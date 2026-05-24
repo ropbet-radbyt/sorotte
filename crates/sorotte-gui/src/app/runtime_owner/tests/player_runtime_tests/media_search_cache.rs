@@ -1,6 +1,226 @@
 use super::*;
 
 #[test]
+fn gui_persisted_config_runtime_owner_opens_media_match_candidate_when_playlist_name_is_missing() {
+    #[derive(Debug, Default)]
+    struct RecordingPlayerState {
+        opened_paths: Vec<String>,
+    }
+
+    struct RecordingPlayerAdapter {
+        state: std::sync::Arc<std::sync::Mutex<RecordingPlayerState>>,
+    }
+
+    impl PlayerAdapter for RecordingPlayerAdapter {
+        fn name(&self) -> &'static str {
+            "recording"
+        }
+
+        fn open_file(&mut self, path: &str) -> Result<(), sorotte_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .opened_paths
+                .push(path.to_owned());
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct MediaMatchPeerSessionRuntimeAdapter {
+        peer_files: Vec<sorotte_client_core::ClientMediaMatchPeerFileState>,
+    }
+
+    impl GuiSessionRuntimeAdapter for MediaMatchPeerSessionRuntimeAdapter {
+        fn current_room_media_match_peer_file_states(
+            &self,
+        ) -> Vec<sorotte_client_core::ClientMediaMatchPeerFileState> {
+            self.peer_files.clone()
+        }
+
+        fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn connect_public_server(
+            &mut self,
+            _selected_server: Option<(String, String)>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn refresh_public_servers(
+            &mut self,
+            _current_servers: Vec<(String, String)>,
+            _language: Option<&str>,
+        ) -> Result<Vec<(String, String)>, String> {
+            Ok(Vec::new())
+        }
+
+        fn search_missing_media(
+            &mut self,
+            _directories: Vec<String>,
+        ) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+    }
+
+    fn media_match_record_for_file(
+        path: &std::path::Path,
+    ) -> sorotte_media_match::MediaFingerprintRecord {
+        let metadata = std::fs::metadata(path).expect("test media should exist");
+        let modified_unix_millis = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+            .unwrap_or(0);
+        let mut record = sorotte_media_match::MediaFingerprintRecord {
+            identity: sorotte_media_match::MediaFileIdentity::new(
+                path,
+                modified_unix_millis,
+                metadata.len(),
+            ),
+            algorithm_version: sorotte_media_match::MEDIA_MATCH_ALGORITHM_VERSION,
+            extraction_settings: sorotte_media_match::MediaExtractionSettings::fast_anchor_v2(),
+            duration_seconds: Some(900.0),
+            container_fingerprint: format!("container:{}", path.display()),
+            audio: None,
+            video: None,
+            audio_anchors: Vec::new(),
+            video_anchors: Vec::new(),
+            audio_error: None,
+            video_error: None,
+        };
+        seed_media_match_strong_anchor_fixture(&mut record);
+        record
+    }
+
+    fn remote_media_match_record(path: &str) -> sorotte_media_match::MediaFingerprintRecord {
+        let mut record = sorotte_media_match::MediaFingerprintRecord {
+            identity: sorotte_media_match::MediaFileIdentity::new(path, 1000, 2000),
+            algorithm_version: sorotte_media_match::MEDIA_MATCH_ALGORITHM_VERSION,
+            extraction_settings: sorotte_media_match::MediaExtractionSettings::fast_anchor_v2(),
+            duration_seconds: Some(900.0),
+            container_fingerprint: format!("container:{path}"),
+            audio: None,
+            video: None,
+            audio_anchors: Vec::new(),
+            video_anchors: Vec::new(),
+            audio_error: None,
+            video_error: None,
+        };
+        seed_media_match_strong_anchor_fixture(&mut record);
+        record
+    }
+
+    fn seed_media_match_strong_anchor_fixture(
+        record: &mut sorotte_media_match::MediaFingerprintRecord,
+    ) {
+        record.audio_anchors = (0u32..12)
+            .map(|index| sorotte_media_match::AudioAnchor {
+                bucket: 100 + index,
+                t_ms: 30_000 + (index * 60_000),
+                weight: 1,
+            })
+            .collect();
+        record.video_anchors = (0u32..12)
+            .map(|index| sorotte_media_match::VideoAnchor {
+                bucket: 200 + index,
+                t_ms: 30_000 + (index * 60_000),
+                hash64: 0x55AA_0000_0000_0000 | u64::from(index),
+                weight: 1,
+            })
+            .collect();
+    }
+
+    let root = test_temp_root("playlist-media-match-alternate-encode");
+    let config_path = root.join("sorotte.ini");
+    let media_root = root.join("local-media");
+    std::fs::create_dir_all(&media_root).expect("alternate-encode media root should be created");
+    let local_file_name = "[ANE] Bakemonogatari - Ep04 [BDRip 1080p x264 FLAC].mkv";
+    let local_media_path = media_root.join(local_file_name);
+    std::fs::write(&local_media_path, b"alternate encode")
+        .expect("alternate-encode fixture should be written");
+    let remote_file_name = "[MTBB-Minis] Bakemonogatari - 04 [19103080].mkv";
+
+    let local_record = media_match_record_for_file(&local_media_path);
+    let mut cache = sorotte_media_match::MediaMatchCache::default();
+    cache.insert(local_record);
+    crate::app::media_match_support::save_media_match_cache_for_test(&root, &cache)
+        .expect("media-match cache should be written");
+    let remote_record = remote_media_match_record(remote_file_name);
+    let remote_signature = sorotte_media_match::media_match_wire_value_from_records(
+        std::slice::from_ref(&remote_record),
+    )
+    .expect("remote media-match signature should serialize");
+
+    let media_root_key =
+        crate::app::media_search_cache::normalized_media_search_root_key(&media_root);
+    let mut root_index_candidates = std::collections::HashMap::new();
+    root_index_candidates.insert(local_file_name.to_owned(), vec![local_file_name.to_owned()]);
+    let mut root_indexes_by_key = std::collections::HashMap::new();
+    root_indexes_by_key.insert(
+        media_root_key.clone(),
+        GuiAttachedMediaSearchRootIndex {
+            root_key: media_root_key.clone(),
+            root_path: media_root.clone(),
+            built_at_unix_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after unix epoch")
+                .as_millis() as u64,
+            candidates_by_name: root_index_candidates,
+        },
+    );
+
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
+        .with_session_runtime(Box::new(MediaMatchPeerSessionRuntimeAdapter {
+            peer_files: vec![sorotte_client_core::ClientMediaMatchPeerFileState {
+                username: "remote".to_owned(),
+                has_file: true,
+                file_name: Some(remote_file_name.to_owned()),
+                file_size: None,
+                file_duration: None,
+                media_match_signature: Some(remote_signature),
+            }],
+        }));
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
+        state: player_state.clone(),
+    })));
+    owner.attached_media_search_index = Some(GuiAttachedMediaSearchIndex {
+        roots: vec![media_root_key],
+        root_indexes_by_key,
+        roots_requiring_refresh: std::collections::BTreeSet::new(),
+    });
+    owner.active_shared_playlist_index = Some(0);
+
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
+        media_match_fingerprinting_enabled: Some(true),
+        media_match_wire_sharing_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.apply_shared_playlist_entries(vec![remote_file_name.to_owned()], Some(0), false);
+
+    assert_eq!(
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+        SelectedPlaylistMediaSyncOutcome::OpenedNewMedia
+    );
+    assert_eq!(
+        player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .opened_paths,
+        vec![sorotte_media_match::normalize_media_path(&local_media_path)],
+        "automatic shared-playlist sync should open the local alternate encode from the peer media-match signature, not require a filename match"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_warm_starts_shared_playlist_resolution_from_persisted_cache()
 {
     #[derive(Debug, Default)]

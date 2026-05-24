@@ -225,8 +225,16 @@ impl GuiPersistedConfigRuntimeOwner {
             .resolve_main_window_user_media_target_for_automatic_sync(state, &target)
         {
             Ok(GuiUserMediaTargetResolution::Resolved(path)) => path,
-            Ok(GuiUserMediaTargetResolution::Pending | GuiUserMediaTargetResolution::Missing)
-            | Err(_) => return SelectedPlaylistMediaSyncOutcome::NoChange,
+            Ok(GuiUserMediaTargetResolution::Pending) => {
+                return SelectedPlaylistMediaSyncOutcome::NoChange;
+            }
+            Ok(GuiUserMediaTargetResolution::Missing) | Err(_) => {
+                let Some(path) = self.media_match_cached_room_candidate_for_target(state, &target)
+                else {
+                    return SelectedPlaylistMediaSyncOutcome::NoChange;
+                };
+                path
+            }
         };
 
         self.ensure_configured_player_attached();

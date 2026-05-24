@@ -137,12 +137,13 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) -> bool {
-        let target_file_name = if let Some(session) = self.session.as_ref() {
+        let target_file_name_result = if let Some(session) = self.session.as_ref() {
             session.missing_media_search_target_file_name()
         } else {
             self.detached_missing_media_target_file_name(projected_state)
         };
-        let search_result = match target_file_name {
+        let target_file_name = target_file_name_result.as_ref().ok().cloned();
+        let search_result = match target_file_name_result {
             Ok(target_file_name) => {
                 self.resolve_main_window_user_media_target(projected_state, &target_file_name)
             }
@@ -153,7 +154,14 @@ impl GuiPersistedConfigRuntimeOwner {
                 let found_path = match result {
                     GuiUserMediaTargetResolution::Resolved(path) => normalized_editable_text(&path),
                     GuiUserMediaTargetResolution::Pending => return true,
-                    GuiUserMediaTargetResolution::Missing => None,
+                    GuiUserMediaTargetResolution::Missing => {
+                        target_file_name.as_deref().and_then(|target| {
+                            self.media_match_cached_room_candidate_for_target(
+                                projected_state,
+                                target,
+                            )
+                        })
+                    }
                 };
                 self.ensure_configured_player_attached();
                 match found_path {

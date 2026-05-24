@@ -25,7 +25,19 @@ use super::super::{
 };
 use super::*;
 
+#[derive(Debug, Clone)]
+struct GuiMediaMatchRemoteTarget {
+    target_file_name: String,
+    media_match_signature: serde_json::Value,
+}
+
 impl GuiPersistedConfigRuntimeOwner {
+    fn usable_media_match_peer_file_name(file_name: Option<String>) -> Option<String> {
+        file_name
+            .map(|target| target.trim().to_owned())
+            .filter(|target| !target.is_empty() && target != "**Hidden filename**")
+    }
+
     fn apply_media_match_progress(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
@@ -148,8 +160,18 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.update_media_match_remote_status(handle, projected_state, status);
                 return true;
             };
-            let Some(current_path) = self.media_match_current_local_path_for_state(projected_state)
-            else {
+            let current_path = if let Some(path) =
+                self.media_match_current_local_path_for_state(projected_state)
+            {
+                path
+            } else if let Some(path) = self
+                .media_match_room_target_for_state(projected_state)
+                .and_then(|target| {
+                    self.media_match_cached_room_candidate_for_target(projected_state, &target)
+                })
+            {
+                path
+            } else {
                 let status = "unavailable: no current file".to_owned();
                 let gate_tiers = BTreeMap::new();
                 if !self.set_media_match_peer_tiers(handle, projected_state, gate_tiers) {
@@ -438,6 +460,10 @@ impl GuiPersistedConfigRuntimeOwner {
         let room_target = self
             .media_match_room_target_for_state(projected_state)
             .unwrap_or_default();
+        let remote_targets = format!(
+            "{:?}",
+            self.media_match_remote_targets_for_state(projected_state)
+        );
         let roots = search_roots
             .iter()
             .map(|root| root.display().to_string())
@@ -445,12 +471,98 @@ impl GuiPersistedConfigRuntimeOwner {
             .join("|");
         let settings = &projected_state.media_match.settings;
         format!(
-            "current={current_player_path}\ntarget={room_target}\nroots={roots}\nfingerprinting={}\nruntime={}\nautoplay={:?}\nwarmup={}",
+            "current={current_player_path}\ntarget={room_target}\nremote={remote_targets}\nroots={roots}\nfingerprinting={}\nruntime={}\nautoplay={:?}\nwarmup={}",
             settings.fingerprinting_enabled,
             settings.runtime_tolerance_enabled,
             settings.autoplay_policy,
             settings.background_warmup_enabled,
         )
+    }
+
+    fn media_match_remote_targets_for_state(
+        &self,
+        projected_state: &SorotteGuiShellAppState,
+    ) -> Vec<GuiMediaMatchRemoteTarget> {
+        let playlist_target = self.current_shared_playlist_target(projected_state);
+        self.session
+            .as_ref()
+            .map(|session| session.current_room_media_match_peer_file_states())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|peer| peer.has_file)
+            .filter_map(|peer| {
+                let media_match_signature = peer.media_match_signature?;
+                let target_file_name = Self::usable_media_match_peer_file_name(peer.file_name)
+                    .or_else(|| playlist_target.clone())?;
+                Some(GuiMediaMatchRemoteTarget {
+                    target_file_name,
+                    media_match_signature,
+                })
+            })
+            .collect()
+    }
+
+    fn media_match_preferred_remote_target_for_state(
+        &self,
+        projected_state: &SorotteGuiShellAppState,
+    ) -> Option<GuiMediaMatchRemoteTarget> {
+        let room_target = self.media_match_room_target_for_state(projected_state);
+        let mut targets = self.media_match_remote_targets_for_state(projected_state);
+        if let Some(room_target) = room_target.as_deref()
+            && let Some(index) = targets.iter().position(|target| {
+                target.target_file_name.eq_ignore_ascii_case(room_target)
+                    || Path::new(&target.target_file_name)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.eq_ignore_ascii_case(room_target))
+            })
+        {
+            return Some(targets.remove(index));
+        }
+        if room_target.is_some() {
+            return None;
+        }
+        targets.into_iter().next()
+    }
+
+    pub(in crate::app::runtime_owner) fn media_match_cached_room_candidate_for_target(
+        &mut self,
+        projected_state: &SorotteGuiShellAppState,
+        target: &str,
+    ) -> Option<String> {
+        if !projected_state.media_match.settings.fingerprinting_enabled {
+            return None;
+        }
+        let root = self.media_match_root_for_request(projected_state)?;
+        let search_roots = self.automatic_media_search_roots(projected_state);
+        if search_roots.is_empty() {
+            return None;
+        }
+        let room_target = Path::new(target)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(target);
+        let remote_targets = self.media_match_remote_targets_for_state(projected_state);
+        let matching_targets = remote_targets.iter().filter(|remote| {
+            remote.target_file_name.eq_ignore_ascii_case(target)
+                || Path::new(&remote.target_file_name)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.eq_ignore_ascii_case(room_target))
+        });
+        for remote in matching_targets {
+            if let Some(candidate) = media_match_cached_strong_candidate_for_remote_signature(
+                &root,
+                &search_roots,
+                &remote.target_file_name,
+                &remote.media_match_signature,
+                &projected_state.media_match.settings,
+                &MediaExtractionSettings::fast_anchor_v2(),
+            ) {
+                return Some(candidate.path);
+            }
+        }
+        None
     }
 
     fn media_match_room_target_for_state(
@@ -584,7 +696,11 @@ impl GuiPersistedConfigRuntimeOwner {
             return false;
         }
         let current_player_path = self.media_match_current_local_path_for_state(projected_state);
-        let extraction_required = current_player_path.is_some();
+        let remote_candidate = current_player_path
+            .is_none()
+            .then(|| self.media_match_preferred_remote_target_for_state(projected_state))
+            .flatten();
+        let extraction_required = current_player_path.is_some() || remote_candidate.is_some();
         let tool_snapshot =
             self.refresh_media_match_runtime_snapshot(&projected_state.media_match.settings);
         if extraction_required && tool_snapshot.health != GuiMediaMatchToolHealth::Healthy {
@@ -654,22 +770,49 @@ impl GuiPersistedConfigRuntimeOwner {
             .name("sorotte-gui-media-match-background".to_owned())
             .spawn(move || {
                 let progress_tx = tx.clone();
-                let hardening_candidates = candidates.clone();
+                let hardening_candidates = current_player_path
+                    .is_some()
+                    .then(|| candidates.clone())
+                    .flatten();
                 let fast_result = if current_player_path.is_none() {
-                    let extraction_settings =
-                        sorotte_media_match::MediaExtractionSettings::fast_anchor_v2();
-                    rebuild_persisted_media_match_index_with_extraction_settings_and_cancel(
-                        &root,
-                        &search_roots,
-                        None,
-                        &settings,
-                        &extraction_settings,
-                        Some(worker_cancel_flag.as_ref()),
-                        |progress| {
-                            let _ = progress_tx
-                                .send(GuiMediaMatchBackgroundWorkerEvent::Progress(progress));
-                        },
-                    )
+                    if let Some(remote_candidate) = remote_candidate {
+                        media_match_tool_paths(&root).and_then(|tools| {
+                            let extraction_settings =
+                                sorotte_media_match::MediaExtractionSettings::fast_anchor_v2();
+                            rebuild_persisted_media_match_remote_candidates_with_progress_and_cancel(
+                                MediaMatchRemoteCandidateRebuildRequest {
+                                    root: &root,
+                                    search_roots: &search_roots,
+                                    target_file_name: &remote_candidate.target_file_name,
+                                    media_match_signature: &remote_candidate.media_match_signature,
+                                    settings: &settings,
+                                    tools: &tools,
+                                    extraction_settings: &extraction_settings,
+                                    cancel_flag: Some(worker_cancel_flag.as_ref()),
+                                },
+                                |progress| {
+                                    let _ = progress_tx.send(
+                                        GuiMediaMatchBackgroundWorkerEvent::Progress(progress),
+                                    );
+                                },
+                            )
+                        })
+                    } else {
+                        let extraction_settings =
+                            sorotte_media_match::MediaExtractionSettings::fast_anchor_v2();
+                        rebuild_persisted_media_match_index_with_extraction_settings_and_cancel(
+                            &root,
+                            &search_roots,
+                            None,
+                            &settings,
+                            &extraction_settings,
+                            Some(worker_cancel_flag.as_ref()),
+                            |progress| {
+                                let _ = progress_tx
+                                    .send(GuiMediaMatchBackgroundWorkerEvent::Progress(progress));
+                            },
+                        )
+                    }
                 } else if let Some(candidates) = candidates {
                     media_match_tool_paths(&root).and_then(|tools| {
                         let extraction_settings =
@@ -811,6 +954,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.media_match_runtime_snapshot = snapshot.clone();
         self.last_published_local_file = None;
         self.media_match_wire_sync_token = None;
+        self.last_attached_media_resolution_trigger = None;
         if !self.sync_media_match_wire_decisions(handle, projected_state) {
             return false;
         }

@@ -23,8 +23,9 @@ use sorotte_media_match::{
     audio_anchors_from_record, decide_media_match, decode_audio_anchor_summary,
     decode_video_anchor_summary, fingerprint_media_file_cancellable_with_report,
     media_extraction_settings_hash, media_fingerprint_summary_from_record,
-    media_match_wire_value_from_records, normalize_media_path, rank_media_match_candidates,
-    video_anchor_hashes_match, video_anchors_from_record,
+    media_match_wire_signature_from_value, media_match_wire_value_from_records,
+    normalize_media_path, rank_media_match_candidates, video_anchor_hashes_match,
+    video_anchors_from_record,
 };
 
 use super::shell_state::{
@@ -93,6 +94,23 @@ pub(super) struct MediaMatchCandidateRebuildRequest<'a> {
     pub(super) tools: &'a MediaMatchToolPaths,
     pub(super) extraction_settings: &'a MediaExtractionSettings,
     pub(super) cancel_flag: Option<&'a AtomicBool>,
+}
+
+pub(super) struct MediaMatchRemoteCandidateRebuildRequest<'a> {
+    pub(super) root: &'a Path,
+    pub(super) search_roots: &'a [PathBuf],
+    pub(super) target_file_name: &'a str,
+    pub(super) media_match_signature: &'a serde_json::Value,
+    pub(super) settings: &'a MediaMatchSettings,
+    pub(super) tools: &'a MediaMatchToolPaths,
+    pub(super) extraction_settings: &'a MediaExtractionSettings,
+    pub(super) cancel_flag: Option<&'a AtomicBool>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct MediaMatchRemoteCandidateMatch {
+    pub(super) path: String,
+    pub(super) decision: MediaMatchDecision,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -756,6 +774,223 @@ where
     })
 }
 
+pub(super) fn rebuild_persisted_media_match_remote_candidates_with_progress_and_cancel<F>(
+    request: MediaMatchRemoteCandidateRebuildRequest<'_>,
+    mut progress: F,
+) -> Result<MediaMatchIndexRebuildResult, String>
+where
+    F: FnMut(MediaMatchToolProgress),
+{
+    let signature = media_match_wire_signature_from_value(request.media_match_signature)?;
+    progress(MediaMatchToolProgress::new(
+        "Scanning media-search roots",
+        Some(format!("{} roots", request.search_roots.len())),
+        0.05,
+    ));
+    let candidates = collect_media_match_candidates(request.search_roots);
+    inventory_media_match_candidates(
+        request.root,
+        request.search_roots,
+        &candidates,
+        request.cancel_flag,
+    )?;
+    let selected = select_remote_media_match_candidates(&candidates, request.target_file_name);
+    let existing_cache =
+        load_media_match_cache_for_settings(request.root, request.extraction_settings)
+            .unwrap_or_default();
+    let mut reused = 0usize;
+    let mut fingerprinted = 0usize;
+    let mut skipped = 0usize;
+    let total = selected.paths.len();
+    let fresh_work_total = selected
+        .paths
+        .iter()
+        .filter(|path| {
+            !media_match_cache_has_valid_record(&existing_cache, path, request.extraction_settings)
+        })
+        .count();
+    let mut fresh_work_done = 0usize;
+    let mut best_match = best_remote_candidate_match(
+        &selected.paths,
+        &existing_cache,
+        &signature,
+        request.settings,
+        request.extraction_settings,
+    );
+    let mut next_cache = existing_cache.clone();
+    let checkpoint_connection = open_media_match_sqlite_index(request.root)?;
+    let mut instrumentation = MediaMatchRebuildInstrumentation::default();
+
+    progress(MediaMatchToolProgress::new(
+        "Fingerprinting media",
+        Some(format!(
+            "0/{fresh_work_total} room-candidate files needing index"
+        )),
+        0.1,
+    ));
+
+    for (index, path) in selected.paths.iter().enumerate() {
+        if request
+            .cancel_flag
+            .is_some_and(|flag| flag.load(Ordering::Relaxed))
+        {
+            return Err("Media Matching room-candidate rebuild was canceled.".to_owned());
+        }
+        if best_match
+            .as_ref()
+            .is_some_and(|best| media_match_tier_is_strong_or_exact(best.decision.tier))
+        {
+            break;
+        }
+        let denominator = total.max(1);
+        let progress_fraction = 0.1 + (0.82 * (index as f32 / denominator as f32));
+        let path_needs_fingerprint =
+            !media_match_cache_has_valid_record(&existing_cache, path, request.extraction_settings);
+        progress(MediaMatchToolProgress::new(
+            "Fingerprinting media",
+            Some(format!(
+                "{fresh_work_done}/{fresh_work_total} room-candidate files needing index: {}",
+                path.display()
+            )),
+            progress_fraction,
+        ));
+        match cached_or_fresh_media_fingerprint(
+            &existing_cache,
+            path,
+            request.tools,
+            request.extraction_settings,
+            request.cancel_flag,
+        ) {
+            Ok((record, was_reused, report)) => {
+                if was_reused {
+                    reused += 1;
+                } else {
+                    fingerprinted += 1;
+                    fresh_work_done += 1;
+                    save_media_match_record_to_sqlite(&checkpoint_connection, &record)?;
+                    if let Some(report) = report {
+                        instrumentation.add_report(&report);
+                    }
+                }
+                let decision = sorotte_media_match::decide_media_match_against_wire_signature(
+                    &record,
+                    &signature,
+                    request.settings,
+                );
+                if best_match
+                    .as_ref()
+                    .is_none_or(|best| media_match_decision_is_better(&decision, &best.decision))
+                {
+                    best_match = Some(MediaMatchRemoteCandidateMatch {
+                        path: record.identity.normalized_path.clone(),
+                        decision,
+                    });
+                }
+                next_cache.insert(record);
+            }
+            Err(MediaFingerprintError::Cancelled { .. }) => {
+                return Err("Media Matching room-candidate rebuild was canceled.".to_owned());
+            }
+            Err(_) => {
+                skipped += 1;
+                if path_needs_fingerprint {
+                    fresh_work_done += 1;
+                }
+            }
+        }
+    }
+
+    if best_match
+        .as_ref()
+        .is_none_or(|best| !media_match_tier_is_strong_or_exact(best.decision.tier))
+    {
+        best_match = best_remote_candidate_match(
+            &selected.paths,
+            &next_cache,
+            &signature,
+            request.settings,
+            request.extraction_settings,
+        );
+    }
+
+    let cache_status = media_match_cache_status(request.root);
+    let attempted = reused + fingerprinted + skipped;
+    let scope = if selected.prefiltered {
+        format!(
+            "{} of {} discovered files",
+            attempted, selected.discovered_files
+        )
+    } else {
+        format!("{} files", selected.discovered_files)
+    };
+    progress(MediaMatchToolProgress::new(
+        "Media Matching room candidates indexed",
+        Some(format!(
+            "{fresh_work_done}/{fresh_work_total} room-candidate files needing index; {cache_status}"
+        )),
+        1.0,
+    ));
+
+    let (message, current_decision, nearest_match, last_evidence) = if let Some(best) = best_match
+        .as_ref()
+        .filter(|best| media_match_tier_is_strong_or_exact(best.decision.tier))
+    {
+        let tier = media_match_tier_label(best.decision.tier);
+        (
+            format!(
+                "Media Matching indexed room candidates across {scope} ({} reused, {} fingerprinted, {} skipped; {}).",
+                reused,
+                fingerprinted,
+                skipped,
+                instrumentation.summary()
+            ),
+            Some(format!("{tier}: room media matched {}", best.path)),
+            Some(format!(
+                "{} ({tier}: {})",
+                best.path, best.decision.explanation
+            )),
+            Some(format_media_match_evidence_summary(&best.decision)),
+        )
+    } else if let Some(best) = best_match {
+        (
+            format!(
+                "Media Matching indexed room candidates across {scope} ({} reused, {} fingerprinted, {} skipped; {}).",
+                reused,
+                fingerprinted,
+                skipped,
+                instrumentation.summary()
+            ),
+            Some("unknown: no strong local match for room media yet".to_owned()),
+            Some(format!(
+                "Nearest local room candidate: {} ({})",
+                best.path, best.decision.explanation
+            )),
+            Some(format_media_match_evidence_summary(&best.decision)),
+        )
+    } else {
+        (
+            format!(
+                "Media Matching indexed room candidates across {scope} ({} reused, {} fingerprinted, {} skipped; {}).",
+                reused,
+                fingerprinted,
+                skipped,
+                instrumentation.summary()
+            ),
+            Some("unknown: no strong local match for room media yet".to_owned()),
+            None,
+            None,
+        )
+    };
+
+    Ok(MediaMatchIndexRebuildResult {
+        message,
+        cache_status,
+        current_decision,
+        nearest_match,
+        last_evidence,
+    })
+}
+
 fn initial_media_match_rebuild_cache(
     existing_cache: &MediaMatchCache,
     prefiltered: bool,
@@ -1140,6 +1375,23 @@ fn select_media_match_rebuild_candidates(
         }
     }
 
+    MediaMatchRebuildCandidateSelection {
+        paths,
+        discovered_files: candidates.len(),
+        prefiltered,
+    }
+}
+
+fn select_remote_media_match_candidates(
+    candidates: &[PathBuf],
+    target_file_name: &str,
+) -> MediaMatchRebuildCandidateSelection {
+    let prefiltered = candidates.len() > MEDIA_MATCH_PREFILTER_THRESHOLD;
+    let paths = if prefiltered {
+        prefilter_media_match_candidates(candidates, target_file_name)
+    } else {
+        candidates.to_vec()
+    };
     MediaMatchRebuildCandidateSelection {
         paths,
         discovered_files: candidates.len(),
@@ -1803,6 +2055,112 @@ fn summarize_current_media_match(
     )
 }
 
+pub(super) fn media_match_cached_strong_candidate_for_remote_signature(
+    root: &Path,
+    search_roots: &[PathBuf],
+    target_file_name: &str,
+    media_match_signature: &serde_json::Value,
+    settings: &MediaMatchSettings,
+    extraction_settings: &MediaExtractionSettings,
+) -> Option<MediaMatchRemoteCandidateMatch> {
+    let signature = media_match_wire_signature_from_value(media_match_signature).ok()?;
+    let candidates = collect_media_match_candidates(search_roots);
+    let selected = select_remote_media_match_candidates(&candidates, target_file_name);
+    let cache = load_media_match_cache_for_settings(root, extraction_settings)?;
+    best_remote_candidate_match(
+        &selected.paths,
+        &cache,
+        &signature,
+        settings,
+        extraction_settings,
+    )
+    .filter(|candidate| media_match_tier_is_strong_or_exact(candidate.decision.tier))
+}
+
+fn best_remote_candidate_match(
+    candidates: &[PathBuf],
+    cache: &MediaMatchCache,
+    signature: &sorotte_media_match::MediaMatchWireSignatureV2,
+    settings: &MediaMatchSettings,
+    extraction_settings: &MediaExtractionSettings,
+) -> Option<MediaMatchRemoteCandidateMatch> {
+    candidates
+        .iter()
+        .filter(|path| media_match_cache_has_valid_record(cache, path, extraction_settings))
+        .filter_map(|path| {
+            let normalized_path = normalize_media_path(path);
+            let record = cache.records.get(&normalized_path)?;
+            let decision = sorotte_media_match::decide_media_match_against_wire_signature(
+                record, signature, settings,
+            );
+            Some(MediaMatchRemoteCandidateMatch {
+                path: record.identity.normalized_path.clone(),
+                decision,
+            })
+        })
+        .max_by(|left, right| media_match_decision_cmp(&left.decision, &right.decision))
+}
+
+fn media_match_tier_is_strong_or_exact(tier: MediaMatchTier) -> bool {
+    matches!(tier, MediaMatchTier::Exact | MediaMatchTier::Strong)
+}
+
+fn media_match_decision_is_better(
+    candidate: &MediaMatchDecision,
+    current: &MediaMatchDecision,
+) -> bool {
+    media_match_decision_cmp(candidate, current).is_gt()
+}
+
+fn media_match_decision_cmp(
+    left: &MediaMatchDecision,
+    right: &MediaMatchDecision,
+) -> std::cmp::Ordering {
+    media_match_tier_score(left.tier)
+        .cmp(&media_match_tier_score(right.tier))
+        .then_with(|| {
+            left.evidence
+                .alignment
+                .as_ref()
+                .map(|alignment| alignment.aligned_pairs)
+                .unwrap_or_default()
+                .cmp(
+                    &right
+                        .evidence
+                        .alignment
+                        .as_ref()
+                        .map(|alignment| alignment.aligned_pairs)
+                        .unwrap_or_default(),
+                )
+        })
+        .then_with(|| {
+            left.evidence
+                .alignment
+                .as_ref()
+                .map(|alignment| alignment.aligned_span_seconds as u64)
+                .unwrap_or_default()
+                .cmp(
+                    &right
+                        .evidence
+                        .alignment
+                        .as_ref()
+                        .map(|alignment| alignment.aligned_span_seconds as u64)
+                        .unwrap_or_default(),
+                )
+        })
+}
+
+fn media_match_tier_score(tier: MediaMatchTier) -> u8 {
+    match tier {
+        MediaMatchTier::Exact => 5,
+        MediaMatchTier::Strong => 4,
+        MediaMatchTier::Probable => 3,
+        MediaMatchTier::Weak => 2,
+        MediaMatchTier::Reject => 1,
+        MediaMatchTier::Unknown => 0,
+    }
+}
+
 pub(super) fn media_match_tier_label(tier: MediaMatchTier) -> &'static str {
     match tier {
         MediaMatchTier::Exact => "exact",
@@ -2373,6 +2731,14 @@ fn save_media_match_cache(root: &Path, cache: &MediaMatchCache) -> Result<(), St
 }
 
 #[cfg(test)]
+pub(in crate::app) fn save_media_match_cache_for_test(
+    root: &Path,
+    cache: &MediaMatchCache,
+) -> Result<(), String> {
+    save_media_match_cache(root, cache)
+}
+
+#[cfg(test)]
 fn save_media_match_cache_to_sqlite(
     connection: &Connection,
     cache: &MediaMatchCache,
@@ -2914,6 +3280,26 @@ mod tests {
         }
     }
 
+    fn seed_strong_anchor_fixture(record: &mut MediaFingerprintRecord) {
+        record.extraction_settings = MediaExtractionSettings::fast_anchor_v2();
+        record.duration_seconds = Some(900.0);
+        record.audio_anchors = (0u32..12)
+            .map(|index| AudioAnchor {
+                bucket: 100 + index,
+                t_ms: 30_000 + (index * 60_000),
+                weight: 1,
+            })
+            .collect();
+        record.video_anchors = (0u32..12)
+            .map(|index| VideoAnchor {
+                bucket: 200 + index,
+                t_ms: 30_000 + (index * 60_000),
+                hash64: 0x55AA_0000_0000_0000 | u64::from(index),
+                weight: 1,
+            })
+            .collect();
+    }
+
     fn media_match_record_updated_unix_millis(root: &Path, record: &MediaFingerprintRecord) -> i64 {
         let connection = open_media_match_sqlite_index(root).expect("SQLite index should open");
         connection
@@ -3039,6 +3425,44 @@ mod tests {
                 .len(),
             1
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn media_match_cached_remote_signature_finds_local_candidate_with_different_name() {
+        let root = unique_media_match_test_root("remote-signature-candidate");
+        let media_dir = root.join("media");
+        std::fs::create_dir_all(&media_dir).expect("media dir should be created");
+        let local_path = media_dir.join("[ANE] Bakemonogatari - Ep04 [BDRip].mkv");
+        std::fs::write(&local_path, b"local-encode").expect("local media should be written");
+
+        let mut local_record = fake_media_match_record_for_file(
+            &local_path,
+            MediaExtractionSettings::fast_anchor_v2(),
+        );
+        seed_strong_anchor_fixture(&mut local_record);
+        let mut cache = MediaMatchCache::default();
+        cache.insert(local_record.clone());
+        save_media_match_cache(&root, &cache).expect("cache should be written");
+
+        let mut remote_record =
+            fake_media_match_record("[MTBB-Minis] Bakemonogatari - 04 [19103080].mkv");
+        seed_strong_anchor_fixture(&mut remote_record);
+        let signature = media_match_wire_value_from_records(std::slice::from_ref(&remote_record))
+            .expect("wire signature should serialize");
+
+        let matched = media_match_cached_strong_candidate_for_remote_signature(
+            &root,
+            std::slice::from_ref(&media_dir),
+            "[MTBB-Minis] Bakemonogatari - 04 [19103080].mkv",
+            &signature,
+            &enabled_media_match_settings(),
+            &MediaExtractionSettings::fast_anchor_v2(),
+        )
+        .expect("remote signature should resolve the local alternate encode");
+
+        assert_eq!(matched.path, normalize_media_path(&local_path));
+        assert_eq!(matched.decision.tier, MediaMatchTier::Strong);
         let _ = std::fs::remove_dir_all(&root);
     }
 
