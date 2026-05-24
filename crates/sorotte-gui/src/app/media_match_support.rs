@@ -1774,11 +1774,27 @@ fn summarize_current_media_match(
     );
     let Some(best) = ranked.into_iter().next() else {
         return (
-            Some("unknown: no comparable indexed candidates".to_owned()),
+            Some("exact: current local file is indexed".to_owned()),
             None,
-            None,
+            Some("current file is indexed exactly; no alternate indexed candidates".to_owned()),
         );
     };
+    if matches!(
+        best.decision.tier,
+        MediaMatchTier::Reject | MediaMatchTier::Unknown
+    ) {
+        return (
+            Some("exact: current local file is indexed".to_owned()),
+            Some(format!(
+                "No alternate indexed match; nearest other: {}",
+                format_media_match_nearest_candidate(&best)
+            )),
+            Some(format!(
+                "current file is indexed exactly | nearest_other {}",
+                format_media_match_evidence_summary(&best.decision)
+            )),
+        );
+    }
     let tier = media_match_tier_label(best.decision.tier);
     (
         Some(format!("{tier}: {}", best.decision.explanation)),
@@ -3579,15 +3595,20 @@ mod tests {
 
         assert_eq!(
             current_decision.as_deref(),
-            Some("reject: anchor timeline evidence is insufficient")
+            Some("exact: current local file is indexed")
         );
         let nearest_match = nearest_match.expect("nearest candidate should be reported");
         assert!(
-            nearest_match
-                .contains("episode-nearest.mkv (reject: anchor timeline evidence is insufficient)"),
+            nearest_match.contains(
+                "No alternate indexed match; nearest other: episode-nearest.mkv (reject: anchor timeline evidence is insufficient)"
+            ),
             "{nearest_match}"
         );
         let last_evidence = last_evidence.expect("debug evidence should be reported");
+        assert!(
+            last_evidence.contains("current file is indexed exactly"),
+            "{last_evidence}"
+        );
         assert!(last_evidence.contains("tier=reject"), "{last_evidence}");
         assert!(
             last_evidence.contains("alignment offset=2.0s"),

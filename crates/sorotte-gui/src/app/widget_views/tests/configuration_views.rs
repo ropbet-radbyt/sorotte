@@ -410,6 +410,14 @@ fn gui_shell_app_state_projects_media_match_plugin_widgets_and_actions() {
             .and_then(|node| node.value.as_deref()),
         Some("bob: strong")
     );
+    let last_evidence = plugins
+        .find("plugins:media-matching:last-evidence")
+        .expect("last evidence should exist");
+    assert_eq!(last_evidence.kind, GuiWidgetKind::TextArea);
+    assert_eq!(
+        last_evidence.value.as_deref(),
+        Some("audio=0.94 video=0.82 offset=20s")
+    );
 
     let fingerprinting = plugins
         .find("plugins:media-matching:setting:fingerprinting")

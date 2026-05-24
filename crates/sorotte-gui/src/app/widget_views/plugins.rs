@@ -327,10 +327,15 @@ impl SorotteGuiShellAppState {
             ),
         ] {
             if let Some(value) = value {
+                let kind = if id == "plugins:media-matching:last-evidence" {
+                    GuiWidgetKind::TextArea
+                } else {
+                    GuiWidgetKind::Status
+                };
                 rows.push(GuiWidgetNode::leaf(
                     id,
                     label,
-                    GuiWidgetKind::Status,
+                    kind,
                     Some(value),
                     true,
                     false,
