@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -42,8 +43,9 @@ const FAST_AUDIO_SAMPLE_SECONDS: u32 = 120;
 const MEDIA_TOOL_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const FFPROBE_TIMEOUT: Duration = Duration::from_secs(15);
 const FPCALC_TIMEOUT: Duration = Duration::from_secs(90);
-const FFMPEG_FAST_FRAME_TIMEOUT: Duration = Duration::from_secs(45);
+const FFMPEG_FAST_FRAME_TIMEOUT: Duration = Duration::from_secs(60);
 const FFMPEG_FULL_VIDEO_TIMEOUT: Duration = Duration::from_secs(90);
+const FAST_VIDEO_SEEK_WINDOW_SECONDS: f64 = 1.0;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -1410,46 +1412,40 @@ fn extract_fast_video_fingerprint(
     if cancel_flag.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
         return Err(MediaFingerprintError::Cancelled { tool: "ffmpeg" });
     }
-    let start = timestamps.first().copied().unwrap_or(0.0).max(0.0);
-    let end = timestamps
-        .last()
-        .copied()
-        .map(|value| value + 1.0)
-        .unwrap_or(start + 1.0)
-        .max(start + 1.0);
-    let step = timestamps
-        .windows(2)
-        .map(|pair| (pair[1] - pair[0]).max(1.0))
-        .min_by(f64::total_cmp)
-        .unwrap_or(60.0)
-        .max(1.0);
-    let filter = format!(
-        "trim=start={start:.3}:end={end:.3},select='isnan(prev_selected_t)+gte(t-prev_selected_t\\,{step:.3})',showinfo,scale={VIDEO_FRAME_WIDTH}:{VIDEO_FRAME_HEIGHT}:flags=bicubic,format=gray"
-    );
+    let mut args = vec![
+        "-v".into(),
+        "info".into(),
+        "-hide_banner".into(),
+        "-nostats".into(),
+        "-nostdin".into(),
+    ];
+    for timestamp in &timestamps {
+        args.push("-ss".into());
+        args.push(format!("{timestamp:.3}").into());
+        args.push("-copyts".into());
+        args.push("-i".into());
+        args.push(media_path.as_ref().as_os_str().to_os_string());
+    }
+    let (filter, output_label) = fast_video_multi_seek_filter(&timestamps);
+    args.extend([
+        "-filter_complex".into(),
+        filter.into(),
+        "-map".into(),
+        output_label.into(),
+        "-frames:v".into(),
+        timestamps.len().to_string().into(),
+        "-fps_mode".into(),
+        "vfr".into(),
+        "-f".into(),
+        "rawvideo".into(),
+        "-pix_fmt".into(),
+        "gray".into(),
+        "-".into(),
+    ]);
     let output = run_tool_output(
         "ffmpeg",
         ffmpeg.as_ref(),
-        [
-            "-v".into(),
-            "info".into(),
-            "-nostdin".into(),
-            "-ss".into(),
-            format!("{start:.3}").into(),
-            "-copyts".into(),
-            "-i".into(),
-            media_path.as_ref().as_os_str().to_os_string(),
-            "-vf".into(),
-            filter.into(),
-            "-frames:v".into(),
-            timestamps.len().to_string().into(),
-            "-vsync".into(),
-            "vfr".into(),
-            "-f".into(),
-            "rawvideo".into(),
-            "-pix_fmt".into(),
-            "gray".into(),
-            "-".into(),
-        ],
+        args,
         cancel_flag,
         FFMPEG_FAST_FRAME_TIMEOUT,
     )?;
@@ -1499,6 +1495,28 @@ fn extract_fast_video_fingerprint(
             .map(|value| value.round().min(f64::from(u32::MAX)) as u32),
         frames,
     })
+}
+
+fn fast_video_multi_seek_filter(timestamps: &[f64]) -> (String, String) {
+    let mut filter = String::new();
+    let mut labels = Vec::with_capacity(timestamps.len());
+    for (index, timestamp) in timestamps.iter().enumerate() {
+        let end = timestamp + FAST_VIDEO_SEEK_WINDOW_SECONDS;
+        let label = format!("v{index}");
+        filter.push_str(&format!(
+            "[{index}:v]trim=start={timestamp:.3}:end={end:.3},select='eq(n\\,0)',showinfo,scale={VIDEO_FRAME_WIDTH}:{VIDEO_FRAME_HEIGHT}:flags=bicubic,format=gray[{label}];"
+        ));
+        labels.push(label);
+    }
+    if labels.len() == 1 {
+        let label = format!("[{}]", labels[0]);
+        return (filter.trim_end_matches(';').to_owned(), label);
+    }
+    for label in &labels {
+        filter.push_str(&format!("[{label}]"));
+    }
+    filter.push_str(&format!("concat=n={}:v=1:a=0[fastvideo]", timestamps.len()));
+    (filter, "[fastvideo]".to_owned())
 }
 
 pub fn fast_video_sample_timestamps(
@@ -2008,34 +2026,60 @@ where
             status: None,
             stderr: error.to_string(),
         })?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| MediaFingerprintError::ToolFailed {
+            tool,
+            status: None,
+            stderr: "failed capturing stdout".to_owned(),
+        })?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| MediaFingerprintError::ToolFailed {
+            tool,
+            status: None,
+            stderr: "failed capturing stderr".to_owned(),
+        })?;
+    let stdout_reader = thread::spawn(move || read_pipe_to_end(stdout));
+    let stderr_reader = thread::spawn(move || read_pipe_to_end(stderr));
     let started_at = Instant::now();
 
     loop {
         if cancel_flag.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
             let _ = child.kill();
             let _ = child.wait();
+            let _ = join_pipe_reader(stdout_reader, tool, "stdout");
+            let _ = join_pipe_reader(stderr_reader, tool, "stderr");
             return Err(MediaFingerprintError::Cancelled { tool });
         }
         if started_at.elapsed() >= timeout {
             let _ = child.kill();
             let _ = child.wait();
+            let _ = join_pipe_reader(stdout_reader, tool, "stdout");
+            let _ = join_pipe_reader(stderr_reader, tool, "stderr");
             return Err(MediaFingerprintError::TimedOut {
                 tool,
                 timeout_seconds: timeout.as_secs().max(1),
             });
         }
         match child.try_wait() {
-            Ok(Some(_status)) => {
-                return child.wait_with_output().map_err(|error| {
-                    MediaFingerprintError::ToolFailed {
-                        tool,
-                        status: None,
-                        stderr: error.to_string(),
-                    }
+            Ok(Some(status)) => {
+                let stdout = join_pipe_reader(stdout_reader, tool, "stdout")?;
+                let stderr = join_pipe_reader(stderr_reader, tool, "stderr")?;
+                return Ok(Output {
+                    status,
+                    stdout,
+                    stderr,
                 });
             }
             Ok(None) => thread::sleep(MEDIA_TOOL_POLL_INTERVAL),
             Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = join_pipe_reader(stdout_reader, tool, "stdout");
+                let _ = join_pipe_reader(stderr_reader, tool, "stderr");
                 return Err(MediaFingerprintError::ToolFailed {
                     tool,
                     status: None,
@@ -2043,6 +2087,33 @@ where
                 });
             }
         }
+    }
+}
+
+fn read_pipe_to_end(mut pipe: impl Read) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    pipe.read_to_end(&mut bytes)
+        .map(|_| bytes)
+        .map_err(|error| error.to_string())
+}
+
+fn join_pipe_reader(
+    reader: thread::JoinHandle<Result<Vec<u8>, String>>,
+    tool: &'static str,
+    pipe: &'static str,
+) -> Result<Vec<u8>, MediaFingerprintError> {
+    match reader.join() {
+        Ok(Ok(bytes)) => Ok(bytes),
+        Ok(Err(error)) => Err(MediaFingerprintError::ToolFailed {
+            tool,
+            status: None,
+            stderr: format!("failed reading {pipe}: {error}"),
+        }),
+        Err(_) => Err(MediaFingerprintError::ToolFailed {
+            tool,
+            status: None,
+            stderr: format!("{pipe} reader thread panicked"),
+        }),
     }
 }
 
