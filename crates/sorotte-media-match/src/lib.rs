@@ -13,15 +13,17 @@ use std::time::UNIX_EPOCH;
 use std::os::windows::process::CommandExt;
 
 use base64::Engine as _;
+use rustfft::{FftPlanner, num_complex::Complex};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-pub const MEDIA_MATCH_ALGORITHM_VERSION: u32 = 2;
+pub const MEDIA_MATCH_ALGORITHM_VERSION: u32 = 3;
 pub const MEDIA_MATCH_FILE_PAYLOAD_KEY: &str = "mediaMatch";
 pub const MEDIA_MATCH_WIRE_SCHEMA_V2: &str = "sorotte.mediaMatch.v2";
+pub const MEDIA_MATCH_WIRE_SCHEMA_V3: &str = "sorotte.mediaMatch.v3";
 pub const MEDIA_MATCH_WIRE_MAX_BYTES: usize = 32 * 1024;
-pub const MEDIA_MATCH_ANCHOR_VERSION: u32 = 2;
+pub const MEDIA_MATCH_ANCHOR_VERSION: u32 = 3;
 
 const FRAME_HASH_BITS: u32 = 64;
 pub const DEFAULT_FRAME_HAMMING_THRESHOLD: u32 = 10;
@@ -35,8 +37,23 @@ const FAST_AUDIO_ANCHOR_LIMIT: usize = 96;
 const FAST_VIDEO_ANCHOR_LIMIT: usize = 48;
 const FULL_AUDIO_ANCHOR_LIMIT: usize = 512;
 const FULL_VIDEO_ANCHOR_LIMIT: usize = 192;
+const V3_AUDIO_SAMPLE_RATE: u32 = 11_025;
+const V3_AUDIO_WINDOW_SAMPLES: usize = 2048;
+const V3_AUDIO_HOP_SAMPLES: usize = 512;
+const V3_AUDIO_MIN_FREQ_HZ: f32 = 250.0;
+const V3_AUDIO_MAX_FREQ_HZ: f32 = 5_000.0;
+const V3_AUDIO_MAX_PEAKS_PER_FRAME: usize = 6;
+const V3_AUDIO_PEAK_NEIGHBORHOOD: usize = 2;
+const V3_AUDIO_PAIR_MIN_DELTA_FRAMES: usize = 8;
+const V3_AUDIO_PAIR_MAX_DELTA_FRAMES: usize = 108;
+const V3_AUDIO_PAIR_FANOUT: usize = 8;
+const V3_AUDIO_VERIFY_LANDMARK_LIMIT: usize = 768;
+const V3_AUDIO_INDEX_LANDMARK_LIMIT: usize = 192;
+const V3_VIDEO_VERIFY_LANDMARK_LIMIT: usize = 192;
+const V3_VIDEO_INDEX_LANDMARK_LIMIT: usize = 64;
 const AUDIO_ANCHOR_WINDOW_TOKENS: usize = 4;
 const MAX_SUMMARY_ANCHORS: usize = 1024;
+const MAX_V3_LANDMARKS: usize = 4096;
 const VIDEO_FRAME_WIDTH: usize = 32;
 const VIDEO_FRAME_HEIGHT: usize = 32;
 const VIDEO_FRAME_BYTES: usize = VIDEO_FRAME_WIDTH * VIDEO_FRAME_HEIGHT;
@@ -44,6 +61,7 @@ const FAST_AUDIO_SAMPLE_SECONDS: u32 = 120;
 const MEDIA_TOOL_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const FFPROBE_TIMEOUT: Duration = Duration::from_secs(15);
 const FPCALC_TIMEOUT: Duration = Duration::from_secs(90);
+const FFMPEG_AUDIO_V3_TIMEOUT: Duration = Duration::from_secs(180);
 const FFMPEG_FAST_FRAME_TIMEOUT: Duration = Duration::from_secs(60);
 const FFMPEG_FULL_VIDEO_TIMEOUT: Duration = Duration::from_secs(90);
 const FAST_VIDEO_SEEK_WINDOW_SECONDS: f64 = 1.0;
@@ -59,6 +77,39 @@ pub enum MediaMatchTier {
     Weak,
     Reject,
     Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MatchClassV3 {
+    SameCutStrong,
+    SameCutProbable,
+    SameMediaDifferentCut,
+    SameVideoDifferentAudio,
+    SameAudioDifferentVideo,
+    PartialOverlap,
+    SharedIntroOutroOnly,
+    Reject,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AlignedSegmentV3 {
+    pub query_start_ms: u32,
+    pub query_end_ms: u32,
+    pub candidate_start_ms: u32,
+    pub candidate_end_ms: u32,
+    pub scale_ppm: i32,
+    pub audio_score: f32,
+    pub video_score: f32,
+    pub confidence: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MediaTimelineMapV3 {
+    pub global_class: MatchClassV3,
+    pub current_position_class: MatchClassV3,
+    pub segments: Vec<AlignedSegmentV3>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -137,6 +188,8 @@ impl MediaMatchDecision {
                 audio: None,
                 video: None,
                 alignment: None,
+                v3_class: None,
+                timeline_map_v3: None,
                 notes: vec![reason.clone()],
             },
             explanation: reason,
@@ -150,6 +203,10 @@ pub struct MediaMatchEvidence {
     pub audio: Option<AudioMatchEvidence>,
     pub video: Option<VideoMatchEvidence>,
     pub alignment: Option<MediaTimelineAlignment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub v3_class: Option<MatchClassV3>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeline_map_v3: Option<MediaTimelineMapV3>,
     pub notes: Vec<String>,
 }
 
@@ -217,6 +274,8 @@ impl MediaFileIdentity {
 pub enum MediaFingerprintProfile {
     FastAnchorV2,
     FullAnchorV2,
+    AudioConstellationV3,
+    CombinedV3,
 }
 
 impl MediaFingerprintProfile {
@@ -224,16 +283,33 @@ impl MediaFingerprintProfile {
         match self {
             Self::FastAnchorV2 => "fast-anchor-v2",
             Self::FullAnchorV2 => "full-anchor-v2",
+            Self::AudioConstellationV3 => "audio-constellation-v3",
+            Self::CombinedV3 => "combined-v3",
         }
     }
 
     pub fn is_fast(self) -> bool {
-        matches!(self, Self::FastAnchorV2)
+        matches!(self, Self::FastAnchorV2 | Self::AudioConstellationV3)
+    }
+
+    pub fn is_v3(self) -> bool {
+        matches!(self, Self::AudioConstellationV3 | Self::CombinedV3)
+    }
+
+    pub fn uses_v3_audio_constellation(self) -> bool {
+        self.is_v3()
+    }
+
+    pub fn uses_video_by_default(self) -> bool {
+        matches!(
+            self,
+            Self::FastAnchorV2 | Self::FullAnchorV2 | Self::CombinedV3
+        )
     }
 }
 
 fn default_media_fingerprint_profile() -> MediaFingerprintProfile {
-    MediaFingerprintProfile::FullAnchorV2
+    MediaFingerprintProfile::AudioConstellationV3
 }
 
 fn default_audio_sample_seconds() -> u32 {
@@ -254,7 +330,7 @@ pub struct MediaExtractionSettings {
 
 impl Default for MediaExtractionSettings {
     fn default() -> Self {
-        Self::full_anchor_v2()
+        Self::audio_constellation_v3()
     }
 }
 
@@ -278,6 +354,28 @@ impl MediaExtractionSettings {
             audio_sample_seconds: 0,
             audio_algorithm: "chromaprint-anchor-v2-full".to_owned(),
             video_algorithm: "sorotte-luma-anchor-v2-full".to_owned(),
+        }
+    }
+
+    pub fn audio_constellation_v3() -> Self {
+        Self {
+            profile: MediaFingerprintProfile::AudioConstellationV3,
+            frame_sample_interval_seconds: 0,
+            max_frames: 0,
+            audio_sample_seconds: 0,
+            audio_algorithm: "sorotte-audio-constellation-v3".to_owned(),
+            video_algorithm: "none".to_owned(),
+        }
+    }
+
+    pub fn combined_v3() -> Self {
+        Self {
+            profile: MediaFingerprintProfile::CombinedV3,
+            frame_sample_interval_seconds: 10,
+            max_frames: 64,
+            audio_sample_seconds: 0,
+            audio_algorithm: "sorotte-audio-constellation-v3".to_owned(),
+            video_algorithm: "sorotte-video-scene-v3".to_owned(),
         }
     }
 }
@@ -341,12 +439,20 @@ pub struct InstrumentedMediaFingerprint {
 }
 
 pub fn expected_media_tool_invocation_counts(
-    _settings: &MediaExtractionSettings,
+    settings: &MediaExtractionSettings,
 ) -> MediaToolInvocationCounts {
     MediaToolInvocationCounts {
-        ffmpeg: 1,
+        ffmpeg: if settings.profile.uses_video_by_default() {
+            2
+        } else {
+            1
+        },
         ffprobe: 1,
-        fpcalc: 1,
+        fpcalc: if settings.profile.uses_v3_audio_constellation() {
+            0
+        } else {
+            1
+        },
     }
 }
 
@@ -545,9 +651,81 @@ impl fmt::Display for MediaSummaryDecodeError {
 
 impl std::error::Error for MediaSummaryDecodeError {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioLandmarkV3 {
+    pub hash: u32,
+    pub t_ms: u32,
+    pub weight: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VideoLandmarkV3 {
+    pub bucket: u32,
+    pub hash64: u64,
+    pub t_ms: u32,
+    pub kind: u8,
+    pub weight: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MediaFingerprintBlobV3 {
+    pub duration_ms: Option<u64>,
+    pub audio_landmarks: Vec<AudioLandmarkV3>,
+    pub video_landmarks: Vec<VideoLandmarkV3>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MediaFingerprintBlobV3DecodeError {
+    InvalidMagic,
+    UnsupportedVersion(u16),
+    InvalidLength,
+    TooManyLandmarks(usize),
+    InvalidSection(u8),
+    NonMonotonicTime,
+}
+
+impl fmt::Display for MediaFingerprintBlobV3DecodeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidMagic => write!(formatter, "invalid media fingerprint v3 blob magic"),
+            Self::UnsupportedVersion(version) => {
+                write!(
+                    formatter,
+                    "unsupported media fingerprint v3 blob version {version}"
+                )
+            }
+            Self::InvalidLength => write!(formatter, "invalid media fingerprint v3 blob length"),
+            Self::TooManyLandmarks(count) => {
+                write!(
+                    formatter,
+                    "media fingerprint v3 blob has too many landmarks ({count})"
+                )
+            }
+            Self::InvalidSection(section) => {
+                write!(
+                    formatter,
+                    "invalid media fingerprint v3 blob section {section}"
+                )
+            }
+            Self::NonMonotonicTime => {
+                write!(
+                    formatter,
+                    "media fingerprint v3 blob timestamps are not monotonic"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for MediaFingerprintBlobV3DecodeError {}
+
 const AUDIO_SUMMARY_MAGIC: &[u8; 4] = b"SAU2";
 const VIDEO_SUMMARY_MAGIC: &[u8; 4] = b"SVI2";
 const SUMMARY_FORMAT_VERSION: u16 = 1;
+const FINGERPRINT_BLOB_V3_MAGIC: &[u8; 4] = b"SMM3";
+const FINGERPRINT_BLOB_V3_FORMAT_VERSION: u16 = 1;
+const FINGERPRINT_BLOB_V3_SECTION_AUDIO: u8 = 1;
+const FINGERPRINT_BLOB_V3_SECTION_VIDEO: u8 = 2;
 
 pub fn media_fingerprint_summary_from_record(
     record: &MediaFingerprintRecord,
@@ -598,6 +776,249 @@ pub fn media_anchor_profile_from_summaries(
     })
 }
 
+pub fn media_fingerprint_blob_v3_from_record(
+    record: &MediaFingerprintRecord,
+) -> MediaFingerprintBlobV3 {
+    MediaFingerprintBlobV3 {
+        duration_ms: record
+            .duration_seconds
+            .and_then(duration_seconds_to_millis)
+            .map(u64::from),
+        audio_landmarks: audio_landmarks_v3_from_record(record),
+        video_landmarks: video_landmarks_v3_from_record(record),
+    }
+}
+
+pub fn media_fingerprint_record_apply_blob_v3(
+    record: &mut MediaFingerprintRecord,
+    blob: MediaFingerprintBlobV3,
+) {
+    record.duration_seconds = blob
+        .duration_ms
+        .map(|duration_ms| duration_ms as f64 / 1000.0);
+    record.audio_anchors = blob
+        .audio_landmarks
+        .into_iter()
+        .map(|landmark| AudioAnchor {
+            bucket: landmark.hash,
+            t_ms: landmark.t_ms,
+            weight: u16::from(landmark.weight.max(1)),
+        })
+        .collect();
+    record.video_anchors = blob
+        .video_landmarks
+        .into_iter()
+        .map(|landmark| VideoAnchor {
+            bucket: landmark.bucket,
+            t_ms: landmark.t_ms,
+            hash64: landmark.hash64,
+            weight: u16::from(landmark.weight.max(1)),
+        })
+        .collect();
+}
+
+pub fn encode_media_fingerprint_blob_v3(blob: &MediaFingerprintBlobV3) -> Vec<u8> {
+    let mut audio = blob.audio_landmarks.clone();
+    audio.sort_by_key(|landmark| (landmark.t_ms, landmark.hash, landmark.weight));
+    audio.truncate(MAX_V3_LANDMARKS);
+    let mut video = blob.video_landmarks.clone();
+    video.sort_by_key(|landmark| {
+        (
+            landmark.t_ms,
+            landmark.bucket,
+            landmark.hash64,
+            landmark.kind,
+            landmark.weight,
+        )
+    });
+    video.truncate(MAX_V3_LANDMARKS);
+
+    let section_count = u8::from(!audio.is_empty()) + u8::from(!video.is_empty());
+    let mut bytes = Vec::with_capacity(16 + audio.len() * 7 + video.len() * 18);
+    bytes.extend_from_slice(FINGERPRINT_BLOB_V3_MAGIC);
+    bytes.extend_from_slice(&FINGERPRINT_BLOB_V3_FORMAT_VERSION.to_le_bytes());
+    encode_varint(blob.duration_ms.unwrap_or(u64::MAX), &mut bytes);
+    bytes.push(section_count);
+    if !audio.is_empty() {
+        bytes.push(FINGERPRINT_BLOB_V3_SECTION_AUDIO);
+        encode_varint(audio.len() as u64, &mut bytes);
+        let mut previous_t_ms = 0u32;
+        for landmark in audio {
+            encode_varint(
+                u64::from(landmark.t_ms.saturating_sub(previous_t_ms)),
+                &mut bytes,
+            );
+            previous_t_ms = landmark.t_ms;
+            bytes.extend_from_slice(&landmark.hash.to_le_bytes());
+            bytes.push(landmark.weight);
+        }
+    }
+    if !video.is_empty() {
+        bytes.push(FINGERPRINT_BLOB_V3_SECTION_VIDEO);
+        encode_varint(video.len() as u64, &mut bytes);
+        let mut previous_t_ms = 0u32;
+        for landmark in video {
+            encode_varint(
+                u64::from(landmark.t_ms.saturating_sub(previous_t_ms)),
+                &mut bytes,
+            );
+            previous_t_ms = landmark.t_ms;
+            bytes.extend_from_slice(&landmark.bucket.to_le_bytes());
+            bytes.extend_from_slice(&landmark.hash64.to_le_bytes());
+            bytes.push(landmark.kind);
+            bytes.push(landmark.weight);
+        }
+    }
+    bytes
+}
+
+pub fn decode_media_fingerprint_blob_v3(
+    bytes: &[u8],
+) -> Result<MediaFingerprintBlobV3, MediaFingerprintBlobV3DecodeError> {
+    if bytes.len() < 7 {
+        return Err(MediaFingerprintBlobV3DecodeError::InvalidLength);
+    }
+    if &bytes[0..4] != FINGERPRINT_BLOB_V3_MAGIC {
+        return Err(MediaFingerprintBlobV3DecodeError::InvalidMagic);
+    }
+    let version = u16::from_le_bytes([bytes[4], bytes[5]]);
+    if version != FINGERPRINT_BLOB_V3_FORMAT_VERSION {
+        return Err(MediaFingerprintBlobV3DecodeError::UnsupportedVersion(
+            version,
+        ));
+    }
+    let mut cursor = 6;
+    let encoded_duration = decode_varint(bytes, &mut cursor)?;
+    let duration_ms = (encoded_duration != u64::MAX).then_some(encoded_duration);
+    let Some(section_count) = bytes.get(cursor).copied() else {
+        return Err(MediaFingerprintBlobV3DecodeError::InvalidLength);
+    };
+    cursor += 1;
+    let mut blob = MediaFingerprintBlobV3 {
+        duration_ms,
+        audio_landmarks: Vec::new(),
+        video_landmarks: Vec::new(),
+    };
+    for _ in 0..section_count {
+        let Some(section) = bytes.get(cursor).copied() else {
+            return Err(MediaFingerprintBlobV3DecodeError::InvalidLength);
+        };
+        cursor += 1;
+        let count = decode_varint(bytes, &mut cursor)? as usize;
+        if count > MAX_V3_LANDMARKS {
+            return Err(MediaFingerprintBlobV3DecodeError::TooManyLandmarks(count));
+        }
+        match section {
+            FINGERPRINT_BLOB_V3_SECTION_AUDIO => {
+                let mut t_ms = 0u32;
+                let mut landmarks = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let delta = decode_varint(bytes, &mut cursor)?;
+                    let delta = u32::try_from(delta)
+                        .map_err(|_| MediaFingerprintBlobV3DecodeError::NonMonotonicTime)?;
+                    t_ms = t_ms
+                        .checked_add(delta)
+                        .ok_or(MediaFingerprintBlobV3DecodeError::NonMonotonicTime)?;
+                    if cursor + 5 > bytes.len() {
+                        return Err(MediaFingerprintBlobV3DecodeError::InvalidLength);
+                    }
+                    let hash = u32::from_le_bytes([
+                        bytes[cursor],
+                        bytes[cursor + 1],
+                        bytes[cursor + 2],
+                        bytes[cursor + 3],
+                    ]);
+                    cursor += 4;
+                    let weight = bytes[cursor];
+                    cursor += 1;
+                    landmarks.push(AudioLandmarkV3 { hash, t_ms, weight });
+                }
+                blob.audio_landmarks = landmarks;
+            }
+            FINGERPRINT_BLOB_V3_SECTION_VIDEO => {
+                let mut t_ms = 0u32;
+                let mut landmarks = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let delta = decode_varint(bytes, &mut cursor)?;
+                    let delta = u32::try_from(delta)
+                        .map_err(|_| MediaFingerprintBlobV3DecodeError::NonMonotonicTime)?;
+                    t_ms = t_ms
+                        .checked_add(delta)
+                        .ok_or(MediaFingerprintBlobV3DecodeError::NonMonotonicTime)?;
+                    if cursor + 14 > bytes.len() {
+                        return Err(MediaFingerprintBlobV3DecodeError::InvalidLength);
+                    }
+                    let bucket = u32::from_le_bytes([
+                        bytes[cursor],
+                        bytes[cursor + 1],
+                        bytes[cursor + 2],
+                        bytes[cursor + 3],
+                    ]);
+                    cursor += 4;
+                    let hash64 = u64::from_le_bytes([
+                        bytes[cursor],
+                        bytes[cursor + 1],
+                        bytes[cursor + 2],
+                        bytes[cursor + 3],
+                        bytes[cursor + 4],
+                        bytes[cursor + 5],
+                        bytes[cursor + 6],
+                        bytes[cursor + 7],
+                    ]);
+                    cursor += 8;
+                    let kind = bytes[cursor];
+                    cursor += 1;
+                    let weight = bytes[cursor];
+                    cursor += 1;
+                    landmarks.push(VideoLandmarkV3 {
+                        bucket,
+                        hash64,
+                        t_ms,
+                        kind,
+                        weight,
+                    });
+                }
+                blob.video_landmarks = landmarks;
+            }
+            section => return Err(MediaFingerprintBlobV3DecodeError::InvalidSection(section)),
+        }
+    }
+    if cursor != bytes.len() {
+        return Err(MediaFingerprintBlobV3DecodeError::InvalidLength);
+    }
+    Ok(blob)
+}
+
+fn encode_varint(mut value: u64, bytes: &mut Vec<u8>) {
+    while value >= 0x80 {
+        bytes.push((value as u8) | 0x80);
+        value >>= 7;
+    }
+    bytes.push(value as u8);
+}
+
+fn decode_varint(
+    bytes: &[u8],
+    cursor: &mut usize,
+) -> Result<u64, MediaFingerprintBlobV3DecodeError> {
+    let mut value = 0u64;
+    let mut shift = 0u32;
+    loop {
+        let Some(byte) = bytes.get(*cursor).copied() else {
+            return Err(MediaFingerprintBlobV3DecodeError::InvalidLength);
+        };
+        *cursor += 1;
+        value |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            return Ok(value);
+        }
+        shift += 7;
+        if shift >= 64 {
+            return Err(MediaFingerprintBlobV3DecodeError::InvalidLength);
+        }
+    }
+}
+
 pub fn audio_anchors_from_record(record: &MediaFingerprintRecord) -> Vec<AudioAnchor> {
     if !record.audio_anchors.is_empty() {
         return record.audio_anchors.clone();
@@ -605,6 +1026,9 @@ pub fn audio_anchors_from_record(record: &MediaFingerprintRecord) -> Vec<AudioAn
     let limit = match record.extraction_settings.profile {
         MediaFingerprintProfile::FastAnchorV2 => FAST_AUDIO_ANCHOR_LIMIT,
         MediaFingerprintProfile::FullAnchorV2 => FULL_AUDIO_ANCHOR_LIMIT,
+        MediaFingerprintProfile::AudioConstellationV3 | MediaFingerprintProfile::CombinedV3 => {
+            V3_AUDIO_VERIFY_LANDMARK_LIMIT
+        }
     };
     record
         .audio
@@ -620,12 +1044,54 @@ pub fn video_anchors_from_record(record: &MediaFingerprintRecord) -> Vec<VideoAn
     let limit = match record.extraction_settings.profile {
         MediaFingerprintProfile::FastAnchorV2 => FAST_VIDEO_ANCHOR_LIMIT,
         MediaFingerprintProfile::FullAnchorV2 => FULL_VIDEO_ANCHOR_LIMIT,
+        MediaFingerprintProfile::AudioConstellationV3 => 0,
+        MediaFingerprintProfile::CombinedV3 => V3_VIDEO_VERIFY_LANDMARK_LIMIT,
     };
     record
         .video
         .as_ref()
         .map(|video| video_anchors_from_fingerprint(video, limit))
         .unwrap_or_default()
+}
+
+pub fn audio_landmarks_v3_from_record(record: &MediaFingerprintRecord) -> Vec<AudioLandmarkV3> {
+    let mut landmarks = audio_anchors_from_record(record)
+        .into_iter()
+        .map(|anchor| AudioLandmarkV3 {
+            hash: anchor.bucket,
+            t_ms: anchor.t_ms,
+            weight: anchor.weight.min(u16::from(u8::MAX)).max(1) as u8,
+        })
+        .collect::<Vec<_>>();
+    bounded_time_distributed_audio_landmarks_v3(&mut landmarks, V3_AUDIO_VERIFY_LANDMARK_LIMIT)
+}
+
+pub fn video_landmarks_v3_from_record(record: &MediaFingerprintRecord) -> Vec<VideoLandmarkV3> {
+    let mut landmarks = video_anchors_from_record(record)
+        .into_iter()
+        .map(|anchor| VideoLandmarkV3 {
+            bucket: anchor.bucket,
+            hash64: anchor.hash64,
+            t_ms: anchor.t_ms,
+            kind: 0,
+            weight: anchor.weight.min(u16::from(u8::MAX)).max(1) as u8,
+        })
+        .collect::<Vec<_>>();
+    bounded_time_distributed_video_landmarks_v3(&mut landmarks, V3_VIDEO_VERIFY_LANDMARK_LIMIT)
+}
+
+pub fn audio_index_landmarks_v3_from_record(
+    record: &MediaFingerprintRecord,
+) -> Vec<AudioLandmarkV3> {
+    let mut landmarks = audio_landmarks_v3_from_record(record);
+    bounded_time_distributed_audio_landmarks_v3(&mut landmarks, V3_AUDIO_INDEX_LANDMARK_LIMIT)
+}
+
+pub fn video_index_landmarks_v3_from_record(
+    record: &MediaFingerprintRecord,
+) -> Vec<VideoLandmarkV3> {
+    let mut landmarks = video_landmarks_v3_from_record(record);
+    bounded_time_distributed_video_landmarks_v3(&mut landmarks, V3_VIDEO_INDEX_LANDMARK_LIMIT)
 }
 
 pub fn audio_anchors_from_fingerprint(
@@ -820,7 +1286,7 @@ pub struct MediaMatchWireSignatureV2 {
 impl Default for MediaMatchWireSignatureV2 {
     fn default() -> Self {
         Self {
-            schema: MEDIA_MATCH_WIRE_SCHEMA_V2.to_owned(),
+            schema: MEDIA_MATCH_WIRE_SCHEMA_V3.to_owned(),
             profiles: Vec::new(),
         }
     }
@@ -939,11 +1405,11 @@ pub fn media_match_wire_signature_from_value(
         .get("schema")
         .and_then(Value::as_str)
         .ok_or_else(|| "media match wire signature has no schema".to_owned())?;
-    if schema != MEDIA_MATCH_WIRE_SCHEMA_V2 {
+    if schema != MEDIA_MATCH_WIRE_SCHEMA_V3 {
         return Err("media match wire signature schema is unsupported".to_owned());
     }
     let signature: MediaMatchWireSignatureV2 = serde_json::from_value(value.clone())
-        .map_err(|error| format!("media match v2 wire signature is invalid: {error}"))?;
+        .map_err(|error| format!("media match v3 wire signature is invalid: {error}"))?;
     if signature.profiles.is_empty() {
         return Err("media match wire signature has no profiles".to_owned());
     }
@@ -1019,12 +1485,12 @@ pub fn media_anchor_profile_from_wire_profile(
 ) -> Result<MediaAnchorProfile, String> {
     if profile.algorithm_version != MEDIA_MATCH_ANCHOR_VERSION {
         return Err(format!(
-            "media match v2 profile '{}' uses unsupported algorithm version {}",
+            "media match v3 profile '{}' uses unsupported algorithm version {}",
             profile.profile, profile.algorithm_version
         ));
     }
     let expected_settings = media_extraction_settings_for_profile_label(&profile.profile)
-        .ok_or_else(|| format!("media match v2 profile '{}' is unknown", profile.profile))?;
+        .ok_or_else(|| format!("media match v3 profile '{}' is unknown", profile.profile))?;
     if let Some(block) = profile.audio.as_ref() {
         validate_wire_anchor_block(
             "audio",
@@ -1047,7 +1513,7 @@ pub fn media_anchor_profile_from_wire_profile(
         .map(|block| {
             base64::engine::general_purpose::STANDARD
                 .decode(block.anchors.as_bytes())
-                .map_err(|error| format!("media match v2 audio anchors are not base64: {error}"))
+                .map_err(|error| format!("media match v3 audio anchors are not base64: {error}"))
         })
         .transpose()?;
     let video_summary = profile
@@ -1056,7 +1522,7 @@ pub fn media_anchor_profile_from_wire_profile(
         .map(|block| {
             base64::engine::general_purpose::STANDARD
                 .decode(block.anchors.as_bytes())
-                .map_err(|error| format!("media match v2 video anchors are not base64: {error}"))
+                .map_err(|error| format!("media match v3 video anchors are not base64: {error}"))
         })
         .transpose()?;
     media_anchor_profile_from_summaries(
@@ -1070,8 +1536,8 @@ pub fn media_anchor_profile_from_wire_profile(
 
 fn media_extraction_settings_for_profile_label(label: &str) -> Option<MediaExtractionSettings> {
     match label {
-        "fast-anchor-v2" => Some(MediaExtractionSettings::fast_anchor_v2()),
-        "full-anchor-v2" => Some(MediaExtractionSettings::full_anchor_v2()),
+        "audio-constellation-v3" => Some(MediaExtractionSettings::audio_constellation_v3()),
+        "combined-v3" => Some(MediaExtractionSettings::combined_v3()),
         _ => None,
     }
 }
@@ -1084,13 +1550,13 @@ fn validate_wire_anchor_block(
 ) -> Result<(), String> {
     if block.algorithm != expected_algorithm {
         return Err(format!(
-            "media match v2 {modality} algorithm '{}' is unsupported for profile '{profile_label}'",
+            "media match v3 {modality} algorithm '{}' is unsupported for profile '{profile_label}'",
             block.algorithm
         ));
     }
     if block.time_base_ms != 1 {
         return Err(format!(
-            "media match v2 {modality} time base {}ms is unsupported",
+            "media match v3 {modality} time base {}ms is unsupported",
             block.time_base_ms
         ));
     }
@@ -1157,44 +1623,77 @@ pub fn fingerprint_media_file_with_report(
         size_bytes,
         duration_seconds,
     );
-    let started_at = Instant::now();
-    let audio_result = extract_audio_fingerprint_with_length(
-        &tools.fpcalc,
-        path,
-        extraction_settings,
-        cancel_flag,
-    );
-    report.invocations.fpcalc = 1;
-    report.timings.audio_millis = started_at.elapsed().as_millis();
-    let audio = match audio_result {
-        Ok(audio) => Some(audio),
-        Err(MediaFingerprintError::Cancelled { tool }) => {
-            return Err(MediaFingerprintError::Cancelled { tool });
+    let mut audio_anchors = Vec::new();
+    let audio = if extraction_settings.profile.uses_v3_audio_constellation() {
+        let started_at = Instant::now();
+        let audio_result =
+            extract_audio_constellation_v3(&tools.ffmpeg, path, duration_seconds, cancel_flag);
+        report.invocations.ffmpeg += 1;
+        report.timings.audio_millis = started_at.elapsed().as_millis();
+        match audio_result {
+            Ok(anchors) => {
+                audio_anchors = anchors
+                    .into_iter()
+                    .map(|landmark| AudioAnchor {
+                        bucket: landmark.hash,
+                        t_ms: landmark.t_ms,
+                        weight: u16::from(landmark.weight.max(1)),
+                    })
+                    .collect();
+                None
+            }
+            Err(MediaFingerprintError::Cancelled { tool }) => {
+                return Err(MediaFingerprintError::Cancelled { tool });
+            }
+            Err(error) => {
+                report.audio_error = Some(error.to_string());
+                None
+            }
         }
-        Err(error) => {
-            report.audio_error = Some(error.to_string());
-            None
+    } else {
+        let started_at = Instant::now();
+        let audio_result = extract_audio_fingerprint_with_length(
+            &tools.fpcalc,
+            path,
+            extraction_settings,
+            cancel_flag,
+        );
+        report.invocations.fpcalc = 1;
+        report.timings.audio_millis = started_at.elapsed().as_millis();
+        match audio_result {
+            Ok(audio) => Some(audio),
+            Err(MediaFingerprintError::Cancelled { tool }) => {
+                return Err(MediaFingerprintError::Cancelled { tool });
+            }
+            Err(error) => {
+                report.audio_error = Some(error.to_string());
+                None
+            }
         }
     };
-    let started_at = Instant::now();
-    let video_result = extract_video_fingerprint_with_cancellation(
-        &tools.ffmpeg,
-        path,
-        duration_seconds,
-        extraction_settings,
-        cancel_flag,
-    );
-    report.invocations.ffmpeg = 1;
-    report.timings.video_millis = started_at.elapsed().as_millis();
-    let video = match video_result {
-        Ok(video) => Some(video),
-        Err(MediaFingerprintError::Cancelled { tool }) => {
-            return Err(MediaFingerprintError::Cancelled { tool });
+    let (video, video_anchors) = if extraction_settings.profile.uses_video_by_default() {
+        let started_at = Instant::now();
+        let video_result = extract_video_fingerprint_with_cancellation(
+            &tools.ffmpeg,
+            path,
+            duration_seconds,
+            extraction_settings,
+            cancel_flag,
+        );
+        report.invocations.ffmpeg += 1;
+        report.timings.video_millis = started_at.elapsed().as_millis();
+        match video_result {
+            Ok(video) => (Some(video), Vec::new()),
+            Err(MediaFingerprintError::Cancelled { tool }) => {
+                return Err(MediaFingerprintError::Cancelled { tool });
+            }
+            Err(error) => {
+                report.video_error = Some(error.to_string());
+                (None, Vec::new())
+            }
         }
-        Err(error) => {
-            report.video_error = Some(error.to_string());
-            None
-        }
+    } else {
+        (None, Vec::new())
     };
 
     let audio_error = report.audio_error.clone();
@@ -1211,13 +1710,17 @@ pub fn fingerprint_media_file_with_report(
         container_fingerprint,
         audio,
         video,
-        audio_anchors: Vec::new(),
-        video_anchors: Vec::new(),
+        audio_anchors,
+        video_anchors,
         audio_error,
         video_error,
     };
-    record.audio_anchors = audio_anchors_from_record(&record);
-    record.video_anchors = video_anchors_from_record(&record);
+    if record.audio_anchors.is_empty() {
+        record.audio_anchors = audio_anchors_from_record(&record);
+    }
+    if record.video_anchors.is_empty() {
+        record.video_anchors = video_anchors_from_record(&record);
+    }
     let summary = media_fingerprint_summary_from_record(&record);
     report.serialized_debug_record_bytes = serde_json::to_vec(&record)
         .map(|bytes| bytes.len())
@@ -1295,6 +1798,226 @@ fn extract_audio_fingerprint_with_length(
     })
 }
 
+pub fn extract_audio_constellation_v3(
+    ffmpeg: impl AsRef<Path>,
+    media_path: impl AsRef<Path>,
+    duration_seconds: Option<f64>,
+    cancel_flag: Option<&AtomicBool>,
+) -> Result<Vec<AudioLandmarkV3>, MediaFingerprintError> {
+    let output = run_tool_output(
+        "ffmpeg",
+        ffmpeg.as_ref(),
+        [
+            "-v".into(),
+            "error".into(),
+            "-nostdin".into(),
+            "-i".into(),
+            media_path.as_ref().as_os_str().to_os_string(),
+            "-vn".into(),
+            "-ac".into(),
+            "1".into(),
+            "-ar".into(),
+            V3_AUDIO_SAMPLE_RATE.to_string().into(),
+            "-f".into(),
+            "s16le".into(),
+            "-".into(),
+        ],
+        cancel_flag,
+        FFMPEG_AUDIO_V3_TIMEOUT,
+    )?;
+    ensure_tool_success("ffmpeg", &output)?;
+    if !output.stdout.len().is_multiple_of(2) {
+        return Err(MediaFingerprintError::InvalidToolOutput {
+            tool: "ffmpeg",
+            reason: "decoded PCM had a partial trailing sample".to_owned(),
+        });
+    }
+    let samples = output
+        .stdout
+        .chunks_exact(2)
+        .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
+        .collect::<Vec<_>>();
+    let mut landmarks =
+        audio_constellation_landmarks_v3_from_pcm(&samples, V3_AUDIO_SAMPLE_RATE, duration_seconds);
+    if landmarks.is_empty() {
+        return Err(MediaFingerprintError::InvalidToolOutput {
+            tool: "ffmpeg",
+            reason: "decoded audio did not produce constellation landmarks".to_owned(),
+        });
+    }
+    Ok(bounded_time_distributed_audio_landmarks_v3(
+        &mut landmarks,
+        V3_AUDIO_VERIFY_LANDMARK_LIMIT,
+    ))
+}
+
+pub fn audio_constellation_landmarks_v3_from_pcm(
+    samples: &[i16],
+    sample_rate: u32,
+    duration_seconds: Option<f64>,
+) -> Vec<AudioLandmarkV3> {
+    if samples.len() < V3_AUDIO_WINDOW_SAMPLES || sample_rate == 0 {
+        return Vec::new();
+    }
+    let min_bin =
+        ((V3_AUDIO_MIN_FREQ_HZ * V3_AUDIO_WINDOW_SAMPLES as f32) / sample_rate as f32).ceil();
+    let max_bin =
+        ((V3_AUDIO_MAX_FREQ_HZ * V3_AUDIO_WINDOW_SAMPLES as f32) / sample_rate as f32).floor();
+    let min_bin = (min_bin as usize).clamp(1, (V3_AUDIO_WINDOW_SAMPLES / 2).saturating_sub(1));
+    let max_bin = (max_bin as usize).clamp(min_bin + 1, V3_AUDIO_WINDOW_SAMPLES / 2);
+    let frames = audio_spectral_peak_frames_v3(samples, min_bin, max_bin);
+    if frames.is_empty() {
+        return Vec::new();
+    }
+    let mut raw = Vec::new();
+    for (frame_index, peaks) in frames.iter().enumerate() {
+        for anchor_peak in peaks {
+            let start = frame_index + V3_AUDIO_PAIR_MIN_DELTA_FRAMES;
+            let end = (frame_index + V3_AUDIO_PAIR_MAX_DELTA_FRAMES + 1).min(frames.len());
+            if start >= end {
+                continue;
+            }
+            let mut emitted = 0usize;
+            'targets: for (target_frame, target_peaks) in
+                frames.iter().enumerate().take(end).skip(start)
+            {
+                let delta_frames = target_frame.saturating_sub(frame_index);
+                for target_peak in target_peaks {
+                    let t_ms = audio_frame_timestamp_ms(frame_index, sample_rate);
+                    let hash =
+                        audio_landmark_hash_v3(anchor_peak.bin, target_peak.bin, delta_frames);
+                    let strength = ((anchor_peak.magnitude + target_peak.magnitude) * 4.0)
+                        .round()
+                        .clamp(1.0, f32::from(u8::MAX)) as u8;
+                    raw.push(AudioLandmarkV3 {
+                        hash,
+                        t_ms,
+                        weight: strength,
+                    });
+                    emitted += 1;
+                    if emitted >= V3_AUDIO_PAIR_FANOUT {
+                        break 'targets;
+                    }
+                }
+            }
+        }
+    }
+    dedupe_audio_landmarks_v3(&mut raw);
+    if let Some(duration) = duration_seconds.filter(|value| value.is_finite() && *value > 120.0) {
+        downweight_edge_audio_landmarks_v3(&mut raw, duration);
+    }
+    bounded_time_distributed_audio_landmarks_v3(&mut raw, V3_AUDIO_VERIFY_LANDMARK_LIMIT)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AudioSpectralPeakV3 {
+    bin: usize,
+    magnitude: f32,
+}
+
+fn audio_spectral_peak_frames_v3(
+    samples: &[i16],
+    min_bin: usize,
+    max_bin: usize,
+) -> Vec<Vec<AudioSpectralPeakV3>> {
+    let frame_count = (samples.len() - V3_AUDIO_WINDOW_SAMPLES) / V3_AUDIO_HOP_SAMPLES + 1;
+    let hann = (0..V3_AUDIO_WINDOW_SAMPLES)
+        .map(|index| {
+            let phase =
+                (std::f32::consts::TAU * index as f32) / (V3_AUDIO_WINDOW_SAMPLES - 1) as f32;
+            0.5 - (0.5 * phase.cos())
+        })
+        .collect::<Vec<_>>();
+    let mut planner = FftPlanner::<f32>::new();
+    let fft = planner.plan_fft_forward(V3_AUDIO_WINDOW_SAMPLES);
+    let mut buffer = vec![Complex::new(0.0f32, 0.0f32); V3_AUDIO_WINDOW_SAMPLES];
+    let mut frames = Vec::with_capacity(frame_count);
+    for frame_index in 0..frame_count {
+        let start = frame_index * V3_AUDIO_HOP_SAMPLES;
+        for (index, slot) in buffer.iter_mut().enumerate() {
+            let sample = samples[start + index] as f32 / f32::from(i16::MAX);
+            *slot = Complex::new(sample * hann[index], 0.0);
+        }
+        fft.process(&mut buffer);
+        let magnitudes = (min_bin..max_bin)
+            .map(|bin| {
+                let value = buffer[bin].norm_sqr().max(f32::MIN_POSITIVE).log10();
+                (bin, value)
+            })
+            .collect::<Vec<_>>();
+        let mean = if magnitudes.is_empty() {
+            0.0
+        } else {
+            magnitudes
+                .iter()
+                .map(|(_, magnitude)| *magnitude)
+                .sum::<f32>()
+                / magnitudes.len() as f32
+        };
+        let mut peaks = Vec::new();
+        for (local_index, (bin, magnitude)) in magnitudes.iter().enumerate() {
+            if *magnitude < mean + 0.35 {
+                continue;
+            }
+            let left = local_index.saturating_sub(V3_AUDIO_PEAK_NEIGHBORHOOD);
+            let right = (local_index + V3_AUDIO_PEAK_NEIGHBORHOOD + 1).min(magnitudes.len());
+            if magnitudes[left..right]
+                .iter()
+                .all(|(_, neighbor)| *magnitude >= *neighbor)
+            {
+                peaks.push(AudioSpectralPeakV3 {
+                    bin: *bin,
+                    magnitude: *magnitude - mean,
+                });
+            }
+        }
+        peaks.sort_by(|left, right| {
+            right
+                .magnitude
+                .total_cmp(&left.magnitude)
+                .then_with(|| left.bin.cmp(&right.bin))
+        });
+        peaks.truncate(V3_AUDIO_MAX_PEAKS_PER_FRAME);
+        peaks.sort_by_key(|peak| peak.bin);
+        frames.push(peaks);
+    }
+    frames
+}
+
+fn audio_frame_timestamp_ms(frame_index: usize, sample_rate: u32) -> u32 {
+    let samples = frame_index.saturating_mul(V3_AUDIO_HOP_SAMPLES) as u64;
+    ((samples * 1000) / u64::from(sample_rate)).min(u64::from(u32::MAX)) as u32
+}
+
+fn audio_landmark_hash_v3(anchor_bin: usize, target_bin: usize, delta_frames: usize) -> u32 {
+    let anchor_bin = (anchor_bin as u32 / 2).min(0x3ff);
+    let target_bin = (target_bin as u32 / 2).min(0x3ff);
+    let delta = (delta_frames as u32).min(0x3ff);
+    let packed = anchor_bin | (target_bin << 10) | (delta << 20);
+    stable_hash_u64(packed.to_le_bytes()) as u32
+}
+
+fn dedupe_audio_landmarks_v3(landmarks: &mut Vec<AudioLandmarkV3>) {
+    landmarks.sort_by_key(|landmark| {
+        (
+            landmark.t_ms,
+            landmark.hash,
+            std::cmp::Reverse(landmark.weight),
+        )
+    });
+    landmarks.dedup_by(|left, right| left.t_ms == right.t_ms && left.hash == right.hash);
+}
+
+fn downweight_edge_audio_landmarks_v3(landmarks: &mut [AudioLandmarkV3], duration_seconds: f64) {
+    let edge_ms = (duration_seconds * 1000.0 * 0.08).clamp(30_000.0, 120_000.0) as u32;
+    let duration_ms = (duration_seconds * 1000.0).min(f64::from(u32::MAX)) as u32;
+    for landmark in landmarks {
+        if landmark.t_ms < edge_ms || landmark.t_ms > duration_ms.saturating_sub(edge_ms) {
+            landmark.weight = landmark.weight.saturating_sub(landmark.weight / 2).max(1);
+        }
+    }
+}
+
 pub fn extract_video_fingerprint(
     ffmpeg: impl AsRef<Path>,
     media_path: impl AsRef<Path>,
@@ -1326,6 +2049,19 @@ fn extract_video_fingerprint_with_cancellation(
             cancel_flag,
         ),
         MediaFingerprintProfile::FullAnchorV2 => extract_full_video_fingerprint(
+            ffmpeg,
+            media_path,
+            duration_seconds,
+            extraction_settings,
+            cancel_flag,
+        ),
+        MediaFingerprintProfile::AudioConstellationV3 => {
+            Err(MediaFingerprintError::InvalidToolOutput {
+                tool: "ffmpeg",
+                reason: "audio-constellation-v3 does not request video extraction".to_owned(),
+            })
+        }
+        MediaFingerprintProfile::CombinedV3 => extract_full_video_fingerprint(
             ffmpeg,
             media_path,
             duration_seconds,
@@ -1667,6 +2403,8 @@ pub fn decide_media_match_anchors(
         audio: None,
         video: None,
         alignment: None,
+        v3_class: None,
+        timeline_map_v3: None,
         notes: Vec::new(),
     };
 
@@ -1844,6 +2582,8 @@ pub fn decide_media_match(
         audio: None,
         video: None,
         alignment: None,
+        v3_class: None,
+        timeline_map_v3: None,
         notes: Vec::new(),
     };
 
@@ -2533,6 +3273,54 @@ fn bounded_time_distributed_video_anchors(
         .collect()
 }
 
+fn bounded_time_distributed_audio_landmarks_v3(
+    landmarks: &mut [AudioLandmarkV3],
+    max_landmarks: usize,
+) -> Vec<AudioLandmarkV3> {
+    landmarks.sort_by_key(|landmark| {
+        (
+            landmark.t_ms,
+            landmark.hash,
+            std::cmp::Reverse(landmark.weight),
+        )
+    });
+    if max_landmarks == 0 {
+        return Vec::new();
+    }
+    if landmarks.len() <= max_landmarks {
+        return landmarks.to_vec();
+    }
+    let stride = landmarks.len() as f64 / max_landmarks as f64;
+    (0..max_landmarks)
+        .map(|index| landmarks[(index as f64 * stride).floor() as usize])
+        .collect()
+}
+
+fn bounded_time_distributed_video_landmarks_v3(
+    landmarks: &mut [VideoLandmarkV3],
+    max_landmarks: usize,
+) -> Vec<VideoLandmarkV3> {
+    landmarks.sort_by_key(|landmark| {
+        (
+            landmark.t_ms,
+            landmark.bucket,
+            landmark.hash64,
+            landmark.kind,
+            std::cmp::Reverse(landmark.weight),
+        )
+    });
+    if max_landmarks == 0 {
+        return Vec::new();
+    }
+    if landmarks.len() <= max_landmarks {
+        return landmarks.to_vec();
+    }
+    let stride = landmarks.len() as f64 / max_landmarks as f64;
+    (0..max_landmarks)
+        .map(|index| landmarks[(index as f64 * stride).floor() as usize])
+        .collect()
+}
+
 fn stable_hash_u64(bytes: impl IntoIterator<Item = u8>) -> u64 {
     let mut hasher = Sha256::new();
     for byte in bytes {
@@ -2706,14 +3494,114 @@ fn extension(path: &str) -> Option<&str> {
 
 fn decision(
     tier: MediaMatchTier,
-    evidence: MediaMatchEvidence,
+    mut evidence: MediaMatchEvidence,
     explanation: impl Into<String>,
 ) -> MediaMatchDecision {
+    let timeline_map = media_timeline_map_v3_from_evidence(tier, &evidence);
+    evidence.v3_class = Some(timeline_map.global_class);
+    evidence.timeline_map_v3 = Some(timeline_map);
     MediaMatchDecision {
         tier,
         evidence,
         explanation: explanation.into(),
     }
+}
+
+fn media_timeline_map_v3_from_evidence(
+    tier: MediaMatchTier,
+    evidence: &MediaMatchEvidence,
+) -> MediaTimelineMapV3 {
+    let global_class = media_match_class_v3_from_evidence(tier, evidence);
+    let segments = evidence
+        .alignment
+        .as_ref()
+        .map(|alignment| {
+            let audio_score = evidence
+                .audio
+                .as_ref()
+                .map(|audio| audio.similarity as f32)
+                .unwrap_or(0.0);
+            let video_score = evidence
+                .video
+                .as_ref()
+                .map(|video| video.query_coverage.min(video.candidate_coverage) as f32)
+                .unwrap_or(0.0);
+            let confidence = match tier {
+                MediaMatchTier::Exact | MediaMatchTier::Strong => 1.0,
+                MediaMatchTier::Probable => 0.72,
+                MediaMatchTier::Weak => 0.35,
+                MediaMatchTier::Reject | MediaMatchTier::Unknown => 0.0,
+            };
+            AlignedSegmentV3 {
+                query_start_ms: seconds_to_u32_ms(alignment.first_query_second),
+                query_end_ms: seconds_to_u32_ms(alignment.last_query_second),
+                candidate_start_ms: seconds_to_u32_ms(alignment.first_candidate_second),
+                candidate_end_ms: seconds_to_u32_ms(alignment.last_candidate_second),
+                scale_ppm: alignment.scale_ppm,
+                audio_score,
+                video_score,
+                confidence,
+            }
+        })
+        .into_iter()
+        .collect();
+    MediaTimelineMapV3 {
+        global_class,
+        current_position_class: global_class,
+        segments,
+    }
+}
+
+fn media_match_class_v3_from_evidence(
+    tier: MediaMatchTier,
+    evidence: &MediaMatchEvidence,
+) -> MatchClassV3 {
+    match tier {
+        MediaMatchTier::Exact | MediaMatchTier::Strong => {
+            if evidence
+                .metadata
+                .duration_within_tolerance
+                .is_some_and(|value| !value)
+            {
+                MatchClassV3::SameMediaDifferentCut
+            } else if evidence.video.is_some() && evidence.audio.is_none() {
+                MatchClassV3::SameVideoDifferentAudio
+            } else {
+                MatchClassV3::SameCutStrong
+            }
+        }
+        MediaMatchTier::Probable => {
+            if evidence
+                .metadata
+                .duration_within_tolerance
+                .is_some_and(|value| !value)
+            {
+                MatchClassV3::SameMediaDifferentCut
+            } else {
+                MatchClassV3::SameCutProbable
+            }
+        }
+        MediaMatchTier::Weak => MatchClassV3::PartialOverlap,
+        MediaMatchTier::Reject => {
+            if evidence
+                .alignment
+                .as_ref()
+                .is_some_and(|alignment| alignment.aligned_span_seconds < 120.0)
+            {
+                MatchClassV3::SharedIntroOutroOnly
+            } else {
+                MatchClassV3::Reject
+            }
+        }
+        MediaMatchTier::Unknown => MatchClassV3::Unknown,
+    }
+}
+
+fn seconds_to_u32_ms(seconds: f64) -> u32 {
+    if !seconds.is_finite() || seconds <= 0.0 {
+        return 0;
+    }
+    (seconds * 1000.0).round().min(f64::from(u32::MAX)) as u32
 }
 
 fn ensure_tool_success(
@@ -2828,13 +3716,6 @@ mod tests {
         record
     }
 
-    fn audio(tokens: &[u32]) -> AudioFingerprint {
-        AudioFingerprint {
-            duration_seconds: Some(tokens.len() as f64),
-            fingerprint_tokens: tokens.to_vec(),
-        }
-    }
-
     fn video_from_hashes(start_second: u64, step_seconds: u64, hashes: &[u64]) -> VideoFingerprint {
         VideoFingerprint {
             duration_seconds: Some(start_second as u32 + step_seconds as u32 * hashes.len() as u32),
@@ -2918,6 +3799,28 @@ mod tests {
         anchor_profile(duration_ms, &audio, &video)
     }
 
+    fn audio_only_v3_anchor_profile(
+        duration_ms: u32,
+        offset_ms: i32,
+        drift_ppm: i32,
+    ) -> MediaAnchorProfile {
+        let query_times = (0..24).map(|index| 60_000 + index * 45_000);
+        let audio = query_times
+            .map(|t_ms| AudioAnchor {
+                bucket: t_ms / 45_000 + 1,
+                t_ms: shifted_anchor_time(t_ms, offset_ms, drift_ppm),
+                weight: 4,
+            })
+            .collect::<Vec<_>>();
+        MediaAnchorProfile {
+            version: MEDIA_MATCH_ANCHOR_VERSION,
+            profile: "audio-constellation-v3".to_owned(),
+            duration_ms: Some(duration_ms),
+            audio_anchors: audio,
+            video_anchors: Vec::new(),
+        }
+    }
+
     fn shifted_anchor_time(t_ms: u32, offset_ms: i32, drift_ppm: i32) -> u32 {
         let scaled = i64::from(t_ms) + ((i64::from(t_ms) * i64::from(drift_ppm)) / 1_000_000);
         (scaled + i64::from(offset_ms))
@@ -2990,6 +3893,129 @@ mod tests {
 
         assert_eq!(decoded, anchors);
         assert!(encoded.len() < 80);
+    }
+
+    #[test]
+    fn v3_blob_round_trips_delta_encoded_landmarks() {
+        let blob = MediaFingerprintBlobV3 {
+            duration_ms: Some(1_413_000),
+            audio_landmarks: vec![
+                AudioLandmarkV3 {
+                    hash: 0x1234_5678,
+                    t_ms: 10_000,
+                    weight: 9,
+                },
+                AudioLandmarkV3 {
+                    hash: 0x90ab_cdef,
+                    t_ms: 42_000,
+                    weight: 3,
+                },
+            ],
+            video_landmarks: vec![VideoLandmarkV3 {
+                bucket: 7,
+                hash64: 0x0123_4567_89ab_cdef,
+                t_ms: 48_000,
+                kind: 2,
+                weight: 5,
+            }],
+        };
+
+        let encoded = encode_media_fingerprint_blob_v3(&blob);
+        let decoded = decode_media_fingerprint_blob_v3(&encoded).expect("v3 blob should decode");
+
+        assert_eq!(decoded, blob);
+        assert!(encoded.len() < 80);
+    }
+
+    #[test]
+    fn v3_blob_rejects_corrupted_input() {
+        assert!(matches!(
+            decode_media_fingerprint_blob_v3(b"not-smm3"),
+            Err(MediaFingerprintBlobV3DecodeError::InvalidMagic)
+        ));
+
+        let blob = MediaFingerprintBlobV3 {
+            duration_ms: Some(1),
+            audio_landmarks: vec![AudioLandmarkV3 {
+                hash: 1,
+                t_ms: 1,
+                weight: 1,
+            }],
+            video_landmarks: Vec::new(),
+        };
+        let mut encoded = encode_media_fingerprint_blob_v3(&blob);
+        encoded.truncate(encoded.len() - 1);
+
+        assert!(matches!(
+            decode_media_fingerprint_blob_v3(&encoded),
+            Err(MediaFingerprintBlobV3DecodeError::InvalidLength)
+        ));
+    }
+
+    #[test]
+    fn v3_audio_constellation_generates_sparse_landmarks_from_pcm() {
+        let sample_rate = V3_AUDIO_SAMPLE_RATE;
+        let seconds = 8;
+        let samples = (0..sample_rate as usize * seconds)
+            .map(|index| {
+                let t = index as f32 / sample_rate as f32;
+                let frequency = 440.0 + ((t / 2.0).floor() * 110.0);
+                (frequency.mul_add(std::f32::consts::TAU * t, 0.0).sin()
+                    * f32::from(i16::MAX)
+                    * 0.5)
+                    .round() as i16
+            })
+            .collect::<Vec<_>>();
+
+        let landmarks =
+            audio_constellation_landmarks_v3_from_pcm(&samples, sample_rate, Some(seconds as f64));
+
+        assert!(!landmarks.is_empty());
+        assert!(landmarks.len() <= V3_AUDIO_VERIFY_LANDMARK_LIMIT);
+        assert!(landmarks.iter().all(|landmark| landmark.weight > 0));
+    }
+
+    #[test]
+    fn v3_audio_only_offset_recovery_is_within_one_second() {
+        let query = audio_only_v3_anchor_profile(1_200_000, 0, 0);
+        let candidate = audio_only_v3_anchor_profile(1_201_000, 1_000, 0);
+
+        let decision = decide_media_match_anchors(&query, &candidate, &enabled_settings());
+
+        assert_eq!(decision.tier, MediaMatchTier::Strong);
+        assert_eq!(
+            decision.evidence.v3_class,
+            Some(MatchClassV3::SameCutStrong)
+        );
+        let alignment = decision.evidence.alignment.expect("alignment evidence");
+        assert!((alignment.offset_seconds - 1.0).abs() <= 1.0);
+        assert_eq!(alignment.aligned_video_anchors, 0);
+        assert!(alignment.aligned_audio_anchors >= 16);
+        assert!(
+            decision
+                .evidence
+                .timeline_map_v3
+                .as_ref()
+                .is_some_and(|map| !map.segments.is_empty())
+        );
+    }
+
+    #[test]
+    fn v3_audio_only_drift_recovery_reports_affine_scale() {
+        let query = audio_only_v3_anchor_profile(1_200_000, 0, 0);
+        let candidate = audio_only_v3_anchor_profile(1_202_000, 0, 1_500);
+
+        let decision = decide_media_match_anchors(&query, &candidate, &enabled_settings());
+
+        assert!(matches!(
+            decision.tier,
+            MediaMatchTier::Strong | MediaMatchTier::Probable
+        ));
+        let alignment = decision.evidence.alignment.expect("alignment evidence");
+        assert!(
+            (alignment.scale_ppm - 1_001_500).abs() <= 300,
+            "{alignment:?}"
+        );
     }
 
     #[test]
@@ -3245,58 +4271,62 @@ mod tests {
     }
 
     #[test]
-    fn fast_anchor_profile_process_budget_is_three_external_tools() {
-        let counts =
-            expected_media_tool_invocation_counts(&MediaExtractionSettings::fast_anchor_v2());
-        assert_eq!(counts.ffmpeg + counts.ffprobe + counts.fpcalc, 3);
+    fn audio_constellation_v3_process_budget_avoids_fpcalc_and_video() {
+        let counts = expected_media_tool_invocation_counts(
+            &MediaExtractionSettings::audio_constellation_v3(),
+        );
+        assert_eq!(counts.ffmpeg + counts.ffprobe + counts.fpcalc, 2);
         assert_eq!(counts.ffmpeg, 1);
+        assert_eq!(counts.fpcalc, 0);
     }
 
     #[test]
-    fn wire_signature_round_trips_fast_profile() {
-        let hashes = synthetic_hashes(&[1, 2, 3, 4]);
-        let record = record_with_extraction_settings(
+    fn wire_signature_round_trips_v3_audio_profile() {
+        let mut record = record_with_extraction_settings(
             "[Judas] Show - S01E07.mkv",
             100,
             Some(1412.37),
-            Some(audio(&[1, 2, 3, 4, 5, 6, 7, 8])),
-            Some(shifted_video(30, &hashes)),
-            MediaExtractionSettings::fast_anchor_v2(),
+            None,
+            None,
+            MediaExtractionSettings::audio_constellation_v3(),
         );
+        record.audio_anchors = audio_only_v3_anchor_profile(1_412_370, 0, 0).audio_anchors;
 
         let value = media_match_wire_value_from_records(std::slice::from_ref(&record))
             .expect("wire value should serialize");
         let signature =
             media_match_wire_signature_from_value(&value).expect("wire signature should parse");
         let profile = media_anchor_profile_from_wire_profile(&signature.profiles[0])
-            .expect("v2 profile should decode");
+            .expect("v3 profile should decode");
 
-        assert_eq!(signature.schema, MEDIA_MATCH_WIRE_SCHEMA_V2);
-        assert_eq!(signature.profiles[0].profile, "fast-anchor-v2");
+        assert_eq!(signature.schema, MEDIA_MATCH_WIRE_SCHEMA_V3);
+        assert_eq!(signature.profiles[0].profile, "audio-constellation-v3");
         assert!(!profile.audio_anchors.is_empty());
-        assert!(!profile.video_anchors.is_empty());
+        assert!(profile.video_anchors.is_empty());
     }
 
     #[test]
     fn wire_signature_compares_local_record_to_remote_profile() {
-        let hashes = synthetic_hashes(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
-        let audio_tokens = (0..360).collect::<Vec<u32>>();
-        let query = record_with_extraction_settings(
+        let query_profile = audio_only_v3_anchor_profile(1_412_000, 0, 0);
+        let remote_profile = audio_only_v3_anchor_profile(1_413_000, 1_000, 0);
+        let mut query = record_with_extraction_settings(
             "[Judas] Show - S01E07.mkv",
             100,
             Some(1412.0),
-            Some(audio(&audio_tokens)),
-            Some(video_from_hashes(0, 60, &hashes)),
-            MediaExtractionSettings::fast_anchor_v2(),
+            None,
+            None,
+            MediaExtractionSettings::audio_constellation_v3(),
         );
-        let remote = record_with_extraction_settings(
+        query.audio_anchors = query_profile.audio_anchors;
+        let mut remote = record_with_extraction_settings(
             "[Erai-raws] Show - 07.mkv",
             200,
             Some(1413.0),
-            Some(audio(&audio_tokens)),
-            Some(video_from_hashes(0, 60, &hashes)),
-            MediaExtractionSettings::fast_anchor_v2(),
+            None,
+            None,
+            MediaExtractionSettings::audio_constellation_v3(),
         );
+        remote.audio_anchors = remote_profile.audio_anchors;
         let value =
             media_match_wire_value_from_records(&[remote]).expect("wire value should serialize");
         let signature =
@@ -3330,15 +4360,16 @@ mod tests {
     }
 
     #[test]
-    fn wire_signature_rejects_unsupported_v2_profile_fields() {
-        let record = record_with_extraction_settings(
+    fn wire_signature_rejects_unsupported_v3_profile_fields() {
+        let mut record = record_with_extraction_settings(
             "episode.mkv",
             100,
             Some(120.0),
-            Some(audio(&[1, 2, 3, 4, 5, 6, 7, 8])),
-            Some(shifted_video(0, &synthetic_hashes(&[1, 2, 3, 4]))),
-            MediaExtractionSettings::fast_anchor_v2(),
+            None,
+            None,
+            MediaExtractionSettings::audio_constellation_v3(),
         );
+        record.audio_anchors = audio_only_v3_anchor_profile(120_000, 0, 0).audio_anchors;
         let value = media_match_wire_value_from_records(std::slice::from_ref(&record))
             .expect("wire value should serialize");
 
@@ -3348,7 +4379,7 @@ mod tests {
         assert!(media_match_wire_signature_from_value(&unsupported_version).is_err());
 
         let mut unknown_profile = value.clone();
-        unknown_profile["profiles"][0]["profile"] = serde_json::json!("fast-anchor-v999");
+        unknown_profile["profiles"][0]["profile"] = serde_json::json!("audio-v999");
         assert!(media_match_wire_signature_from_value(&unknown_profile).is_err());
 
         let mut wrong_time_base = value.clone();
@@ -3356,8 +4387,8 @@ mod tests {
         assert!(media_match_wire_signature_from_value(&wrong_time_base).is_err());
 
         let mut wrong_algorithm = value;
-        wrong_algorithm["profiles"][0]["video"]["algorithm"] =
-            serde_json::json!("unsupported-video-anchor-algorithm");
+        wrong_algorithm["profiles"][0]["audio"]["algorithm"] =
+            serde_json::json!("unsupported-audio-anchor-algorithm");
         assert!(media_match_wire_signature_from_value(&wrong_algorithm).is_err());
     }
 

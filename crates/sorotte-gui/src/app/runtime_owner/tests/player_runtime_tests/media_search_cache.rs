@@ -82,7 +82,8 @@ fn gui_persisted_config_runtime_owner_opens_media_match_candidate_when_playlist_
                 metadata.len(),
             ),
             algorithm_version: sorotte_media_match::MEDIA_MATCH_ALGORITHM_VERSION,
-            extraction_settings: sorotte_media_match::MediaExtractionSettings::fast_anchor_v2(),
+            extraction_settings:
+                sorotte_media_match::MediaExtractionSettings::audio_constellation_v3(),
             duration_seconds: Some(900.0),
             container_fingerprint: format!("container:{}", path.display()),
             audio: None,
@@ -100,7 +101,8 @@ fn gui_persisted_config_runtime_owner_opens_media_match_candidate_when_playlist_
         let mut record = sorotte_media_match::MediaFingerprintRecord {
             identity: sorotte_media_match::MediaFileIdentity::new(path, 1000, 2000),
             algorithm_version: sorotte_media_match::MEDIA_MATCH_ALGORITHM_VERSION,
-            extraction_settings: sorotte_media_match::MediaExtractionSettings::fast_anchor_v2(),
+            extraction_settings:
+                sorotte_media_match::MediaExtractionSettings::audio_constellation_v3(),
             duration_seconds: Some(900.0),
             container_fingerprint: format!("container:{path}"),
             audio: None,
@@ -117,21 +119,14 @@ fn gui_persisted_config_runtime_owner_opens_media_match_candidate_when_playlist_
     fn seed_media_match_strong_anchor_fixture(
         record: &mut sorotte_media_match::MediaFingerprintRecord,
     ) {
-        record.audio_anchors = (0u32..12)
+        record.audio_anchors = (0u32..24)
             .map(|index| sorotte_media_match::AudioAnchor {
                 bucket: 100 + index,
-                t_ms: 30_000 + (index * 60_000),
-                weight: 1,
+                t_ms: 30_000 + (index * 30_000),
+                weight: 4,
             })
             .collect();
-        record.video_anchors = (0u32..12)
-            .map(|index| sorotte_media_match::VideoAnchor {
-                bucket: 200 + index,
-                t_ms: 30_000 + (index * 60_000),
-                hash64: 0x55AA_0000_0000_0000 | u64::from(index),
-                weight: 1,
-            })
-            .collect();
+        record.video_anchors.clear();
     }
 
     let root = test_temp_root("playlist-media-match-alternate-encode");

@@ -271,7 +271,6 @@ pub(super) enum GuiMediaMatchToolHealth {
     Healthy,
     MissingFfmpeg,
     MissingFfprobe,
-    MissingFpcalc,
     Broken,
 }
 
@@ -281,7 +280,6 @@ impl GuiMediaMatchToolHealth {
             Self::Healthy => "healthy",
             Self::MissingFfmpeg => "missing-ffmpeg",
             Self::MissingFfprobe => "missing-ffprobe",
-            Self::MissingFpcalc => "missing-fpcalc",
             Self::Broken => "broken",
         }
     }

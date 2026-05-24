@@ -183,7 +183,7 @@ impl GuiPersistedConfigRuntimeOwner {
             let Some(local_record) = media_match_record_for_path(
                 &root,
                 &current_path,
-                &MediaExtractionSettings::fast_anchor_v2(),
+                &MediaExtractionSettings::audio_constellation_v3(),
             ) else {
                 let status = "pending local fingerprint".to_owned();
                 let gate_tiers = BTreeMap::new();
@@ -557,7 +557,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 &remote.target_file_name,
                 &remote.media_match_signature,
                 &projected_state.media_match.settings,
-                &MediaExtractionSettings::fast_anchor_v2(),
+                &MediaExtractionSettings::audio_constellation_v3(),
             ) {
                 return Some(candidate.path);
             }
@@ -778,7 +778,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     if let Some(remote_candidate) = remote_candidate {
                         media_match_tool_paths(&root).and_then(|tools| {
                             let extraction_settings =
-                                sorotte_media_match::MediaExtractionSettings::fast_anchor_v2();
+                                sorotte_media_match::MediaExtractionSettings::audio_constellation_v3();
                             rebuild_persisted_media_match_remote_candidates_with_progress_and_cancel(
                                 MediaMatchRemoteCandidateRebuildRequest {
                                     root: &root,
@@ -799,7 +799,7 @@ impl GuiPersistedConfigRuntimeOwner {
                         })
                     } else {
                         let extraction_settings =
-                            sorotte_media_match::MediaExtractionSettings::fast_anchor_v2();
+                            sorotte_media_match::MediaExtractionSettings::audio_constellation_v3();
                         rebuild_persisted_media_match_index_with_extraction_settings_and_cancel(
                             &root,
                             &search_roots,
@@ -816,7 +816,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 } else if let Some(candidates) = candidates {
                     media_match_tool_paths(&root).and_then(|tools| {
                         let extraction_settings =
-                            sorotte_media_match::MediaExtractionSettings::fast_anchor_v2();
+                            sorotte_media_match::MediaExtractionSettings::audio_constellation_v3();
                         rebuild_persisted_media_match_candidates_with_progress_and_cancel(
                             MediaMatchCandidateRebuildRequest {
                                 root: &root,
@@ -835,7 +835,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     })
                 } else {
                     let extraction_settings =
-                        sorotte_media_match::MediaExtractionSettings::fast_anchor_v2();
+                        sorotte_media_match::MediaExtractionSettings::audio_constellation_v3();
                     rebuild_persisted_media_match_index_with_extraction_settings_and_cancel(
                         &root,
                         &search_roots,
@@ -875,7 +875,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 }
                 let full_result = media_match_tool_paths(&root).and_then(|tools| {
                     let extraction_settings =
-                        sorotte_media_match::MediaExtractionSettings::full_anchor_v2();
+                        sorotte_media_match::MediaExtractionSettings::combined_v3();
                     rebuild_persisted_media_match_candidates_with_progress_and_cancel(
                         MediaMatchCandidateRebuildRequest {
                             root: &root,
@@ -1701,16 +1701,16 @@ mod tests {
         let connection = rusqlite::Connection::open(
             root.join("cache")
                 .join("media-match")
-                .join("index-v2.sqlite3"),
+                .join("index-v3.sqlite3"),
         )
         .expect("SQLite index should open");
         let inventory = connection
-            .query_row("SELECT COUNT(*) FROM media_files", [], |row| {
+            .query_row("SELECT COUNT(*) FROM media_files_v3", [], |row| {
                 row.get::<_, i64>(0)
             })
             .expect("inventory count should load");
         let fingerprints = connection
-            .query_row("SELECT COUNT(*) FROM fingerprints", [], |row| {
+            .query_row("SELECT COUNT(*) FROM fingerprints_v3", [], |row| {
                 row.get::<_, i64>(0)
             })
             .expect("fingerprint count should load");
