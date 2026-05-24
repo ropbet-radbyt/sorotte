@@ -543,8 +543,6 @@ where
     let existing_cache =
         load_media_match_cache_for_settings(request.root, request.extraction_settings)
             .unwrap_or_default();
-    let checkpoint_connection = open_media_match_sqlite_index(request.root)?;
-    let mut next_cache = initial_media_match_rebuild_cache(&existing_cache, selected.prefiltered);
     let mut reused = 0usize;
     let mut fingerprinted = 0usize;
     let mut skipped = 0usize;
@@ -565,6 +563,31 @@ where
         Some(format!("0/{fresh_work_total} files needing index")),
         0.1,
     ));
+    if fresh_work_total == 0 {
+        let (current_decision, last_evidence) = summarize_current_media_match(
+            request.current_player_path,
+            &existing_cache,
+            request.settings,
+        );
+        let cache_status = format!("{} fingerprint records", existing_cache.records.len());
+        progress(MediaMatchToolProgress::new(
+            "Media Matching index rebuilt",
+            Some(format!("0/0 files needing index; {cache_status}")),
+            1.0,
+        ));
+        return Ok(MediaMatchIndexRebuildResult {
+            message: format!(
+                "Media Matching index already current ({} discovered files, 0 needing index).",
+                selected.discovered_files
+            ),
+            cache_status,
+            current_decision,
+            last_evidence,
+        });
+    }
+
+    let checkpoint_connection = open_media_match_sqlite_index(request.root)?;
+    let mut next_cache = initial_media_match_rebuild_cache(&existing_cache, selected.prefiltered);
 
     for (index, path) in selected.paths.iter().enumerate() {
         if request
@@ -598,6 +621,7 @@ where
                 } else {
                     fingerprinted += 1;
                     fresh_work_done += 1;
+                    save_media_match_record_to_sqlite(&checkpoint_connection, &record)?;
                 }
                 if normalized_current_path.as_deref()
                     == Some(record.identity.normalized_path.as_str())
@@ -607,7 +631,6 @@ where
                     let decision = decide_media_match(query, &record, request.settings);
                     strong_match_found = decision.tier == MediaMatchTier::Strong;
                 }
-                save_media_match_record_to_sqlite(&checkpoint_connection, &record)?;
                 next_cache.insert(record);
                 if strong_match_found {
                     break;
@@ -1288,7 +1311,6 @@ fn initialize_media_match_sqlite_index(connection: &Connection) -> Result<(), St
     connection
         .execute_batch(
             "
-            PRAGMA user_version = 1;
             CREATE TABLE IF NOT EXISTS metadata (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -1311,6 +1333,12 @@ fn initialize_media_match_sqlite_index(connection: &Connection) -> Result<(), St
             ",
         )
         .map_err(|error| format!("failed initializing media-match SQLite index: {error}"))?;
+    let user_version = connection
+        .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+        .map_err(|error| format!("failed reading media-match SQLite schema version: {error}"))?;
+    if user_version == MEDIA_MATCH_SQLITE_SCHEMA_VERSION {
+        return Ok(());
+    }
     connection
         .pragma_update(None, "user_version", MEDIA_MATCH_SQLITE_SCHEMA_VERSION)
         .map_err(|error| format!("failed setting media-match SQLite schema version: {error}"))?;
@@ -1772,6 +1800,47 @@ mod tests {
         }
     }
 
+    fn fake_media_match_record_for_file(
+        path: &Path,
+        extraction_settings: MediaExtractionSettings,
+    ) -> MediaFingerprintRecord {
+        let metadata = std::fs::metadata(path).expect("test media file should exist");
+        let modified_unix_millis = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+            .unwrap_or(0);
+        MediaFingerprintRecord {
+            identity: sorotte_media_match::MediaFileIdentity::new(
+                path,
+                modified_unix_millis,
+                metadata.len(),
+            ),
+            algorithm_version: MEDIA_MATCH_ALGORITHM_VERSION,
+            extraction_settings,
+            duration_seconds: Some(1200.0),
+            container_fingerprint: format!("container:{}", path.display()),
+            audio: None,
+            video: None,
+        }
+    }
+
+    fn media_match_record_updated_unix_millis(root: &Path, record: &MediaFingerprintRecord) -> i64 {
+        let connection = open_media_match_sqlite_index(root).expect("SQLite index should open");
+        connection
+            .query_row(
+                "SELECT updated_unix_millis FROM fingerprints
+                 WHERE normalized_path = ?1 AND profile = ?2",
+                params![
+                    record.identity.normalized_path,
+                    record.extraction_settings.profile.label(),
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("record timestamp should be readable")
+    }
+
     #[test]
     fn media_match_clear_persisted_cache_removes_cache_and_tool_metadata() {
         let root = unique_media_match_test_root("clear");
@@ -1901,6 +1970,52 @@ mod tests {
             media_match_sqlite_counts(&root).expect("counts should load"),
             (1, 0, 1)
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn media_match_rebuild_with_no_fresh_work_does_not_rewrite_sqlite_records() {
+        let root = unique_media_match_test_root("no-op-rebuild");
+        let media_dir = root.join("media");
+        std::fs::create_dir_all(&media_dir).expect("media dir should be created");
+        let media_path = media_dir.join("episode.mkv");
+        std::fs::write(&media_path, vec![42u8; 2000]).expect("test media file should be written");
+        let extraction_settings = MediaExtractionSettings::fast_v1();
+        let record = fake_media_match_record_for_file(&media_path, extraction_settings.clone());
+        let mut cache = MediaMatchCacheV1::default();
+        cache.insert(record.clone());
+        save_media_match_cache(&root, &cache).expect("cache should be written");
+        let before = media_match_record_updated_unix_millis(&root, &record);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        let mut settings = MediaMatchSettings {
+            fingerprinting_enabled: true,
+            ..MediaMatchSettings::default()
+        };
+        settings.runtime_tolerance_enabled = true;
+        let tools = MediaMatchToolPaths {
+            ffmpeg: PathBuf::from("ffmpeg-not-used"),
+            ffprobe: PathBuf::from("ffprobe-not-used"),
+            fpcalc: PathBuf::from("fpcalc-not-used"),
+        };
+        let result = rebuild_persisted_media_match_candidates_with_progress_and_cancel(
+            MediaMatchCandidateRebuildRequest {
+                root: &root,
+                candidates: vec![media_path],
+                current_player_path: None,
+                settings: &settings,
+                tools: &tools,
+                extraction_settings: &extraction_settings,
+                cancel_flag: None,
+            },
+            |_| {},
+        )
+        .expect("no-op rebuild should succeed without invoking tools");
+        let after = media_match_record_updated_unix_millis(&root, &record);
+
+        assert_eq!(before, after);
+        assert!(result.message.contains("already current"));
+        assert_eq!(result.cache_status, "1 fingerprint records");
         let _ = std::fs::remove_dir_all(&root);
     }
 

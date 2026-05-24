@@ -823,7 +823,6 @@ impl GuiPersistedConfigRuntimeOwner {
                 Ok(GuiMediaMatchBackgroundWorkerEvent::Finished(result)) => {
                     keep_rx = false;
                     self.media_match_background_worker_cancel = None;
-                    self.media_match_background_trigger_key = None;
                     if !matches!(&result, Err(error) if error.contains("canceled")) {
                         self.media_match_background_cancel_disposition = None;
                     }
@@ -919,7 +918,6 @@ impl GuiPersistedConfigRuntimeOwner {
                 Err(mpsc::TryRecvError::Disconnected) => {
                     keep_rx = false;
                     self.media_match_background_worker_cancel = None;
-                    self.media_match_background_trigger_key = None;
                     self.media_match_background_cancel_disposition = None;
                     let status = self
                         .finish_media_match_background_index_backup(false)
