@@ -459,7 +459,9 @@ impl SorotteGuiShellAppState {
             .as_deref()
             .is_some_and(|status| {
                 let lower = status.to_ascii_lowercase();
-                lower != "idle" && !lower.starts_with("failed") && !lower.starts_with("canceled")
+                !lower.starts_with("idle")
+                    && !lower.starts_with("failed")
+                    && !lower.starts_with("canceled")
             })
     }
 

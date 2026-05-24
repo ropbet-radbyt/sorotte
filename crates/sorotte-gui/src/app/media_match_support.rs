@@ -567,11 +567,11 @@ where
         ));
         return Ok(MediaMatchIndexRebuildResult {
             message: format!(
-                "Media Matching inventoried {} discovered files; fingerprints will be generated lazily for the current file and likely candidates.",
+                "Media Matching inventoried {} discovered files. No active local media path could be resolved, so fingerprinting is idle until the player or selected playlist item resolves to a local file.",
                 candidates.len()
             ),
             cache_status,
-            current_decision: Some("unknown: no current player file".to_owned()),
+            current_decision: Some("unknown: no resolved current local file".to_owned()),
             nearest_match: None,
             last_evidence: None,
         });
@@ -1745,7 +1745,7 @@ fn summarize_current_media_match(
 ) -> (Option<String>, Option<String>, Option<String>) {
     let Some(current_player_path) = current_player_path else {
         return (
-            Some("unknown: no current player file".to_owned()),
+            Some("unknown: no resolved current local file".to_owned()),
             None,
             None,
         );
@@ -3539,6 +3539,7 @@ mod tests {
         assert_eq!(inventory, 2);
         assert_eq!(fingerprints, 0);
         assert!(result.message.contains("inventoried 2 discovered files"));
+        assert!(result.message.contains("No active local media path"));
         let _ = std::fs::remove_dir_all(&root);
     }
 
