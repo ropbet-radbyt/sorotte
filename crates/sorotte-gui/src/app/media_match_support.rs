@@ -18,13 +18,13 @@ use serde::{Deserialize, Serialize};
 use sorotte_media_match::{
     AudioAnchor, MEDIA_MATCH_ALGORITHM_VERSION, MEDIA_MATCH_ANCHOR_VERSION,
     MediaExtractionSettings, MediaFingerprintError, MediaFingerprintProfile,
-    MediaFingerprintRecord, MediaMatchCache, MediaMatchSettings, MediaMatchTier,
-    MediaMatchToolPaths, VideoAnchor, audio_anchors_from_record, decide_media_match,
-    decode_audio_anchor_summary, decode_video_anchor_summary,
-    fingerprint_media_file_cancellable_with_report, media_extraction_settings_hash,
-    media_fingerprint_summary_from_record, media_match_wire_value_from_records,
-    normalize_media_path, rank_media_match_candidates, video_anchor_hashes_match,
-    video_anchors_from_record,
+    MediaFingerprintRecord, MediaMatchCache, MediaMatchCandidateDecision, MediaMatchDecision,
+    MediaMatchSettings, MediaMatchTier, MediaMatchToolPaths, VideoAnchor,
+    audio_anchors_from_record, decide_media_match, decode_audio_anchor_summary,
+    decode_video_anchor_summary, fingerprint_media_file_cancellable_with_report,
+    media_extraction_settings_hash, media_fingerprint_summary_from_record,
+    media_match_wire_value_from_records, normalize_media_path, rank_media_match_candidates,
+    video_anchor_hashes_match, video_anchors_from_record,
 };
 
 use super::shell_state::{
@@ -41,6 +41,9 @@ const MEDIA_MATCH_INDEX_BACKUP_FILE: &str = "index-v2.previous.sqlite3";
 const MEDIA_MATCH_SQLITE_SCHEMA_VERSION: i64 = 2;
 const MEDIA_MATCH_PREFILTER_THRESHOLD: usize = 64;
 const MEDIA_MATCH_PREFILTER_LIMIT: usize = 24;
+const MEDIA_MATCH_VIDEO_HAMMING_FALLBACK_MIN_CANDIDATES: usize = 4;
+const MEDIA_MATCH_VIDEO_HAMMING_FALLBACK_MAX_QUERY_ANCHORS: usize = 16;
+const MEDIA_MATCH_VIDEO_HAMMING_FALLBACK_MAX_ROWS_PER_QUERY: i64 = 50_000;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 #[cfg(windows)]
@@ -78,6 +81,7 @@ pub(super) struct MediaMatchIndexRebuildResult {
     pub(super) message: String,
     pub(super) cache_status: String,
     pub(super) current_decision: Option<String>,
+    pub(super) nearest_match: Option<String>,
     pub(super) last_evidence: Option<String>,
 }
 
@@ -356,6 +360,7 @@ pub(super) fn probe_media_match_runtime_snapshot(
         fpcalc_status: Some(fpcalc.status),
         cache_status: root.map(media_match_cache_status),
         current_decision: None,
+        nearest_match: None,
         last_evidence: None,
         remote_status: Some("unavailable".to_owned()),
         background_status: Some("idle".to_owned()),
@@ -553,7 +558,7 @@ where
     ));
     let candidates = collect_media_match_candidates(search_roots);
     if current_player_path.is_none() {
-        inventory_media_match_candidates(root, &candidates, cancel_flag)?;
+        inventory_media_match_candidates(root, search_roots, &candidates, cancel_flag)?;
         let cache_status = media_match_cache_status(root);
         progress(MediaMatchToolProgress::new(
             "Media Matching inventory updated",
@@ -567,6 +572,7 @@ where
             ),
             cache_status,
             current_decision: Some("unknown: no current player file".to_owned()),
+            nearest_match: None,
             last_evidence: None,
         });
     }
@@ -618,7 +624,7 @@ where
         0.1,
     ));
     if fresh_work_total == 0 {
-        let (current_decision, last_evidence) = summarize_current_media_match(
+        let (current_decision, nearest_match, last_evidence) = summarize_current_media_match(
             request.root,
             request.current_player_path,
             &existing_cache,
@@ -638,6 +644,7 @@ where
             ),
             cache_status,
             current_decision,
+            nearest_match,
             last_evidence,
         });
     }
@@ -708,7 +715,7 @@ where
         }
     }
 
-    let (current_decision, last_evidence) = summarize_current_media_match(
+    let (current_decision, nearest_match, last_evidence) = summarize_current_media_match(
         request.root,
         request.current_player_path,
         &next_cache,
@@ -744,6 +751,7 @@ where
         message,
         cache_status,
         current_decision,
+        nearest_match,
         last_evidence,
     })
 }
@@ -838,15 +846,23 @@ fn media_match_cache_status(root: &Path) -> String {
     match media_match_sqlite_all_settings_counts(root) {
         Ok((inventory, fast, full)) if inventory > 0 || fast > 0 || full > 0 => {
             let storage = media_match_sqlite_storage_status(root).unwrap_or_default();
-            if storage.is_empty() {
-                format!(
-                    "inventory: {inventory}, fast(all settings): {fast}, full(all settings): {full}"
-                )
+            let active = media_match_sqlite_active_settings_counts(root)
+                .map(|(active_fast, active_full)| {
+                    format!("active settings fast/full={active_fast}/{active_full}")
+                })
+                .unwrap_or_default();
+            let details = [active, storage]
+                .into_iter()
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>();
+            let details = if details.is_empty() {
+                String::new()
             } else {
-                format!(
-                    "inventory: {inventory}, fast(all settings): {fast}, full(all settings): {full}; {storage}"
-                )
-            }
+                format!("; {}", details.join("; "))
+            };
+            format!(
+                "inventory: {inventory}, fast(all settings): {fast}, full(all settings): {full}{details}"
+            )
         }
         Ok(_) => "empty".to_owned(),
         Err(error) => format!("unreadable cache: {error}"),
@@ -942,6 +958,7 @@ fn collect_media_match_candidates(search_roots: &[PathBuf]) -> Vec<PathBuf> {
 
 fn inventory_media_match_candidates(
     root: &Path,
+    search_roots: &[PathBuf],
     candidates: &[PathBuf],
     cancel_flag: Option<&AtomicBool>,
 ) -> Result<(), String> {
@@ -1010,10 +1027,58 @@ fn inventory_media_match_candidates(
             )
             .map_err(|error| format!("failed writing media-match inventory row: {error}"))?;
     }
+    prune_missing_media_match_inventory_rows(&transaction, search_roots, candidates)?;
     transaction
         .commit()
         .map_err(|error| format!("failed committing media-match inventory transaction: {error}"))?;
     Ok(())
+}
+
+fn prune_missing_media_match_inventory_rows(
+    connection: &Connection,
+    search_roots: &[PathBuf],
+    candidates: &[PathBuf],
+) -> Result<(), String> {
+    let normalized_roots = search_roots
+        .iter()
+        .map(normalize_media_path)
+        .collect::<Vec<_>>();
+    if normalized_roots.is_empty() {
+        return Ok(());
+    }
+    let seen_paths = candidates
+        .iter()
+        .map(normalize_media_path)
+        .collect::<BTreeSet<_>>();
+    let mut statement = connection
+        .prepare("SELECT file_id, normalized_path FROM media_files")
+        .map_err(|error| format!("failed preparing media-match stale inventory query: {error}"))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| format!("failed querying media-match stale inventory rows: {error}"))?;
+    let mut stale_file_ids = Vec::new();
+    for row in rows.flatten() {
+        let (file_id, normalized_path) = row;
+        let under_scanned_root = normalized_roots
+            .iter()
+            .any(|root| media_match_path_is_under_root(&normalized_path, root));
+        if under_scanned_root && !seen_paths.contains(&normalized_path) {
+            stale_file_ids.push(file_id);
+        }
+    }
+    for file_id in stale_file_ids {
+        delete_media_match_file_and_fingerprints(connection, file_id)?;
+    }
+    Ok(())
+}
+
+fn media_match_path_is_under_root(normalized_path: &str, normalized_root: &str) -> bool {
+    normalized_path == normalized_root
+        || normalized_path
+            .strip_prefix(normalized_root)
+            .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1059,6 +1124,8 @@ fn select_media_match_rebuild_candidates(
     let prefiltered = normalized_current_path.is_some()
         && root_candidates.len() > MEDIA_MATCH_PREFILTER_THRESHOLD;
     let selected_root_candidates = if prefiltered {
+        // Missing fingerprints cannot be anchor-shortlisted yet; for large roots this filename
+        // pass is intentionally only a fast bootstrap until background warmup adds anchors.
         prefilter_media_match_candidates(
             &root_candidates,
             current_player_path.expect("prefilter requires a current path"),
@@ -1540,7 +1607,8 @@ fn collect_video_anchor_candidate_scores(
         )
         .map_err(|error| format!("failed preparing media-match video anchor hit query: {error}"))?;
     let mut seen_hits = BTreeSet::<(i64, i64, i64, u64, u64)>::new();
-    for (bucket, query_t_ms, query_hash64) in query_anchors {
+    let mut lsh_candidate_ids = BTreeSet::<i64>::new();
+    for (bucket, query_t_ms, query_hash64) in &query_anchors {
         let hits = hit_statement
             .query_map(
                 params![
@@ -1561,26 +1629,51 @@ fn collect_video_anchor_candidate_scores(
             )
             .map_err(|error| format!("failed querying media-match video anchor hits: {error}"))?;
         for hit in hits.flatten() {
-            if !video_anchor_hashes_match(query_hash64, hit.2) {
+            if !video_anchor_hashes_match(*query_hash64, hit.2) {
                 continue;
             }
-            if !seen_hits.insert((hit.0, query_t_ms, hit.1, query_hash64, hit.2)) {
+            if !seen_hits.insert((hit.0, *query_t_ms, hit.1, *query_hash64, hit.2)) {
                 continue;
             }
+            lsh_candidate_ids.insert(hit.0);
             *scores.entry(hit.0).or_default() += hit.3.max(1);
         }
-        collect_video_anchor_hamming_fallback_scores(
-            connection,
-            current_file_id,
-            profile,
-            settings_hash,
-            query_t_ms,
-            query_hash64,
-            scores,
-            &mut seen_hits,
-        )?;
+    }
+    if lsh_candidate_ids.len() < MEDIA_MATCH_VIDEO_HAMMING_FALLBACK_MIN_CANDIDATES {
+        for (query_t_ms, query_hash64) in
+            bounded_video_hamming_fallback_query_anchors(&query_anchors)
+        {
+            collect_video_anchor_hamming_fallback_scores(
+                connection,
+                current_file_id,
+                profile,
+                settings_hash,
+                query_t_ms,
+                query_hash64,
+                scores,
+                &mut seen_hits,
+            )?;
+        }
     }
     Ok(())
+}
+
+fn bounded_video_hamming_fallback_query_anchors(
+    query_anchors: &[(i64, i64, u64)],
+) -> Vec<(i64, u64)> {
+    let unique = query_anchors
+        .iter()
+        .map(|(_, t_ms, hash64)| (*t_ms, *hash64))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if unique.len() <= MEDIA_MATCH_VIDEO_HAMMING_FALLBACK_MAX_QUERY_ANCHORS {
+        return unique;
+    }
+    let stride = unique.len() as f64 / MEDIA_MATCH_VIDEO_HAMMING_FALLBACK_MAX_QUERY_ANCHORS as f64;
+    (0..MEDIA_MATCH_VIDEO_HAMMING_FALLBACK_MAX_QUERY_ANCHORS)
+        .map(|index| unique[(index as f64 * stride).floor() as usize])
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1605,7 +1698,9 @@ fn collect_video_anchor_hamming_fallback_scores(
              WHERE anchors.version = ?1
                 AND anchors.profile = ?2
                 AND anchors.file_id != ?3
-                AND fingerprints.settings_hash = ?4",
+                AND fingerprints.settings_hash = ?4
+             ORDER BY anchors.file_id, anchors.t_ms
+             LIMIT ?5",
         )
         .map_err(|error| {
             format!("failed preparing media-match video Hamming fallback query: {error}")
@@ -1617,6 +1712,7 @@ fn collect_video_anchor_hamming_fallback_scores(
                 profile,
                 current_file_id,
                 settings_hash,
+                MEDIA_MATCH_VIDEO_HAMMING_FALLBACK_MAX_ROWS_PER_QUERY,
             ],
             |row| {
                 Ok((
@@ -1646,14 +1742,19 @@ fn summarize_current_media_match(
     cache: &MediaMatchCache,
     settings: &MediaMatchSettings,
     extraction_settings: &MediaExtractionSettings,
-) -> (Option<String>, Option<String>) {
+) -> (Option<String>, Option<String>, Option<String>) {
     let Some(current_player_path) = current_player_path else {
-        return (Some("unknown: no current player file".to_owned()), None);
+        return (
+            Some("unknown: no current player file".to_owned()),
+            None,
+            None,
+        );
     };
     let normalized_current_path = normalize_media_path(current_player_path);
     let Some(query) = cache.records.get(&normalized_current_path) else {
         return (
             Some("unknown: current player file is not indexed".to_owned()),
+            None,
             None,
         );
     };
@@ -1671,19 +1772,18 @@ fn summarize_current_media_match(
         }),
         settings,
     );
-    let Some(best) = ranked
-        .into_iter()
-        .find(|candidate| candidate.decision.tier != MediaMatchTier::Reject)
-    else {
+    let Some(best) = ranked.into_iter().next() else {
         return (
             Some("unknown: no comparable indexed candidates".to_owned()),
+            None,
             None,
         );
     };
     let tier = media_match_tier_label(best.decision.tier);
     (
         Some(format!("{tier}: {}", best.decision.explanation)),
-        Some(format!("best candidate: {}", best.candidate_path)),
+        Some(format_media_match_nearest_candidate(&best)),
+        Some(format_media_match_evidence_summary(&best.decision)),
     )
 }
 
@@ -1695,6 +1795,77 @@ pub(super) fn media_match_tier_label(tier: MediaMatchTier) -> &'static str {
         MediaMatchTier::Weak => "weak",
         MediaMatchTier::Reject => "reject",
         MediaMatchTier::Unknown => "unknown",
+    }
+}
+
+fn format_media_match_nearest_candidate(candidate: &MediaMatchCandidateDecision) -> String {
+    let tier = media_match_tier_label(candidate.decision.tier);
+    format!(
+        "{} ({tier}: {})",
+        candidate.candidate_path, candidate.decision.explanation
+    )
+}
+
+fn format_media_match_evidence_summary(decision: &MediaMatchDecision) -> String {
+    let mut parts = vec![format!(
+        "tier={} reason={}",
+        media_match_tier_label(decision.tier),
+        decision.explanation
+    )];
+    if let Some(alignment) = decision.evidence.alignment.as_ref() {
+        parts.push(format!(
+            "alignment offset={:.1}s scale={}ppm drift={:.4} span={:.1}s pairs={} audio={} video={} margin={:.2}",
+            alignment.offset_seconds,
+            alignment.scale_ppm,
+            alignment.drift_ratio,
+            alignment.aligned_span_seconds,
+            alignment.aligned_pairs,
+            alignment.aligned_audio_anchors,
+            alignment.aligned_video_anchors,
+            alignment.second_best_offset_margin
+        ));
+    }
+    if let Some(audio) = decision.evidence.audio.as_ref() {
+        parts.push(format!(
+            "audio similarity={:.2} shared={:.2} duration_delta={}",
+            audio.similarity,
+            audio.shared_token_ratio,
+            format_optional_seconds(audio.duration_delta_seconds)
+        ));
+    }
+    if let Some(video) = decision.evidence.video.as_ref() {
+        parts.push(format!(
+            "video pairs={} coverage={:.2}/{:.2} offset={:.1}s drift={:.4} mean_hamming={:.1}",
+            video.aligned_pairs,
+            video.query_coverage,
+            video.candidate_coverage,
+            video.best_offset_seconds,
+            video.drift_ratio,
+            video.mean_hamming_distance
+        ));
+    }
+    parts.push(format!(
+        "metadata duration_delta={} duration_within_tolerance={}",
+        format_optional_seconds(decision.evidence.metadata.duration_delta_seconds),
+        format_optional_bool(decision.evidence.metadata.duration_within_tolerance)
+    ));
+    if !decision.evidence.notes.is_empty() {
+        parts.push(format!("notes={}", decision.evidence.notes.join("; ")));
+    }
+    parts.join(" | ")
+}
+
+fn format_optional_seconds(value: Option<f64>) -> String {
+    value
+        .map(|seconds| format!("{seconds:.1}s"))
+        .unwrap_or_else(|| "n/a".to_owned())
+}
+
+fn format_optional_bool(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "true",
+        Some(false) => "false",
+        None => "n/a",
     }
 }
 
@@ -1897,6 +2068,17 @@ fn delete_media_match_fingerprints_and_anchors(
     connection
         .execute("DELETE FROM fingerprints WHERE file_id = ?1", [file_id])
         .map_err(|error| format!("failed deleting stale media-match fingerprints: {error}"))?;
+    Ok(())
+}
+
+fn delete_media_match_file_and_fingerprints(
+    connection: &Connection,
+    file_id: i64,
+) -> Result<(), String> {
+    delete_media_match_fingerprints_and_anchors(connection, file_id)?;
+    connection
+        .execute("DELETE FROM media_files WHERE file_id = ?1", [file_id])
+        .map_err(|error| format!("failed deleting stale media-match file row: {error}"))?;
     Ok(())
 }
 
@@ -2205,6 +2387,27 @@ fn save_media_match_record_to_sqlite_with_error(
         .duration_seconds
         .filter(|value| value.is_finite() && *value >= 0.0)
         .map(|value| (value * 1000.0).round().min(f64::from(u32::MAX)) as i64);
+    if let Some((file_id, old_mtime, old_size)) = transaction
+        .query_row(
+            "SELECT file_id, modified_unix_millis, size_bytes
+             FROM media_files
+             WHERE normalized_path = ?1",
+            [record.identity.normalized_path.as_str()],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| format!("failed reading media-match media file row: {error}"))?
+        && (old_mtime != record.identity.modified_unix_millis as i64
+            || old_size != record.identity.size_bytes as i64)
+    {
+        delete_media_match_fingerprints_and_anchors(&transaction, file_id)?;
+    }
     transaction
         .execute(
             "INSERT INTO media_files (
@@ -2410,6 +2613,35 @@ fn media_match_sqlite_all_settings_counts(root: &Path) -> Result<(usize, usize, 
         inventory,
         count_for_profile(MediaFingerprintProfile::FastAnchorV2.label())?,
         count_for_profile(MediaFingerprintProfile::FullAnchorV2.label())?,
+    ))
+}
+
+fn media_match_sqlite_active_settings_counts(root: &Path) -> Result<(usize, usize), String> {
+    if !managed_media_match_index_path(root).exists() {
+        return Ok((0, 0));
+    }
+    let connection = open_media_match_sqlite_index(root)?;
+    let count_for_settings = |settings: &MediaExtractionSettings| -> Result<usize, String> {
+        Ok(connection
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM fingerprints
+                 WHERE version = ?1
+                   AND profile = ?2
+                   AND settings_hash = ?3",
+                params![
+                    i64::from(MEDIA_MATCH_ANCHOR_VERSION),
+                    settings.profile.label(),
+                    media_extraction_settings_hash(settings).to_vec(),
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| format!("failed reading media-match active-settings count: {error}"))?
+            .max(0) as usize)
+    };
+    Ok((
+        count_for_settings(&MediaExtractionSettings::fast_anchor_v2())?,
+        count_for_settings(&MediaExtractionSettings::full_anchor_v2())?,
     ))
 }
 
@@ -2659,6 +2891,13 @@ mod tests {
         }
     }
 
+    fn enabled_media_match_settings() -> MediaMatchSettings {
+        MediaMatchSettings {
+            fingerprinting_enabled: true,
+            ..MediaMatchSettings::default()
+        }
+    }
+
     fn media_match_record_updated_unix_millis(root: &Path, record: &MediaFingerprintRecord) -> i64 {
         let connection = open_media_match_sqlite_index(root).expect("SQLite index should open");
         connection
@@ -2871,6 +3110,7 @@ mod tests {
             .expect("candidate media should be changed");
         inventory_media_match_candidates(
             &root,
+            std::slice::from_ref(&media_dir),
             &[query_path.clone(), candidate_path.clone()],
             None,
         )
@@ -2904,6 +3144,160 @@ mod tests {
             .expect("anchor candidates should load")
             .contains(&candidate_normalized_path),
             "stale anchors for changed files must not be used for candidate lookup"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn media_match_save_invalidates_other_profiles_when_file_identity_changes() {
+        let root = unique_media_match_test_root("save-cross-profile-invalidation");
+        let media_dir = root.join("media");
+        std::fs::create_dir_all(&media_dir).expect("media dir should be created");
+        let query_path = media_dir.join("query.mkv");
+        let candidate_path = media_dir.join("candidate.mkv");
+        std::fs::write(&query_path, b"query-v1").expect("query media should be written");
+        std::fs::write(&candidate_path, b"candidate-v1")
+            .expect("candidate media should be written");
+        let fast_settings = MediaExtractionSettings::fast_anchor_v2();
+        let full_settings = MediaExtractionSettings::full_anchor_v2();
+        let mut full_query = fake_media_match_record_for_file(&query_path, full_settings.clone());
+        full_query.audio_anchors = vec![AudioAnchor {
+            bucket: 77,
+            t_ms: 10_000,
+            weight: 1,
+        }];
+        let mut stale_full_candidate =
+            fake_media_match_record_for_file(&candidate_path, full_settings.clone());
+        stale_full_candidate.audio_anchors = vec![AudioAnchor {
+            bucket: 77,
+            t_ms: 12_000,
+            weight: 1,
+        }];
+        let mut stale_fast_candidate =
+            fake_media_match_record_for_file(&candidate_path, fast_settings.clone());
+        stale_fast_candidate.audio_anchors = vec![AudioAnchor {
+            bucket: 42,
+            t_ms: 12_000,
+            weight: 1,
+        }];
+        let candidate_normalized_path = stale_full_candidate.identity.normalized_path.clone();
+        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
+        save_media_match_record_to_sqlite(&connection, &full_query)
+            .expect("full query should be saved");
+        save_media_match_record_to_sqlite(&connection, &stale_fast_candidate)
+            .expect("stale fast candidate should be saved");
+        save_media_match_record_to_sqlite(&connection, &stale_full_candidate)
+            .expect("stale full candidate should be saved");
+        assert!(
+            media_match_anchor_candidate_paths(
+                &root,
+                &full_query.identity.normalized_path,
+                &full_settings,
+            )
+            .expect("full anchor candidates should load")
+            .contains(&candidate_normalized_path),
+            "fixture should start with a full-profile candidate hit"
+        );
+
+        std::fs::write(&candidate_path, b"candidate-v2-with-new-size")
+            .expect("candidate media should be changed");
+        let mut fresh_fast_candidate =
+            fake_media_match_record_for_file(&candidate_path, fast_settings.clone());
+        fresh_fast_candidate.audio_anchors = vec![AudioAnchor {
+            bucket: 43,
+            t_ms: 12_000,
+            weight: 1,
+        }];
+        save_media_match_record_to_sqlite(&connection, &fresh_fast_candidate)
+            .expect("fresh fast candidate should replace stale profiles atomically");
+
+        assert!(
+            media_match_record_for_path(
+                &root,
+                candidate_path.to_str().expect("test path should be UTF-8"),
+                &full_settings,
+            )
+            .is_none(),
+            "saving a fresh fast profile for a changed file must invalidate stale full profile rows"
+        );
+        assert!(
+            !media_match_anchor_candidate_paths(
+                &root,
+                &full_query.identity.normalized_path,
+                &full_settings,
+            )
+            .expect("full anchor candidates should load")
+            .contains(&candidate_normalized_path),
+            "stale full-profile anchors must not remain candidate lookup evidence"
+        );
+        let fresh_fast = media_match_record_for_path(
+            &root,
+            candidate_path.to_str().expect("test path should be UTF-8"),
+            &fast_settings,
+        )
+        .expect("fresh fast profile should load");
+        assert_eq!(
+            fresh_fast.identity.size_bytes,
+            fresh_fast_candidate.identity.size_bytes
+        );
+        assert!(
+            audio_anchors_from_record(&fresh_fast)
+                .iter()
+                .any(|anchor| anchor.bucket == 43)
+        );
+        let full_rows = connection
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM fingerprints
+                 JOIN media_files ON media_files.file_id = fingerprints.file_id
+                 WHERE media_files.normalized_path = ?1
+                   AND fingerprints.version = ?2
+                   AND fingerprints.profile = ?3",
+                params![
+                    candidate_normalized_path,
+                    i64::from(MEDIA_MATCH_ANCHOR_VERSION),
+                    full_settings.profile.label(),
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("full row count should load");
+        assert_eq!(full_rows, 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn media_match_inventory_prunes_deleted_files_under_scanned_roots() {
+        let root = unique_media_match_test_root("deleted-inventory-prune");
+        let media_dir = root.join("media");
+        std::fs::create_dir_all(&media_dir).expect("media dir should be created");
+        let kept_path = media_dir.join("kept.mkv");
+        let removed_path = media_dir.join("removed.mkv");
+        std::fs::write(&kept_path, b"kept").expect("kept media should be written");
+        std::fs::write(&removed_path, b"removed").expect("removed media should be written");
+        let extraction_settings = MediaExtractionSettings::fast_anchor_v2();
+        let mut cache = MediaMatchCache::default();
+        let kept = fake_media_match_record_for_file(&kept_path, extraction_settings.clone());
+        let removed = fake_media_match_record_for_file(&removed_path, extraction_settings.clone());
+        let removed_normalized_path = removed.identity.normalized_path.clone();
+        cache.insert(kept.clone());
+        cache.insert(removed);
+        save_media_match_cache(&root, &cache).expect("cache should be written");
+
+        std::fs::remove_file(&removed_path).expect("removed media should be deleted");
+        inventory_media_match_candidates(
+            &root,
+            std::slice::from_ref(&media_dir),
+            std::slice::from_ref(&kept_path),
+            None,
+        )
+        .expect("inventory should prune deleted files");
+
+        let cache = load_media_match_cache_for_settings(&root, &extraction_settings)
+            .expect("kept cache should still load");
+        assert!(cache.records.contains_key(&kept.identity.normalized_path));
+        assert!(
+            !cache.records.contains_key(&removed_normalized_path),
+            "deleted files under scanned roots should not remain in the media-match cache"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -3145,6 +3539,61 @@ mod tests {
         assert_eq!(inventory, 2);
         assert_eq!(fingerprints, 0);
         assert!(result.message.contains("inventoried 2 discovered files"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn media_match_summary_reports_nearest_reject_with_debug_metrics() {
+        let root = unique_media_match_test_root("nearest-reject");
+        let mut query = fake_media_match_record("episode-current.mkv");
+        query.audio_anchors = vec![AudioAnchor {
+            bucket: 42,
+            t_ms: 10_000,
+            weight: 1,
+        }];
+        let mut nearest = fake_media_match_record("episode-nearest.mkv");
+        nearest.audio_anchors = vec![AudioAnchor {
+            bucket: 42,
+            t_ms: 12_000,
+            weight: 1,
+        }];
+        let mut unrelated = fake_media_match_record("episode-unrelated.mkv");
+        unrelated.audio_anchors = vec![AudioAnchor {
+            bucket: 84,
+            t_ms: 10_000,
+            weight: 1,
+        }];
+        let mut cache = MediaMatchCache::default();
+        cache.insert(query);
+        cache.insert(unrelated);
+        cache.insert(nearest);
+
+        let (current_decision, nearest_match, last_evidence) = summarize_current_media_match(
+            &root,
+            Some("episode-current.mkv"),
+            &cache,
+            &enabled_media_match_settings(),
+            &MediaExtractionSettings::fast_anchor_v2(),
+        );
+
+        assert_eq!(
+            current_decision.as_deref(),
+            Some("reject: anchor timeline evidence is insufficient")
+        );
+        let nearest_match = nearest_match.expect("nearest candidate should be reported");
+        assert!(
+            nearest_match
+                .contains("episode-nearest.mkv (reject: anchor timeline evidence is insufficient)"),
+            "{nearest_match}"
+        );
+        let last_evidence = last_evidence.expect("debug evidence should be reported");
+        assert!(last_evidence.contains("tier=reject"), "{last_evidence}");
+        assert!(
+            last_evidence.contains("alignment offset=2.0s"),
+            "{last_evidence}"
+        );
+        assert!(last_evidence.contains("pairs=1"), "{last_evidence}");
+        assert!(last_evidence.contains("audio=1"), "{last_evidence}");
         let _ = std::fs::remove_dir_all(&root);
     }
 

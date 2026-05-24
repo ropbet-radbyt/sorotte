@@ -1557,6 +1557,14 @@ pub fn rank_media_match_candidates<'a>(
         media_match_tier_rank(right.decision.tier)
             .cmp(&media_match_tier_rank(left.decision.tier))
             .then_with(|| {
+                media_match_candidate_aligned_pairs(&right.decision)
+                    .cmp(&media_match_candidate_aligned_pairs(&left.decision))
+            })
+            .then_with(|| {
+                media_match_candidate_aligned_span(&right.decision)
+                    .total_cmp(&media_match_candidate_aligned_span(&left.decision))
+            })
+            .then_with(|| {
                 right
                     .decision
                     .evidence
@@ -1577,6 +1585,31 @@ pub fn rank_media_match_candidates<'a>(
             .then_with(|| left.candidate_path.cmp(&right.candidate_path))
     });
     decisions
+}
+
+fn media_match_candidate_aligned_pairs(decision: &MediaMatchDecision) -> usize {
+    decision
+        .evidence
+        .alignment
+        .as_ref()
+        .map(|alignment| alignment.aligned_pairs)
+        .or_else(|| {
+            decision
+                .evidence
+                .video
+                .as_ref()
+                .map(|video| video.aligned_pairs)
+        })
+        .unwrap_or(0)
+}
+
+fn media_match_candidate_aligned_span(decision: &MediaMatchDecision) -> f64 {
+    decision
+        .evidence
+        .alignment
+        .as_ref()
+        .map(|alignment| alignment.aligned_span_seconds)
+        .unwrap_or(0.0)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1698,8 +1731,14 @@ pub fn decide_media_match_anchors(
     };
     let query_audio_coverage = anchor_coverage(audio_pairs, query.audio_anchors.len());
     let candidate_audio_coverage = anchor_coverage(audio_pairs, candidate.audio_anchors.len());
-    let query_video_coverage = anchor_coverage(video_pairs, query.video_anchors.len());
-    let candidate_video_coverage = anchor_coverage(video_pairs, candidate.video_anchors.len());
+    let query_video_coverage = anchor_coverage(
+        video_pairs,
+        unique_video_frame_anchor_count(&query.video_anchors),
+    );
+    let candidate_video_coverage = anchor_coverage(
+        video_pairs,
+        unique_video_frame_anchor_count(&candidate.video_anchors),
+    );
     if !query.audio_anchors.is_empty() && !candidate.audio_anchors.is_empty() {
         evidence.audio = Some(AudioMatchEvidence {
             similarity: query_audio_coverage.min(candidate_audio_coverage),
@@ -2418,6 +2457,14 @@ fn anchor_coverage(aligned: usize, total: usize) -> f64 {
     }
 }
 
+fn unique_video_frame_anchor_count(anchors: &[VideoAnchor]) -> usize {
+    anchors
+        .iter()
+        .map(|anchor| (anchor.t_ms, anchor.hash64))
+        .collect::<HashSet<_>>()
+        .len()
+}
+
 fn aligned_anchor_bounds(pairs: &[AnchorMatchPair]) -> (u32, u32, u32, u32) {
     let first_query = pairs.iter().map(|pair| pair.query_t_ms).min().unwrap_or(0);
     let last_query = pairs.iter().map(|pair| pair.query_t_ms).max().unwrap_or(0);
@@ -3067,6 +3114,37 @@ mod tests {
     }
 
     #[test]
+    fn video_anchor_coverage_counts_unique_frames_not_lsh_bands() {
+        let hash = synthetic_hash(42);
+        let query_video = video_from_hashes(30, 10, &[hash]);
+        let candidate_video = video_from_hashes(32, 10, &[hash]);
+        let query = MediaAnchorProfile {
+            version: MEDIA_MATCH_ANCHOR_VERSION,
+            profile: "fast-anchor-v2".to_owned(),
+            duration_ms: Some(120_000),
+            audio_anchors: Vec::new(),
+            video_anchors: video_anchors_from_fingerprint(&query_video, 4),
+        };
+        let candidate = MediaAnchorProfile {
+            version: MEDIA_MATCH_ANCHOR_VERSION,
+            profile: "fast-anchor-v2".to_owned(),
+            duration_ms: Some(120_000),
+            audio_anchors: Vec::new(),
+            video_anchors: video_anchors_from_fingerprint(&candidate_video, 4),
+        };
+
+        let decision = decide_media_match_anchors(&query, &candidate, &enabled_settings());
+        let video = decision
+            .evidence
+            .video
+            .expect("video evidence should be present");
+
+        assert_eq!(video.aligned_pairs, 1);
+        assert_eq!(video.query_coverage, 1.0);
+        assert_eq!(video.candidate_coverage, 1.0);
+    }
+
+    #[test]
     fn anchor_matching_handles_trimmed_start_body_overlap() {
         let query = regular_anchor_profile(1_200_000, 0, 0);
         let candidate_audio = query.audio_anchors[3..].to_vec();
@@ -3565,6 +3643,34 @@ mod tests {
         assert_eq!(
             ranked[0].candidate_path,
             normalize_media_path("episode.bluray.mkv")
+        );
+    }
+
+    #[test]
+    fn candidate_ranking_prefers_nearest_reject_with_timeline_evidence() {
+        let query_profile = anchor_profile(900_000, &[(42, 10_000)], &[]);
+        let nearest_profile = anchor_profile(900_000, &[(42, 12_000)], &[]);
+        let unrelated_profile = anchor_profile(900_000, &[(84, 10_000)], &[]);
+        let query = record_from_anchor_profile("episode.web.mkv", 100, query_profile);
+        let nearest = record_from_anchor_profile("episode-nearest.mkv", 110, nearest_profile);
+        let unrelated = record_from_anchor_profile("episode-unrelated.mkv", 120, unrelated_profile);
+
+        let ranked =
+            rank_media_match_candidates(&query, [&unrelated, &nearest], &enabled_settings());
+
+        assert_eq!(ranked[0].decision.tier, MediaMatchTier::Reject);
+        assert_eq!(
+            ranked[0].candidate_path,
+            normalize_media_path("episode-nearest.mkv")
+        );
+        assert_eq!(
+            ranked[0]
+                .decision
+                .evidence
+                .alignment
+                .as_ref()
+                .map(|alignment| alignment.aligned_pairs),
+            Some(1)
         );
     }
 

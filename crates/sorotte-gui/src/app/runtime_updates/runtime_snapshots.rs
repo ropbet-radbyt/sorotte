@@ -434,6 +434,9 @@ impl SorotteGuiShellAppState {
         self.media_match.current_decision = snapshot
             .current_decision
             .and_then(|value| normalized_editable_text(&value));
+        self.media_match.nearest_match = snapshot
+            .nearest_match
+            .and_then(|value| normalized_editable_text(&value));
         self.media_match.last_evidence = snapshot
             .last_evidence
             .and_then(|value| normalized_editable_text(&value));

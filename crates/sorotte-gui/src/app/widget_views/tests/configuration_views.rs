@@ -347,6 +347,7 @@ fn gui_shell_app_state_projects_media_match_plugin_widgets_and_actions() {
                 fpcalc_status: Some("fpcalc 1.5.1 (C:/Tools/fpcalc.exe)".to_owned()),
                 cache_status: Some("2 fingerprint records".to_owned()),
                 current_decision: Some("strong: aligned video hashes".to_owned()),
+                nearest_match: Some("episode-b.mkv (strong: aligned video hashes)".to_owned()),
                 last_evidence: Some("audio=0.94 video=0.82 offset=20s".to_owned()),
                 remote_status: Some("bob: strong".to_owned()),
                 background_status: Some("idle".to_owned()),
@@ -390,6 +391,12 @@ fn gui_shell_app_state_projects_media_match_plugin_widgets_and_actions() {
             .find("plugins:media-matching:current-decision")
             .and_then(|node| node.value.as_deref()),
         Some("strong: aligned video hashes")
+    );
+    assert_eq!(
+        plugins
+            .find("plugins:media-matching:nearest-match")
+            .and_then(|node| node.value.as_deref()),
+        Some("episode-b.mkv (strong: aligned video hashes)")
     );
     assert_eq!(
         plugins

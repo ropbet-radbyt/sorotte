@@ -183,6 +183,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.pending_attached_player_pause_confirmation_pump = None;
         self.stream_helper_runtime_snapshot = GuiStreamHelperRuntimeSnapshot::default();
         self.media_match_runtime_snapshot.current_decision = None;
+        self.media_match_runtime_snapshot.nearest_match = None;
         self.media_match_runtime_snapshot.last_evidence = None;
         self.media_match_runtime_snapshot.remote_status = Some("unavailable".to_owned());
         self.media_match_wire_sync_token = None;
@@ -515,6 +516,7 @@ impl GuiPersistedConfigRuntimeOwner {
             settings,
         );
         snapshot.current_decision = self.media_match_runtime_snapshot.current_decision.clone();
+        snapshot.nearest_match = self.media_match_runtime_snapshot.nearest_match.clone();
         snapshot.last_evidence = self.media_match_runtime_snapshot.last_evidence.clone();
         snapshot.remote_status = self.media_match_runtime_snapshot.remote_status.clone();
         snapshot.background_status = self.media_match_runtime_snapshot.background_status.clone();

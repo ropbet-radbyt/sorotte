@@ -209,6 +209,8 @@ fn gui_persisted_config_runtime_owner_preserves_media_match_tools_when_player_ca
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
     owner.refresh_startup_media_match_snapshot(None);
     owner.media_match_runtime_snapshot.current_decision = Some("strong: seeded".to_owned());
+    owner.media_match_runtime_snapshot.nearest_match =
+        Some("episode-b.mkv (strong: seeded)".to_owned());
     owner.media_match_runtime_snapshot.last_evidence = Some("seeded evidence".to_owned());
     let before = owner.media_match_runtime_snapshot.clone();
 
@@ -239,6 +241,7 @@ fn gui_persisted_config_runtime_owner_preserves_media_match_tools_when_player_ca
         before.cache_status
     );
     assert_eq!(owner.media_match_runtime_snapshot.current_decision, None);
+    assert_eq!(owner.media_match_runtime_snapshot.nearest_match, None);
     assert_eq!(owner.media_match_runtime_snapshot.last_evidence, None);
 
     let _ = std::fs::remove_dir_all(&root);

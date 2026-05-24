@@ -311,6 +311,11 @@ impl SorotteGuiShellAppState {
                 self.media_match.current_decision.clone(),
             ),
             (
+                "plugins:media-matching:nearest-match",
+                "Nearest Match",
+                self.media_match.nearest_match.clone(),
+            ),
+            (
                 "plugins:media-matching:remote-status",
                 "Room Matches",
                 self.media_match.remote_status.clone(),

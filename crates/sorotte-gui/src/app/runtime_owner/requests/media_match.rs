@@ -769,6 +769,7 @@ impl GuiPersistedConfigRuntimeOwner {
             self.refresh_media_match_runtime_snapshot(&projected_state.media_match.settings);
         snapshot.cache_status = Some(result.cache_status);
         snapshot.current_decision = result.current_decision;
+        snapshot.nearest_match = result.nearest_match;
         snapshot.last_evidence = result.last_evidence.or_else(|| {
             Some(
                 "Fingerprint evidence is local; optional raw wire signatures are shared only with room peers."
@@ -1229,6 +1230,7 @@ impl GuiPersistedConfigRuntimeOwner {
             self.refresh_media_match_runtime_snapshot(&projected_state.media_match.settings);
         snapshot.cache_status = Some("empty".to_owned());
         snapshot.current_decision = None;
+        snapshot.nearest_match = None;
         snapshot.last_evidence = None;
         snapshot.background_status = Some("idle".to_owned());
         self.media_match_runtime_snapshot = snapshot.clone();
@@ -1500,6 +1502,7 @@ mod tests {
             result.current_decision,
             Some("unknown: no current player file".to_owned())
         );
+        assert_eq!(result.nearest_match, None);
         let _ = std::fs::remove_dir_all(&root);
     }
 }
