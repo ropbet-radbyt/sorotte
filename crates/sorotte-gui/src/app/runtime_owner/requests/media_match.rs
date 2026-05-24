@@ -435,8 +435,8 @@ impl GuiPersistedConfigRuntimeOwner {
         current_player_path: Option<&str>,
     ) -> String {
         let current_player_path = current_player_path.unwrap_or_default();
-        let shared_target = self
-            .current_shared_playlist_target(projected_state)
+        let room_target = self
+            .media_match_room_target_for_state(projected_state)
             .unwrap_or_default();
         let roots = search_roots
             .iter()
@@ -445,12 +445,26 @@ impl GuiPersistedConfigRuntimeOwner {
             .join("|");
         let settings = &projected_state.media_match.settings;
         format!(
-            "current={current_player_path}\ntarget={shared_target}\nroots={roots}\nfingerprinting={}\nruntime={}\nautoplay={:?}\nwarmup={}",
+            "current={current_player_path}\ntarget={room_target}\nroots={roots}\nfingerprinting={}\nruntime={}\nautoplay={:?}\nwarmup={}",
             settings.fingerprinting_enabled,
             settings.runtime_tolerance_enabled,
             settings.autoplay_policy,
             settings.background_warmup_enabled,
         )
+    }
+
+    fn media_match_room_target_for_state(
+        &self,
+        projected_state: &SorotteGuiShellAppState,
+    ) -> Option<String> {
+        self.current_shared_playlist_target(projected_state)
+            .or_else(|| {
+                self.session
+                    .as_ref()
+                    .and_then(|session| session.missing_media_search_target_file_name().ok())
+            })
+            .map(|target| target.trim().to_owned())
+            .filter(|target| !target.is_empty())
     }
 
     fn media_match_current_local_path_for_state(
@@ -466,7 +480,7 @@ impl GuiPersistedConfigRuntimeOwner {
             return Some(path);
         }
 
-        let target = self.current_shared_playlist_target(projected_state)?;
+        let target = self.media_match_room_target_for_state(projected_state)?;
         match self.resolve_main_window_user_media_target(projected_state, &target) {
             Ok(GuiUserMediaTargetResolution::Resolved(path)) if Path::new(&path).is_file() => {
                 Some(path)
@@ -1431,7 +1445,44 @@ impl GuiPersistedConfigRuntimeOwner {
 mod tests {
     use super::*;
     use crate::app::runtime_owner::{GuiAttachedMediaSearchIndex, GuiAttachedMediaSearchRootIndex};
+    use crate::app::runtime_stack::GuiSessionRuntimeAdapter;
     use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
+
+    struct MediaMatchTargetSession {
+        target: String,
+    }
+
+    impl GuiSessionRuntimeAdapter for MediaMatchTargetSession {
+        fn missing_media_search_target_file_name(&self) -> Result<String, String> {
+            Ok(self.target.clone())
+        }
+
+        fn search_missing_media(
+            &mut self,
+            _directories: Vec<String>,
+        ) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+
+        fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn connect_public_server(
+            &mut self,
+            _selected_server: Option<(String, String)>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn refresh_public_servers(
+            &mut self,
+            current_servers: Vec<(String, String)>,
+            _language: Option<&str>,
+        ) -> Result<Vec<(String, String)>, String> {
+            Ok(current_servers)
+        }
+    }
 
     #[test]
     fn background_worker_with_attached_index_and_no_current_file_inventories_only() {
@@ -1527,6 +1578,64 @@ mod tests {
             Some("unknown: no resolved current local file".to_owned())
         );
         assert_eq!(result.nearest_match, None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn media_match_current_path_resolves_room_target_file_without_player_update() {
+        let mut root = std::env::temp_dir();
+        root.push(format!(
+            "sorotte-gui-media-match-runtime-room-target-current-{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            let _ = std::fs::remove_dir_all(&root);
+        }
+        std::fs::create_dir_all(&root).expect("test root should be created");
+        let config_path = root.join("sorotte.ini");
+        let media_root = root.join("media");
+        let nested_directory = media_root.join("Bakemonogatari");
+        std::fs::create_dir_all(&nested_directory).expect("media root should be created");
+        let media_path = nested_directory.join("episode.mkv");
+        std::fs::write(&media_path, b"not real media").expect("media file should be created");
+        let saved_settings = StoredClientSettingsMvp {
+            media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
+            media_match_fingerprinting_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        };
+        let state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+        let root_key =
+            crate::app::media_search_cache::normalized_media_search_root_key(&media_root);
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
+            .with_session_runtime(Box::new(MediaMatchTargetSession {
+                target: "episode.mkv".to_owned(),
+            }));
+        owner.attached_media_search_index = Some(GuiAttachedMediaSearchIndex {
+            roots: vec![root_key.clone()],
+            root_indexes_by_key: std::collections::HashMap::from([(
+                root_key.clone(),
+                GuiAttachedMediaSearchRootIndex {
+                    root_key: root_key.clone(),
+                    root_path: media_root.clone(),
+                    built_at_unix_ms: 1,
+                    candidates_by_name: std::collections::HashMap::from([(
+                        "episode.mkv".to_owned(),
+                        vec!["Bakemonogatari\\episode.mkv".to_owned()],
+                    )]),
+                },
+            )]),
+            roots_requiring_refresh: std::collections::BTreeSet::new(),
+        });
+
+        assert!(owner.player_local_file.is_none());
+        assert_eq!(
+            owner.media_match_room_target_for_state(&state),
+            Some("episode.mkv".to_owned())
+        );
+        assert_eq!(
+            owner.media_match_current_local_path_for_state(&state),
+            Some(media_path.to_string_lossy().into_owned())
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
