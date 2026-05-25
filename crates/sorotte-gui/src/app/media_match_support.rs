@@ -1999,6 +1999,21 @@ fn media_match_v3_anchor_candidate_paths(
                     .cmp(&(left.best_offset_score * right.total_score.max(1)))
             })
             .then_with(|| right.approximate_span_ms.cmp(&left.approximate_span_ms))
+            .then_with(|| {
+                right
+                    .distinct_query_regions
+                    .cmp(&left.distinct_query_regions)
+            })
+            .then_with(|| {
+                right
+                    .distinct_candidate_regions
+                    .cmp(&left.distinct_candidate_regions)
+            })
+            .then_with(|| {
+                right
+                    .best_offset_modality_count()
+                    .cmp(&left.best_offset_modality_count())
+            })
             .then_with(|| right.total_score.cmp(&left.total_score))
             .then_with(|| left.file_id.cmp(&right.file_id))
     });
@@ -2046,6 +2061,18 @@ fn finalize_v3_candidate_retrieval_score(
         }
     }
     score
+}
+
+impl V3CandidateRetrievalScore {
+    fn best_offset_modality_count(&self) -> i64 {
+        self.offset_bins
+            .get(&self.best_offset_bin)
+            .map(|score| {
+                (if score.audio_hits > 0 { 1 } else { 0 })
+                    + (if score.video_hits > 0 { 1 } else { 0 })
+            })
+            .unwrap_or(0)
+    }
 }
 
 fn media_match_v3_document_frequency_weight(document_frequency: i64) -> i64 {
@@ -2572,7 +2599,7 @@ fn format_media_match_evidence_summary(decision: &MediaMatchDecision) -> String 
     }
     if let Some(map) = decision.evidence.timeline_map_v3.as_ref() {
         parts.push(format!(
-            "v3 class={:?} segments={} span={:.1}s largest_gap={:.1}s edge_only={} av_conflict={} best_segment={} second_segment={}",
+            "v3 class={:?} segments={} span={:.1}s largest_gap={:.1}s edge_only={} av_conflict={} best_segment={} second_segment={} pairs={} hypotheses={} segment_candidates={} chained_segments={} piecewise_fit_ms={}",
             map.global_class,
             map.segments.len(),
             f64::from(map.total_aligned_span_ms) / 1000.0,
@@ -2580,7 +2607,12 @@ fn format_media_match_evidence_summary(decision: &MediaMatchDecision) -> String 
             map.edge_only,
             map.audio_video_conflict,
             map.best_segment_score,
-            map.second_best_segment_score
+            map.second_best_segment_score,
+            map.piecewise_pair_count,
+            map.piecewise_hypothesis_count,
+            map.piecewise_segment_candidate_count,
+            map.piecewise_segment_chain_count,
+            map.piecewise_fit_millis
         ));
     }
     parts.push(format!(

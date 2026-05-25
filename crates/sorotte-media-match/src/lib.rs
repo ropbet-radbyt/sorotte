@@ -41,6 +41,7 @@ const V3_SEGMENT_MERGE_GAP_MS: u32 = 45_000;
 const V3_SEGMENT_MERGE_SCALE_PPM: i32 = 2_500;
 const V3_EDGE_REGION_MIN_MS: u32 = 120_000;
 const V3_EDGE_REGION_MAX_MS: u32 = 300_000;
+const V3_PIECEWISE_MAX_HYPOTHESIS_PAIRS: usize = 512;
 const MAX_BROAD_SCALE_FIT_PAIRS: usize = 128;
 const VIDEO_LSH_BANDS: u32 = 4;
 const VIDEO_LSH_BITS_PER_BAND: u32 = 16;
@@ -142,6 +143,16 @@ pub struct MediaTimelineMapV3 {
     pub best_segment_score: u32,
     #[serde(default)]
     pub second_best_segment_score: u32,
+    #[serde(default)]
+    pub piecewise_pair_count: usize,
+    #[serde(default)]
+    pub piecewise_hypothesis_count: usize,
+    #[serde(default)]
+    pub piecewise_segment_candidate_count: usize,
+    #[serde(default)]
+    pub piecewise_segment_chain_count: usize,
+    #[serde(default)]
+    pub piecewise_fit_millis: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -2459,6 +2470,11 @@ struct V3TimelineAnalysis {
     second_best_segment_score: u32,
     audio_pairs: usize,
     video_pairs: usize,
+    piecewise_pair_count: usize,
+    piecewise_hypothesis_count: usize,
+    piecewise_segment_candidate_count: usize,
+    piecewise_segment_chain_count: usize,
+    piecewise_fit_millis: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2637,14 +2653,19 @@ pub fn decide_media_match_anchors(
         },
     );
     evidence.notes.push(format!(
-        "v3 segments={} span={:.1}s largest_gap={:.1}s edge_only={} audio_video_conflict={} best_segment_score={} second_segment_score={}",
+        "v3 segments={} span={:.1}s largest_gap={:.1}s edge_only={} audio_video_conflict={} best_segment_score={} second_segment_score={} pair_count={} hypotheses={} segment_candidates={} chained_segments={} piecewise_fit_ms={}",
         timeline_analysis.segments.len(),
         f64::from(timeline_analysis.total_aligned_span_ms) / 1000.0,
         f64::from(timeline_analysis.largest_gap_ms) / 1000.0,
         timeline_analysis.edge_only,
         timeline_analysis.audio_video_conflict,
         timeline_analysis.best_segment_score,
-        timeline_analysis.second_best_segment_score
+        timeline_analysis.second_best_segment_score,
+        timeline_analysis.piecewise_pair_count,
+        timeline_analysis.piecewise_hypothesis_count,
+        timeline_analysis.piecewise_segment_candidate_count,
+        timeline_analysis.piecewise_segment_chain_count,
+        timeline_analysis.piecewise_fit_millis
     ));
 
     let tier = match v3_class {
@@ -3324,6 +3345,7 @@ fn build_v3_timeline_analysis(
     candidate: &MediaAnchorProfile,
     pairs: &[AnchorMatchPair],
 ) -> V3TimelineAnalysis {
+    let started_at = Instant::now();
     let mut hypotheses = Vec::<(f64, f64)>::new();
     let mut offset_bins = pairs
         .iter()
@@ -3334,7 +3356,9 @@ fn build_v3_timeline_analysis(
     for offset_bin in offset_bins {
         hypotheses.push((1.0, (offset_bin * DEFAULT_ANCHOR_OFFSET_BIN_MS) as f64));
     }
-    add_v3_piecewise_hypotheses_from_pairs(pairs, &mut hypotheses);
+    let hypothesis_pairs = select_v3_piecewise_hypothesis_pairs(pairs);
+    add_v3_piecewise_hypotheses_from_pairs(&hypothesis_pairs, &mut hypotheses);
+    let piecewise_hypothesis_count = hypotheses.len();
 
     let mut segment_candidates = Vec::<V3SegmentCandidate>::new();
     for (scale, offset) in hypotheses {
@@ -3346,7 +3370,9 @@ fn build_v3_timeline_analysis(
         let inliers = anchor_fit_inliers(pairs, scale, offset);
         segment_candidates.extend(v3_segments_from_inliers(&inliers, scale, offset));
     }
+    let piecewise_segment_candidate_count = segment_candidates.len();
     let mut segments = chain_v3_segments(dedup_v3_segments(segment_candidates));
+    let piecewise_segment_chain_count = segments.len();
     merge_adjacent_v3_segments(&mut segments);
     let total_aligned_span_ms = segments
         .iter()
@@ -3374,7 +3400,102 @@ fn build_v3_timeline_analysis(
         second_best_segment_score,
         audio_pairs,
         video_pairs,
+        piecewise_pair_count: pairs.len(),
+        piecewise_hypothesis_count,
+        piecewise_segment_candidate_count,
+        piecewise_segment_chain_count,
+        piecewise_fit_millis: started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
     }
+}
+
+fn select_v3_piecewise_hypothesis_pairs(pairs: &[AnchorMatchPair]) -> Vec<AnchorMatchPair> {
+    if pairs.len() <= V3_PIECEWISE_MAX_HYPOTHESIS_PAIRS {
+        return pairs.to_vec();
+    }
+    let mut bin_scores = HashMap::<i64, u32>::new();
+    for pair in pairs {
+        let offset = i64::from(pair.candidate_t_ms) - i64::from(pair.query_t_ms);
+        *bin_scores.entry(rounded_offset_bin(offset)).or_default() += u32::from(pair.weight.max(1));
+    }
+    let mut bins = bin_scores.into_iter().collect::<Vec<_>>();
+    bins.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+
+    let mut selected = Vec::with_capacity(V3_PIECEWISE_MAX_HYPOTHESIS_PAIRS);
+    let mut seen = HashSet::<(u32, u32, u8)>::new();
+    for modality in [AnchorModality::Audio, AnchorModality::Video] {
+        let modality_quota = V3_PIECEWISE_MAX_HYPOTHESIS_PAIRS / 8;
+        for (bin, _) in &bins {
+            let mut candidates = pairs
+                .iter()
+                .copied()
+                .filter(|pair| {
+                    pair.modality == modality
+                        && rounded_offset_bin(
+                            i64::from(pair.candidate_t_ms) - i64::from(pair.query_t_ms),
+                        ) == *bin
+                })
+                .collect::<Vec<_>>();
+            candidates.sort_by(v3_hypothesis_pair_order);
+            for pair in candidates {
+                push_v3_hypothesis_pair(&mut selected, &mut seen, pair);
+                if selected
+                    .iter()
+                    .filter(|selected| selected.modality == modality)
+                    .count()
+                    >= modality_quota
+                    || selected.len() >= V3_PIECEWISE_MAX_HYPOTHESIS_PAIRS
+                {
+                    break;
+                }
+            }
+            if selected
+                .iter()
+                .filter(|selected| selected.modality == modality)
+                .count()
+                >= modality_quota
+                || selected.len() >= V3_PIECEWISE_MAX_HYPOTHESIS_PAIRS
+            {
+                break;
+            }
+        }
+    }
+    for (bin, _) in bins {
+        let mut candidates = pairs
+            .iter()
+            .copied()
+            .filter(|pair| {
+                rounded_offset_bin(i64::from(pair.candidate_t_ms) - i64::from(pair.query_t_ms))
+                    == bin
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by(v3_hypothesis_pair_order);
+        for pair in candidates {
+            push_v3_hypothesis_pair(&mut selected, &mut seen, pair);
+            if selected.len() >= V3_PIECEWISE_MAX_HYPOTHESIS_PAIRS {
+                return selected;
+            }
+        }
+    }
+    selected
+}
+
+fn push_v3_hypothesis_pair(
+    selected: &mut Vec<AnchorMatchPair>,
+    seen: &mut HashSet<(u32, u32, u8)>,
+    pair: AnchorMatchPair,
+) {
+    if seen.insert((pair.query_t_ms, pair.candidate_t_ms, pair.modality_order())) {
+        selected.push(pair);
+    }
+}
+
+fn v3_hypothesis_pair_order(left: &AnchorMatchPair, right: &AnchorMatchPair) -> std::cmp::Ordering {
+    right
+        .weight
+        .cmp(&left.weight)
+        .then_with(|| left.query_t_ms.cmp(&right.query_t_ms))
+        .then_with(|| left.candidate_t_ms.cmp(&right.candidate_t_ms))
+        .then_with(|| left.modality_order().cmp(&right.modality_order()))
 }
 
 fn add_v3_piecewise_hypotheses_from_pairs(
@@ -3733,6 +3854,17 @@ fn dominant_modality_offset_bin(
         .max_by(|left, right| left.1.cmp(&right.1).then_with(|| right.0.cmp(&left.0)))
 }
 
+fn v3_segments_have_material_timeline_change(segments: &[V3SegmentCandidate]) -> bool {
+    segments.windows(2).any(|pair| {
+        let left = &pair[0];
+        let right = &pair[1];
+        let left_offset = i64::from(left.candidate_start_ms) - i64::from(left.query_start_ms);
+        let right_offset = i64::from(right.candidate_start_ms) - i64::from(right.query_start_ms);
+        (left_offset - right_offset).abs() > DEFAULT_ANCHOR_ALIGNMENT_TOLERANCE_MS * 2
+            || (left.scale_ppm - right.scale_ppm).abs() > V3_SEGMENT_MERGE_SCALE_PPM
+    })
+}
+
 fn classify_v3_timeline(
     query: &MediaAnchorProfile,
     candidate: &MediaAnchorProfile,
@@ -3777,8 +3909,8 @@ fn classify_v3_timeline(
         .map(|duration| f64::from(analysis.total_aligned_span_ms) / f64::from(duration))
         .unwrap_or(1.0);
     let broad_body_coverage = query_coverage.min(candidate_coverage) >= 0.25;
-    let clear_edit = analysis.segments.len() >= 2
-        || analysis.largest_gap_ms >= 90_000
+    let material_segment_change = v3_segments_have_material_timeline_change(&analysis.segments);
+    let clear_edit = material_segment_change
         || (context.meaningful_span && broad_body_coverage && !context.duration_ok);
     if clear_edit && analysis.total_aligned_span_ms >= 120_000 {
         return MatchClassV3::SameMediaDifferentCut;
@@ -3840,6 +3972,11 @@ fn media_timeline_map_v3_from_analysis(
         audio_video_conflict: analysis.audio_video_conflict,
         best_segment_score: analysis.best_segment_score,
         second_best_segment_score: analysis.second_best_segment_score,
+        piecewise_pair_count: analysis.piecewise_pair_count,
+        piecewise_hypothesis_count: analysis.piecewise_hypothesis_count,
+        piecewise_segment_candidate_count: analysis.piecewise_segment_candidate_count,
+        piecewise_segment_chain_count: analysis.piecewise_segment_chain_count,
+        piecewise_fit_millis: analysis.piecewise_fit_millis,
     }
 }
 
@@ -4182,9 +4319,7 @@ fn media_timeline_map_v3_from_evidence(
     tier: MediaMatchTier,
     evidence: &MediaMatchEvidence,
 ) -> MediaTimelineMapV3 {
-    // TODO(media-match-v3): this currently derives a single V3 timeline segment from
-    // the old global alignment. Replace it with true piecewise segment chaining before
-    // relying on MatchClassV3/timeline_map_v3 for edit-aware timeline maps.
+    // Fallback for exact/non-anchor decisions; anchor decisions provide a true piecewise map.
     let global_class = media_match_class_v3_from_evidence(tier, evidence);
     let segments: Vec<AlignedSegmentV3> = evidence
         .alignment
@@ -4232,6 +4367,7 @@ fn media_timeline_map_v3_from_evidence(
         .map(|segment| segment.weighted_score)
         .max()
         .unwrap_or(0);
+    let segment_count = segments.len();
     MediaTimelineMapV3 {
         global_class,
         current_position_class: global_class,
@@ -4242,6 +4378,11 @@ fn media_timeline_map_v3_from_evidence(
         audio_video_conflict: false,
         best_segment_score,
         second_best_segment_score: 0,
+        piecewise_pair_count: 0,
+        piecewise_hypothesis_count: 0,
+        piecewise_segment_candidate_count: 0,
+        piecewise_segment_chain_count: segment_count,
+        piecewise_fit_millis: 0,
     }
 }
 
@@ -4869,6 +5010,63 @@ mod tests {
         let map = decision.evidence.timeline_map_v3.expect("timeline map");
         assert_eq!(map.segments.len(), 1);
         assert!((map.segments[0].scale_ppm - 1_001_500).abs() <= 300);
+    }
+
+    #[test]
+    fn piecewise_hypothesis_pair_selection_is_capped_and_preserves_modalities() {
+        let pairs = (0..700)
+            .map(|index| AnchorMatchPair {
+                query_t_ms: 60_000 + index * 2_000,
+                candidate_t_ms: 65_000 + index * 2_000,
+                modality: if index % 5 == 0 {
+                    AnchorModality::Video
+                } else {
+                    AnchorModality::Audio
+                },
+                weight: if index % 7 == 0 { 8 } else { 1 },
+            })
+            .collect::<Vec<_>>();
+
+        let selected = select_v3_piecewise_hypothesis_pairs(&pairs);
+
+        assert!(selected.len() <= V3_PIECEWISE_MAX_HYPOTHESIS_PAIRS);
+        assert!(
+            selected
+                .iter()
+                .any(|pair| pair.modality == AnchorModality::Audio)
+        );
+        assert!(
+            selected
+                .iter()
+                .any(|pair| pair.modality == AnchorModality::Video)
+        );
+    }
+
+    #[test]
+    fn sparse_same_cut_common_gap_is_not_different_cut() {
+        let mut audio = v3_audio_times(120_000, 8, 45_000);
+        audio.extend(
+            (0..8)
+                .map(|index| (2_000 + index, 850_000 + (index * 45_000)))
+                .collect::<Vec<_>>(),
+        );
+        let query = v3_profile_from_times(1_400_000, &audio, &[]);
+        let candidate =
+            v3_profile_from_times(1_400_000, &v3_shift_audio_times(&audio, 5_000, 0), &[]);
+
+        let decision = decide_media_match_anchors(&query, &candidate, &enabled_settings());
+
+        assert_ne!(
+            decision.evidence.v3_class,
+            Some(MatchClassV3::SameMediaDifferentCut),
+            "{decision:?}"
+        );
+        assert!(matches!(
+            decision.evidence.v3_class,
+            Some(MatchClassV3::SameCutStrong | MatchClassV3::SameCutProbable)
+        ));
+        let map = decision.evidence.timeline_map_v3.expect("timeline map");
+        assert!(map.segments.len() >= 2, "{map:?}");
     }
 
     #[test]
