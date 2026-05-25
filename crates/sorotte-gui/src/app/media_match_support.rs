@@ -663,6 +663,7 @@ where
     Ok(())
 }
 
+#[cfg(any(windows, test))]
 fn media_match_install_success_message(optional_fpcalc_warning: Option<&str>) -> String {
     match optional_fpcalc_warning {
         Some(warning) => format!(
