@@ -65,8 +65,7 @@ const MEDIA_MATCH_USER_AGENT: &str = concat!("sorotte-gui/", env!("CARGO_PKG_VER
 #[cfg(windows)]
 const FFMPEG_WINDOWS_ZIP_URL: &str =
     "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
-#[cfg(windows)]
-const FPCALC_WINDOWS_ZIP_URL: &str = "https://github.com/acoustid/chromaprint/releases/download/v1.5.1/chromaprint-fpcalc-1.5.1-windows-x86_64.zip";
+const MEDIA_MATCH_V3_ANCHOR_STATS_DIRTY_KEY: &str = "anchor_stats_v3_dirty";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum MediaMatchTool {
@@ -597,70 +596,17 @@ where
             )?;
             tool.assign_version(&mut metadata, version);
         }
-        let fpcalc_warning = install_optional_managed_fpcalc_with_progress(
-            root,
-            &client,
-            &mut metadata,
-            &mut progress,
-        )
-        .err();
         save_managed_media_match_metadata(root, &metadata)?;
         progress(MediaMatchToolProgress::new(
             "Media Matching tools installed",
-            Some(match fpcalc_warning.as_deref() {
-                Some(warning) => format!(
-                    "{}; V3 is ready, optional legacy fpcalc failed: {warning}",
-                    bin_dir.display()
-                ),
-                None => bin_dir.display().to_string(),
-            }),
+            Some(format!(
+                "{}; V3 is ready. Optional legacy fpcalc can be imported separately.",
+                bin_dir.display()
+            )),
             1.0,
         ));
-        Ok(media_match_install_success_message(
-            fpcalc_warning.as_deref(),
-        ))
+        Ok(media_match_install_success_message(None))
     }
-}
-
-#[cfg(windows)]
-fn install_optional_managed_fpcalc_with_progress<F>(
-    root: &Path,
-    client: &reqwest::blocking::Client,
-    metadata: &mut ManagedMediaMatchMetadata,
-    progress: &mut F,
-) -> Result<(), String>
-where
-    F: FnMut(MediaMatchToolProgress),
-{
-    let fpcalc_zip = download_bytes_with_progress(
-        client,
-        FPCALC_WINDOWS_ZIP_URL,
-        "Downloading optional fpcalc",
-        0.78,
-        0.88,
-        progress,
-    )?;
-    progress(MediaMatchToolProgress::new(
-        "Extracting optional fpcalc",
-        Some("Installing fpcalc.exe for legacy Chromaprint profiles.".to_owned()),
-        0.89,
-    ));
-    extract_zip_entry(
-        &fpcalc_zip,
-        "fpcalc.exe",
-        &managed_media_match_tool_path(root, MediaMatchTool::Fpcalc),
-    )?;
-    progress(MediaMatchToolProgress::new(
-        "Verifying optional fpcalc",
-        None,
-        0.94,
-    ));
-    let version = probe_executable_version(
-        &managed_media_match_tool_path(root, MediaMatchTool::Fpcalc),
-        MediaMatchTool::Fpcalc.version_args(),
-    )?;
-    MediaMatchTool::Fpcalc.assign_version(metadata, version);
-    Ok(())
 }
 
 #[cfg(any(windows, test))]
@@ -670,7 +616,7 @@ fn media_match_install_success_message(optional_fpcalc_warning: Option<&str>) ->
             "Installed ffmpeg and ffprobe for Media Matching V3. Optional legacy fpcalc failed: {warning}"
         ),
         None => {
-            "Installed ffmpeg and ffprobe for Media Matching V3; optional legacy fpcalc is available."
+            "Installed ffmpeg and ffprobe for Media Matching V3; optional legacy fpcalc can be imported separately."
                 .to_owned()
         }
     }
@@ -1435,7 +1381,7 @@ fn inventory_media_match_candidates(
     v3_stats_dirty |=
         prune_missing_media_match_inventory_rows(&transaction, search_roots, candidates)?;
     if v3_stats_dirty {
-        refresh_all_anchor_stats_v3(&transaction, current_unix_millis() as i64)?;
+        mark_anchor_stats_v3_dirty(&transaction)?;
     }
     transaction
         .commit()
@@ -1924,6 +1870,7 @@ fn media_match_v3_anchor_candidate_paths(
         return Ok(Vec::new());
     }
     let connection = open_media_match_sqlite_index(root)?;
+    refresh_dirty_anchor_stats_v3_if_needed(&connection)?;
     let Some(current_file_id) = connection
         .query_row(
             "SELECT file_id FROM media_files_v3 WHERE normalized_path = ?1",
@@ -1936,6 +1883,7 @@ fn media_match_v3_anchor_candidate_paths(
         return Ok(Vec::new());
     };
     let settings_hash = media_extraction_settings_hash(extraction_settings).to_vec();
+    // TODO(V3): rank retrieval hits by dominant offset bins, then verify blobs for top candidates.
     let mut statement = connection
         .prepare(
             "SELECT candidate.file_id,
@@ -3720,7 +3668,8 @@ fn refresh_all_anchor_stats_v3(connection: &Connection, now: i64) -> Result<(), 
             params![i64::from(MEDIA_MATCH_ANCHOR_VERSION), now],
         )
         .map(|_| ())
-        .map_err(|error| format!("failed refreshing all media-match v3 anchor stats: {error}"))
+        .map_err(|error| format!("failed refreshing all media-match v3 anchor stats: {error}"))?;
+    clear_anchor_stats_v3_dirty(connection)
 }
 
 fn refresh_media_match_v3_anchor_stats_for_settings(
@@ -3736,6 +3685,51 @@ fn refresh_media_match_v3_anchor_stats_for_settings(
     let start = Instant::now();
     refresh_anchor_stats_v3(connection, &settings_hash, now)?;
     instrumentation.add_stats_refresh(start.elapsed().as_millis());
+    Ok(())
+}
+
+fn mark_anchor_stats_v3_dirty(connection: &Connection) -> Result<(), String> {
+    connection
+        .execute(
+            "INSERT INTO metadata (key, value)
+             VALUES (?1, '1')
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [MEDIA_MATCH_V3_ANCHOR_STATS_DIRTY_KEY],
+        )
+        .map(|_| ())
+        .map_err(|error| format!("failed marking media-match v3 anchor stats dirty: {error}"))
+}
+
+fn clear_anchor_stats_v3_dirty(connection: &Connection) -> Result<(), String> {
+    connection
+        .execute(
+            "DELETE FROM metadata WHERE key = ?1",
+            [MEDIA_MATCH_V3_ANCHOR_STATS_DIRTY_KEY],
+        )
+        .map(|_| ())
+        .map_err(|error| {
+            format!("failed clearing media-match v3 anchor stats dirty marker: {error}")
+        })
+}
+
+fn anchor_stats_v3_dirty(connection: &Connection) -> Result<bool, String> {
+    let value = connection
+        .query_row(
+            "SELECT value FROM metadata WHERE key = ?1",
+            [MEDIA_MATCH_V3_ANCHOR_STATS_DIRTY_KEY],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| {
+            format!("failed reading media-match v3 anchor stats dirty marker: {error}")
+        })?;
+    Ok(value.is_some_and(|value| value != "0"))
+}
+
+fn refresh_dirty_anchor_stats_v3_if_needed(connection: &Connection) -> Result<(), String> {
+    if anchor_stats_v3_dirty(connection)? {
+        refresh_all_anchor_stats_v3(connection, current_unix_millis() as i64)?;
+    }
     Ok(())
 }
 
@@ -4778,15 +4772,32 @@ mod tests {
             std::slice::from_ref(&kept_path),
             None,
         )
-        .expect("inventory should prune deleted files and refresh stats");
+        .expect("inventory should prune deleted files and mark stats dirty");
+        assert!(
+            anchor_stats_v3_dirty(&connection).expect("dirty marker should load"),
+            "inventory pruning should defer expensive all-settings stats refresh"
+        );
+        media_match_anchor_candidate_paths(
+            &root,
+            &kept.identity.normalized_path,
+            &extraction_settings,
+        )
+        .expect("candidate lookup should refresh dirty anchor stats");
 
-        let shared_after = v3_audio_bucket_document_frequency(&connection, &settings_hash, 500);
+        let refreshed_connection =
+            open_media_match_sqlite_index(&root).expect("SQLite index should reopen");
+        let shared_after =
+            v3_audio_bucket_document_frequency(&refreshed_connection, &settings_hash, 500);
         let removed_only_after =
-            v3_audio_bucket_document_frequency(&connection, &settings_hash, 501);
+            v3_audio_bucket_document_frequency(&refreshed_connection, &settings_hash, 501);
         assert_eq!(shared_after, Some(1));
         assert_eq!(
             removed_only_after, None,
             "anchor stats for pruned-only buckets should be removed"
+        );
+        assert!(
+            !anchor_stats_v3_dirty(&refreshed_connection).expect("dirty marker should load"),
+            "candidate lookup should clear the dirty marker after refreshing stats"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

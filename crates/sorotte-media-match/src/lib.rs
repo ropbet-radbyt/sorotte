@@ -1067,6 +1067,7 @@ pub fn audio_landmarks_v3_from_record(record: &MediaFingerprintRecord) -> Vec<Au
 }
 
 pub fn video_landmarks_v3_from_record(record: &MediaFingerprintRecord) -> Vec<VideoLandmarkV3> {
+    // TODO(V3): replace legacy luma-frame anchors with scene descriptors and temporal shingles.
     let mut landmarks = video_anchors_from_record(record)
         .into_iter()
         .map(|anchor| VideoLandmarkV3 {
@@ -1804,6 +1805,7 @@ pub fn extract_audio_constellation_v3(
     duration_seconds: Option<f64>,
     cancel_flag: Option<&AtomicBool>,
 ) -> Result<Vec<AudioLandmarkV3>, MediaFingerprintError> {
+    // TODO(V3): stream PCM into the STFT instead of buffering full decoded audio.
     let output = run_tool_output(
         "ffmpeg",
         ffmpeg.as_ref(),
