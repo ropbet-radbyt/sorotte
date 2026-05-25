@@ -26,8 +26,8 @@ use sorotte_media_match::{
     media_extraction_settings_hash, media_fingerprint_blob_v3_from_record,
     media_fingerprint_record_apply_blob_v3, media_fingerprint_summary_from_record,
     media_match_wire_signature_from_value, media_match_wire_value_from_records,
-    normalize_media_path, rank_media_match_candidates, video_anchor_hashes_match,
-    video_anchors_from_record, video_index_landmarks_v3_from_record,
+    normalize_media_path, rank_media_match_candidates, validate_video_landmarks_v3,
+    video_anchor_hashes_match, video_anchors_from_record, video_index_landmarks_v3_from_record,
 };
 
 use super::shell_state::{
@@ -137,6 +137,8 @@ struct MediaMatchRebuildInstrumentation {
     audio_stream_raw_landmarks: usize,
     audio_stream_final_landmarks: usize,
     max_audio_stream_buffer_samples: usize,
+    max_audio_stream_raw_landmarks: usize,
+    audio_stream_raw_compactions: usize,
     debug_record_bytes: usize,
     audio_blob_bytes: usize,
     video_blob_bytes: usize,
@@ -163,6 +165,10 @@ impl MediaMatchRebuildInstrumentation {
         self.max_audio_stream_buffer_samples = self
             .max_audio_stream_buffer_samples
             .max(report.audio_stream.max_buffer_samples);
+        self.max_audio_stream_raw_landmarks = self
+            .max_audio_stream_raw_landmarks
+            .max(report.audio_stream.max_raw_landmarks_buffered);
+        self.audio_stream_raw_compactions += report.audio_stream.raw_landmark_compactions;
         self.debug_record_bytes += report.serialized_debug_record_bytes;
     }
 
@@ -198,7 +204,7 @@ impl MediaMatchRebuildInstrumentation {
 
     fn summary(&self) -> String {
         format!(
-            "tools ffmpeg/ffprobe/fpcalc={}/{}/{}, extract={}ms (probe {}ms, audio {}ms, video {}ms), v3 audio stream bytes/samples/frames/raw/final/maxbuf={}/{}/{}/{}/{}/{}, v3 blob bytes audio/video={}/{}, v3 index rows audio/video={}/{}, stats refreshes={} in {}ms (debug record bytes={})",
+            "tools ffmpeg/ffprobe/fpcalc={}/{}/{}, extract={}ms (probe {}ms, audio {}ms, video {}ms), v3 audio stream bytes/samples/frames/raw/final/maxbuf/maxraw/compactions={}/{}/{}/{}/{}/{}/{}/{}, v3 blob bytes audio/video={}/{}, v3 index rows audio/video={}/{}, stats refreshes={} in {}ms (debug record bytes={})",
             self.ffmpeg_invocations,
             self.ffprobe_invocations,
             self.fpcalc_invocations,
@@ -212,6 +218,8 @@ impl MediaMatchRebuildInstrumentation {
             self.audio_stream_raw_landmarks,
             self.audio_stream_final_landmarks,
             self.max_audio_stream_buffer_samples,
+            self.max_audio_stream_raw_landmarks,
+            self.audio_stream_raw_compactions,
             self.audio_blob_bytes,
             self.video_blob_bytes,
             self.audio_index_rows,
@@ -1926,6 +1934,324 @@ struct MediaMatchV3RetrievalStats {
     raw_hit_rows_processed: i64,
     candidates_scored: i64,
     retrieval_elapsed_ms: u128,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct MediaMatchV3DiagnosticManifest {
+    pub cases: Vec<MediaMatchV3DiagnosticCase>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct MediaMatchV3DiagnosticCase {
+    pub name: String,
+    pub query: String,
+    pub candidates: Vec<String>,
+    #[serde(default)]
+    pub expected: Vec<MediaMatchV3DiagnosticExpectation>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct MediaMatchV3DiagnosticExpectation {
+    pub candidate: String,
+    pub class: Option<String>,
+    #[serde(alias = "min_tier")]
+    pub min_tier: Option<String>,
+    #[serde(alias = "max_offset_error_ms")]
+    pub max_offset_error_ms: Option<i64>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct MediaMatchV3DiagnosticReport {
+    pub algorithm_version: u32,
+    pub settings_hash: String,
+    pub profile: String,
+    pub cases: Vec<MediaMatchV3DiagnosticCaseReport>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct MediaMatchV3DiagnosticCaseReport {
+    pub name: String,
+    pub query: String,
+    pub extraction: sorotte_media_match::MediaMatchV3DiagnosticSummary,
+    pub retrieval: MediaMatchV3RetrievalStatsReport,
+    pub pairs: Vec<MediaMatchV3DiagnosticPairReport>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct MediaMatchV3DiagnosticPairReport {
+    pub query: String,
+    pub candidate: String,
+    pub extraction_profile: String,
+    pub query_extraction: sorotte_media_match::MediaMatchV3DiagnosticSummary,
+    pub candidate_extraction: sorotte_media_match::MediaMatchV3DiagnosticSummary,
+    pub retrieval: MediaMatchV3RetrievalStatsReport,
+    pub decision: MediaMatchV3DecisionDiagnosticReport,
+    pub passed: bool,
+    pub failures: Vec<String>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct MediaMatchV3DecisionDiagnosticReport {
+    pub tier: String,
+    pub v3_class: Option<String>,
+    pub explanation: String,
+    pub offset_seconds: Option<f64>,
+    pub scale_ppm: Option<i32>,
+    pub segment_count: usize,
+    pub total_aligned_span_ms: u32,
+    pub largest_gap_ms: u32,
+    pub edge_only: bool,
+    pub audio_video_conflict: bool,
+    pub piecewise_pair_count: Option<usize>,
+    pub piecewise_hypothesis_count: Option<usize>,
+    pub piecewise_segment_count: Option<usize>,
+    pub piecewise_fit_millis: Option<u64>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct MediaMatchV3RetrievalStatsReport {
+    pub query_buckets_total: i64,
+    pub query_buckets_skipped_common: i64,
+    pub raw_hit_rows_processed: i64,
+    pub candidates_scored: i64,
+    pub retrieval_elapsed_ms: u128,
+    pub candidates: Vec<String>,
+}
+
+#[cfg(test)]
+pub(super) fn media_match_v3_diagnostic_manifest_report_json(
+    root: &Path,
+    manifest_json: &str,
+    tools: &MediaMatchToolPaths,
+    extraction_settings: &MediaExtractionSettings,
+    settings: &MediaMatchSettings,
+) -> Result<String, String> {
+    let manifest: MediaMatchV3DiagnosticManifest = serde_json::from_str(manifest_json)
+        .map_err(|error| format!("failed parsing media-match V3 diagnostic manifest: {error}"))?;
+    let report = run_media_match_v3_diagnostic_manifest(
+        root,
+        &manifest,
+        tools,
+        extraction_settings,
+        settings,
+    )?;
+    serde_json::to_string_pretty(&report)
+        .map_err(|error| format!("failed serializing media-match V3 diagnostic report: {error}"))
+}
+
+#[cfg(test)]
+fn run_media_match_v3_diagnostic_manifest(
+    root: &Path,
+    manifest: &MediaMatchV3DiagnosticManifest,
+    tools: &MediaMatchToolPaths,
+    extraction_settings: &MediaExtractionSettings,
+    settings: &MediaMatchSettings,
+) -> Result<MediaMatchV3DiagnosticReport, String> {
+    let settings_hash = media_extraction_settings_hash(extraction_settings).to_vec();
+    let connection = open_media_match_sqlite_index(root)?;
+    let mut cases = Vec::new();
+    for case in &manifest.cases {
+        let cancel = AtomicBool::new(false);
+        let query = fingerprint_media_file_cancellable_with_report(
+            &case.query,
+            tools,
+            extraction_settings,
+            &cancel,
+        )
+        .map_err(|error| {
+            format!(
+                "failed fingerprinting diagnostic query '{}': {error}",
+                case.query
+            )
+        })?;
+        save_media_match_record_to_sqlite(&connection, &query.record)?;
+        let mut candidates = BTreeMap::new();
+        for candidate_path in &case.candidates {
+            let candidate = fingerprint_media_file_cancellable_with_report(
+                candidate_path,
+                tools,
+                extraction_settings,
+                &cancel,
+            )
+            .map_err(|error| {
+                format!("failed fingerprinting diagnostic candidate '{candidate_path}': {error}")
+            })?;
+            save_media_match_record_to_sqlite(&connection, &candidate.record)?;
+            candidates.insert(normalize_media_path(candidate_path), candidate);
+        }
+        let (retrieved_paths, retrieval_stats) = media_match_v3_anchor_candidate_paths_with_stats(
+            root,
+            &query.record.identity.normalized_path,
+            extraction_settings,
+        )?;
+        let retrieval =
+            MediaMatchV3RetrievalStatsReport::from_stats(retrieval_stats, retrieved_paths.clone());
+        let query_summary =
+            sorotte_media_match::summarize_instrumented_record_v3_diagnostics(&query);
+        let mut pairs = Vec::new();
+        for candidate_path in &case.candidates {
+            let normalized_candidate = normalize_media_path(candidate_path);
+            let Some(candidate) = candidates.get(&normalized_candidate) else {
+                continue;
+            };
+            let decision = decide_media_match(&query.record, &candidate.record, settings);
+            let expectation = case
+                .expected
+                .iter()
+                .find(|expected| normalize_media_path(&expected.candidate) == normalized_candidate);
+            let (passed, failures) =
+                evaluate_media_match_v3_diagnostic_expectation(&decision, expectation);
+            pairs.push(MediaMatchV3DiagnosticPairReport {
+                query: query.record.identity.normalized_path.clone(),
+                candidate: candidate.record.identity.normalized_path.clone(),
+                extraction_profile: extraction_settings.profile.label().to_owned(),
+                query_extraction: query_summary.clone(),
+                candidate_extraction:
+                    sorotte_media_match::summarize_instrumented_record_v3_diagnostics(candidate),
+                retrieval: retrieval.clone(),
+                decision: MediaMatchV3DecisionDiagnosticReport::from_decision(&decision),
+                passed,
+                failures,
+            });
+        }
+        cases.push(MediaMatchV3DiagnosticCaseReport {
+            name: case.name.clone(),
+            query: query.record.identity.normalized_path.clone(),
+            extraction: query_summary,
+            retrieval,
+            pairs,
+        });
+    }
+    Ok(MediaMatchV3DiagnosticReport {
+        algorithm_version: MEDIA_MATCH_ANCHOR_VERSION,
+        settings_hash: bytes_to_lower_hex(&settings_hash),
+        profile: extraction_settings.profile.label().to_owned(),
+        cases,
+    })
+}
+
+#[cfg(test)]
+impl MediaMatchV3RetrievalStatsReport {
+    fn from_stats(stats: MediaMatchV3RetrievalStats, candidates: Vec<String>) -> Self {
+        Self {
+            query_buckets_total: stats.query_buckets_total,
+            query_buckets_skipped_common: stats.query_buckets_skipped_common,
+            raw_hit_rows_processed: stats.raw_hit_rows_processed,
+            candidates_scored: stats.candidates_scored,
+            retrieval_elapsed_ms: stats.retrieval_elapsed_ms,
+            candidates,
+        }
+    }
+}
+
+#[cfg(test)]
+impl MediaMatchV3DecisionDiagnosticReport {
+    fn from_decision(decision: &MediaMatchDecision) -> Self {
+        let map = decision.evidence.timeline_map_v3.as_ref();
+        let summary = sorotte_media_match::summarize_decision_v3_diagnostics(decision);
+        Self {
+            tier: media_match_tier_label(decision.tier).to_owned(),
+            v3_class: decision.evidence.v3_class.map(|class| format!("{class:?}")),
+            explanation: decision.explanation.clone(),
+            offset_seconds: decision
+                .evidence
+                .alignment
+                .as_ref()
+                .map(|alignment| alignment.offset_seconds),
+            scale_ppm: decision
+                .evidence
+                .alignment
+                .as_ref()
+                .map(|alignment| alignment.scale_ppm),
+            segment_count: map.map(|map| map.segments.len()).unwrap_or_default(),
+            total_aligned_span_ms: map.map(|map| map.total_aligned_span_ms).unwrap_or_default(),
+            largest_gap_ms: map.map(|map| map.largest_gap_ms).unwrap_or_default(),
+            edge_only: map.map(|map| map.edge_only).unwrap_or(false),
+            audio_video_conflict: map.map(|map| map.audio_video_conflict).unwrap_or(false),
+            piecewise_pair_count: summary.piecewise_pair_count,
+            piecewise_hypothesis_count: summary.piecewise_hypothesis_count,
+            piecewise_segment_count: summary.piecewise_segment_count,
+            piecewise_fit_millis: summary.piecewise_fit_millis,
+        }
+    }
+}
+
+#[cfg(test)]
+fn evaluate_media_match_v3_diagnostic_expectation(
+    decision: &MediaMatchDecision,
+    expectation: Option<&MediaMatchV3DiagnosticExpectation>,
+) -> (bool, Vec<String>) {
+    let Some(expectation) = expectation else {
+        return (true, Vec::new());
+    };
+    let mut failures = Vec::new();
+    if let Some(expected_class) = expectation.class.as_deref() {
+        let actual_class = decision
+            .evidence
+            .v3_class
+            .map(|class| format!("{class:?}"))
+            .unwrap_or_else(|| "None".to_owned());
+        if actual_class != expected_class {
+            failures.push(format!(
+                "expected class {expected_class}, got {actual_class}"
+            ));
+        }
+    }
+    if let Some(min_tier) = expectation.min_tier.as_deref() {
+        let Some(min_score) = media_match_v3_diagnostic_tier_score(min_tier) else {
+            failures.push(format!("unknown expected tier {min_tier}"));
+            return (false, failures);
+        };
+        if media_match_tier_score(decision.tier) < min_score {
+            failures.push(format!(
+                "expected tier at least {min_tier}, got {}",
+                media_match_tier_label(decision.tier)
+            ));
+        }
+    }
+    if let Some(max_offset_error_ms) = expectation.max_offset_error_ms {
+        let actual_offset_ms = decision
+            .evidence
+            .alignment
+            .as_ref()
+            .map(|alignment| (alignment.offset_seconds * 1000.0).round() as i64)
+            .unwrap_or(i64::MAX / 4);
+        if actual_offset_ms.abs() > max_offset_error_ms {
+            failures.push(format!(
+                "expected offset error <= {max_offset_error_ms}ms, got {actual_offset_ms}ms"
+            ));
+        }
+    }
+    (failures.is_empty(), failures)
+}
+
+#[cfg(test)]
+fn media_match_v3_diagnostic_tier_score(label: &str) -> Option<u8> {
+    match label.to_ascii_lowercase().as_str() {
+        "exact" => Some(media_match_tier_score(MediaMatchTier::Exact)),
+        "strong" => Some(media_match_tier_score(MediaMatchTier::Strong)),
+        "probable" => Some(media_match_tier_score(MediaMatchTier::Probable)),
+        "weak" => Some(media_match_tier_score(MediaMatchTier::Weak)),
+        "reject" => Some(media_match_tier_score(MediaMatchTier::Reject)),
+        "unknown" => Some(media_match_tier_score(MediaMatchTier::Unknown)),
+        _ => None,
+    }
 }
 
 fn media_match_v3_anchor_candidate_paths_with_stats(
@@ -3792,7 +4118,15 @@ fn save_media_match_v3_record_to_sqlite_with_error(
         }
         (!errors.is_empty()).then(|| errors.join("; "))
     });
+    if let Some(video) = &record.video
+        && !video.v3_landmarks.is_empty()
+    {
+        validate_video_landmarks_v3(&video.v3_landmarks)
+            .map_err(|error| format!("invalid media-match V3 video fingerprint: {error}"))?;
+    }
     let blob = media_fingerprint_blob_v3_from_record(record);
+    validate_video_landmarks_v3(&blob.video_landmarks)
+        .map_err(|error| format!("invalid media-match V3 video fingerprint: {error}"))?;
     let audio_blob = (!blob.audio_landmarks.is_empty()).then(|| {
         encode_media_fingerprint_blob_v3(&sorotte_media_match::MediaFingerprintBlobV3 {
             duration_ms: blob.duration_ms,
@@ -3809,6 +4143,8 @@ fn save_media_match_v3_record_to_sqlite_with_error(
     });
     let audio_index = audio_index_landmarks_v3_from_record(record);
     let video_index = video_index_landmarks_v3_from_record(record);
+    validate_video_landmarks_v3(&video_index)
+        .map_err(|error| format!("invalid media-match V3 video index: {error}"))?;
     let settings_hash = media_extraction_settings_hash(&record.extraction_settings).to_vec();
     transaction
         .execute(
@@ -5364,6 +5700,182 @@ mod tests {
             .expect("full row count should load");
         assert_eq!(full_rows, 0);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn media_match_save_rejects_invalid_v3_video_kind() {
+        let root = unique_media_match_test_root("invalid-v3-kind");
+        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
+        let mut record = fake_media_match_record("invalid-kind.mkv");
+        record.extraction_settings = MediaExtractionSettings::combined_v3();
+        record.video = Some(sorotte_media_match::VideoFingerprint {
+            duration_seconds: Some(60),
+            frames: Vec::new(),
+            v3_landmarks: vec![sorotte_media_match::VideoLandmarkV3 {
+                bucket: sorotte_media_match::v3_video_bucket_for_kind(9, 12),
+                hash64: 0x1234,
+                t_ms: 1_000,
+                kind: 9,
+                weight: 1,
+            }],
+        });
+
+        let error = save_media_match_record_to_sqlite(&connection, &record)
+            .expect_err("invalid V3 video kind must not save silently");
+
+        assert!(
+            error.contains("unsupported V3 video landmark kind 9"),
+            "{error}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn media_match_save_rejects_mismatched_v3_video_bucket_kind() {
+        let root = unique_media_match_test_root("invalid-v3-bucket-kind");
+        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
+        let mut record = fake_media_match_record("invalid-bucket-kind.mkv");
+        record.extraction_settings = MediaExtractionSettings::combined_v3();
+        record.video = Some(sorotte_media_match::VideoFingerprint {
+            duration_seconds: Some(60),
+            frames: Vec::new(),
+            v3_landmarks: vec![sorotte_media_match::VideoLandmarkV3 {
+                bucket: sorotte_media_match::v3_video_bucket_for_kind(
+                    sorotte_media_match::V3_VIDEO_KIND_EDGE,
+                    12,
+                ),
+                hash64: 0x1234,
+                t_ms: 1_000,
+                kind: sorotte_media_match::V3_VIDEO_KIND_GLOBAL_DCT,
+                weight: 1,
+            }],
+        });
+
+        let error = save_media_match_record_to_sqlite(&connection, &record)
+            .expect_err("mismatched V3 video bucket kind must not save silently");
+
+        assert!(error.contains("does not match bucket kind"), "{error}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[ignore = "requires ffmpeg/ffprobe in SOROTTE_MEDIA_MATCH_FFMPEG/SOROTTE_MEDIA_MATCH_FFPROBE or PATH"]
+    fn v3_manifest_harness_runs_small_synthetic_case() {
+        let Some(ffmpeg) = test_ffmpeg_path() else {
+            eprintln!("skipping ignored ffmpeg test: ffmpeg is not available");
+            return;
+        };
+        let Some(ffprobe) = test_ffprobe_path() else {
+            eprintln!("skipping ignored ffmpeg test: ffprobe is not available");
+            return;
+        };
+        let root = unique_media_match_test_root("v3-manifest-harness");
+        let media_dir = root.join("media");
+        std::fs::create_dir_all(&media_dir).expect("media dir should be created");
+        let query = media_dir.join("query.mkv");
+        let candidate = media_dir.join("candidate.mkv");
+        generate_v3_synthetic_media(&ffmpeg, &query, 440, 23);
+        std::fs::copy(&query, &candidate).expect("candidate media should be copied");
+        let tools = MediaMatchToolPaths {
+            ffmpeg,
+            ffprobe,
+            fpcalc: PathBuf::from("fpcalc-not-used"),
+        };
+        let query_json = query.to_string_lossy().to_string();
+        let candidate_json = candidate.to_string_lossy().to_string();
+        let manifest = serde_json::json!({
+            "cases": [{
+                "name": "copied-synthetic-media",
+                "query": query_json,
+                "candidates": [candidate_json.clone()],
+                "expected": [{
+                    "candidate": candidate_json,
+                    "min_tier": "Exact"
+                }]
+            }]
+        });
+
+        let report_json = media_match_v3_diagnostic_manifest_report_json(
+            &root,
+            &manifest.to_string(),
+            &tools,
+            &MediaExtractionSettings::combined_v3(),
+            &enabled_media_match_settings(),
+        )
+        .expect("diagnostic manifest should run");
+        let report: serde_json::Value =
+            serde_json::from_str(&report_json).expect("report JSON should parse");
+        let pair = &report["cases"][0]["pairs"][0];
+
+        assert_eq!(report["algorithmVersion"], MEDIA_MATCH_ANCHOR_VERSION);
+        assert_eq!(pair["decision"]["tier"], "exact");
+        assert_eq!(pair["passed"], true);
+        assert!(
+            pair["queryExtraction"]["audioBlobBytes"]
+                .as_u64()
+                .unwrap_or_default()
+                > 0
+        );
+        assert!(
+            pair["retrieval"]["queryBucketsTotal"]
+                .as_i64()
+                .unwrap_or_default()
+                >= 0
+        );
+        assert!(pair["decision"].get("v3Class").is_some());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn test_ffmpeg_path() -> Option<PathBuf> {
+        test_tool_path("SOROTTE_MEDIA_MATCH_FFMPEG", "ffmpeg")
+    }
+
+    fn test_ffprobe_path() -> Option<PathBuf> {
+        test_tool_path("SOROTTE_MEDIA_MATCH_FFPROBE", "ffprobe")
+    }
+
+    fn test_tool_path(env_key: &str, default_name: &str) -> Option<PathBuf> {
+        let path = std::env::var_os(env_key)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(default_name));
+        let status = Command::new(&path)
+            .arg("-version")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .ok()?;
+        status.success().then_some(path)
+    }
+
+    fn generate_v3_synthetic_media(ffmpeg: &Path, path: &Path, frequency_hz: u32, crf: u8) {
+        let status = Command::new(ffmpeg)
+            .args([
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=64x64:rate=1:duration=30",
+                "-f",
+                "lavfi",
+                "-i",
+                &format!("sine=frequency={frequency_hz}:sample_rate=44100:duration=30"),
+                "-shortest",
+                "-c:v",
+                "libx264",
+                "-crf",
+                &crf.to_string(),
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+            ])
+            .arg(path)
+            .status()
+            .expect("ffmpeg should create synthetic media");
+        assert!(status.success(), "ffmpeg fixture generation failed");
     }
 
     #[test]

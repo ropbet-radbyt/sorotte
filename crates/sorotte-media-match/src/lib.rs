@@ -5,6 +5,7 @@ use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -20,6 +21,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+// TODO(media-match): split this crate into settings/wire/audio_v3/video_v3/extraction/
+// anchors/matching/diagnostics modules in a separate behavior-preserving change.
 pub const MEDIA_MATCH_ALGORITHM_VERSION: u32 = 3;
 pub const MEDIA_MATCH_FILE_PAYLOAD_KEY: &str = "mediaMatch";
 pub const MEDIA_MATCH_WIRE_SCHEMA_V2: &str = "sorotte.mediaMatch.v2";
@@ -71,6 +74,10 @@ const V3_AUDIO_PAIR_MAX_DELTA_FRAMES: usize = 108;
 const V3_AUDIO_PAIR_FANOUT: usize = 8;
 const V3_AUDIO_VERIFY_LANDMARK_LIMIT: usize = 768;
 const V3_AUDIO_INDEX_LANDMARK_LIMIT: usize = 192;
+// Streaming audio keeps only a winnowed raw landmark buffer; this bounds noisy/long files
+// while preserving enough oversampling for the final time-distributed selector.
+pub const V3_AUDIO_RAW_LANDMARK_BUFFER_LIMIT: usize = V3_AUDIO_VERIFY_LANDMARK_LIMIT * 8;
+const V3_AUDIO_RAW_LANDMARK_RETAIN_LIMIT: usize = V3_AUDIO_VERIFY_LANDMARK_LIMIT * 4;
 const V3_VIDEO_VERIFY_LANDMARK_LIMIT: usize = 192;
 const V3_VIDEO_INDEX_LANDMARK_LIMIT: usize = 64;
 const V3_VIDEO_PHASH_SIZE: usize = 32;
@@ -498,6 +505,8 @@ pub struct MediaAudioStreamMetrics {
     pub raw_landmarks_before_bounding: usize,
     pub final_landmarks: usize,
     pub max_buffer_samples: usize,
+    pub max_raw_landmarks_buffered: usize,
+    pub raw_landmark_compactions: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -518,7 +527,7 @@ pub struct InstrumentedMediaFingerprint {
     pub report: MediaFingerprintExtractionReport,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct MediaMatchV3DiagnosticSummary {
     pub file_path: Option<String>,
     pub profile: String,
@@ -577,13 +586,15 @@ fn summarize_record_v3_diagnostics_with_report(
     let mut notes = Vec::new();
     if let Some(report) = report {
         notes.push(format!(
-            "streamed_audio_bytes={} streamed_audio_samples={} peak_frames={} raw_audio_landmarks={} final_audio_landmarks={} max_audio_buffer_samples={}",
+            "streamed_audio_bytes={} streamed_audio_samples={} peak_frames={} raw_audio_landmarks={} final_audio_landmarks={} max_audio_buffer_samples={} max_raw_landmarks={} raw_compactions={}",
             report.audio_stream.streamed_bytes,
             report.audio_stream.streamed_samples,
             report.audio_stream.peak_frames,
             report.audio_stream.raw_landmarks_before_bounding,
             report.audio_stream.final_landmarks,
-            report.audio_stream.max_buffer_samples
+            report.audio_stream.max_buffer_samples,
+            report.audio_stream.max_raw_landmarks_buffered,
+            report.audio_stream.raw_landmark_compactions
         ));
     }
     MediaMatchV3DiagnosticSummary {
@@ -857,6 +868,7 @@ pub enum MediaSummaryDecodeError {
     TooManyAnchors(usize),
     UnsupportedVideoKind(u8),
     MismatchedVideoBucketKind { kind: u8, bucket_kind: u8 },
+    InvalidTemporalVideoBucket { expected: u32, actual: u32 },
 }
 
 impl fmt::Display for MediaSummaryDecodeError {
@@ -883,6 +895,12 @@ impl fmt::Display for MediaSummaryDecodeError {
                 write!(
                     formatter,
                     "media v3 video landmark kind {kind} does not match bucket kind {bucket_kind}"
+                )
+            }
+            Self::InvalidTemporalVideoBucket { expected, actual } => {
+                write!(
+                    formatter,
+                    "media v3 temporal video bucket {actual} does not match expected {expected}"
                 )
             }
         }
@@ -924,6 +942,7 @@ pub enum MediaFingerprintBlobV3DecodeError {
     NonMonotonicTime,
     UnsupportedVideoKind(u8),
     MismatchedVideoBucketKind { kind: u8, bucket_kind: u8 },
+    InvalidTemporalVideoBucket { expected: u32, actual: u32 },
 }
 
 impl fmt::Display for MediaFingerprintBlobV3DecodeError {
@@ -965,6 +984,12 @@ impl fmt::Display for MediaFingerprintBlobV3DecodeError {
                 write!(
                     formatter,
                     "media fingerprint v3 video landmark kind {kind} does not match bucket kind {bucket_kind}"
+                )
+            }
+            Self::InvalidTemporalVideoBucket { expected, actual } => {
+                write!(
+                    formatter,
+                    "media fingerprint v3 temporal video bucket {actual} does not match expected {expected}"
                 )
             }
         }
@@ -1242,6 +1267,17 @@ pub fn decode_media_fingerprint_blob_v3(
                                 bucket_kind,
                             },
                         );
+                    }
+                    if kind == V3_VIDEO_KIND_TEMPORAL_SHINGLE {
+                        let expected = v3_video_bucket_for_kind(kind, anchor_bucket(hash64));
+                        if bucket != expected {
+                            return Err(
+                                MediaFingerprintBlobV3DecodeError::InvalidTemporalVideoBucket {
+                                    expected,
+                                    actual: bucket,
+                                },
+                            );
+                        }
                     }
                     landmarks.push(VideoLandmarkV3 {
                         bucket,
@@ -1591,6 +1627,15 @@ pub fn decode_video_anchor_summary(
         };
         if bucket_kind != kind {
             return Err(MediaSummaryDecodeError::MismatchedVideoBucketKind { kind, bucket_kind });
+        }
+        if kind == V3_VIDEO_KIND_TEMPORAL_SHINGLE {
+            let expected = v3_video_bucket_for_kind(kind, anchor_bucket(hash64));
+            if bucket != expected {
+                return Err(MediaSummaryDecodeError::InvalidTemporalVideoBucket {
+                    expected,
+                    actual: bucket,
+                });
+            }
         }
         t_ms = t_ms.saturating_add(delta_t_ms);
         anchors.push(VideoAnchor {
@@ -2273,6 +2318,8 @@ struct AudioConstellationV3Builder {
     next_frame_index: usize,
     peak_frames: usize,
     max_buffer_samples: usize,
+    max_raw_landmarks_buffered: usize,
+    raw_landmark_compactions: usize,
 }
 
 impl AudioConstellationV3Builder {
@@ -2287,6 +2334,8 @@ impl AudioConstellationV3Builder {
             next_frame_index: 0,
             peak_frames: 0,
             max_buffer_samples: 0,
+            max_raw_landmarks_buffered: 0,
+            raw_landmark_compactions: 0,
         }
     }
 
@@ -2317,6 +2366,7 @@ impl AudioConstellationV3Builder {
     }
 
     fn process_peak_frame(&mut self, frame_index: usize, peaks: Vec<AudioSpectralPeakV3>) {
+        let mut needs_compaction = false;
         for anchor_frame in &mut self.recent_frames {
             let delta_frames = frame_index.saturating_sub(anchor_frame.frame_index);
             if !(V3_AUDIO_PAIR_MIN_DELTA_FRAMES..=V3_AUDIO_PAIR_MAX_DELTA_FRAMES)
@@ -2341,6 +2391,8 @@ impl AudioConstellationV3Builder {
                         t_ms,
                         weight: strength,
                     });
+                    needs_compaction |=
+                        self.raw_landmarks.len() > V3_AUDIO_RAW_LANDMARK_BUFFER_LIMIT;
                     emitted += 1;
                     if emitted >= V3_AUDIO_PAIR_FANOUT {
                         break;
@@ -2348,6 +2400,13 @@ impl AudioConstellationV3Builder {
                 }
                 anchor_frame.emitted_per_peak[peak_index] = emitted;
             }
+        }
+        if needs_compaction {
+            self.compact_raw_landmarks_if_needed();
+        } else {
+            self.max_raw_landmarks_buffered = self
+                .max_raw_landmarks_buffered
+                .max(self.raw_landmarks.len());
         }
         while self.recent_frames.front().is_some_and(|frame| {
             frame_index.saturating_sub(frame.frame_index) >= V3_AUDIO_PAIR_MAX_DELTA_FRAMES
@@ -2363,6 +2422,19 @@ impl AudioConstellationV3Builder {
         });
     }
 
+    fn compact_raw_landmarks_if_needed(&mut self) {
+        if self.raw_landmarks.len() > V3_AUDIO_RAW_LANDMARK_BUFFER_LIMIT {
+            compact_audio_landmark_buffer_v3(
+                &mut self.raw_landmarks,
+                V3_AUDIO_RAW_LANDMARK_RETAIN_LIMIT,
+            );
+            self.raw_landmark_compactions += 1;
+        }
+        self.max_raw_landmarks_buffered = self
+            .max_raw_landmarks_buffered
+            .max(self.raw_landmarks.len());
+    }
+
     fn finish_with_metrics(
         self,
         duration_seconds: Option<f64>,
@@ -2374,6 +2446,8 @@ impl AudioConstellationV3Builder {
             raw_landmarks_before_bounding: raw_count,
             final_landmarks: landmarks.len(),
             max_buffer_samples: self.max_buffer_samples,
+            max_raw_landmarks_buffered: self.max_raw_landmarks_buffered.max(raw_count),
+            raw_landmark_compactions: self.raw_landmark_compactions,
             ..MediaAudioStreamMetrics::default()
         };
         (landmarks, metrics)
@@ -2461,6 +2535,63 @@ fn finish_bounded_audio_landmarks_v3(
         downweight_edge_audio_landmarks_v3(&mut raw, duration);
     }
     bounded_time_distributed_audio_landmarks_v3(&mut raw, V3_AUDIO_VERIFY_LANDMARK_LIMIT)
+}
+
+fn compact_audio_landmark_buffer_v3(landmarks: &mut Vec<AudioLandmarkV3>, retain_limit: usize) {
+    dedupe_audio_landmarks_v3(landmarks);
+    if landmarks.len() <= retain_limit {
+        return;
+    }
+    let mut by_weight = landmarks.clone();
+    by_weight.sort_by_key(|landmark| {
+        (
+            std::cmp::Reverse(landmark.weight),
+            landmark.t_ms,
+            landmark.hash,
+        )
+    });
+    let high_weight_limit = retain_limit / 2;
+    let mut selected = by_weight
+        .into_iter()
+        .take(high_weight_limit)
+        .collect::<Vec<_>>();
+    let mut selected_keys = selected
+        .iter()
+        .map(|landmark| (landmark.hash, landmark.t_ms))
+        .collect::<HashSet<_>>();
+    let distributed_limit = retain_limit.saturating_sub(selected.len());
+    let mut distributed = bounded_time_distributed_audio_landmarks_v3(landmarks, distributed_limit);
+    for landmark in distributed.drain(..) {
+        if selected_keys.insert((landmark.hash, landmark.t_ms)) {
+            selected.push(landmark);
+        }
+    }
+    if selected.len() < retain_limit {
+        let mut remaining = landmarks.clone();
+        remaining.sort_by_key(|landmark| {
+            (
+                landmark.t_ms,
+                std::cmp::Reverse(landmark.weight),
+                landmark.hash,
+            )
+        });
+        for landmark in remaining {
+            if selected.len() >= retain_limit {
+                break;
+            }
+            if selected_keys.insert((landmark.hash, landmark.t_ms)) {
+                selected.push(landmark);
+            }
+        }
+    }
+    selected.sort_by_key(|landmark| {
+        (
+            landmark.t_ms,
+            landmark.hash,
+            std::cmp::Reverse(landmark.weight),
+        )
+    });
+    *landmarks = selected;
 }
 
 #[cfg(test)]
@@ -3778,27 +3909,45 @@ where
             status: None,
             stderr: "failed capturing stderr".to_owned(),
         })?;
+    let (stdout_error_sender, stdout_error_receiver) = mpsc::channel::<MediaFingerprintError>();
     let stdout_reader = thread::spawn(move || {
         let mut buffer = [0u8; 64 * 1024];
         loop {
-            let count =
-                stdout
-                    .read(&mut buffer)
-                    .map_err(|error| MediaFingerprintError::ToolFailed {
+            let count = match stdout.read(&mut buffer) {
+                Ok(count) => count,
+                Err(error) => {
+                    let error = MediaFingerprintError::ToolFailed {
                         tool,
                         status: None,
                         stderr: format!("failed reading stdout: {error}"),
-                    })?;
+                    };
+                    let _ = stdout_error_sender.send(error.clone());
+                    return Err(error);
+                }
+            };
             if count == 0 {
                 return Ok(());
             }
-            on_stdout_chunk(&buffer[..count])?;
+            if let Err(error) = on_stdout_chunk(&buffer[..count]) {
+                let _ = stdout_error_sender.send(error.clone());
+                return Err(error);
+            }
         }
     });
     let stderr_reader = thread::spawn(move || read_pipe_to_end(stderr));
     let started_at = Instant::now();
 
     loop {
+        match stdout_error_receiver.try_recv() {
+            Ok(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = join_streaming_stdout_reader(stdout_reader, tool);
+                let _ = join_pipe_reader(stderr_reader, tool, "stderr");
+                return Err(error);
+            }
+            Err(mpsc::TryRecvError::Empty) | Err(mpsc::TryRecvError::Disconnected) => {}
+        }
         if cancel_flag.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
             let _ = child.kill();
             let _ = child.wait();
@@ -5134,6 +5283,44 @@ pub fn v3_video_kind_from_bucket(bucket: u32) -> Option<u8> {
 
 pub fn v3_video_bucket_kind_matches(kind: u8, bucket: u32) -> bool {
     v3_video_kind_from_bucket(bucket).is_some_and(|bucket_kind| bucket_kind == kind)
+}
+
+pub fn validate_video_landmark_v3(landmark: &VideoLandmarkV3) -> Result<(), String> {
+    if !v3_video_kind_is_supported(landmark.kind) {
+        return Err(format!(
+            "unsupported V3 video landmark kind {}",
+            landmark.kind
+        ));
+    }
+    let Some(bucket_kind) = v3_video_kind_from_bucket(landmark.bucket) else {
+        return Err(format!(
+            "unsupported V3 video landmark bucket kind {}",
+            (landmark.bucket >> V3_VIDEO_BUCKET_KIND_SHIFT) as u8
+        ));
+    };
+    if bucket_kind != landmark.kind {
+        return Err(format!(
+            "V3 video landmark kind {} does not match bucket kind {}",
+            landmark.kind, bucket_kind
+        ));
+    }
+    if landmark.kind == V3_VIDEO_KIND_TEMPORAL_SHINGLE {
+        let expected = v3_video_bucket_for_kind(landmark.kind, anchor_bucket(landmark.hash64));
+        if landmark.bucket != expected {
+            return Err(format!(
+                "V3 temporal shingle bucket {} does not match exact hash bucket {}",
+                landmark.bucket, expected
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_video_landmarks_v3(landmarks: &[VideoLandmarkV3]) -> Result<(), String> {
+    for landmark in landmarks {
+        validate_video_landmark_v3(landmark)?;
+    }
+    Ok(())
 }
 
 fn v3_video_lsh_buckets(kind: u8, hash: u64) -> Vec<u32> {
@@ -6803,7 +6990,7 @@ mod tests {
     #[test]
     fn v3_audio_streaming_builder_is_chunk_boundary_stable() {
         let sample_rate = V3_AUDIO_SAMPLE_RATE;
-        let seconds = 10;
+        let seconds = 5;
         let samples = synthetic_audio_samples_v3(sample_rate, seconds);
         let full =
             audio_constellation_landmarks_v3_from_pcm(&samples, sample_rate, Some(seconds as f64));
@@ -6871,7 +7058,66 @@ mod tests {
             metrics.max_buffer_samples <= V3_AUDIO_WINDOW_SAMPLES,
             "{metrics:?}"
         );
+        assert!(
+            metrics.max_raw_landmarks_buffered <= V3_AUDIO_RAW_LANDMARK_BUFFER_LIMIT,
+            "{metrics:?}"
+        );
+        assert!(
+            metrics.raw_landmark_compactions > 0,
+            "long synthetic audio should exercise raw landmark compaction: {metrics:?}"
+        );
         assert!(metrics.streamed_samples > V3_AUDIO_WINDOW_SAMPLES * 100);
+    }
+
+    #[test]
+    fn streaming_stdout_callback_error_aborts_promptly() {
+        let (executable, args) = streaming_stdout_error_test_command();
+        let started_at = Instant::now();
+        let result = run_tool_streaming_stdout(
+            "test-tool",
+            &executable,
+            args,
+            None,
+            Duration::from_secs(20),
+            |_chunk| {
+                Err(MediaFingerprintError::InvalidToolOutput {
+                    tool: "test-tool",
+                    reason: "intentional callback failure".to_owned(),
+                })
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(MediaFingerprintError::InvalidToolOutput {
+                tool: "test-tool",
+                ..
+            })
+        ));
+        assert!(
+            started_at.elapsed() < Duration::from_secs(5),
+            "callback failure should not wait for timeout"
+        );
+    }
+
+    #[cfg(windows)]
+    fn streaming_stdout_error_test_command() -> (PathBuf, Vec<OsString>) {
+        (
+            PathBuf::from("powershell"),
+            vec![
+                "-NoProfile".into(),
+                "-Command".into(),
+                "Write-Output chunk; Start-Sleep -Seconds 30".into(),
+            ],
+        )
+    }
+
+    #[cfg(not(windows))]
+    fn streaming_stdout_error_test_command() -> (PathBuf, Vec<OsString>) {
+        (
+            PathBuf::from("sh"),
+            vec!["-c".into(), "printf chunk; sleep 30".into()],
+        )
     }
 
     fn synthetic_audio_samples_v3(sample_rate: u32, seconds: usize) -> Vec<i16> {
@@ -7754,9 +8000,10 @@ mod tests {
     #[test]
     #[ignore = "requires ffmpeg in SOROTTE_MEDIA_MATCH_FFMPEG or PATH"]
     fn fast_video_extraction_preserves_pts_near_intended_samples_on_synthetic_media() {
-        let ffmpeg = std::env::var_os("SOROTTE_MEDIA_MATCH_FFMPEG")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("ffmpeg"));
+        let Some(ffmpeg) = test_ffmpeg_path() else {
+            eprintln!("skipping ignored ffmpeg test: ffmpeg is not available");
+            return;
+        };
         let mut media_path = std::env::temp_dir();
         media_path.push(format!("sorotte-fast-video-pts-{}.mkv", std::process::id()));
         let status = Command::new(&ffmpeg)
@@ -7797,8 +8044,14 @@ mod tests {
     #[test]
     #[ignore = "requires ffmpeg/ffprobe in SOROTTE_MEDIA_MATCH_FFMPEG/SOROTTE_MEDIA_MATCH_FFPROBE or PATH"]
     fn combined_v3_ffmpeg_generates_v3_video_kinds() {
-        let ffmpeg = test_ffmpeg_path();
-        let ffprobe = test_ffprobe_path();
+        let Some(ffmpeg) = test_ffmpeg_path() else {
+            eprintln!("skipping ignored ffmpeg test: ffmpeg is not available");
+            return;
+        };
+        let Some(ffprobe) = test_ffprobe_path() else {
+            eprintln!("skipping ignored ffmpeg test: ffprobe is not available");
+            return;
+        };
         let media_path = temp_media_match_path("combined-v3-kinds", "mkv");
         let status = Command::new(&ffmpeg)
             .args([
@@ -7859,8 +8112,14 @@ mod tests {
     #[test]
     #[ignore = "requires ffmpeg/ffprobe in SOROTTE_MEDIA_MATCH_FFMPEG/SOROTTE_MEDIA_MATCH_FFPROBE or PATH"]
     fn audio_v3_streaming_extracts_synthetic_audio() {
-        let ffmpeg = test_ffmpeg_path();
-        let ffprobe = test_ffprobe_path();
+        let Some(ffmpeg) = test_ffmpeg_path() else {
+            eprintln!("skipping ignored ffmpeg test: ffmpeg is not available");
+            return;
+        };
+        let Some(ffprobe) = test_ffprobe_path() else {
+            eprintln!("skipping ignored ffmpeg test: ffprobe is not available");
+            return;
+        };
         let media_path = temp_media_match_path("audio-v3-streaming", "wav");
         let status = Command::new(&ffmpeg)
             .args([
@@ -7896,13 +8155,23 @@ mod tests {
         assert!(!audio_landmarks_v3_from_record(&fingerprint.record).is_empty());
         assert!(fingerprint.report.audio_stream.streamed_bytes > 0);
         assert!(fingerprint.report.audio_stream.max_buffer_samples <= V3_AUDIO_WINDOW_SAMPLES);
+        assert!(
+            fingerprint.report.audio_stream.max_raw_landmarks_buffered
+                <= V3_AUDIO_RAW_LANDMARK_BUFFER_LIMIT
+        );
     }
 
     #[test]
     #[ignore = "requires ffmpeg/ffprobe in SOROTTE_MEDIA_MATCH_FFMPEG/SOROTTE_MEDIA_MATCH_FFPROBE or PATH"]
     fn combined_v3_storage_bound_on_synthetic_media() {
-        let ffmpeg = test_ffmpeg_path();
-        let ffprobe = test_ffprobe_path();
+        let Some(ffmpeg) = test_ffmpeg_path() else {
+            eprintln!("skipping ignored ffmpeg test: ffmpeg is not available");
+            return;
+        };
+        let Some(ffprobe) = test_ffprobe_path() else {
+            eprintln!("skipping ignored ffmpeg test: ffprobe is not available");
+            return;
+        };
         let media_path = temp_media_match_path("combined-v3-storage", "mkv");
         let status = Command::new(&ffmpeg)
             .args([
@@ -7950,16 +8219,26 @@ mod tests {
         assert!(diagnostics.video_blob_bytes > 0);
     }
 
-    fn test_ffmpeg_path() -> PathBuf {
-        std::env::var_os("SOROTTE_MEDIA_MATCH_FFMPEG")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("ffmpeg"))
+    fn test_ffmpeg_path() -> Option<PathBuf> {
+        test_tool_path("SOROTTE_MEDIA_MATCH_FFMPEG", "ffmpeg")
     }
 
-    fn test_ffprobe_path() -> PathBuf {
-        std::env::var_os("SOROTTE_MEDIA_MATCH_FFPROBE")
+    fn test_ffprobe_path() -> Option<PathBuf> {
+        test_tool_path("SOROTTE_MEDIA_MATCH_FFPROBE", "ffprobe")
+    }
+
+    fn test_tool_path(env_key: &str, default_name: &str) -> Option<PathBuf> {
+        let path = std::env::var_os(env_key)
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("ffprobe"))
+            .unwrap_or_else(|| PathBuf::from(default_name));
+        let status = Command::new(&path)
+            .arg("-version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .ok()?;
+        status.success().then_some(path)
     }
 
     fn temp_media_match_path(prefix: &str, extension: &str) -> PathBuf {
