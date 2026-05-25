@@ -63,7 +63,10 @@ impl GuiPersistedConfigRuntimeOwner {
             handle,
             projected_state,
             "Rechecking Media Matching tools",
-            Some("Verifying ffmpeg, ffprobe, and fpcalc.".to_owned()),
+            Some(
+                "Verifying ffmpeg and ffprobe for V3; fpcalc is optional legacy support."
+                    .to_owned(),
+            ),
             0.92,
         );
         let snapshot =
@@ -776,9 +779,9 @@ impl GuiPersistedConfigRuntimeOwner {
                     .flatten();
                 let fast_result = if current_player_path.is_none() {
                     if let Some(remote_candidate) = remote_candidate {
-                        media_match_tool_paths(&root).and_then(|tools| {
-                            let extraction_settings =
-                                sorotte_media_match::MediaExtractionSettings::audio_constellation_v3();
+                        let extraction_settings =
+                            sorotte_media_match::MediaExtractionSettings::audio_constellation_v3();
+                        media_match_tool_paths_for_settings(&root, &extraction_settings).and_then(|tools| {
                             rebuild_persisted_media_match_remote_candidates_with_progress_and_cancel(
                                 MediaMatchRemoteCandidateRebuildRequest {
                                     root: &root,
@@ -814,9 +817,9 @@ impl GuiPersistedConfigRuntimeOwner {
                         )
                     }
                 } else if let Some(candidates) = candidates {
-                    media_match_tool_paths(&root).and_then(|tools| {
-                        let extraction_settings =
-                            sorotte_media_match::MediaExtractionSettings::audio_constellation_v3();
+                    let extraction_settings =
+                        sorotte_media_match::MediaExtractionSettings::audio_constellation_v3();
+                    media_match_tool_paths_for_settings(&root, &extraction_settings).and_then(|tools| {
                         rebuild_persisted_media_match_candidates_with_progress_and_cancel(
                             MediaMatchCandidateRebuildRequest {
                                 root: &root,
@@ -873,9 +876,8 @@ impl GuiPersistedConfigRuntimeOwner {
                     )));
                     return;
                 }
-                let full_result = media_match_tool_paths(&root).and_then(|tools| {
-                    let extraction_settings =
-                        sorotte_media_match::MediaExtractionSettings::combined_v3();
+                let extraction_settings = sorotte_media_match::MediaExtractionSettings::combined_v3();
+                let full_result = media_match_tool_paths_for_settings(&root, &extraction_settings).and_then(|tools| {
                     rebuild_persisted_media_match_candidates_with_progress_and_cancel(
                         MediaMatchCandidateRebuildRequest {
                             root: &root,
@@ -1192,7 +1194,7 @@ impl GuiPersistedConfigRuntimeOwner {
             projected_state,
             "Preparing Media Matching tools",
             Some(
-                "Installing ffmpeg, ffprobe, and fpcalc into Sorotte's managed tools directory."
+                "Installing ffmpeg, ffprobe, and optional legacy fpcalc into Sorotte's managed tools directory."
                     .to_owned(),
             ),
             0.02,

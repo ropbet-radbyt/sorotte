@@ -83,7 +83,7 @@ impl GuiRuntimeRequest {
             Self::ImportMediaMatchFpcalc(_) => {
                 vec![GuiShellAction::PushTransientNotification {
                     level: GuiTransientNotificationLevel::Info,
-                    message: "Importing fpcalc into Sorotte's managed media matching tools."
+                    message: "Importing optional legacy fpcalc into Sorotte's managed media matching tools."
                         .to_owned(),
                 }]
             }
@@ -260,7 +260,7 @@ impl GuiRuntimeRequest {
             Self::ImportMediaMatchFpcalc(_) => {
                 vec![GuiShellAction::PushTransientNotification {
                     level: GuiTransientNotificationLevel::Info,
-                    message: "Importing fpcalc into Sorotte's managed media matching tools."
+                    message: "Importing optional legacy fpcalc into Sorotte's managed media matching tools."
                         .to_owned(),
                 }]
             }

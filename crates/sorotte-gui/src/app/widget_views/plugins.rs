@@ -180,7 +180,7 @@ impl SorotteGuiShellAppState {
                     ),
                     GuiWidgetNode::leaf(
                         "plugins:media-matching:import-fpcalc",
-                        "Import fpcalc",
+                        "Import fpcalc (Legacy)",
                         GuiWidgetKind::Button,
                         None,
                         self.media_matching_plugin_action_enabled("import"),
@@ -292,7 +292,7 @@ impl SorotteGuiShellAppState {
             ),
             (
                 "plugins:media-matching:fpcalc-status",
-                "fpcalc",
+                "fpcalc (optional legacy)",
                 self.media_match.fpcalc_status.clone(),
             ),
             (

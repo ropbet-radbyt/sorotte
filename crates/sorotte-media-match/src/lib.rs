@@ -1278,12 +1278,12 @@ pub fn decode_video_anchor_summary(
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MediaMatchWireSignatureV2 {
+pub struct MediaMatchWireSignature {
     pub schema: String,
-    pub profiles: Vec<MediaMatchWireAnchorProfile>,
+    pub profiles: Vec<MediaMatchWireProfile>,
 }
 
-impl Default for MediaMatchWireSignatureV2 {
+impl Default for MediaMatchWireSignature {
     fn default() -> Self {
         Self {
             schema: MEDIA_MATCH_WIRE_SCHEMA_V3.to_owned(),
@@ -1294,7 +1294,7 @@ impl Default for MediaMatchWireSignatureV2 {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MediaMatchWireAnchorProfile {
+pub struct MediaMatchWireProfile {
     pub profile: String,
     pub algorithm_version: u32,
     pub duration_ms: Option<u32>,
@@ -1373,8 +1373,8 @@ impl MediaMatchCache {
 
 pub fn media_match_wire_signature_from_records(
     records: &[MediaFingerprintRecord],
-) -> MediaMatchWireSignatureV2 {
-    let mut signature = MediaMatchWireSignatureV2::default();
+) -> MediaMatchWireSignature {
+    let mut signature = MediaMatchWireSignature::default();
     for record in records {
         if let Some(profile) = media_match_wire_anchor_profile_from_record(record) {
             signature.profiles.push(profile);
@@ -1395,7 +1395,7 @@ pub fn media_match_wire_value_from_records(records: &[MediaFingerprintRecord]) -
 
 pub fn media_match_wire_signature_from_value(
     value: &Value,
-) -> Result<MediaMatchWireSignatureV2, String> {
+) -> Result<MediaMatchWireSignature, String> {
     let bytes = serde_json::to_vec(value)
         .map_err(|error| format!("media match wire signature could not serialize: {error}"))?;
     if bytes.len() > MEDIA_MATCH_WIRE_MAX_BYTES {
@@ -1408,7 +1408,7 @@ pub fn media_match_wire_signature_from_value(
     if schema != MEDIA_MATCH_WIRE_SCHEMA_V3 {
         return Err("media match wire signature schema is unsupported".to_owned());
     }
-    let signature: MediaMatchWireSignatureV2 = serde_json::from_value(value.clone())
+    let signature: MediaMatchWireSignature = serde_json::from_value(value.clone())
         .map_err(|error| format!("media match v3 wire signature is invalid: {error}"))?;
     if signature.profiles.is_empty() {
         return Err("media match wire signature has no profiles".to_owned());
@@ -1421,7 +1421,7 @@ pub fn media_match_wire_signature_from_value(
 
 pub fn decide_media_match_against_wire_signature(
     query: &MediaFingerprintRecord,
-    signature: &MediaMatchWireSignatureV2,
+    signature: &MediaMatchWireSignature,
     settings: &MediaMatchSettings,
 ) -> MediaMatchDecision {
     let query_profile = media_anchor_profile_from_record(query);
@@ -1442,7 +1442,7 @@ pub fn decide_media_match_against_wire_signature(
 
 fn media_match_wire_anchor_profile_from_record(
     record: &MediaFingerprintRecord,
-) -> Option<MediaMatchWireAnchorProfile> {
+) -> Option<MediaMatchWireProfile> {
     let anchor_profile = media_anchor_profile_from_record(record);
     media_match_wire_anchor_profile_from_anchor_profile(
         &anchor_profile,
@@ -1455,7 +1455,7 @@ pub fn media_match_wire_anchor_profile_from_anchor_profile(
     profile: &MediaAnchorProfile,
     audio_algorithm: &str,
     video_algorithm: &str,
-) -> Option<MediaMatchWireAnchorProfile> {
+) -> Option<MediaMatchWireProfile> {
     if profile.is_empty() {
         return None;
     }
@@ -1463,7 +1463,7 @@ pub fn media_match_wire_anchor_profile_from_anchor_profile(
         .then(|| encode_audio_anchor_summary(&profile.audio_anchors));
     let video_summary = (!profile.video_anchors.is_empty())
         .then(|| encode_video_anchor_summary(&profile.video_anchors));
-    Some(MediaMatchWireAnchorProfile {
+    Some(MediaMatchWireProfile {
         profile: profile.profile.clone(),
         algorithm_version: profile.version,
         duration_ms: profile.duration_ms,
@@ -1481,7 +1481,7 @@ pub fn media_match_wire_anchor_profile_from_anchor_profile(
 }
 
 pub fn media_anchor_profile_from_wire_profile(
-    profile: &MediaMatchWireAnchorProfile,
+    profile: &MediaMatchWireProfile,
 ) -> Result<MediaAnchorProfile, String> {
     if profile.algorithm_version != MEDIA_MATCH_ANCHOR_VERSION {
         return Err(format!(
@@ -1531,7 +1531,7 @@ pub fn media_anchor_profile_from_wire_profile(
         audio_summary.as_deref(),
         video_summary.as_deref(),
     )
-    .map_err(|error| format!("media match v2 anchors could not decode: {error}"))
+    .map_err(|error| format!("media match v3 anchors could not decode: {error}"))
 }
 
 fn media_extraction_settings_for_profile_label(label: &str) -> Option<MediaExtractionSettings> {
@@ -3511,6 +3511,9 @@ fn media_timeline_map_v3_from_evidence(
     tier: MediaMatchTier,
     evidence: &MediaMatchEvidence,
 ) -> MediaTimelineMapV3 {
+    // TODO(media-match-v3): this currently derives a single V3 timeline segment from
+    // the old global alignment. Replace it with true piecewise segment chaining before
+    // relying on MatchClassV3/timeline_map_v3 for edit-aware timeline maps.
     let global_class = media_match_class_v3_from_evidence(tier, evidence);
     let segments = evidence
         .alignment
@@ -3652,6 +3655,49 @@ fn longest_common_subsequence_ratio(left: &[u32], right: &[u32]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn unique_test_root(label: &str) -> PathBuf {
+        let mut root = std::env::temp_dir();
+        root.push(format!(
+            "sorotte-media-match-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&root).expect("test root should be created");
+        root
+    }
+
+    fn write_fake_tool(root: &Path, name: &str, stdout_line: Option<&str>) -> PathBuf {
+        #[cfg(windows)]
+        let path = root.join(format!("{name}.cmd"));
+        #[cfg(not(windows))]
+        let path = root.join(name);
+
+        #[cfg(windows)]
+        let script = match stdout_line {
+            Some(line) => format!("@echo off\r\necho {line}\r\nexit /b 0\r\n"),
+            None => "@echo off\r\nexit /b 0\r\n".to_owned(),
+        };
+        #[cfg(not(windows))]
+        let script = match stdout_line {
+            Some(line) => format!("#!/bin/sh\nprintf '%s\\n' '{line}'\n"),
+            None => "#!/bin/sh\nexit 0\n".to_owned(),
+        };
+        std::fs::write(&path, script).expect("fake tool should be written");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&path)
+                .expect("fake tool metadata should load")
+                .permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&path, permissions).expect("fake tool should be executable");
+        }
+        path
+    }
 
     fn record(
         path: &str,
@@ -4278,6 +4324,67 @@ mod tests {
         assert_eq!(counts.ffmpeg + counts.ffprobe + counts.fpcalc, 2);
         assert_eq!(counts.ffmpeg, 1);
         assert_eq!(counts.fpcalc, 0);
+    }
+
+    #[test]
+    fn combined_v3_process_budget_avoids_fpcalc() {
+        let counts = expected_media_tool_invocation_counts(&MediaExtractionSettings::combined_v3());
+        assert_eq!(counts.ffmpeg, 2);
+        assert_eq!(counts.ffprobe, 1);
+        assert_eq!(counts.fpcalc, 0);
+    }
+
+    #[test]
+    fn audio_constellation_v3_extraction_path_never_invokes_fpcalc() {
+        let root = unique_test_root("audio-v3-no-fpcalc");
+        let media_path = root.join("episode.mkv");
+        std::fs::write(&media_path, b"not real media").expect("test media should be written");
+        let tools = MediaMatchToolPaths {
+            ffmpeg: write_fake_tool(&root, "ffmpeg", None),
+            ffprobe: write_fake_tool(&root, "ffprobe", Some("1.0")),
+            fpcalc: root.join("fpcalc-must-not-exist"),
+        };
+
+        let result = fingerprint_media_file_with_report(
+            &media_path,
+            &tools,
+            &MediaExtractionSettings::audio_constellation_v3(),
+            None,
+        )
+        .expect("V3 fingerprint should tolerate empty fake ffmpeg as a modality error");
+
+        assert_eq!(result.report.invocations.ffprobe, 1);
+        assert_eq!(result.report.invocations.ffmpeg, 1);
+        assert_eq!(result.report.invocations.fpcalc, 0);
+        assert!(result.record.audio_error.is_some());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn combined_v3_extraction_path_never_invokes_fpcalc() {
+        let root = unique_test_root("combined-v3-no-fpcalc");
+        let media_path = root.join("episode.mkv");
+        std::fs::write(&media_path, b"not real media").expect("test media should be written");
+        let tools = MediaMatchToolPaths {
+            ffmpeg: write_fake_tool(&root, "ffmpeg", None),
+            ffprobe: write_fake_tool(&root, "ffprobe", Some("1.0")),
+            fpcalc: root.join("fpcalc-must-not-exist"),
+        };
+
+        let result = fingerprint_media_file_with_report(
+            &media_path,
+            &tools,
+            &MediaExtractionSettings::combined_v3(),
+            None,
+        )
+        .expect("combined V3 fingerprint should tolerate empty fake ffmpeg as modality errors");
+
+        assert_eq!(result.report.invocations.ffprobe, 1);
+        assert_eq!(result.report.invocations.ffmpeg, 2);
+        assert_eq!(result.report.invocations.fpcalc, 0);
+        assert!(result.record.audio_error.is_some());
+        assert!(result.record.video_error.is_some());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

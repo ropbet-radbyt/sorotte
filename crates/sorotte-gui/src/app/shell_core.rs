@@ -329,6 +329,7 @@ impl SorotteGuiShellAppState {
             super::GuiMediaMatchToolHealth::Healthy => "Media matching ready",
             super::GuiMediaMatchToolHealth::MissingFfmpeg => "ffmpeg required",
             super::GuiMediaMatchToolHealth::MissingFfprobe => "ffprobe required",
+            super::GuiMediaMatchToolHealth::MissingFpcalc => "fpcalc required for legacy matching",
             super::GuiMediaMatchToolHealth::Broken => "Media matching tools are broken",
         }
     }
@@ -341,10 +342,9 @@ impl SorotteGuiShellAppState {
             return "Fingerprinting is off; matches are diagnostic only.".to_owned();
         }
         if self.media_match.health == super::GuiMediaMatchToolHealth::Healthy {
-            return "ffmpeg and ffprobe are available for local media fingerprints.".to_owned();
+            return "ffmpeg and ffprobe are available for Media Matching V3; fpcalc is optional for legacy Chromaprint profiles.".to_owned();
         }
-        "Import or install ffmpeg, ffprobe, and fpcalc to enable local media fingerprints."
-            .to_owned()
+        "Import or install ffmpeg and ffprobe to enable V3 local media fingerprints; fpcalc is optional legacy support.".to_owned()
     }
 
     pub(super) fn media_match_autoplay_policy_summary(&self) -> String {
