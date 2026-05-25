@@ -37,6 +37,7 @@ struct ManifestCandidate {
     path: String,
     expected_class: Option<String>,
     minimum_tier: Option<String>,
+    expected_offset_ms: Option<i64>,
     max_offset_error_ms: Option<i64>,
     autoplay_eligible: Option<bool>,
 }
@@ -182,10 +183,7 @@ fn parse_manifest(text: &str) -> Result<Manifest, String> {
 fn run_manifest(manifest: &Manifest) -> Result<DiagnosticReport, String> {
     let settings = settings_for_profile(&manifest.profile)?;
     let tools = tool_paths();
-    let autoplay_settings = MediaMatchSettings {
-        autoplay_policy: MediaMatchAutoplayPolicy::AllowStrongSameMedia,
-        ..MediaMatchSettings::default()
-    };
+    let autoplay_settings = diagnostic_decision_settings();
     let mut records = BTreeMap::<String, InstrumentedMediaFingerprint>::new();
     let mut cases = Vec::new();
     let mut summary = ReportSummary {
@@ -247,6 +245,14 @@ fn run_manifest(manifest: &Manifest) -> Result<DiagnosticReport, String> {
     })
 }
 
+fn diagnostic_decision_settings() -> MediaMatchSettings {
+    MediaMatchSettings {
+        fingerprinting_enabled: true,
+        autoplay_policy: MediaMatchAutoplayPolicy::AllowStrongSameMedia,
+        ..MediaMatchSettings::default()
+    }
+}
+
 fn fingerprint_cached<'a>(
     records: &'a mut BTreeMap<String, InstrumentedMediaFingerprint>,
     path: &str,
@@ -295,13 +301,22 @@ fn evaluate_expectation(
     }
     if let Some(max_offset_error_ms) = expected.max_offset_error_ms {
         match decision.evidence.alignment.as_ref() {
-            Some(alignment)
-                if ((alignment.offset_seconds * 1000.0).round() as i64).abs()
-                    <= max_offset_error_ms => {}
-            Some(alignment) => failures.push(format!(
-                "expected offset <= {max_offset_error_ms}ms, got {}ms",
-                (alignment.offset_seconds * 1000.0).round() as i64
-            )),
+            Some(alignment) => {
+                let actual_offset_ms = (alignment.offset_seconds * 1000.0).round() as i64;
+                let expected_offset_ms = expected.expected_offset_ms.unwrap_or(0);
+                let offset_error_ms = (actual_offset_ms - expected_offset_ms).abs();
+                if offset_error_ms > max_offset_error_ms {
+                    if expected.expected_offset_ms.is_some() {
+                        failures.push(format!(
+                            "expected offset {expected_offset_ms}ms +/- {max_offset_error_ms}ms, got {actual_offset_ms}ms (error {offset_error_ms}ms)"
+                        ));
+                    } else {
+                        failures.push(format!(
+                            "expected absolute offset <= {max_offset_error_ms}ms, got {actual_offset_ms}ms"
+                        ));
+                    }
+                }
+            }
             None => failures.push("expected offset evidence, got none".to_owned()),
         }
     }
@@ -436,7 +451,10 @@ mod tests {
     };
 
     use super::*;
-    use sorotte_media_match::{MediaMatchEvidence, MetadataMatchEvidence};
+    use sorotte_media_match::{
+        MEDIA_MATCH_ALGORITHM_VERSION, MediaFileIdentity, MediaFingerprintRecord,
+        MediaMatchEvidence, MediaTimelineAlignment, MetadataMatchEvidence,
+    };
 
     #[test]
     fn manifest_parsing_accepts_expected_shape() {
@@ -450,6 +468,7 @@ mod tests {
                   "path": "candidate.mkv",
                   "expectedClass": "SameCutStrong",
                   "minimumTier": "Strong",
+                  "expectedOffsetMs": 5000,
                   "maxOffsetErrorMs": 1000,
                   "autoplayEligible": true
                 }]
@@ -460,6 +479,10 @@ mod tests {
 
         assert_eq!(manifest.profile, "combined-v3");
         assert_eq!(manifest.cases[0].candidates[0].path, "candidate.mkv");
+        assert_eq!(
+            manifest.cases[0].candidates[0].expected_offset_ms,
+            Some(5000)
+        );
         assert_eq!(
             parse_match_class(
                 manifest.cases[0].candidates[0]
@@ -486,6 +509,7 @@ mod tests {
             path: "candidate.mkv".to_owned(),
             expected_class: Some("SameCutStrong".to_owned()),
             minimum_tier: Some("Strong".to_owned()),
+            expected_offset_ms: None,
             max_offset_error_ms: None,
             autoplay_eligible: Some(true),
         };
@@ -497,6 +521,73 @@ mod tests {
         let failures = evaluate_expectation(&decision, &expected, &settings);
 
         assert_eq!(failures.len(), 3, "{failures:?}");
+    }
+
+    #[test]
+    fn expectation_offset_with_expected_value_uses_delta() {
+        let decision = decision_with_offset_ms(5200);
+        let settings = diagnostic_decision_settings();
+        let expected = ManifestCandidate {
+            path: "candidate.mkv".to_owned(),
+            expected_class: None,
+            minimum_tier: None,
+            expected_offset_ms: Some(5000),
+            max_offset_error_ms: Some(1000),
+            autoplay_eligible: None,
+        };
+
+        let failures = evaluate_expectation(&decision, &expected, &settings);
+
+        assert!(failures.is_empty(), "{failures:?}");
+    }
+
+    #[test]
+    fn expectation_offset_with_expected_value_reports_delta_failure() {
+        let decision = decision_with_offset_ms(8000);
+        let settings = diagnostic_decision_settings();
+        let expected = ManifestCandidate {
+            path: "candidate.mkv".to_owned(),
+            expected_class: None,
+            minimum_tier: None,
+            expected_offset_ms: Some(5000),
+            max_offset_error_ms: Some(1000),
+            autoplay_eligible: None,
+        };
+
+        let failures = evaluate_expectation(&decision, &expected, &settings);
+
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(failures[0].contains("expected offset 5000ms +/- 1000ms"));
+        assert!(failures[0].contains("got 8000ms"));
+    }
+
+    #[test]
+    fn expectation_offset_without_expected_value_keeps_absolute_behavior() {
+        let decision = decision_with_offset_ms(800);
+        let settings = diagnostic_decision_settings();
+        let expected = ManifestCandidate {
+            path: "candidate.mkv".to_owned(),
+            expected_class: None,
+            minimum_tier: None,
+            expected_offset_ms: None,
+            max_offset_error_ms: Some(1000),
+            autoplay_eligible: None,
+        };
+
+        let failures = evaluate_expectation(&decision, &expected, &settings);
+
+        assert!(failures.is_empty(), "{failures:?}");
+    }
+
+    #[test]
+    fn diagnostic_decision_settings_enable_fingerprinting() {
+        let query = exactish_record("query.mkv");
+        let mut candidate = exactish_record("candidate.mkv");
+        candidate.identity.normalized_path = "candidate.mkv".to_owned();
+        let decision = decide_media_match(&query, &candidate, &diagnostic_decision_settings());
+
+        assert_ne!(decision.tier, MediaMatchTier::Unknown, "{decision:?}");
+        assert!(!decision.explanation.contains("fingerprinting disabled"));
     }
 
     #[test]
@@ -524,6 +615,7 @@ mod tests {
                     path: candidate.to_string_lossy().to_string(),
                     expected_class: None,
                     minimum_tier: Some("Probable".to_owned()),
+                    expected_offset_ms: None,
                     max_offset_error_ms: None,
                     autoplay_eligible: None,
                 }],
@@ -604,5 +696,51 @@ mod tests {
         ));
         fs::create_dir_all(&path).expect("temp dir should be created");
         path
+    }
+
+    fn decision_with_offset_ms(offset_ms: i64) -> MediaMatchDecision {
+        MediaMatchDecision {
+            tier: MediaMatchTier::Strong,
+            evidence: MediaMatchEvidence {
+                metadata: MetadataMatchEvidence::default(),
+                alignment: Some(MediaTimelineAlignment {
+                    offset_seconds: offset_ms as f64 / 1000.0,
+                    scale_ppm: 1_000_000,
+                    drift_ratio: 0.0,
+                    aligned_pairs: 12,
+                    aligned_audio_anchors: 12,
+                    aligned_video_anchors: 0,
+                    aligned_span_seconds: 300.0,
+                    second_best_offset_margin: 1.0,
+                    first_query_second: 0.0,
+                    last_query_second: 300.0,
+                    first_candidate_second: offset_ms as f64 / 1000.0,
+                    last_candidate_second: 300.0 + offset_ms as f64 / 1000.0,
+                }),
+                v3_class: Some(MatchClassV3::SameCutStrong),
+                ..MediaMatchEvidence::default()
+            },
+            explanation: "strong".to_owned(),
+        }
+    }
+
+    fn exactish_record(path: &str) -> MediaFingerprintRecord {
+        MediaFingerprintRecord {
+            identity: MediaFileIdentity {
+                normalized_path: path.to_owned(),
+                modified_unix_millis: 1,
+                size_bytes: 123,
+            },
+            algorithm_version: MEDIA_MATCH_ALGORITHM_VERSION,
+            extraction_settings: MediaExtractionSettings::audio_constellation_v3(),
+            duration_seconds: Some(60.0),
+            container_fingerprint: "same-container".to_owned(),
+            audio: None,
+            video: None,
+            audio_anchors: Vec::new(),
+            video_anchors: Vec::new(),
+            audio_error: None,
+            video_error: None,
+        }
     }
 }

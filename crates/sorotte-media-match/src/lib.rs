@@ -21,8 +21,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-// TODO(media-match): split this crate into settings/wire/audio_v3/video_v3/extraction/
-// anchors/matching/diagnostics modules in a separate behavior-preserving change.
+mod timeline_v3;
+
+pub use timeline_v3::{
+    classify_timeline_at_query_ms, map_candidate_position_to_query_ms,
+    map_query_position_to_candidate_ms, timeline_map_contains_query_position,
+};
+
+// TODO(media-match): continue the behavior-preserving module split beyond
+// timeline_v3 into settings/wire/audio_v3/video_v3/extraction/anchors/
+// matching/diagnostics modules.
 pub const MEDIA_MATCH_ALGORITHM_VERSION: u32 = 3;
 pub const MEDIA_MATCH_FILE_PAYLOAD_KEY: &str = "mediaMatch";
 pub const MEDIA_MATCH_WIRE_SCHEMA_V2: &str = "sorotte.mediaMatch.v2";
@@ -554,6 +562,9 @@ pub struct MediaAudioStreamMetrics {
     pub raw_landmarks_before_bounding: usize,
     pub final_landmarks: usize,
     pub max_buffer_samples: usize,
+    /// Compatibility alias for the largest retained raw-landmark buffer after
+    /// online compaction/finalization. Use `max_raw_landmarks_seen` for the
+    /// transient pre-compaction high-water mark.
     pub max_raw_landmarks_buffered: usize,
     pub max_raw_landmarks_seen: usize,
     pub max_raw_landmarks_after_compaction: usize,
@@ -579,6 +590,7 @@ pub struct InstrumentedMediaFingerprint {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MediaMatchV3DiagnosticSummary {
     pub file_path: Option<String>,
     pub profile: String,
@@ -599,6 +611,15 @@ pub struct MediaMatchV3DiagnosticSummary {
     pub piecewise_fit_millis: Option<u64>,
     pub decision_tier: Option<MediaMatchTier>,
     pub decision_class: Option<MatchClassV3>,
+    pub streamed_bytes: Option<usize>,
+    pub streamed_samples: Option<usize>,
+    pub peak_frames: Option<usize>,
+    pub raw_landmarks_before_bounding: Option<usize>,
+    pub final_landmarks: Option<usize>,
+    pub max_buffer_samples: Option<usize>,
+    pub max_raw_landmarks_seen: Option<usize>,
+    pub max_raw_landmarks_after_compaction: Option<usize>,
+    pub raw_landmark_compactions: Option<usize>,
     pub notes: Vec<String>,
 }
 
@@ -635,16 +656,16 @@ fn summarize_record_v3_diagnostics_with_report(
     })
     .len();
     let mut notes = Vec::new();
+    let audio_stream = report.map(|report| &report.audio_stream);
     if let Some(report) = report {
         notes.push(format!(
-            "streamed_audio_bytes={} streamed_audio_samples={} peak_frames={} raw_audio_landmarks={} final_audio_landmarks={} max_audio_buffer_samples={} max_raw_landmarks_buffered={} max_raw_landmarks_seen={} max_raw_landmarks_after_compaction={} raw_compactions={}",
+            "streamedBytes={} streamedSamples={} peakFrames={} rawLandmarksBeforeBounding={} finalLandmarks={} maxBufferSamples={} maxRawLandmarksSeen={} maxRawLandmarksAfterCompaction={} rawLandmarkCompactions={}",
             report.audio_stream.streamed_bytes,
             report.audio_stream.streamed_samples,
             report.audio_stream.peak_frames,
             report.audio_stream.raw_landmarks_before_bounding,
             report.audio_stream.final_landmarks,
             report.audio_stream.max_buffer_samples,
-            report.audio_stream.max_raw_landmarks_buffered,
             report.audio_stream.max_raw_landmarks_seen,
             report.audio_stream.max_raw_landmarks_after_compaction,
             report.audio_stream.raw_landmark_compactions
@@ -670,6 +691,17 @@ fn summarize_record_v3_diagnostics_with_report(
         piecewise_fit_millis: None,
         decision_tier: None,
         decision_class: None,
+        streamed_bytes: audio_stream.map(|stream| stream.streamed_bytes),
+        streamed_samples: audio_stream.map(|stream| stream.streamed_samples),
+        peak_frames: audio_stream.map(|stream| stream.peak_frames),
+        raw_landmarks_before_bounding: audio_stream
+            .map(|stream| stream.raw_landmarks_before_bounding),
+        final_landmarks: audio_stream.map(|stream| stream.final_landmarks),
+        max_buffer_samples: audio_stream.map(|stream| stream.max_buffer_samples),
+        max_raw_landmarks_seen: audio_stream.map(|stream| stream.max_raw_landmarks_seen),
+        max_raw_landmarks_after_compaction: audio_stream
+            .map(|stream| stream.max_raw_landmarks_after_compaction),
+        raw_landmark_compactions: audio_stream.map(|stream| stream.raw_landmark_compactions),
         notes,
     }
 }
@@ -715,6 +747,15 @@ pub fn summarize_decision_v3_diagnostics(
             .evidence
             .v3_class
             .or_else(|| map.map(|map| map.global_class)),
+        streamed_bytes: None,
+        streamed_samples: None,
+        peak_frames: None,
+        raw_landmarks_before_bounding: None,
+        final_landmarks: None,
+        max_buffer_samples: None,
+        max_raw_landmarks_seen: None,
+        max_raw_landmarks_after_compaction: None,
+        raw_landmark_compactions: None,
         notes,
     }
 }
@@ -5015,103 +5056,6 @@ fn media_timeline_map_v3_from_analysis(
     }
 }
 
-pub fn classify_timeline_at_query_ms(map: &MediaTimelineMapV3, query_t_ms: u32) -> MatchClassV3 {
-    if map
-        .segments
-        .iter()
-        .any(|segment| segment.query_start_ms <= query_t_ms && query_t_ms <= segment.query_end_ms)
-    {
-        map.global_class
-    } else if map.segments.is_empty() {
-        MatchClassV3::Unknown
-    } else {
-        MatchClassV3::PartialOverlap
-    }
-}
-
-pub fn timeline_map_contains_query_position(map: &MediaTimelineMapV3, query_t_ms: u32) -> bool {
-    map.segments
-        .iter()
-        .any(|segment| segment.query_start_ms <= query_t_ms && query_t_ms <= segment.query_end_ms)
-}
-
-pub fn map_query_position_to_candidate_ms(
-    map: &MediaTimelineMapV3,
-    query_t_ms: u32,
-) -> Option<TimelinePositionMapResult> {
-    let (segment_index, segment) = map.segments.iter().enumerate().find(|(_, segment)| {
-        segment.query_start_ms <= query_t_ms && query_t_ms <= segment.query_end_ms
-    })?;
-    let delta_ms = query_t_ms.saturating_sub(segment.query_start_ms);
-    let mapped_delta_ms = affine_delta_ms(delta_ms, i64::from(segment.scale_ppm))?;
-    let mapped_ms = clamp_i64_to_u32(
-        i64::from(segment.candidate_start_ms) + mapped_delta_ms,
-        segment.candidate_start_ms,
-        segment.candidate_end_ms,
-    );
-    let confidence = timeline_position_confidence(map, segment);
-    Some(TimelinePositionMapResult {
-        mapped_ms,
-        class_at_position: map.global_class,
-        segment_index,
-        confidence,
-        local_offset_ms: i64::from(mapped_ms) - i64::from(query_t_ms),
-        scale_ppm: segment.scale_ppm,
-    })
-}
-
-pub fn map_candidate_position_to_query_ms(
-    map: &MediaTimelineMapV3,
-    candidate_t_ms: u32,
-) -> Option<TimelinePositionMapResult> {
-    let (segment_index, segment) = map.segments.iter().enumerate().find(|(_, segment)| {
-        segment.candidate_start_ms <= candidate_t_ms
-            && candidate_t_ms <= segment.candidate_end_ms
-            && segment.scale_ppm > 0
-    })?;
-    let delta_ms = candidate_t_ms.saturating_sub(segment.candidate_start_ms);
-    let mapped_delta_ms = affine_delta_ms(
-        delta_ms,
-        1_000_000_000_000i64 / i64::from(segment.scale_ppm),
-    )?;
-    let mapped_ms = clamp_i64_to_u32(
-        i64::from(segment.query_start_ms) + mapped_delta_ms,
-        segment.query_start_ms,
-        segment.query_end_ms,
-    );
-    let confidence = timeline_position_confidence(map, segment);
-    Some(TimelinePositionMapResult {
-        mapped_ms,
-        class_at_position: map.global_class,
-        segment_index,
-        confidence,
-        local_offset_ms: i64::from(candidate_t_ms) - i64::from(mapped_ms),
-        scale_ppm: segment.scale_ppm,
-    })
-}
-
-fn affine_delta_ms(delta_ms: u32, scale_ppm: i64) -> Option<i64> {
-    if scale_ppm <= 0 {
-        return None;
-    }
-    Some((i64::from(delta_ms) * scale_ppm) / 1_000_000)
-}
-
-fn clamp_i64_to_u32(value: i64, min: u32, max: u32) -> u32 {
-    value.clamp(i64::from(min), i64::from(max)) as u32
-}
-
-fn timeline_position_confidence(map: &MediaTimelineMapV3, segment: &AlignedSegmentV3) -> f32 {
-    let multiplier = match map.global_class {
-        MatchClassV3::SameCutStrong | MatchClassV3::SameCutProbable => 1.0,
-        MatchClassV3::SameMediaDifferentCut | MatchClassV3::PartialOverlap => 0.85,
-        MatchClassV3::SameAudioDifferentVideo | MatchClassV3::SameVideoDifferentAudio => 0.65,
-        MatchClassV3::SharedIntroOutroOnly => 0.25,
-        MatchClassV3::Reject | MatchClassV3::Unknown => 0.0,
-    };
-    (segment.confidence * multiplier).clamp(0.0, 1.0)
-}
-
 fn anchor_coverage(aligned: usize, total: usize) -> f64 {
     if total == 0 {
         0.0
@@ -7134,6 +7078,53 @@ mod tests {
         assert!(summary.video_index_count > 0);
         assert!(summary.audio_blob_bytes > 0);
         assert!(summary.video_blob_bytes > 0);
+    }
+
+    #[test]
+    fn v3_diagnostics_serializes_stable_stream_metric_names() {
+        let record = record_with_extraction_settings(
+            "stream-diagnostics.mkv",
+            100,
+            Some(120.0),
+            None,
+            None,
+            MediaExtractionSettings::audio_constellation_v3(),
+        );
+        let fingerprint = InstrumentedMediaFingerprint {
+            record,
+            report: MediaFingerprintExtractionReport {
+                audio_stream: MediaAudioStreamMetrics {
+                    streamed_bytes: 10_000,
+                    streamed_samples: 5_000,
+                    peak_frames: 12,
+                    raw_landmarks_before_bounding: 300,
+                    final_landmarks: 96,
+                    max_buffer_samples: V3_AUDIO_WINDOW_SAMPLES + V3_AUDIO_HOP_SAMPLES,
+                    max_raw_landmarks_seen: 1_100,
+                    max_raw_landmarks_after_compaction: 512,
+                    raw_landmark_compactions: 2,
+                    ..MediaAudioStreamMetrics::default()
+                },
+                ..MediaFingerprintExtractionReport::default()
+            },
+        };
+
+        let value =
+            serde_json::to_value(summarize_instrumented_record_v3_diagnostics(&fingerprint))
+                .expect("diagnostics should serialize");
+
+        assert_eq!(value["streamedBytes"], 10_000);
+        assert_eq!(value["streamedSamples"], 5_000);
+        assert_eq!(value["peakFrames"], 12);
+        assert_eq!(value["rawLandmarksBeforeBounding"], 300);
+        assert_eq!(value["finalLandmarks"], 96);
+        assert_eq!(
+            value["maxBufferSamples"],
+            V3_AUDIO_WINDOW_SAMPLES + V3_AUDIO_HOP_SAMPLES
+        );
+        assert_eq!(value["maxRawLandmarksSeen"], 1_100);
+        assert_eq!(value["maxRawLandmarksAfterCompaction"], 512);
+        assert_eq!(value["rawLandmarkCompactions"], 2);
     }
 
     #[test]

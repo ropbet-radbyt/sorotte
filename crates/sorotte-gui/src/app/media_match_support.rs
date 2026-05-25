@@ -137,7 +137,6 @@ struct MediaMatchRebuildInstrumentation {
     audio_stream_raw_landmarks: usize,
     audio_stream_final_landmarks: usize,
     max_audio_stream_buffer_samples: usize,
-    max_audio_stream_raw_landmarks: usize,
     max_audio_stream_raw_landmarks_seen: usize,
     max_audio_stream_raw_landmarks_after_compaction: usize,
     audio_stream_raw_compactions: usize,
@@ -167,9 +166,6 @@ impl MediaMatchRebuildInstrumentation {
         self.max_audio_stream_buffer_samples = self
             .max_audio_stream_buffer_samples
             .max(report.audio_stream.max_buffer_samples);
-        self.max_audio_stream_raw_landmarks = self
-            .max_audio_stream_raw_landmarks
-            .max(report.audio_stream.max_raw_landmarks_buffered);
         self.max_audio_stream_raw_landmarks_seen = self
             .max_audio_stream_raw_landmarks_seen
             .max(report.audio_stream.max_raw_landmarks_seen);
@@ -212,7 +208,7 @@ impl MediaMatchRebuildInstrumentation {
 
     fn summary(&self) -> String {
         format!(
-            "tools ffmpeg/ffprobe/fpcalc={}/{}/{}, extract={}ms (probe {}ms, audio {}ms, video {}ms), v3 audio stream bytes/samples/frames/raw/final/maxbuf/maxraw/maxrawseen/maxrawpostcompact/compactions={}/{}/{}/{}/{}/{}/{}/{}/{}/{}, v3 blob bytes audio/video={}/{}, v3 index rows audio/video={}/{}, stats refreshes={} in {}ms (debug record bytes={})",
+            "tools ffmpeg/ffprobe/fpcalc={}/{}/{}, extract={}ms (probe {}ms, audio {}ms, video {}ms), v3 audio stream streamedBytes/streamedSamples/peakFrames/rawLandmarksBeforeBounding/finalLandmarks/maxBufferSamples/maxRawLandmarksSeen/maxRawLandmarksAfterCompaction/rawLandmarkCompactions={}/{}/{}/{}/{}/{}/{}/{}/{}, v3 blob bytes audio/video={}/{}, v3 index rows audio/video={}/{}, stats refreshes={} in {}ms (debug record bytes={})",
             self.ffmpeg_invocations,
             self.ffprobe_invocations,
             self.fpcalc_invocations,
@@ -226,7 +222,6 @@ impl MediaMatchRebuildInstrumentation {
             self.audio_stream_raw_landmarks,
             self.audio_stream_final_landmarks,
             self.max_audio_stream_buffer_samples,
-            self.max_audio_stream_raw_landmarks,
             self.max_audio_stream_raw_landmarks_seen,
             self.max_audio_stream_raw_landmarks_after_compaction,
             self.audio_stream_raw_compactions,
