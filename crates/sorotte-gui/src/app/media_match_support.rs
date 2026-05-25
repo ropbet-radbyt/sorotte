@@ -1941,324 +1941,6 @@ struct MediaMatchV3RetrievalStats {
     retrieval_elapsed_ms: u128,
 }
 
-#[cfg(test)]
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct MediaMatchV3DiagnosticManifest {
-    pub cases: Vec<MediaMatchV3DiagnosticCase>,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct MediaMatchV3DiagnosticCase {
-    pub name: String,
-    pub query: String,
-    pub candidates: Vec<String>,
-    #[serde(default)]
-    pub expected: Vec<MediaMatchV3DiagnosticExpectation>,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct MediaMatchV3DiagnosticExpectation {
-    pub candidate: String,
-    pub class: Option<String>,
-    #[serde(alias = "min_tier")]
-    pub min_tier: Option<String>,
-    #[serde(alias = "max_offset_error_ms")]
-    pub max_offset_error_ms: Option<i64>,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct MediaMatchV3DiagnosticReport {
-    pub algorithm_version: u32,
-    pub settings_hash: String,
-    pub profile: String,
-    pub cases: Vec<MediaMatchV3DiagnosticCaseReport>,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct MediaMatchV3DiagnosticCaseReport {
-    pub name: String,
-    pub query: String,
-    pub extraction: sorotte_media_match::MediaMatchV3DiagnosticSummary,
-    pub retrieval: MediaMatchV3RetrievalStatsReport,
-    pub pairs: Vec<MediaMatchV3DiagnosticPairReport>,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct MediaMatchV3DiagnosticPairReport {
-    pub query: String,
-    pub candidate: String,
-    pub extraction_profile: String,
-    pub query_extraction: sorotte_media_match::MediaMatchV3DiagnosticSummary,
-    pub candidate_extraction: sorotte_media_match::MediaMatchV3DiagnosticSummary,
-    pub retrieval: MediaMatchV3RetrievalStatsReport,
-    pub decision: MediaMatchV3DecisionDiagnosticReport,
-    pub passed: bool,
-    pub failures: Vec<String>,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct MediaMatchV3DecisionDiagnosticReport {
-    pub tier: String,
-    pub v3_class: Option<String>,
-    pub explanation: String,
-    pub offset_seconds: Option<f64>,
-    pub scale_ppm: Option<i32>,
-    pub segment_count: usize,
-    pub total_aligned_span_ms: u32,
-    pub largest_gap_ms: u32,
-    pub edge_only: bool,
-    pub audio_video_conflict: bool,
-    pub piecewise_pair_count: Option<usize>,
-    pub piecewise_hypothesis_count: Option<usize>,
-    pub piecewise_segment_count: Option<usize>,
-    pub piecewise_fit_millis: Option<u64>,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, Serialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct MediaMatchV3RetrievalStatsReport {
-    pub query_buckets_total: i64,
-    pub query_buckets_skipped_common: i64,
-    pub raw_hit_rows_processed: i64,
-    pub candidates_scored: i64,
-    pub retrieval_elapsed_ms: u128,
-    pub candidates: Vec<String>,
-}
-
-#[cfg(test)]
-pub(super) fn media_match_v3_diagnostic_manifest_report_json(
-    root: &Path,
-    manifest_json: &str,
-    tools: &MediaMatchToolPaths,
-    extraction_settings: &MediaExtractionSettings,
-    settings: &MediaMatchSettings,
-) -> Result<String, String> {
-    let manifest: MediaMatchV3DiagnosticManifest = serde_json::from_str(manifest_json)
-        .map_err(|error| format!("failed parsing media-match V3 diagnostic manifest: {error}"))?;
-    let report = run_media_match_v3_diagnostic_manifest(
-        root,
-        &manifest,
-        tools,
-        extraction_settings,
-        settings,
-    )?;
-    serde_json::to_string_pretty(&report)
-        .map_err(|error| format!("failed serializing media-match V3 diagnostic report: {error}"))
-}
-
-#[cfg(test)]
-fn run_media_match_v3_diagnostic_manifest(
-    root: &Path,
-    manifest: &MediaMatchV3DiagnosticManifest,
-    tools: &MediaMatchToolPaths,
-    extraction_settings: &MediaExtractionSettings,
-    settings: &MediaMatchSettings,
-) -> Result<MediaMatchV3DiagnosticReport, String> {
-    let settings_hash = media_extraction_settings_hash(extraction_settings).to_vec();
-    let connection = open_media_match_sqlite_index(root)?;
-    let mut cases = Vec::new();
-    for case in &manifest.cases {
-        let cancel = AtomicBool::new(false);
-        let query = fingerprint_media_file_cancellable_with_report(
-            &case.query,
-            tools,
-            extraction_settings,
-            &cancel,
-        )
-        .map_err(|error| {
-            format!(
-                "failed fingerprinting diagnostic query '{}': {error}",
-                case.query
-            )
-        })?;
-        save_media_match_record_to_sqlite(&connection, &query.record)?;
-        let mut candidates = BTreeMap::new();
-        for candidate_path in &case.candidates {
-            let candidate = fingerprint_media_file_cancellable_with_report(
-                candidate_path,
-                tools,
-                extraction_settings,
-                &cancel,
-            )
-            .map_err(|error| {
-                format!("failed fingerprinting diagnostic candidate '{candidate_path}': {error}")
-            })?;
-            save_media_match_record_to_sqlite(&connection, &candidate.record)?;
-            candidates.insert(normalize_media_path(candidate_path), candidate);
-        }
-        let (retrieved_paths, retrieval_stats) = media_match_v3_anchor_candidate_paths_with_stats(
-            root,
-            &query.record.identity.normalized_path,
-            extraction_settings,
-        )?;
-        let retrieval =
-            MediaMatchV3RetrievalStatsReport::from_stats(retrieval_stats, retrieved_paths.clone());
-        let query_summary =
-            sorotte_media_match::summarize_instrumented_record_v3_diagnostics(&query);
-        let mut pairs = Vec::new();
-        for candidate_path in &case.candidates {
-            let normalized_candidate = normalize_media_path(candidate_path);
-            let Some(candidate) = candidates.get(&normalized_candidate) else {
-                continue;
-            };
-            let decision = decide_media_match(&query.record, &candidate.record, settings);
-            let expectation = case
-                .expected
-                .iter()
-                .find(|expected| normalize_media_path(&expected.candidate) == normalized_candidate);
-            let (passed, failures) =
-                evaluate_media_match_v3_diagnostic_expectation(&decision, expectation);
-            pairs.push(MediaMatchV3DiagnosticPairReport {
-                query: query.record.identity.normalized_path.clone(),
-                candidate: candidate.record.identity.normalized_path.clone(),
-                extraction_profile: extraction_settings.profile.label().to_owned(),
-                query_extraction: query_summary.clone(),
-                candidate_extraction:
-                    sorotte_media_match::summarize_instrumented_record_v3_diagnostics(candidate),
-                retrieval: retrieval.clone(),
-                decision: MediaMatchV3DecisionDiagnosticReport::from_decision(&decision),
-                passed,
-                failures,
-            });
-        }
-        cases.push(MediaMatchV3DiagnosticCaseReport {
-            name: case.name.clone(),
-            query: query.record.identity.normalized_path.clone(),
-            extraction: query_summary,
-            retrieval,
-            pairs,
-        });
-    }
-    Ok(MediaMatchV3DiagnosticReport {
-        algorithm_version: MEDIA_MATCH_ANCHOR_VERSION,
-        settings_hash: bytes_to_lower_hex(&settings_hash),
-        profile: extraction_settings.profile.label().to_owned(),
-        cases,
-    })
-}
-
-#[cfg(test)]
-impl MediaMatchV3RetrievalStatsReport {
-    fn from_stats(stats: MediaMatchV3RetrievalStats, candidates: Vec<String>) -> Self {
-        Self {
-            query_buckets_total: stats.query_buckets_total,
-            query_buckets_skipped_common: stats.query_buckets_skipped_common,
-            raw_hit_rows_processed: stats.raw_hit_rows_processed,
-            candidates_scored: stats.candidates_scored,
-            retrieval_elapsed_ms: stats.retrieval_elapsed_ms,
-            candidates,
-        }
-    }
-}
-
-#[cfg(test)]
-impl MediaMatchV3DecisionDiagnosticReport {
-    fn from_decision(decision: &MediaMatchDecision) -> Self {
-        let map = decision.evidence.timeline_map_v3.as_ref();
-        let summary = sorotte_media_match::summarize_decision_v3_diagnostics(decision);
-        Self {
-            tier: media_match_tier_label(decision.tier).to_owned(),
-            v3_class: decision.evidence.v3_class.map(|class| format!("{class:?}")),
-            explanation: decision.explanation.clone(),
-            offset_seconds: decision
-                .evidence
-                .alignment
-                .as_ref()
-                .map(|alignment| alignment.offset_seconds),
-            scale_ppm: decision
-                .evidence
-                .alignment
-                .as_ref()
-                .map(|alignment| alignment.scale_ppm),
-            segment_count: map.map(|map| map.segments.len()).unwrap_or_default(),
-            total_aligned_span_ms: map.map(|map| map.total_aligned_span_ms).unwrap_or_default(),
-            largest_gap_ms: map.map(|map| map.largest_gap_ms).unwrap_or_default(),
-            edge_only: map.map(|map| map.edge_only).unwrap_or(false),
-            audio_video_conflict: map.map(|map| map.audio_video_conflict).unwrap_or(false),
-            piecewise_pair_count: summary.piecewise_pair_count,
-            piecewise_hypothesis_count: summary.piecewise_hypothesis_count,
-            piecewise_segment_count: summary.piecewise_segment_count,
-            piecewise_fit_millis: summary.piecewise_fit_millis,
-        }
-    }
-}
-
-#[cfg(test)]
-fn evaluate_media_match_v3_diagnostic_expectation(
-    decision: &MediaMatchDecision,
-    expectation: Option<&MediaMatchV3DiagnosticExpectation>,
-) -> (bool, Vec<String>) {
-    let Some(expectation) = expectation else {
-        return (true, Vec::new());
-    };
-    let mut failures = Vec::new();
-    if let Some(expected_class) = expectation.class.as_deref() {
-        let actual_class = decision
-            .evidence
-            .v3_class
-            .map(|class| format!("{class:?}"))
-            .unwrap_or_else(|| "None".to_owned());
-        if actual_class != expected_class {
-            failures.push(format!(
-                "expected class {expected_class}, got {actual_class}"
-            ));
-        }
-    }
-    if let Some(min_tier) = expectation.min_tier.as_deref() {
-        let Some(min_score) = media_match_v3_diagnostic_tier_score(min_tier) else {
-            failures.push(format!("unknown expected tier {min_tier}"));
-            return (false, failures);
-        };
-        if media_match_tier_score(decision.tier) < min_score {
-            failures.push(format!(
-                "expected tier at least {min_tier}, got {}",
-                media_match_tier_label(decision.tier)
-            ));
-        }
-    }
-    if let Some(max_offset_error_ms) = expectation.max_offset_error_ms {
-        let actual_offset_ms = decision
-            .evidence
-            .alignment
-            .as_ref()
-            .map(|alignment| (alignment.offset_seconds * 1000.0).round() as i64)
-            .unwrap_or(i64::MAX / 4);
-        if actual_offset_ms.abs() > max_offset_error_ms {
-            failures.push(format!(
-                "expected offset error <= {max_offset_error_ms}ms, got {actual_offset_ms}ms"
-            ));
-        }
-    }
-    (failures.is_empty(), failures)
-}
-
-#[cfg(test)]
-fn media_match_v3_diagnostic_tier_score(label: &str) -> Option<u8> {
-    match label.to_ascii_lowercase().as_str() {
-        "exact" => Some(media_match_tier_score(MediaMatchTier::Exact)),
-        "strong" => Some(media_match_tier_score(MediaMatchTier::Strong)),
-        "probable" => Some(media_match_tier_score(MediaMatchTier::Probable)),
-        "weak" => Some(media_match_tier_score(MediaMatchTier::Weak)),
-        "reject" => Some(media_match_tier_score(MediaMatchTier::Reject)),
-        "unknown" => Some(media_match_tier_score(MediaMatchTier::Unknown)),
-        _ => None,
-    }
-}
-
 fn media_match_v3_anchor_candidate_paths_with_stats(
     root: &Path,
     normalized_current_path: &str,
@@ -5866,48 +5548,50 @@ mod tests {
             ffprobe,
             fpcalc: PathBuf::from("fpcalc-not-used"),
         };
-        let query_json = query.to_string_lossy().to_string();
-        let candidate_json = candidate.to_string_lossy().to_string();
         let manifest = serde_json::json!({
+            "profile": "combined-v3",
+            "baseDir": "media",
             "cases": [{
                 "name": "copied-synthetic-media",
-                "query": query_json,
-                "candidates": [candidate_json.clone()],
-                "expected": [{
-                    "candidate": candidate_json,
-                    "min_tier": "Exact"
+                "query": "query.mkv",
+                "candidates": [{
+                    "path": "candidate.mkv",
+                    "minimumTier": "Probable",
+                    "mustBeRetrieved": true
                 }]
             }]
         });
 
-        let report_json = media_match_v3_diagnostic_manifest_report_json(
-            &root,
+        let report_json = sorotte_media_match::media_match_v3_diagnostic_manifest_report_json(
             &manifest.to_string(),
-            &tools,
-            &MediaExtractionSettings::combined_v3(),
-            &enabled_media_match_settings(),
+            sorotte_media_match::MediaMatchV3DiagnosticRunOptions {
+                manifest_dir: root.clone(),
+                cache_root: root.join("diagnostic-cache"),
+                tools,
+                generated_at_unix_millis: Some(123),
+            },
         )
         .expect("diagnostic manifest should run");
         let report: serde_json::Value =
             serde_json::from_str(&report_json).expect("report JSON should parse");
-        let pair = &report["cases"][0]["pairs"][0];
+        let candidate = &report["cases"][0]["candidates"][0];
 
         assert_eq!(report["algorithmVersion"], MEDIA_MATCH_ANCHOR_VERSION);
-        assert_eq!(pair["decision"]["tier"], "exact");
-        assert_eq!(pair["passed"], true);
+        assert_eq!(candidate["passed"], true);
+        assert_eq!(candidate["retrieved"], true);
         assert!(
-            pair["queryExtraction"]["audioBlobBytes"]
+            report["cases"][0]["query"]["diagnostics"]["audioBlobBytes"]
                 .as_u64()
                 .unwrap_or_default()
                 > 0
         );
         assert!(
-            pair["retrieval"]["queryBucketsTotal"]
+            report["cases"][0]["retrieval"]["queryBucketsTotal"]
                 .as_i64()
                 .unwrap_or_default()
                 >= 0
         );
-        assert!(pair["decision"].get("v3Class").is_some());
+        assert!(candidate["decision"].get("class").is_some());
         let _ = std::fs::remove_dir_all(&root);
     }
 

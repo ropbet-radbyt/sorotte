@@ -3446,6 +3446,7 @@ name = "sorotte-media-match"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "rusqlite",
  "rustfft",
  "serde",
  "serde_json",

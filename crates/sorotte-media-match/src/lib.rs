@@ -21,8 +21,21 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+mod diagnostic_harness;
 mod timeline_v3;
 
+pub use diagnostic_harness::{
+    MediaMatchV3DiagnosticCandidateReport, MediaMatchV3DiagnosticDecisionReport,
+    MediaMatchV3DiagnosticExpectation, MediaMatchV3DiagnosticFingerprintReport,
+    MediaMatchV3DiagnosticManifest, MediaMatchV3DiagnosticManifestCase,
+    MediaMatchV3DiagnosticReport, MediaMatchV3DiagnosticRetrievalReport,
+    MediaMatchV3DiagnosticRunOptions, MediaMatchV3DiagnosticSummaryReport,
+    MediaMatchV3ResolvedManifest, MediaMatchV3ResolvedManifestCandidate,
+    MediaMatchV3ResolvedManifestCase, MediaMatchV3RetrievalStats,
+    media_match_v3_anchor_candidate_paths_with_stats, media_match_v3_diagnostic_manifest_from_json,
+    media_match_v3_diagnostic_manifest_report_json, resolve_media_match_v3_diagnostic_manifest,
+    run_media_match_v3_diagnostic_manifest,
+};
 pub use timeline_v3::{
     classify_timeline_at_query_ms, map_candidate_position_to_query_ms,
     map_query_position_to_candidate_ms, timeline_map_contains_query_position,
@@ -7420,6 +7433,36 @@ mod tests {
 
         assert_eq!(mapped.class_at_position, MatchClassV3::SharedIntroOutroOnly);
         assert!(mapped.confidence <= 0.25, "{mapped:?}");
+    }
+
+    #[test]
+    fn timeline_mapping_rejects_non_positive_scale() {
+        let zero = test_timeline_map_v3(
+            MatchClassV3::SameCutStrong,
+            vec![test_segment_v3(0, 90_000, 0, 90_000, 0)],
+        );
+        let negative = test_timeline_map_v3(
+            MatchClassV3::SameCutStrong,
+            vec![test_segment_v3(0, 90_000, 0, 90_000, -1)],
+        );
+
+        assert!(map_query_position_to_candidate_ms(&zero, 30_000).is_none());
+        assert!(map_query_position_to_candidate_ms(&negative, 30_000).is_none());
+        assert!(map_candidate_position_to_query_ms(&zero, 30_000).is_none());
+        assert!(map_candidate_position_to_query_ms(&negative, 30_000).is_none());
+    }
+
+    #[test]
+    fn timeline_mapping_absurd_scale_does_not_panic() {
+        let map = test_timeline_map_v3(
+            MatchClassV3::SameCutStrong,
+            vec![test_segment_v3(0, u32::MAX, 0, u32::MAX, i32::MAX)],
+        );
+
+        let mapped = map_query_position_to_candidate_ms(&map, u32::MAX)
+            .expect("i128 arithmetic should handle public extreme scale safely");
+
+        assert_eq!(mapped.mapped_ms, u32::MAX);
     }
 
     fn test_segment_v3(

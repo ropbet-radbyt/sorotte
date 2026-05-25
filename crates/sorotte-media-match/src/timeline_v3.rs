@@ -86,7 +86,8 @@ fn affine_delta_ms(delta_ms: u32, scale_ppm: i64) -> Option<i64> {
     if scale_ppm <= 0 {
         return None;
     }
-    Some((i64::from(delta_ms) * scale_ppm) / 1_000_000)
+    let scaled = i128::from(delta_ms).checked_mul(i128::from(scale_ppm))?;
+    i64::try_from(scaled / 1_000_000).ok()
 }
 
 fn clamp_i64_to_u32(value: i64, min: u32, max: u32) -> u32 {
