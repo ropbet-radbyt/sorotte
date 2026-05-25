@@ -131,6 +131,12 @@ struct MediaMatchRebuildInstrumentation {
     ffprobe_millis: u128,
     audio_millis: u128,
     video_millis: u128,
+    audio_streamed_bytes: usize,
+    audio_streamed_samples: usize,
+    audio_stream_peak_frames: usize,
+    audio_stream_raw_landmarks: usize,
+    audio_stream_final_landmarks: usize,
+    max_audio_stream_buffer_samples: usize,
     debug_record_bytes: usize,
     audio_blob_bytes: usize,
     video_blob_bytes: usize,
@@ -149,6 +155,14 @@ impl MediaMatchRebuildInstrumentation {
         self.ffprobe_millis += report.timings.ffprobe_millis;
         self.audio_millis += report.timings.audio_millis;
         self.video_millis += report.timings.video_millis;
+        self.audio_streamed_bytes += report.audio_stream.streamed_bytes;
+        self.audio_streamed_samples += report.audio_stream.streamed_samples;
+        self.audio_stream_peak_frames += report.audio_stream.peak_frames;
+        self.audio_stream_raw_landmarks += report.audio_stream.raw_landmarks_before_bounding;
+        self.audio_stream_final_landmarks += report.audio_stream.final_landmarks;
+        self.max_audio_stream_buffer_samples = self
+            .max_audio_stream_buffer_samples
+            .max(report.audio_stream.max_buffer_samples);
         self.debug_record_bytes += report.serialized_debug_record_bytes;
     }
 
@@ -184,7 +198,7 @@ impl MediaMatchRebuildInstrumentation {
 
     fn summary(&self) -> String {
         format!(
-            "tools ffmpeg/ffprobe/fpcalc={}/{}/{}, extract={}ms (probe {}ms, audio {}ms, video {}ms), v3 blob bytes audio/video={}/{}, v3 index rows audio/video={}/{}, stats refreshes={} in {}ms (debug record bytes={})",
+            "tools ffmpeg/ffprobe/fpcalc={}/{}/{}, extract={}ms (probe {}ms, audio {}ms, video {}ms), v3 audio stream bytes/samples/frames/raw/final/maxbuf={}/{}/{}/{}/{}/{}, v3 blob bytes audio/video={}/{}, v3 index rows audio/video={}/{}, stats refreshes={} in {}ms (debug record bytes={})",
             self.ffmpeg_invocations,
             self.ffprobe_invocations,
             self.fpcalc_invocations,
@@ -192,6 +206,12 @@ impl MediaMatchRebuildInstrumentation {
             self.ffprobe_millis,
             self.audio_millis,
             self.video_millis,
+            self.audio_streamed_bytes,
+            self.audio_streamed_samples,
+            self.audio_stream_peak_frames,
+            self.audio_stream_raw_landmarks,
+            self.audio_stream_final_landmarks,
+            self.max_audio_stream_buffer_samples,
             self.audio_blob_bytes,
             self.video_blob_bytes,
             self.audio_index_rows,
@@ -1891,8 +1911,32 @@ fn media_match_v3_anchor_candidate_paths(
     normalized_current_path: &str,
     extraction_settings: &MediaExtractionSettings,
 ) -> Result<Vec<String>, String> {
+    media_match_v3_anchor_candidate_paths_with_stats(
+        root,
+        normalized_current_path,
+        extraction_settings,
+    )
+    .map(|(paths, _stats)| paths)
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct MediaMatchV3RetrievalStats {
+    query_buckets_total: i64,
+    query_buckets_skipped_common: i64,
+    raw_hit_rows_processed: i64,
+    candidates_scored: i64,
+    retrieval_elapsed_ms: u128,
+}
+
+fn media_match_v3_anchor_candidate_paths_with_stats(
+    root: &Path,
+    normalized_current_path: &str,
+    extraction_settings: &MediaExtractionSettings,
+) -> Result<(Vec<String>, MediaMatchV3RetrievalStats), String> {
+    let started_at = Instant::now();
+    let mut stats = MediaMatchV3RetrievalStats::default();
     if !managed_media_match_index_path(root).exists() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), stats));
     }
     let connection = open_media_match_sqlite_index(root)?;
     let settings_hash = media_extraction_settings_hash(extraction_settings).to_vec();
@@ -1906,7 +1950,8 @@ fn media_match_v3_anchor_candidate_paths(
         .optional()
         .map_err(|error| format!("failed reading current media-match v3 file id: {error}"))?
     else {
-        return Ok(Vec::new());
+        stats.retrieval_elapsed_ms = started_at.elapsed().as_millis();
+        return Ok((Vec::new(), stats));
     };
     let indexed_file_count = connection
         .query_row(
@@ -1920,6 +1965,30 @@ fn media_match_v3_anchor_candidate_paths(
         .max(1);
     let common_bucket_threshold = MEDIA_MATCH_V3_COMMON_BUCKET_MIN_SKIP_DF
         .max(indexed_file_count / MEDIA_MATCH_V3_COMMON_BUCKET_FILE_DIVISOR);
+    let (query_buckets_total, query_buckets_skipped_common) = connection
+        .query_row(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(CASE WHEN COALESCE(stats.document_frequency, 1) > ?4 THEN 1 ELSE 0 END), 0)
+             FROM anchor_index_v3 query
+             LEFT JOIN anchor_stats_v3 stats
+               ON stats.algorithm_version = query.algorithm_version
+              AND stats.settings_hash = query.settings_hash
+              AND stats.modality = query.modality
+              AND stats.bucket = query.bucket
+             WHERE query.algorithm_version = ?1
+               AND query.settings_hash = ?2
+               AND query.file_id = ?3",
+            params![
+                i64::from(MEDIA_MATCH_ANCHOR_VERSION),
+                &settings_hash,
+                current_file_id,
+                common_bucket_threshold,
+            ],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .unwrap_or((0, 0));
+    stats.query_buckets_total = query_buckets_total;
+    stats.query_buckets_skipped_common = query_buckets_skipped_common;
     let mut statement = connection
         .prepare(
             "SELECT candidate.file_id,
@@ -1970,6 +2039,7 @@ fn media_match_v3_anchor_candidate_paths(
         .map_err(|error| format!("failed querying media-match v3 anchor candidates: {error}"))?;
     let mut scores = BTreeMap::<i64, V3CandidateRetrievalScore>::new();
     for row in rows.flatten() {
+        stats.raw_hit_rows_processed += 1;
         let (file_id, query_t_ms, candidate_t_ms, modality, hit_weight, document_frequency) = row;
         let weighted_score =
             hit_weight.max(1) * media_match_v3_document_frequency_weight(document_frequency);
@@ -2006,6 +2076,7 @@ fn media_match_v3_anchor_candidate_paths(
         .into_values()
         .map(finalize_v3_candidate_retrieval_score)
         .collect::<Vec<_>>();
+    stats.candidates_scored = ranked.len() as i64;
     ranked.sort_by(|left, right| {
         right
             .best_offset_score
@@ -2043,7 +2114,8 @@ fn media_match_v3_anchor_candidate_paths(
             paths.push(path);
         }
     }
-    Ok(paths)
+    stats.retrieval_elapsed_ms = started_at.elapsed().as_millis();
+    Ok((paths, stats))
 }
 
 fn finalize_v3_candidate_retrieval_score(
@@ -2405,9 +2477,25 @@ fn summarize_current_media_match(
             None,
         );
     };
-    let anchor_candidates =
-        media_match_anchor_candidate_paths(root, &normalized_current_path, extraction_settings)
-            .unwrap_or_default();
+    let (anchor_candidates, retrieval_stats) = if extraction_settings.profile.is_v3() {
+        media_match_v3_anchor_candidate_paths_with_stats(
+            root,
+            &normalized_current_path,
+            extraction_settings,
+        )
+        .map(|(paths, stats)| (paths, Some(stats)))
+        .unwrap_or_default()
+    } else {
+        (
+            media_match_anchor_candidate_paths(root, &normalized_current_path, extraction_settings)
+                .unwrap_or_default(),
+            None,
+        )
+    };
+    let retrieval_suffix = retrieval_stats
+        .as_ref()
+        .map(format_media_match_v3_retrieval_stats)
+        .unwrap_or_default();
     let anchor_candidate_set = anchor_candidates.iter().cloned().collect::<BTreeSet<_>>();
     let use_anchor_candidates = !anchor_candidate_set.is_empty();
     let ranked = rank_media_match_candidates(
@@ -2423,7 +2511,9 @@ fn summarize_current_media_match(
         return (
             Some("exact: current local file is indexed".to_owned()),
             None,
-            Some("current file is indexed exactly; no alternate indexed candidates".to_owned()),
+            Some(format!(
+                "current file is indexed exactly; no alternate indexed candidates{retrieval_suffix}"
+            )),
         );
     };
     if matches!(
@@ -2437,8 +2527,8 @@ fn summarize_current_media_match(
                 format_media_match_nearest_candidate(&best)
             )),
             Some(format!(
-                "current file is indexed exactly | nearest_other {}",
-                format_media_match_evidence_summary(&best.decision)
+                "current file is indexed exactly | nearest_other {}{retrieval_suffix}",
+                format_media_match_evidence_summary(&best.decision),
             )),
         );
     }
@@ -2446,7 +2536,10 @@ fn summarize_current_media_match(
     (
         Some(format!("{tier}: {}", best.decision.explanation)),
         Some(format_media_match_nearest_candidate(&best)),
-        Some(format_media_match_evidence_summary(&best.decision)),
+        Some(format!(
+            "{}{retrieval_suffix}",
+            format_media_match_evidence_summary(&best.decision)
+        )),
     )
 }
 
@@ -2640,6 +2733,20 @@ fn format_media_match_evidence_summary(decision: &MediaMatchDecision) -> String 
         parts.push(format!("notes={}", decision.evidence.notes.join("; ")));
     }
     parts.join(" | ")
+}
+
+fn format_media_match_v3_retrieval_stats(stats: &MediaMatchV3RetrievalStats) -> String {
+    format!(
+        " | retrieval buckets={}/{} skipped_common={} hits={} candidates={} elapsed={}ms",
+        stats
+            .query_buckets_total
+            .saturating_sub(stats.query_buckets_skipped_common),
+        stats.query_buckets_total,
+        stats.query_buckets_skipped_common,
+        stats.raw_hit_rows_processed,
+        stats.candidates_scored,
+        stats.retrieval_elapsed_ms
+    )
 }
 
 fn format_optional_seconds(value: Option<f64>) -> String {
@@ -4758,13 +4865,17 @@ mod tests {
             save_media_match_record_to_sqlite(&connection, &dummy).expect("dummy should save");
         }
 
-        let candidates = media_match_anchor_candidate_paths(
+        let (candidates, stats) = media_match_v3_anchor_candidate_paths_with_stats(
             &root,
             &query.identity.normalized_path,
             &query.extraction_settings,
         )
         .expect("candidate lookup should run");
 
+        assert!(stats.query_buckets_total >= 2, "{stats:?}");
+        assert!(stats.query_buckets_skipped_common >= 1, "{stats:?}");
+        assert!(stats.raw_hit_rows_processed >= 1, "{stats:?}");
+        assert!(stats.candidates_scored >= 1, "{stats:?}");
         assert_eq!(
             candidates.first(),
             Some(&rare_candidate.identity.normalized_path),
