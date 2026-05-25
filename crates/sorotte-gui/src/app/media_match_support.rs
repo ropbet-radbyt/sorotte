@@ -49,6 +49,7 @@ const MEDIA_MATCH_PREFILTER_LIMIT: usize = 24;
 const MEDIA_MATCH_VIDEO_HAMMING_FALLBACK_MIN_CANDIDATES: usize = 4;
 const MEDIA_MATCH_VIDEO_HAMMING_FALLBACK_MAX_QUERY_ANCHORS: usize = 16;
 const MEDIA_MATCH_VIDEO_HAMMING_FALLBACK_MAX_ROWS_PER_QUERY: i64 = 50_000;
+const MEDIA_MATCH_FPCALC_OPTIONAL_STATUS: &str = "fpcalc optional for V3";
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 #[cfg(windows)]
@@ -409,11 +410,29 @@ pub(super) fn probe_media_match_runtime_snapshot(
     root: Option<&Path>,
     settings: &MediaMatchSettings,
 ) -> GuiMediaMatchRuntimeSnapshot {
+    let extraction_settings = MediaExtractionSettings::audio_constellation_v3();
     let ffmpeg = probe_tool(root, MediaMatchTool::Ffmpeg);
     let ffprobe = probe_tool(root, MediaMatchTool::Ffprobe);
-    let fpcalc = probe_tool(root, MediaMatchTool::Fpcalc);
-    let extraction_settings = MediaExtractionSettings::audio_constellation_v3();
-    let health = media_match_health_for_settings(&ffmpeg, &ffprobe, &fpcalc, &extraction_settings);
+    let fpcalc = optional_fpcalc_probe_for_v3();
+    media_match_runtime_snapshot_from_probes(
+        root,
+        settings,
+        ffmpeg,
+        ffprobe,
+        fpcalc,
+        &extraction_settings,
+    )
+}
+
+fn media_match_runtime_snapshot_from_probes(
+    root: Option<&Path>,
+    settings: &MediaMatchSettings,
+    ffmpeg: MediaMatchToolProbe,
+    ffprobe: MediaMatchToolProbe,
+    fpcalc: MediaMatchToolProbe,
+    extraction_settings: &MediaExtractionSettings,
+) -> GuiMediaMatchRuntimeSnapshot {
+    let health = media_match_health_for_settings(&ffmpeg, &ffprobe, &fpcalc, extraction_settings);
     let message = media_match_health_message(health, &ffmpeg, &ffprobe, &fpcalc);
     GuiMediaMatchRuntimeSnapshot {
         settings: settings.clone(),
@@ -432,6 +451,14 @@ pub(super) fn probe_media_match_runtime_snapshot(
         remote_status: Some("unavailable".to_owned()),
         background_status: Some("idle".to_owned()),
         open_install_location_available: root.is_some(),
+    }
+}
+
+fn optional_fpcalc_probe_for_v3() -> MediaMatchToolProbe {
+    MediaMatchToolProbe {
+        path: None,
+        error: None,
+        status: MEDIA_MATCH_FPCALC_OPTIONAL_STATUS.to_owned(),
     }
 }
 
@@ -553,35 +580,12 @@ where
             "ffprobe.exe",
             &managed_media_match_tool_path(root, MediaMatchTool::Ffprobe),
         )?;
-        let fpcalc_zip = download_bytes_with_progress(
-            &client,
-            FPCALC_WINDOWS_ZIP_URL,
-            "Downloading fpcalc",
-            0.58,
-            0.72,
-            &mut progress,
-        )?;
-        progress(MediaMatchToolProgress::new(
-            "Extracting fpcalc",
-            Some("Installing fpcalc.exe.".to_owned()),
-            0.73,
-        ));
-        extract_zip_entry(
-            &fpcalc_zip,
-            "fpcalc.exe",
-            &managed_media_match_tool_path(root, MediaMatchTool::Fpcalc),
-        )?;
-
         let mut metadata = ManagedMediaMatchMetadata {
             version: MEDIA_MATCH_METADATA_VERSION,
             installed_at_unix_seconds: Some(current_unix_seconds()),
             ..ManagedMediaMatchMetadata::default()
         };
-        for tool in [
-            MediaMatchTool::Ffmpeg,
-            MediaMatchTool::Ffprobe,
-            MediaMatchTool::Fpcalc,
-        ] {
+        for tool in [MediaMatchTool::Ffmpeg, MediaMatchTool::Ffprobe] {
             progress(MediaMatchToolProgress::new(
                 format!("Verifying {}", tool.display_name()),
                 None,
@@ -593,13 +597,81 @@ where
             )?;
             tool.assign_version(&mut metadata, version);
         }
+        let fpcalc_warning = install_optional_managed_fpcalc_with_progress(
+            root,
+            &client,
+            &mut metadata,
+            &mut progress,
+        )
+        .err();
         save_managed_media_match_metadata(root, &metadata)?;
         progress(MediaMatchToolProgress::new(
             "Media Matching tools installed",
-            Some(bin_dir.display().to_string()),
+            Some(match fpcalc_warning.as_deref() {
+                Some(warning) => format!(
+                    "{}; V3 is ready, optional legacy fpcalc failed: {warning}",
+                    bin_dir.display()
+                ),
+                None => bin_dir.display().to_string(),
+            }),
             1.0,
         ));
-        Ok("Installed ffmpeg, ffprobe, and optional legacy fpcalc for Media Matching.".to_owned())
+        Ok(media_match_install_success_message(
+            fpcalc_warning.as_deref(),
+        ))
+    }
+}
+
+#[cfg(windows)]
+fn install_optional_managed_fpcalc_with_progress<F>(
+    root: &Path,
+    client: &reqwest::blocking::Client,
+    metadata: &mut ManagedMediaMatchMetadata,
+    progress: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut(MediaMatchToolProgress),
+{
+    let fpcalc_zip = download_bytes_with_progress(
+        client,
+        FPCALC_WINDOWS_ZIP_URL,
+        "Downloading optional fpcalc",
+        0.78,
+        0.88,
+        progress,
+    )?;
+    progress(MediaMatchToolProgress::new(
+        "Extracting optional fpcalc",
+        Some("Installing fpcalc.exe for legacy Chromaprint profiles.".to_owned()),
+        0.89,
+    ));
+    extract_zip_entry(
+        &fpcalc_zip,
+        "fpcalc.exe",
+        &managed_media_match_tool_path(root, MediaMatchTool::Fpcalc),
+    )?;
+    progress(MediaMatchToolProgress::new(
+        "Verifying optional fpcalc",
+        None,
+        0.94,
+    ));
+    let version = probe_executable_version(
+        &managed_media_match_tool_path(root, MediaMatchTool::Fpcalc),
+        MediaMatchTool::Fpcalc.version_args(),
+    )?;
+    MediaMatchTool::Fpcalc.assign_version(metadata, version);
+    Ok(())
+}
+
+fn media_match_install_success_message(optional_fpcalc_warning: Option<&str>) -> String {
+    match optional_fpcalc_warning {
+        Some(warning) => format!(
+            "Installed ffmpeg and ffprobe for Media Matching V3. Optional legacy fpcalc failed: {warning}"
+        ),
+        None => {
+            "Installed ffmpeg and ffprobe for Media Matching V3; optional legacy fpcalc is available."
+                .to_owned()
+        }
     }
 }
 
@@ -1295,6 +1367,7 @@ fn inventory_media_match_candidates(
     let transaction = connection
         .unchecked_transaction()
         .map_err(|error| format!("failed starting media-match inventory transaction: {error}"))?;
+    let mut v3_stats_dirty = false;
     for path in candidates {
         if cancel_flag.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
             return Err("Media Matching inventory scan was canceled.".to_owned());
@@ -1329,6 +1402,7 @@ fn inventory_media_match_candidates(
             && (old_mtime != modified_unix_millis as i64 || old_size != size_bytes as i64)
         {
             delete_media_match_v3_fingerprints_and_anchors(&transaction, file_id)?;
+            v3_stats_dirty = true;
         }
         transaction
             .execute(
@@ -1357,7 +1431,11 @@ fn inventory_media_match_candidates(
             )
             .map_err(|error| format!("failed writing media-match inventory row: {error}"))?;
     }
-    prune_missing_media_match_inventory_rows(&transaction, search_roots, candidates)?;
+    v3_stats_dirty |=
+        prune_missing_media_match_inventory_rows(&transaction, search_roots, candidates)?;
+    if v3_stats_dirty {
+        refresh_all_anchor_stats_v3(&transaction, current_unix_millis() as i64)?;
+    }
     transaction
         .commit()
         .map_err(|error| format!("failed committing media-match inventory transaction: {error}"))?;
@@ -1368,13 +1446,13 @@ fn prune_missing_media_match_inventory_rows(
     connection: &Connection,
     search_roots: &[PathBuf],
     candidates: &[PathBuf],
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let normalized_roots = search_roots
         .iter()
         .map(normalize_media_path)
         .collect::<Vec<_>>();
     if normalized_roots.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
     let seen_paths = candidates
         .iter()
@@ -1398,10 +1476,11 @@ fn prune_missing_media_match_inventory_rows(
             stale_file_ids.push(file_id);
         }
     }
+    let pruned_any = !stale_file_ids.is_empty();
     for file_id in stale_file_ids {
         delete_media_match_v3_file_and_fingerprints(connection, file_id)?;
     }
-    Ok(())
+    Ok(pruned_any)
 }
 
 fn media_match_path_is_under_root(normalized_path: &str, normalized_root: &str) -> bool {
@@ -3610,6 +3689,39 @@ fn refresh_anchor_stats_v3(
         .map_err(|error| format!("failed refreshing media-match v3 anchor stats: {error}"))
 }
 
+fn refresh_all_anchor_stats_v3(connection: &Connection, now: i64) -> Result<(), String> {
+    connection
+        .execute(
+            "DELETE FROM anchor_stats_v3
+             WHERE algorithm_version = ?1",
+            [i64::from(MEDIA_MATCH_ANCHOR_VERSION)],
+        )
+        .map_err(|error| format!("failed clearing media-match v3 anchor stats: {error}"))?;
+    connection
+        .execute(
+            "INSERT INTO anchor_stats_v3 (
+                algorithm_version,
+                settings_hash,
+                modality,
+                bucket,
+                document_frequency,
+                updated_unix_millis
+            )
+            SELECT algorithm_version,
+                   settings_hash,
+                   modality,
+                   bucket,
+                   COUNT(DISTINCT file_id),
+                   ?2
+            FROM anchor_index_v3
+            WHERE algorithm_version = ?1
+            GROUP BY algorithm_version, settings_hash, modality, bucket",
+            params![i64::from(MEDIA_MATCH_ANCHOR_VERSION), now],
+        )
+        .map(|_| ())
+        .map_err(|error| format!("failed refreshing all media-match v3 anchor stats: {error}"))
+}
+
 fn refresh_media_match_v3_anchor_stats_for_settings(
     connection: &Connection,
     extraction_settings: &MediaExtractionSettings,
@@ -4042,6 +4154,31 @@ mod tests {
             .expect("record timestamp should be readable")
     }
 
+    fn v3_audio_bucket_document_frequency(
+        connection: &Connection,
+        settings_hash: &[u8],
+        bucket: u32,
+    ) -> Option<i64> {
+        connection
+            .query_row(
+                "SELECT document_frequency
+                 FROM anchor_stats_v3
+                 WHERE algorithm_version = ?1
+                   AND settings_hash = ?2
+                   AND modality = ?3
+                   AND bucket = ?4",
+                params![
+                    i64::from(MEDIA_MATCH_ANCHOR_VERSION),
+                    settings_hash,
+                    MEDIA_MATCH_V3_MODALITY_AUDIO,
+                    i64::from(bucket),
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .expect("anchor stats frequency query should run")
+    }
+
     #[test]
     fn v3_tool_readiness_passes_without_fpcalc() {
         let ffmpeg = healthy_tool_probe("ffmpeg");
@@ -4074,6 +4211,53 @@ mod tests {
                 &MediaExtractionSettings::fast_anchor_v2()
             ),
             GuiMediaMatchToolHealth::MissingFpcalc
+        );
+    }
+
+    #[test]
+    fn runtime_snapshot_defaults_to_v3_without_probing_required_fpcalc() {
+        let settings = enabled_media_match_settings();
+        let snapshot = media_match_runtime_snapshot_from_probes(
+            None,
+            &settings,
+            healthy_tool_probe("ffmpeg"),
+            healthy_tool_probe("ffprobe"),
+            optional_fpcalc_probe_for_v3(),
+            &MediaExtractionSettings::audio_constellation_v3(),
+        );
+
+        assert_eq!(snapshot.health, GuiMediaMatchToolHealth::Healthy);
+        assert_eq!(
+            snapshot.fpcalc_status.as_deref(),
+            Some(MEDIA_MATCH_FPCALC_OPTIONAL_STATUS)
+        );
+        assert_eq!(snapshot.message, None);
+    }
+
+    #[test]
+    fn v3_install_readiness_text_marks_fpcalc_optional() {
+        let success = media_match_install_success_message(None);
+        assert!(success.contains("Media Matching V3"), "{success}");
+        assert!(success.contains("optional legacy fpcalc"), "{success}");
+
+        let warning = media_match_install_success_message(Some("download failed"));
+        assert!(
+            warning.contains("Installed ffmpeg and ffprobe"),
+            "{warning}"
+        );
+        assert!(
+            warning.contains("Optional legacy fpcalc failed"),
+            "{warning}"
+        );
+        assert!(
+            media_match_health_message(
+                GuiMediaMatchToolHealth::MissingFpcalc,
+                &healthy_tool_probe("ffmpeg"),
+                &healthy_tool_probe("ffprobe"),
+                &missing_tool_probe("fpcalc"),
+            )
+            .expect("legacy missing-fpcalc message should exist")
+            .contains("V3 profiles do not use fpcalc")
         );
     }
 
@@ -4538,6 +4722,70 @@ mod tests {
         assert!(
             !cache.records.contains_key(&removed_normalized_path),
             "deleted files under scanned roots should not remain in the media-match cache"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn media_match_inventory_prune_refreshes_v3_anchor_stats() {
+        let root = unique_media_match_test_root("deleted-inventory-stats");
+        let media_dir = root.join("media");
+        std::fs::create_dir_all(&media_dir).expect("media dir should be created");
+        let kept_path = media_dir.join("kept.mkv");
+        let removed_path = media_dir.join("removed.mkv");
+        std::fs::write(&kept_path, b"kept").expect("kept media should be written");
+        std::fs::write(&removed_path, b"removed").expect("removed media should be written");
+        let extraction_settings = MediaExtractionSettings::audio_constellation_v3();
+        let mut kept = fake_media_match_record_for_file(&kept_path, extraction_settings.clone());
+        kept.audio_anchors = vec![AudioAnchor {
+            bucket: 500,
+            t_ms: 10_000,
+            weight: 1,
+        }];
+        let mut removed =
+            fake_media_match_record_for_file(&removed_path, extraction_settings.clone());
+        removed.audio_anchors = vec![
+            AudioAnchor {
+                bucket: 500,
+                t_ms: 11_000,
+                weight: 1,
+            },
+            AudioAnchor {
+                bucket: 501,
+                t_ms: 12_000,
+                weight: 1,
+            },
+        ];
+        let mut cache = MediaMatchCache::default();
+        cache.insert(kept.clone());
+        cache.insert(removed);
+        save_media_match_cache(&root, &cache).expect("cache should be written");
+        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
+        refresh_all_anchor_stats_v3(&connection, current_unix_millis() as i64)
+            .expect("initial stats refresh should succeed");
+        let settings_hash = media_extraction_settings_hash(&extraction_settings).to_vec();
+        let shared_before = v3_audio_bucket_document_frequency(&connection, &settings_hash, 500);
+        let removed_only_before =
+            v3_audio_bucket_document_frequency(&connection, &settings_hash, 501);
+        assert_eq!(shared_before, Some(2));
+        assert_eq!(removed_only_before, Some(1));
+
+        std::fs::remove_file(&removed_path).expect("removed media should be deleted");
+        inventory_media_match_candidates(
+            &root,
+            std::slice::from_ref(&media_dir),
+            std::slice::from_ref(&kept_path),
+            None,
+        )
+        .expect("inventory should prune deleted files and refresh stats");
+
+        let shared_after = v3_audio_bucket_document_frequency(&connection, &settings_hash, 500);
+        let removed_only_after =
+            v3_audio_bucket_document_frequency(&connection, &settings_hash, 501);
+        assert_eq!(shared_after, Some(1));
+        assert_eq!(
+            removed_only_after, None,
+            "anchor stats for pruned-only buckets should be removed"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
