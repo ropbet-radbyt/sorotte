@@ -138,6 +138,8 @@ struct MediaMatchRebuildInstrumentation {
     audio_stream_final_landmarks: usize,
     max_audio_stream_buffer_samples: usize,
     max_audio_stream_raw_landmarks: usize,
+    max_audio_stream_raw_landmarks_seen: usize,
+    max_audio_stream_raw_landmarks_after_compaction: usize,
     audio_stream_raw_compactions: usize,
     debug_record_bytes: usize,
     audio_blob_bytes: usize,
@@ -168,6 +170,12 @@ impl MediaMatchRebuildInstrumentation {
         self.max_audio_stream_raw_landmarks = self
             .max_audio_stream_raw_landmarks
             .max(report.audio_stream.max_raw_landmarks_buffered);
+        self.max_audio_stream_raw_landmarks_seen = self
+            .max_audio_stream_raw_landmarks_seen
+            .max(report.audio_stream.max_raw_landmarks_seen);
+        self.max_audio_stream_raw_landmarks_after_compaction = self
+            .max_audio_stream_raw_landmarks_after_compaction
+            .max(report.audio_stream.max_raw_landmarks_after_compaction);
         self.audio_stream_raw_compactions += report.audio_stream.raw_landmark_compactions;
         self.debug_record_bytes += report.serialized_debug_record_bytes;
     }
@@ -204,7 +212,7 @@ impl MediaMatchRebuildInstrumentation {
 
     fn summary(&self) -> String {
         format!(
-            "tools ffmpeg/ffprobe/fpcalc={}/{}/{}, extract={}ms (probe {}ms, audio {}ms, video {}ms), v3 audio stream bytes/samples/frames/raw/final/maxbuf/maxraw/compactions={}/{}/{}/{}/{}/{}/{}/{}, v3 blob bytes audio/video={}/{}, v3 index rows audio/video={}/{}, stats refreshes={} in {}ms (debug record bytes={})",
+            "tools ffmpeg/ffprobe/fpcalc={}/{}/{}, extract={}ms (probe {}ms, audio {}ms, video {}ms), v3 audio stream bytes/samples/frames/raw/final/maxbuf/maxraw/maxrawseen/maxrawpostcompact/compactions={}/{}/{}/{}/{}/{}/{}/{}/{}/{}, v3 blob bytes audio/video={}/{}, v3 index rows audio/video={}/{}, stats refreshes={} in {}ms (debug record bytes={})",
             self.ffmpeg_invocations,
             self.ffprobe_invocations,
             self.fpcalc_invocations,
@@ -219,6 +227,8 @@ impl MediaMatchRebuildInstrumentation {
             self.audio_stream_final_landmarks,
             self.max_audio_stream_buffer_samples,
             self.max_audio_stream_raw_landmarks,
+            self.max_audio_stream_raw_landmarks_seen,
+            self.max_audio_stream_raw_landmarks_after_compaction,
             self.audio_stream_raw_compactions,
             self.audio_blob_bytes,
             self.video_blob_bytes,
@@ -5755,6 +5765,86 @@ mod tests {
             .expect_err("mismatched V3 video bucket kind must not save silently");
 
         assert!(error.contains("does not match bucket kind"), "{error}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn media_match_save_rejects_invalid_v3_temporal_shingle_bucket() {
+        let root = unique_media_match_test_root("invalid-v3-temporal-bucket");
+        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
+        let mut record = fake_media_match_record("invalid-temporal-bucket.mkv");
+        record.extraction_settings = MediaExtractionSettings::combined_v3();
+        let hash64 = 0x1234_5678_9abc_def0;
+        record.video = Some(sorotte_media_match::VideoFingerprint {
+            duration_seconds: Some(60),
+            frames: Vec::new(),
+            v3_landmarks: vec![sorotte_media_match::VideoLandmarkV3 {
+                bucket: sorotte_media_match::v3_video_bucket_for_kind(
+                    sorotte_media_match::V3_VIDEO_KIND_TEMPORAL_SHINGLE,
+                    0xfeed_beef,
+                ),
+                hash64,
+                t_ms: 1_000,
+                kind: sorotte_media_match::V3_VIDEO_KIND_TEMPORAL_SHINGLE,
+                weight: 1,
+            }],
+        });
+
+        let error = save_media_match_record_to_sqlite(&connection, &record)
+            .expect_err("invalid temporal V3 video bucket must not save silently");
+
+        assert!(
+            error.contains("temporal shingle bucket"),
+            "unexpected error: {error}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn media_match_save_and_loads_valid_combined_v3_video_landmark() {
+        let root = unique_media_match_test_root("valid-combined-v3-video");
+        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
+        let mut record = fake_media_match_record("valid-combined-v3.mkv");
+        record.extraction_settings = MediaExtractionSettings::combined_v3();
+        let hash64 = 0x1234_5678_9abc_def0;
+        record.video = Some(sorotte_media_match::VideoFingerprint {
+            duration_seconds: Some(60),
+            frames: Vec::new(),
+            v3_landmarks: vec![sorotte_media_match::VideoLandmarkV3 {
+                bucket: sorotte_media_match::v3_video_bucket_for_kind(
+                    sorotte_media_match::V3_VIDEO_KIND_TEMPORAL_SHINGLE,
+                    (hash64 >> 32) as u32,
+                ),
+                hash64,
+                t_ms: 1_000,
+                kind: sorotte_media_match::V3_VIDEO_KIND_TEMPORAL_SHINGLE,
+                weight: 3,
+            }],
+        });
+
+        save_media_match_record_to_sqlite(&connection, &record)
+            .expect("valid combined V3 video landmark should save");
+        let cache =
+            load_media_match_cache_for_settings(&root, &MediaExtractionSettings::combined_v3())
+                .expect("valid combined V3 cache should load");
+        let loaded = cache
+            .records
+            .get(&record.identity.normalized_path)
+            .expect("saved record should be loaded");
+
+        assert_eq!(
+            loaded
+                .video_anchors
+                .first()
+                .map(|landmark| (landmark.kind, landmark.bucket)),
+            Some((
+                sorotte_media_match::V3_VIDEO_KIND_TEMPORAL_SHINGLE,
+                sorotte_media_match::v3_video_bucket_for_kind(
+                    sorotte_media_match::V3_VIDEO_KIND_TEMPORAL_SHINGLE,
+                    (hash64 >> 32) as u32,
+                )
+            ))
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

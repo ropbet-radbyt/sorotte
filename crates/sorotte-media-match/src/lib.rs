@@ -34,6 +34,9 @@ const FRAME_HASH_BITS: u32 = 64;
 pub const DEFAULT_FRAME_HAMMING_THRESHOLD: u32 = 10;
 const DEFAULT_ANCHOR_ALIGNMENT_TOLERANCE_MS: i64 = 1_000;
 const DEFAULT_ANCHOR_OFFSET_BIN_MS: i64 = 1_000;
+
+// V3 piecewise timeline fitting thresholds. These are deliberately conservative:
+// segments need enough local evidence to map time, while gaps remain explicit.
 const V3_SEGMENT_MIN_PAIR_DELTA_MS: u32 = 30_000;
 const V3_SEGMENT_SPLIT_GAP_MS: u32 = 75_000;
 const V3_SEGMENT_AUDIO_MIN_PAIRS: usize = 6;
@@ -48,6 +51,8 @@ const V3_EDGE_REGION_MIN_MS: u32 = 120_000;
 const V3_EDGE_REGION_MAX_MS: u32 = 300_000;
 const V3_PIECEWISE_MAX_HYPOTHESIS_PAIRS: usize = 512;
 const MAX_BROAD_SCALE_FIT_PAIRS: usize = 128;
+
+// V3 video retrieval and descriptor thresholds.
 const VIDEO_LSH_BANDS: u32 = 4;
 const VIDEO_LSH_BITS_PER_BAND: u32 = 16;
 const V3_VIDEO_BUCKET_KIND_SHIFT: u32 = 28;
@@ -62,6 +67,8 @@ const FAST_AUDIO_ANCHOR_LIMIT: usize = 96;
 const FAST_VIDEO_ANCHOR_LIMIT: usize = 48;
 const FULL_AUDIO_ANCHOR_LIMIT: usize = 512;
 const FULL_VIDEO_ANCHOR_LIMIT: usize = 192;
+
+// V3 native audio constellation extraction thresholds.
 const V3_AUDIO_SAMPLE_RATE: u32 = 11_025;
 const V3_AUDIO_WINDOW_SAMPLES: usize = 2048;
 const V3_AUDIO_HOP_SAMPLES: usize = 512;
@@ -103,6 +110,38 @@ const FFMPEG_FULL_VIDEO_TIMEOUT: Duration = Duration::from_secs(90);
 const FAST_VIDEO_SEEK_WINDOW_SECONDS: f64 = 1.0;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct V3Tuning {
+    pub segment_min_pair_delta_ms: u32,
+    pub segment_split_gap_ms: u32,
+    pub segment_audio_min_pairs: usize,
+    pub segment_video_min_pairs: usize,
+    pub piecewise_max_hypothesis_pairs: usize,
+    pub audio_raw_landmark_buffer_limit: usize,
+    pub audio_raw_landmark_retain_limit: usize,
+    pub video_hamming_global: u32,
+    pub video_hamming_center: u32,
+    pub video_hamming_edge: u32,
+    pub video_hamming_temporal: u32,
+}
+
+pub fn current_v3_tuning() -> V3Tuning {
+    V3Tuning {
+        segment_min_pair_delta_ms: V3_SEGMENT_MIN_PAIR_DELTA_MS,
+        segment_split_gap_ms: V3_SEGMENT_SPLIT_GAP_MS,
+        segment_audio_min_pairs: V3_SEGMENT_AUDIO_MIN_PAIRS,
+        segment_video_min_pairs: V3_SEGMENT_VIDEO_MIN_PAIRS,
+        piecewise_max_hypothesis_pairs: V3_PIECEWISE_MAX_HYPOTHESIS_PAIRS,
+        audio_raw_landmark_buffer_limit: V3_AUDIO_RAW_LANDMARK_BUFFER_LIMIT,
+        audio_raw_landmark_retain_limit: V3_AUDIO_RAW_LANDMARK_RETAIN_LIMIT,
+        video_hamming_global: 10,
+        video_hamming_center: 10,
+        video_hamming_edge: 12,
+        video_hamming_temporal: 0,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -176,6 +215,16 @@ pub struct MediaTimelineMapV3 {
     pub piecewise_segment_chain_count: usize,
     #[serde(default)]
     pub piecewise_fit_millis: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TimelinePositionMapResult {
+    pub mapped_ms: u32,
+    pub class_at_position: MatchClassV3,
+    pub segment_index: usize,
+    pub confidence: f32,
+    pub local_offset_ms: i64,
+    pub scale_ppm: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -506,6 +555,8 @@ pub struct MediaAudioStreamMetrics {
     pub final_landmarks: usize,
     pub max_buffer_samples: usize,
     pub max_raw_landmarks_buffered: usize,
+    pub max_raw_landmarks_seen: usize,
+    pub max_raw_landmarks_after_compaction: usize,
     pub raw_landmark_compactions: usize,
 }
 
@@ -586,7 +637,7 @@ fn summarize_record_v3_diagnostics_with_report(
     let mut notes = Vec::new();
     if let Some(report) = report {
         notes.push(format!(
-            "streamed_audio_bytes={} streamed_audio_samples={} peak_frames={} raw_audio_landmarks={} final_audio_landmarks={} max_audio_buffer_samples={} max_raw_landmarks={} raw_compactions={}",
+            "streamed_audio_bytes={} streamed_audio_samples={} peak_frames={} raw_audio_landmarks={} final_audio_landmarks={} max_audio_buffer_samples={} max_raw_landmarks_buffered={} max_raw_landmarks_seen={} max_raw_landmarks_after_compaction={} raw_compactions={}",
             report.audio_stream.streamed_bytes,
             report.audio_stream.streamed_samples,
             report.audio_stream.peak_frames,
@@ -594,6 +645,8 @@ fn summarize_record_v3_diagnostics_with_report(
             report.audio_stream.final_landmarks,
             report.audio_stream.max_buffer_samples,
             report.audio_stream.max_raw_landmarks_buffered,
+            report.audio_stream.max_raw_landmarks_seen,
+            report.audio_stream.max_raw_landmarks_after_compaction,
             report.audio_stream.raw_landmark_compactions
         ));
     }
@@ -2319,6 +2372,8 @@ struct AudioConstellationV3Builder {
     peak_frames: usize,
     max_buffer_samples: usize,
     max_raw_landmarks_buffered: usize,
+    max_raw_landmarks_seen: usize,
+    max_raw_landmarks_after_compaction: usize,
     raw_landmark_compactions: usize,
 }
 
@@ -2335,6 +2390,8 @@ impl AudioConstellationV3Builder {
             peak_frames: 0,
             max_buffer_samples: 0,
             max_raw_landmarks_buffered: 0,
+            max_raw_landmarks_seen: 0,
+            max_raw_landmarks_after_compaction: 0,
             raw_landmark_compactions: 0,
         }
     }
@@ -2391,6 +2448,8 @@ impl AudioConstellationV3Builder {
                         t_ms,
                         weight: strength,
                     });
+                    self.max_raw_landmarks_seen =
+                        self.max_raw_landmarks_seen.max(self.raw_landmarks.len());
                     needs_compaction |=
                         self.raw_landmarks.len() > V3_AUDIO_RAW_LANDMARK_BUFFER_LIMIT;
                     emitted += 1;
@@ -2429,6 +2488,9 @@ impl AudioConstellationV3Builder {
                 V3_AUDIO_RAW_LANDMARK_RETAIN_LIMIT,
             );
             self.raw_landmark_compactions += 1;
+            self.max_raw_landmarks_after_compaction = self
+                .max_raw_landmarks_after_compaction
+                .max(self.raw_landmarks.len());
         }
         self.max_raw_landmarks_buffered = self
             .max_raw_landmarks_buffered
@@ -2447,6 +2509,8 @@ impl AudioConstellationV3Builder {
             final_landmarks: landmarks.len(),
             max_buffer_samples: self.max_buffer_samples,
             max_raw_landmarks_buffered: self.max_raw_landmarks_buffered.max(raw_count),
+            max_raw_landmarks_seen: self.max_raw_landmarks_seen.max(raw_count),
+            max_raw_landmarks_after_compaction: self.max_raw_landmarks_after_compaction,
             raw_landmark_compactions: self.raw_landmark_compactions,
             ..MediaAudioStreamMetrics::default()
         };
@@ -4965,6 +5029,89 @@ pub fn classify_timeline_at_query_ms(map: &MediaTimelineMapV3, query_t_ms: u32) 
     }
 }
 
+pub fn timeline_map_contains_query_position(map: &MediaTimelineMapV3, query_t_ms: u32) -> bool {
+    map.segments
+        .iter()
+        .any(|segment| segment.query_start_ms <= query_t_ms && query_t_ms <= segment.query_end_ms)
+}
+
+pub fn map_query_position_to_candidate_ms(
+    map: &MediaTimelineMapV3,
+    query_t_ms: u32,
+) -> Option<TimelinePositionMapResult> {
+    let (segment_index, segment) = map.segments.iter().enumerate().find(|(_, segment)| {
+        segment.query_start_ms <= query_t_ms && query_t_ms <= segment.query_end_ms
+    })?;
+    let delta_ms = query_t_ms.saturating_sub(segment.query_start_ms);
+    let mapped_delta_ms = affine_delta_ms(delta_ms, i64::from(segment.scale_ppm))?;
+    let mapped_ms = clamp_i64_to_u32(
+        i64::from(segment.candidate_start_ms) + mapped_delta_ms,
+        segment.candidate_start_ms,
+        segment.candidate_end_ms,
+    );
+    let confidence = timeline_position_confidence(map, segment);
+    Some(TimelinePositionMapResult {
+        mapped_ms,
+        class_at_position: map.global_class,
+        segment_index,
+        confidence,
+        local_offset_ms: i64::from(mapped_ms) - i64::from(query_t_ms),
+        scale_ppm: segment.scale_ppm,
+    })
+}
+
+pub fn map_candidate_position_to_query_ms(
+    map: &MediaTimelineMapV3,
+    candidate_t_ms: u32,
+) -> Option<TimelinePositionMapResult> {
+    let (segment_index, segment) = map.segments.iter().enumerate().find(|(_, segment)| {
+        segment.candidate_start_ms <= candidate_t_ms
+            && candidate_t_ms <= segment.candidate_end_ms
+            && segment.scale_ppm > 0
+    })?;
+    let delta_ms = candidate_t_ms.saturating_sub(segment.candidate_start_ms);
+    let mapped_delta_ms = affine_delta_ms(
+        delta_ms,
+        1_000_000_000_000i64 / i64::from(segment.scale_ppm),
+    )?;
+    let mapped_ms = clamp_i64_to_u32(
+        i64::from(segment.query_start_ms) + mapped_delta_ms,
+        segment.query_start_ms,
+        segment.query_end_ms,
+    );
+    let confidence = timeline_position_confidence(map, segment);
+    Some(TimelinePositionMapResult {
+        mapped_ms,
+        class_at_position: map.global_class,
+        segment_index,
+        confidence,
+        local_offset_ms: i64::from(candidate_t_ms) - i64::from(mapped_ms),
+        scale_ppm: segment.scale_ppm,
+    })
+}
+
+fn affine_delta_ms(delta_ms: u32, scale_ppm: i64) -> Option<i64> {
+    if scale_ppm <= 0 {
+        return None;
+    }
+    Some((i64::from(delta_ms) * scale_ppm) / 1_000_000)
+}
+
+fn clamp_i64_to_u32(value: i64, min: u32, max: u32) -> u32 {
+    value.clamp(i64::from(min), i64::from(max)) as u32
+}
+
+fn timeline_position_confidence(map: &MediaTimelineMapV3, segment: &AlignedSegmentV3) -> f32 {
+    let multiplier = match map.global_class {
+        MatchClassV3::SameCutStrong | MatchClassV3::SameCutProbable => 1.0,
+        MatchClassV3::SameMediaDifferentCut | MatchClassV3::PartialOverlap => 0.85,
+        MatchClassV3::SameAudioDifferentVideo | MatchClassV3::SameVideoDifferentAudio => 0.65,
+        MatchClassV3::SharedIntroOutroOnly => 0.25,
+        MatchClassV3::Reject | MatchClassV3::Unknown => 0.0,
+    };
+    (segment.confidence * multiplier).clamp(0.0, 1.0)
+}
+
 fn anchor_coverage(aligned: usize, total: usize) -> f64 {
     if total == 0 {
         0.0
@@ -5334,10 +5481,12 @@ fn v3_video_lsh_buckets(kind: u8, hash: u64) -> Vec<u32> {
 }
 
 pub fn v3_video_hamming_threshold(kind: u8) -> u32 {
+    let tuning = current_v3_tuning();
     match kind {
-        V3_VIDEO_KIND_GLOBAL_DCT | V3_VIDEO_KIND_CENTER_DCT => 10,
-        V3_VIDEO_KIND_EDGE => 12,
-        V3_VIDEO_KIND_TEMPORAL_SHINGLE => 0,
+        V3_VIDEO_KIND_GLOBAL_DCT => tuning.video_hamming_global,
+        V3_VIDEO_KIND_CENTER_DCT => tuning.video_hamming_center,
+        V3_VIDEO_KIND_EDGE => tuning.video_hamming_edge,
+        V3_VIDEO_KIND_TEMPORAL_SHINGLE => tuning.video_hamming_temporal,
         _ => DEFAULT_FRAME_HAMMING_THRESHOLD,
     }
 }
@@ -6498,6 +6647,29 @@ mod tests {
     }
 
     #[test]
+    fn v3_blob_rejects_invalid_temporal_video_bucket() {
+        let hash64 = 0x1234_5678_9abc_def0;
+        let blob = MediaFingerprintBlobV3 {
+            duration_ms: Some(1),
+            audio_landmarks: Vec::new(),
+            video_landmarks: vec![VideoLandmarkV3 {
+                bucket: v3_video_bucket_for_kind(V3_VIDEO_KIND_TEMPORAL_SHINGLE, 0xfeed_beef),
+                hash64,
+                t_ms: 1,
+                kind: V3_VIDEO_KIND_TEMPORAL_SHINGLE,
+                weight: 1,
+            }],
+        };
+
+        let encoded = encode_media_fingerprint_blob_v3(&blob);
+
+        assert!(matches!(
+            decode_media_fingerprint_blob_v3(&encoded),
+            Err(MediaFingerprintBlobV3DecodeError::InvalidTemporalVideoBucket { .. })
+        ));
+    }
+
+    #[test]
     fn v3_wire_profile_rejects_unknown_video_kind() {
         let summary = encode_video_anchor_summary(&[VideoAnchor {
             bucket: v3_video_bucket_for_kind(9, 1),
@@ -7062,6 +7234,20 @@ mod tests {
             metrics.max_raw_landmarks_buffered <= V3_AUDIO_RAW_LANDMARK_BUFFER_LIMIT,
             "{metrics:?}"
         );
+        let bounded_burst =
+            V3_AUDIO_PAIR_FANOUT * V3_AUDIO_MAX_PEAKS_PER_FRAME * V3_AUDIO_PAIR_MAX_DELTA_FRAMES;
+        assert!(
+            metrics.max_raw_landmarks_seen <= V3_AUDIO_RAW_LANDMARK_BUFFER_LIMIT + bounded_burst,
+            "{metrics:?}"
+        );
+        assert!(
+            metrics.max_raw_landmarks_seen > V3_AUDIO_RAW_LANDMARK_RETAIN_LIMIT,
+            "long synthetic audio should report a pre-compaction peak: {metrics:?}"
+        );
+        assert!(
+            metrics.max_raw_landmarks_after_compaction <= V3_AUDIO_RAW_LANDMARK_RETAIN_LIMIT,
+            "{metrics:?}"
+        );
         assert!(
             metrics.raw_landmark_compactions > 0,
             "long synthetic audio should exercise raw landmark compaction: {metrics:?}"
@@ -7129,6 +7315,169 @@ mod tests {
                     as i16
             })
             .collect()
+    }
+
+    #[test]
+    fn same_cut_single_segment_maps_position() {
+        let map = test_timeline_map_v3(
+            MatchClassV3::SameCutStrong,
+            vec![test_segment_v3(10_000, 110_000, 12_000, 112_000, 1_000_000)],
+        );
+
+        let mapped = map_query_position_to_candidate_ms(&map, 60_000)
+            .expect("position should map inside segment");
+
+        assert_eq!(mapped.mapped_ms, 62_000);
+        assert_eq!(mapped.segment_index, 0);
+        assert_eq!(mapped.class_at_position, MatchClassV3::SameCutStrong);
+        assert_eq!(mapped.local_offset_ms, 2_000);
+        assert!(timeline_map_contains_query_position(&map, 60_000));
+    }
+
+    #[test]
+    fn inserted_logo_two_segments_maps_each_segment() {
+        let map = test_timeline_map_v3(
+            MatchClassV3::SameMediaDifferentCut,
+            vec![
+                test_segment_v3(0, 120_000, 0, 120_000, 1_000_000),
+                test_segment_v3(120_000, 240_000, 180_000, 300_000, 1_000_000),
+            ],
+        );
+
+        let first = map_query_position_to_candidate_ms(&map, 90_000).expect("first segment");
+        let second = map_query_position_to_candidate_ms(&map, 180_000).expect("second segment");
+
+        assert_eq!(first.mapped_ms, 90_000);
+        assert_eq!(first.segment_index, 0);
+        assert_eq!(second.mapped_ms, 240_000);
+        assert_eq!(second.segment_index, 1);
+        assert_eq!(
+            second.class_at_position,
+            MatchClassV3::SameMediaDifferentCut
+        );
+    }
+
+    #[test]
+    fn position_in_edit_gap_returns_none() {
+        let map = test_timeline_map_v3(
+            MatchClassV3::SameMediaDifferentCut,
+            vec![
+                test_segment_v3(0, 90_000, 0, 90_000, 1_000_000),
+                test_segment_v3(150_000, 240_000, 180_000, 270_000, 1_000_000),
+            ],
+        );
+
+        assert!(map_query_position_to_candidate_ms(&map, 120_000).is_none());
+        assert!(!timeline_map_contains_query_position(&map, 120_000));
+    }
+
+    #[test]
+    fn reverse_mapping_round_trips_inside_segment() {
+        let map = test_timeline_map_v3(
+            MatchClassV3::SameCutStrong,
+            vec![test_segment_v3(10_000, 110_000, 20_000, 121_000, 1_010_000)],
+        );
+
+        let forward = map_query_position_to_candidate_ms(&map, 60_000).expect("forward map");
+        let reverse =
+            map_candidate_position_to_query_ms(&map, forward.mapped_ms).expect("reverse map");
+
+        assert!((i64::from(reverse.mapped_ms) - 60_000).abs() <= 1);
+        assert_eq!(reverse.segment_index, 0);
+        assert!((reverse.local_offset_ms - (i64::from(forward.mapped_ms) - 60_000)).abs() <= 1);
+    }
+
+    #[test]
+    fn same_media_different_cut_maps_but_not_autoplay() {
+        let map = test_timeline_map_v3(
+            MatchClassV3::SameMediaDifferentCut,
+            vec![test_segment_v3(0, 180_000, 30_000, 210_000, 1_000_000)],
+        );
+        let mapped =
+            map_query_position_to_candidate_ms(&map, 90_000).expect("different cut maps locally");
+        let decision = MediaMatchDecision {
+            tier: MediaMatchTier::Strong,
+            evidence: MediaMatchEvidence {
+                v3_class: Some(MatchClassV3::SameMediaDifferentCut),
+                timeline_map_v3: Some(map),
+                ..MediaMatchEvidence::default()
+            },
+            explanation: "different cut".to_owned(),
+        };
+        let settings = MediaMatchSettings {
+            autoplay_policy: MediaMatchAutoplayPolicy::AllowStrongSameMedia,
+            ..MediaMatchSettings::default()
+        };
+
+        assert_eq!(mapped.mapped_ms, 120_000);
+        assert_eq!(
+            mapped.class_at_position,
+            MatchClassV3::SameMediaDifferentCut
+        );
+        assert!(!decision.same_media_for_autoplay(&settings));
+    }
+
+    #[test]
+    fn shared_intro_outro_maps_low_confidence() {
+        let map = test_timeline_map_v3(
+            MatchClassV3::SharedIntroOutroOnly,
+            vec![test_segment_v3(0, 90_000, 0, 90_000, 1_000_000)],
+        );
+
+        let mapped = map_query_position_to_candidate_ms(&map, 30_000)
+            .expect("edge segment maps diagnostically");
+
+        assert_eq!(mapped.class_at_position, MatchClassV3::SharedIntroOutroOnly);
+        assert!(mapped.confidence <= 0.25, "{mapped:?}");
+    }
+
+    fn test_segment_v3(
+        query_start_ms: u32,
+        query_end_ms: u32,
+        candidate_start_ms: u32,
+        candidate_end_ms: u32,
+        scale_ppm: i32,
+    ) -> AlignedSegmentV3 {
+        AlignedSegmentV3 {
+            query_start_ms,
+            query_end_ms,
+            candidate_start_ms,
+            candidate_end_ms,
+            scale_ppm,
+            audio_pairs: 8,
+            video_pairs: 0,
+            weighted_score: 8,
+            residual_ms: 0.0,
+            audio_score: 1.0,
+            video_score: 0.0,
+            confidence: 1.0,
+        }
+    }
+
+    fn test_timeline_map_v3(
+        global_class: MatchClassV3,
+        segments: Vec<AlignedSegmentV3>,
+    ) -> MediaTimelineMapV3 {
+        let total_aligned_span_ms = segments
+            .iter()
+            .map(|segment| segment.query_end_ms.saturating_sub(segment.query_start_ms))
+            .sum();
+        MediaTimelineMapV3 {
+            global_class,
+            current_position_class: global_class,
+            segments,
+            total_aligned_span_ms,
+            largest_gap_ms: 0,
+            edge_only: false,
+            audio_video_conflict: false,
+            best_segment_score: 8,
+            second_best_segment_score: 0,
+            piecewise_pair_count: 8,
+            piecewise_hypothesis_count: 1,
+            piecewise_segment_candidate_count: 1,
+            piecewise_segment_chain_count: 1,
+            piecewise_fit_millis: 0,
+        }
     }
 
     #[test]
