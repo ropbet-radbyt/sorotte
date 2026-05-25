@@ -45,6 +45,13 @@ const V3_PIECEWISE_MAX_HYPOTHESIS_PAIRS: usize = 512;
 const MAX_BROAD_SCALE_FIT_PAIRS: usize = 128;
 const VIDEO_LSH_BANDS: u32 = 4;
 const VIDEO_LSH_BITS_PER_BAND: u32 = 16;
+const V3_VIDEO_BUCKET_KIND_SHIFT: u32 = 28;
+const V3_VIDEO_BUCKET_VALUE_MASK: u32 = 0x0fff_ffff;
+pub const V3_VIDEO_KIND_LEGACY_LUMA: u8 = 0;
+pub const V3_VIDEO_KIND_GLOBAL_DCT: u8 = 1;
+pub const V3_VIDEO_KIND_CENTER_DCT: u8 = 2;
+pub const V3_VIDEO_KIND_EDGE: u8 = 3;
+pub const V3_VIDEO_KIND_TEMPORAL_SHINGLE: u8 = 4;
 const FAST_VIDEO_SAMPLE_FRAMES: usize = 12;
 const FAST_AUDIO_ANCHOR_LIMIT: usize = 96;
 const FAST_VIDEO_ANCHOR_LIMIT: usize = 48;
@@ -64,6 +71,13 @@ const V3_AUDIO_VERIFY_LANDMARK_LIMIT: usize = 768;
 const V3_AUDIO_INDEX_LANDMARK_LIMIT: usize = 192;
 const V3_VIDEO_VERIFY_LANDMARK_LIMIT: usize = 192;
 const V3_VIDEO_INDEX_LANDMARK_LIMIT: usize = 64;
+const V3_VIDEO_PHASH_SIZE: usize = 32;
+const V3_VIDEO_PHASH_LOW_FREQ: usize = 8;
+const V3_VIDEO_MIN_VARIANCE: f64 = 6.0;
+const V3_VIDEO_TEMPORAL_MIN_DELTA_MS: u32 = 5_000;
+const V3_VIDEO_TEMPORAL_MAX_DELTA_MS: u32 = 60_000;
+const V3_VIDEO_TEMPORAL_DELTA_BUCKET_MS: u32 = 5_000;
+const V3_VIDEO_TEMPORAL_FANOUT: usize = 2;
 const AUDIO_ANCHOR_WINDOW_TOKENS: usize = 4;
 const MAX_SUMMARY_ANCHORS: usize = 1024;
 const MAX_V3_LANDMARKS: usize = 4096;
@@ -606,6 +620,8 @@ pub struct AudioFingerprint {
 pub struct VideoFingerprint {
     pub duration_seconds: Option<u32>,
     pub frames: Vec<FrameFingerprint>,
+    #[serde(default)]
+    pub v3_landmarks: Vec<VideoLandmarkV3>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -644,7 +660,17 @@ pub struct VideoAnchor {
     pub bucket: u32,
     pub t_ms: u32,
     pub hash64: u64,
+    #[serde(default)]
+    pub kind: u8,
     pub weight: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LumaRect {
+    pub x: usize,
+    pub y: usize,
+    pub width: usize,
+    pub height: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -773,7 +799,7 @@ impl fmt::Display for MediaFingerprintBlobV3DecodeError {
 impl std::error::Error for MediaFingerprintBlobV3DecodeError {}
 
 const AUDIO_SUMMARY_MAGIC: &[u8; 4] = b"SAU2";
-const VIDEO_SUMMARY_MAGIC: &[u8; 4] = b"SVI2";
+const VIDEO_SUMMARY_MAGIC: &[u8; 4] = b"SVI3";
 const SUMMARY_FORMAT_VERSION: u16 = 1;
 const FINGERPRINT_BLOB_V3_MAGIC: &[u8; 4] = b"SMM3";
 const FINGERPRINT_BLOB_V3_FORMAT_VERSION: u16 = 1;
@@ -865,6 +891,7 @@ pub fn media_fingerprint_record_apply_blob_v3(
             bucket: landmark.bucket,
             t_ms: landmark.t_ms,
             hash64: landmark.hash64,
+            kind: landmark.kind,
             weight: u16::from(landmark.weight.max(1)),
         })
         .collect();
@@ -1094,6 +1121,28 @@ pub fn video_anchors_from_record(record: &MediaFingerprintRecord) -> Vec<VideoAn
     if !record.video_anchors.is_empty() {
         return record.video_anchors.clone();
     }
+    if matches!(
+        record.extraction_settings.profile,
+        MediaFingerprintProfile::CombinedV3
+    ) && let Some(video) = &record.video
+        && !video.v3_landmarks.is_empty()
+    {
+        let mut anchors = video
+            .v3_landmarks
+            .iter()
+            .map(|landmark| VideoAnchor {
+                bucket: landmark.bucket,
+                t_ms: landmark.t_ms,
+                hash64: landmark.hash64,
+                kind: landmark.kind,
+                weight: u16::from(landmark.weight.max(1)),
+            })
+            .collect::<Vec<_>>();
+        return bounded_time_distributed_video_anchors(
+            &mut anchors,
+            V3_VIDEO_VERIFY_LANDMARK_LIMIT,
+        );
+    }
     let limit = match record.extraction_settings.profile {
         MediaFingerprintProfile::FastAnchorV2 => FAST_VIDEO_ANCHOR_LIMIT,
         MediaFingerprintProfile::FullAnchorV2 => FULL_VIDEO_ANCHOR_LIMIT,
@@ -1120,14 +1169,22 @@ pub fn audio_landmarks_v3_from_record(record: &MediaFingerprintRecord) -> Vec<Au
 }
 
 pub fn video_landmarks_v3_from_record(record: &MediaFingerprintRecord) -> Vec<VideoLandmarkV3> {
-    // TODO(V3): replace legacy luma-frame anchors with scene descriptors and temporal shingles.
+    if let Some(video) = &record.video
+        && !video.v3_landmarks.is_empty()
+    {
+        let mut landmarks = video.v3_landmarks.clone();
+        return bounded_time_distributed_video_landmarks_v3(
+            &mut landmarks,
+            V3_VIDEO_VERIFY_LANDMARK_LIMIT,
+        );
+    }
     let mut landmarks = video_anchors_from_record(record)
         .into_iter()
         .map(|anchor| VideoLandmarkV3 {
             bucket: anchor.bucket,
             hash64: anchor.hash64,
             t_ms: anchor.t_ms,
-            kind: 0,
+            kind: anchor.kind,
             weight: anchor.weight.min(u16::from(u8::MAX)).max(1) as u8,
         })
         .collect::<Vec<_>>();
@@ -1199,6 +1256,7 @@ pub fn video_anchors_from_fingerprint(
                     bucket,
                     t_ms,
                     hash64: frame.hash,
+                    kind: V3_VIDEO_KIND_LEGACY_LUMA,
                     weight: 1,
                 })
         })
@@ -1268,9 +1326,17 @@ pub fn decode_audio_anchor_summary(
 
 pub fn encode_video_anchor_summary(anchors: &[VideoAnchor]) -> Vec<u8> {
     let mut sorted = anchors.to_vec();
-    sorted.sort_by_key(|anchor| (anchor.t_ms, anchor.bucket, anchor.hash64, anchor.weight));
+    sorted.sort_by_key(|anchor| {
+        (
+            anchor.t_ms,
+            anchor.bucket,
+            anchor.hash64,
+            anchor.kind,
+            anchor.weight,
+        )
+    });
     let count = sorted.len().min(MAX_SUMMARY_ANCHORS);
-    let mut bytes = Vec::with_capacity(8 + count * 18);
+    let mut bytes = Vec::with_capacity(8 + count * 19);
     bytes.extend_from_slice(VIDEO_SUMMARY_MAGIC);
     bytes.extend_from_slice(&SUMMARY_FORMAT_VERSION.to_le_bytes());
     bytes.extend_from_slice(&(count as u16).to_le_bytes());
@@ -1281,6 +1347,7 @@ pub fn encode_video_anchor_summary(anchors: &[VideoAnchor]) -> Vec<u8> {
         bytes.extend_from_slice(&delta_t_ms.to_le_bytes());
         bytes.extend_from_slice(&anchor.bucket.to_le_bytes());
         bytes.extend_from_slice(&anchor.hash64.to_le_bytes());
+        bytes.push(anchor.kind);
         bytes.extend_from_slice(&anchor.weight.to_le_bytes());
     }
     bytes
@@ -1303,7 +1370,7 @@ pub fn decode_video_anchor_summary(
     if count > MAX_SUMMARY_ANCHORS {
         return Err(MediaSummaryDecodeError::TooManyAnchors(count));
     }
-    let expected = 8 + count * 18;
+    let expected = 8 + count * 19;
     if bytes.len() != expected {
         return Err(MediaSummaryDecodeError::InvalidLength);
     }
@@ -1317,6 +1384,8 @@ pub fn decode_video_anchor_summary(
         cursor += 4;
         let hash64 = read_u64_le(bytes, cursor)?;
         cursor += 8;
+        let kind = bytes[cursor];
+        cursor += 1;
         let weight = read_u16_le(bytes, cursor)?;
         cursor += 2;
         t_ms = t_ms.saturating_add(delta_t_ms);
@@ -1324,6 +1393,7 @@ pub fn decode_video_anchor_summary(
             bucket,
             t_ms,
             hash64,
+            kind,
             weight,
         });
     }
@@ -2164,14 +2234,7 @@ fn extract_full_video_fingerprint(
         FFMPEG_FULL_VIDEO_TIMEOUT,
     )?;
     ensure_tool_success("ffmpeg", &output)?;
-    let frames = video_frames_from_ffmpeg_rawvideo(&output.stdout, &output.stderr)?;
-
-    Ok(VideoFingerprint {
-        duration_seconds: duration_seconds
-            .filter(|value| value.is_finite() && *value >= 0.0)
-            .map(|value| value.round().min(f64::from(u32::MAX)) as u32),
-        frames,
-    })
+    video_fingerprint_from_ffmpeg_rawvideo(&output.stdout, &output.stderr, duration_seconds)
 }
 
 fn extract_fast_video_fingerprint(
@@ -2229,13 +2292,36 @@ fn extract_fast_video_fingerprint(
         FFMPEG_FAST_FRAME_TIMEOUT,
     )?;
     ensure_tool_success("ffmpeg", &output)?;
-    let frames = video_frames_from_ffmpeg_rawvideo(&output.stdout, &output.stderr)?;
+    video_fingerprint_from_ffmpeg_rawvideo(&output.stdout, &output.stderr, duration_seconds)
+}
+
+fn video_fingerprint_from_ffmpeg_rawvideo(
+    stdout: &[u8],
+    stderr: &[u8],
+    duration_seconds: Option<f64>,
+) -> Result<VideoFingerprint, MediaFingerprintError> {
+    let frames = video_frames_from_ffmpeg_rawvideo(stdout, stderr)?;
+    let pts_times = frames
+        .iter()
+        .map(|frame| frame.timestamp_millis.min(u64::from(u32::MAX)) as u32)
+        .collect::<Vec<_>>();
+    let mut luma_frames = Vec::with_capacity(pts_times.len());
+    for (t_ms, chunk) in pts_times
+        .iter()
+        .copied()
+        .zip(stdout.chunks_exact(VIDEO_FRAME_BYTES))
+    {
+        luma_frames.push((t_ms, chunk.to_vec()));
+    }
+    let v3_landmarks =
+        video_landmarks_v3_from_luma_frames(VIDEO_FRAME_WIDTH, VIDEO_FRAME_HEIGHT, &luma_frames);
 
     Ok(VideoFingerprint {
         duration_seconds: duration_seconds
             .filter(|value| value.is_finite() && *value >= 0.0)
             .map(|value| value.round().min(f64::from(u32::MAX)) as u32),
         frames,
+        v3_landmarks,
     })
 }
 
@@ -2652,13 +2738,18 @@ pub fn decide_media_match_anchors(
             continuity_ok,
         },
     );
+    let video_inconclusive = !query.video_anchors.is_empty()
+        && !candidate.video_anchors.is_empty()
+        && timeline_analysis.video_pairs < V3_SEGMENT_VIDEO_MIN_PAIRS
+        && !timeline_analysis.audio_video_conflict;
     evidence.notes.push(format!(
-        "v3 segments={} span={:.1}s largest_gap={:.1}s edge_only={} audio_video_conflict={} best_segment_score={} second_segment_score={} pair_count={} hypotheses={} segment_candidates={} chained_segments={} piecewise_fit_ms={}",
+        "v3 segments={} span={:.1}s largest_gap={:.1}s edge_only={} audio_video_conflict={} video_inconclusive={} best_segment_score={} second_segment_score={} pair_count={} hypotheses={} segment_candidates={} chained_segments={} piecewise_fit_ms={}",
         timeline_analysis.segments.len(),
         f64::from(timeline_analysis.total_aligned_span_ms) / 1000.0,
         f64::from(timeline_analysis.largest_gap_ms) / 1000.0,
         timeline_analysis.edge_only,
         timeline_analysis.audio_video_conflict,
+        video_inconclusive,
         timeline_analysis.best_segment_score,
         timeline_analysis.second_best_segment_score,
         timeline_analysis.piecewise_pair_count,
@@ -3096,7 +3187,7 @@ fn collect_anchor_match_pairs(
             }
         }
     }
-    let mut seen_video_pairs = HashSet::<(u32, u32, u64, u64)>::new();
+    let mut seen_video_pairs = HashSet::<(u32, u32, u8, u64, u64)>::new();
     for query_anchor in &query.video_anchors {
         if let Some(candidate_anchors) = candidate_video.get(&query_anchor.bucket) {
             for candidate_anchor in candidate_anchors {
@@ -3122,16 +3213,24 @@ fn collect_anchor_match_pairs(
 
 fn push_video_anchor_match_pair(
     pairs: &mut Vec<AnchorMatchPair>,
-    seen_video_pairs: &mut HashSet<(u32, u32, u64, u64)>,
+    seen_video_pairs: &mut HashSet<(u32, u32, u8, u64, u64)>,
     query_anchor: &VideoAnchor,
     candidate_anchor: &VideoAnchor,
 ) -> bool {
-    if !video_anchor_hashes_match(query_anchor.hash64, candidate_anchor.hash64) {
+    if query_anchor.kind != candidate_anchor.kind {
+        return false;
+    }
+    if !v3_video_anchor_hashes_match(
+        query_anchor.kind,
+        query_anchor.hash64,
+        candidate_anchor.hash64,
+    ) {
         return false;
     }
     if !seen_video_pairs.insert((
         query_anchor.t_ms,
         candidate_anchor.t_ms,
+        query_anchor.kind,
         query_anchor.hash64,
         candidate_anchor.hash64,
     )) {
@@ -3802,40 +3901,18 @@ fn v3_range_is_edge_only(
 }
 
 fn v3_audio_video_conflict(
-    query: &MediaAnchorProfile,
-    candidate: &MediaAnchorProfile,
+    _query: &MediaAnchorProfile,
+    _candidate: &MediaAnchorProfile,
     pairs: &[AnchorMatchPair],
-    segments: &[V3SegmentCandidate],
+    _segments: &[V3SegmentCandidate],
 ) -> bool {
-    let audio_segment_pairs = segments
-        .iter()
-        .map(|segment| segment.audio_pairs)
-        .sum::<usize>();
-    let video_segment_pairs = segments
-        .iter()
-        .map(|segment| segment.video_pairs)
-        .sum::<usize>();
-    if audio_segment_pairs >= V3_SEGMENT_AUDIO_MIN_PAIRS
-        && !query.video_anchors.is_empty()
-        && !candidate.video_anchors.is_empty()
-        && video_segment_pairs == 0
-    {
-        return true;
-    }
-    if video_segment_pairs >= V3_SEGMENT_VIDEO_MIN_PAIRS
-        && !query.audio_anchors.is_empty()
-        && !candidate.audio_anchors.is_empty()
-        && audio_segment_pairs == 0
-    {
-        return true;
-    }
     let audio_offset = dominant_modality_offset_bin(pairs, AnchorModality::Audio);
     let video_offset = dominant_modality_offset_bin(pairs, AnchorModality::Video);
     matches!(
         (audio_offset, video_offset),
         (Some((audio_bin, audio_score)), Some((video_bin, video_score)))
-            if audio_score >= 3
-                && video_score >= 3
+            if audio_score >= V3_SEGMENT_AUDIO_MIN_PAIRS as u32
+                && video_score >= V3_SEGMENT_VIDEO_MIN_PAIRS as u32
                 && (audio_bin - video_bin).abs() * DEFAULT_ANCHOR_OFFSET_BIN_MS
                     > DEFAULT_ANCHOR_ALIGNMENT_TOLERANCE_MS * 2
     )
@@ -3879,20 +3956,13 @@ fn classify_v3_timeline(
     }
     let has_query_audio = !query.audio_anchors.is_empty();
     let has_candidate_audio = !candidate.audio_anchors.is_empty();
-    let has_query_video = !query.video_anchors.is_empty();
-    let has_candidate_video = !candidate.video_anchors.is_empty();
     let audio_strong = analysis.audio_pairs >= V3_SEGMENT_AUDIO_MIN_PAIRS;
     let video_strong = analysis.video_pairs >= V3_SEGMENT_VIDEO_MIN_PAIRS;
-    if analysis.audio_video_conflict && audio_strong {
+    if analysis.audio_video_conflict && audio_strong && analysis.audio_pairs >= analysis.video_pairs
+    {
         return MatchClassV3::SameAudioDifferentVideo;
     }
     if analysis.audio_video_conflict && video_strong {
-        return MatchClassV3::SameVideoDifferentAudio;
-    }
-    if audio_strong && has_query_video && has_candidate_video && analysis.video_pairs == 0 {
-        return MatchClassV3::SameAudioDifferentVideo;
-    }
-    if video_strong && has_query_audio && has_candidate_audio && analysis.audio_pairs == 0 {
         return MatchClassV3::SameVideoDifferentAudio;
     }
     if video_strong && (!has_query_audio || !has_candidate_audio) {
@@ -4005,7 +4075,7 @@ fn anchor_coverage(aligned: usize, total: usize) -> f64 {
 fn unique_video_frame_anchor_count(anchors: &[VideoAnchor]) -> usize {
     anchors
         .iter()
-        .map(|anchor| (anchor.t_ms, anchor.hash64))
+        .map(|anchor| (anchor.t_ms, anchor.kind, anchor.hash64))
         .collect::<HashSet<_>>()
         .len()
 }
@@ -4068,7 +4138,7 @@ fn bounded_time_distributed_video_anchors(
     anchors: &mut [VideoAnchor],
     max_anchors: usize,
 ) -> Vec<VideoAnchor> {
-    anchors.sort_by_key(|anchor| (anchor.t_ms, anchor.bucket, anchor.hash64));
+    anchors.sort_by_key(|anchor| (anchor.t_ms, anchor.bucket, anchor.hash64, anchor.kind));
     if anchors.len() <= max_anchors {
         return anchors.to_vec();
     }
@@ -4154,6 +4224,368 @@ fn video_lsh_buckets(hash: u64) -> [u32; VIDEO_LSH_BANDS as usize] {
 
 pub fn video_anchor_hashes_match(left: u64, right: u64) -> bool {
     frame_hash_distance(left, right) <= DEFAULT_FRAME_HAMMING_THRESHOLD
+}
+
+pub fn v3_video_bucket_for_kind(kind: u8, raw_bucket: u32) -> u32 {
+    ((u32::from(kind) & 0x0f) << V3_VIDEO_BUCKET_KIND_SHIFT)
+        | (raw_bucket & V3_VIDEO_BUCKET_VALUE_MASK)
+}
+
+pub fn v3_video_kind_from_bucket(bucket: u32) -> Option<u8> {
+    let kind = (bucket >> V3_VIDEO_BUCKET_KIND_SHIFT) as u8;
+    matches!(
+        kind,
+        V3_VIDEO_KIND_LEGACY_LUMA
+            | V3_VIDEO_KIND_GLOBAL_DCT
+            | V3_VIDEO_KIND_CENTER_DCT
+            | V3_VIDEO_KIND_EDGE
+            | V3_VIDEO_KIND_TEMPORAL_SHINGLE
+    )
+    .then_some(kind)
+}
+
+fn v3_video_lsh_buckets(kind: u8, hash: u64) -> Vec<u32> {
+    if kind == V3_VIDEO_KIND_TEMPORAL_SHINGLE {
+        return vec![v3_video_bucket_for_kind(kind, anchor_bucket(hash))];
+    }
+    video_lsh_buckets(hash)
+        .into_iter()
+        .map(|bucket| v3_video_bucket_for_kind(kind, bucket))
+        .collect()
+}
+
+pub fn v3_video_hamming_threshold(kind: u8) -> u32 {
+    match kind {
+        V3_VIDEO_KIND_GLOBAL_DCT | V3_VIDEO_KIND_CENTER_DCT => 10,
+        V3_VIDEO_KIND_EDGE => 12,
+        V3_VIDEO_KIND_TEMPORAL_SHINGLE => 1,
+        _ => DEFAULT_FRAME_HAMMING_THRESHOLD,
+    }
+}
+
+fn v3_video_anchor_hashes_match(kind: u8, left: u64, right: u64) -> bool {
+    frame_hash_distance(left, right) <= v3_video_hamming_threshold(kind)
+}
+
+pub fn detect_content_window_luma(width: usize, height: usize, luma: &[u8]) -> Option<LumaRect> {
+    if width == 0 || height == 0 || luma.len() < width.saturating_mul(height) {
+        return None;
+    }
+    let full = LumaRect {
+        x: 0,
+        y: 0,
+        width,
+        height,
+    };
+    let row_is_content = |y: usize| {
+        let start = y * width;
+        !luma_slice_is_black(&luma[start..start + width])
+    };
+    let top = (0..height).find(|y| row_is_content(*y));
+    let bottom = (0..height).rev().find(|y| row_is_content(*y));
+    let (Some(top), Some(bottom)) = (top, bottom) else {
+        return Some(full);
+    };
+    let column_is_content = |x: usize| {
+        let mut values = Vec::with_capacity(bottom - top + 1);
+        for y in top..=bottom {
+            values.push(luma[y * width + x]);
+        }
+        !luma_slice_is_black(&values)
+    };
+    let left = (0..width).find(|x| column_is_content(*x));
+    let right = (0..width).rev().find(|x| column_is_content(*x));
+    let (Some(left), Some(right)) = (left, right) else {
+        return Some(full);
+    };
+    let rect = LumaRect {
+        x: left,
+        y: top,
+        width: right - left + 1,
+        height: bottom - top + 1,
+    };
+    let uncertain = rect.width < width / 3
+        || rect.height < height / 3
+        || rect.width < 4
+        || rect.height < 4
+        || (rect.x <= 1
+            && rect.y <= 1
+            && rect.x + rect.width + 1 >= width
+            && rect.y + rect.height + 1 >= height);
+    if uncertain { Some(full) } else { Some(rect) }
+}
+
+fn luma_slice_is_black(values: &[u8]) -> bool {
+    if values.is_empty() {
+        return true;
+    }
+    let mean = values.iter().map(|value| f64::from(*value)).sum::<f64>() / values.len() as f64;
+    let variance = values
+        .iter()
+        .map(|value| {
+            let delta = f64::from(*value) - mean;
+            delta * delta
+        })
+        .sum::<f64>()
+        / values.len() as f64;
+    mean < 18.0 && variance < 18.0
+}
+
+fn luma_rect_variance(width: usize, luma: &[u8], rect: LumaRect) -> f64 {
+    let mut count = 0usize;
+    let mut sum = 0f64;
+    let mut sum_sq = 0f64;
+    for y in rect.y..rect.y + rect.height {
+        for x in rect.x..rect.x + rect.width {
+            let value = f64::from(luma[y * width + x]);
+            count += 1;
+            sum += value;
+            sum_sq += value * value;
+        }
+    }
+    if count == 0 {
+        return 0.0;
+    }
+    let mean = sum / count as f64;
+    (sum_sq / count as f64) - (mean * mean)
+}
+
+pub fn video_landmarks_v3_from_luma_frame(
+    width: usize,
+    height: usize,
+    luma: &[u8],
+    t_ms: u32,
+) -> Vec<VideoLandmarkV3> {
+    let Some(content) = detect_content_window_luma(width, height, luma) else {
+        return Vec::new();
+    };
+    if luma_rect_variance(width, luma, content) < V3_VIDEO_MIN_VARIANCE {
+        return Vec::new();
+    }
+    let mut landmarks = Vec::new();
+    if let Some(hash) = dct_phash_luma(width, height, luma, content) {
+        push_v3_video_landmarks_for_hash(&mut landmarks, V3_VIDEO_KIND_GLOBAL_DCT, t_ms, hash, 2);
+    }
+    if let Some(hash) = dct_phash_luma(width, height, luma, center_crop_rect(content, 0.68)) {
+        push_v3_video_landmarks_for_hash(&mut landmarks, V3_VIDEO_KIND_CENTER_DCT, t_ms, hash, 2);
+    }
+    if let Some(hash) = edge_hash_luma(width, height, luma, content) {
+        push_v3_video_landmarks_for_hash(&mut landmarks, V3_VIDEO_KIND_EDGE, t_ms, hash, 2);
+    }
+    landmarks
+}
+
+pub fn video_landmarks_v3_from_luma_frames(
+    width: usize,
+    height: usize,
+    frames: &[(u32, Vec<u8>)],
+) -> Vec<VideoLandmarkV3> {
+    let mut landmarks = Vec::new();
+    for (t_ms, luma) in frames {
+        landmarks.extend(video_landmarks_v3_from_luma_frame(
+            width, height, luma, *t_ms,
+        ));
+    }
+    add_v3_temporal_video_shingles(&mut landmarks);
+    dedupe_video_landmarks_v3(&mut landmarks);
+    bounded_time_distributed_video_landmarks_v3(&mut landmarks, V3_VIDEO_VERIFY_LANDMARK_LIMIT)
+}
+
+fn push_v3_video_landmarks_for_hash(
+    landmarks: &mut Vec<VideoLandmarkV3>,
+    kind: u8,
+    t_ms: u32,
+    hash64: u64,
+    weight: u8,
+) {
+    for bucket in v3_video_lsh_buckets(kind, hash64) {
+        landmarks.push(VideoLandmarkV3 {
+            bucket,
+            hash64,
+            t_ms,
+            kind,
+            weight,
+        });
+    }
+}
+
+fn center_crop_rect(rect: LumaRect, scale: f64) -> LumaRect {
+    let width = ((rect.width as f64 * scale).round() as usize)
+        .clamp(4, rect.width.max(4))
+        .min(rect.width);
+    let height = ((rect.height as f64 * scale).round() as usize)
+        .clamp(4, rect.height.max(4))
+        .min(rect.height);
+    LumaRect {
+        x: rect.x + (rect.width - width) / 2,
+        y: rect.y + (rect.height - height) / 2,
+        width,
+        height,
+    }
+}
+
+fn sample_luma_rect_32(
+    width: usize,
+    luma: &[u8],
+    rect: LumaRect,
+) -> [f64; V3_VIDEO_PHASH_SIZE * V3_VIDEO_PHASH_SIZE] {
+    let mut samples = [0f64; V3_VIDEO_PHASH_SIZE * V3_VIDEO_PHASH_SIZE];
+    for y in 0..V3_VIDEO_PHASH_SIZE {
+        let source_y = rect.y + ((y * rect.height) / V3_VIDEO_PHASH_SIZE).min(rect.height - 1);
+        for x in 0..V3_VIDEO_PHASH_SIZE {
+            let source_x = rect.x + ((x * rect.width) / V3_VIDEO_PHASH_SIZE).min(rect.width - 1);
+            samples[y * V3_VIDEO_PHASH_SIZE + x] = f64::from(luma[source_y * width + source_x]);
+        }
+    }
+    samples
+}
+
+fn dct_phash_luma(width: usize, height: usize, luma: &[u8], rect: LumaRect) -> Option<u64> {
+    if width == 0 || height == 0 || luma.len() < width.saturating_mul(height) {
+        return None;
+    }
+    let samples = sample_luma_rect_32(width, luma, rect);
+    let mut coeffs = [0f64; V3_VIDEO_PHASH_LOW_FREQ * V3_VIDEO_PHASH_LOW_FREQ];
+    for v in 0..V3_VIDEO_PHASH_LOW_FREQ {
+        for u in 0..V3_VIDEO_PHASH_LOW_FREQ {
+            let mut sum = 0f64;
+            for y in 0..V3_VIDEO_PHASH_SIZE {
+                let cos_y = (((2 * y + 1) as f64 * v as f64 * std::f64::consts::PI)
+                    / (2.0 * V3_VIDEO_PHASH_SIZE as f64))
+                    .cos();
+                for x in 0..V3_VIDEO_PHASH_SIZE {
+                    let cos_x = (((2 * x + 1) as f64 * u as f64 * std::f64::consts::PI)
+                        / (2.0 * V3_VIDEO_PHASH_SIZE as f64))
+                        .cos();
+                    sum += samples[y * V3_VIDEO_PHASH_SIZE + x] * cos_x * cos_y;
+                }
+            }
+            coeffs[v * V3_VIDEO_PHASH_LOW_FREQ + u] = sum;
+        }
+    }
+    let mut comparable = coeffs[1..].to_vec();
+    comparable.sort_by(|left, right| left.total_cmp(right));
+    let median = comparable[comparable.len() / 2];
+    let mut hash = 0u64;
+    for (index, coeff) in coeffs.iter().enumerate().skip(1) {
+        if *coeff >= median {
+            hash |= 1u64 << index;
+        }
+    }
+    Some(hash)
+}
+
+fn edge_hash_luma(width: usize, height: usize, luma: &[u8], rect: LumaRect) -> Option<u64> {
+    if width < 3 || height < 3 || luma.len() < width.saturating_mul(height) {
+        return None;
+    }
+    let mut cells = [0f64; 64];
+    for cell_y in 0..8 {
+        for cell_x in 0..8 {
+            let start_x = rect.x + cell_x * rect.width / 8;
+            let end_x = (rect.x + ((cell_x + 1) * rect.width / 8))
+                .max(start_x + 1)
+                .min(rect.x + rect.width);
+            let start_y = rect.y + cell_y * rect.height / 8;
+            let end_y = (rect.y + ((cell_y + 1) * rect.height / 8))
+                .max(start_y + 1)
+                .min(rect.y + rect.height);
+            let mut sum = 0f64;
+            let mut count = 0f64;
+            for y in start_y.max(1)..end_y.min(height - 1) {
+                for x in start_x.max(1)..end_x.min(width - 1) {
+                    let dx =
+                        i16::from(luma[y * width + x + 1]) - i16::from(luma[y * width + x - 1]);
+                    let dy =
+                        i16::from(luma[(y + 1) * width + x]) - i16::from(luma[(y - 1) * width + x]);
+                    sum += f64::from(dx.unsigned_abs() + dy.unsigned_abs());
+                    count += 1.0;
+                }
+            }
+            cells[cell_y * 8 + cell_x] = if count > 0.0 { sum / count } else { 0.0 };
+        }
+    }
+    let mut sorted = cells;
+    sorted.sort_by(|left, right| left.total_cmp(right));
+    let median = sorted[sorted.len() / 2];
+    if median <= 0.0 && cells.iter().all(|value| *value <= 0.0) {
+        return None;
+    }
+    let mut hash = 0u64;
+    for (index, value) in cells.iter().enumerate() {
+        if *value >= median {
+            hash |= 1u64 << index;
+        }
+    }
+    Some(hash)
+}
+
+fn add_v3_temporal_video_shingles(landmarks: &mut Vec<VideoLandmarkV3>) {
+    let mut descriptors = landmarks
+        .iter()
+        .copied()
+        .filter(|landmark| {
+            matches!(
+                landmark.kind,
+                V3_VIDEO_KIND_GLOBAL_DCT | V3_VIDEO_KIND_CENTER_DCT | V3_VIDEO_KIND_EDGE
+            )
+        })
+        .collect::<Vec<_>>();
+    descriptors.sort_by_key(|landmark| (landmark.t_ms, landmark.kind, landmark.hash64));
+    descriptors.dedup_by_key(|landmark| (landmark.t_ms, landmark.kind, landmark.hash64));
+    let mut shingles = Vec::new();
+    for (index, left) in descriptors.iter().enumerate() {
+        let mut emitted = 0usize;
+        for right in descriptors.iter().skip(index + 1) {
+            let delta = right.t_ms.saturating_sub(left.t_ms);
+            if delta > V3_VIDEO_TEMPORAL_MAX_DELTA_MS {
+                break;
+            }
+            if delta < V3_VIDEO_TEMPORAL_MIN_DELTA_MS || left.kind != right.kind {
+                continue;
+            }
+            let delta_bucket = delta / V3_VIDEO_TEMPORAL_DELTA_BUCKET_MS;
+            let mut bytes = Vec::with_capacity(21);
+            bytes.push(left.kind);
+            bytes.extend_from_slice(&left.hash64.to_le_bytes());
+            bytes.extend_from_slice(&right.hash64.to_le_bytes());
+            bytes.extend_from_slice(&delta_bucket.to_le_bytes());
+            let hash64 = stable_hash_u64(bytes);
+            shingles.push(VideoLandmarkV3 {
+                bucket: v3_video_bucket_for_kind(
+                    V3_VIDEO_KIND_TEMPORAL_SHINGLE,
+                    anchor_bucket(hash64),
+                ),
+                hash64,
+                t_ms: left.t_ms,
+                kind: V3_VIDEO_KIND_TEMPORAL_SHINGLE,
+                weight: 4,
+            });
+            emitted += 1;
+            if emitted >= V3_VIDEO_TEMPORAL_FANOUT {
+                break;
+            }
+        }
+    }
+    landmarks.extend(shingles);
+}
+
+fn dedupe_video_landmarks_v3(landmarks: &mut Vec<VideoLandmarkV3>) {
+    landmarks.sort_by_key(|landmark| {
+        (
+            landmark.t_ms,
+            landmark.kind,
+            landmark.bucket,
+            landmark.hash64,
+            std::cmp::Reverse(landmark.weight),
+        )
+    });
+    landmarks.dedup_by(|left, right| {
+        left.t_ms == right.t_ms
+            && left.kind == right.kind
+            && left.bucket == right.bucket
+            && left.hash64 == right.hash64
+    });
 }
 
 pub fn media_extraction_settings_hash(settings: &MediaExtractionSettings) -> [u8; 32] {
@@ -4606,6 +5038,7 @@ mod tests {
                     )
                 })
                 .collect(),
+            v3_landmarks: Vec::new(),
         }
     }
 
@@ -4622,6 +5055,39 @@ mod tests {
 
     fn synthetic_hashes(values: &[u64]) -> Vec<u64> {
         values.iter().copied().map(synthetic_hash).collect()
+    }
+
+    fn synthetic_luma_pattern(width: usize, height: usize) -> Vec<u8> {
+        synthetic_luma_pattern_seed(width, height, 0)
+    }
+
+    fn synthetic_luma_pattern_seed(width: usize, height: usize, seed: usize) -> Vec<u8> {
+        (0..height)
+            .flat_map(|y| {
+                (0..width).map(move |x| {
+                    let base = ((x * (9 + seed % 5)
+                        + y * (13 + seed % 7)
+                        + ((x / 4 + y / 4 + seed) % 2) * 70
+                        + seed * 17)
+                        % 220) as u8;
+                    base.saturating_add(20)
+                })
+            })
+            .collect()
+    }
+
+    fn brightness_shift_luma(luma: &[u8], delta: i16) -> Vec<u8> {
+        luma.iter()
+            .map(|value| (i16::from(*value) + delta).clamp(0, i16::from(u8::MAX)) as u8)
+            .collect()
+    }
+
+    fn v3_landmark_hash_for_kind(landmarks: &[VideoLandmarkV3], kind: u8) -> u64 {
+        landmarks
+            .iter()
+            .find(|landmark| landmark.kind == kind)
+            .map(|landmark| landmark.hash64)
+            .expect("landmark kind should exist")
     }
 
     fn anchor_profile(
@@ -4647,6 +5113,7 @@ mod tests {
                     bucket: *bucket,
                     t_ms: *t_ms,
                     hash64: *hash64,
+                    kind: V3_VIDEO_KIND_LEGACY_LUMA,
                     weight: 1,
                 })
                 .collect(),
@@ -4721,6 +5188,7 @@ mod tests {
                     bucket: *bucket,
                     t_ms: *t_ms,
                     hash64: *hash64,
+                    kind: V3_VIDEO_KIND_LEGACY_LUMA,
                     weight: 4,
                 })
                 .collect(),
@@ -4825,12 +5293,14 @@ mod tests {
                 bucket: 9,
                 t_ms: 1_000,
                 hash64: 0x0123_4567_89ab_cdef,
+                kind: V3_VIDEO_KIND_GLOBAL_DCT,
                 weight: 1,
             },
             VideoAnchor {
                 bucket: 10,
                 t_ms: 3_000,
                 hash64: 0xfedc_ba98_7654_3210,
+                kind: V3_VIDEO_KIND_EDGE,
                 weight: 3,
             },
         ];
@@ -4839,7 +5309,7 @@ mod tests {
         let decoded = decode_video_anchor_summary(&encoded).expect("video summary should decode");
 
         assert_eq!(decoded, anchors);
-        assert!(encoded.len() < 80);
+        assert!(encoded.len() < 84);
     }
 
     #[test]
@@ -4897,6 +5367,298 @@ mod tests {
             decode_media_fingerprint_blob_v3(&encoded),
             Err(MediaFingerprintBlobV3DecodeError::InvalidLength)
         ));
+    }
+
+    #[test]
+    fn black_bar_detection_letterbox() {
+        let width = 32;
+        let height = 32;
+        let mut luma = synthetic_luma_pattern(width, height);
+        for y in 0..6 {
+            for x in 0..width {
+                luma[y * width + x] = 0;
+                luma[(height - 1 - y) * width + x] = 0;
+            }
+        }
+
+        let rect = detect_content_window_luma(width, height, &luma).expect("content rect");
+
+        assert_eq!(rect.y, 6);
+        assert_eq!(rect.height, 20);
+    }
+
+    #[test]
+    fn black_bar_detection_pillarbox() {
+        let width = 32;
+        let height = 32;
+        let mut luma = synthetic_luma_pattern(width, height);
+        for y in 0..height {
+            for x in 0..5 {
+                luma[y * width + x] = 0;
+                luma[y * width + (width - 1 - x)] = 0;
+            }
+        }
+
+        let rect = detect_content_window_luma(width, height, &luma).expect("content rect");
+
+        assert_eq!(rect.x, 5);
+        assert_eq!(rect.width, 22);
+    }
+
+    #[test]
+    fn all_black_frame_is_ignored_for_v3_video() {
+        let luma = vec![0; VIDEO_FRAME_BYTES];
+        let rect =
+            detect_content_window_luma(VIDEO_FRAME_WIDTH, VIDEO_FRAME_HEIGHT, &luma).unwrap();
+
+        assert_eq!(
+            rect,
+            LumaRect {
+                x: 0,
+                y: 0,
+                width: VIDEO_FRAME_WIDTH,
+                height: VIDEO_FRAME_HEIGHT
+            }
+        );
+        assert!(video_landmarks_v3_from_luma_frame(32, 32, &luma, 0).is_empty());
+    }
+
+    #[test]
+    fn global_dct_hash_stable_under_brightness_shift() {
+        let luma = synthetic_luma_pattern(32, 32);
+        let brighter = brightness_shift_luma(&luma, 22);
+        let left = video_landmarks_v3_from_luma_frame(32, 32, &luma, 1_000);
+        let right = video_landmarks_v3_from_luma_frame(32, 32, &brighter, 1_000);
+
+        let distance = frame_hash_distance(
+            v3_landmark_hash_for_kind(&left, V3_VIDEO_KIND_GLOBAL_DCT),
+            v3_landmark_hash_for_kind(&right, V3_VIDEO_KIND_GLOBAL_DCT),
+        );
+
+        assert!(distance <= v3_video_hamming_threshold(V3_VIDEO_KIND_GLOBAL_DCT));
+    }
+
+    #[test]
+    fn center_crop_resists_hard_subtitle_band() {
+        let luma = synthetic_luma_pattern(32, 32);
+        let mut subtitled = luma.clone();
+        for y in 25..30 {
+            for x in 6..26 {
+                subtitled[y * 32 + x] = 255;
+            }
+        }
+        let left = video_landmarks_v3_from_luma_frame(32, 32, &luma, 1_000);
+        let right = video_landmarks_v3_from_luma_frame(32, 32, &subtitled, 1_000);
+
+        let distance = frame_hash_distance(
+            v3_landmark_hash_for_kind(&left, V3_VIDEO_KIND_CENTER_DCT),
+            v3_landmark_hash_for_kind(&right, V3_VIDEO_KIND_CENTER_DCT),
+        );
+
+        assert!(distance <= v3_video_hamming_threshold(V3_VIDEO_KIND_CENTER_DCT));
+    }
+
+    #[test]
+    fn edge_hash_resists_brightness_shift() {
+        let luma = synthetic_luma_pattern(32, 32);
+        let brighter = brightness_shift_luma(&luma, 30);
+        let left = video_landmarks_v3_from_luma_frame(32, 32, &luma, 1_000);
+        let right = video_landmarks_v3_from_luma_frame(32, 32, &brighter, 1_000);
+
+        let distance = frame_hash_distance(
+            v3_landmark_hash_for_kind(&left, V3_VIDEO_KIND_EDGE),
+            v3_landmark_hash_for_kind(&right, V3_VIDEO_KIND_EDGE),
+        );
+
+        assert!(distance <= v3_video_hamming_threshold(V3_VIDEO_KIND_EDGE));
+    }
+
+    #[test]
+    fn temporal_shingle_requires_order() {
+        let mut forward = vec![
+            VideoLandmarkV3 {
+                bucket: v3_video_bucket_for_kind(V3_VIDEO_KIND_GLOBAL_DCT, 1),
+                hash64: 0x1000,
+                t_ms: 0,
+                kind: V3_VIDEO_KIND_GLOBAL_DCT,
+                weight: 2,
+            },
+            VideoLandmarkV3 {
+                bucket: v3_video_bucket_for_kind(V3_VIDEO_KIND_GLOBAL_DCT, 2),
+                hash64: 0x2000,
+                t_ms: 10_000,
+                kind: V3_VIDEO_KIND_GLOBAL_DCT,
+                weight: 2,
+            },
+            VideoLandmarkV3 {
+                bucket: v3_video_bucket_for_kind(V3_VIDEO_KIND_GLOBAL_DCT, 3),
+                hash64: 0x3000,
+                t_ms: 20_000,
+                kind: V3_VIDEO_KIND_GLOBAL_DCT,
+                weight: 2,
+            },
+        ];
+        let mut backward = vec![
+            VideoLandmarkV3 {
+                bucket: v3_video_bucket_for_kind(V3_VIDEO_KIND_GLOBAL_DCT, 3),
+                hash64: 0x3000,
+                t_ms: 0,
+                kind: V3_VIDEO_KIND_GLOBAL_DCT,
+                weight: 2,
+            },
+            VideoLandmarkV3 {
+                bucket: v3_video_bucket_for_kind(V3_VIDEO_KIND_GLOBAL_DCT, 2),
+                hash64: 0x2000,
+                t_ms: 10_000,
+                kind: V3_VIDEO_KIND_GLOBAL_DCT,
+                weight: 2,
+            },
+            VideoLandmarkV3 {
+                bucket: v3_video_bucket_for_kind(V3_VIDEO_KIND_GLOBAL_DCT, 1),
+                hash64: 0x1000,
+                t_ms: 20_000,
+                kind: V3_VIDEO_KIND_GLOBAL_DCT,
+                weight: 2,
+            },
+        ];
+        add_v3_temporal_video_shingles(&mut forward);
+        add_v3_temporal_video_shingles(&mut backward);
+        let forward_shingles = forward
+            .iter()
+            .filter(|landmark| landmark.kind == V3_VIDEO_KIND_TEMPORAL_SHINGLE)
+            .map(|landmark| landmark.hash64)
+            .collect::<HashSet<_>>();
+        let backward_shingles = backward
+            .iter()
+            .filter(|landmark| landmark.kind == V3_VIDEO_KIND_TEMPORAL_SHINGLE)
+            .map(|landmark| landmark.hash64)
+            .collect::<HashSet<_>>();
+
+        assert!(!forward_shingles.is_empty());
+        assert!(forward_shingles.is_disjoint(&backward_shingles));
+    }
+
+    #[test]
+    fn video_descriptor_kinds_do_not_cross_match() {
+        let hash = 0x0123_4567_89ab_cdef;
+        let query = VideoAnchor {
+            bucket: v3_video_bucket_for_kind(V3_VIDEO_KIND_GLOBAL_DCT, 7),
+            t_ms: 1_000,
+            hash64: hash,
+            kind: V3_VIDEO_KIND_GLOBAL_DCT,
+            weight: 2,
+        };
+        let candidate = VideoAnchor {
+            bucket: v3_video_bucket_for_kind(V3_VIDEO_KIND_EDGE, 7),
+            t_ms: 1_000,
+            hash64: hash,
+            kind: V3_VIDEO_KIND_EDGE,
+            weight: 2,
+        };
+        let query = MediaAnchorProfile {
+            version: MEDIA_MATCH_ANCHOR_VERSION,
+            profile: "combined-v3".to_owned(),
+            duration_ms: Some(120_000),
+            audio_anchors: Vec::new(),
+            video_anchors: vec![query],
+        };
+        let candidate = MediaAnchorProfile {
+            video_anchors: vec![candidate],
+            ..query.clone()
+        };
+
+        assert!(collect_anchor_match_pairs(&query, &candidate).is_empty());
+    }
+
+    #[test]
+    fn combined_v3_video_landmarks_include_multiple_kinds() {
+        let frames = vec![
+            (0, synthetic_luma_pattern_seed(32, 32, 1)),
+            (10_000, synthetic_luma_pattern_seed(32, 32, 2)),
+            (20_000, synthetic_luma_pattern_seed(32, 32, 3)),
+        ];
+        let landmarks = video_landmarks_v3_from_luma_frames(32, 32, &frames);
+        let video = VideoFingerprint {
+            duration_seconds: Some(30),
+            frames: Vec::new(),
+            v3_landmarks: landmarks,
+        };
+        let record = record_with_extraction_settings(
+            "video.mkv",
+            100,
+            Some(30.0),
+            None,
+            Some(video),
+            MediaExtractionSettings::combined_v3(),
+        );
+        let kinds = video_landmarks_v3_from_record(&record)
+            .into_iter()
+            .map(|landmark| landmark.kind)
+            .collect::<HashSet<_>>();
+
+        assert!(kinds.contains(&V3_VIDEO_KIND_GLOBAL_DCT));
+        assert!(kinds.contains(&V3_VIDEO_KIND_CENTER_DCT));
+        assert!(kinds.contains(&V3_VIDEO_KIND_EDGE));
+        assert!(kinds.contains(&V3_VIDEO_KIND_TEMPORAL_SHINGLE));
+    }
+
+    #[test]
+    fn cropped_or_letterboxed_same_video_still_matches() {
+        let content = synthetic_luma_pattern_seed(32, 20, 7);
+        let mut letterboxed = vec![0u8; 32 * 32];
+        for y in 0..20 {
+            for x in 0..32 {
+                letterboxed[(y + 6) * 32 + x] = content[y * 32 + x];
+            }
+        }
+        let plain = video_landmarks_v3_from_luma_frame(32, 20, &content, 10_000);
+        let boxed = video_landmarks_v3_from_luma_frame(32, 32, &letterboxed, 10_000);
+
+        for kind in [
+            V3_VIDEO_KIND_GLOBAL_DCT,
+            V3_VIDEO_KIND_CENTER_DCT,
+            V3_VIDEO_KIND_EDGE,
+        ] {
+            let distance = frame_hash_distance(
+                v3_landmark_hash_for_kind(&plain, kind),
+                v3_landmark_hash_for_kind(&boxed, kind),
+            );
+            assert!(
+                distance <= v3_video_hamming_threshold(kind),
+                "kind {kind} distance {distance} should stay matchable"
+            );
+        }
+    }
+
+    #[test]
+    fn combined_v3_video_storage_limits_are_bounded() {
+        let frames = (0..80)
+            .map(|index| {
+                (
+                    index * 10_000,
+                    synthetic_luma_pattern_seed(32, 32, index as usize),
+                )
+            })
+            .collect::<Vec<_>>();
+        let landmarks = video_landmarks_v3_from_luma_frames(32, 32, &frames);
+        let video = VideoFingerprint {
+            duration_seconds: Some(800),
+            frames: Vec::new(),
+            v3_landmarks: landmarks,
+        };
+        let record = record_with_extraction_settings(
+            "storage.mkv",
+            100,
+            Some(800.0),
+            None,
+            Some(video),
+            MediaExtractionSettings::combined_v3(),
+        );
+
+        assert!(video_landmarks_v3_from_record(&record).len() <= V3_VIDEO_VERIFY_LANDMARK_LIMIT);
+        assert!(
+            video_index_landmarks_v3_from_record(&record).len() <= V3_VIDEO_INDEX_LANDMARK_LIMIT
+        );
     }
 
     #[test]
@@ -5188,6 +5950,33 @@ mod tests {
     }
 
     #[test]
+    fn same_audio_weak_video_is_not_false_conflict() {
+        let audio = v3_audio_times(120_000, 18, 45_000);
+        let query_video = vec![(10_000, 120_000, synthetic_hash(1))];
+        let candidate_video = vec![(20_000, 125_000, synthetic_hash(2))];
+        let query = v3_profile_from_times(1_200_000, &audio, &query_video);
+        let candidate = v3_profile_from_times(
+            1_200_000,
+            &v3_shift_audio_times(&audio, 5_000, 0),
+            &candidate_video,
+        );
+
+        let decision = decide_media_match_anchors(&query, &candidate, &enabled_settings());
+
+        assert!(
+            matches!(
+                decision.evidence.v3_class,
+                Some(MatchClassV3::SameCutStrong | MatchClassV3::SameCutProbable)
+            ),
+            "{decision:?}"
+        );
+        assert_ne!(
+            decision.evidence.v3_class,
+            Some(MatchClassV3::SameAudioDifferentVideo)
+        );
+    }
+
+    #[test]
     fn same_audio_different_video_is_not_autoplay() {
         let audio = v3_audio_times(120_000, 18, 45_000);
         let video = v3_video_times_from_audio(&audio);
@@ -5207,6 +5996,26 @@ mod tests {
             Some(MatchClassV3::SameAudioDifferentVideo)
         );
         assert!(!decision.same_media_for_autoplay(&settings));
+    }
+
+    #[test]
+    fn same_video_different_audio_requires_contradictory_audio() {
+        let video_source = v3_audio_times(120_000, 18, 45_000);
+        let video = v3_video_times_from_audio(&video_source);
+        let audio = v3_audio_times(120_000, 6, 45_000);
+        let query = v3_profile_from_times(1_200_000, &audio, &video);
+        let candidate = v3_profile_from_times(
+            1_200_000,
+            &v3_shift_audio_times(&audio, 90_000, 0),
+            &v3_shift_video_times(&video, 5_000, 0),
+        );
+
+        let decision = decide_media_match_anchors(&query, &candidate, &enabled_settings());
+
+        assert_eq!(
+            decision.evidence.v3_class,
+            Some(MatchClassV3::SameVideoDifferentAudio)
+        );
     }
 
     #[test]
@@ -5273,6 +6082,7 @@ mod tests {
                 timestamp_millis: 30_000,
                 hash: query_hash,
             }],
+            v3_landmarks: Vec::new(),
         };
         let candidate_video = VideoFingerprint {
             duration_seconds: Some(120),
@@ -5280,6 +6090,7 @@ mod tests {
                 timestamp_millis: 31_000,
                 hash: candidate_hash,
             }],
+            v3_landmarks: Vec::new(),
         };
         let query = MediaAnchorProfile {
             version: MEDIA_MATCH_ANCHOR_VERSION,
@@ -5321,6 +6132,7 @@ mod tests {
                 timestamp_millis: 30_000,
                 hash: query_hash,
             }],
+            v3_landmarks: Vec::new(),
         };
         let candidate_video = VideoFingerprint {
             duration_seconds: Some(120),
@@ -5328,6 +6140,7 @@ mod tests {
                 timestamp_millis: 31_000,
                 hash: candidate_hash,
             }],
+            v3_landmarks: Vec::new(),
         };
         let query = MediaAnchorProfile {
             version: MEDIA_MATCH_ANCHOR_VERSION,
@@ -5922,6 +6735,7 @@ mod tests {
                 .enumerate()
                 .map(|(index, hash)| FrameFingerprint::new(index as f64 * 10.0, *hash))
                 .collect(),
+            v3_landmarks: Vec::new(),
         };
         let candidate = VideoFingerprint {
             duration_seconds: Some(86),
@@ -5930,6 +6744,7 @@ mod tests {
                 .enumerate()
                 .map(|(index, hash)| FrameFingerprint::new(index as f64 * 10.8, *hash))
                 .collect(),
+            v3_landmarks: Vec::new(),
         };
 
         let evidence = align_video_fingerprints(&query, &candidate).expect("should align");

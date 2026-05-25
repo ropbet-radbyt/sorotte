@@ -49,6 +49,8 @@ const MEDIA_MATCH_PREFILTER_LIMIT: usize = 24;
 const MEDIA_MATCH_V3_OFFSET_BIN_MS: i64 = 1_000;
 const MEDIA_MATCH_V3_RETRIEVAL_REGION_MS: i64 = 60_000;
 const MEDIA_MATCH_V3_RETRIEVAL_GAP_MS: i64 = 120_000;
+const MEDIA_MATCH_V3_COMMON_BUCKET_MIN_SKIP_DF: i64 = 256;
+const MEDIA_MATCH_V3_COMMON_BUCKET_FILE_DIVISOR: i64 = 20;
 const MEDIA_MATCH_VIDEO_HAMMING_FALLBACK_MIN_CANDIDATES: usize = 4;
 const MEDIA_MATCH_VIDEO_HAMMING_FALLBACK_MAX_QUERY_ANCHORS: usize = 16;
 const MEDIA_MATCH_VIDEO_HAMMING_FALLBACK_MAX_ROWS_PER_QUERY: i64 = 50_000;
@@ -1906,6 +1908,18 @@ fn media_match_v3_anchor_candidate_paths(
     else {
         return Ok(Vec::new());
     };
+    let indexed_file_count = connection
+        .query_row(
+            "SELECT COUNT(DISTINCT file_id)
+             FROM anchor_index_v3
+             WHERE algorithm_version = ?1 AND settings_hash = ?2",
+            params![i64::from(MEDIA_MATCH_ANCHOR_VERSION), settings_hash],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        .max(1);
+    let common_bucket_threshold = MEDIA_MATCH_V3_COMMON_BUCKET_MIN_SKIP_DF
+        .max(indexed_file_count / MEDIA_MATCH_V3_COMMON_BUCKET_FILE_DIVISOR);
     let mut statement = connection
         .prepare(
             "SELECT candidate.file_id,
@@ -1928,7 +1942,8 @@ fn media_match_v3_anchor_candidate_paths(
               AND stats.bucket = query.bucket
              WHERE query.algorithm_version = ?1
                AND query.settings_hash = ?2
-               AND query.file_id = ?3",
+               AND query.file_id = ?3
+               AND COALESCE(stats.document_frequency, 1) <= ?4",
         )
         .map_err(|error| {
             format!("failed preparing media-match v3 anchor candidate query: {error}")
@@ -1939,6 +1954,7 @@ fn media_match_v3_anchor_candidate_paths(
                 i64::from(MEDIA_MATCH_ANCHOR_VERSION),
                 settings_hash,
                 current_file_id,
+                common_bucket_threshold,
             ],
             |row| {
                 Ok((
@@ -3121,6 +3137,7 @@ fn media_match_record_from_cached_summary(
                 )
             })
             .collect(),
+        v3_landmarks: Vec::new(),
     });
     MediaFingerprintRecord {
         identity: sorotte_media_match::MediaFileIdentity {
@@ -4721,6 +4738,46 @@ mod tests {
     }
 
     #[test]
+    fn retrieval_common_bucket_cap_skips_overly_common_buckets() {
+        let root = unique_media_match_test_root("v3-common-bucket-cap");
+        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
+        let query =
+            v3_record_with_audio_anchors("query.mkv", &[(777, 120_000, 4), (999, 420_000, 4)]);
+        let common_candidate =
+            v3_record_with_audio_anchors("common-candidate.mkv", &[(777, 125_000, 4)]);
+        let rare_candidate =
+            v3_record_with_audio_anchors("rare-candidate.mkv", &[(999, 425_000, 4)]);
+        for record in [&query, &common_candidate, &rare_candidate] {
+            save_media_match_record_to_sqlite(&connection, record).expect("record should save");
+        }
+        for dummy_index in 0..260 {
+            let dummy = v3_record_with_audio_anchors(
+                &format!("common-dummy-{dummy_index}.mkv"),
+                &[(777, 180_000 + dummy_index, 1)],
+            );
+            save_media_match_record_to_sqlite(&connection, &dummy).expect("dummy should save");
+        }
+
+        let candidates = media_match_anchor_candidate_paths(
+            &root,
+            &query.identity.normalized_path,
+            &query.extraction_settings,
+        )
+        .expect("candidate lookup should run");
+
+        assert_eq!(
+            candidates.first(),
+            Some(&rare_candidate.identity.normalized_path),
+            "rare buckets should survive when overly common buckets are skipped"
+        );
+        assert!(
+            !candidates.contains(&common_candidate.identity.normalized_path),
+            "candidate with only an over-common bucket should be skipped"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn offset_aware_retrieval_prefers_body_span_over_intro_outro_edges() {
         let root = unique_media_match_test_root("v3-offset-body-span");
         let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
@@ -5330,6 +5387,7 @@ mod tests {
                 timestamp_millis: 30_000,
                 hash: query_hash,
             }],
+            v3_landmarks: Vec::new(),
         });
         let mut candidate = fake_media_match_record("candidate.mkv");
         candidate.extraction_settings = MediaExtractionSettings::combined_v3();
@@ -5339,6 +5397,7 @@ mod tests {
                 timestamp_millis: 31_000,
                 hash: candidate_hash,
             }],
+            v3_landmarks: Vec::new(),
         });
         let candidate_path = candidate.identity.normalized_path.clone();
         let mut cache = MediaMatchCache::default();
@@ -5373,6 +5432,7 @@ mod tests {
                 timestamp_millis: 30_000,
                 hash: query_hash,
             }],
+            v3_landmarks: Vec::new(),
         });
         let mut candidate = fake_media_match_record("candidate.mkv");
         candidate.extraction_settings = MediaExtractionSettings::combined_v3();
@@ -5382,6 +5442,7 @@ mod tests {
                 timestamp_millis: 31_000,
                 hash: candidate_hash,
             }],
+            v3_landmarks: Vec::new(),
         });
         let candidate_path = candidate.identity.normalized_path.clone();
         let mut cache = MediaMatchCache::default();
