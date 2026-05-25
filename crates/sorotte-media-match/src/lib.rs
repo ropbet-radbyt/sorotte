@@ -29,6 +29,18 @@ const FRAME_HASH_BITS: u32 = 64;
 pub const DEFAULT_FRAME_HAMMING_THRESHOLD: u32 = 10;
 const DEFAULT_ANCHOR_ALIGNMENT_TOLERANCE_MS: i64 = 1_000;
 const DEFAULT_ANCHOR_OFFSET_BIN_MS: i64 = 1_000;
+const V3_SEGMENT_MIN_PAIR_DELTA_MS: u32 = 30_000;
+const V3_SEGMENT_SPLIT_GAP_MS: u32 = 75_000;
+const V3_SEGMENT_AUDIO_MIN_PAIRS: usize = 6;
+const V3_SEGMENT_AUDIO_MIN_SPAN_MS: u32 = 60_000;
+const V3_SEGMENT_AUDIO_VIDEO_MIN_PAIRS: usize = 3;
+const V3_SEGMENT_AUDIO_VIDEO_MIN_SPAN_MS: u32 = 45_000;
+const V3_SEGMENT_VIDEO_MIN_PAIRS: usize = 5;
+const V3_SEGMENT_VIDEO_MIN_SPAN_MS: u32 = 60_000;
+const V3_SEGMENT_MERGE_GAP_MS: u32 = 45_000;
+const V3_SEGMENT_MERGE_SCALE_PPM: i32 = 2_500;
+const V3_EDGE_REGION_MIN_MS: u32 = 120_000;
+const V3_EDGE_REGION_MAX_MS: u32 = 300_000;
 const MAX_BROAD_SCALE_FIT_PAIRS: usize = 128;
 const VIDEO_LSH_BANDS: u32 = 4;
 const VIDEO_LSH_BITS_PER_BAND: u32 = 16;
@@ -100,6 +112,14 @@ pub struct AlignedSegmentV3 {
     pub candidate_start_ms: u32,
     pub candidate_end_ms: u32,
     pub scale_ppm: i32,
+    #[serde(default)]
+    pub audio_pairs: usize,
+    #[serde(default)]
+    pub video_pairs: usize,
+    #[serde(default)]
+    pub weighted_score: u32,
+    #[serde(default)]
+    pub residual_ms: f64,
     pub audio_score: f32,
     pub video_score: f32,
     pub confidence: f32,
@@ -110,6 +130,18 @@ pub struct MediaTimelineMapV3 {
     pub global_class: MatchClassV3,
     pub current_position_class: MatchClassV3,
     pub segments: Vec<AlignedSegmentV3>,
+    #[serde(default)]
+    pub total_aligned_span_ms: u32,
+    #[serde(default)]
+    pub largest_gap_ms: u32,
+    #[serde(default)]
+    pub edge_only: bool,
+    #[serde(default)]
+    pub audio_video_conflict: bool,
+    #[serde(default)]
+    pub best_segment_score: u32,
+    #[serde(default)]
+    pub second_best_segment_score: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -176,7 +208,17 @@ pub struct MediaMatchDecision {
 
 impl MediaMatchDecision {
     pub fn same_media_for_autoplay(&self, settings: &MediaMatchSettings) -> bool {
-        settings.autoplay_allows_strong_same_media() && self.tier == MediaMatchTier::Strong
+        if !settings.autoplay_allows_strong_same_media() {
+            return false;
+        }
+        match self.tier {
+            MediaMatchTier::Exact => true,
+            MediaMatchTier::Strong => self.evidence.v3_class == Some(MatchClassV3::SameCutStrong),
+            MediaMatchTier::Probable
+            | MediaMatchTier::Weak
+            | MediaMatchTier::Reject
+            | MediaMatchTier::Unknown => false,
+        }
     }
 
     pub fn unknown(reason: impl Into<String>) -> Self {
@@ -2364,6 +2406,15 @@ enum AnchorModality {
     Video,
 }
 
+impl AnchorMatchPair {
+    fn modality_order(self) -> u8 {
+        match self.modality {
+            AnchorModality::Audio => 0,
+            AnchorModality::Video => 1,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct AnchorScaleOffsetFit {
     offset_ms: i64,
@@ -2381,6 +2432,42 @@ struct AnchorFitCandidate {
     scale: f64,
     offset: f64,
     aligned: Vec<AnchorMatchPair>,
+}
+
+#[derive(Debug, Clone)]
+struct V3SegmentCandidate {
+    query_start_ms: u32,
+    query_end_ms: u32,
+    candidate_start_ms: u32,
+    candidate_end_ms: u32,
+    scale_ppm: i32,
+    audio_pairs: usize,
+    video_pairs: usize,
+    weighted_score: u32,
+    residual_ms: f64,
+    confidence: f32,
+}
+
+#[derive(Debug, Clone)]
+struct V3TimelineAnalysis {
+    segments: Vec<V3SegmentCandidate>,
+    total_aligned_span_ms: u32,
+    largest_gap_ms: u32,
+    edge_only: bool,
+    audio_video_conflict: bool,
+    best_segment_score: u32,
+    second_best_segment_score: u32,
+    audio_pairs: usize,
+    video_pairs: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct V3ClassificationContext {
+    duration_ok: bool,
+    meaningful_span: bool,
+    drift_ok: bool,
+    margin_ok: bool,
+    continuity_ok: bool,
 }
 
 pub fn decide_media_match_anchors(
@@ -2536,42 +2623,83 @@ pub fn decide_media_match_anchors(
     let very_strong_single_modality =
         (audio_pairs >= 16 || video_pairs >= 10) && meaningful_span && margin_ok && continuity_ok;
     let weak_evidence = audio_pairs >= 2 || video_pairs >= 2 || aligned.len() >= 3;
+    let timeline_analysis = build_v3_timeline_analysis(query, candidate, &pairs);
+    let v3_class = classify_v3_timeline(
+        query,
+        candidate,
+        &timeline_analysis,
+        V3ClassificationContext {
+            duration_ok,
+            meaningful_span,
+            drift_ok,
+            margin_ok,
+            continuity_ok,
+        },
+    );
+    evidence.notes.push(format!(
+        "v3 segments={} span={:.1}s largest_gap={:.1}s edge_only={} audio_video_conflict={} best_segment_score={} second_segment_score={}",
+        timeline_analysis.segments.len(),
+        f64::from(timeline_analysis.total_aligned_span_ms) / 1000.0,
+        f64::from(timeline_analysis.largest_gap_ms) / 1000.0,
+        timeline_analysis.edge_only,
+        timeline_analysis.audio_video_conflict,
+        timeline_analysis.best_segment_score,
+        timeline_analysis.second_best_segment_score
+    ));
 
-    if both_modalities && meaningful_span && drift_ok && margin_ok && duration_ok && continuity_ok {
-        return decision(
-            MediaMatchTier::Strong,
-            evidence,
-            "anchor timelines strongly align across audio and video",
-        );
-    }
-    if very_strong_single_modality && drift_ok && (duration_ok || span_seconds >= 300.0) {
-        return decision(
-            MediaMatchTier::Strong,
-            evidence,
-            "anchor timeline strongly aligns in one modality over a broad span",
-        );
-    }
-    if (both_modalities && drift_ok && margin_ok)
-        || (weak_evidence && meaningful_span && drift_ok && continuity_ok)
-    {
-        return decision(
-            MediaMatchTier::Probable,
-            evidence,
-            "anchor timelines align but evidence is not strong enough for autoplay",
-        );
-    }
-    if weak_evidence {
-        return decision(
-            MediaMatchTier::Weak,
-            evidence,
-            "partial anchor timeline evidence",
-        );
-    }
-    decision(
-        MediaMatchTier::Reject,
-        evidence,
-        "anchor timeline evidence is insufficient",
-    )
+    let tier = match v3_class {
+        MatchClassV3::SameCutStrong
+            if (both_modalities
+                && meaningful_span
+                && drift_ok
+                && margin_ok
+                && duration_ok
+                && continuity_ok)
+                || (very_strong_single_modality
+                    && drift_ok
+                    && (duration_ok || span_seconds >= 300.0)) =>
+        {
+            MediaMatchTier::Strong
+        }
+        MatchClassV3::SameCutStrong | MatchClassV3::SameCutProbable => MediaMatchTier::Probable,
+        MatchClassV3::SameMediaDifferentCut
+        | MatchClassV3::SameAudioDifferentVideo
+        | MatchClassV3::SameVideoDifferentAudio => MediaMatchTier::Probable,
+        MatchClassV3::PartialOverlap => MediaMatchTier::Weak,
+        MatchClassV3::SharedIntroOutroOnly | MatchClassV3::Reject => MediaMatchTier::Reject,
+        MatchClassV3::Unknown => {
+            if weak_evidence {
+                MediaMatchTier::Weak
+            } else {
+                MediaMatchTier::Unknown
+            }
+        }
+    };
+    let timeline_map = media_timeline_map_v3_from_analysis(v3_class, &timeline_analysis);
+    evidence.timeline_map_v3 = Some(timeline_map);
+
+    let explanation = match v3_class {
+        MatchClassV3::SameCutStrong => "anchor timelines strongly align across the same cut",
+        MatchClassV3::SameCutProbable => {
+            "anchor timelines align but evidence is below same-cut strong confidence"
+        }
+        MatchClassV3::SameMediaDifferentCut => {
+            "anchor timelines align in multiple body segments with edit differences"
+        }
+        MatchClassV3::SameAudioDifferentVideo => {
+            "audio timeline aligns but video evidence conflicts or is absent"
+        }
+        MatchClassV3::SameVideoDifferentAudio => {
+            "video timeline aligns but audio evidence conflicts or is absent"
+        }
+        MatchClassV3::PartialOverlap => "partial anchor timeline overlap",
+        MatchClassV3::SharedIntroOutroOnly => {
+            "anchor timeline evidence is concentrated at shared edges"
+        }
+        MatchClassV3::Reject => "anchor timeline evidence is insufficient",
+        MatchClassV3::Unknown => "insufficient comparable anchor evidence",
+    };
+    decision(tier, evidence, explanation)
 }
 
 pub fn decide_media_match(
@@ -3191,6 +3319,544 @@ fn max_anchor_fit_residual_ms(pairs: &[AnchorMatchPair], scale: f64, offset: f64
         .fold(0.0, f64::max)
 }
 
+fn build_v3_timeline_analysis(
+    query: &MediaAnchorProfile,
+    candidate: &MediaAnchorProfile,
+    pairs: &[AnchorMatchPair],
+) -> V3TimelineAnalysis {
+    let mut hypotheses = Vec::<(f64, f64)>::new();
+    let mut offset_bins = pairs
+        .iter()
+        .map(|pair| rounded_offset_bin(i64::from(pair.candidate_t_ms) - i64::from(pair.query_t_ms)))
+        .collect::<Vec<_>>();
+    offset_bins.sort_unstable();
+    offset_bins.dedup();
+    for offset_bin in offset_bins {
+        hypotheses.push((1.0, (offset_bin * DEFAULT_ANCHOR_OFFSET_BIN_MS) as f64));
+    }
+    add_v3_piecewise_hypotheses_from_pairs(pairs, &mut hypotheses);
+
+    let mut segment_candidates = Vec::<V3SegmentCandidate>::new();
+    for (scale, offset) in hypotheses {
+        let inliers = anchor_fit_inliers(pairs, scale, offset);
+        if inliers.len() < 2 {
+            continue;
+        }
+        let (scale, offset) = least_squares_anchor_fit(&inliers).unwrap_or((scale, offset));
+        let inliers = anchor_fit_inliers(pairs, scale, offset);
+        segment_candidates.extend(v3_segments_from_inliers(&inliers, scale, offset));
+    }
+    let mut segments = chain_v3_segments(dedup_v3_segments(segment_candidates));
+    merge_adjacent_v3_segments(&mut segments);
+    let total_aligned_span_ms = segments
+        .iter()
+        .map(|segment| segment.query_end_ms.saturating_sub(segment.query_start_ms))
+        .sum::<u32>();
+    let largest_gap_ms = largest_v3_segment_gap_ms(&segments);
+    let mut scores = segments
+        .iter()
+        .map(|segment| segment.weighted_score)
+        .collect::<Vec<_>>();
+    scores.sort_unstable_by(|left, right| right.cmp(left));
+    let best_segment_score = scores.first().copied().unwrap_or(0);
+    let second_best_segment_score = scores.get(1).copied().unwrap_or(0);
+    let audio_pairs = segments.iter().map(|segment| segment.audio_pairs).sum();
+    let video_pairs = segments.iter().map(|segment| segment.video_pairs).sum();
+    let edge_only = v3_segments_are_edge_only(&segments, query.duration_ms, candidate.duration_ms);
+    let audio_video_conflict = v3_audio_video_conflict(query, candidate, pairs, &segments);
+    V3TimelineAnalysis {
+        segments,
+        total_aligned_span_ms,
+        largest_gap_ms,
+        edge_only,
+        audio_video_conflict,
+        best_segment_score,
+        second_best_segment_score,
+        audio_pairs,
+        video_pairs,
+    }
+}
+
+fn add_v3_piecewise_hypotheses_from_pairs(
+    pairs: &[AnchorMatchPair],
+    hypotheses: &mut Vec<(f64, f64)>,
+) {
+    for (left_index, left) in pairs.iter().enumerate() {
+        for right in pairs.iter().skip(left_index + 1) {
+            let query_delta = right.query_t_ms.abs_diff(left.query_t_ms);
+            if query_delta < V3_SEGMENT_MIN_PAIR_DELTA_MS {
+                continue;
+            }
+            let query_delta = f64::from(right.query_t_ms) - f64::from(left.query_t_ms);
+            let candidate_delta = f64::from(right.candidate_t_ms) - f64::from(left.candidate_t_ms);
+            if query_delta.abs() < f64::EPSILON {
+                continue;
+            }
+            let scale = candidate_delta / query_delta;
+            if !(0.95..=1.05).contains(&scale) {
+                continue;
+            }
+            let offset = f64::from(left.candidate_t_ms) - (scale * f64::from(left.query_t_ms));
+            hypotheses.push((scale, offset));
+        }
+    }
+    hypotheses.sort_by(|left, right| {
+        left.0
+            .total_cmp(&right.0)
+            .then_with(|| left.1.total_cmp(&right.1))
+    });
+    hypotheses.dedup_by(|left, right| {
+        (left.0 - right.0).abs() < 0.000_1 && (left.1 - right.1).abs() < 250.0
+    });
+}
+
+fn v3_segments_from_inliers(
+    inliers: &[AnchorMatchPair],
+    scale: f64,
+    offset: f64,
+) -> Vec<V3SegmentCandidate> {
+    let mut sorted = inliers.to_vec();
+    sorted.sort_by_key(|pair| (pair.query_t_ms, pair.candidate_t_ms, pair.modality_order()));
+    let mut segments = Vec::new();
+    let mut current = Vec::<AnchorMatchPair>::new();
+    for pair in sorted {
+        if let Some(previous) = current.last().copied() {
+            let query_gap = pair.query_t_ms.saturating_sub(previous.query_t_ms);
+            let candidate_gap = pair.candidate_t_ms.saturating_sub(previous.candidate_t_ms);
+            let current_span = aligned_anchor_span_ms(&current);
+            let gap_threshold =
+                V3_SEGMENT_SPLIT_GAP_MS.max((f64::from(current_span) * 0.15).round() as u32);
+            let gap_delta = query_gap.abs_diff(candidate_gap);
+            let large_common_gap = query_gap.max(candidate_gap) > 300_000;
+            if gap_delta > gap_threshold || large_common_gap {
+                if let Some(segment) = v3_segment_candidate_from_pairs(&current, scale, offset) {
+                    segments.push(segment);
+                }
+                current.clear();
+            }
+        }
+        current.push(pair);
+    }
+    if let Some(segment) = v3_segment_candidate_from_pairs(&current, scale, offset) {
+        segments.push(segment);
+    }
+    segments
+}
+
+fn v3_segment_candidate_from_pairs(
+    pairs: &[AnchorMatchPair],
+    scale: f64,
+    offset: f64,
+) -> Option<V3SegmentCandidate> {
+    if pairs.is_empty() {
+        return None;
+    }
+    let audio_pairs = pairs
+        .iter()
+        .filter(|pair| pair.modality == AnchorModality::Audio)
+        .count();
+    let video_pairs = pairs
+        .iter()
+        .filter(|pair| pair.modality == AnchorModality::Video)
+        .count();
+    let span_ms = aligned_anchor_span_ms(pairs);
+    let enough = if audio_pairs >= V3_SEGMENT_AUDIO_VIDEO_MIN_PAIRS
+        && video_pairs >= V3_SEGMENT_AUDIO_VIDEO_MIN_PAIRS
+    {
+        span_ms >= V3_SEGMENT_AUDIO_VIDEO_MIN_SPAN_MS
+    } else if audio_pairs >= V3_SEGMENT_AUDIO_MIN_PAIRS {
+        span_ms >= V3_SEGMENT_AUDIO_MIN_SPAN_MS
+    } else if video_pairs >= V3_SEGMENT_VIDEO_MIN_PAIRS {
+        span_ms >= V3_SEGMENT_VIDEO_MIN_SPAN_MS
+    } else {
+        false
+    };
+    if !enough {
+        return None;
+    }
+    let (query_start_ms, query_end_ms, candidate_start_ms, candidate_end_ms) =
+        aligned_anchor_bounds(pairs);
+    let weighted_score = pairs
+        .iter()
+        .map(|pair| u32::from(pair.weight.max(1)))
+        .sum::<u32>();
+    let residual_ms = max_anchor_fit_residual_ms(pairs, scale, offset);
+    let scale_ppm = (scale * 1_000_000.0)
+        .round()
+        .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
+    let confidence = (weighted_score as f32 / 64.0)
+        .min(1.0)
+        .max((span_ms as f32 / 600_000.0).min(1.0));
+    Some(V3SegmentCandidate {
+        query_start_ms,
+        query_end_ms,
+        candidate_start_ms,
+        candidate_end_ms,
+        scale_ppm,
+        audio_pairs,
+        video_pairs,
+        weighted_score,
+        residual_ms,
+        confidence,
+    })
+}
+
+fn dedup_v3_segments(mut segments: Vec<V3SegmentCandidate>) -> Vec<V3SegmentCandidate> {
+    segments.sort_by(|left, right| {
+        left.query_start_ms
+            .cmp(&right.query_start_ms)
+            .then_with(|| left.query_end_ms.cmp(&right.query_end_ms))
+            .then_with(|| left.candidate_start_ms.cmp(&right.candidate_start_ms))
+            .then_with(|| left.candidate_end_ms.cmp(&right.candidate_end_ms))
+            .then_with(|| right.weighted_score.cmp(&left.weighted_score))
+    });
+    let mut deduped = Vec::<V3SegmentCandidate>::new();
+    for segment in segments {
+        let duplicate = deduped.iter().any(|current| {
+            current.query_start_ms.abs_diff(segment.query_start_ms) <= 1_000
+                && current.query_end_ms.abs_diff(segment.query_end_ms) <= 1_000
+                && current
+                    .candidate_start_ms
+                    .abs_diff(segment.candidate_start_ms)
+                    <= 1_000
+                && current.candidate_end_ms.abs_diff(segment.candidate_end_ms) <= 1_000
+        });
+        if !duplicate {
+            deduped.push(segment);
+        }
+    }
+    deduped
+}
+
+fn chain_v3_segments(mut segments: Vec<V3SegmentCandidate>) -> Vec<V3SegmentCandidate> {
+    if segments.len() <= 1 {
+        return segments;
+    }
+    segments.sort_by(|left, right| {
+        left.query_start_ms
+            .cmp(&right.query_start_ms)
+            .then_with(|| left.candidate_start_ms.cmp(&right.candidate_start_ms))
+            .then_with(|| right.weighted_score.cmp(&left.weighted_score))
+    });
+    let mut best_scores = vec![0i64; segments.len()];
+    let mut previous = vec![None; segments.len()];
+    for index in 0..segments.len() {
+        best_scores[index] = v3_segment_chain_score(&segments[index]);
+        for prev_index in 0..index {
+            if !v3_segments_are_chain_compatible(&segments[prev_index], &segments[index]) {
+                continue;
+            }
+            let candidate_score =
+                best_scores[prev_index] + v3_segment_chain_score(&segments[index]);
+            if candidate_score > best_scores[index]
+                || (candidate_score == best_scores[index]
+                    && previous[index].is_none_or(|current| prev_index < current))
+            {
+                best_scores[index] = candidate_score;
+                previous[index] = Some(prev_index);
+            }
+        }
+    }
+    let Some((mut index, _)) = best_scores
+        .iter()
+        .enumerate()
+        .max_by(|left, right| left.1.cmp(right.1).then_with(|| right.0.cmp(&left.0)))
+    else {
+        return Vec::new();
+    };
+    let mut chain = Vec::new();
+    loop {
+        chain.push(segments[index].clone());
+        let Some(prev_index) = previous[index] else {
+            break;
+        };
+        index = prev_index;
+    }
+    chain.reverse();
+    chain
+}
+
+fn v3_segment_chain_score(segment: &V3SegmentCandidate) -> i64 {
+    i64::from(segment.weighted_score) * 1_000
+        + i64::from(segment.query_end_ms.saturating_sub(segment.query_start_ms) / 1_000)
+}
+
+fn v3_segments_are_chain_compatible(left: &V3SegmentCandidate, right: &V3SegmentCandidate) -> bool {
+    left.query_end_ms <= right.query_start_ms && left.candidate_end_ms <= right.candidate_start_ms
+}
+
+fn merge_adjacent_v3_segments(segments: &mut Vec<V3SegmentCandidate>) {
+    if segments.len() < 2 {
+        return;
+    }
+    let mut merged = Vec::<V3SegmentCandidate>::new();
+    for segment in segments.drain(..) {
+        if let Some(previous) = merged.last_mut()
+            && v3_segments_can_merge(previous, &segment)
+        {
+            previous.query_end_ms = previous.query_end_ms.max(segment.query_end_ms);
+            previous.candidate_end_ms = previous.candidate_end_ms.max(segment.candidate_end_ms);
+            previous.audio_pairs += segment.audio_pairs;
+            previous.video_pairs += segment.video_pairs;
+            previous.weighted_score += segment.weighted_score;
+            previous.residual_ms = previous.residual_ms.max(segment.residual_ms);
+            previous.confidence = previous.confidence.max(segment.confidence);
+            continue;
+        }
+        merged.push(segment);
+    }
+    *segments = merged;
+}
+
+fn v3_segments_can_merge(left: &V3SegmentCandidate, right: &V3SegmentCandidate) -> bool {
+    left.query_end_ms <= right.query_start_ms
+        && left.candidate_end_ms <= right.candidate_start_ms
+        && right.query_start_ms.saturating_sub(left.query_end_ms) <= V3_SEGMENT_MERGE_GAP_MS
+        && right
+            .candidate_start_ms
+            .saturating_sub(left.candidate_end_ms)
+            <= V3_SEGMENT_MERGE_GAP_MS
+        && (left.scale_ppm - right.scale_ppm).abs() <= V3_SEGMENT_MERGE_SCALE_PPM
+}
+
+fn largest_v3_segment_gap_ms(segments: &[V3SegmentCandidate]) -> u32 {
+    segments
+        .windows(2)
+        .map(|pair| {
+            pair[1]
+                .query_start_ms
+                .saturating_sub(pair[0].query_end_ms)
+                .max(
+                    pair[1]
+                        .candidate_start_ms
+                        .saturating_sub(pair[0].candidate_end_ms),
+                )
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+fn v3_segments_are_edge_only(
+    segments: &[V3SegmentCandidate],
+    query_duration_ms: Option<u32>,
+    candidate_duration_ms: Option<u32>,
+) -> bool {
+    if segments.is_empty() {
+        return false;
+    }
+    let query_edge = v3_edge_region_ms(query_duration_ms);
+    let candidate_edge = v3_edge_region_ms(candidate_duration_ms);
+    segments.iter().all(|segment| {
+        v3_range_is_edge_only(
+            segment.query_start_ms,
+            segment.query_end_ms,
+            query_duration_ms,
+            query_edge,
+        ) && v3_range_is_edge_only(
+            segment.candidate_start_ms,
+            segment.candidate_end_ms,
+            candidate_duration_ms,
+            candidate_edge,
+        )
+    })
+}
+
+fn v3_edge_region_ms(duration_ms: Option<u32>) -> u32 {
+    duration_ms
+        .map(|duration| {
+            ((f64::from(duration) * 0.15).round() as u32)
+                .clamp(V3_EDGE_REGION_MIN_MS, V3_EDGE_REGION_MAX_MS)
+        })
+        .unwrap_or(V3_EDGE_REGION_MIN_MS)
+}
+
+fn v3_range_is_edge_only(
+    start_ms: u32,
+    end_ms: u32,
+    duration_ms: Option<u32>,
+    edge_ms: u32,
+) -> bool {
+    end_ms <= edge_ms
+        || duration_ms.is_some_and(|duration| start_ms >= duration.saturating_sub(edge_ms))
+}
+
+fn v3_audio_video_conflict(
+    query: &MediaAnchorProfile,
+    candidate: &MediaAnchorProfile,
+    pairs: &[AnchorMatchPair],
+    segments: &[V3SegmentCandidate],
+) -> bool {
+    let audio_segment_pairs = segments
+        .iter()
+        .map(|segment| segment.audio_pairs)
+        .sum::<usize>();
+    let video_segment_pairs = segments
+        .iter()
+        .map(|segment| segment.video_pairs)
+        .sum::<usize>();
+    if audio_segment_pairs >= V3_SEGMENT_AUDIO_MIN_PAIRS
+        && !query.video_anchors.is_empty()
+        && !candidate.video_anchors.is_empty()
+        && video_segment_pairs == 0
+    {
+        return true;
+    }
+    if video_segment_pairs >= V3_SEGMENT_VIDEO_MIN_PAIRS
+        && !query.audio_anchors.is_empty()
+        && !candidate.audio_anchors.is_empty()
+        && audio_segment_pairs == 0
+    {
+        return true;
+    }
+    let audio_offset = dominant_modality_offset_bin(pairs, AnchorModality::Audio);
+    let video_offset = dominant_modality_offset_bin(pairs, AnchorModality::Video);
+    matches!(
+        (audio_offset, video_offset),
+        (Some((audio_bin, audio_score)), Some((video_bin, video_score)))
+            if audio_score >= 3
+                && video_score >= 3
+                && (audio_bin - video_bin).abs() * DEFAULT_ANCHOR_OFFSET_BIN_MS
+                    > DEFAULT_ANCHOR_ALIGNMENT_TOLERANCE_MS * 2
+    )
+}
+
+fn dominant_modality_offset_bin(
+    pairs: &[AnchorMatchPair],
+    modality: AnchorModality,
+) -> Option<(i64, u32)> {
+    let mut bins = HashMap::<i64, u32>::new();
+    for pair in pairs.iter().filter(|pair| pair.modality == modality) {
+        let offset = i64::from(pair.candidate_t_ms) - i64::from(pair.query_t_ms);
+        *bins.entry(rounded_offset_bin(offset)).or_default() += u32::from(pair.weight.max(1));
+    }
+    bins.into_iter()
+        .max_by(|left, right| left.1.cmp(&right.1).then_with(|| right.0.cmp(&left.0)))
+}
+
+fn classify_v3_timeline(
+    query: &MediaAnchorProfile,
+    candidate: &MediaAnchorProfile,
+    analysis: &V3TimelineAnalysis,
+    context: V3ClassificationContext,
+) -> MatchClassV3 {
+    if analysis.segments.is_empty() {
+        return MatchClassV3::Reject;
+    }
+    if analysis.edge_only {
+        return MatchClassV3::SharedIntroOutroOnly;
+    }
+    let has_query_audio = !query.audio_anchors.is_empty();
+    let has_candidate_audio = !candidate.audio_anchors.is_empty();
+    let has_query_video = !query.video_anchors.is_empty();
+    let has_candidate_video = !candidate.video_anchors.is_empty();
+    let audio_strong = analysis.audio_pairs >= V3_SEGMENT_AUDIO_MIN_PAIRS;
+    let video_strong = analysis.video_pairs >= V3_SEGMENT_VIDEO_MIN_PAIRS;
+    if analysis.audio_video_conflict && audio_strong {
+        return MatchClassV3::SameAudioDifferentVideo;
+    }
+    if analysis.audio_video_conflict && video_strong {
+        return MatchClassV3::SameVideoDifferentAudio;
+    }
+    if audio_strong && has_query_video && has_candidate_video && analysis.video_pairs == 0 {
+        return MatchClassV3::SameAudioDifferentVideo;
+    }
+    if video_strong && has_query_audio && has_candidate_audio && analysis.audio_pairs == 0 {
+        return MatchClassV3::SameVideoDifferentAudio;
+    }
+    if video_strong && (!has_query_audio || !has_candidate_audio) {
+        return MatchClassV3::SameVideoDifferentAudio;
+    }
+    let query_coverage = query
+        .duration_ms
+        .filter(|duration| *duration > 0)
+        .map(|duration| f64::from(analysis.total_aligned_span_ms) / f64::from(duration))
+        .unwrap_or(1.0);
+    let candidate_coverage = candidate
+        .duration_ms
+        .filter(|duration| *duration > 0)
+        .map(|duration| f64::from(analysis.total_aligned_span_ms) / f64::from(duration))
+        .unwrap_or(1.0);
+    let broad_body_coverage = query_coverage.min(candidate_coverage) >= 0.25;
+    let clear_edit = analysis.segments.len() >= 2
+        || analysis.largest_gap_ms >= 90_000
+        || (context.meaningful_span && broad_body_coverage && !context.duration_ok);
+    if clear_edit && analysis.total_aligned_span_ms >= 120_000 {
+        return MatchClassV3::SameMediaDifferentCut;
+    }
+    if context.meaningful_span
+        && broad_body_coverage
+        && context.drift_ok
+        && context.margin_ok
+        && context.continuity_ok
+        && (audio_strong || video_strong)
+    {
+        return MatchClassV3::SameCutStrong;
+    }
+    if context.meaningful_span
+        && broad_body_coverage
+        && analysis.total_aligned_span_ms >= 120_000
+        && (audio_strong || video_strong)
+    {
+        return MatchClassV3::SameCutProbable;
+    }
+    if analysis.total_aligned_span_ms >= 45_000 {
+        return MatchClassV3::PartialOverlap;
+    }
+    MatchClassV3::Reject
+}
+
+fn media_timeline_map_v3_from_analysis(
+    global_class: MatchClassV3,
+    analysis: &V3TimelineAnalysis,
+) -> MediaTimelineMapV3 {
+    let segments = analysis
+        .segments
+        .iter()
+        .map(|segment| {
+            let total_pairs = (segment.audio_pairs + segment.video_pairs).max(1) as f32;
+            AlignedSegmentV3 {
+                query_start_ms: segment.query_start_ms,
+                query_end_ms: segment.query_end_ms,
+                candidate_start_ms: segment.candidate_start_ms,
+                candidate_end_ms: segment.candidate_end_ms,
+                scale_ppm: segment.scale_ppm,
+                audio_pairs: segment.audio_pairs,
+                video_pairs: segment.video_pairs,
+                weighted_score: segment.weighted_score,
+                residual_ms: segment.residual_ms,
+                audio_score: segment.audio_pairs as f32 / total_pairs,
+                video_score: segment.video_pairs as f32 / total_pairs,
+                confidence: segment.confidence,
+            }
+        })
+        .collect();
+    MediaTimelineMapV3 {
+        global_class,
+        current_position_class: global_class,
+        segments,
+        total_aligned_span_ms: analysis.total_aligned_span_ms,
+        largest_gap_ms: analysis.largest_gap_ms,
+        edge_only: analysis.edge_only,
+        audio_video_conflict: analysis.audio_video_conflict,
+        best_segment_score: analysis.best_segment_score,
+        second_best_segment_score: analysis.second_best_segment_score,
+    }
+}
+
+pub fn classify_timeline_at_query_ms(map: &MediaTimelineMapV3, query_t_ms: u32) -> MatchClassV3 {
+    if map
+        .segments
+        .iter()
+        .any(|segment| segment.query_start_ms <= query_t_ms && query_t_ms <= segment.query_end_ms)
+    {
+        map.global_class
+    } else if map.segments.is_empty() {
+        MatchClassV3::Unknown
+    } else {
+        MatchClassV3::PartialOverlap
+    }
+}
+
 fn anchor_coverage(aligned: usize, total: usize) -> f64 {
     if total == 0 {
         0.0
@@ -3499,7 +4165,10 @@ fn decision(
     mut evidence: MediaMatchEvidence,
     explanation: impl Into<String>,
 ) -> MediaMatchDecision {
-    let timeline_map = media_timeline_map_v3_from_evidence(tier, &evidence);
+    let timeline_map = evidence
+        .timeline_map_v3
+        .take()
+        .unwrap_or_else(|| media_timeline_map_v3_from_evidence(tier, &evidence));
     evidence.v3_class = Some(timeline_map.global_class);
     evidence.timeline_map_v3 = Some(timeline_map);
     MediaMatchDecision {
@@ -3517,7 +4186,7 @@ fn media_timeline_map_v3_from_evidence(
     // the old global alignment. Replace it with true piecewise segment chaining before
     // relying on MatchClassV3/timeline_map_v3 for edit-aware timeline maps.
     let global_class = media_match_class_v3_from_evidence(tier, evidence);
-    let segments = evidence
+    let segments: Vec<AlignedSegmentV3> = evidence
         .alignment
         .as_ref()
         .map(|alignment| {
@@ -3543,6 +4212,10 @@ fn media_timeline_map_v3_from_evidence(
                 candidate_start_ms: seconds_to_u32_ms(alignment.first_candidate_second),
                 candidate_end_ms: seconds_to_u32_ms(alignment.last_candidate_second),
                 scale_ppm: alignment.scale_ppm,
+                audio_pairs: alignment.aligned_audio_anchors,
+                video_pairs: alignment.aligned_video_anchors,
+                weighted_score: alignment.aligned_pairs as u32,
+                residual_ms: alignment.drift_ratio * alignment.aligned_span_seconds * 1000.0,
                 audio_score,
                 video_score,
                 confidence,
@@ -3550,10 +4223,25 @@ fn media_timeline_map_v3_from_evidence(
         })
         .into_iter()
         .collect();
+    let total_aligned_span_ms = segments
+        .iter()
+        .map(|segment| segment.query_end_ms.saturating_sub(segment.query_start_ms))
+        .sum();
+    let best_segment_score = segments
+        .iter()
+        .map(|segment| segment.weighted_score)
+        .max()
+        .unwrap_or(0);
     MediaTimelineMapV3 {
         global_class,
         current_position_class: global_class,
         segments,
+        total_aligned_span_ms,
+        largest_gap_ms: 0,
+        edge_only: false,
+        audio_video_conflict: false,
+        best_segment_score,
+        second_best_segment_score: 0,
     }
 }
 
@@ -3869,6 +4557,76 @@ mod tests {
         }
     }
 
+    fn v3_profile_from_times(
+        duration_ms: u32,
+        audio_times: &[(u32, u32)],
+        video_times: &[(u32, u32, u64)],
+    ) -> MediaAnchorProfile {
+        MediaAnchorProfile {
+            version: MEDIA_MATCH_ANCHOR_VERSION,
+            profile: "combined-v3".to_owned(),
+            duration_ms: Some(duration_ms),
+            audio_anchors: audio_times
+                .iter()
+                .map(|(bucket, t_ms)| AudioAnchor {
+                    bucket: *bucket,
+                    t_ms: *t_ms,
+                    weight: 4,
+                })
+                .collect(),
+            video_anchors: video_times
+                .iter()
+                .map(|(bucket, t_ms, hash64)| VideoAnchor {
+                    bucket: *bucket,
+                    t_ms: *t_ms,
+                    hash64: *hash64,
+                    weight: 4,
+                })
+                .collect(),
+        }
+    }
+
+    fn v3_audio_times(start_ms: u32, count: u32, step_ms: u32) -> Vec<(u32, u32)> {
+        (0..count)
+            .map(|index| (1_000 + index, start_ms + (index * step_ms)))
+            .collect()
+    }
+
+    fn v3_shift_audio_times(
+        times: &[(u32, u32)],
+        offset_ms: i32,
+        drift_ppm: i32,
+    ) -> Vec<(u32, u32)> {
+        times
+            .iter()
+            .map(|(bucket, t_ms)| (*bucket, shifted_anchor_time(*t_ms, offset_ms, drift_ppm)))
+            .collect()
+    }
+
+    fn v3_video_times_from_audio(times: &[(u32, u32)]) -> Vec<(u32, u32, u64)> {
+        times
+            .iter()
+            .map(|(bucket, t_ms)| (*bucket + 10_000, *t_ms, synthetic_hash(u64::from(*bucket))))
+            .collect()
+    }
+
+    fn v3_shift_video_times(
+        times: &[(u32, u32, u64)],
+        offset_ms: i32,
+        drift_ppm: i32,
+    ) -> Vec<(u32, u32, u64)> {
+        times
+            .iter()
+            .map(|(bucket, t_ms, hash)| {
+                (
+                    *bucket,
+                    shifted_anchor_time(*t_ms, offset_ms, drift_ppm),
+                    *hash,
+                )
+            })
+            .collect()
+    }
+
     fn shifted_anchor_time(t_ms: u32, offset_ms: i32, drift_ppm: i32) -> u32 {
         let scaled = i64::from(t_ms) + ((i64::from(t_ms) * i64::from(drift_ppm)) / 1_000_000);
         (scaled + i64::from(offset_ms))
@@ -4030,7 +4788,7 @@ mod tests {
 
         let decision = decide_media_match_anchors(&query, &candidate, &enabled_settings());
 
-        assert_eq!(decision.tier, MediaMatchTier::Strong);
+        assert_eq!(decision.tier, MediaMatchTier::Strong, "{decision:?}");
         assert_eq!(
             decision.evidence.v3_class,
             Some(MatchClassV3::SameCutStrong)
@@ -4055,15 +4813,221 @@ mod tests {
 
         let decision = decide_media_match_anchors(&query, &candidate, &enabled_settings());
 
-        assert!(matches!(
-            decision.tier,
-            MediaMatchTier::Strong | MediaMatchTier::Probable
-        ));
+        assert!(
+            matches!(
+                decision.tier,
+                MediaMatchTier::Strong | MediaMatchTier::Probable
+            ),
+            "{decision:?}"
+        );
         let alignment = decision.evidence.alignment.expect("alignment evidence");
         assert!(
             (alignment.scale_ppm - 1_001_500).abs() <= 300,
             "{alignment:?}"
         );
+    }
+
+    #[test]
+    fn same_cut_strong_single_segment_is_autoplay_eligible() {
+        let audio = v3_audio_times(120_000, 18, 45_000);
+        let query = v3_profile_from_times(1_200_000, &audio, &[]);
+        let candidate =
+            v3_profile_from_times(1_200_000, &v3_shift_audio_times(&audio, 5_000, 0), &[]);
+        let mut settings = enabled_settings();
+        settings.autoplay_policy = MediaMatchAutoplayPolicy::AllowStrongSameMedia;
+
+        let decision = decide_media_match_anchors(&query, &candidate, &settings);
+
+        assert_eq!(decision.tier, MediaMatchTier::Strong);
+        assert_eq!(
+            decision.evidence.v3_class,
+            Some(MatchClassV3::SameCutStrong)
+        );
+        assert!(decision.same_media_for_autoplay(&settings));
+        let map = decision.evidence.timeline_map_v3.expect("timeline map");
+        assert_eq!(map.global_class, MatchClassV3::SameCutStrong);
+        assert_eq!(map.segments.len(), 1);
+        assert!(map.total_aligned_span_ms >= 600_000);
+    }
+
+    #[test]
+    fn affine_drift_single_segment_reports_v3_scale() {
+        let audio = v3_audio_times(120_000, 18, 45_000);
+        let query = v3_profile_from_times(1_200_000, &audio, &[]);
+        let candidate =
+            v3_profile_from_times(1_202_000, &v3_shift_audio_times(&audio, 0, 1_500), &[]);
+
+        let decision = decide_media_match_anchors(&query, &candidate, &enabled_settings());
+
+        assert!(
+            matches!(
+                decision.tier,
+                MediaMatchTier::Strong | MediaMatchTier::Probable
+            ),
+            "{decision:?}"
+        );
+        let map = decision.evidence.timeline_map_v3.expect("timeline map");
+        assert_eq!(map.segments.len(), 1);
+        assert!((map.segments[0].scale_ppm - 1_001_500).abs() <= 300);
+    }
+
+    #[test]
+    fn trimmed_intro_maps_as_different_cut_not_autoplay() {
+        let audio = v3_audio_times(60_000, 24, 45_000);
+        let query = v3_profile_from_times(1_200_000, &audio, &[]);
+        let candidate_audio = audio[4..].to_vec();
+        let candidate = v3_profile_from_times(1_020_000, &candidate_audio, &[]);
+        let mut settings = enabled_settings();
+        settings.autoplay_policy = MediaMatchAutoplayPolicy::AllowStrongSameMedia;
+
+        let decision = decide_media_match_anchors(&query, &candidate, &settings);
+
+        assert!(matches!(
+            decision.evidence.v3_class,
+            Some(MatchClassV3::SameMediaDifferentCut | MatchClassV3::PartialOverlap)
+        ));
+        assert_ne!(
+            decision.evidence.v3_class,
+            Some(MatchClassV3::SharedIntroOutroOnly)
+        );
+        assert!(!decision.same_media_for_autoplay(&settings));
+    }
+
+    #[test]
+    fn inserted_logo_piecewise_chain_maps_two_segments() {
+        let audio = v3_audio_times(120_000, 20, 45_000);
+        let query = v3_profile_from_times(1_200_000, &audio, &[]);
+        let candidate_audio = audio
+            .iter()
+            .enumerate()
+            .map(|(index, (bucket, t_ms))| {
+                let offset = if index < 9 { 5_000 } else { 80_000 };
+                (*bucket, shifted_anchor_time(*t_ms, offset, 0))
+            })
+            .collect::<Vec<_>>();
+        let candidate = v3_profile_from_times(1_280_000, &candidate_audio, &[]);
+
+        let decision = decide_media_match_anchors(&query, &candidate, &enabled_settings());
+
+        let map = decision.evidence.timeline_map_v3.expect("timeline map");
+        assert_eq!(map.global_class, MatchClassV3::SameMediaDifferentCut);
+        assert!(map.segments.len() >= 2, "{map:?}");
+    }
+
+    #[test]
+    fn removed_recap_piecewise_chain_maps_two_segments() {
+        let mut audio = v3_audio_times(120_000, 8, 45_000);
+        audio.extend(
+            (0..12)
+                .map(|index| (1_008 + index, 600_000 + (index * 45_000)))
+                .collect::<Vec<_>>(),
+        );
+        let query = v3_profile_from_times(1_200_000, &audio, &[]);
+        let candidate_audio = audio
+            .iter()
+            .enumerate()
+            .map(|(index, (bucket, t_ms))| {
+                let offset = if index < 8 { 5_000 } else { -65_000 };
+                (*bucket, shifted_anchor_time(*t_ms, offset, 0))
+            })
+            .collect::<Vec<_>>();
+        let candidate = v3_profile_from_times(1_130_000, &candidate_audio, &[]);
+
+        let decision = decide_media_match_anchors(&query, &candidate, &enabled_settings());
+
+        let map = decision.evidence.timeline_map_v3.expect("timeline map");
+        assert_eq!(map.global_class, MatchClassV3::SameMediaDifferentCut);
+        assert!(map.segments.len() >= 2, "{map:?}");
+    }
+
+    #[test]
+    fn wrong_episode_shared_intro_outro_is_edge_only() {
+        let audio = vec![
+            (1_000, 0),
+            (1_001, 30_000),
+            (1_002, 60_000),
+            (1_003, 1_100_000),
+            (1_004, 1_130_000),
+            (1_005, 1_160_000),
+        ];
+        let video = v3_video_times_from_audio(&audio);
+        let query = v3_profile_from_times(1_200_000, &audio, &video);
+        let candidate = query.clone();
+
+        let decision = decide_media_match_anchors(&query, &candidate, &enabled_settings());
+
+        assert!(!matches!(decision.tier, MediaMatchTier::Strong));
+        assert!(matches!(
+            decision.evidence.v3_class,
+            Some(MatchClassV3::SharedIntroOutroOnly | MatchClassV3::Reject)
+        ));
+        assert!(
+            decision
+                .evidence
+                .timeline_map_v3
+                .as_ref()
+                .is_some_and(|map| map.edge_only)
+        );
+    }
+
+    #[test]
+    fn partial_overlap_trailer_or_clip_is_not_same_cut() {
+        let audio = v3_audio_times(420_000, 6, 30_000);
+        let query = v3_profile_from_times(1_200_000, &audio, &[]);
+        let candidate =
+            v3_profile_from_times(240_000, &v3_shift_audio_times(&audio, -360_000, 0), &[]);
+
+        let decision = decide_media_match_anchors(&query, &candidate, &enabled_settings());
+
+        assert_eq!(
+            decision.evidence.v3_class,
+            Some(MatchClassV3::PartialOverlap)
+        );
+        assert_ne!(
+            decision.evidence.v3_class,
+            Some(MatchClassV3::SameCutStrong)
+        );
+    }
+
+    #[test]
+    fn same_audio_different_video_is_not_autoplay() {
+        let audio = v3_audio_times(120_000, 18, 45_000);
+        let video = v3_video_times_from_audio(&audio);
+        let query = v3_profile_from_times(1_200_000, &audio, &video);
+        let candidate = v3_profile_from_times(
+            1_200_000,
+            &v3_shift_audio_times(&audio, 5_000, 0),
+            &v3_shift_video_times(&video, 90_000, 0),
+        );
+        let mut settings = enabled_settings();
+        settings.autoplay_policy = MediaMatchAutoplayPolicy::AllowStrongSameMedia;
+
+        let decision = decide_media_match_anchors(&query, &candidate, &settings);
+
+        assert_eq!(
+            decision.evidence.v3_class,
+            Some(MatchClassV3::SameAudioDifferentVideo)
+        );
+        assert!(!decision.same_media_for_autoplay(&settings));
+    }
+
+    #[test]
+    fn same_video_different_audio_is_not_autoplay() {
+        let audio = v3_audio_times(120_000, 12, 45_000);
+        let video = v3_video_times_from_audio(&audio);
+        let query = v3_profile_from_times(1_200_000, &[], &video);
+        let candidate =
+            v3_profile_from_times(1_200_000, &[], &v3_shift_video_times(&video, 5_000, 0));
+        let mut settings = enabled_settings();
+        settings.autoplay_policy = MediaMatchAutoplayPolicy::AllowStrongSameMedia;
+
+        let decision = decide_media_match_anchors(&query, &candidate, &settings);
+
+        assert_eq!(
+            decision.evidence.v3_class,
+            Some(MatchClassV3::SameVideoDifferentAudio)
+        );
+        assert!(!decision.same_media_for_autoplay(&settings));
     }
 
     #[test]
@@ -4087,10 +5051,13 @@ mod tests {
 
         let decision = decide_media_match_anchors(&query, &candidate, &enabled_settings());
 
-        assert!(matches!(
-            decision.tier,
-            MediaMatchTier::Strong | MediaMatchTier::Probable
-        ));
+        assert!(
+            matches!(
+                decision.tier,
+                MediaMatchTier::Strong | MediaMatchTier::Probable
+            ),
+            "{decision:?}"
+        );
         let alignment = decision.evidence.alignment.expect("alignment evidence");
         assert!(alignment.drift_ratio <= 0.015);
         assert!(alignment.scale_ppm > 1_000_000);
@@ -4232,10 +5199,13 @@ mod tests {
 
         let decision = decide_media_match_anchors(&query, &candidate, &enabled_settings());
 
-        assert!(matches!(
-            decision.tier,
-            MediaMatchTier::Strong | MediaMatchTier::Probable
-        ));
+        assert!(
+            matches!(
+                decision.tier,
+                MediaMatchTier::Strong | MediaMatchTier::Probable
+            ),
+            "{decision:?}"
+        );
         assert!(
             decision
                 .evidence
@@ -4306,10 +5276,13 @@ mod tests {
 
         let decision = decide_media_match_anchors(&query, &candidate, &enabled_settings());
 
-        assert!(matches!(
-            decision.tier,
-            MediaMatchTier::Strong | MediaMatchTier::Probable
-        ));
+        assert!(
+            matches!(
+                decision.tier,
+                MediaMatchTier::Strong | MediaMatchTier::Probable
+            ),
+            "{decision:?}"
+        );
         let alignment = decision.evidence.alignment.expect("alignment evidence");
         assert!(alignment.aligned_pairs >= 30, "{alignment:?}");
         assert!(
