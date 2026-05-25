@@ -7116,7 +7116,7 @@ mod tests {
     fn streaming_stdout_error_test_command() -> (PathBuf, Vec<OsString>) {
         (
             PathBuf::from("sh"),
-            vec!["-c".into(), "printf chunk; sleep 30".into()],
+            vec!["-c".into(), "printf chunk; exec sleep 30".into()],
         )
     }
 
