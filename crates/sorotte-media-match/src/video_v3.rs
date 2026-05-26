@@ -4,12 +4,16 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    DEFAULT_FRAME_HAMMING_THRESHOLD, FRAME_HASH_BITS, V3_VIDEO_BUCKET_KIND_SHIFT,
-    V3_VIDEO_BUCKET_VALUE_MASK, V3_VIDEO_INDEX_LANDMARK_LIMIT, V3_VIDEO_MIN_VARIANCE,
-    V3_VIDEO_PHASH_LOW_FREQ, V3_VIDEO_PHASH_SIZE, V3_VIDEO_TEMPORAL_DELTA_BUCKET_MS,
-    V3_VIDEO_TEMPORAL_FANOUT, V3_VIDEO_TEMPORAL_MAX_DELTA_MS, V3_VIDEO_TEMPORAL_MIN_DELTA_MS,
-    V3_VIDEO_VERIFY_LANDMARK_LIMIT, VIDEO_LSH_BANDS, VIDEO_LSH_BITS_PER_BAND, VideoAnchor,
-    current_v3_tuning,
+    VideoAnchor,
+    tuning::{
+        DEFAULT_FRAME_HAMMING_THRESHOLD, FRAME_HASH_BITS, V3_VIDEO_BUCKET_KIND_SHIFT,
+        V3_VIDEO_BUCKET_VALUE_MASK, V3_VIDEO_HAMMING_CENTER, V3_VIDEO_HAMMING_EDGE,
+        V3_VIDEO_HAMMING_GLOBAL, V3_VIDEO_HAMMING_TEMPORAL, V3_VIDEO_INDEX_LANDMARK_LIMIT,
+        V3_VIDEO_MIN_VARIANCE, V3_VIDEO_PHASH_LOW_FREQ, V3_VIDEO_PHASH_SIZE,
+        V3_VIDEO_TEMPORAL_DELTA_BUCKET_MS, V3_VIDEO_TEMPORAL_FANOUT,
+        V3_VIDEO_TEMPORAL_MAX_DELTA_MS, V3_VIDEO_TEMPORAL_MIN_DELTA_MS,
+        V3_VIDEO_VERIFY_LANDMARK_LIMIT, VIDEO_LSH_BANDS, VIDEO_LSH_BITS_PER_BAND,
+    },
 };
 
 pub const V3_VIDEO_KIND_LUMA_FRAME: u8 = 0;
@@ -265,7 +269,8 @@ pub(crate) fn video_lsh_buckets(hash: u64) -> [u32; VIDEO_LSH_BANDS as usize] {
     buckets
 }
 
-pub fn video_anchor_hashes_match(left: u64, right: u64) -> bool {
+#[cfg(test)]
+pub(crate) fn video_anchor_hashes_match(left: u64, right: u64) -> bool {
     frame_hash_distance(left, right) <= DEFAULT_FRAME_HAMMING_THRESHOLD
 }
 
@@ -343,12 +348,11 @@ pub(crate) fn v3_video_lsh_buckets(kind: u8, hash: u64) -> Vec<u32> {
 }
 
 pub fn v3_video_hamming_threshold(kind: u8) -> u32 {
-    let tuning = current_v3_tuning();
     match kind {
-        V3_VIDEO_KIND_GLOBAL_DCT => tuning.video_hamming_global,
-        V3_VIDEO_KIND_CENTER_DCT => tuning.video_hamming_center,
-        V3_VIDEO_KIND_EDGE => tuning.video_hamming_edge,
-        V3_VIDEO_KIND_TEMPORAL_SHINGLE => tuning.video_hamming_temporal,
+        V3_VIDEO_KIND_GLOBAL_DCT => V3_VIDEO_HAMMING_GLOBAL,
+        V3_VIDEO_KIND_CENTER_DCT => V3_VIDEO_HAMMING_CENTER,
+        V3_VIDEO_KIND_EDGE => V3_VIDEO_HAMMING_EDGE,
+        V3_VIDEO_KIND_TEMPORAL_SHINGLE => V3_VIDEO_HAMMING_TEMPORAL,
         _ => DEFAULT_FRAME_HAMMING_THRESHOLD,
     }
 }

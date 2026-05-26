@@ -4,15 +4,20 @@ use std::sync::Arc;
 use rustfft::{Fft, FftPlanner, num_complex::Complex};
 use serde::{Deserialize, Serialize};
 
-#[cfg(test)]
-use crate::V3_AUDIO_SAMPLE_RATE;
 use crate::{
-    MediaAudioStreamMetrics, MediaFingerprintError, V3_AUDIO_HOP_SAMPLES, V3_AUDIO_MAX_FREQ_HZ,
-    V3_AUDIO_MAX_PEAKS_PER_FRAME, V3_AUDIO_MIN_FREQ_HZ, V3_AUDIO_PAIR_FANOUT,
-    V3_AUDIO_PAIR_MAX_DELTA_FRAMES, V3_AUDIO_PAIR_MIN_DELTA_FRAMES, V3_AUDIO_PEAK_NEIGHBORHOOD,
-    V3_AUDIO_RAW_LANDMARK_BUFFER_LIMIT, V3_AUDIO_RAW_LANDMARK_RETAIN_LIMIT,
-    V3_AUDIO_VERIFY_LANDMARK_LIMIT, V3_AUDIO_WINDOW_SAMPLES, stable_hash_u64,
+    MediaAudioStreamMetrics, MediaFingerprintError,
+    tuning::{
+        V3_AUDIO_HOP_SAMPLES, V3_AUDIO_MAX_FREQ_HZ, V3_AUDIO_MAX_PEAKS_PER_FRAME,
+        V3_AUDIO_MIN_FREQ_HZ, V3_AUDIO_PAIR_FANOUT, V3_AUDIO_PAIR_MAX_DELTA_FRAMES,
+        V3_AUDIO_PAIR_MIN_DELTA_FRAMES, V3_AUDIO_PEAK_NEIGHBORHOOD,
+        V3_AUDIO_RAW_LANDMARK_BUFFER_LIMIT, V3_AUDIO_RAW_LANDMARK_RETAIN_LIMIT,
+        V3_AUDIO_VERIFY_LANDMARK_LIMIT, V3_AUDIO_WINDOW_SAMPLES,
+    },
+    video_v3::stable_hash_u64,
 };
+
+#[cfg(test)]
+use crate::tuning::V3_AUDIO_SAMPLE_RATE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AudioLandmarkV3 {

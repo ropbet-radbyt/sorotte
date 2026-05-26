@@ -9,13 +9,17 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
 use crate::{
-    MEDIA_MATCH_ALGORITHM_VERSION, MEDIA_MATCH_ANCHOR_VERSION, MediaExtractionSettings,
-    MediaFileIdentity, MediaFingerprintBlobV3, MediaFingerprintRecord, MediaMatchCache,
-    audio_index_landmarks_v3_from_record, container_fingerprint_from_metadata,
-    decode_media_fingerprint_blob_v3, encode_media_fingerprint_blob_v3,
-    media_extraction_settings_hash, media_fingerprint_blob_v3_from_record,
-    media_fingerprint_record_apply_blob_v3, validate_video_landmarks_v3,
-    video_index_landmarks_v3_from_record,
+    MEDIA_MATCH_ALGORITHM_VERSION, MEDIA_MATCH_ANCHOR_VERSION,
+    anchors::{
+        MediaFingerprintBlobV3, audio_index_landmarks_v3_from_record,
+        decode_media_fingerprint_blob_v3, encode_media_fingerprint_blob_v3,
+        media_fingerprint_blob_v3_from_record, media_fingerprint_record_apply_blob_v3,
+        video_index_landmarks_v3_from_record,
+    },
+    identity::container_fingerprint_from_metadata,
+    settings::{MediaExtractionSettings, media_extraction_settings_hash},
+    types::{MediaFileIdentity, MediaFingerprintRecord, MediaMatchCache},
+    video_v3::validate_video_landmarks_v3,
 };
 
 const MEDIA_MATCH_V3_SQLITE_SCHEMA_VERSION: i64 = 3;

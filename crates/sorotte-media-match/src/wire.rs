@@ -4,10 +4,13 @@ use serde_json::Value;
 
 use crate::{
     MEDIA_MATCH_ANCHOR_VERSION, MEDIA_MATCH_WIRE_MAX_BYTES, MEDIA_MATCH_WIRE_SCHEMA_V3,
-    MediaAnchorProfile, MediaExtractionSettings, MediaFingerprintRecord, MediaMatchDecision,
-    MediaMatchSettings, decide_media_match_anchors, encode_wire_audio_anchor_summary,
-    encode_wire_video_anchor_summary, media_anchor_profile_from_record,
-    media_anchor_profile_from_wire_summaries, media_match_tier_rank,
+    anchors::{
+        MediaAnchorProfile, encode_wire_audio_anchor_summary, encode_wire_video_anchor_summary,
+        media_anchor_profile_from_record, media_anchor_profile_from_wire_summaries,
+    },
+    matching::{decide_media_match_anchors, media_match_tier_rank},
+    settings::MediaExtractionSettings,
+    types::{MediaFingerprintRecord, MediaMatchDecision, MediaMatchSettings},
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

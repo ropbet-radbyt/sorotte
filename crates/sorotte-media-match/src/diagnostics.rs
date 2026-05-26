@@ -3,9 +3,12 @@ use serde::Serialize;
 use crate::{
     InstrumentedMediaFingerprint, MatchClassV3, MediaFingerprintBlobV3,
     MediaFingerprintExtractionReport, MediaFingerprintRecord, MediaMatchDecision, MediaMatchTier,
-    audio_index_landmarks_v3_from_record, audio_landmarks_v3_from_record,
-    duration_seconds_to_millis, encode_media_fingerprint_blob_v3,
-    video_index_landmarks_v3_from_record, video_landmarks_v3_from_record,
+    anchors::{
+        audio_index_landmarks_v3_from_record, audio_landmarks_v3_from_record,
+        encode_media_fingerprint_blob_v3, video_index_landmarks_v3_from_record,
+        video_landmarks_v3_from_record,
+    },
+    identity::duration_seconds_to_millis,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

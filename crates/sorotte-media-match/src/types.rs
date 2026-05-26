@@ -2,7 +2,12 @@ use std::{collections::BTreeMap, path::Path};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{MediaExtractionSettings, MediaFingerprintRecord, normalize_media_path};
+use crate::{
+    anchors::{AudioAnchor, VideoAnchor},
+    identity::normalize_media_path,
+    settings::MediaExtractionSettings,
+    video_v3::VideoFingerprint,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -220,6 +225,41 @@ pub struct VideoMatchEvidence {
     pub best_offset_seconds: f64,
     pub drift_ratio: f64,
     pub mean_hamming_distance: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MediaFingerprintRecord {
+    pub identity: MediaFileIdentity,
+    pub algorithm_version: u32,
+    pub extraction_settings: MediaExtractionSettings,
+    pub duration_seconds: Option<f64>,
+    pub container_fingerprint: String,
+    pub video: Option<VideoFingerprint>,
+    #[serde(default)]
+    pub audio_anchors: Vec<AudioAnchor>,
+    #[serde(default)]
+    pub video_anchors: Vec<VideoAnchor>,
+    #[serde(default)]
+    pub audio_error: Option<String>,
+    #[serde(default)]
+    pub video_error: Option<String>,
+}
+
+impl MediaFingerprintRecord {
+    pub fn valid_for(
+        &self,
+        normalized_path: &str,
+        modified_unix_millis: u64,
+        size_bytes: u64,
+        algorithm_version: u32,
+        extraction_settings: &MediaExtractionSettings,
+    ) -> bool {
+        self.identity.normalized_path == normalized_path
+            && self.identity.modified_unix_millis == modified_unix_millis
+            && self.identity.size_bytes == size_bytes
+            && self.algorithm_version == algorithm_version
+            && &self.extraction_settings == extraction_settings
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

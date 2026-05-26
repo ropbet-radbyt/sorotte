@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -64,4 +65,11 @@ impl MediaExtractionSettings {
             video_algorithm: "sorotte-video-scene-v3".to_owned(),
         }
     }
+}
+
+pub fn media_extraction_settings_hash(settings: &MediaExtractionSettings) -> [u8; 32] {
+    let bytes = serde_json::to_vec(settings).unwrap_or_default();
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hasher.finalize().into()
 }

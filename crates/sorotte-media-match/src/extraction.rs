@@ -12,16 +12,27 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 use std::os::windows::process::CommandExt;
 
 #[cfg(windows)]
-use crate::CREATE_NO_WINDOW;
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 use crate::{
-    AudioAnchor, AudioConstellationV3PcmStream, AudioLandmarkV3, FFMPEG_AUDIO_V3_TIMEOUT,
-    FFMPEG_FULL_VIDEO_TIMEOUT, FFPROBE_TIMEOUT, FrameFingerprint, MEDIA_MATCH_ALGORITHM_VERSION,
-    MEDIA_TOOL_POLL_INTERVAL, MediaExtractionSettings, MediaFileIdentity, MediaFingerprintProfile,
-    MediaFingerprintRecord, V3_AUDIO_SAMPLE_RATE, VIDEO_FRAME_BYTES, VIDEO_FRAME_HEIGHT,
-    VIDEO_FRAME_WIDTH, VideoFingerprint, audio_anchors_from_record,
-    container_fingerprint_from_metadata, media_fingerprint_wire_summary_from_record,
-    normalize_media_path, pdq_style_luma_hash, video_anchors_from_record,
-    video_landmarks_v3_from_luma_frames,
+    AudioAnchor, MEDIA_MATCH_ALGORITHM_VERSION,
+    anchors::{
+        audio_anchors_from_record, media_fingerprint_wire_summary_from_record,
+        video_anchors_from_record,
+    },
+    audio_v3::{AudioConstellationV3PcmStream, AudioLandmarkV3},
+    identity::{container_fingerprint_from_metadata, normalize_media_path},
+    settings::{MediaExtractionSettings, MediaFingerprintProfile},
+    tuning::{
+        FFMPEG_AUDIO_V3_TIMEOUT, FFMPEG_FULL_VIDEO_TIMEOUT, FFPROBE_TIMEOUT,
+        MEDIA_TOOL_POLL_INTERVAL, V3_AUDIO_SAMPLE_RATE, VIDEO_FRAME_BYTES, VIDEO_FRAME_HEIGHT,
+        VIDEO_FRAME_WIDTH,
+    },
+    types::{MediaFileIdentity, MediaFingerprintRecord},
+    video_v3::{
+        FrameFingerprint, VideoFingerprint, pdq_style_luma_hash,
+        video_landmarks_v3_from_luma_frames,
+    },
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -59,6 +59,26 @@ Review failures in this order:
 5. raw hit rows / common bucket pressure
 6. extraction time / blob bytes
 
+## First Calibration Run
+
+Before changing thresholds, build a small but mixed manifest and capture both
+profiles with a stable cache root:
+
+1. Start with 5-10 known-good same-cut pairs.
+2. Add 3-5 wrong-episode/shared-intro pairs.
+3. Add 2-3 different-cut pairs.
+4. Add 1-2 dub or same-video-different-audio cases.
+5. Add 1-2 crop/letterbox cases.
+6. Run `audio-constellation-v3` first, then `combined-v3`.
+7. Record retrieval misses, wrong class, false `SameCutStrong`, offset error,
+   raw hit row spikes, extraction time, and blob/index size.
+
+Use report filenames that include the profile and either a timestamp or commit
+label, for example `reports/audio-2026-05-26.json` and
+`reports/combined-2026-05-26.json`. For commit-to-commit comparisons, keep the
+same manifests and `--cache-root`, then compare JSON reports with
+`git diff --no-index` or another text diff.
+
 ## Manifest
 
 Start from

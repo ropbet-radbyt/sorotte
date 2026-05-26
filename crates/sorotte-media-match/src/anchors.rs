@@ -3,16 +3,25 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AudioLandmarkV3, MAX_SUMMARY_ANCHORS, MAX_V3_LANDMARKS, MEDIA_MATCH_ANCHOR_VERSION,
-    MediaFingerprintProfile, MediaFingerprintRecord, V3_AUDIO_INDEX_LANDMARK_LIMIT,
-    V3_AUDIO_VERIFY_LANDMARK_LIMIT, V3_VIDEO_BUCKET_KIND_SHIFT, V3_VIDEO_INDEX_LANDMARK_LIMIT,
-    V3_VIDEO_KIND_LUMA_FRAME, V3_VIDEO_KIND_TEMPORAL_SHINGLE, V3_VIDEO_VERIFY_LANDMARK_LIMIT,
-    VideoFingerprint, VideoLandmarkV3, anchor_bucket, bounded_time_distributed_audio_landmarks_v3,
-    bounded_time_distributed_video_anchors, bounded_time_distributed_video_landmarks_v3,
-    duration_seconds_to_millis, media_extraction_settings_hash, read_u16_le, read_u32_le,
-    read_u64_le, v3_video_bucket_for_kind, v3_video_kind_from_bucket, v3_video_kind_is_supported,
-    video_lsh_buckets,
+    MEDIA_MATCH_ANCHOR_VERSION,
+    audio_v3::{AudioLandmarkV3, bounded_time_distributed_audio_landmarks_v3},
+    identity::duration_seconds_to_millis,
+    settings::{MediaFingerprintProfile, media_extraction_settings_hash},
+    tuning::{
+        V3_AUDIO_INDEX_LANDMARK_LIMIT, V3_AUDIO_VERIFY_LANDMARK_LIMIT, V3_VIDEO_BUCKET_KIND_SHIFT,
+        V3_VIDEO_INDEX_LANDMARK_LIMIT, V3_VIDEO_VERIFY_LANDMARK_LIMIT,
+    },
+    types::MediaFingerprintRecord,
+    video_v3::{
+        V3_VIDEO_KIND_LUMA_FRAME, V3_VIDEO_KIND_TEMPORAL_SHINGLE, VideoFingerprint,
+        VideoLandmarkV3, anchor_bucket, bounded_time_distributed_video_anchors,
+        bounded_time_distributed_video_landmarks_v3, v3_video_bucket_for_kind,
+        v3_video_kind_from_bucket, v3_video_kind_is_supported, video_lsh_buckets,
+    },
 };
+
+const MAX_WIRE_ANCHORS: usize = 1024;
+const MAX_V3_LANDMARKS: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AudioAnchor {
@@ -124,6 +133,29 @@ pub enum MediaFingerprintBlobV3DecodeError {
     UnsupportedVideoKind(u8),
     MismatchedVideoBucketKind { kind: u8, bucket_kind: u8 },
     InvalidTemporalVideoBucket { expected: u32, actual: u32 },
+}
+
+fn read_u16_le(bytes: &[u8], offset: usize) -> Result<u16, MediaWireAnchorDecodeError> {
+    let slice = bytes
+        .get(offset..offset + 2)
+        .ok_or(MediaWireAnchorDecodeError::InvalidLength)?;
+    Ok(u16::from_le_bytes([slice[0], slice[1]]))
+}
+
+fn read_u32_le(bytes: &[u8], offset: usize) -> Result<u32, MediaWireAnchorDecodeError> {
+    let slice = bytes
+        .get(offset..offset + 4)
+        .ok_or(MediaWireAnchorDecodeError::InvalidLength)?;
+    Ok(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
+}
+
+fn read_u64_le(bytes: &[u8], offset: usize) -> Result<u64, MediaWireAnchorDecodeError> {
+    let slice = bytes
+        .get(offset..offset + 8)
+        .ok_or(MediaWireAnchorDecodeError::InvalidLength)?;
+    Ok(u64::from_le_bytes([
+        slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7],
+    ]))
 }
 
 impl fmt::Display for MediaFingerprintBlobV3DecodeError {
@@ -631,7 +663,7 @@ pub fn video_anchors_from_fingerprint(
 pub fn encode_wire_audio_anchor_summary(anchors: &[AudioAnchor]) -> Vec<u8> {
     let mut sorted = anchors.to_vec();
     sorted.sort_by_key(|anchor| (anchor.t_ms, anchor.bucket, anchor.weight));
-    let count = sorted.len().min(MAX_SUMMARY_ANCHORS);
+    let count = sorted.len().min(MAX_WIRE_ANCHORS);
     let mut bytes = Vec::with_capacity(8 + count * 10);
     bytes.extend_from_slice(AUDIO_SUMMARY_MAGIC);
     bytes.extend_from_slice(&SUMMARY_FORMAT_VERSION.to_le_bytes());
@@ -661,7 +693,7 @@ pub fn decode_wire_audio_anchor_summary(
         return Err(MediaWireAnchorDecodeError::UnsupportedVersion(version));
     }
     let count = u16::from_le_bytes([bytes[6], bytes[7]]) as usize;
-    if count > MAX_SUMMARY_ANCHORS {
+    if count > MAX_WIRE_ANCHORS {
         return Err(MediaWireAnchorDecodeError::TooManyAnchors(count));
     }
     let expected = 8 + count * 10;
@@ -699,7 +731,7 @@ pub fn encode_wire_video_anchor_summary(anchors: &[VideoAnchor]) -> Vec<u8> {
             anchor.weight,
         )
     });
-    let count = sorted.len().min(MAX_SUMMARY_ANCHORS);
+    let count = sorted.len().min(MAX_WIRE_ANCHORS);
     let mut bytes = Vec::with_capacity(8 + count * 19);
     bytes.extend_from_slice(VIDEO_SUMMARY_MAGIC);
     bytes.extend_from_slice(&SUMMARY_FORMAT_VERSION.to_le_bytes());
@@ -731,7 +763,7 @@ pub fn decode_wire_video_anchor_summary(
         return Err(MediaWireAnchorDecodeError::UnsupportedVersion(version));
     }
     let count = u16::from_le_bytes([bytes[6], bytes[7]]) as usize;
-    if count > MAX_SUMMARY_ANCHORS {
+    if count > MAX_WIRE_ANCHORS {
         return Err(MediaWireAnchorDecodeError::TooManyAnchors(count));
     }
     let expected = 8 + count * 19;
