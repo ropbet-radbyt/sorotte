@@ -35,6 +35,8 @@ pub struct MediaMatchV3DiagnosticManifestCase {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaMatchV3DiagnosticExpectation {
+    #[serde(default)]
+    pub id: Option<String>,
     pub path: String,
     pub expected_class: Option<String>,
     pub minimum_tier: Option<String>,
@@ -107,6 +109,7 @@ pub struct MediaMatchV3DiagnosticFingerprintReport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaMatchV3DiagnosticCandidateReport {
+    pub candidate_id: Option<String>,
     pub path: String,
     pub diagnostics: MediaMatchV3DiagnosticSummary,
     pub source: String,
@@ -259,6 +262,7 @@ pub fn run_media_match_v3_diagnostic_manifest(
                 summary.failed += 1;
             }
             reports.push(MediaMatchV3DiagnosticCandidateReport {
+                candidate_id: candidate.expectation.id.clone(),
                 path: normalized_candidate.clone(),
                 diagnostics: summarize_instrumented_record_v3_diagnostics(&fingerprint.fingerprint),
                 source: fingerprint.source.to_owned(),
@@ -581,6 +585,7 @@ mod tests {
                 "name": "same-episode",
                 "query": "query.mkv",
                 "candidates": [{
+                  "id": "same-episode-candidate",
                   "path": "candidate.mkv",
                   "expectedClass": "SameCutStrong",
                   "minimumTier": "Strong",
@@ -596,6 +601,10 @@ mod tests {
 
         assert_eq!(manifest.profile, "combined-v3");
         assert_eq!(manifest.base_dir.as_deref(), Some("media"));
+        assert_eq!(
+            manifest.cases[0].candidates[0].id.as_deref(),
+            Some("same-episode-candidate")
+        );
         assert_eq!(manifest.cases[0].candidates[0].path, "candidate.mkv");
         assert_eq!(
             manifest.cases[0].candidates[0].expected_offset_ms,
@@ -614,6 +623,7 @@ mod tests {
                 name: "relative".to_owned(),
                 query: "query.mkv".to_owned(),
                 candidates: vec![MediaMatchV3DiagnosticExpectation {
+                    id: None,
                     path: "candidate.mkv".to_owned(),
                     expected_class: None,
                     minimum_tier: None,
@@ -645,6 +655,7 @@ mod tests {
                 name: "base".to_owned(),
                 query: "query.mkv".to_owned(),
                 candidates: vec![MediaMatchV3DiagnosticExpectation {
+                    id: None,
                     path: "candidate.mkv".to_owned(),
                     expected_class: None,
                     minimum_tier: None,
@@ -695,6 +706,7 @@ mod tests {
     fn expectation_evaluation_covers_offsets_autoplay_and_retrieval() {
         let settings = diagnostic_decision_settings();
         let expected = MediaMatchV3DiagnosticExpectation {
+            id: None,
             path: "candidate.mkv".to_owned(),
             expected_class: Some("SameCutStrong".to_owned()),
             minimum_tier: Some("Strong".to_owned()),
@@ -734,6 +746,7 @@ mod tests {
     fn expectation_offset_without_expected_value_keeps_absolute_behavior() {
         let settings = diagnostic_decision_settings();
         let expected = MediaMatchV3DiagnosticExpectation {
+            id: None,
             path: "candidate.mkv".to_owned(),
             expected_class: None,
             minimum_tier: None,

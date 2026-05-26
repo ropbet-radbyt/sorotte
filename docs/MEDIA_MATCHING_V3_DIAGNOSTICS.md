@@ -52,8 +52,16 @@ cargo run -p sorotte-media-match --bin v3_report_compare -- reports/combined-bef
 
 The comparison tool reports new failures, resolved failures, class/tier changes,
 retrieval-rank changes, offset-error changes, and aggregate metric deltas. It
-exits nonzero when the current report has more failed expectations than the
-baseline, which makes it suitable for local regression checks.
+uses strict regression behavior by default and exits nonzero when the current
+report has any new expectation failure, any baseline pair missing from the
+current report, or any `mustBeRetrieved` candidate that was not retrieved. A
+resolved failure does not cancel out a new failure.
+
+The comparison output includes a top-level `summary` with regression status and
+counts for baseline/current failures, new failures, resolved failures, missing
+pairs, new pairs, and retrieval misses. It also reports aggregate deltas,
+including extraction time, retrieval time, blob bytes, index rows, and raw hit
+rows.
 
 Review failures in this order:
 
@@ -106,6 +114,7 @@ and replace the placeholder paths with local media paths.
       "candidates": [
         {
           "path": "episode-x265.mkv",
+          "id": "same-episode-x264-x265",
           "expectedClass": "SameCutStrong",
           "minimumTier": "Strong",
           "expectedOffsetMs": 0,
@@ -121,6 +130,12 @@ and replace the placeholder paths with local media paths.
 
 Relative paths resolve against `baseDir` when present, otherwise against the
 manifest directory. Absolute paths are preserved.
+
+Candidate `id` is optional but recommended for real corpus runs. Report
+comparison matches pairs by `case.name` plus `candidateId` when `id` is present;
+otherwise it falls back to `case.name` plus the candidate path. Use `id` when
+reports may be generated from different media roots or machines. Path fallback is
+fine for one-machine runs where report paths are stable.
 
 Profiles:
 
@@ -178,6 +193,35 @@ isolated fixture without checking the broader corpus.
 - Large raw hit row count or common-bucket pressure: inspect skipped-common
   buckets, raw hit rows, and whether static/common audio or video landmarks need
   better rarity filtering.
+
+## Dry-Run Command Sequence
+
+For a first corpus dry run, keep one stable cache per profile and write reports
+with a commit or date label:
+
+```powershell
+$cacheAudio = ".media-match-v3-cache-audio"
+$cacheCombined = ".media-match-v3-cache-combined"
+$label = "before"
+
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output "reports/audio-$label.json" --cache-root $cacheAudio
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.combined.json --output "reports/combined-$label.json" --cache-root $cacheCombined
+```
+
+After a later patch, rerun with a new label and compare:
+
+```powershell
+$label = "after"
+
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output "reports/audio-$label.json" --cache-root $cacheAudio
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.combined.json --output "reports/combined-$label.json" --cache-root $cacheCombined
+cargo run -p sorotte-media-match --bin v3_report_compare -- reports/audio-before.json reports/audio-after.json
+cargo run -p sorotte-media-match --bin v3_report_compare -- reports/combined-before.json reports/combined-after.json
+```
+
+Run `audio-constellation-v3` first to isolate audio retrieval/alignment issues,
+then run `combined-v3` to evaluate video hardening. Compare reports before
+tuning thresholds.
 
 ## Recommended Corpus
 

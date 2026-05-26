@@ -11,7 +11,10 @@ use crate::{
 #[serde(rename_all = "camelCase")]
 pub struct MediaMatchV3ReportPairKey {
     pub case_name: String,
-    pub candidate_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -44,7 +47,21 @@ pub struct MediaMatchV3ReportMetricDelta {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct MediaMatchV3ReportComparisonSummary {
+    pub regression: bool,
+    pub baseline_failed: usize,
+    pub current_failed: usize,
+    pub new_failures: usize,
+    pub resolved_failures: usize,
+    pub missing_pairs: usize,
+    pub new_pairs: usize,
+    pub retrieval_misses: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MediaMatchV3ReportComparison {
+    pub summary: MediaMatchV3ReportComparisonSummary,
     pub baseline_failed: usize,
     pub current_failed: usize,
     pub new_failures: Vec<MediaMatchV3ReportStatusChange>,
@@ -63,6 +80,12 @@ pub struct MediaMatchV3ReportComparison {
 impl MediaMatchV3ReportComparison {
     pub fn current_has_more_failures(&self) -> bool {
         self.current_failed > self.baseline_failed
+    }
+
+    pub fn current_has_regressions(&self) -> bool {
+        !self.new_failures.is_empty()
+            || !self.missing_pairs_in_current.is_empty()
+            || !self.retrieval_misses.is_empty()
     }
 }
 
@@ -131,29 +154,47 @@ pub fn compare_media_match_v3_reports(
         );
     }
 
+    let missing_pairs_in_current = baseline_keys
+        .difference(&current_keys)
+        .cloned()
+        .collect::<Vec<_>>();
+    let new_pairs_in_current = current_keys
+        .difference(&baseline_keys)
+        .cloned()
+        .collect::<Vec<_>>();
+    let retrieval_misses = current_pairs
+        .iter()
+        .filter(|(_, pair)| {
+            pair.expectation
+                .as_ref()
+                .is_some_and(|e| e.must_be_retrieved)
+        })
+        .filter(|(_, pair)| !pair.retrieved)
+        .map(|(key, _)| key.clone())
+        .collect::<Vec<_>>();
+    let regression = !new_failures.is_empty()
+        || !missing_pairs_in_current.is_empty()
+        || !retrieval_misses.is_empty();
+    let summary = MediaMatchV3ReportComparisonSummary {
+        regression,
+        baseline_failed: baseline.summary.failed,
+        current_failed: current.summary.failed,
+        new_failures: new_failures.len(),
+        resolved_failures: resolved_failures.len(),
+        missing_pairs: missing_pairs_in_current.len(),
+        new_pairs: new_pairs_in_current.len(),
+        retrieval_misses: retrieval_misses.len(),
+    };
+
     MediaMatchV3ReportComparison {
+        summary,
         baseline_failed: baseline.summary.failed,
         current_failed: current.summary.failed,
         new_failures,
         resolved_failures,
-        missing_pairs_in_current: baseline_keys
-            .difference(&current_keys)
-            .cloned()
-            .collect::<Vec<_>>(),
-        new_pairs_in_current: current_keys
-            .difference(&baseline_keys)
-            .cloned()
-            .collect::<Vec<_>>(),
-        retrieval_misses: current_pairs
-            .iter()
-            .filter(|(_, pair)| {
-                pair.expectation
-                    .as_ref()
-                    .is_some_and(|e| e.must_be_retrieved)
-            })
-            .filter(|(_, pair)| !pair.retrieved)
-            .map(|(key, _)| key.clone())
-            .collect(),
+        missing_pairs_in_current,
+        new_pairs_in_current,
+        retrieval_misses,
         class_changes,
         tier_changes,
         retrieval_rank_changes,
@@ -169,16 +210,29 @@ fn report_pairs_by_key(
     let mut pairs = BTreeMap::new();
     for case in &report.cases {
         for candidate in &case.candidates {
-            pairs.insert(
-                MediaMatchV3ReportPairKey {
-                    case_name: case.name.clone(),
-                    candidate_path: candidate.path.clone(),
-                },
-                candidate,
-            );
+            pairs.insert(report_pair_key(&case.name, candidate), candidate);
         }
     }
     pairs
+}
+
+fn report_pair_key(
+    case_name: &str,
+    candidate: &MediaMatchV3DiagnosticCandidateReport,
+) -> MediaMatchV3ReportPairKey {
+    if let Some(candidate_id) = candidate.candidate_id.as_ref() {
+        MediaMatchV3ReportPairKey {
+            case_name: case_name.to_owned(),
+            candidate_id: Some(candidate_id.clone()),
+            candidate_path: None,
+        }
+    } else {
+        MediaMatchV3ReportPairKey {
+            case_name: case_name.to_owned(),
+            candidate_id: None,
+            candidate_path: Some(candidate.path.clone()),
+        }
+    }
 }
 
 fn status_change(
@@ -253,6 +307,11 @@ fn report_metric_deltas(
             "totalRawHitRowsProcessed",
             i128::from(baseline.summary.total_raw_hit_rows_processed),
             i128::from(current.summary.total_raw_hit_rows_processed),
+        ),
+        metric_delta(
+            "totalRetrievalMillis",
+            baseline.summary.total_retrieval_millis as i128,
+            current.summary.total_retrieval_millis as i128,
         ),
     ]
 }
@@ -333,10 +392,18 @@ mod tests {
         let comparison = compare_media_match_v3_reports(&baseline, &current);
 
         assert!(comparison.current_has_more_failures());
+        assert!(comparison.current_has_regressions());
+        assert!(comparison.summary.regression);
+        assert_eq!(comparison.summary.new_failures, 1);
         assert_eq!(comparison.new_failures.len(), 1);
         assert_eq!(comparison.tier_changes.len(), 1);
         assert_eq!(comparison.class_changes.len(), 1);
         assert_eq!(comparison.retrieval_rank_changes.len(), 1);
+
+        let value = serde_json::to_value(&comparison).expect("comparison should serialize");
+        assert_eq!(value["summary"]["regression"], true);
+        assert_eq!(value["summary"]["newFailures"], 1);
+        assert_eq!(value["summary"]["resolvedFailures"], 0);
     }
 
     #[test]
@@ -355,7 +422,52 @@ mod tests {
         let comparison = compare_media_match_v3_reports(&baseline, &current);
 
         assert!(!comparison.current_has_more_failures());
+        assert!(!comparison.current_has_regressions());
         assert_eq!(comparison.resolved_failures.len(), 1);
+    }
+
+    #[test]
+    fn comparison_treats_new_failure_offset_by_resolution_as_regression() {
+        let mut baseline = report_with_candidate(
+            "case",
+            "new-failure.mkv",
+            true,
+            "Strong",
+            "SameCutStrong",
+            Some(1),
+        );
+        let baseline_resolved =
+            report_with_candidate("case", "resolved.mkv", false, "Reject", "Reject", None);
+        baseline.cases[0]
+            .candidates
+            .push(baseline_resolved.cases[0].candidates[0].clone());
+        baseline.summary.pair_count = 2;
+        baseline.summary.passed = 1;
+        baseline.summary.failed = 1;
+
+        let mut current =
+            report_with_candidate("case", "new-failure.mkv", false, "Reject", "Reject", None);
+        let current_resolved = report_with_candidate(
+            "case",
+            "resolved.mkv",
+            true,
+            "Strong",
+            "SameCutStrong",
+            Some(2),
+        );
+        current.cases[0]
+            .candidates
+            .push(current_resolved.cases[0].candidates[0].clone());
+        current.summary.pair_count = 2;
+        current.summary.passed = 1;
+        current.summary.failed = 1;
+
+        let comparison = compare_media_match_v3_reports(&baseline, &current);
+
+        assert!(!comparison.current_has_more_failures());
+        assert!(comparison.current_has_regressions());
+        assert_eq!(comparison.summary.new_failures, 1);
+        assert_eq!(comparison.summary.resolved_failures, 1);
     }
 
     #[test]
@@ -374,12 +486,158 @@ mod tests {
         let comparison = compare_media_match_v3_reports(&baseline, &current);
 
         assert_eq!(comparison.missing_pairs_in_current[0].case_name, "a");
+        assert!(comparison.current_has_regressions());
         assert_eq!(comparison.new_pairs_in_current[0].case_name, "b");
+    }
+
+    #[test]
+    fn missing_pair_is_regression_even_when_net_failures_decrease() {
+        let mut baseline =
+            report_with_candidate("case", "missing.mkv", false, "Reject", "Reject", None);
+        let second =
+            report_with_candidate("case", "still-present.mkv", false, "Reject", "Reject", None);
+        baseline.cases[0]
+            .candidates
+            .push(second.cases[0].candidates[0].clone());
+        baseline.summary.pair_count = 2;
+        baseline.summary.passed = 0;
+        baseline.summary.failed = 2;
+
+        let current = report_with_candidate(
+            "case",
+            "still-present.mkv",
+            true,
+            "Strong",
+            "SameCutStrong",
+            Some(1),
+        );
+
+        let comparison = compare_media_match_v3_reports(&baseline, &current);
+
+        assert!(!comparison.current_has_more_failures());
+        assert!(comparison.current_has_regressions());
+        assert_eq!(comparison.summary.missing_pairs, 1);
+    }
+
+    #[test]
+    fn comparison_uses_candidate_id_before_path() {
+        let baseline = report_with_candidate_id(
+            "case",
+            "old-root/candidate.mkv",
+            Some("same-pair"),
+            true,
+            "Strong",
+            "SameCutStrong",
+            Some(1),
+        );
+        let current = report_with_candidate_id(
+            "case",
+            "new-root/candidate.mkv",
+            Some("same-pair"),
+            true,
+            "Strong",
+            "SameCutStrong",
+            Some(1),
+        );
+
+        let comparison = compare_media_match_v3_reports(&baseline, &current);
+
+        assert!(comparison.missing_pairs_in_current.is_empty());
+        assert!(comparison.new_pairs_in_current.is_empty());
+        assert_eq!(
+            comparison.class_changes.first().map(|change| &change.key),
+            None
+        );
+    }
+
+    #[test]
+    fn comparison_falls_back_to_path_without_candidate_id() {
+        let baseline = report_with_candidate(
+            "case",
+            "old-root/candidate.mkv",
+            true,
+            "Strong",
+            "SameCutStrong",
+            Some(1),
+        );
+        let current = report_with_candidate(
+            "case",
+            "new-root/candidate.mkv",
+            true,
+            "Strong",
+            "SameCutStrong",
+            Some(1),
+        );
+
+        let comparison = compare_media_match_v3_reports(&baseline, &current);
+
+        assert_eq!(
+            comparison.missing_pairs_in_current[0]
+                .candidate_path
+                .as_deref(),
+            Some("old-root/candidate.mkv")
+        );
+        assert_eq!(
+            comparison.new_pairs_in_current[0].candidate_path.as_deref(),
+            Some("new-root/candidate.mkv")
+        );
+    }
+
+    #[test]
+    fn comparison_reports_retrieval_time_delta() {
+        let baseline = report_with_candidate(
+            "case",
+            "candidate.mkv",
+            true,
+            "Strong",
+            "SameCutStrong",
+            Some(1),
+        );
+        let mut current = report_with_candidate(
+            "case",
+            "candidate.mkv",
+            true,
+            "Strong",
+            "SameCutStrong",
+            Some(1),
+        );
+        current.summary.total_retrieval_millis = 9;
+
+        let comparison = compare_media_match_v3_reports(&baseline, &current);
+        let delta = comparison
+            .metric_deltas
+            .iter()
+            .find(|delta| delta.field == "totalRetrievalMillis")
+            .expect("retrieval time delta should be reported");
+
+        assert_eq!(delta.baseline, 2);
+        assert_eq!(delta.current, 9);
+        assert_eq!(delta.delta, 7);
     }
 
     fn report_with_candidate(
         case_name: &str,
         candidate_path: &str,
+        passed: bool,
+        tier: &str,
+        class: &str,
+        retrieval_rank: Option<usize>,
+    ) -> MediaMatchV3DiagnosticReport {
+        report_with_candidate_id(
+            case_name,
+            candidate_path,
+            None,
+            passed,
+            tier,
+            class,
+            retrieval_rank,
+        )
+    }
+
+    fn report_with_candidate_id(
+        case_name: &str,
+        candidate_path: &str,
+        candidate_id: Option<&str>,
         passed: bool,
         tier: &str,
         class: &str,
@@ -399,9 +657,11 @@ mod tests {
                 query: fingerprint("query.mkv"),
                 retrieval: MediaMatchV3DiagnosticRetrievalReport {
                     raw_hit_rows_processed: 10,
+                    retrieval_elapsed_ms: 2,
                     ..MediaMatchV3DiagnosticRetrievalReport::default()
                 },
                 candidates: vec![MediaMatchV3DiagnosticCandidateReport {
+                    candidate_id: candidate_id.map(str::to_owned),
                     path: candidate_path.to_owned(),
                     diagnostics: diagnostic_summary(candidate_path),
                     source: "fresh".to_owned(),
@@ -424,6 +684,7 @@ mod tests {
                         piecewise_fit_millis: Some(1),
                     },
                     expectation: Some(MediaMatchV3DiagnosticExpectation {
+                        id: candidate_id.map(str::to_owned),
                         path: candidate_path.to_owned(),
                         expected_class: Some("SameCutStrong".to_owned()),
                         minimum_tier: Some("Strong".to_owned()),

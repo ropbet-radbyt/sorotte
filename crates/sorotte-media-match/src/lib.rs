@@ -40,8 +40,9 @@ pub use extraction::{
 pub use identity::normalize_media_path;
 pub use matching::{MediaMatchCandidateDecision, decide_media_match, rank_media_match_candidates};
 pub use report_compare::{
-    MediaMatchV3ReportComparison, MediaMatchV3ReportMetricDelta, MediaMatchV3ReportPairKey,
-    MediaMatchV3ReportStatusChange, MediaMatchV3ReportValueChange, compare_media_match_v3_reports,
+    MediaMatchV3ReportComparison, MediaMatchV3ReportComparisonSummary,
+    MediaMatchV3ReportMetricDelta, MediaMatchV3ReportPairKey, MediaMatchV3ReportStatusChange,
+    MediaMatchV3ReportValueChange, compare_media_match_v3_reports,
 };
 pub use settings::{
     MediaExtractionSettings, MediaFingerprintProfile, media_extraction_settings_hash,

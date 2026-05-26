@@ -5,7 +5,7 @@ use sorotte_media_match::{MediaMatchV3DiagnosticReport, compare_media_match_v3_r
 fn main() -> ExitCode {
     match run() {
         Ok(comparison) => {
-            let current_has_more_failures = comparison.current_has_more_failures();
+            let current_has_regressions = comparison.current_has_regressions();
             match serde_json::to_string_pretty(&comparison) {
                 Ok(json) => println!("{json}"),
                 Err(error) => {
@@ -13,7 +13,7 @@ fn main() -> ExitCode {
                     return ExitCode::from(2);
                 }
             }
-            if current_has_more_failures {
+            if current_has_regressions {
                 ExitCode::from(1)
             } else {
                 ExitCode::SUCCESS

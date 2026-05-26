@@ -7,6 +7,7 @@
       "query": "remux/source-a.mkv",
       "candidates": [
         {
+          "id": "remux-source-a",
           "path": "remux/source-a-remux.mkv",
           "expectedClass": "SameCutStrong",
           "minimumTier": "Strong",
@@ -22,6 +23,7 @@
       "query": "encodes/episode-x264.mkv",
       "candidates": [
         {
+          "id": "different-encode-episode",
           "path": "encodes/episode-x265-or-av1.mkv",
           "expectedClass": "SameCutStrong",
           "minimumTier": "Strong",
@@ -37,6 +39,7 @@
       "query": "offsets/tv-version.mkv",
       "candidates": [
         {
+          "id": "tv-bd-offset",
           "path": "offsets/bd-version.mkv",
           "expectedClass": "SameCutStrong",
           "minimumTier": "Strong",
@@ -52,6 +55,7 @@
       "query": "cuts/no-logo.mkv",
       "candidates": [
         {
+          "id": "inserted-logo-cut",
           "path": "cuts/with-inserted-logo.mkv",
           "expectedClass": "SameMediaDifferentCut",
           "minimumTier": "Probable",
@@ -65,6 +69,7 @@
       "query": "series/episode-01.mkv",
       "candidates": [
         {
+          "id": "wrong-episode-shared-op-ed",
           "path": "series/episode-02-shared-op-ed.mkv",
           "expectedClass": "SharedIntroOutroOnly",
           "minimumTier": "Reject",
@@ -78,6 +83,7 @@
       "query": "audio/japanese-audio.mkv",
       "candidates": [
         {
+          "id": "same-video-different-audio",
           "path": "audio/english-dub-same-video.mkv",
           "expectedClass": "SameVideoDifferentAudio",
           "minimumTier": "Probable",
@@ -91,6 +97,7 @@
       "query": "collisions/same-soundtrack-a.mkv",
       "candidates": [
         {
+          "id": "same-audio-different-video",
           "path": "collisions/same-soundtrack-b.mkv",
           "expectedClass": "SameAudioDifferentVideo",
           "minimumTier": "Probable",
@@ -104,6 +111,7 @@
       "query": "video/full-frame.mkv",
       "candidates": [
         {
+          "id": "crop-letterbox",
           "path": "video/cropped-or-letterboxed.mkv",
           "expectedClass": "SameCutStrong",
           "minimumTier": "Strong",
