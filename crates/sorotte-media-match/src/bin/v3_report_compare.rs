@@ -2,6 +2,7 @@ use std::{env, fs, process::ExitCode};
 
 use sorotte_media_match::{
     MediaMatchV3DiagnosticReport, MediaMatchV3ReportComparison, compare_media_match_v3_reports,
+    validate_media_match_v3_diagnostic_report,
 };
 
 fn main() -> ExitCode {
@@ -29,9 +30,19 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<MediaMatchV3ReportComparison, String> {
-    let args = parse_args(env::args().skip(1))?;
+    run_with_args(env::args().skip(1))
+}
+
+fn run_with_args(
+    args: impl IntoIterator<Item = String>,
+) -> Result<MediaMatchV3ReportComparison, String> {
+    let args = parse_args(args)?;
     let baseline = read_report(&args.baseline_path)?;
     let current = read_report(&args.current_path)?;
+    validate_media_match_v3_diagnostic_report(&baseline)
+        .map_err(|error| format!("baseline report is invalid: {error}"))?;
+    validate_media_match_v3_diagnostic_report(&current)
+        .map_err(|error| format!("current report is invalid: {error}"))?;
     let mut comparison = compare_media_match_v3_reports(&baseline, &current);
     comparison.comparison_mode = args.mode.label().to_owned();
     Ok(comparison)
@@ -127,7 +138,19 @@ fn usage() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sorotte_media_match::{MediaMatchV3ReportComparisonSummary, MediaMatchV3ReportPairKey};
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{Duration, SystemTime, UNIX_EPOCH},
+    };
+
+    use sorotte_media_match::{
+        MediaMatchV3DiagnosticCandidateReport, MediaMatchV3DiagnosticCaseReport,
+        MediaMatchV3DiagnosticDecisionReport, MediaMatchV3DiagnosticExpectation,
+        MediaMatchV3DiagnosticFingerprintReport, MediaMatchV3DiagnosticRetrievalReport,
+        MediaMatchV3DiagnosticSummary, MediaMatchV3DiagnosticSummaryReport,
+        MediaMatchV3ReportComparisonSummary, MediaMatchV3ReportPairKey, current_v3_tuning,
+    };
 
     #[test]
     fn parse_default_mode() {
@@ -174,6 +197,46 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn run_rejects_invalid_baseline_report() {
+        let root = temp_dir("v3-report-compare-baseline-invalid");
+        let baseline = root.join("baseline.json");
+        let current = root.join("current.json");
+        let mut invalid = report(true, Some("candidate"));
+        invalid.summary.failed = 1;
+        write_report(&baseline, &invalid);
+        write_report(&current, &report(true, Some("candidate")));
+
+        let error = run_with_args([
+            baseline.to_string_lossy().to_string(),
+            current.to_string_lossy().to_string(),
+        ])
+        .expect_err("invalid baseline should be rejected");
+
+        assert!(error.contains("baseline report is invalid"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn run_rejects_invalid_current_report() {
+        let root = temp_dir("v3-report-compare-current-invalid");
+        let baseline = root.join("baseline.json");
+        let current = root.join("current.json");
+        let mut invalid = report(true, Some("candidate"));
+        invalid.cases[0].candidates[0].candidate_id = Some(" ".to_owned());
+        write_report(&baseline, &report(true, Some("candidate")));
+        write_report(&current, &invalid);
+
+        let error = run_with_args([
+            baseline.to_string_lossy().to_string(),
+            current.to_string_lossy().to_string(),
+        ])
+        .expect_err("invalid current should be rejected");
+
+        assert!(error.contains("current report is invalid"));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -261,5 +324,134 @@ mod tests {
             offset_error_changes: Vec::new(),
             metric_deltas: Vec::new(),
         }
+    }
+
+    fn write_report(path: &PathBuf, report: &MediaMatchV3DiagnosticReport) {
+        fs::write(
+            path,
+            serde_json::to_string(report).expect("report should serialize"),
+        )
+        .expect("report should be written");
+    }
+
+    fn report(passed: bool, candidate_id: Option<&str>) -> MediaMatchV3DiagnosticReport {
+        let failed = usize::from(!passed);
+        MediaMatchV3DiagnosticReport {
+            algorithm_version: 3,
+            profile: "audio-constellation-v3".to_owned(),
+            settings_hash: "00".to_owned(),
+            tuning: current_v3_tuning(),
+            cache_root: "cache".to_owned(),
+            cache_retained: true,
+            generated_at_unix_millis: 1,
+            cases: vec![MediaMatchV3DiagnosticCaseReport {
+                name: "case".to_owned(),
+                query: MediaMatchV3DiagnosticFingerprintReport {
+                    path: "query.mkv".to_owned(),
+                    diagnostics: diagnostic_summary("query.mkv"),
+                    source: "fresh".to_owned(),
+                },
+                retrieval: MediaMatchV3DiagnosticRetrievalReport {
+                    raw_hit_rows_processed: 10,
+                    retrieval_elapsed_ms: 2,
+                    ..MediaMatchV3DiagnosticRetrievalReport::default()
+                },
+                candidates: vec![MediaMatchV3DiagnosticCandidateReport {
+                    candidate_id: candidate_id.map(str::to_owned),
+                    path: "candidate.mkv".to_owned(),
+                    diagnostics: diagnostic_summary("candidate.mkv"),
+                    source: "fresh".to_owned(),
+                    retrieved: true,
+                    retrieval_rank: Some(1),
+                    decision: MediaMatchV3DiagnosticDecisionReport {
+                        tier: "Strong".to_owned(),
+                        class: Some("SameCutStrong".to_owned()),
+                        explanation: "same cut".to_owned(),
+                        autoplay_eligible: true,
+                        offset_seconds: Some(0.0),
+                        scale_ppm: Some(1_000_000),
+                        segment_count: 1,
+                        total_aligned_span_ms: 60_000,
+                        largest_gap_ms: 0,
+                        edge_only: false,
+                        audio_video_conflict: false,
+                        piecewise_pair_count: Some(8),
+                        piecewise_hypothesis_count: Some(4),
+                        piecewise_fit_millis: Some(1),
+                    },
+                    expectation: Some(MediaMatchV3DiagnosticExpectation {
+                        id: candidate_id.map(str::to_owned),
+                        path: "candidate.mkv".to_owned(),
+                        expected_class: Some("SameCutStrong".to_owned()),
+                        minimum_tier: Some("Strong".to_owned()),
+                        expected_offset_ms: Some(0),
+                        max_offset_error_ms: Some(1_000),
+                        autoplay_eligible: Some(true),
+                        must_be_retrieved: true,
+                    }),
+                    passed,
+                    failure_reason: (!passed).then(|| "failed".to_owned()),
+                }],
+            }],
+            summary: MediaMatchV3DiagnosticSummaryReport {
+                case_count: 1,
+                pair_count: 1,
+                passed: usize::from(passed),
+                failed,
+                total_extraction_millis: 20,
+                total_audio_blob_bytes: 200,
+                total_video_blob_bytes: 100,
+                total_raw_hit_rows_processed: 10,
+                total_retrieval_millis: 2,
+            },
+        }
+    }
+
+    fn diagnostic_summary(path: &str) -> MediaMatchV3DiagnosticSummary {
+        MediaMatchV3DiagnosticSummary {
+            file_path: Some(path.to_owned()),
+            profile: "audio-constellation-v3".to_owned(),
+            duration_ms: Some(60_000),
+            extraction_total_millis: Some(10),
+            extraction_audio_millis: Some(8),
+            extraction_video_millis: Some(0),
+            audio_verify_count: 10,
+            video_verify_count: 0,
+            audio_index_count: 5,
+            video_index_count: 0,
+            audio_blob_bytes: 100,
+            video_blob_bytes: 0,
+            retrieval_candidates_count: None,
+            piecewise_pair_count: None,
+            piecewise_hypothesis_count: None,
+            piecewise_segment_count: None,
+            piecewise_fit_millis: None,
+            decision_tier: None,
+            decision_class: None,
+            streamed_bytes: None,
+            streamed_samples: None,
+            peak_frames: None,
+            raw_landmarks_before_bounding: None,
+            final_landmarks: None,
+            max_buffer_samples: None,
+            max_raw_landmarks_seen: None,
+            max_raw_landmarks_after_compaction: None,
+            raw_landmark_compactions: None,
+            notes: Vec::new(),
+        }
+    }
+
+    fn temp_dir(prefix: &str) -> PathBuf {
+        let mut path = env::temp_dir();
+        path.push(format!(
+            "sorotte-{prefix}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or(Duration::ZERO)
+                .as_nanos()
+        ));
+        fs::create_dir_all(&path).expect("temp dir should be created");
+        path
     }
 }

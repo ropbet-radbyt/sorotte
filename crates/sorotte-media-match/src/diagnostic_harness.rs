@@ -174,8 +174,10 @@ struct CachedFingerprint {
 pub fn media_match_v3_diagnostic_manifest_from_json(
     manifest_json: &str,
 ) -> Result<MediaMatchV3DiagnosticManifest, String> {
-    serde_json::from_str(manifest_json)
-        .map_err(|error| format!("failed parsing media-match V3 diagnostic manifest: {error}"))
+    let manifest = serde_json::from_str(manifest_json)
+        .map_err(|error| format!("failed parsing media-match V3 diagnostic manifest: {error}"))?;
+    validate_media_match_v3_diagnostic_manifest(&manifest)?;
+    Ok(manifest)
 }
 
 pub fn media_match_v3_diagnostic_manifest_report_json(
@@ -311,6 +313,7 @@ pub fn resolve_media_match_v3_diagnostic_manifest(
     manifest: &MediaMatchV3DiagnosticManifest,
     manifest_dir: &Path,
 ) -> Result<MediaMatchV3ResolvedManifest, String> {
+    validate_media_match_v3_diagnostic_manifest(manifest)?;
     let base = manifest
         .base_dir
         .as_deref()
@@ -366,6 +369,47 @@ pub fn resolve_media_match_v3_diagnostic_manifest(
         profile: manifest.profile.clone(),
         cases,
     })
+}
+
+pub fn validate_media_match_v3_diagnostic_manifest(
+    manifest: &MediaMatchV3DiagnosticManifest,
+) -> Result<(), String> {
+    for case in &manifest.cases {
+        if case.name.trim().is_empty() {
+            return Err("media-match V3 diagnostic manifest has a blank case name".to_owned());
+        }
+        if case.query.trim().is_empty() {
+            return Err(format!("case '{}' has a blank query path", case.name));
+        }
+        let mut candidate_ids = BTreeSet::new();
+        let mut no_id_candidate_paths = BTreeSet::new();
+        for candidate in &case.candidates {
+            if candidate.path.trim().is_empty() {
+                return Err(format!("case '{}' has a blank candidate path", case.name));
+            }
+            if let Some(id) = candidate.id.as_deref() {
+                let trimmed = id.trim();
+                if trimmed.is_empty() {
+                    return Err(format!(
+                        "case '{}' candidate '{}' has a blank id",
+                        case.name, candidate.path
+                    ));
+                }
+                if !candidate_ids.insert(trimmed.to_owned()) {
+                    return Err(format!(
+                        "case '{}' has duplicate candidate id '{}'",
+                        case.name, trimmed
+                    ));
+                }
+            } else if !no_id_candidate_paths.insert(candidate.path.clone()) {
+                return Err(format!(
+                    "case '{}' has duplicate candidate path '{}' without an id",
+                    case.name, candidate.path
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 impl MediaMatchV3DiagnosticRetrievalReport {
@@ -741,6 +785,60 @@ mod tests {
         .expect_err("duplicate no-id paths should be rejected");
 
         assert!(error.contains("duplicate candidate path"));
+    }
+
+    #[test]
+    fn manifest_validation_rejects_blank_case_name() {
+        let manifest = MediaMatchV3DiagnosticManifest {
+            profile: "audio-constellation-v3".to_owned(),
+            base_dir: None,
+            cases: vec![MediaMatchV3DiagnosticManifestCase {
+                name: " ".to_owned(),
+                query: "query.mkv".to_owned(),
+                candidates: Vec::new(),
+            }],
+        };
+
+        let error = validate_media_match_v3_diagnostic_manifest(&manifest)
+            .expect_err("blank case name should be rejected");
+
+        assert!(error.contains("blank case name"));
+    }
+
+    #[test]
+    fn manifest_validation_rejects_blank_query_path() {
+        let manifest = MediaMatchV3DiagnosticManifest {
+            profile: "audio-constellation-v3".to_owned(),
+            base_dir: None,
+            cases: vec![MediaMatchV3DiagnosticManifestCase {
+                name: "case".to_owned(),
+                query: " ".to_owned(),
+                candidates: Vec::new(),
+            }],
+        };
+
+        let error = validate_media_match_v3_diagnostic_manifest(&manifest)
+            .expect_err("blank query path should be rejected");
+
+        assert!(error.contains("blank query path"));
+    }
+
+    #[test]
+    fn manifest_validation_rejects_blank_candidate_path() {
+        let manifest = MediaMatchV3DiagnosticManifest {
+            profile: "audio-constellation-v3".to_owned(),
+            base_dir: None,
+            cases: vec![MediaMatchV3DiagnosticManifestCase {
+                name: "case".to_owned(),
+                query: "query.mkv".to_owned(),
+                candidates: vec![test_expectation_without_id(" ")],
+            }],
+        };
+
+        let error = validate_media_match_v3_diagnostic_manifest(&manifest)
+            .expect_err("blank candidate path should be rejected");
+
+        assert!(error.contains("blank candidate path"));
     }
 
     #[test]

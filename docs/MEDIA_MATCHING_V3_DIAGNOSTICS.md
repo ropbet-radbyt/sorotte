@@ -72,6 +72,17 @@ Strict mode exits nonzero for any current failed expectation, any current
 the old behavior and exits nonzero only when the current report has more failed
 expectations than the baseline.
 
+Exit codes:
+
+- `0`: comparison completed and the selected mode did not fail.
+- `1`: comparison completed and the selected mode failed.
+- `2`: usage error, invalid JSON, or invalid diagnostic report input.
+
+Reports are validated before comparison. Summary counts must match the candidate
+rows, retrieval totals must match per-case retrieval metrics, candidate IDs must
+be non-empty, and duplicate comparison keys are invalid input rather than
+regressions.
+
 The comparison output includes a top-level `summary` with regression status and
 unresolved-failure status plus counts for baseline/current failures, new
 failures, resolved failures, missing pairs, new pairs, new failed pairs,
@@ -79,8 +90,10 @@ retrieval misses, and new retrieval misses. It also reports aggregate deltas,
 including extraction time, retrieval time, blob bytes, index rows, and raw hit
 rows.
 
-Duplicate comparison keys in either report are surfaced as duplicate pairs and
-treated as regressions because they make pair-level comparison ambiguous.
+Generated reports should never contain duplicate comparison keys. Library-level
+comparison output still exposes duplicate pair lists for diagnostics, but the CLI
+rejects duplicate keys before comparison because they make pair-level comparison
+ambiguous.
 
 Review failures in this order:
 
@@ -256,6 +269,15 @@ cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.combined.json --
 cargo run -p sorotte-media-match --bin v3_report_compare -- reports/audio-before.json reports/audio-after.json
 cargo run -p sorotte-media-match --bin v3_report_compare -- reports/combined-before.json reports/combined-after.json
 ```
+
+After validation work, run a self-comparison smoke check before changing
+thresholds:
+
+```powershell
+cargo run -p sorotte-media-match --bin v3_report_compare -- reports/audio-before.json reports/audio-before.json
+```
+
+Self-comparison should produce no regressions, no missing pairs, and no changes.
 
 Run `audio-constellation-v3` first to isolate audio retrieval/alignment issues,
 then run `combined-v3` to evaluate video hardening. Compare reports before

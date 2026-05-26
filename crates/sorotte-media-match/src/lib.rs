@@ -26,6 +26,7 @@ pub use diagnostic_harness::{
     MediaMatchV3ResolvedManifestCandidate, MediaMatchV3ResolvedManifestCase,
     media_match_v3_diagnostic_manifest_from_json, media_match_v3_diagnostic_manifest_report_json,
     resolve_media_match_v3_diagnostic_manifest, run_media_match_v3_diagnostic_manifest,
+    validate_media_match_v3_diagnostic_manifest,
 };
 pub use diagnostics::{
     MediaMatchV3DiagnosticSummary, summarize_decision_v3_diagnostics,
@@ -43,6 +44,7 @@ pub use report_compare::{
     MediaMatchV3ReportComparison, MediaMatchV3ReportComparisonSummary,
     MediaMatchV3ReportMetricDelta, MediaMatchV3ReportPairKey, MediaMatchV3ReportStatusChange,
     MediaMatchV3ReportValueChange, compare_media_match_v3_reports,
+    validate_media_match_v3_diagnostic_report,
 };
 pub use settings::{
     MediaExtractionSettings, MediaFingerprintProfile, media_extraction_settings_hash,

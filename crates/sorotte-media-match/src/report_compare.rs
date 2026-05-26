@@ -18,6 +18,21 @@ pub struct MediaMatchV3ReportPairKey {
     pub candidate_path: Option<String>,
 }
 
+impl MediaMatchV3ReportPairKey {
+    fn label(&self) -> String {
+        match self.candidate_id.as_deref() {
+            Some(candidate_id) => {
+                format!("case '{}' candidate id '{}'", self.case_name, candidate_id)
+            }
+            None => format!(
+                "case '{}' candidate path '{}'",
+                self.case_name,
+                self.candidate_path.as_deref().unwrap_or("<missing>")
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaMatchV3ReportStatusChange {
@@ -109,6 +124,101 @@ impl MediaMatchV3ReportComparison {
             || !self.duplicate_pairs_in_baseline.is_empty()
             || !self.duplicate_pairs_in_current.is_empty()
     }
+}
+
+pub fn validate_media_match_v3_diagnostic_report(
+    report: &MediaMatchV3DiagnosticReport,
+) -> Result<(), String> {
+    let case_count = report.cases.len();
+    if report.summary.case_count != case_count {
+        return Err(format!(
+            "summary.caseCount={} does not match cases.len()={case_count}",
+            report.summary.case_count
+        ));
+    }
+
+    let mut pair_count = 0usize;
+    let mut passed = 0usize;
+    let mut failed = 0usize;
+    let mut total_raw_hit_rows_processed = 0i64;
+    let mut total_retrieval_millis = 0u128;
+
+    for case in &report.cases {
+        pair_count += case.candidates.len();
+        total_raw_hit_rows_processed += case.retrieval.raw_hit_rows_processed;
+        total_retrieval_millis += case.retrieval.retrieval_elapsed_ms;
+        for candidate in &case.candidates {
+            if let Some(candidate_id) = candidate.candidate_id.as_deref()
+                && candidate_id.trim().is_empty()
+            {
+                return Err(format!(
+                    "case '{}' candidate '{}' has a blank candidateId",
+                    case.name, candidate.path
+                ));
+            }
+            if let Some(candidate_id) = candidate.candidate_id.as_deref()
+                && candidate_id.trim() != candidate_id
+            {
+                return Err(format!(
+                    "case '{}' candidate '{}' has a candidateId with leading or trailing whitespace",
+                    case.name, candidate.path
+                ));
+            }
+            if candidate.passed {
+                passed += 1;
+            } else {
+                failed += 1;
+            }
+        }
+    }
+
+    if report.summary.pair_count != pair_count {
+        return Err(format!(
+            "summary.pairCount={} does not match candidate count={pair_count}",
+            report.summary.pair_count
+        ));
+    }
+    if report.summary.passed != passed {
+        return Err(format!(
+            "summary.passed={} does not match passed candidates={passed}",
+            report.summary.passed
+        ));
+    }
+    if report.summary.failed != failed {
+        return Err(format!(
+            "summary.failed={} does not match failed candidates={failed}",
+            report.summary.failed
+        ));
+    }
+    if report.summary.passed + report.summary.failed != report.summary.pair_count {
+        return Err(format!(
+            "summary.passed + summary.failed = {} does not match summary.pairCount={}",
+            report.summary.passed + report.summary.failed,
+            report.summary.pair_count
+        ));
+    }
+    if report.summary.total_raw_hit_rows_processed != total_raw_hit_rows_processed {
+        return Err(format!(
+            "summary.totalRawHitRowsProcessed={} does not match retrieval total={total_raw_hit_rows_processed}",
+            report.summary.total_raw_hit_rows_processed
+        ));
+    }
+    if report.summary.total_retrieval_millis != total_retrieval_millis {
+        return Err(format!(
+            "summary.totalRetrievalMillis={} does not match retrieval total={total_retrieval_millis}",
+            report.summary.total_retrieval_millis
+        ));
+    }
+
+    let pairs = report_pairs_by_key(report);
+    if let Some(key) = pairs.duplicate_keys.first() {
+        return Err(format!(
+            "duplicate comparison key in report: {}",
+            key.label()
+        ));
+    }
+
+    Ok(())
 }
 
 pub fn compare_media_match_v3_reports(
@@ -305,7 +415,7 @@ fn report_pair_key(
     if let Some(candidate_id) = candidate.candidate_id.as_ref() {
         MediaMatchV3ReportPairKey {
             case_name: case_name.to_owned(),
-            candidate_id: Some(candidate_id.clone()),
+            candidate_id: Some(candidate_id.trim().to_owned()),
             candidate_path: None,
         }
     } else {
@@ -847,6 +957,142 @@ mod tests {
         assert_eq!(delta.baseline, 2);
         assert_eq!(delta.current, 9);
         assert_eq!(delta.delta, 7);
+    }
+
+    #[test]
+    fn report_validation_accepts_generated_style_report() {
+        let report = report_with_candidate(
+            "case",
+            "candidate.mkv",
+            true,
+            "Strong",
+            "SameCutStrong",
+            Some(1),
+        );
+
+        validate_media_match_v3_diagnostic_report(&report).expect("report should validate");
+    }
+
+    #[test]
+    fn report_validation_rejects_mismatched_failed_summary() {
+        let mut report = report_with_candidate(
+            "case",
+            "candidate.mkv",
+            true,
+            "Strong",
+            "SameCutStrong",
+            Some(1),
+        );
+        report.summary.failed = 1;
+
+        let error = validate_media_match_v3_diagnostic_report(&report)
+            .expect_err("mismatched failure count should be invalid");
+
+        assert!(error.contains("summary.failed"));
+    }
+
+    #[test]
+    fn report_validation_rejects_mismatched_pair_count() {
+        let mut report = report_with_candidate(
+            "case",
+            "candidate.mkv",
+            true,
+            "Strong",
+            "SameCutStrong",
+            Some(1),
+        );
+        report.summary.pair_count = 2;
+
+        let error = validate_media_match_v3_diagnostic_report(&report)
+            .expect_err("mismatched pair count should be invalid");
+
+        assert!(error.contains("summary.pairCount"));
+    }
+
+    #[test]
+    fn report_validation_rejects_blank_candidate_id() {
+        let report = report_with_candidate_id(
+            "case",
+            "candidate.mkv",
+            Some(""),
+            true,
+            "Strong",
+            "SameCutStrong",
+            Some(1),
+        );
+
+        let error = validate_media_match_v3_diagnostic_report(&report)
+            .expect_err("blank candidate id should be invalid");
+
+        assert!(error.contains("blank candidateId"));
+    }
+
+    #[test]
+    fn report_validation_rejects_whitespace_candidate_id() {
+        let report = report_with_candidate_id(
+            "case",
+            "candidate.mkv",
+            Some(" candidate "),
+            true,
+            "Strong",
+            "SameCutStrong",
+            Some(1),
+        );
+
+        let error = validate_media_match_v3_diagnostic_report(&report)
+            .expect_err("candidate id whitespace should be invalid");
+
+        assert!(error.contains("leading or trailing whitespace"));
+    }
+
+    #[test]
+    fn report_validation_rejects_duplicate_candidate_id_keys() {
+        let mut report = report_with_candidate_id(
+            "case",
+            "first.mkv",
+            Some("duplicate"),
+            true,
+            "Strong",
+            "SameCutStrong",
+            Some(1),
+        );
+        let duplicate = report_with_candidate_id(
+            "case",
+            "second.mkv",
+            Some("duplicate"),
+            true,
+            "Strong",
+            "SameCutStrong",
+            Some(2),
+        );
+        report.cases[0]
+            .candidates
+            .push(duplicate.cases[0].candidates[0].clone());
+        report.summary.pair_count = 2;
+        report.summary.passed = 2;
+
+        let error = validate_media_match_v3_diagnostic_report(&report)
+            .expect_err("duplicate comparison keys should be invalid");
+
+        assert!(error.contains("duplicate comparison key"));
+    }
+
+    #[test]
+    fn report_validation_rejects_retrieval_summary_mismatch() {
+        let mut report = report_with_candidate(
+            "case",
+            "candidate.mkv",
+            true,
+            "Strong",
+            "SameCutStrong",
+            Some(1),
+        );
+        report.summary.total_retrieval_millis = 99;
+
+        let error = validate_media_match_v3_diagnostic_report(&report)
+            .expect_err("retrieval total mismatch should be invalid");
+
+        assert!(error.contains("summary.totalRetrievalMillis"));
     }
 
     fn report_with_candidate(
