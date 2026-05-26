@@ -30,10 +30,6 @@ pub struct MediaAudioStreamMetrics {
     pub raw_landmarks_before_bounding: usize,
     pub final_landmarks: usize,
     pub max_buffer_samples: usize,
-    /// Compatibility alias for the largest retained raw-landmark buffer after
-    /// online compaction/finalization. Use `max_raw_landmarks_seen` for the
-    /// transient pre-compaction high-water mark.
-    pub max_raw_landmarks_buffered: usize,
     pub max_raw_landmarks_seen: usize,
     pub max_raw_landmarks_after_compaction: usize,
     pub raw_landmark_compactions: usize,

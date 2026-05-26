@@ -24,17 +24,17 @@ use sorotte_media_match::{
     delete_media_match_v3_file_and_fingerprints, delete_media_match_v3_fingerprints_and_anchors,
     encode_media_fingerprint_blob_v3, fingerprint_media_file_cancellable_with_report,
     load_media_match_v3_cache_for_settings, load_media_match_v3_record_for_path,
-    map_query_position_to_candidate_ms, media_extraction_settings_hash,
-    media_fingerprint_blob_v3_from_record, media_match_v3_anchor_candidate_paths_with_stats,
-    media_match_wire_signature_from_value, media_match_wire_value_from_records,
-    normalize_media_path, open_media_match_v3_index, rank_media_match_candidates,
-    refresh_anchor_stats_v3, save_media_match_v3_record, video_index_landmarks_v3_from_record,
+    media_extraction_settings_hash, media_fingerprint_blob_v3_from_record,
+    media_match_v3_anchor_candidate_paths_with_stats, media_match_wire_signature_from_value,
+    media_match_wire_value_from_records, normalize_media_path, open_media_match_v3_index,
+    rank_media_match_candidates, refresh_anchor_stats_v3, save_media_match_v3_record,
+    video_index_landmarks_v3_from_record,
 };
 
 #[cfg(test)]
 use sorotte_media_match::{
     AudioAnchor, anchor_stats_v3_dirty, initialize_media_match_v3_index,
-    refresh_all_anchor_stats_v3,
+    map_query_position_to_candidate_ms, refresh_all_anchor_stats_v3,
 };
 
 use super::shell_state::{
@@ -2046,7 +2046,11 @@ fn format_media_match_evidence_summary(decision: &MediaMatchDecision) -> String 
     parts.join(" | ")
 }
 
-#[allow(dead_code)]
+// TODO(media-match): when the runtime summary callsite has the local playback
+// position, use this formatting path for debug evidence only. The current
+// `summarize_current_media_match` inputs have the best V3 decision but not the
+// player's current timestamp.
+#[cfg(test)]
 fn format_media_match_position_mapping_diagnostic(
     decision: &MediaMatchDecision,
     current_position_ms: u32,
@@ -2126,6 +2130,10 @@ fn probe_executable_output_with_timeout(
     args: &[&str],
     timeout: Duration,
 ) -> Result<Output, String> {
+    // Version probes use bounded `-version` output from ffmpeg/ffprobe. Keeping
+    // stdout/stderr piped is acceptable here because the process is also
+    // timeout-protected; long-running media extraction uses the streaming
+    // runner that drains pipes concurrently.
     let mut child = hidden_media_match_command(path)
         .args(args)
         .stdin(Stdio::null())
@@ -3517,7 +3525,7 @@ mod tests {
             "fixture should start with a candidate anchor hit"
         );
 
-        std::fs::write(&candidate_path, b"candidate-v2-with-new-size")
+        std::fs::write(&candidate_path, b"candidate-v3-with-new-size")
             .expect("candidate media should be changed");
         inventory_media_match_candidates(
             &root,
@@ -3610,7 +3618,7 @@ mod tests {
             "fixture should start with a full-profile candidate hit"
         );
 
-        std::fs::write(&candidate_path, b"candidate-v2-with-new-size")
+        std::fs::write(&candidate_path, b"candidate-v3-with-new-size")
             .expect("candidate media should be changed");
         let mut fresh_fast_candidate =
             fake_media_match_record_for_file(&candidate_path, fast_settings.clone());

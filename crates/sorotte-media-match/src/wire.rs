@@ -5,8 +5,8 @@ use serde_json::Value;
 use crate::{
     MEDIA_MATCH_ANCHOR_VERSION, MEDIA_MATCH_WIRE_MAX_BYTES, MEDIA_MATCH_WIRE_SCHEMA_V3,
     MediaAnchorProfile, MediaExtractionSettings, MediaFingerprintRecord, MediaMatchDecision,
-    MediaMatchSettings, decide_media_match_anchors, encode_audio_anchor_summary,
-    encode_video_anchor_summary, media_anchor_profile_from_record,
+    MediaMatchSettings, decide_media_match_anchors, encode_wire_audio_anchor_summary,
+    encode_wire_video_anchor_summary, media_anchor_profile_from_record,
     media_anchor_profile_from_summaries, media_match_tier_rank,
 };
 
@@ -133,9 +133,9 @@ pub fn media_match_wire_anchor_profile_from_anchor_profile(
         return None;
     }
     let audio_summary = (!profile.audio_anchors.is_empty())
-        .then(|| encode_audio_anchor_summary(&profile.audio_anchors));
+        .then(|| encode_wire_audio_anchor_summary(&profile.audio_anchors));
     let video_summary = (!profile.video_anchors.is_empty())
-        .then(|| encode_video_anchor_summary(&profile.video_anchors));
+        .then(|| encode_wire_video_anchor_summary(&profile.video_anchors));
     Some(MediaMatchWireProfile {
         profile: profile.profile.clone(),
         algorithm_version: profile.version,

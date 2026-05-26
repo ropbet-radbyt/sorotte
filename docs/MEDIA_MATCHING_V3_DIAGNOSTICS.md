@@ -99,6 +99,27 @@ Autoplay remains conservative: exact identity can be eligible, and the only
 non-exact V3 class eligible for strong same-media autoplay is `SameCutStrong`
 with tier `Strong` and user policy allowing it.
 
+## Failure Checklist
+
+Use report data to decide what to tune or fix. Do not tune thresholds from one
+isolated fixture without checking the broader corpus.
+
+- Candidate not retrieved: check `retrieved`, `retrievalRank`,
+  `queryBucketsSkippedCommon`, `rawHitRowsProcessed`, and whether the expected
+  file has enough indexed landmarks.
+- Retrieved but direct decision failed: check decision tier/class, segment count,
+  total aligned span, largest gap, edge-only status, and audio/video conflict.
+- Wrong class: compare expected edit structure with `segmentCount`,
+  `totalAlignedSpanMs`, `largestGapMs`, and `edgeOnly`.
+- Offset error: compare `offsetSeconds` against `expectedOffsetMs`; then inspect
+  piecewise segment starts and `scalePpm`.
+- Unexpected autoplay eligibility: confirm only exact identity or `Strong` +
+  `SameCutStrong` can pass, and verify the manifest `autoplayEligible`
+  expectation.
+- Large raw hit row count or common-bucket pressure: inspect skipped-common
+  buckets, raw hit rows, and whether static/common audio or video landmarks need
+  better rarity filtering.
+
 ## Recommended Corpus
 
 Use a corpus with cases that stress retrieval, alignment, and false-positive
