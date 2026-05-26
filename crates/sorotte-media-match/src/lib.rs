@@ -23,6 +23,7 @@ use sha2::{Digest, Sha256};
 
 mod diagnostic_harness;
 mod timeline_v3;
+mod v3_index;
 
 pub use diagnostic_harness::{
     MediaMatchV3DiagnosticCandidateReport, MediaMatchV3DiagnosticDecisionReport,
@@ -31,14 +32,23 @@ pub use diagnostic_harness::{
     MediaMatchV3DiagnosticReport, MediaMatchV3DiagnosticRetrievalReport,
     MediaMatchV3DiagnosticRunOptions, MediaMatchV3DiagnosticSummaryReport,
     MediaMatchV3ResolvedManifest, MediaMatchV3ResolvedManifestCandidate,
-    MediaMatchV3ResolvedManifestCase, MediaMatchV3RetrievalStats,
-    media_match_v3_anchor_candidate_paths_with_stats, media_match_v3_diagnostic_manifest_from_json,
+    MediaMatchV3ResolvedManifestCase, media_match_v3_diagnostic_manifest_from_json,
     media_match_v3_diagnostic_manifest_report_json, resolve_media_match_v3_diagnostic_manifest,
     run_media_match_v3_diagnostic_manifest,
 };
 pub use timeline_v3::{
     classify_timeline_at_query_ms, map_candidate_position_to_query_ms,
     map_query_position_to_candidate_ms, timeline_map_contains_query_position,
+};
+pub use v3_index::{
+    MediaMatchV3Index, MediaMatchV3IndexPaths, MediaMatchV3RetrievalStats, anchor_stats_v3_dirty,
+    clear_all_anchor_stats_v3_dirty, clear_anchor_stats_v3_dirty,
+    delete_media_match_v3_file_and_fingerprints, delete_media_match_v3_fingerprints_and_anchors,
+    initialize_media_match_v3_index, load_media_match_v3_cache_for_settings,
+    load_media_match_v3_record_for_path, mark_anchor_stats_v3_dirty,
+    mark_anchor_stats_v3_dirty_for_file, media_match_v3_anchor_candidate_paths_with_stats,
+    media_match_v3_index_path, open_media_match_v3_index, refresh_all_anchor_stats_v3,
+    refresh_anchor_stats_v3, refresh_dirty_anchor_stats_v3_if_needed, save_media_match_v3_record,
 };
 
 // TODO(media-match): continue the behavior-preserving module split beyond
