@@ -26,12 +26,12 @@ use sorotte_media_match::{
     delete_media_match_v3_fingerprints_and_anchors, encode_media_fingerprint_blob_v3,
     fingerprint_media_file_cancellable_with_report, initialize_media_match_v3_index,
     load_media_match_v3_cache_for_settings, load_media_match_v3_record_for_path,
-    media_extraction_settings_hash, media_fingerprint_blob_v3_from_record,
-    media_fingerprint_summary_from_record, media_match_v3_anchor_candidate_paths_with_stats,
-    media_match_wire_signature_from_value, media_match_wire_value_from_records,
-    normalize_media_path, rank_media_match_candidates, refresh_anchor_stats_v3,
-    save_media_match_v3_record, video_anchor_hashes_match, video_anchors_from_record,
-    video_index_landmarks_v3_from_record,
+    map_query_position_to_candidate_ms, media_extraction_settings_hash,
+    media_fingerprint_blob_v3_from_record, media_fingerprint_summary_from_record,
+    media_match_v3_anchor_candidate_paths_with_stats, media_match_wire_signature_from_value,
+    media_match_wire_value_from_records, normalize_media_path, rank_media_match_candidates,
+    refresh_anchor_stats_v3, save_media_match_v3_record, video_anchor_hashes_match,
+    video_anchors_from_record, video_index_landmarks_v3_from_record,
 };
 
 #[cfg(test)]
@@ -2205,6 +2205,10 @@ fn summarize_current_media_match(
         .as_ref()
         .map(format_media_match_v3_retrieval_stats)
         .unwrap_or_default();
+    // TODO(media-match): pass the runtime owner's current playback position
+    // into this summary and append `format_media_match_position_mapping_diagnostic`
+    // to debug evidence only. Do not infer across edit gaps or change
+    // readiness/autoplay/seek behavior when this diagnostic is wired.
     let anchor_candidate_set = anchor_candidates.iter().cloned().collect::<BTreeSet<_>>();
     let use_anchor_candidates = !anchor_candidate_set.is_empty();
     let ranked = rank_media_match_candidates(
@@ -2442,6 +2446,24 @@ fn format_media_match_evidence_summary(decision: &MediaMatchDecision) -> String 
         parts.push(format!("notes={}", decision.evidence.notes.join("; ")));
     }
     parts.join(" | ")
+}
+
+#[allow(dead_code)]
+fn format_media_match_position_mapping_diagnostic(
+    decision: &MediaMatchDecision,
+    current_position_ms: u32,
+) -> Option<String> {
+    let map = decision.evidence.timeline_map_v3.as_ref()?;
+    let mapped = map_query_position_to_candidate_ms(map, current_position_ms)?;
+    Some(format!(
+        "mapped_position candidate={:.1}s class={:?} segment={} confidence={:.2} local_offset={}ms scale={}ppm",
+        f64::from(mapped.mapped_ms) / 1000.0,
+        mapped.class_at_position,
+        mapped.segment_index,
+        mapped.confidence,
+        mapped.local_offset_ms,
+        mapped.scale_ppm
+    ))
 }
 
 fn format_media_match_v3_retrieval_stats(stats: &MediaMatchV3RetrievalStats) -> String {
@@ -3953,6 +3975,152 @@ mod tests {
     }
 
     #[test]
+    fn v3_runtime_and_diagnostic_retrieval_share_index_results() {
+        let root = unique_media_match_test_root("v3-shared-retrieval");
+        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
+        let query = v3_record_with_audio_anchors(
+            "query.mkv",
+            &[
+                (1_000, 120_000, 4),
+                (1_001, 180_000, 4),
+                (1_002, 240_000, 4),
+            ],
+        );
+        let candidate = v3_record_with_audio_anchors(
+            "candidate.mkv",
+            &[
+                (1_000, 126_000, 4),
+                (1_001, 186_000, 4),
+                (1_002, 246_000, 4),
+            ],
+        );
+        let scattered = v3_record_with_audio_anchors(
+            "scattered.mkv",
+            &[
+                (1_000, 300_000, 4),
+                (1_001, 900_000, 4),
+                (1_002, 450_000, 4),
+            ],
+        );
+        for record in [&query, &candidate, &scattered] {
+            save_media_match_record_to_sqlite(&connection, record).expect("record should save");
+        }
+
+        let runtime_candidates = media_match_v3_anchor_candidate_paths(
+            &root,
+            &query.identity.normalized_path,
+            &query.extraction_settings,
+        )
+        .expect("runtime candidate lookup should run");
+        let (diagnostic_candidates, stats) = media_match_v3_anchor_candidate_paths_with_stats(
+            &connection,
+            &query.identity.normalized_path,
+            &query.extraction_settings,
+        )
+        .expect("diagnostic candidate lookup should run");
+
+        assert_eq!(runtime_candidates, diagnostic_candidates);
+        assert_eq!(
+            diagnostic_candidates.first(),
+            Some(&candidate.identity.normalized_path)
+        );
+        assert!(stats.raw_hit_rows_processed > 0, "{stats:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn saved_v3_record_loads_through_shared_and_runtime_paths() {
+        let root = unique_media_match_test_root("v3-shared-load");
+        let media_path = root.join("media.mkv");
+        std::fs::write(&media_path, b"same media bytes").expect("media file should be written");
+        let extraction_settings = MediaExtractionSettings::audio_constellation_v3();
+        let mut record = fake_media_match_record_for_file(&media_path, extraction_settings.clone());
+        record.audio_anchors = vec![
+            AudioAnchor {
+                bucket: 700,
+                t_ms: 10_000,
+                weight: 4,
+            },
+            AudioAnchor {
+                bucket: 701,
+                t_ms: 40_000,
+                weight: 4,
+            },
+        ];
+        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
+        save_media_match_record_to_sqlite(&connection, &record).expect("record should save");
+
+        let shared = load_media_match_v3_record_for_path(
+            &connection,
+            &record.identity.normalized_path,
+            &extraction_settings,
+            record.identity.modified_unix_millis,
+            record.identity.size_bytes,
+        )
+        .expect("shared loader should run")
+        .expect("shared loader should return saved record");
+        let runtime = media_match_record_for_path(
+            &root,
+            media_path.to_str().expect("test path should be UTF-8"),
+            &extraction_settings,
+        )
+        .expect("runtime loader should return saved record");
+
+        assert_eq!(shared.identity, runtime.identity);
+        assert_eq!(shared.audio_anchors, runtime.audio_anchors);
+        assert_eq!(shared.extraction_settings, runtime.extraction_settings);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn mapped_position_diagnostic_formats_known_v3_segment() {
+        let decision = MediaMatchDecision {
+            tier: MediaMatchTier::Strong,
+            evidence: sorotte_media_match::MediaMatchEvidence {
+                timeline_map_v3: Some(sorotte_media_match::MediaTimelineMapV3 {
+                    global_class: sorotte_media_match::MatchClassV3::SameCutStrong,
+                    current_position_class: sorotte_media_match::MatchClassV3::SameCutStrong,
+                    segments: vec![sorotte_media_match::AlignedSegmentV3 {
+                        query_start_ms: 10_000,
+                        query_end_ms: 40_000,
+                        candidate_start_ms: 15_000,
+                        candidate_end_ms: 45_000,
+                        scale_ppm: 1_000_000,
+                        audio_pairs: 8,
+                        video_pairs: 0,
+                        weighted_score: 32,
+                        residual_ms: 0.0,
+                        audio_score: 1.0,
+                        video_score: 0.0,
+                        confidence: 0.9,
+                    }],
+                    total_aligned_span_ms: 30_000,
+                    largest_gap_ms: 0,
+                    edge_only: false,
+                    audio_video_conflict: false,
+                    best_segment_score: 32,
+                    second_best_segment_score: 0,
+                    piecewise_pair_count: 8,
+                    piecewise_hypothesis_count: 1,
+                    piecewise_segment_candidate_count: 1,
+                    piecewise_segment_chain_count: 1,
+                    piecewise_fit_millis: 1,
+                }),
+                ..sorotte_media_match::MediaMatchEvidence::default()
+            },
+            explanation: "same cut".to_owned(),
+        };
+
+        let diagnostic = format_media_match_position_mapping_diagnostic(&decision, 20_000)
+            .expect("position inside segment should map");
+
+        assert!(diagnostic.contains("candidate=25.0s"), "{diagnostic}");
+        assert!(diagnostic.contains("class=SameCutStrong"), "{diagnostic}");
+        assert!(diagnostic.contains("segment=0"), "{diagnostic}");
+        assert!(diagnostic.contains("local_offset=5000ms"), "{diagnostic}");
+    }
+
+    #[test]
     fn offset_aware_retrieval_prefers_body_span_over_intro_outro_edges() {
         let root = unique_media_match_test_root("v3-offset-body-span");
         let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
@@ -4608,6 +4776,7 @@ mod tests {
             sorotte_media_match::MediaMatchV3DiagnosticRunOptions {
                 manifest_dir: root.clone(),
                 cache_root: root.join("diagnostic-cache"),
+                cache_retained: true,
                 tools,
                 generated_at_unix_millis: Some(123),
             },

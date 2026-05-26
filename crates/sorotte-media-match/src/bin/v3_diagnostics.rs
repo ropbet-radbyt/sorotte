@@ -26,6 +26,7 @@ fn run_cli() -> Result<bool, String> {
         manifest_path,
         output_path,
         cache_root,
+        keep_cache,
     } = parse_args(env::args().skip(1))?;
     let manifest_text = fs::read_to_string(&manifest_path).map_err(|error| {
         format!(
@@ -38,17 +39,34 @@ fn run_cli() -> Result<bool, String> {
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let supplied_cache_root = cache_root.is_some();
     let cache_root = cache_root.unwrap_or_else(temp_cache_root);
-    let report = run_media_match_v3_diagnostic_manifest(
+    let mut report = run_media_match_v3_diagnostic_manifest(
         &manifest,
         MediaMatchV3DiagnosticRunOptions {
             manifest_dir,
-            cache_root,
+            cache_root: cache_root.clone(),
+            cache_retained: supplied_cache_root || keep_cache,
             tools: tool_paths(),
             generated_at_unix_millis: None,
         },
     )?;
     let passed = report.summary.failed == 0;
+    if supplied_cache_root || keep_cache || !passed {
+        report.cache_retained = true;
+        eprintln!(
+            "media-match V3 diagnostic cache retained at {}",
+            cache_root.display()
+        );
+    } else if let Err(error) = fs::remove_dir_all(&cache_root) {
+        report.cache_retained = true;
+        eprintln!(
+            "warning: failed to remove temporary media-match V3 diagnostic cache '{}': {error}",
+            cache_root.display()
+        );
+    } else {
+        report.cache_retained = false;
+    }
     let report_json = serde_json::to_string_pretty(&report)
         .map_err(|error| format!("failed serializing report JSON: {error}"))?;
     if let Some(output_path) = output_path {
@@ -65,12 +83,14 @@ struct CliArgs {
     manifest_path: PathBuf,
     output_path: Option<PathBuf>,
     cache_root: Option<PathBuf>,
+    keep_cache: bool,
 }
 
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String> {
     let mut manifest_path = None;
     let mut output_path = None;
     let mut cache_root = None;
+    let mut keep_cache = false;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -86,6 +106,9 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
                 };
                 cache_root = Some(PathBuf::from(value));
             }
+            "--keep-cache" => {
+                keep_cache = true;
+            }
             _ if manifest_path.is_none() => {
                 manifest_path = Some(PathBuf::from(arg));
             }
@@ -99,11 +122,13 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
         manifest_path,
         output_path,
         cache_root,
+        keep_cache,
     })
 }
 
 fn usage() -> String {
-    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir]".to_owned()
+    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache]"
+        .to_owned()
 }
 
 fn tool_paths() -> MediaMatchToolPaths {
@@ -150,12 +175,14 @@ mod tests {
             "report.json".to_owned(),
             "--cache-root".to_owned(),
             "cache".to_owned(),
+            "--keep-cache".to_owned(),
         ])
         .expect("args should parse");
 
         assert_eq!(args.manifest_path, PathBuf::from("manifest.json"));
         assert_eq!(args.output_path, Some(PathBuf::from("report.json")));
         assert_eq!(args.cache_root, Some(PathBuf::from("cache")));
+        assert!(args.keep_cache);
     }
 
     #[test]
@@ -195,6 +222,7 @@ mod tests {
             MediaMatchV3DiagnosticRunOptions {
                 manifest_dir: root.clone(),
                 cache_root: root.join("cache-root"),
+                cache_retained: true,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(123),
             },

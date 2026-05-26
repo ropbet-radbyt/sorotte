@@ -49,6 +49,7 @@ pub struct MediaMatchV3DiagnosticExpectation {
 pub struct MediaMatchV3DiagnosticRunOptions {
     pub manifest_dir: PathBuf,
     pub cache_root: PathBuf,
+    pub cache_retained: bool,
     pub tools: MediaMatchToolPaths,
     pub generated_at_unix_millis: Option<u64>,
 }
@@ -79,6 +80,8 @@ pub struct MediaMatchV3DiagnosticReport {
     pub profile: String,
     pub settings_hash: String,
     pub tuning: V3Tuning,
+    pub cache_root: String,
+    pub cache_retained: bool,
     pub generated_at_unix_millis: u64,
     pub cases: Vec<MediaMatchV3DiagnosticCaseReport>,
     pub summary: MediaMatchV3DiagnosticSummaryReport,
@@ -286,6 +289,8 @@ pub fn run_media_match_v3_diagnostic_manifest(
         profile: settings.profile.label().to_owned(),
         settings_hash: bytes_to_lower_hex(&settings_hash),
         tuning: current_v3_tuning(),
+        cache_root: options.cache_root.to_string_lossy().to_string(),
+        cache_retained: options.cache_retained,
         generated_at_unix_millis: options
             .generated_at_unix_millis
             .unwrap_or_else(current_unix_millis),
@@ -741,6 +746,36 @@ mod tests {
         );
 
         assert!(failures.is_empty(), "{failures:?}");
+    }
+
+    #[test]
+    fn diagnostic_report_includes_cache_root_and_retention() {
+        let cache_root = PathBuf::from("C:/diagnostic-cache");
+        let manifest = MediaMatchV3DiagnosticManifest {
+            profile: "audio-constellation-v3".to_owned(),
+            base_dir: None,
+            cases: Vec::new(),
+        };
+
+        let report = run_media_match_v3_diagnostic_manifest(
+            &manifest,
+            MediaMatchV3DiagnosticRunOptions {
+                manifest_dir: PathBuf::from("C:/manifest"),
+                cache_root: cache_root.clone(),
+                cache_retained: true,
+                tools: MediaMatchToolPaths {
+                    ffmpeg: PathBuf::from("ffmpeg"),
+                    ffprobe: PathBuf::from("ffprobe"),
+                    fpcalc: PathBuf::from("fpcalc-not-used"),
+                },
+                generated_at_unix_millis: Some(123),
+            },
+        )
+        .expect("empty diagnostic manifest should run");
+        let value = serde_json::to_value(&report).expect("report should serialize");
+
+        assert_eq!(value["cacheRoot"], cache_root.to_string_lossy().as_ref());
+        assert_eq!(value["cacheRetained"], true);
     }
 
     fn decision_with_offset_ms(offset_ms: i64) -> MediaMatchDecision {
