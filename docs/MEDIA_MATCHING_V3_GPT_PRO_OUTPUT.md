@@ -1,5 +1,9 @@
 ## Recommendation
 
+Historical note: this proposal motivated the V3 implementation. Current Sorotte
+Media Matching is V3-only and has removed the old V2/fpcalc/Chromaprint
+implementation; references below are kept only as historical design context.
+
 Build V3 as an **audio-first sparse-landmark matcher with video hardening**, not as a bigger V2.
 
 The core change should be: replace V2's Chromaprint-token-derived audio anchors and per-frame luma hashes with a **native Sorotte fingerprint engine** that produces sparse, time-local, high-entropy landmarks across the whole timeline. Use audio for primary retrieval because it is cheaper to decode than video and is usually the strongest signal across remuxes/re-encodes. Use video only as a second-stage confirmer or fallback for dubs, missing audio, commentary tracks, or audio collisions.

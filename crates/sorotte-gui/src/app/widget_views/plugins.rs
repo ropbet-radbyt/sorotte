@@ -179,14 +179,6 @@ impl SorotteGuiShellAppState {
                         false,
                     ),
                     GuiWidgetNode::leaf(
-                        "plugins:media-matching:import-fpcalc",
-                        "Import fpcalc (Legacy)",
-                        GuiWidgetKind::Button,
-                        None,
-                        self.media_matching_plugin_action_enabled("import"),
-                        false,
-                    ),
-                    GuiWidgetNode::leaf(
                         "plugins:media-matching:open-location",
                         "Open Install Location",
                         GuiWidgetKind::Button,
@@ -289,11 +281,6 @@ impl SorotteGuiShellAppState {
                 "plugins:media-matching:ffprobe-status",
                 "ffprobe",
                 self.media_match.ffprobe_status.clone(),
-            ),
-            (
-                "plugins:media-matching:fpcalc-status",
-                "fpcalc (optional legacy)",
-                self.media_match.fpcalc_status.clone(),
             ),
             (
                 "plugins:media-matching:cache-status",

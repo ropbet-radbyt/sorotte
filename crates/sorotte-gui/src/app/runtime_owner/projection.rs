@@ -290,7 +290,6 @@ impl GuiPersistedConfigRuntimeOwner {
             || state.media_match.install_location != desired_media_match.install_location
             || state.media_match.ffmpeg_status != desired_media_match.ffmpeg_status
             || state.media_match.ffprobe_status != desired_media_match.ffprobe_status
-            || state.media_match.fpcalc_status != desired_media_match.fpcalc_status
             || state.media_match.cache_status != desired_media_match.cache_status
             || state.media_match.current_decision != desired_media_match.current_decision
             || state.media_match.nearest_match != desired_media_match.nearest_match

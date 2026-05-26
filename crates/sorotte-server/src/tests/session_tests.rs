@@ -70,7 +70,7 @@ fn set_file_broadcasts_user_file_update_and_list_includes_file() {
     let directed_lines = runtime
         .handle_line_fanout(
             "client-1",
-            r#"{"Set":{"file":{"name":"movie.mkv","duration":95.5,"size":123456789,"mediaMatch":{"schema":"sorotte.mediaMatch.v2","profiles":[{"profile":"fast-anchor-v2","algorithmVersion":2,"durationMs":95500,"audio":{"algorithm":"chromaprint-anchor-v2-120s","timeBaseMs":1,"anchors":"U0FVMgEAAAA="},"video":{"algorithm":"sorotte-luma-anchor-v2-fast","timeBaseMs":1,"anchors":"U1ZJMgEAAAA="}}]}}}}"#,
+            r#"{"Set":{"file":{"name":"movie.mkv","duration":95.5,"size":123456789,"mediaMatch":{"schema":"sorotte.mediaMatch.v3","profiles":[{"profile":"combined-v3","algorithmVersion":3,"durationMs":95500,"audio":{"algorithm":"sorotte-audio-constellation-v3","timeBaseMs":1,"anchors":"U0FVMwEAAAA="},"video":{"algorithm":"sorotte-video-scene-v3","timeBaseMs":1,"anchors":"U1ZJMwEAAAA="}}]}}}}"#,
         )
         .expect("set file should fan out");
     let directed_messages = decode_directed_lines(&directed_lines);
@@ -99,20 +99,20 @@ fn set_file_broadcasts_user_file_update_and_list_includes_file() {
         assert_eq!(
             file.get("mediaMatch"),
             Some(&json!({
-                "schema": "sorotte.mediaMatch.v2",
+                "schema": "sorotte.mediaMatch.v3",
                 "profiles": [{
-                    "profile": "fast-anchor-v2",
-                    "algorithmVersion": 2,
+                    "profile": "combined-v3",
+                    "algorithmVersion": 3,
                     "durationMs": 95500,
                     "audio": {
-                        "algorithm": "chromaprint-anchor-v2-120s",
+                        "algorithm": "sorotte-audio-constellation-v3",
                         "timeBaseMs": 1,
-                        "anchors": "U0FVMgEAAAA="
+                        "anchors": "U0FVMwEAAAA="
                     },
                     "video": {
-                        "algorithm": "sorotte-luma-anchor-v2-fast",
+                        "algorithm": "sorotte-video-scene-v3",
                         "timeBaseMs": 1,
-                        "anchors": "U1ZJMgEAAAA="
+                        "anchors": "U1ZJMwEAAAA="
                     }
                 }]
             }))
@@ -144,20 +144,20 @@ fn set_file_broadcasts_user_file_update_and_list_includes_file() {
     assert_eq!(
         alice_file.get("mediaMatch"),
         Some(&json!({
-            "schema": "sorotte.mediaMatch.v2",
+            "schema": "sorotte.mediaMatch.v3",
             "profiles": [{
-                "profile": "fast-anchor-v2",
-                "algorithmVersion": 2,
+                "profile": "combined-v3",
+                "algorithmVersion": 3,
                 "durationMs": 95500,
                 "audio": {
-                    "algorithm": "chromaprint-anchor-v2-120s",
+                    "algorithm": "sorotte-audio-constellation-v3",
                     "timeBaseMs": 1,
-                    "anchors": "U0FVMgEAAAA="
+                    "anchors": "U0FVMwEAAAA="
                 },
                 "video": {
-                    "algorithm": "sorotte-luma-anchor-v2-fast",
+                    "algorithm": "sorotte-video-scene-v3",
                     "timeBaseMs": 1,
-                    "anchors": "U1ZJMgEAAAA="
+                    "anchors": "U1ZJMwEAAAA="
                 }
             }]
         }))
@@ -277,7 +277,7 @@ fn set_file_truncates_filename_to_legacy_limit() {
 
     let long_name = "x".repeat(DEFAULT_MAX_FILENAME_LENGTH + 10);
     let set_file = format!(
-        r#"{{"Set":{{"file":{{"name":"{long_name}","mediaMatch":{{"schema":"sorotte.mediaMatch.v2","profiles":[{{"profile":"fast-anchor-v2"}}]}}}}}}}}"#
+        r#"{{"Set":{{"file":{{"name":"{long_name}","mediaMatch":{{"schema":"sorotte.mediaMatch.v3","profiles":[{{"profile":"audio-constellation-v3"}}]}}}}}}}}"#
     );
     let directed_lines = runtime
         .handle_line_fanout("client-1", &set_file)
@@ -306,8 +306,8 @@ fn set_file_truncates_filename_to_legacy_limit() {
     assert_eq!(
         file.get("mediaMatch"),
         Some(&json!({
-            "schema": "sorotte.mediaMatch.v2",
-            "profiles": [{"profile": "fast-anchor-v2"}]
+            "schema": "sorotte.mediaMatch.v3",
+            "profiles": [{"profile": "audio-constellation-v3"}]
         }))
     );
 }

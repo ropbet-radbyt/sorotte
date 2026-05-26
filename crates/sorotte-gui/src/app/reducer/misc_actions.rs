@@ -16,7 +16,6 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::InstallMediaMatchTools
             | GuiShellAction::ImportMediaMatchFfmpeg(_)
             | GuiShellAction::ImportMediaMatchFfprobe(_)
-            | GuiShellAction::ImportMediaMatchFpcalc(_)
             | GuiShellAction::RecheckMediaMatchTools
             | GuiShellAction::RebuildMediaMatchIndex
             | GuiShellAction::CancelMediaMatchRebuild

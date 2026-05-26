@@ -204,15 +204,6 @@ impl GuiWidgetEguiRenderer {
         Self::pick_media_match_tool_executable(state, "Select ffprobe Executable")
     }
 
-    pub(super) fn pick_media_match_fpcalc_executable(
-        state: &SorotteGuiShellAppState,
-    ) -> Option<String> {
-        if let Some(path) = Self::media_match_fpcalc_override_path_from_lookup(&env_trimmed) {
-            return Some(path);
-        }
-        Self::pick_media_match_tool_executable(state, "Select fpcalc Executable")
-    }
-
     fn pick_media_match_tool_executable(
         state: &SorotteGuiShellAppState,
         title: &'static str,
@@ -275,15 +266,6 @@ impl GuiWidgetEguiRenderer {
         F: Fn(&str) -> Option<String>,
     {
         lookup("SOROTTE_GUI_TEST_MEDIA_MATCH_FFPROBE_PATH")
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty())
-    }
-
-    pub(super) fn media_match_fpcalc_override_path_from_lookup<F>(lookup: &F) -> Option<String>
-    where
-        F: Fn(&str) -> Option<String>,
-    {
-        lookup("SOROTTE_GUI_TEST_MEDIA_MATCH_FPCALC_PATH")
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty())
     }

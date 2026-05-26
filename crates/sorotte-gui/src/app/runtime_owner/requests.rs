@@ -222,14 +222,6 @@ impl GuiPersistedConfigRuntimeOwner {
                     source_path,
                 );
             }
-            GuiRuntimeRequest::ImportMediaMatchFpcalc(source_path) => {
-                return self.handle_import_media_match_tool_request(
-                    handle,
-                    projected_state,
-                    MediaMatchTool::Fpcalc,
-                    source_path,
-                );
-            }
             GuiRuntimeRequest::OpenMediaMatchInstallLocation => {
                 return self
                     .handle_open_media_match_install_location_request(handle, projected_state);

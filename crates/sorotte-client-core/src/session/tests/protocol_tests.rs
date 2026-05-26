@@ -352,7 +352,7 @@ fn list_set_and_state_messages_reconcile_client_view() {
 
     session
             .apply_message_json(
-                r#"{"Set":{"user":{"bob":{"room":{"name":"room2"},"file":{"name":"bob.mp4","size":"15e2b0d3c338","duration":95.5,"mediaMatch":{"schema":"sorotte.mediaMatch.v2","profiles":[{"profile":"fast-anchor-v2"}]}},"isReady":true,"features":{"uiMode":"GUI"},"controller":true}}}}"#,
+                r#"{"Set":{"user":{"bob":{"room":{"name":"room2"},"file":{"name":"bob.mp4","size":"15e2b0d3c338","duration":95.5,"mediaMatch":{"schema":"sorotte.mediaMatch.v3","profiles":[{"profile":"audio-constellation-v3"}]}},"isReady":true,"features":{"uiMode":"GUI"},"controller":true}}}}"#,
             )
             .expect("set user message should apply");
     assert_eq!(session.user_room("bob"), Some("room2"));
@@ -363,8 +363,8 @@ fn list_set_and_state_messages_reconcile_client_view() {
     assert_eq!(
         session.user_media_match_signature("bob"),
         Some(&json!({
-            "schema": "sorotte.mediaMatch.v2",
-            "profiles": [{"profile": "fast-anchor-v2"}]
+            "schema": "sorotte.mediaMatch.v3",
+            "profiles": [{"profile": "audio-constellation-v3"}]
         }))
     );
     assert_eq!(session.user_features("bob"), Some(&json!({"uiMode":"GUI"})));
@@ -505,7 +505,7 @@ fn list_snapshot_file_payload_tracks_mixed_raw_and_hashed_metadata() {
         .expect("hello should apply");
     session
             .apply_message_json(
-                r#"{"List":{"room1":{"alice":{"isReady":true,"file":{"name":"**Hidden filename**","size":"15e2b0d3c338","duration":95}},"bob":{"isReady":true,"file":{"name":"movie.mkv","size":123456789,"duration":95.5,"mediaMatch":{"schema":"sorotte.mediaMatch.v2","profiles":[{"profile":"fast-anchor-v2","algorithmVersion":2}]}}}}}}"#,
+                r#"{"List":{"room1":{"alice":{"isReady":true,"file":{"name":"**Hidden filename**","size":"15e2b0d3c338","duration":95}},"bob":{"isReady":true,"file":{"name":"movie.mkv","size":123456789,"duration":95.5,"mediaMatch":{"schema":"sorotte.mediaMatch.v3","profiles":[{"profile":"audio-constellation-v3","algorithmVersion":3}]}}}}}}"#,
             )
             .expect("list snapshot with mixed file metadata should apply");
 
@@ -524,8 +524,8 @@ fn list_snapshot_file_payload_tracks_mixed_raw_and_hashed_metadata() {
     assert_eq!(
         session.user_media_match_signature("bob"),
         Some(&json!({
-            "schema": "sorotte.mediaMatch.v2",
-            "profiles": [{"profile": "fast-anchor-v2", "algorithmVersion": 2}]
+            "schema": "sorotte.mediaMatch.v3",
+            "profiles": [{"profile": "audio-constellation-v3", "algorithmVersion": 3}]
         }))
     );
     assert_eq!(
@@ -533,8 +533,8 @@ fn list_snapshot_file_payload_tracks_mixed_raw_and_hashed_metadata() {
         vec![(
             "bob".to_owned(),
             json!({
-                "schema": "sorotte.mediaMatch.v2",
-                "profiles": [{"profile": "fast-anchor-v2", "algorithmVersion": 2}]
+                "schema": "sorotte.mediaMatch.v3",
+                "profiles": [{"profile": "audio-constellation-v3", "algorithmVersion": 3}]
             })
         )]
     );

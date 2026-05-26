@@ -80,13 +80,6 @@ impl GuiRuntimeRequest {
                         .to_owned(),
                 }]
             }
-            Self::ImportMediaMatchFpcalc(_) => {
-                vec![GuiShellAction::PushTransientNotification {
-                    level: GuiTransientNotificationLevel::Info,
-                    message: "Importing optional legacy fpcalc into Sorotte's managed media matching tools."
-                        .to_owned(),
-                }]
-            }
             Self::OpenMediaMatchInstallLocation => {
                 vec![GuiShellAction::PushTransientNotification {
                     level: GuiTransientNotificationLevel::Info,
@@ -254,13 +247,6 @@ impl GuiRuntimeRequest {
                 vec![GuiShellAction::PushTransientNotification {
                     level: GuiTransientNotificationLevel::Info,
                     message: "Importing ffprobe into Sorotte's managed media matching tools."
-                        .to_owned(),
-                }]
-            }
-            Self::ImportMediaMatchFpcalc(_) => {
-                vec![GuiShellAction::PushTransientNotification {
-                    level: GuiTransientNotificationLevel::Info,
-                    message: "Importing optional legacy fpcalc into Sorotte's managed media matching tools."
                         .to_owned(),
                 }]
             }

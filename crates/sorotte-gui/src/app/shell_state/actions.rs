@@ -228,7 +228,6 @@ pub(in crate::app) enum GuiShellAction {
     InstallMediaMatchTools,
     ImportMediaMatchFfmpeg(String),
     ImportMediaMatchFfprobe(String),
-    ImportMediaMatchFpcalc(String),
     RecheckMediaMatchTools,
     RebuildMediaMatchIndex,
     CancelMediaMatchRebuild,

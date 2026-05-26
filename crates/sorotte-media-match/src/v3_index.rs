@@ -944,7 +944,6 @@ fn media_match_v3_record_from_cached_blobs(
                 duration_seconds,
             )
         }),
-        audio: None,
         video: None,
         audio_anchors: Vec::new(),
         video_anchors: Vec::new(),

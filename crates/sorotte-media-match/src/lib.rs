@@ -69,7 +69,6 @@ pub use v3_index::{
 // wire/audio_v3/video_v3/extraction/anchors/matching modules.
 pub const MEDIA_MATCH_ALGORITHM_VERSION: u32 = 3;
 pub const MEDIA_MATCH_FILE_PAYLOAD_KEY: &str = "mediaMatch";
-pub const MEDIA_MATCH_WIRE_SCHEMA_V2: &str = "sorotte.mediaMatch.v2";
 pub const MEDIA_MATCH_WIRE_SCHEMA_V3: &str = "sorotte.mediaMatch.v3";
 pub const MEDIA_MATCH_WIRE_MAX_BYTES: usize = 32 * 1024;
 pub const MEDIA_MATCH_ANCHOR_VERSION: u32 = 3;
@@ -106,11 +105,6 @@ pub const V3_VIDEO_KIND_GLOBAL_DCT: u8 = 1;
 pub const V3_VIDEO_KIND_CENTER_DCT: u8 = 2;
 pub const V3_VIDEO_KIND_EDGE: u8 = 3;
 pub const V3_VIDEO_KIND_TEMPORAL_SHINGLE: u8 = 4;
-const FAST_VIDEO_SAMPLE_FRAMES: usize = 12;
-const FAST_AUDIO_ANCHOR_LIMIT: usize = 96;
-const FAST_VIDEO_ANCHOR_LIMIT: usize = 48;
-const FULL_AUDIO_ANCHOR_LIMIT: usize = 512;
-const FULL_VIDEO_ANCHOR_LIMIT: usize = 192;
 
 // V3 native audio constellation extraction thresholds.
 const V3_AUDIO_SAMPLE_RATE: u32 = 11_025;
@@ -138,20 +132,15 @@ const V3_VIDEO_TEMPORAL_MIN_DELTA_MS: u32 = 5_000;
 const V3_VIDEO_TEMPORAL_MAX_DELTA_MS: u32 = 60_000;
 const V3_VIDEO_TEMPORAL_DELTA_BUCKET_MS: u32 = 5_000;
 const V3_VIDEO_TEMPORAL_FANOUT: usize = 2;
-const AUDIO_ANCHOR_WINDOW_TOKENS: usize = 4;
 const MAX_SUMMARY_ANCHORS: usize = 1024;
 const MAX_V3_LANDMARKS: usize = 4096;
 const VIDEO_FRAME_WIDTH: usize = 32;
 const VIDEO_FRAME_HEIGHT: usize = 32;
 const VIDEO_FRAME_BYTES: usize = VIDEO_FRAME_WIDTH * VIDEO_FRAME_HEIGHT;
-const FAST_AUDIO_SAMPLE_SECONDS: u32 = 120;
 const MEDIA_TOOL_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const FFPROBE_TIMEOUT: Duration = Duration::from_secs(15);
-const FPCALC_TIMEOUT: Duration = Duration::from_secs(90);
 const FFMPEG_AUDIO_V3_TIMEOUT: Duration = Duration::from_secs(180);
-const FFMPEG_FAST_FRAME_TIMEOUT: Duration = Duration::from_secs(60);
 const FFMPEG_FULL_VIDEO_TIMEOUT: Duration = Duration::from_secs(90);
-const FAST_VIDEO_SEEK_WINDOW_SECONDS: f64 = 1.0;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -194,7 +183,6 @@ pub struct MediaFingerprintRecord {
     pub extraction_settings: MediaExtractionSettings,
     pub duration_seconds: Option<f64>,
     pub container_fingerprint: String,
-    pub audio: Option<AudioFingerprint>,
     pub video: Option<VideoFingerprint>,
     #[serde(default)]
     pub audio_anchors: Vec<AudioAnchor>,
@@ -210,14 +198,12 @@ pub struct MediaFingerprintRecord {
 pub struct MediaMatchToolPaths {
     pub ffmpeg: PathBuf,
     pub ffprobe: PathBuf,
-    pub fpcalc: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MediaToolInvocationCounts {
     pub ffmpeg: u32,
     pub ffprobe: u32,
-    pub fpcalc: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -273,11 +259,6 @@ pub fn expected_media_tool_invocation_counts(
             1
         },
         ffprobe: 1,
-        fpcalc: if settings.profile.uses_v3_audio_constellation() {
-            0
-        } else {
-            1
-        },
     }
 }
 
@@ -366,12 +347,6 @@ impl MediaFingerprintRecord {
             && self.algorithm_version == algorithm_version
             && &self.extraction_settings == extraction_settings
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AudioFingerprint {
-    pub duration_seconds: Option<f64>,
-    pub fingerprint_tokens: Vec<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -929,18 +904,7 @@ pub fn audio_anchors_from_record(record: &MediaFingerprintRecord) -> Vec<AudioAn
     if !record.audio_anchors.is_empty() {
         return record.audio_anchors.clone();
     }
-    let limit = match record.extraction_settings.profile {
-        MediaFingerprintProfile::FastAnchorV2 => FAST_AUDIO_ANCHOR_LIMIT,
-        MediaFingerprintProfile::FullAnchorV2 => FULL_AUDIO_ANCHOR_LIMIT,
-        MediaFingerprintProfile::AudioConstellationV3 | MediaFingerprintProfile::CombinedV3 => {
-            V3_AUDIO_VERIFY_LANDMARK_LIMIT
-        }
-    };
-    record
-        .audio
-        .as_ref()
-        .map(|audio| audio_anchors_from_fingerprint(audio, limit))
-        .unwrap_or_default()
+    Vec::new()
 }
 
 pub fn video_anchors_from_record(record: &MediaFingerprintRecord) -> Vec<VideoAnchor> {
@@ -969,11 +933,13 @@ pub fn video_anchors_from_record(record: &MediaFingerprintRecord) -> Vec<VideoAn
             V3_VIDEO_VERIFY_LANDMARK_LIMIT,
         );
     }
-    let limit = match record.extraction_settings.profile {
-        MediaFingerprintProfile::FastAnchorV2 => FAST_VIDEO_ANCHOR_LIMIT,
-        MediaFingerprintProfile::FullAnchorV2 => FULL_VIDEO_ANCHOR_LIMIT,
-        MediaFingerprintProfile::AudioConstellationV3 => 0,
-        MediaFingerprintProfile::CombinedV3 => V3_VIDEO_VERIFY_LANDMARK_LIMIT,
+    let limit = if matches!(
+        record.extraction_settings.profile,
+        MediaFingerprintProfile::CombinedV3
+    ) {
+        V3_VIDEO_VERIFY_LANDMARK_LIMIT
+    } else {
+        0
     };
     record
         .video
@@ -1029,39 +995,6 @@ pub fn video_index_landmarks_v3_from_record(
 ) -> Vec<VideoLandmarkV3> {
     let mut landmarks = video_landmarks_v3_from_record(record);
     bounded_time_distributed_video_landmarks_v3(&mut landmarks, V3_VIDEO_INDEX_LANDMARK_LIMIT)
-}
-
-pub fn audio_anchors_from_fingerprint(
-    audio: &AudioFingerprint,
-    max_anchors: usize,
-) -> Vec<AudioAnchor> {
-    let tokens = &audio.fingerprint_tokens;
-    if tokens.len() < AUDIO_ANCHOR_WINDOW_TOKENS || max_anchors == 0 {
-        return Vec::new();
-    }
-    let duration_ms = audio
-        .duration_seconds
-        .and_then(duration_seconds_to_millis)
-        .unwrap_or_else(|| tokens.len().saturating_mul(1_000).min(u32::MAX as usize) as u32);
-    let token_span = tokens
-        .len()
-        .saturating_sub(AUDIO_ANCHOR_WINDOW_TOKENS)
-        .max(1);
-    let mut anchors = tokens
-        .windows(AUDIO_ANCHOR_WINDOW_TOKENS)
-        .enumerate()
-        .map(|(index, window)| {
-            let hash = stable_hash_u64(window.iter().flat_map(|token| token.to_le_bytes()));
-            let t_ms = ((u64::from(duration_ms) * index as u64) / token_span as u64)
-                .min(u64::from(u32::MAX)) as u32;
-            AudioAnchor {
-                bucket: anchor_bucket(hash),
-                t_ms,
-                weight: 1,
-            }
-        })
-        .collect::<Vec<_>>();
-    bounded_time_distributed_audio_anchors(&mut anchors, max_anchors)
 }
 
 pub fn video_anchors_from_fingerprint(
@@ -1594,58 +1527,34 @@ pub fn fingerprint_media_file_with_report(
         duration_seconds,
     );
     let mut audio_anchors = Vec::new();
-    let audio = if extraction_settings.profile.uses_v3_audio_constellation() {
-        let started_at = Instant::now();
-        let audio_result = extract_audio_constellation_v3_with_metrics(
-            &tools.ffmpeg,
-            path,
-            duration_seconds,
-            cancel_flag,
-        );
-        report.invocations.ffmpeg += 1;
-        report.timings.audio_millis = started_at.elapsed().as_millis();
-        match audio_result {
-            Ok((anchors, metrics)) => {
-                report.audio_stream = metrics;
-                audio_anchors = anchors
-                    .into_iter()
-                    .map(|landmark| AudioAnchor {
-                        bucket: landmark.hash,
-                        t_ms: landmark.t_ms,
-                        weight: u16::from(landmark.weight.max(1)),
-                    })
-                    .collect();
-                None
-            }
-            Err(MediaFingerprintError::Cancelled { tool }) => {
-                return Err(MediaFingerprintError::Cancelled { tool });
-            }
-            Err(error) => {
-                report.audio_error = Some(error.to_string());
-                None
-            }
+    let started_at = Instant::now();
+    let audio_result = extract_audio_constellation_v3_with_metrics(
+        &tools.ffmpeg,
+        path,
+        duration_seconds,
+        cancel_flag,
+    );
+    report.invocations.ffmpeg += 1;
+    report.timings.audio_millis = started_at.elapsed().as_millis();
+    match audio_result {
+        Ok((anchors, metrics)) => {
+            report.audio_stream = metrics;
+            audio_anchors = anchors
+                .into_iter()
+                .map(|landmark| AudioAnchor {
+                    bucket: landmark.hash,
+                    t_ms: landmark.t_ms,
+                    weight: u16::from(landmark.weight.max(1)),
+                })
+                .collect();
         }
-    } else {
-        let started_at = Instant::now();
-        let audio_result = extract_audio_fingerprint_with_length(
-            &tools.fpcalc,
-            path,
-            extraction_settings,
-            cancel_flag,
-        );
-        report.invocations.fpcalc = 1;
-        report.timings.audio_millis = started_at.elapsed().as_millis();
-        match audio_result {
-            Ok(audio) => Some(audio),
-            Err(MediaFingerprintError::Cancelled { tool }) => {
-                return Err(MediaFingerprintError::Cancelled { tool });
-            }
-            Err(error) => {
-                report.audio_error = Some(error.to_string());
-                None
-            }
+        Err(MediaFingerprintError::Cancelled { tool }) => {
+            return Err(MediaFingerprintError::Cancelled { tool });
         }
-    };
+        Err(error) => {
+            report.audio_error = Some(error.to_string());
+        }
+    }
     let (video, video_anchors) = if extraction_settings.profile.uses_video_by_default() {
         let started_at = Instant::now();
         let video_result = extract_video_fingerprint_with_cancellation(
@@ -1683,7 +1592,6 @@ pub fn fingerprint_media_file_with_report(
         extraction_settings: extraction_settings.clone(),
         duration_seconds,
         container_fingerprint,
-        audio,
         video,
         audio_anchors,
         video_anchors,
@@ -1732,45 +1640,6 @@ pub fn probe_media_duration_seconds(
         .find_map(|line| line.trim().parse::<f64>().ok())
         .filter(|value| value.is_finite() && *value >= 0.0);
     Ok(value)
-}
-
-pub fn extract_audio_fingerprint(
-    fpcalc: impl AsRef<Path>,
-    media_path: impl AsRef<Path>,
-) -> Result<AudioFingerprint, MediaFingerprintError> {
-    extract_audio_fingerprint_with_length(
-        fpcalc,
-        media_path,
-        &MediaExtractionSettings::full_anchor_v2(),
-        None,
-    )
-}
-
-fn extract_audio_fingerprint_with_length(
-    fpcalc: impl AsRef<Path>,
-    media_path: impl AsRef<Path>,
-    extraction_settings: &MediaExtractionSettings,
-    cancel_flag: Option<&AtomicBool>,
-) -> Result<AudioFingerprint, MediaFingerprintError> {
-    let mut args = vec!["-raw".into()];
-    match extraction_settings.audio_sample_seconds {
-        0 => {
-            args.push("-length".into());
-            args.push("0".into());
-        }
-        sample_seconds => {
-            args.push("-length".into());
-            args.push(sample_seconds.to_string().into());
-        }
-    }
-    args.push(media_path.as_ref().as_os_str().to_os_string());
-    let output = run_tool_output("fpcalc", fpcalc.as_ref(), args, cancel_flag, FPCALC_TIMEOUT)?;
-    ensure_tool_success("fpcalc", &output)?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    parse_fpcalc_output(&text).ok_or_else(|| MediaFingerprintError::InvalidToolOutput {
-        tool: "fpcalc",
-        reason: "missing raw Chromaprint fingerprint tokens".to_owned(),
-    })
 }
 
 pub fn extract_audio_constellation_v3(
@@ -2528,20 +2397,6 @@ fn extract_video_fingerprint_with_cancellation(
     cancel_flag: Option<&AtomicBool>,
 ) -> Result<VideoFingerprint, MediaFingerprintError> {
     match extraction_settings.profile {
-        MediaFingerprintProfile::FastAnchorV2 => extract_fast_video_fingerprint(
-            ffmpeg,
-            media_path,
-            duration_seconds,
-            extraction_settings,
-            cancel_flag,
-        ),
-        MediaFingerprintProfile::FullAnchorV2 => extract_full_video_fingerprint(
-            ffmpeg,
-            media_path,
-            duration_seconds,
-            extraction_settings,
-            cancel_flag,
-        ),
         MediaFingerprintProfile::AudioConstellationV3 => {
             Err(MediaFingerprintError::InvalidToolOutput {
                 tool: "ffmpeg",
@@ -2594,64 +2449,6 @@ fn extract_full_video_fingerprint(
         ],
         cancel_flag,
         FFMPEG_FULL_VIDEO_TIMEOUT,
-    )?;
-    ensure_tool_success("ffmpeg", &output)?;
-    video_fingerprint_from_ffmpeg_rawvideo(&output.stdout, &output.stderr, duration_seconds)
-}
-
-fn extract_fast_video_fingerprint(
-    ffmpeg: impl AsRef<Path>,
-    media_path: impl AsRef<Path>,
-    duration_seconds: Option<f64>,
-    extraction_settings: &MediaExtractionSettings,
-    cancel_flag: Option<&AtomicBool>,
-) -> Result<VideoFingerprint, MediaFingerprintError> {
-    let timestamps = fast_video_sample_timestamps(duration_seconds, extraction_settings.max_frames);
-    if timestamps.is_empty() {
-        return Err(MediaFingerprintError::InvalidToolOutput {
-            tool: "ffmpeg",
-            reason: "no fast video sample timestamps were selected".to_owned(),
-        });
-    }
-    if cancel_flag.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
-        return Err(MediaFingerprintError::Cancelled { tool: "ffmpeg" });
-    }
-    let mut args = vec![
-        "-v".into(),
-        "info".into(),
-        "-hide_banner".into(),
-        "-nostats".into(),
-        "-nostdin".into(),
-    ];
-    for timestamp in &timestamps {
-        args.push("-ss".into());
-        args.push(format!("{timestamp:.3}").into());
-        args.push("-copyts".into());
-        args.push("-i".into());
-        args.push(media_path.as_ref().as_os_str().to_os_string());
-    }
-    let (filter, output_label) = fast_video_multi_seek_filter(&timestamps);
-    args.extend([
-        "-filter_complex".into(),
-        filter.into(),
-        "-map".into(),
-        output_label.into(),
-        "-frames:v".into(),
-        timestamps.len().to_string().into(),
-        "-fps_mode".into(),
-        "vfr".into(),
-        "-f".into(),
-        "rawvideo".into(),
-        "-pix_fmt".into(),
-        "gray".into(),
-        "-".into(),
-    ]);
-    let output = run_tool_output(
-        "ffmpeg",
-        ffmpeg.as_ref(),
-        args,
-        cancel_flag,
-        FFMPEG_FAST_FRAME_TIMEOUT,
     )?;
     ensure_tool_success("ffmpeg", &output)?;
     video_fingerprint_from_ffmpeg_rawvideo(&output.stdout, &output.stderr, duration_seconds)
@@ -2730,54 +2527,6 @@ fn video_frames_from_ffmpeg_rawvideo(
         });
     }
     Ok(frames)
-}
-
-fn fast_video_multi_seek_filter(timestamps: &[f64]) -> (String, String) {
-    let mut filter = String::new();
-    let mut labels = Vec::with_capacity(timestamps.len());
-    for (index, timestamp) in timestamps.iter().enumerate() {
-        let end = timestamp + FAST_VIDEO_SEEK_WINDOW_SECONDS;
-        let label = format!("v{index}");
-        filter.push_str(&format!(
-            "[{index}:v]trim=start={timestamp:.3}:end={end:.3},select='eq(n\\,0)',showinfo,scale={VIDEO_FRAME_WIDTH}:{VIDEO_FRAME_HEIGHT}:flags=bicubic,format=gray[{label}];"
-        ));
-        labels.push(label);
-    }
-    if labels.len() == 1 {
-        let label = format!("[{}]", labels[0]);
-        return (filter.trim_end_matches(';').to_owned(), label);
-    }
-    for label in &labels {
-        filter.push_str(&format!("[{label}]"));
-    }
-    filter.push_str(&format!("concat=n={}:v=1:a=0[fastvideo]", timestamps.len()));
-    (filter, "[fastvideo]".to_owned())
-}
-
-pub fn fast_video_sample_timestamps(
-    duration_seconds: Option<f64>,
-    requested_frames: usize,
-) -> Vec<f64> {
-    let count = requested_frames.clamp(1, FAST_VIDEO_SAMPLE_FRAMES);
-    let Some(duration) = duration_seconds.filter(|value| value.is_finite() && *value > 0.0) else {
-        return (0..count).map(|index| (index as f64) * 60.0).collect();
-    };
-    if count == 1 {
-        return vec![(duration / 2.0).max(0.0)];
-    }
-    let edge_margin = if duration >= 300.0 {
-        duration.mul_add(0.10, 0.0).min(120.0)
-    } else if duration >= 120.0 {
-        duration * 0.08
-    } else {
-        0.0
-    };
-    let start = edge_margin.min(duration / 3.0);
-    let end = (duration - edge_margin).max(start);
-    let step = (end - start) / ((count - 1) as f64);
-    (0..count)
-        .map(|index| start + (step * index as f64))
-        .collect()
 }
 
 pub fn rank_media_match_candidates<'a>(
@@ -3238,48 +2987,9 @@ pub fn decide_media_match(
     decide_media_match_anchors(&query_profile, &candidate_profile, settings)
 }
 
-/// Legacy diagnostic helper for raw Chromaprint token vectors.
-///
-/// Media Matching v2 decisions use compact time-local anchors via
-/// [`decide_media_match_anchors`] instead of this non-queryable comparison.
-pub fn compare_audio_fingerprints(
-    query: &AudioFingerprint,
-    candidate: &AudioFingerprint,
-) -> AudioMatchEvidence {
-    let query_set = query
-        .fingerprint_tokens
-        .iter()
-        .copied()
-        .collect::<HashSet<_>>();
-    let candidate_set = candidate
-        .fingerprint_tokens
-        .iter()
-        .copied()
-        .collect::<HashSet<_>>();
-    let intersection = query_set.intersection(&candidate_set).count() as f64;
-    let union = query_set.union(&candidate_set).count() as f64;
-    let shared_token_ratio = if union > 0.0 {
-        intersection / union
-    } else {
-        0.0
-    };
-
-    let sequence_similarity =
-        longest_common_subsequence_ratio(&query.fingerprint_tokens, &candidate.fingerprint_tokens);
-    let similarity = (shared_token_ratio * 0.35) + (sequence_similarity * 0.65);
-    AudioMatchEvidence {
-        similarity,
-        shared_token_ratio,
-        duration_delta_seconds: query
-            .duration_seconds
-            .zip(candidate.duration_seconds)
-            .map(|(left, right)| (left - right).abs()),
-    }
-}
-
 /// Legacy diagnostic helper for direct frame-hash sequence alignment.
 ///
-/// Media Matching v2 decisions use compact time-local anchors via
+/// Media Matching decisions use compact time-local anchors via
 /// [`decide_media_match_anchors`] instead of this non-queryable comparison.
 pub fn align_video_fingerprints(
     query: &VideoFingerprint,
@@ -3342,34 +3052,6 @@ pub fn align_video_fingerprints(
         best_offset_seconds,
         drift_ratio,
         mean_hamming_distance: distance_sum as f64 / aligned.len() as f64,
-    })
-}
-
-pub fn parse_fpcalc_output(output: &str) -> Option<AudioFingerprint> {
-    let mut duration_seconds = None;
-    let mut tokens = Vec::new();
-
-    for line in output.lines() {
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        match key.trim() {
-            "DURATION" => {
-                duration_seconds = value.trim().parse::<f64>().ok();
-            }
-            "FINGERPRINT" => {
-                tokens = value
-                    .split(',')
-                    .filter_map(|token| token.trim().parse::<u32>().ok())
-                    .collect();
-            }
-            _ => {}
-        }
-    }
-
-    (!tokens.is_empty()).then_some(AudioFingerprint {
-        duration_seconds,
-        fingerprint_tokens: tokens,
     })
 }
 
@@ -4615,20 +4297,6 @@ fn aligned_anchor_largest_gap_ratio(pairs: &[AnchorMatchPair]) -> f64 {
     largest_gap as f64 / span as f64
 }
 
-fn bounded_time_distributed_audio_anchors(
-    anchors: &mut [AudioAnchor],
-    max_anchors: usize,
-) -> Vec<AudioAnchor> {
-    anchors.sort_by_key(|anchor| (anchor.t_ms, anchor.bucket));
-    if anchors.len() <= max_anchors {
-        return anchors.to_vec();
-    }
-    let stride = anchors.len() as f64 / max_anchors as f64;
-    (0..max_anchors)
-        .map(|index| anchors[(index as f64 * stride).floor() as usize])
-        .collect()
-}
-
 fn bounded_time_distributed_video_anchors(
     anchors: &mut [VideoAnchor],
     max_anchors: usize,
@@ -5570,26 +5238,6 @@ fn media_match_tier_rank(tier: MediaMatchTier) -> u8 {
     }
 }
 
-fn longest_common_subsequence_ratio(left: &[u32], right: &[u32]) -> f64 {
-    if left.is_empty() || right.is_empty() {
-        return 0.0;
-    }
-    let mut previous = vec![0usize; right.len() + 1];
-    let mut current = vec![0usize; right.len() + 1];
-    for left_item in left {
-        for (right_index, right_item) in right.iter().enumerate() {
-            current[right_index + 1] = if left_item == right_item {
-                previous[right_index] + 1
-            } else {
-                current[right_index].max(previous[right_index + 1])
-            };
-        }
-        std::mem::swap(&mut previous, &mut current);
-        current.fill(0);
-    }
-    previous[right.len()] as f64 / left.len().min(right.len()) as f64
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5641,7 +5289,6 @@ mod tests {
         path: &str,
         size: u64,
         duration: Option<f64>,
-        audio: Option<AudioFingerprint>,
         video: Option<VideoFingerprint>,
     ) -> MediaFingerprintRecord {
         let normalized_path = normalize_media_path(path);
@@ -5652,7 +5299,7 @@ mod tests {
                 size_bytes: size,
             },
             algorithm_version: MEDIA_MATCH_ALGORITHM_VERSION,
-            extraction_settings: MediaExtractionSettings::full_anchor_v2(),
+            extraction_settings: MediaExtractionSettings::combined_v3(),
             duration_seconds: duration,
             container_fingerprint: container_fingerprint_from_metadata(
                 &normalized_path,
@@ -5660,7 +5307,6 @@ mod tests {
                 size,
                 duration,
             ),
-            audio,
             video,
             audio_anchors: Vec::new(),
             video_anchors: Vec::new(),
@@ -5673,11 +5319,10 @@ mod tests {
         path: &str,
         size: u64,
         duration: Option<f64>,
-        audio: Option<AudioFingerprint>,
         video: Option<VideoFingerprint>,
         extraction_settings: MediaExtractionSettings,
     ) -> MediaFingerprintRecord {
-        let mut record = record(path, size, duration, audio, video);
+        let mut record = record(path, size, duration, video);
         record.extraction_settings = extraction_settings;
         record
     }
@@ -5692,9 +5337,8 @@ mod tests {
             size,
             profile.duration_ms.map(|duration| duration as f64 / 1000.0),
             None,
-            None,
         );
-        record.extraction_settings = MediaExtractionSettings::fast_anchor_v2();
+        record.extraction_settings = MediaExtractionSettings::audio_constellation_v3();
         record.audio_anchors = profile.audio_anchors;
         record.video_anchors = profile.video_anchors;
         record
@@ -5772,7 +5416,7 @@ mod tests {
     ) -> MediaAnchorProfile {
         MediaAnchorProfile {
             version: MEDIA_MATCH_ANCHOR_VERSION,
-            profile: "fast-anchor-v2".to_owned(),
+            profile: "combined-v3".to_owned(),
             duration_ms: Some(duration_ms),
             audio_anchors: audio
                 .iter()
@@ -6408,7 +6052,6 @@ mod tests {
             "video.mkv",
             100,
             Some(30.0),
-            None,
             Some(video),
             MediaExtractionSettings::combined_v3(),
         );
@@ -6466,7 +6109,6 @@ mod tests {
             "index-bounds.mkv",
             100,
             Some(800.0),
-            None,
             Some(video),
             MediaExtractionSettings::combined_v3(),
         );
@@ -6528,7 +6170,6 @@ mod tests {
             "storage.mkv",
             100,
             Some(800.0),
-            None,
             Some(video),
             MediaExtractionSettings::combined_v3(),
         );
@@ -6566,7 +6207,6 @@ mod tests {
             "diagnostics.mkv",
             100,
             Some(120.0),
-            None,
             Some(video),
             MediaExtractionSettings::combined_v3(),
         );
@@ -6589,7 +6229,6 @@ mod tests {
             "stream-diagnostics.mkv",
             100,
             Some(120.0),
-            None,
             None,
             MediaExtractionSettings::audio_constellation_v3(),
         );
@@ -7431,14 +7070,14 @@ mod tests {
         };
         let query = MediaAnchorProfile {
             version: MEDIA_MATCH_ANCHOR_VERSION,
-            profile: "fast-anchor-v2".to_owned(),
+            profile: "combined-v3".to_owned(),
             duration_ms: Some(120_000),
             audio_anchors: Vec::new(),
             video_anchors: video_anchors_from_fingerprint(&query_video, 4),
         };
         let candidate = MediaAnchorProfile {
             version: MEDIA_MATCH_ANCHOR_VERSION,
-            profile: "fast-anchor-v2".to_owned(),
+            profile: "combined-v3".to_owned(),
             duration_ms: Some(120_000),
             audio_anchors: Vec::new(),
             video_anchors: video_anchors_from_fingerprint(&candidate_video, 4),
@@ -7481,14 +7120,14 @@ mod tests {
         };
         let query = MediaAnchorProfile {
             version: MEDIA_MATCH_ANCHOR_VERSION,
-            profile: "fast-anchor-v2".to_owned(),
+            profile: "combined-v3".to_owned(),
             duration_ms: Some(120_000),
             audio_anchors: Vec::new(),
             video_anchors: video_anchors_from_fingerprint(&query_video, 4),
         };
         let candidate = MediaAnchorProfile {
             version: MEDIA_MATCH_ANCHOR_VERSION,
-            profile: "fast-anchor-v2".to_owned(),
+            profile: "combined-v3".to_owned(),
             duration_ms: Some(120_000),
             audio_anchors: Vec::new(),
             video_anchors: video_anchors_from_fingerprint(&candidate_video, 4),
@@ -7509,14 +7148,14 @@ mod tests {
         let candidate_video = video_from_hashes(32, 10, &[hash]);
         let query = MediaAnchorProfile {
             version: MEDIA_MATCH_ANCHOR_VERSION,
-            profile: "fast-anchor-v2".to_owned(),
+            profile: "combined-v3".to_owned(),
             duration_ms: Some(120_000),
             audio_anchors: Vec::new(),
             video_anchors: video_anchors_from_fingerprint(&query_video, 4),
         };
         let candidate = MediaAnchorProfile {
             version: MEDIA_MATCH_ANCHOR_VERSION,
-            profile: "fast-anchor-v2".to_owned(),
+            profile: "combined-v3".to_owned(),
             duration_ms: Some(120_000),
             audio_anchors: Vec::new(),
             video_anchors: video_anchors_from_fingerprint(&candidate_video, 4),
@@ -7640,32 +7279,29 @@ mod tests {
     }
 
     #[test]
-    fn audio_constellation_v3_process_budget_avoids_fpcalc_and_video() {
+    fn audio_constellation_v3_process_budget_is_audio_only() {
         let counts = expected_media_tool_invocation_counts(
             &MediaExtractionSettings::audio_constellation_v3(),
         );
-        assert_eq!(counts.ffmpeg + counts.ffprobe + counts.fpcalc, 2);
+        assert_eq!(counts.ffmpeg + counts.ffprobe, 2);
         assert_eq!(counts.ffmpeg, 1);
-        assert_eq!(counts.fpcalc, 0);
     }
 
     #[test]
-    fn combined_v3_process_budget_avoids_fpcalc() {
+    fn combined_v3_process_budget_includes_video() {
         let counts = expected_media_tool_invocation_counts(&MediaExtractionSettings::combined_v3());
         assert_eq!(counts.ffmpeg, 2);
         assert_eq!(counts.ffprobe, 1);
-        assert_eq!(counts.fpcalc, 0);
     }
 
     #[test]
-    fn audio_constellation_v3_extraction_path_never_invokes_fpcalc() {
-        let root = unique_test_root("audio-v3-no-fpcalc");
+    fn audio_constellation_v3_extraction_uses_ffmpeg_and_ffprobe_only() {
+        let root = unique_test_root("audio-v3-tools");
         let media_path = root.join("episode.mkv");
         std::fs::write(&media_path, b"not real media").expect("test media should be written");
         let tools = MediaMatchToolPaths {
             ffmpeg: write_fake_tool(&root, "ffmpeg", None),
             ffprobe: write_fake_tool(&root, "ffprobe", Some("1.0")),
-            fpcalc: root.join("fpcalc-must-not-exist"),
         };
 
         let result = fingerprint_media_file_with_report(
@@ -7678,20 +7314,18 @@ mod tests {
 
         assert_eq!(result.report.invocations.ffprobe, 1);
         assert_eq!(result.report.invocations.ffmpeg, 1);
-        assert_eq!(result.report.invocations.fpcalc, 0);
         assert!(result.record.audio_error.is_some());
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn combined_v3_extraction_path_never_invokes_fpcalc() {
-        let root = unique_test_root("combined-v3-no-fpcalc");
+    fn combined_v3_extraction_uses_ffmpeg_and_ffprobe_only() {
+        let root = unique_test_root("combined-v3-tools");
         let media_path = root.join("episode.mkv");
         std::fs::write(&media_path, b"not real media").expect("test media should be written");
         let tools = MediaMatchToolPaths {
             ffmpeg: write_fake_tool(&root, "ffmpeg", None),
             ffprobe: write_fake_tool(&root, "ffprobe", Some("1.0")),
-            fpcalc: root.join("fpcalc-must-not-exist"),
         };
 
         let result = fingerprint_media_file_with_report(
@@ -7704,7 +7338,6 @@ mod tests {
 
         assert_eq!(result.report.invocations.ffprobe, 1);
         assert_eq!(result.report.invocations.ffmpeg, 2);
-        assert_eq!(result.report.invocations.fpcalc, 0);
         assert!(result.record.audio_error.is_some());
         assert!(result.record.video_error.is_some());
         let _ = std::fs::remove_dir_all(&root);
@@ -7716,7 +7349,6 @@ mod tests {
             "[Judas] Show - S01E07.mkv",
             100,
             Some(1412.37),
-            None,
             None,
             MediaExtractionSettings::audio_constellation_v3(),
         );
@@ -7744,7 +7376,6 @@ mod tests {
             100,
             Some(1412.0),
             None,
-            None,
             MediaExtractionSettings::audio_constellation_v3(),
         );
         query.audio_anchors = query_profile.audio_anchors;
@@ -7752,7 +7383,6 @@ mod tests {
             "[Erai-raws] Show - 07.mkv",
             200,
             Some(1413.0),
-            None,
             None,
             MediaExtractionSettings::audio_constellation_v3(),
         );
@@ -7781,12 +7411,6 @@ mod tests {
             "profiles": [{"profile": format!("fast-v{}", 1)}]
         });
         assert!(media_match_wire_signature_from_value(&legacy_v1).is_err());
-
-        let empty_v2 = serde_json::json!({
-            "schema": MEDIA_MATCH_WIRE_SCHEMA_V2,
-            "profiles": []
-        });
-        assert!(media_match_wire_signature_from_value(&empty_v2).is_err());
     }
 
     #[test]
@@ -7795,7 +7419,6 @@ mod tests {
             "episode.mkv",
             100,
             Some(120.0),
-            None,
             None,
             MediaExtractionSettings::audio_constellation_v3(),
         );
@@ -7854,67 +7477,6 @@ mod tests {
     }
 
     #[test]
-    fn pre_cancelled_fast_video_extraction_returns_cancelled_not_partial() {
-        let cancel = AtomicBool::new(true);
-        let result = extract_fast_video_fingerprint(
-            "ffmpeg-not-used",
-            "media-not-used.mkv",
-            Some(120.0),
-            &MediaExtractionSettings::fast_anchor_v2(),
-            Some(&cancel),
-        );
-
-        assert!(matches!(
-            result,
-            Err(MediaFingerprintError::Cancelled { tool: "ffmpeg" })
-        ));
-    }
-
-    #[test]
-    #[ignore = "requires ffmpeg in SOROTTE_MEDIA_MATCH_FFMPEG or PATH"]
-    fn fast_video_extraction_preserves_pts_near_intended_samples_on_synthetic_media() {
-        let Some(ffmpeg) = test_ffmpeg_path() else {
-            eprintln!("skipping ignored ffmpeg test: ffmpeg is not available");
-            return;
-        };
-        let mut media_path = std::env::temp_dir();
-        media_path.push(format!("sorotte-fast-video-pts-{}.mkv", std::process::id()));
-        let status = Command::new(&ffmpeg)
-            .args([
-                "-v",
-                "error",
-                "-y",
-                "-f",
-                "lavfi",
-                "-i",
-                "testsrc2=size=64x64:rate=1:duration=120",
-                "-c:v",
-                "libx264",
-                "-pix_fmt",
-                "yuv420p",
-            ])
-            .arg(&media_path)
-            .status()
-            .expect("ffmpeg should create synthetic media");
-        assert!(status.success(), "ffmpeg fixture generation failed");
-        let mut settings = MediaExtractionSettings::fast_anchor_v2();
-        settings.max_frames = 3;
-        let video = extract_video_fingerprint(&ffmpeg, &media_path, Some(120.0), &settings)
-            .expect("fast video fingerprint should extract");
-        let intended = fast_video_sample_timestamps(Some(120.0), settings.max_frames);
-        let _ = std::fs::remove_file(&media_path);
-
-        assert_eq!(video.frames.len(), intended.len());
-        for (frame, intended_second) in video.frames.iter().zip(intended) {
-            let actual_second = frame.timestamp_millis as f64 / 1000.0;
-            assert!(
-                (actual_second - intended_second).abs() <= 1.5,
-                "actual {actual_second:.3}s should be near intended {intended_second:.3}s"
-            );
-        }
-    }
-
-    #[test]
     #[ignore = "requires ffmpeg/ffprobe in SOROTTE_MEDIA_MATCH_FFMPEG/SOROTTE_MEDIA_MATCH_FFPROBE or PATH"]
     fn combined_v3_ffmpeg_generates_v3_video_kinds() {
         let Some(ffmpeg) = test_ffmpeg_path() else {
@@ -7951,11 +7513,7 @@ mod tests {
             .status()
             .expect("ffmpeg should create synthetic media");
         assert!(status.success(), "ffmpeg fixture generation failed");
-        let tools = MediaMatchToolPaths {
-            ffmpeg,
-            ffprobe,
-            fpcalc: PathBuf::from("fpcalc-not-used"),
-        };
+        let tools = MediaMatchToolPaths { ffmpeg, ffprobe };
         let fingerprint = fingerprint_media_file_with_report(
             &media_path,
             &tools,
@@ -7975,7 +7533,6 @@ mod tests {
             .map(|landmark| landmark.kind)
             .collect::<HashSet<_>>();
 
-        assert_eq!(fingerprint.report.invocations.fpcalc, 0);
         assert!(kinds.contains(&V3_VIDEO_KIND_GLOBAL_DCT));
         assert!(kinds.contains(&V3_VIDEO_KIND_CENTER_DCT));
         assert!(kinds.contains(&V3_VIDEO_KIND_EDGE));
@@ -8010,11 +7567,7 @@ mod tests {
             .status()
             .expect("ffmpeg should create synthetic audio");
         assert!(status.success(), "ffmpeg fixture generation failed");
-        let tools = MediaMatchToolPaths {
-            ffmpeg,
-            ffprobe,
-            fpcalc: PathBuf::from("fpcalc-not-used"),
-        };
+        let tools = MediaMatchToolPaths { ffmpeg, ffprobe };
         let fingerprint = fingerprint_media_file_with_report(
             &media_path,
             &tools,
@@ -8024,7 +7577,6 @@ mod tests {
         .expect("audio v3 fingerprint should extract");
         let _ = std::fs::remove_file(&media_path);
 
-        assert_eq!(fingerprint.report.invocations.fpcalc, 0);
         assert!(!audio_landmarks_v3_from_record(&fingerprint.record).is_empty());
         assert!(fingerprint.report.audio_stream.streamed_bytes > 0);
         assert!(fingerprint.report.audio_stream.max_buffer_samples <= V3_AUDIO_WINDOW_SAMPLES);
@@ -8071,11 +7623,7 @@ mod tests {
             .status()
             .expect("ffmpeg should create synthetic media");
         assert!(status.success(), "ffmpeg fixture generation failed");
-        let tools = MediaMatchToolPaths {
-            ffmpeg,
-            ffprobe,
-            fpcalc: PathBuf::from("fpcalc-not-used"),
-        };
+        let tools = MediaMatchToolPaths { ffmpeg, ffprobe };
         let fingerprint = fingerprint_media_file_with_report(
             &media_path,
             &tools,
@@ -8125,7 +7673,7 @@ mod tests {
 
     #[test]
     fn exact_decision_uses_path_mtime_and_size() {
-        let query = record("C:/Media/Movie.mkv", 100, Some(100.0), None, None);
+        let query = record("C:/Media/Movie.mkv", 100, Some(100.0), None);
         let candidate = query.clone();
 
         let decision = decide_media_match(&query, &candidate, &enabled_settings());
@@ -8224,14 +7772,12 @@ mod tests {
             "show-e01.mkv",
             100,
             Some(1200.0),
-            None,
             Some(shifted_video(0, &query_hashes)),
         );
         let candidate = record(
             "show-e02.mkv",
             100,
             Some(1200.0),
-            None,
             Some(shifted_video(0, &candidate_hashes)),
         );
 
@@ -8349,10 +7895,10 @@ mod tests {
 
     #[test]
     fn cache_invalidates_on_identity_and_algorithm_inputs() {
-        let settings = MediaExtractionSettings::full_anchor_v2();
-        let fast_settings = MediaExtractionSettings::fast_anchor_v2();
+        let settings = MediaExtractionSettings::combined_v3();
+        let audio_settings = MediaExtractionSettings::audio_constellation_v3();
         let mut cache = MediaMatchCache::default();
-        let record = record("movie.mkv", 100, Some(10.0), None, None);
+        let record = record("movie.mkv", 100, Some(10.0), None);
         cache.insert(record);
 
         assert!(
@@ -8406,19 +7952,10 @@ mod tests {
                     1000,
                     100,
                     MEDIA_MATCH_ALGORITHM_VERSION,
-                    &fast_settings
+                    &audio_settings
                 )
                 .is_none()
         );
-    }
-
-    #[test]
-    fn fpcalc_output_parser_accepts_duration_and_tokens() {
-        let parsed = parse_fpcalc_output("DURATION=123.45\nFINGERPRINT=1,2,3,5,8\n")
-            .expect("fpcalc output should parse");
-
-        assert_eq!(parsed.duration_seconds, Some(123.45));
-        assert_eq!(parsed.fingerprint_tokens, vec![1, 2, 3, 5, 8]);
     }
 
     #[test]
@@ -8456,20 +7993,6 @@ mod tests {
                 tool: "test-tool",
                 timeout_seconds: 1,
             }
-        );
-    }
-
-    #[test]
-    fn fast_video_sample_timestamps_are_sparse_and_skip_stable_edges() {
-        let timestamps = fast_video_sample_timestamps(Some(1800.0), 12);
-
-        assert_eq!(timestamps.len(), 12);
-        assert!(timestamps[0] >= 120.0);
-        assert!(timestamps[11] <= 1680.0);
-        assert!(
-            timestamps
-                .windows(2)
-                .all(|pair| pair[0] < pair[1] && pair[1] - pair[0] > 60.0)
         );
     }
 

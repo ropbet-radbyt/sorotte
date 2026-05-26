@@ -63,10 +63,7 @@ impl GuiPersistedConfigRuntimeOwner {
             handle,
             projected_state,
             "Rechecking Media Matching tools",
-            Some(
-                "Verifying ffmpeg and ffprobe for V3; fpcalc is optional legacy support."
-                    .to_owned(),
-            ),
+            Some("Verifying ffmpeg and ffprobe for V3.".to_owned()),
             0.92,
         );
         let snapshot =
@@ -1194,8 +1191,7 @@ impl GuiPersistedConfigRuntimeOwner {
             projected_state,
             "Preparing Media Matching tools",
             Some(
-                "Installing ffmpeg, ffprobe, and optional legacy fpcalc into Sorotte's managed tools directory."
-                    .to_owned(),
+                "Installing ffmpeg and ffprobe into Sorotte's managed tools directory.".to_owned(),
             ),
             0.02,
         );

@@ -411,14 +411,6 @@ impl SorotteGuiShellAppState {
             Ok(value) => value,
             Err(result) => return result,
         };
-        let fpcalc_status = match normalize_optional_value(
-            snapshot.fpcalc_status,
-            "GUI media-match runtime snapshots cannot contain an empty fpcalc status.",
-        ) {
-            Ok(value) => value,
-            Err(result) => return result,
-        };
-
         self.media_match.settings = snapshot.settings;
         self.media_match.health = snapshot.health;
         self.media_match.message = message;
@@ -427,7 +419,6 @@ impl SorotteGuiShellAppState {
         self.media_match.install_location = install_location;
         self.media_match.ffmpeg_status = ffmpeg_status;
         self.media_match.ffprobe_status = ffprobe_status;
-        self.media_match.fpcalc_status = fpcalc_status;
         self.media_match.cache_status = snapshot
             .cache_status
             .and_then(|value| normalized_editable_text(&value));

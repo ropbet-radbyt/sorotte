@@ -233,10 +233,6 @@ fn gui_persisted_config_runtime_owner_preserves_media_match_tools_when_player_ca
         before.ffprobe_status
     );
     assert_eq!(
-        owner.media_match_runtime_snapshot.fpcalc_status,
-        before.fpcalc_status
-    );
-    assert_eq!(
         owner.media_match_runtime_snapshot.cache_status,
         before.cache_status
     );

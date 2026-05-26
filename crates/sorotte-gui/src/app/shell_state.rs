@@ -271,7 +271,6 @@ pub(super) enum GuiMediaMatchToolHealth {
     Healthy,
     MissingFfmpeg,
     MissingFfprobe,
-    MissingFpcalc,
     Broken,
 }
 
@@ -281,7 +280,6 @@ impl GuiMediaMatchToolHealth {
             Self::Healthy => "healthy",
             Self::MissingFfmpeg => "missing-ffmpeg",
             Self::MissingFfprobe => "missing-ffprobe",
-            Self::MissingFpcalc => "missing-fpcalc",
             Self::Broken => "broken",
         }
     }
@@ -297,7 +295,6 @@ pub(super) struct GuiMediaMatchState {
     pub(super) install_location: Option<String>,
     pub(super) ffmpeg_status: Option<String>,
     pub(super) ffprobe_status: Option<String>,
-    pub(super) fpcalc_status: Option<String>,
     pub(super) cache_status: Option<String>,
     pub(super) current_decision: Option<String>,
     pub(super) nearest_match: Option<String>,
@@ -327,7 +324,6 @@ impl Default for GuiMediaMatchState {
             install_location: None,
             ffmpeg_status: None,
             ffprobe_status: None,
-            fpcalc_status: None,
             cache_status: Some("empty".to_owned()),
             current_decision: None,
             nearest_match: None,
@@ -349,7 +345,6 @@ pub(super) struct GuiMediaMatchRuntimeSnapshot {
     pub(super) install_location: Option<String>,
     pub(super) ffmpeg_status: Option<String>,
     pub(super) ffprobe_status: Option<String>,
-    pub(super) fpcalc_status: Option<String>,
     pub(super) cache_status: Option<String>,
     pub(super) current_decision: Option<String>,
     pub(super) nearest_match: Option<String>,
@@ -370,7 +365,6 @@ impl From<&GuiMediaMatchState> for GuiMediaMatchRuntimeSnapshot {
             install_location: value.install_location.clone(),
             ffmpeg_status: value.ffmpeg_status.clone(),
             ffprobe_status: value.ffprobe_status.clone(),
-            fpcalc_status: value.fpcalc_status.clone(),
             cache_status: value.cache_status.clone(),
             current_decision: value.current_decision.clone(),
             nearest_match: value.nearest_match.clone(),

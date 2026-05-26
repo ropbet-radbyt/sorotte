@@ -64,7 +64,6 @@ pub(in crate::app) enum GuiRuntimeRequest {
     InstallMediaMatchTools,
     ImportMediaMatchFfmpeg(String),
     ImportMediaMatchFfprobe(String),
-    ImportMediaMatchFpcalc(String),
     OpenMediaMatchInstallLocation,
     RecheckMediaMatchTools,
     RebuildMediaMatchIndex,

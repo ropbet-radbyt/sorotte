@@ -138,7 +138,6 @@ fn tool_paths() -> MediaMatchToolPaths {
     MediaMatchToolPaths {
         ffmpeg: env_tool_path("SOROTTE_MEDIA_MATCH_FFMPEG", "ffmpeg"),
         ffprobe: env_tool_path("SOROTTE_MEDIA_MATCH_FFPROBE", "ffprobe"),
-        fpcalc: PathBuf::from("fpcalc-not-used-for-v3"),
     }
 }
 

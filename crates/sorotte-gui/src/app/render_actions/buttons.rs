@@ -209,9 +209,6 @@ impl GuiWidgetEguiRenderer {
             "plugins:media-matching:import-ffprobe" => {
                 Self::actions_for_media_match_import_ffprobe(state)
             }
-            "plugins:media-matching:import-fpcalc" => {
-                Self::actions_for_media_match_import_fpcalc(state)
-            }
             "plugins:media-matching:open-location" => {
                 vec![GuiShellAction::OpenMediaMatchInstallLocation]
             }
@@ -629,14 +626,5 @@ impl GuiWidgetEguiRenderer {
             return Vec::new();
         };
         vec![GuiShellAction::ImportMediaMatchFfprobe(path)]
-    }
-
-    fn actions_for_media_match_import_fpcalc(
-        state: &SorotteGuiShellAppState,
-    ) -> Vec<GuiShellAction> {
-        let Some(path) = Self::pick_media_match_fpcalc_executable(state) else {
-            return Vec::new();
-        };
-        vec![GuiShellAction::ImportMediaMatchFpcalc(path)]
     }
 }

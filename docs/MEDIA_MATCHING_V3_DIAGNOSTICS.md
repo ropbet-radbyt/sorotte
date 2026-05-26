@@ -28,7 +28,7 @@ cargo run -p sorotte-media-match --bin v3_diagnostics -- manifest.json --keep-ca
 
 The runner uses `SOROTTE_MEDIA_MATCH_FFMPEG` and
 `SOROTTE_MEDIA_MATCH_FFPROBE` when set; otherwise it resolves `ffmpeg` and
-`ffprobe` from `PATH`. V3 does not require `fpcalc`.
+`ffprobe` from `PATH`.
 
 ## Manifest
 

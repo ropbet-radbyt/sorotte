@@ -1,5 +1,9 @@
 # GPT Pro Media Matching Review Output
 
+Historical note: this captured the pre-V3 prototype review. Current Sorotte
+Media Matching is V3-only and has removed the old V2/fpcalc/Chromaprint
+implementation; references below are kept only as historical design context.
+
 Based on static inspection of the branch and the public repository context; I did not run a media benchmark corpus locally. The main conclusion is that the current branch is a useful prototype, but the durable solution should be a **compact anchor-indexed timeline matcher**, not a “store full JSON fingerprint records and compare them later” system.
 
 Sorotte’s project context matters here: it is a Rust Syncplay-compatible client/server with GUI/CLI pieces, and its current player target is mpv. The feature should therefore answer a Syncplay-specific question: “are these two users playing the same underlying media timeline, and can we safely use that to reduce false ‘different file’ warnings or permit autoplay/readiness?” It does **not** need to become a general global media-identification database. ([GitHub][1])

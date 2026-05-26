@@ -344,7 +344,6 @@ fn gui_shell_app_state_projects_media_match_plugin_widgets_and_actions() {
                 ),
                 ffmpeg_status: Some("ffmpeg 7.1 (C:/Tools/ffmpeg.exe)".to_owned()),
                 ffprobe_status: Some("ffprobe 7.1 (C:/Tools/ffprobe.exe)".to_owned()),
-                fpcalc_status: Some("fpcalc 1.5.1 (C:/Tools/fpcalc.exe)".to_owned()),
                 cache_status: Some("2 fingerprint records".to_owned()),
                 current_decision: Some("strong: aligned video hashes".to_owned()),
                 nearest_match: Some("episode-b.mkv (strong: aligned video hashes)".to_owned()),

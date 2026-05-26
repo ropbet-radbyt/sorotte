@@ -766,7 +766,6 @@ mod tests {
                 tools: MediaMatchToolPaths {
                     ffmpeg: PathBuf::from("ffmpeg"),
                     ffprobe: PathBuf::from("ffprobe"),
-                    fpcalc: PathBuf::from("fpcalc-not-used"),
                 },
                 generated_at_unix_millis: Some(123),
             },

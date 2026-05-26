@@ -149,10 +149,6 @@ impl GuiShellDispatchPlan {
                     plan.runtime_requests
                         .push(GuiRuntimeRequest::ImportMediaMatchFfprobe(path));
                 }
-                GuiShellAction::ImportMediaMatchFpcalc(path) => {
-                    plan.runtime_requests
-                        .push(GuiRuntimeRequest::ImportMediaMatchFpcalc(path));
-                }
                 GuiShellAction::OpenMediaMatchInstallLocation => {
                     plan.runtime_requests
                         .push(GuiRuntimeRequest::OpenMediaMatchInstallLocation);

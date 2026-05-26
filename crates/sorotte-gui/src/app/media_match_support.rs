@@ -32,7 +32,10 @@ use sorotte_media_match::{
 };
 
 #[cfg(test)]
-use sorotte_media_match::{AudioAnchor, anchor_stats_v3_dirty, refresh_all_anchor_stats_v3};
+use sorotte_media_match::{
+    AudioAnchor, anchor_stats_v3_dirty, initialize_media_match_v3_index,
+    refresh_all_anchor_stats_v3,
+};
 
 use super::shell_state::{
     GuiMediaMatchRuntimeSnapshot, GuiMediaMatchToolHealth,
@@ -47,7 +50,6 @@ const MEDIA_MATCH_INDEX_FILE: &str = "index-v3.sqlite3";
 const MEDIA_MATCH_INDEX_BACKUP_FILE: &str = "index-v3.previous.sqlite3";
 const MEDIA_MATCH_PREFILTER_THRESHOLD: usize = 64;
 const MEDIA_MATCH_PREFILTER_LIMIT: usize = 24;
-const MEDIA_MATCH_FPCALC_OPTIONAL_STATUS: &str = "fpcalc optional for V3";
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 #[cfg(windows)]
@@ -68,7 +70,6 @@ const FFMPEG_WINDOWS_ZIP_URL: &str =
 pub(super) enum MediaMatchTool {
     Ffmpeg,
     Ffprobe,
-    Fpcalc,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -118,7 +119,6 @@ pub(super) struct MediaMatchRemoteCandidateMatch {
 struct MediaMatchRebuildInstrumentation {
     ffmpeg_invocations: u32,
     ffprobe_invocations: u32,
-    fpcalc_invocations: u32,
     extraction_millis: u128,
     ffprobe_millis: u128,
     audio_millis: u128,
@@ -145,7 +145,6 @@ impl MediaMatchRebuildInstrumentation {
     fn add_report(&mut self, report: &sorotte_media_match::MediaFingerprintExtractionReport) {
         self.ffmpeg_invocations += report.invocations.ffmpeg;
         self.ffprobe_invocations += report.invocations.ffprobe;
-        self.fpcalc_invocations += report.invocations.fpcalc;
         self.extraction_millis += report.timings.total_millis;
         self.ffprobe_millis += report.timings.ffprobe_millis;
         self.audio_millis += report.timings.audio_millis;
@@ -169,24 +168,22 @@ impl MediaMatchRebuildInstrumentation {
     }
 
     fn add_saved_record(&mut self, record: &MediaFingerprintRecord) {
-        if record.extraction_settings.profile.is_v3() {
-            let blob = media_fingerprint_blob_v3_from_record(record);
-            let duration_ms = record.duration_seconds.map(seconds_to_millis_u64);
-            self.audio_blob_bytes += encode_media_fingerprint_blob_v3(&MediaFingerprintBlobV3 {
-                duration_ms,
-                audio_landmarks: blob.audio_landmarks.clone(),
-                video_landmarks: Vec::new(),
-            })
-            .len();
-            self.video_blob_bytes += encode_media_fingerprint_blob_v3(&MediaFingerprintBlobV3 {
-                duration_ms,
-                audio_landmarks: Vec::new(),
-                video_landmarks: blob.video_landmarks.clone(),
-            })
-            .len();
-            self.audio_index_rows += audio_index_landmarks_v3_from_record(record).len();
-            self.video_index_rows += video_index_landmarks_v3_from_record(record).len();
-        }
+        let blob = media_fingerprint_blob_v3_from_record(record);
+        let duration_ms = record.duration_seconds.map(seconds_to_millis_u64);
+        self.audio_blob_bytes += encode_media_fingerprint_blob_v3(&MediaFingerprintBlobV3 {
+            duration_ms,
+            audio_landmarks: blob.audio_landmarks.clone(),
+            video_landmarks: Vec::new(),
+        })
+        .len();
+        self.video_blob_bytes += encode_media_fingerprint_blob_v3(&MediaFingerprintBlobV3 {
+            duration_ms,
+            audio_landmarks: Vec::new(),
+            video_landmarks: blob.video_landmarks.clone(),
+        })
+        .len();
+        self.audio_index_rows += audio_index_landmarks_v3_from_record(record).len();
+        self.video_index_rows += video_index_landmarks_v3_from_record(record).len();
     }
 
     fn add_stats_refresh(&mut self, elapsed_millis: u128) {
@@ -196,10 +193,9 @@ impl MediaMatchRebuildInstrumentation {
 
     fn summary(&self) -> String {
         format!(
-            "tools ffmpeg/ffprobe/fpcalc={}/{}/{}, extract={}ms (probe {}ms, audio {}ms, video {}ms), v3 audio stream streamedBytes/streamedSamples/peakFrames/rawLandmarksBeforeBounding/finalLandmarks/maxBufferSamples/maxRawLandmarksSeen/maxRawLandmarksAfterCompaction/rawLandmarkCompactions={}/{}/{}/{}/{}/{}/{}/{}/{}, v3 blob bytes audio/video={}/{}, v3 index rows audio/video={}/{}, stats refreshes={} in {}ms (debug record bytes={})",
+            "tools ffmpeg/ffprobe={}/{}, extract={}ms (probe {}ms, audio {}ms, video {}ms), v3 audio stream streamedBytes/streamedSamples/peakFrames/rawLandmarksBeforeBounding/finalLandmarks/maxBufferSamples/maxRawLandmarksSeen/maxRawLandmarksAfterCompaction/rawLandmarkCompactions={}/{}/{}/{}/{}/{}/{}/{}/{}, v3 blob bytes audio/video={}/{}, v3 index rows audio/video={}/{}, stats refreshes={} in {}ms (debug record bytes={})",
             self.ffmpeg_invocations,
             self.ffprobe_invocations,
-            self.fpcalc_invocations,
             self.extraction_millis,
             self.ffprobe_millis,
             self.audio_millis,
@@ -238,7 +234,6 @@ struct ManagedMediaMatchMetadata {
     installed_at_unix_seconds: Option<u64>,
     ffmpeg_version: Option<String>,
     ffprobe_version: Option<String>,
-    fpcalc_version: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -253,7 +248,6 @@ impl MediaMatchTool {
         match self {
             Self::Ffmpeg => "ffmpeg",
             Self::Ffprobe => "ffprobe",
-            Self::Fpcalc => "fpcalc",
         }
     }
 
@@ -273,20 +267,12 @@ impl MediaMatchTool {
                     "ffprobe"
                 }
             }
-            Self::Fpcalc => {
-                if cfg!(windows) {
-                    "fpcalc.exe"
-                } else {
-                    "fpcalc"
-                }
-            }
         }
     }
 
     fn version_args(self) -> &'static [&'static str] {
         match self {
             Self::Ffmpeg | Self::Ffprobe => &["-version"],
-            Self::Fpcalc => &["-version"],
         }
     }
 
@@ -294,7 +280,6 @@ impl MediaMatchTool {
         match self {
             Self::Ffmpeg => metadata.ffmpeg_version = Some(version),
             Self::Ffprobe => metadata.ffprobe_version = Some(version),
-            Self::Fpcalc => metadata.fpcalc_version = Some(version),
         }
     }
 }
@@ -438,15 +423,7 @@ pub(super) fn probe_media_match_runtime_snapshot(
     let extraction_settings = MediaExtractionSettings::audio_constellation_v3();
     let ffmpeg = probe_tool(root, MediaMatchTool::Ffmpeg);
     let ffprobe = probe_tool(root, MediaMatchTool::Ffprobe);
-    let fpcalc = optional_fpcalc_probe_for_v3();
-    media_match_runtime_snapshot_from_probes(
-        root,
-        settings,
-        ffmpeg,
-        ffprobe,
-        fpcalc,
-        &extraction_settings,
-    )
+    media_match_runtime_snapshot_from_probes(root, settings, ffmpeg, ffprobe, &extraction_settings)
 }
 
 fn media_match_runtime_snapshot_from_probes(
@@ -454,11 +431,10 @@ fn media_match_runtime_snapshot_from_probes(
     settings: &MediaMatchSettings,
     ffmpeg: MediaMatchToolProbe,
     ffprobe: MediaMatchToolProbe,
-    fpcalc: MediaMatchToolProbe,
     extraction_settings: &MediaExtractionSettings,
 ) -> GuiMediaMatchRuntimeSnapshot {
-    let health = media_match_health_for_settings(&ffmpeg, &ffprobe, &fpcalc, extraction_settings);
-    let message = media_match_health_message(health, &ffmpeg, &ffprobe, &fpcalc);
+    let health = media_match_health_for_settings(&ffmpeg, &ffprobe, extraction_settings);
+    let message = media_match_health_message(health, &ffmpeg, &ffprobe);
     GuiMediaMatchRuntimeSnapshot {
         settings: settings.clone(),
         health,
@@ -468,7 +444,6 @@ fn media_match_runtime_snapshot_from_probes(
         install_location: root.map(|root| managed_media_match_bin_dir(root).display().to_string()),
         ffmpeg_status: Some(ffmpeg.status),
         ffprobe_status: Some(ffprobe.status),
-        fpcalc_status: Some(fpcalc.status),
         cache_status: root.map(media_match_cache_status),
         current_decision: None,
         nearest_match: None,
@@ -476,14 +451,6 @@ fn media_match_runtime_snapshot_from_probes(
         remote_status: Some("unavailable".to_owned()),
         background_status: Some("idle".to_owned()),
         open_install_location_available: root.is_some(),
-    }
-}
-
-fn optional_fpcalc_probe_for_v3() -> MediaMatchToolProbe {
-    MediaMatchToolProbe {
-        path: None,
-        error: None,
-        status: MEDIA_MATCH_FPCALC_OPTIONAL_STATUS.to_owned(),
     }
 }
 
@@ -567,7 +534,7 @@ where
         let _ = root;
         progress(MediaMatchToolProgress::new(
             "Media Matching tool install unavailable",
-            Some("Import ffmpeg and ffprobe manually on this platform; fpcalc is optional legacy support.".to_owned()),
+            Some("Import ffmpeg and ffprobe manually on this platform.".to_owned()),
             1.0,
         ));
         Err("Automatic Media Matching tool installation is currently Windows-only.".to_owned())
@@ -625,27 +592,16 @@ where
         save_managed_media_match_metadata(root, &metadata)?;
         progress(MediaMatchToolProgress::new(
             "Media Matching tools installed",
-            Some(format!(
-                "{}; V3 is ready. Optional legacy fpcalc can be imported separately.",
-                bin_dir.display()
-            )),
+            Some(format!("{}; V3 is ready.", bin_dir.display())),
             1.0,
         ));
-        Ok(media_match_install_success_message(None))
+        Ok(media_match_install_success_message())
     }
 }
 
 #[cfg(any(windows, test))]
-fn media_match_install_success_message(optional_fpcalc_warning: Option<&str>) -> String {
-    match optional_fpcalc_warning {
-        Some(warning) => format!(
-            "Installed ffmpeg and ffprobe for Media Matching V3. Optional legacy fpcalc failed: {warning}"
-        ),
-        None => {
-            "Installed ffmpeg and ffprobe for Media Matching V3; optional legacy fpcalc can be imported separately."
-                .to_owned()
-        }
-    }
+fn media_match_install_success_message() -> String {
+    "Installed ffmpeg and ffprobe for Media Matching V3.".to_owned()
 }
 
 pub(super) fn rebuild_persisted_media_match_index_with_extraction_settings_and_cancel<F>(
@@ -1144,8 +1100,7 @@ fn probe_tool(root: Option<&Path>, tool: MediaMatchTool) -> MediaMatchToolProbe 
 fn media_match_health_for_settings(
     ffmpeg: &MediaMatchToolProbe,
     ffprobe: &MediaMatchToolProbe,
-    fpcalc: &MediaMatchToolProbe,
-    extraction_settings: &MediaExtractionSettings,
+    _extraction_settings: &MediaExtractionSettings,
 ) -> GuiMediaMatchToolHealth {
     if ffmpeg.error.is_some() || ffprobe.error.is_some() {
         return GuiMediaMatchToolHealth::Broken;
@@ -1156,26 +1111,13 @@ fn media_match_health_for_settings(
     if ffprobe.path.is_none() {
         return GuiMediaMatchToolHealth::MissingFfprobe;
     }
-    if media_match_profile_requires_fpcalc(extraction_settings) {
-        if fpcalc.error.is_some() {
-            return GuiMediaMatchToolHealth::Broken;
-        }
-        if fpcalc.path.is_none() {
-            return GuiMediaMatchToolHealth::MissingFpcalc;
-        }
-    }
     GuiMediaMatchToolHealth::Healthy
-}
-
-fn media_match_profile_requires_fpcalc(extraction_settings: &MediaExtractionSettings) -> bool {
-    !extraction_settings.profile.uses_v3_audio_constellation()
 }
 
 fn media_match_health_message(
     health: GuiMediaMatchToolHealth,
     ffmpeg: &MediaMatchToolProbe,
     ffprobe: &MediaMatchToolProbe,
-    fpcalc: &MediaMatchToolProbe,
 ) -> Option<String> {
     match health {
         GuiMediaMatchToolHealth::Healthy => None,
@@ -1185,12 +1127,9 @@ fn media_match_health_message(
         GuiMediaMatchToolHealth::MissingFfprobe => {
             Some("Media Matching needs ffprobe for media metadata.".to_owned())
         }
-        GuiMediaMatchToolHealth::MissingFpcalc => {
-            Some("Legacy Media Matching profiles need fpcalc for Chromaprint audio fingerprints; V3 profiles do not use fpcalc.".to_owned())
-        }
         GuiMediaMatchToolHealth::Broken => Some(format!(
-            "One or more Media Matching tools could not run: {}; {}; {}",
-            ffmpeg.status, ffprobe.status, fpcalc.status
+            "One or more Media Matching tools could not run: {}; {}",
+            ffmpeg.status, ffprobe.status
         )),
     }
 }
@@ -1265,22 +1204,12 @@ pub(super) fn media_match_tool_paths_for_settings(
     root: &Path,
     extraction_settings: &MediaExtractionSettings,
 ) -> Result<MediaMatchToolPaths, String> {
-    let requires_fpcalc = media_match_profile_requires_fpcalc(extraction_settings);
     let ffmpeg = probe_tool(Some(root), MediaMatchTool::Ffmpeg);
     let ffprobe = probe_tool(Some(root), MediaMatchTool::Ffprobe);
-    let fpcalc = if requires_fpcalc {
-        probe_tool(Some(root), MediaMatchTool::Fpcalc)
-    } else {
-        MediaMatchToolProbe {
-            path: None,
-            error: None,
-            status: "fpcalc optional for V3".to_owned(),
-        }
-    };
-    let health = media_match_health_for_settings(&ffmpeg, &ffprobe, &fpcalc, extraction_settings);
+    let health = media_match_health_for_settings(&ffmpeg, &ffprobe, extraction_settings);
     if health != GuiMediaMatchToolHealth::Healthy {
         return Err(
-            media_match_health_message(health, &ffmpeg, &ffprobe, &fpcalc).unwrap_or_else(|| {
+            media_match_health_message(health, &ffmpeg, &ffprobe).unwrap_or_else(|| {
                 "Media Matching tools are not ready for fingerprint extraction.".to_owned()
             }),
         );
@@ -1292,13 +1221,6 @@ pub(super) fn media_match_tool_paths_for_settings(
         ffprobe: ffprobe
             .path
             .ok_or_else(|| "Media Matching could not resolve ffprobe.".to_owned())?,
-        fpcalc: if requires_fpcalc {
-            fpcalc
-                .path
-                .ok_or_else(|| "Media Matching could not resolve fpcalc.".to_owned())?
-        } else {
-            fpcalc.path.unwrap_or_else(|| PathBuf::from("fpcalc"))
-        },
     })
 }
 
@@ -1819,17 +1741,16 @@ fn media_match_cache_has_valid_record(
         .is_some()
 }
 
+#[cfg(test)]
 fn media_match_anchor_candidate_paths(
     root: &Path,
     normalized_current_path: &str,
     extraction_settings: &MediaExtractionSettings,
 ) -> Result<Vec<String>, String> {
-    if !extraction_settings.profile.is_v3() {
-        return Ok(Vec::new());
-    }
     media_match_v3_anchor_candidate_paths(root, normalized_current_path, extraction_settings)
 }
 
+#[cfg(test)]
 fn media_match_v3_anchor_candidate_paths(
     root: &Path,
     normalized_current_path: &str,
@@ -1866,24 +1787,16 @@ fn summarize_current_media_match(
             None,
         );
     };
-    let (anchor_candidates, retrieval_stats) = if extraction_settings.profile.is_v3() {
-        open_media_match_sqlite_index(root)
-            .and_then(|connection| {
-                media_match_v3_anchor_candidate_paths_with_stats(
-                    &connection,
-                    &normalized_current_path,
-                    extraction_settings,
-                )
-            })
-            .map(|(paths, stats)| (paths, Some(stats)))
-            .unwrap_or_default()
-    } else {
-        (
-            media_match_anchor_candidate_paths(root, &normalized_current_path, extraction_settings)
-                .unwrap_or_default(),
-            None,
-        )
-    };
+    let (anchor_candidates, retrieval_stats) = open_media_match_sqlite_index(root)
+        .and_then(|connection| {
+            media_match_v3_anchor_candidate_paths_with_stats(
+                &connection,
+                &normalized_current_path,
+                extraction_settings,
+            )
+        })
+        .map(|(paths, stats)| (paths, Some(stats)))
+        .unwrap_or_default();
     let retrieval_suffix = retrieval_stats
         .as_ref()
         .map(format_media_match_v3_retrieval_stats)
@@ -2248,9 +2161,6 @@ fn load_media_match_cache_for_settings_from_sqlite(
     connection: &Connection,
     extraction_settings: &MediaExtractionSettings,
 ) -> Option<MediaMatchCache> {
-    if !extraction_settings.profile.is_v3() {
-        return None;
-    }
     load_media_match_v3_cache_for_settings(connection, extraction_settings).ok()
 }
 
@@ -2297,9 +2207,6 @@ fn load_media_match_record_for_path_from_sqlite(
     modified_unix_millis: u64,
     size_bytes: u64,
 ) -> Option<MediaFingerprintRecord> {
-    if !extraction_settings.profile.is_v3() {
-        return None;
-    }
     load_media_match_v3_record_for_path(
         connection,
         normalized_path,
@@ -2348,9 +2255,6 @@ fn save_media_match_record_to_sqlite_with_error(
     record: &MediaFingerprintRecord,
     error: Option<&str>,
 ) -> Result<(), String> {
-    if !record.extraction_settings.profile.is_v3() {
-        return Err("legacy media-match profiles are not persisted; use V3".to_owned());
-    }
     save_media_match_v3_record(connection, record, error)
 }
 
@@ -2359,9 +2263,6 @@ fn refresh_media_match_v3_anchor_stats_for_settings(
     extraction_settings: &MediaExtractionSettings,
     instrumentation: &mut MediaMatchRebuildInstrumentation,
 ) -> Result<(), String> {
-    if !extraction_settings.profile.is_v3() {
-        return Ok(());
-    }
     let settings_hash = media_extraction_settings_hash(extraction_settings);
     let now = current_unix_millis() as i64;
     let start = Instant::now();
@@ -2642,7 +2543,6 @@ mod tests {
             extraction_settings: MediaExtractionSettings::default(),
             duration_seconds: Some(1200.0),
             container_fingerprint: format!("container:{path}"),
-            audio: None,
             video: None,
             audio_anchors: Vec::new(),
             video_anchors: Vec::new(),
@@ -2672,7 +2572,6 @@ mod tests {
             extraction_settings,
             duration_seconds: Some(1200.0),
             container_fingerprint: format!("container:{}", path.display()),
-            audio: None,
             video: None,
             audio_anchors: Vec::new(),
             video_anchors: Vec::new(),
@@ -2693,14 +2592,6 @@ mod tests {
             path: Some(PathBuf::from(name)),
             error: None,
             status: format!("{name} ok"),
-        }
-    }
-
-    fn missing_tool_probe(name: &str) -> MediaMatchToolProbe {
-        MediaMatchToolProbe {
-            path: None,
-            error: None,
-            status: format!("Missing {name}"),
         }
     }
 
@@ -2781,16 +2672,14 @@ mod tests {
     }
 
     #[test]
-    fn v3_tool_readiness_passes_without_fpcalc() {
+    fn v3_tool_readiness_requires_ffmpeg_and_ffprobe() {
         let ffmpeg = healthy_tool_probe("ffmpeg");
         let ffprobe = healthy_tool_probe("ffprobe");
-        let fpcalc = missing_tool_probe("fpcalc");
 
         assert_eq!(
             media_match_health_for_settings(
                 &ffmpeg,
                 &ffprobe,
-                &fpcalc,
                 &MediaExtractionSettings::audio_constellation_v3()
             ),
             GuiMediaMatchToolHealth::Healthy
@@ -2799,7 +2688,6 @@ mod tests {
             media_match_health_for_settings(
                 &ffmpeg,
                 &ffprobe,
-                &fpcalc,
                 &MediaExtractionSettings::combined_v3()
             ),
             GuiMediaMatchToolHealth::Healthy
@@ -2807,75 +2695,52 @@ mod tests {
     }
 
     #[test]
-    fn runtime_snapshot_defaults_to_v3_without_probing_required_fpcalc() {
+    fn runtime_snapshot_defaults_to_v3_tools_only() {
         let settings = enabled_media_match_settings();
         let snapshot = media_match_runtime_snapshot_from_probes(
             None,
             &settings,
             healthy_tool_probe("ffmpeg"),
             healthy_tool_probe("ffprobe"),
-            optional_fpcalc_probe_for_v3(),
             &MediaExtractionSettings::audio_constellation_v3(),
         );
 
         assert_eq!(snapshot.health, GuiMediaMatchToolHealth::Healthy);
-        assert_eq!(
-            snapshot.fpcalc_status.as_deref(),
-            Some(MEDIA_MATCH_FPCALC_OPTIONAL_STATUS)
-        );
         assert_eq!(snapshot.message, None);
     }
 
     #[test]
-    fn legacy_v2_profiles_are_not_runtime_persisted() {
+    fn legacy_v1_v2_tables_are_discarded_not_migrated() {
         let root = unique_media_match_test_root("legacy-v2-removed");
         let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
-        let mut record = fake_media_match_record("legacy.mkv");
-        record.extraction_settings = MediaExtractionSettings::fast_anchor_v2();
-
-        let error = save_media_match_record_to_sqlite(&connection, &record)
-            .expect_err("legacy V2 records should not be persisted");
-        assert!(error.contains("legacy media-match profiles"), "{error}");
-        assert!(
-            load_media_match_cache_for_settings(&root, &MediaExtractionSettings::fast_anchor_v2())
-                .is_none()
-        );
-        assert!(
-            media_match_anchor_candidate_paths(
-                &root,
-                &record.identity.normalized_path,
-                &MediaExtractionSettings::fast_anchor_v2(),
+        connection
+            .execute("CREATE TABLE fingerprints (record_json TEXT)", [])
+            .expect("legacy fingerprints table can be created");
+        initialize_media_match_v3_index(&connection).expect("V3 initialization should rerun");
+        let legacy_count = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='fingerprints'",
+                [],
+                |row| row.get::<_, i64>(0),
             )
-            .expect("legacy lookup should be a no-op")
-            .is_empty()
-        );
+            .expect("sqlite_master query should run");
+        assert_eq!(legacy_count, 0);
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn v3_install_readiness_text_marks_fpcalc_optional() {
-        let success = media_match_install_success_message(None);
+    fn v3_install_readiness_text_names_required_tools() {
+        let success = media_match_install_success_message();
         assert!(success.contains("Media Matching V3"), "{success}");
-        assert!(success.contains("optional legacy fpcalc"), "{success}");
-
-        let warning = media_match_install_success_message(Some("download failed"));
-        assert!(
-            warning.contains("Installed ffmpeg and ffprobe"),
-            "{warning}"
-        );
-        assert!(
-            warning.contains("Optional legacy fpcalc failed"),
-            "{warning}"
-        );
+        assert!(success.contains("ffmpeg and ffprobe"), "{success}");
         assert!(
             media_match_health_message(
-                GuiMediaMatchToolHealth::MissingFpcalc,
+                GuiMediaMatchToolHealth::MissingFfmpeg,
                 &healthy_tool_probe("ffmpeg"),
                 &healthy_tool_probe("ffprobe"),
-                &missing_tool_probe("fpcalc"),
             )
-            .expect("legacy missing-fpcalc message should exist")
-            .contains("V3 profiles do not use fpcalc")
+            .expect("missing ffmpeg message should exist")
+            .contains("ffmpeg")
         );
     }
 
@@ -3892,11 +3757,7 @@ mod tests {
         let candidate = media_dir.join("candidate.mkv");
         generate_v3_synthetic_media(&ffmpeg, &query, 440, 23);
         std::fs::copy(&query, &candidate).expect("candidate media should be copied");
-        let tools = MediaMatchToolPaths {
-            ffmpeg,
-            ffprobe,
-            fpcalc: PathBuf::from("fpcalc-not-used"),
-        };
+        let tools = MediaMatchToolPaths { ffmpeg, ffprobe };
         let manifest = serde_json::json!({
             "profile": "combined-v3",
             "baseDir": "media",
@@ -4442,7 +4303,6 @@ mod tests {
         let tools = MediaMatchToolPaths {
             ffmpeg: PathBuf::from("ffmpeg-not-used"),
             ffprobe: PathBuf::from("ffprobe-not-used"),
-            fpcalc: PathBuf::from("fpcalc-not-used"),
         };
         let result = rebuild_persisted_media_match_candidates_with_progress_and_cancel(
             MediaMatchCandidateRebuildRequest {
@@ -4483,7 +4343,6 @@ mod tests {
         let tools = MediaMatchToolPaths {
             ffmpeg: PathBuf::from("ffmpeg-not-used"),
             ffprobe: PathBuf::from("ffprobe-not-used"),
-            fpcalc: PathBuf::from("fpcalc-not-used"),
         };
         let cancel = AtomicBool::new(true);
         let result = rebuild_persisted_media_match_candidates_with_progress_and_cancel(
