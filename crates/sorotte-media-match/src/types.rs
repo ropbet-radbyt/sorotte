@@ -213,7 +213,7 @@ pub struct MetadataMatchEvidence {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AudioMatchEvidence {
     pub similarity: f64,
-    pub shared_token_ratio: f64,
+    pub shared_anchor_ratio: f64,
     pub duration_delta_seconds: Option<f64>,
 }
 

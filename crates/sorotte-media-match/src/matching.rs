@@ -298,7 +298,7 @@ pub fn decide_media_match_anchors(
     if !query.audio_anchors.is_empty() && !candidate.audio_anchors.is_empty() {
         evidence.audio = Some(AudioMatchEvidence {
             similarity: query_audio_coverage.min(candidate_audio_coverage),
-            shared_token_ratio: query_audio_coverage.min(candidate_audio_coverage),
+            shared_anchor_ratio: query_audio_coverage.min(candidate_audio_coverage),
             duration_delta_seconds: evidence.metadata.duration_delta_seconds,
         });
     }

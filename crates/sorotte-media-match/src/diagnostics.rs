@@ -1,17 +1,17 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
-    InstrumentedMediaFingerprint, MatchClassV3, MediaFingerprintBlobV3,
-    MediaFingerprintExtractionReport, MediaFingerprintRecord, MediaMatchDecision, MediaMatchTier,
+    InstrumentedMediaFingerprint, MatchClassV3, MediaFingerprintExtractionReport,
+    MediaFingerprintRecord, MediaMatchDecision, MediaMatchTier,
     anchors::{
-        audio_index_landmarks_v3_from_record, audio_landmarks_v3_from_record,
-        encode_media_fingerprint_blob_v3, video_index_landmarks_v3_from_record,
-        video_landmarks_v3_from_record,
+        MediaFingerprintBlobV3, audio_index_landmarks_v3_from_record,
+        audio_landmarks_v3_from_record, encode_media_fingerprint_blob_v3,
+        video_index_landmarks_v3_from_record, video_landmarks_v3_from_record,
     },
     identity::duration_seconds_to_millis,
 };
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaMatchV3DiagnosticSummary {
     pub file_path: Option<String>,

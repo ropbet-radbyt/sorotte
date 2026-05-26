@@ -73,7 +73,7 @@ pub struct MediaMatchV3ResolvedManifestCandidate {
     pub expectation: MediaMatchV3DiagnosticExpectation,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaMatchV3DiagnosticReport {
     pub algorithm_version: u32,
@@ -87,7 +87,7 @@ pub struct MediaMatchV3DiagnosticReport {
     pub summary: MediaMatchV3DiagnosticSummaryReport,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaMatchV3DiagnosticCaseReport {
     pub name: String,
@@ -96,7 +96,7 @@ pub struct MediaMatchV3DiagnosticCaseReport {
     pub candidates: Vec<MediaMatchV3DiagnosticCandidateReport>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaMatchV3DiagnosticFingerprintReport {
     pub path: String,
@@ -104,7 +104,7 @@ pub struct MediaMatchV3DiagnosticFingerprintReport {
     pub source: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaMatchV3DiagnosticCandidateReport {
     pub path: String,
@@ -118,12 +118,13 @@ pub struct MediaMatchV3DiagnosticCandidateReport {
     pub failure_reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaMatchV3DiagnosticDecisionReport {
     pub tier: String,
     pub class: Option<String>,
     pub explanation: String,
+    pub autoplay_eligible: bool,
     pub offset_seconds: Option<f64>,
     pub scale_ppm: Option<i32>,
     pub segment_count: usize,
@@ -136,7 +137,7 @@ pub struct MediaMatchV3DiagnosticDecisionReport {
     pub piecewise_fit_millis: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaMatchV3DiagnosticRetrievalReport {
     pub query_buckets_total: i64,
@@ -147,7 +148,7 @@ pub struct MediaMatchV3DiagnosticRetrievalReport {
     pub retrieved_candidates: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaMatchV3DiagnosticSummaryReport {
     pub case_count: usize,
@@ -263,7 +264,10 @@ pub fn run_media_match_v3_diagnostic_manifest(
                 source: fingerprint.source.to_owned(),
                 retrieved,
                 retrieval_rank,
-                decision: MediaMatchV3DiagnosticDecisionReport::from_decision(&decision),
+                decision: MediaMatchV3DiagnosticDecisionReport::from_decision(
+                    &decision,
+                    &autoplay_settings,
+                ),
                 expectation: Some(candidate.expectation.clone()),
                 passed,
                 failure_reason: (!failures.is_empty()).then(|| failures.join("; ")),
@@ -346,13 +350,14 @@ impl MediaMatchV3DiagnosticRetrievalReport {
 }
 
 impl MediaMatchV3DiagnosticDecisionReport {
-    fn from_decision(decision: &MediaMatchDecision) -> Self {
+    fn from_decision(decision: &MediaMatchDecision, settings: &MediaMatchSettings) -> Self {
         let map = decision.evidence.timeline_map_v3.as_ref();
         let summary = summarize_decision_v3_diagnostics(decision);
         Self {
             tier: format!("{:?}", decision.tier),
             class: decision.evidence.v3_class.map(|class| format!("{class:?}")),
             explanation: decision.explanation.clone(),
+            autoplay_eligible: decision.same_media_for_autoplay(settings),
             offset_seconds: decision
                 .evidence
                 .alignment

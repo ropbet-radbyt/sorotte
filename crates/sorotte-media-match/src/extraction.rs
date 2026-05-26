@@ -86,7 +86,8 @@ pub struct InstrumentedMediaFingerprint {
     pub report: MediaFingerprintExtractionReport,
 }
 
-pub fn expected_media_tool_invocation_counts(
+#[cfg(test)]
+pub(crate) fn expected_media_tool_invocation_counts(
     settings: &MediaExtractionSettings,
 ) -> MediaToolInvocationCounts {
     MediaToolInvocationCounts {
@@ -339,16 +340,6 @@ pub fn probe_media_duration_seconds(
     Ok(value)
 }
 
-pub fn extract_audio_constellation_v3(
-    ffmpeg: impl AsRef<Path>,
-    media_path: impl AsRef<Path>,
-    duration_seconds: Option<f64>,
-    cancel_flag: Option<&AtomicBool>,
-) -> Result<Vec<AudioLandmarkV3>, MediaFingerprintError> {
-    extract_audio_constellation_v3_with_metrics(ffmpeg, media_path, duration_seconds, cancel_flag)
-        .map(|(landmarks, _)| landmarks)
-}
-
 pub(crate) fn extract_audio_constellation_v3_with_metrics(
     ffmpeg: impl AsRef<Path>,
     media_path: impl AsRef<Path>,
@@ -407,21 +398,6 @@ pub(crate) fn extract_audio_constellation_v3_with_metrics(
         });
     }
     Ok((landmarks, metrics))
-}
-
-pub fn extract_video_fingerprint(
-    ffmpeg: impl AsRef<Path>,
-    media_path: impl AsRef<Path>,
-    duration_seconds: Option<f64>,
-    extraction_settings: &MediaExtractionSettings,
-) -> Result<VideoFingerprint, MediaFingerprintError> {
-    extract_video_fingerprint_with_cancellation(
-        ffmpeg,
-        media_path,
-        duration_seconds,
-        extraction_settings,
-        None,
-    )
 }
 
 pub(crate) fn extract_video_fingerprint_with_cancellation(

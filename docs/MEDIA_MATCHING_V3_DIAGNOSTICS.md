@@ -41,14 +41,19 @@ cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.combined.json --
 ```
 
 After an algorithm or threshold change, rerun with the same manifests and cache
-root into new report names, then diff the JSON reports:
+root into new report names, then compare the JSON reports:
 
 ```powershell
 cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-after.json --cache-root .media-match-v3-cache
 cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.combined.json --output reports/combined-after.json --cache-root .media-match-v3-cache
-git diff --no-index reports/audio-before.json reports/audio-after.json
-git diff --no-index reports/combined-before.json reports/combined-after.json
+cargo run -p sorotte-media-match --bin v3_report_compare -- reports/audio-before.json reports/audio-after.json
+cargo run -p sorotte-media-match --bin v3_report_compare -- reports/combined-before.json reports/combined-after.json
 ```
+
+The comparison tool reports new failures, resolved failures, class/tier changes,
+retrieval-rank changes, offset-error changes, and aggregate metric deltas. It
+exits nonzero when the current report has more failed expectations than the
+baseline, which makes it suitable for local regression checks.
 
 Review failures in this order:
 
@@ -77,7 +82,12 @@ Use report filenames that include the profile and either a timestamp or commit
 label, for example `reports/audio-2026-05-26.json` and
 `reports/combined-2026-05-26.json`. For commit-to-commit comparisons, keep the
 same manifests and `--cache-root`, then compare JSON reports with
-`git diff --no-index` or another text diff.
+`v3_report_compare`. If you also need a raw field-level view, follow up with
+`git diff --no-index`.
+
+Do not tune thresholds until at least one small mixed corpus report exists for
+both `audio-constellation-v3` and `combined-v3`. Tune from report patterns, not
+from a single isolated fixture.
 
 ## Manifest
 
@@ -129,7 +139,7 @@ The JSON report includes:
   scored candidates, elapsed time, and retrieved candidate paths
 - decision diagnostics: tier, V3 class, explanation, offset, scale, segment
   count, total aligned span, largest gap, edge-only flag, audio/video conflict,
-  and piecewise fitting counts
+  autoplay eligibility, and piecewise fitting counts
 - expectation pass/fail status and failure reason per candidate
 
 `mustBeRetrieved` fails a candidate when direct pairwise matching would pass but

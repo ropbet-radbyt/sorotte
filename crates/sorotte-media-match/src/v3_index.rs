@@ -18,6 +18,10 @@ use crate::{
     },
     identity::container_fingerprint_from_metadata,
     settings::{MediaExtractionSettings, media_extraction_settings_hash},
+    tuning::{
+        V3_COMMON_BUCKET_FILE_DIVISOR, V3_COMMON_BUCKET_MIN_SKIP_DF, V3_RETRIEVAL_GAP_MS,
+        V3_RETRIEVAL_OFFSET_BIN_MS, V3_RETRIEVAL_PREFILTER_LIMIT, V3_RETRIEVAL_REGION_MS,
+    },
     types::{MediaFileIdentity, MediaFingerprintRecord, MediaMatchCache},
     video_v3::validate_video_landmarks_v3,
 };
@@ -26,12 +30,6 @@ const MEDIA_MATCH_V3_SQLITE_SCHEMA_VERSION: i64 = 3;
 const MEDIA_MATCH_V3_INDEX_FILE: &str = "index-v3.sqlite3";
 const MEDIA_MATCH_V3_MODALITY_AUDIO: i64 = 1;
 const MEDIA_MATCH_V3_MODALITY_VIDEO: i64 = 2;
-const MEDIA_MATCH_V3_PREFILTER_LIMIT: usize = 24;
-const MEDIA_MATCH_V3_OFFSET_BIN_MS: i64 = 1_000;
-const MEDIA_MATCH_V3_RETRIEVAL_REGION_MS: i64 = 60_000;
-const MEDIA_MATCH_V3_RETRIEVAL_GAP_MS: i64 = 120_000;
-const MEDIA_MATCH_V3_COMMON_BUCKET_MIN_SKIP_DF: i64 = 256;
-const MEDIA_MATCH_V3_COMMON_BUCKET_FILE_DIVISOR: i64 = 20;
 const MEDIA_MATCH_V3_ANCHOR_STATS_DIRTY_PREFIX: &str = "anchor_stats_v3_dirty:";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,9 +46,6 @@ impl MediaMatchV3IndexPaths {
         }
     }
 }
-
-#[derive(Debug)]
-pub struct MediaMatchV3Index;
 
 #[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -544,8 +539,8 @@ pub fn media_match_v3_anchor_candidate_paths_with_stats(
         )
         .unwrap_or(0)
         .max(1);
-    let common_bucket_threshold = MEDIA_MATCH_V3_COMMON_BUCKET_MIN_SKIP_DF
-        .max(indexed_file_count / MEDIA_MATCH_V3_COMMON_BUCKET_FILE_DIVISOR);
+    let common_bucket_threshold =
+        V3_COMMON_BUCKET_MIN_SKIP_DF.max(indexed_file_count / V3_COMMON_BUCKET_FILE_DIVISOR);
     let (query_buckets_total, query_buckets_skipped_common) = connection
         .query_row(
             "SELECT COUNT(*),
@@ -641,10 +636,10 @@ pub fn media_match_v3_anchor_candidate_paths_with_stats(
         offset_score.weighted_score += weighted_score;
         offset_score
             .query_regions
-            .insert(query_t_ms / MEDIA_MATCH_V3_RETRIEVAL_REGION_MS);
+            .insert(query_t_ms / V3_RETRIEVAL_REGION_MS);
         offset_score
             .candidate_regions
-            .insert(candidate_t_ms / MEDIA_MATCH_V3_RETRIEVAL_REGION_MS);
+            .insert(candidate_t_ms / V3_RETRIEVAL_REGION_MS);
         offset_score.query_times.push(query_t_ms);
         offset_score.candidate_times.push(candidate_t_ms);
         match modality {
@@ -686,7 +681,7 @@ pub fn media_match_v3_anchor_candidate_paths_with_stats(
             .then_with(|| left.file_id.cmp(&right.file_id))
     });
     let mut paths = Vec::new();
-    for score in ranked.into_iter().take(MEDIA_MATCH_V3_PREFILTER_LIMIT) {
+    for score in ranked.into_iter().take(V3_RETRIEVAL_PREFILTER_LIMIT) {
         if let Ok(path) = connection.query_row(
             "SELECT normalized_path FROM media_files_v3 WHERE file_id = ?1",
             [score.file_id],
@@ -1026,9 +1021,9 @@ fn media_match_v3_document_frequency_weight(document_frequency: i64) -> i64 {
 
 fn media_match_v3_rounded_offset_bin(offset_ms: i64) -> i64 {
     if offset_ms >= 0 {
-        (offset_ms + (MEDIA_MATCH_V3_OFFSET_BIN_MS / 2)) / MEDIA_MATCH_V3_OFFSET_BIN_MS
+        (offset_ms + (V3_RETRIEVAL_OFFSET_BIN_MS / 2)) / V3_RETRIEVAL_OFFSET_BIN_MS
     } else {
-        (offset_ms - (MEDIA_MATCH_V3_OFFSET_BIN_MS / 2)) / MEDIA_MATCH_V3_OFFSET_BIN_MS
+        (offset_ms - (V3_RETRIEVAL_OFFSET_BIN_MS / 2)) / V3_RETRIEVAL_OFFSET_BIN_MS
     }
 }
 
@@ -1043,7 +1038,7 @@ fn media_match_v3_longest_contiguous_span_ms(times: &[i64]) -> i64 {
     let mut previous = sorted[0];
     let mut best = 0;
     for time in sorted.into_iter().skip(1) {
-        if time - previous > MEDIA_MATCH_V3_RETRIEVAL_GAP_MS {
+        if time - previous > V3_RETRIEVAL_GAP_MS {
             best = best.max(previous - segment_start);
             segment_start = time;
         }

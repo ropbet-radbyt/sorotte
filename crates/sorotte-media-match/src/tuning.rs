@@ -45,6 +45,12 @@ pub(crate) const V3_AUDIO_RAW_LANDMARK_RETAIN_LIMIT: usize = V3_AUDIO_VERIFY_LAN
 // V3 video retrieval and descriptor thresholds.
 pub(crate) const VIDEO_LSH_BANDS: u32 = 4;
 pub(crate) const VIDEO_LSH_BITS_PER_BAND: u32 = 16;
+pub(crate) const V3_RETRIEVAL_PREFILTER_LIMIT: usize = 24;
+pub(crate) const V3_RETRIEVAL_OFFSET_BIN_MS: i64 = 1_000;
+pub(crate) const V3_RETRIEVAL_REGION_MS: i64 = 60_000;
+pub(crate) const V3_RETRIEVAL_GAP_MS: i64 = 120_000;
+pub(crate) const V3_COMMON_BUCKET_MIN_SKIP_DF: i64 = 256;
+pub(crate) const V3_COMMON_BUCKET_FILE_DIVISOR: i64 = 20;
 pub(crate) const V3_VIDEO_BUCKET_KIND_SHIFT: u32 = 28;
 pub(crate) const V3_VIDEO_BUCKET_VALUE_MASK: u32 = 0x0fff_ffff;
 pub(crate) const V3_VIDEO_VERIFY_LANDMARK_LIMIT: usize = 192;
@@ -78,8 +84,20 @@ pub struct V3Tuning {
     pub segment_audio_min_pairs: usize,
     pub segment_video_min_pairs: usize,
     pub piecewise_max_hypothesis_pairs: usize,
+    pub audio_verify_landmark_limit: usize,
+    pub audio_index_landmark_limit: usize,
     pub audio_raw_landmark_buffer_limit: usize,
     pub audio_raw_landmark_retain_limit: usize,
+    pub video_verify_landmark_limit: usize,
+    pub video_index_landmark_limit: usize,
+    pub retrieval_prefilter_limit: usize,
+    pub retrieval_offset_bin_ms: i64,
+    pub retrieval_region_ms: i64,
+    pub retrieval_gap_ms: i64,
+    pub common_bucket_min_skip_df: i64,
+    pub common_bucket_file_divisor: i64,
+    pub video_lsh_bands: u32,
+    pub video_lsh_bits_per_band: u32,
     pub video_hamming_global: u32,
     pub video_hamming_center: u32,
     pub video_hamming_edge: u32,
@@ -93,11 +111,79 @@ pub fn current_v3_tuning() -> V3Tuning {
         segment_audio_min_pairs: V3_SEGMENT_AUDIO_MIN_PAIRS,
         segment_video_min_pairs: V3_SEGMENT_VIDEO_MIN_PAIRS,
         piecewise_max_hypothesis_pairs: V3_PIECEWISE_MAX_HYPOTHESIS_PAIRS,
+        audio_verify_landmark_limit: V3_AUDIO_VERIFY_LANDMARK_LIMIT,
+        audio_index_landmark_limit: V3_AUDIO_INDEX_LANDMARK_LIMIT,
         audio_raw_landmark_buffer_limit: V3_AUDIO_RAW_LANDMARK_BUFFER_LIMIT,
         audio_raw_landmark_retain_limit: V3_AUDIO_RAW_LANDMARK_RETAIN_LIMIT,
+        video_verify_landmark_limit: V3_VIDEO_VERIFY_LANDMARK_LIMIT,
+        video_index_landmark_limit: V3_VIDEO_INDEX_LANDMARK_LIMIT,
+        retrieval_prefilter_limit: V3_RETRIEVAL_PREFILTER_LIMIT,
+        retrieval_offset_bin_ms: V3_RETRIEVAL_OFFSET_BIN_MS,
+        retrieval_region_ms: V3_RETRIEVAL_REGION_MS,
+        retrieval_gap_ms: V3_RETRIEVAL_GAP_MS,
+        common_bucket_min_skip_df: V3_COMMON_BUCKET_MIN_SKIP_DF,
+        common_bucket_file_divisor: V3_COMMON_BUCKET_FILE_DIVISOR,
+        video_lsh_bands: VIDEO_LSH_BANDS,
+        video_lsh_bits_per_band: VIDEO_LSH_BITS_PER_BAND,
         video_hamming_global: V3_VIDEO_HAMMING_GLOBAL,
         video_hamming_center: V3_VIDEO_HAMMING_CENTER,
         video_hamming_edge: V3_VIDEO_HAMMING_EDGE,
         video_hamming_temporal: V3_VIDEO_HAMMING_TEMPORAL,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn v3_tuning_serializes_stable_calibration_fields() {
+        let value = serde_json::to_value(current_v3_tuning()).expect("V3 tuning should serialize");
+
+        assert_eq!(
+            value["audioVerifyLandmarkLimit"].as_u64(),
+            Some(V3_AUDIO_VERIFY_LANDMARK_LIMIT as u64)
+        );
+        assert_eq!(
+            value["audioIndexLandmarkLimit"].as_u64(),
+            Some(V3_AUDIO_INDEX_LANDMARK_LIMIT as u64)
+        );
+        assert_eq!(
+            value["videoVerifyLandmarkLimit"].as_u64(),
+            Some(V3_VIDEO_VERIFY_LANDMARK_LIMIT as u64)
+        );
+        assert_eq!(
+            value["videoIndexLandmarkLimit"].as_u64(),
+            Some(V3_VIDEO_INDEX_LANDMARK_LIMIT as u64)
+        );
+        assert_eq!(
+            value["retrievalPrefilterLimit"].as_u64(),
+            Some(V3_RETRIEVAL_PREFILTER_LIMIT as u64)
+        );
+        assert_eq!(
+            value["retrievalOffsetBinMs"].as_i64(),
+            Some(V3_RETRIEVAL_OFFSET_BIN_MS)
+        );
+        assert_eq!(
+            value["retrievalRegionMs"].as_i64(),
+            Some(V3_RETRIEVAL_REGION_MS)
+        );
+        assert_eq!(value["retrievalGapMs"].as_i64(), Some(V3_RETRIEVAL_GAP_MS));
+        assert_eq!(
+            value["commonBucketMinSkipDf"].as_i64(),
+            Some(V3_COMMON_BUCKET_MIN_SKIP_DF)
+        );
+        assert_eq!(
+            value["commonBucketFileDivisor"].as_i64(),
+            Some(V3_COMMON_BUCKET_FILE_DIVISOR)
+        );
+        assert_eq!(
+            value["videoLshBands"].as_u64(),
+            Some(u64::from(VIDEO_LSH_BANDS))
+        );
+        assert_eq!(
+            value["videoLshBitsPerBand"].as_u64(),
+            Some(u64::from(VIDEO_LSH_BITS_PER_BAND))
+        );
     }
 }

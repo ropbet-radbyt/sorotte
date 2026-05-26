@@ -17,18 +17,16 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use sorotte_media_match::{
     MEDIA_MATCH_ALGORITHM_VERSION, MEDIA_MATCH_ANCHOR_VERSION, MediaExtractionSettings,
-    MediaFingerprintBlobV3, MediaFingerprintError, MediaFingerprintProfile, MediaFingerprintRecord,
-    MediaMatchCache, MediaMatchCandidateDecision, MediaMatchDecision, MediaMatchSettings,
-    MediaMatchTier, MediaMatchToolPaths, MediaMatchV3RetrievalStats,
-    audio_index_landmarks_v3_from_record, decide_media_match,
+    MediaFingerprintError, MediaFingerprintProfile, MediaFingerprintRecord, MediaMatchCache,
+    MediaMatchCandidateDecision, MediaMatchDecision, MediaMatchSettings, MediaMatchTier,
+    MediaMatchToolPaths, MediaMatchV3RetrievalStats, decide_media_match,
     delete_media_match_v3_file_and_fingerprints, delete_media_match_v3_fingerprints_and_anchors,
-    encode_media_fingerprint_blob_v3, fingerprint_media_file_cancellable_with_report,
-    load_media_match_v3_cache_for_settings, load_media_match_v3_record_for_path,
-    media_extraction_settings_hash, media_fingerprint_blob_v3_from_record,
+    fingerprint_media_file_cancellable_with_report, load_media_match_v3_cache_for_settings,
+    load_media_match_v3_record_for_path, media_extraction_settings_hash,
     media_match_v3_anchor_candidate_paths_with_stats, media_match_wire_signature_from_value,
     media_match_wire_value_from_records, normalize_media_path, open_media_match_v3_index,
     rank_media_match_candidates, refresh_anchor_stats_v3, save_media_match_v3_record,
-    video_index_landmarks_v3_from_record,
+    summarize_record_v3_diagnostics,
 };
 
 #[cfg(test)]
@@ -170,22 +168,11 @@ impl MediaMatchRebuildInstrumentation {
     }
 
     fn add_saved_record(&mut self, record: &MediaFingerprintRecord) {
-        let blob = media_fingerprint_blob_v3_from_record(record);
-        let duration_ms = record.duration_seconds.map(seconds_to_millis_u64);
-        self.audio_blob_bytes += encode_media_fingerprint_blob_v3(&MediaFingerprintBlobV3 {
-            duration_ms,
-            audio_landmarks: blob.audio_landmarks.clone(),
-            video_landmarks: Vec::new(),
-        })
-        .len();
-        self.video_blob_bytes += encode_media_fingerprint_blob_v3(&MediaFingerprintBlobV3 {
-            duration_ms,
-            audio_landmarks: Vec::new(),
-            video_landmarks: blob.video_landmarks.clone(),
-        })
-        .len();
-        self.audio_index_rows += audio_index_landmarks_v3_from_record(record).len();
-        self.video_index_rows += video_index_landmarks_v3_from_record(record).len();
+        let diagnostics = summarize_record_v3_diagnostics(record);
+        self.audio_blob_bytes += diagnostics.audio_blob_bytes;
+        self.video_blob_bytes += diagnostics.video_blob_bytes;
+        self.audio_index_rows += diagnostics.audio_index_count;
+        self.video_index_rows += diagnostics.video_index_count;
     }
 
     fn add_stats_refresh(&mut self, elapsed_millis: u128) {
@@ -219,14 +206,6 @@ impl MediaMatchRebuildInstrumentation {
             self.stats_refresh_millis,
             self.debug_record_bytes
         )
-    }
-}
-
-fn seconds_to_millis_u64(seconds: f64) -> u64 {
-    if seconds.is_finite() && seconds >= 0.0 {
-        (seconds * 1000.0).round().min(u64::MAX as f64) as u64
-    } else {
-        0
     }
 }
 
@@ -1803,10 +1782,11 @@ fn summarize_current_media_match(
         .as_ref()
         .map(format_media_match_v3_retrieval_stats)
         .unwrap_or_default();
-    // TODO(media-match): pass the runtime owner's current playback position
-    // into this summary and append `format_media_match_position_mapping_diagnostic`
-    // to debug evidence only. Do not infer across edit gaps or change
-    // readiness/autoplay/seek behavior when this diagnostic is wired.
+    // TODO(media-match): the runtime owner has playback position as
+    // `sorotte_client_core::session::SessionState::local_position`; thread that value into
+    // `summarize_current_media_match` and append `format_media_match_position_mapping_diagnostic`
+    // to debug evidence only. Do not infer across edit gaps or change readiness/autoplay/seek
+    // behavior when this diagnostic is wired.
     let anchor_candidate_set = anchor_candidates.iter().cloned().collect::<BTreeSet<_>>();
     let use_anchor_candidates = !anchor_candidate_set.is_empty();
     let ranked = rank_media_match_candidates(
@@ -2002,7 +1982,7 @@ fn format_media_match_evidence_summary(decision: &MediaMatchDecision) -> String 
         parts.push(format!(
             "audio similarity={:.2} shared={:.2} duration_delta={}",
             audio.similarity,
-            audio.shared_token_ratio,
+            audio.shared_anchor_ratio,
             format_optional_seconds(audio.duration_delta_seconds)
         ));
     }
@@ -2046,10 +2026,9 @@ fn format_media_match_evidence_summary(decision: &MediaMatchDecision) -> String 
     parts.join(" | ")
 }
 
-// TODO(media-match): when the runtime summary callsite has the local playback
-// position, use this formatting path for debug evidence only. The current
-// `summarize_current_media_match` inputs have the best V3 decision but not the
-// player's current timestamp.
+// TODO(media-match): wire `sorotte_client_core::session::SessionState::local_position`
+// into `summarize_current_media_match` and use this formatting path for debug evidence only.
+// The current summary inputs have the best V3 decision but not the player's current timestamp.
 #[cfg(test)]
 fn format_media_match_position_mapping_diagnostic(
     decision: &MediaMatchDecision,
