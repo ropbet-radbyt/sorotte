@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -320,17 +320,45 @@ pub fn resolve_media_match_v3_diagnostic_manifest(
         .cases
         .iter()
         .map(|case| {
+            let mut candidate_ids = BTreeSet::new();
+            let mut no_id_candidate_paths = BTreeSet::new();
+            let candidates = case
+                .candidates
+                .iter()
+                .map(|candidate| {
+                    let path = resolve_manifest_path(manifest_dir, &base, &candidate.path);
+                    let mut expectation = candidate.clone();
+                    if let Some(id) = expectation.id.as_deref() {
+                        let trimmed = id.trim();
+                        if trimmed.is_empty() {
+                            return Err(format!(
+                                "case '{}' candidate '{}' has a blank id",
+                                case.name, candidate.path
+                            ));
+                        }
+                        if !candidate_ids.insert(trimmed.to_owned()) {
+                            return Err(format!(
+                                "case '{}' has duplicate candidate id '{}'",
+                                case.name, trimmed
+                            ));
+                        }
+                        expectation.id = Some(trimmed.to_owned());
+                    } else {
+                        let key = path.to_string_lossy().to_string();
+                        if !no_id_candidate_paths.insert(key.clone()) {
+                            return Err(format!(
+                                "case '{}' has duplicate candidate path '{}' without an id",
+                                case.name, key
+                            ));
+                        }
+                    }
+                    Ok(MediaMatchV3ResolvedManifestCandidate { path, expectation })
+                })
+                .collect::<Result<Vec<_>, String>>()?;
             Ok(MediaMatchV3ResolvedManifestCase {
                 name: case.name.clone(),
                 query: resolve_manifest_path(manifest_dir, &base, &case.query),
-                candidates: case
-                    .candidates
-                    .iter()
-                    .map(|candidate| MediaMatchV3ResolvedManifestCandidate {
-                        path: resolve_manifest_path(manifest_dir, &base, &candidate.path),
-                        expectation: candidate.clone(),
-                    })
-                    .collect(),
+                candidates,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -647,6 +675,75 @@ mod tests {
     }
 
     #[test]
+    fn manifest_rejects_duplicate_candidate_ids_in_case() {
+        let manifest = MediaMatchV3DiagnosticManifest {
+            profile: "audio-constellation-v3".to_owned(),
+            base_dir: None,
+            cases: vec![MediaMatchV3DiagnosticManifestCase {
+                name: "duplicate".to_owned(),
+                query: "query.mkv".to_owned(),
+                candidates: vec![
+                    test_expectation_with_id("same-id", "candidate-a.mkv"),
+                    test_expectation_with_id("same-id", "candidate-b.mkv"),
+                ],
+            }],
+        };
+
+        let error = resolve_media_match_v3_diagnostic_manifest(
+            &manifest,
+            &PathBuf::from("C:/manifest-root"),
+        )
+        .expect_err("duplicate candidate ids should be rejected");
+
+        assert!(error.contains("duplicate candidate id"));
+    }
+
+    #[test]
+    fn manifest_rejects_blank_candidate_id() {
+        let manifest = MediaMatchV3DiagnosticManifest {
+            profile: "audio-constellation-v3".to_owned(),
+            base_dir: None,
+            cases: vec![MediaMatchV3DiagnosticManifestCase {
+                name: "blank".to_owned(),
+                query: "query.mkv".to_owned(),
+                candidates: vec![test_expectation_with_id("  ", "candidate.mkv")],
+            }],
+        };
+
+        let error = resolve_media_match_v3_diagnostic_manifest(
+            &manifest,
+            &PathBuf::from("C:/manifest-root"),
+        )
+        .expect_err("blank candidate id should be rejected");
+
+        assert!(error.contains("blank id"));
+    }
+
+    #[test]
+    fn manifest_rejects_duplicate_candidate_paths_without_ids() {
+        let manifest = MediaMatchV3DiagnosticManifest {
+            profile: "audio-constellation-v3".to_owned(),
+            base_dir: None,
+            cases: vec![MediaMatchV3DiagnosticManifestCase {
+                name: "paths".to_owned(),
+                query: "query.mkv".to_owned(),
+                candidates: vec![
+                    test_expectation_without_id("candidate.mkv"),
+                    test_expectation_without_id("candidate.mkv"),
+                ],
+            }],
+        };
+
+        let error = resolve_media_match_v3_diagnostic_manifest(
+            &manifest,
+            &PathBuf::from("C:/manifest-root"),
+        )
+        .expect_err("duplicate no-id paths should be rejected");
+
+        assert!(error.contains("duplicate candidate path"));
+    }
+
+    #[test]
     fn manifest_base_dir_resolves_relative_to_manifest_dir() {
         let manifest = MediaMatchV3DiagnosticManifest {
             profile: "audio-constellation-v3".to_owned(),
@@ -793,6 +890,32 @@ mod tests {
 
         assert_eq!(value["cacheRoot"], cache_root.to_string_lossy().as_ref());
         assert_eq!(value["cacheRetained"], true);
+    }
+
+    fn test_expectation_with_id(id: &str, path: &str) -> MediaMatchV3DiagnosticExpectation {
+        MediaMatchV3DiagnosticExpectation {
+            id: Some(id.to_owned()),
+            path: path.to_owned(),
+            expected_class: None,
+            minimum_tier: None,
+            expected_offset_ms: None,
+            max_offset_error_ms: None,
+            autoplay_eligible: None,
+            must_be_retrieved: false,
+        }
+    }
+
+    fn test_expectation_without_id(path: &str) -> MediaMatchV3DiagnosticExpectation {
+        MediaMatchV3DiagnosticExpectation {
+            id: None,
+            path: path.to_owned(),
+            expected_class: None,
+            minimum_tier: None,
+            expected_offset_ms: None,
+            max_offset_error_ms: None,
+            autoplay_eligible: None,
+            must_be_retrieved: false,
+        }
     }
 
     fn decision_with_offset_ms(offset_ms: i64) -> MediaMatchDecision {

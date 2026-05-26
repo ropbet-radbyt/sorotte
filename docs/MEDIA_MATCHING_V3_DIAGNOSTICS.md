@@ -52,16 +52,35 @@ cargo run -p sorotte-media-match --bin v3_report_compare -- reports/combined-bef
 
 The comparison tool reports new failures, resolved failures, class/tier changes,
 retrieval-rank changes, offset-error changes, and aggregate metric deltas. It
-uses strict regression behavior by default and exits nonzero when the current
-report has any new expectation failure, any baseline pair missing from the
-current report, or any `mustBeRetrieved` candidate that was not retrieved. A
-resolved failure does not cancel out a new failure.
+uses regression behavior by default and exits nonzero when the current report has
+any new expectation failure, any baseline pair missing from the current report,
+any new failed pair added in the current report, or any new `mustBeRetrieved`
+retrieval miss that was not already a miss in the baseline. A resolved failure
+does not cancel out a new failure.
+
+Comparison modes:
+
+- Default regression mode:
+  `v3_report_compare baseline.json current.json`
+- Strict current-quality mode:
+  `v3_report_compare --strict baseline.json current.json`
+- Net failure-count mode:
+  `v3_report_compare --net-failures-only baseline.json current.json`
+
+Strict mode exits nonzero for any current failed expectation, any current
+`mustBeRetrieved` retrieval miss, or any missing baseline pair. Net mode keeps
+the old behavior and exits nonzero only when the current report has more failed
+expectations than the baseline.
 
 The comparison output includes a top-level `summary` with regression status and
-counts for baseline/current failures, new failures, resolved failures, missing
-pairs, new pairs, and retrieval misses. It also reports aggregate deltas,
+unresolved-failure status plus counts for baseline/current failures, new
+failures, resolved failures, missing pairs, new pairs, new failed pairs,
+retrieval misses, and new retrieval misses. It also reports aggregate deltas,
 including extraction time, retrieval time, blob bytes, index rows, and raw hit
 rows.
+
+Duplicate comparison keys in either report are surfaced as duplicate pairs and
+treated as regressions because they make pair-level comparison ambiguous.
 
 Review failures in this order:
 
@@ -96,6 +115,23 @@ same manifests and `--cache-root`, then compare JSON reports with
 Do not tune thresholds until at least one small mixed corpus report exists for
 both `audio-constellation-v3` and `combined-v3`. Tune from report patterns, not
 from a single isolated fixture.
+
+Capture first-run notes in a small table before tuning:
+
+| Case ID | Expected Class | Actual Class | Retrieval Rank | Offset Error | Issue Category | Likely Cause | Action |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `same-episode-x264-x265` | `SameCutStrong` |  |  |  |  |  |  |
+
+Use these issue categories consistently:
+
+- retrieval miss
+- false `SameCutStrong`
+- wrong `SameMediaDifferentCut`
+- wrong `SharedIntroOutroOnly`
+- offset error
+- extraction time
+- raw hit rows
+- blob/index size
 
 ## Manifest
 
@@ -135,7 +171,9 @@ Candidate `id` is optional but recommended for real corpus runs. Report
 comparison matches pairs by `case.name` plus `candidateId` when `id` is present;
 otherwise it falls back to `case.name` plus the candidate path. Use `id` when
 reports may be generated from different media roots or machines. Path fallback is
-fine for one-machine runs where report paths are stable.
+fine for one-machine runs where report paths are stable. Candidate IDs must be
+non-empty and unique within a case. When IDs are absent, duplicate candidate
+paths within the same case are rejected to avoid ambiguous comparison keys.
 
 Profiles:
 
