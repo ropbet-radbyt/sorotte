@@ -30,6 +30,35 @@ V3 requires only `ffmpeg` and `ffprobe`. The runner uses
 `SOROTTE_MEDIA_MATCH_FFMPEG` and `SOROTTE_MEDIA_MATCH_FFPROBE` when set;
 otherwise it resolves `ffmpeg` and `ffprobe` from `PATH`.
 
+## Corpus Calibration Workflow
+
+Run the audio-first profile before the combined profile. This separates
+retrieval/audio alignment failures from video-hardening behavior:
+
+```powershell
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-before.json --cache-root .media-match-v3-cache
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.combined.json --output reports/combined-before.json --cache-root .media-match-v3-cache
+```
+
+After an algorithm or threshold change, rerun with the same manifests and cache
+root into new report names, then diff the JSON reports:
+
+```powershell
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-after.json --cache-root .media-match-v3-cache
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.combined.json --output reports/combined-after.json --cache-root .media-match-v3-cache
+git diff --no-index reports/audio-before.json reports/audio-after.json
+git diff --no-index reports/combined-before.json reports/combined-after.json
+```
+
+Review failures in this order:
+
+1. `mustBeRetrieved`
+2. direct decision class/tier
+3. offset error
+4. autoplay eligibility
+5. raw hit rows / common bucket pressure
+6. extraction time / blob bytes
+
 ## Manifest
 
 Start from

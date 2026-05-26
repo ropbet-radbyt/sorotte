@@ -1,10 +1,35 @@
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
-use crate::*;
+use crate::{
+    AlignedSegmentV3, AudioAnchor, AudioMatchEvidence, DEFAULT_ANCHOR_ALIGNMENT_TOLERANCE_MS,
+    DEFAULT_ANCHOR_OFFSET_BIN_MS, DEFAULT_FRAME_HAMMING_THRESHOLD, MAX_BROAD_SCALE_FIT_PAIRS,
+    MatchClassV3, MediaAnchorProfile, MediaFingerprintRecord, MediaMatchDecision,
+    MediaMatchEvidence, MediaMatchSettings, MediaMatchTier, MediaTimelineAlignment,
+    MediaTimelineMapV3, MetadataMatchEvidence, V3_EDGE_REGION_MAX_MS, V3_EDGE_REGION_MIN_MS,
+    V3_PIECEWISE_MAX_HYPOTHESIS_PAIRS, V3_SEGMENT_AUDIO_MIN_PAIRS, V3_SEGMENT_AUDIO_MIN_SPAN_MS,
+    V3_SEGMENT_AUDIO_VIDEO_MIN_PAIRS, V3_SEGMENT_AUDIO_VIDEO_MIN_SPAN_MS, V3_SEGMENT_MERGE_GAP_MS,
+    V3_SEGMENT_MERGE_SCALE_PPM, V3_SEGMENT_MIN_PAIR_DELTA_MS, V3_SEGMENT_SPLIT_GAP_MS,
+    V3_SEGMENT_VIDEO_MIN_PAIRS, V3_SEGMENT_VIDEO_MIN_SPAN_MS, VideoAnchor, VideoFingerprint,
+    VideoMatchEvidence, frame_hash_distance, media_anchor_profile_from_record,
+    v3_video_anchor_hashes_match, v3_video_bucket_kind_matches, v3_video_kind_is_supported,
+};
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MediaMatchCandidateDecision {
     pub candidate_path: String,
     pub decision: MediaMatchDecision,
+}
+
+pub(crate) fn media_match_tier_rank(tier: MediaMatchTier) -> u8 {
+    match tier {
+        MediaMatchTier::Exact => 5,
+        MediaMatchTier::Strong => 4,
+        MediaMatchTier::Probable => 3,
+        MediaMatchTier::Weak => 2,
+        MediaMatchTier::Unknown => 1,
+        MediaMatchTier::Reject => 0,
+    }
 }
 
 pub fn rank_media_match_candidates<'a>(

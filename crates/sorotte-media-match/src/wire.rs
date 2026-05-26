@@ -7,7 +7,7 @@ use crate::{
     MediaAnchorProfile, MediaExtractionSettings, MediaFingerprintRecord, MediaMatchDecision,
     MediaMatchSettings, decide_media_match_anchors, encode_wire_audio_anchor_summary,
     encode_wire_video_anchor_summary, media_anchor_profile_from_record,
-    media_anchor_profile_from_summaries, media_match_tier_rank,
+    media_anchor_profile_from_wire_summaries, media_match_tier_rank,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -198,7 +198,7 @@ pub fn media_anchor_profile_from_wire_profile(
                 .map_err(|error| format!("media match v3 video anchors are not base64: {error}"))
         })
         .transpose()?;
-    media_anchor_profile_from_summaries(
+    media_anchor_profile_from_wire_summaries(
         profile.profile.clone(),
         profile.duration_ms,
         audio_summary.as_deref(),
