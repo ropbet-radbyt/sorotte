@@ -33,7 +33,8 @@ impl MediaMatchV3ReportPairKey {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MediaMatchV3ReportCompatibilityOptions {
     pub allow_different_profile: bool,
     pub allow_different_settings: bool,
@@ -98,6 +99,7 @@ pub struct MediaMatchV3ReportComparisonSummary {
 pub struct MediaMatchV3ReportComparison {
     pub comparison_mode: String,
     pub compatibility: MediaMatchV3ReportCompatibility,
+    pub compatibility_options: MediaMatchV3ReportCompatibilityOptions,
     pub summary: MediaMatchV3ReportComparisonSummary,
     pub baseline_failed: usize,
     pub current_failed: usize,
@@ -300,12 +302,15 @@ pub fn compare_media_match_v3_reports_with_options(
     validate_media_match_v3_diagnostic_report(current)
         .map_err(|error| format!("current report is invalid: {error}"))?;
     validate_media_match_v3_report_pair_compatible(baseline, current, options)?;
-    Ok(compare_media_match_v3_reports_unchecked(baseline, current))
+    Ok(compare_media_match_v3_reports_unchecked(
+        baseline, current, *options,
+    ))
 }
 
 fn compare_media_match_v3_reports_unchecked(
     baseline: &MediaMatchV3DiagnosticReport,
     current: &MediaMatchV3DiagnosticReport,
+    compatibility_options: MediaMatchV3ReportCompatibilityOptions,
 ) -> MediaMatchV3ReportComparison {
     let compatibility = report_compatibility(baseline, current);
     let baseline_pairs = report_pairs_by_key(baseline);
@@ -438,6 +443,7 @@ fn compare_media_match_v3_reports_unchecked(
     MediaMatchV3ReportComparison {
         comparison_mode: "regression".to_owned(),
         compatibility,
+        compatibility_options,
         summary,
         baseline_failed: baseline.summary.failed,
         current_failed: current.summary.failed,
@@ -741,6 +747,15 @@ mod tests {
         assert_eq!(value["summary"]["newFailures"], 1);
         assert_eq!(value["summary"]["resolvedFailures"], 0);
         assert_eq!(value["comparisonMode"], "regression");
+        assert_eq!(
+            value["compatibilityOptions"]["allowDifferentProfile"],
+            false
+        );
+        assert_eq!(
+            value["compatibilityOptions"]["allowDifferentSettings"],
+            false
+        );
+        assert_eq!(value["compatibilityOptions"]["allowDifferentTuning"], false);
     }
 
     #[test]
@@ -1424,6 +1439,12 @@ mod tests {
         .expect("allowed settings mismatch should compare");
 
         assert!(!comparison.compatibility.settings_hash_matches);
+        assert!(comparison.compatibility_options.allow_different_settings);
+        let value = serde_json::to_value(&comparison).expect("comparison should serialize");
+        assert_eq!(
+            value["compatibilityOptions"]["allowDifferentSettings"],
+            true
+        );
     }
 
     fn report_with_candidate(

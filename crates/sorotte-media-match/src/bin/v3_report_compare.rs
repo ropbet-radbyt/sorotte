@@ -309,6 +309,7 @@ mod tests {
         .expect("allowed profile mismatch should compare");
 
         assert!(!comparison.compatibility.profile_matches);
+        assert!(comparison.compatibility_options.allow_different_profile);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -389,6 +390,7 @@ mod tests {
                 settings_hash_matches: true,
                 tuning_matches: true,
             },
+            compatibility_options: MediaMatchV3ReportCompatibilityOptions::default(),
             summary: MediaMatchV3ReportComparisonSummary {
                 regression,
                 unresolved_failure,
