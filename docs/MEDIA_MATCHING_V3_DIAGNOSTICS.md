@@ -58,6 +58,19 @@ any new failed pair added in the current report, or any new `mustBeRetrieved`
 retrieval miss that was not already a miss in the baseline. A resolved failure
 does not cancel out a new failure.
 
+Reports must be compatible by default. `v3_report_compare` rejects comparisons
+unless `algorithmVersion`, `profile`, `settingsHash`, and `tuning` all match.
+Use explicit allow flags only for exploratory comparisons:
+
+```powershell
+v3_report_compare [--strict|--net-failures-only] [--allow-different-profile] [--allow-different-settings] [--allow-different-tuning] baseline.json current.json
+```
+
+Do not compare an `audio-constellation-v3` report with a `combined-v3` report
+unless you intentionally pass `--allow-different-profile`. Likewise, do not
+compare reports from different settings hashes or tuning unless that mismatch is
+the thing being inspected.
+
 Comparison modes:
 
 - Default regression mode:
@@ -76,24 +89,25 @@ Exit codes:
 
 - `0`: comparison completed and the selected mode did not fail.
 - `1`: comparison completed and the selected mode failed.
-- `2`: usage error, invalid JSON, or invalid diagnostic report input.
+- `2`: usage error, invalid JSON, invalid diagnostic report input, or
+  incompatible reports.
 
 Reports are validated before comparison. Summary counts must match the candidate
-rows, retrieval totals must match per-case retrieval metrics, candidate IDs must
-be non-empty, and duplicate comparison keys are invalid input rather than
-regressions.
+rows, retrieval and aggregate fingerprint totals must match their detailed
+metrics, candidate IDs must be non-empty, and duplicate comparison keys are
+invalid input rather than regressions.
 
 The comparison output includes a top-level `summary` with regression status and
 unresolved-failure status plus counts for baseline/current failures, new
 failures, resolved failures, missing pairs, new pairs, new failed pairs,
 retrieval misses, and new retrieval misses. It also reports aggregate deltas,
 including extraction time, retrieval time, blob bytes, index rows, and raw hit
-rows.
+rows. A top-level `compatibility` block records whether algorithm version,
+profile, settings hash, and tuning matched.
 
-Generated reports should never contain duplicate comparison keys. Library-level
-comparison output still exposes duplicate pair lists for diagnostics, but the CLI
+Generated reports should never contain duplicate comparison keys. Validation
 rejects duplicate keys before comparison because they make pair-level comparison
-ambiguous.
+ambiguous, and normal comparison output does not include duplicate-key arrays.
 
 Review failures in this order:
 
@@ -280,8 +294,10 @@ cargo run -p sorotte-media-match --bin v3_report_compare -- reports/audio-before
 Self-comparison should produce no regressions, no missing pairs, and no changes.
 
 Run `audio-constellation-v3` first to isolate audio retrieval/alignment issues,
-then run `combined-v3` to evaluate video hardening. Compare reports before
-tuning thresholds.
+then run `combined-v3` to evaluate video hardening. Keep separate stable cache
+roots and report sequences per profile. Compare reports before tuning thresholds.
+When first failures appear, classify them as retrieval miss, direct decision
+mismatch, class too weak, class too strong, offset error, or cost/storage issue.
 
 ## Recommended Corpus
 

@@ -1,8 +1,8 @@
 use std::{env, fs, process::ExitCode};
 
 use sorotte_media_match::{
-    MediaMatchV3DiagnosticReport, MediaMatchV3ReportComparison, compare_media_match_v3_reports,
-    validate_media_match_v3_diagnostic_report,
+    MediaMatchV3DiagnosticReport, MediaMatchV3ReportComparison,
+    MediaMatchV3ReportCompatibilityOptions, compare_media_match_v3_reports_with_options,
 };
 
 fn main() -> ExitCode {
@@ -39,11 +39,11 @@ fn run_with_args(
     let args = parse_args(args)?;
     let baseline = read_report(&args.baseline_path)?;
     let current = read_report(&args.current_path)?;
-    validate_media_match_v3_diagnostic_report(&baseline)
-        .map_err(|error| format!("baseline report is invalid: {error}"))?;
-    validate_media_match_v3_diagnostic_report(&current)
-        .map_err(|error| format!("current report is invalid: {error}"))?;
-    let mut comparison = compare_media_match_v3_reports(&baseline, &current);
+    let mut comparison = compare_media_match_v3_reports_with_options(
+        &baseline,
+        &current,
+        &args.compatibility_options,
+    )?;
     comparison.comparison_mode = args.mode.label().to_owned();
     Ok(comparison)
 }
@@ -68,12 +68,14 @@ impl ComparisonMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CliArgs {
     mode: ComparisonMode,
+    compatibility_options: MediaMatchV3ReportCompatibilityOptions,
     baseline_path: String,
     current_path: String,
 }
 
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String> {
     let mut mode = ComparisonMode::Regression;
+    let mut compatibility_options = MediaMatchV3ReportCompatibilityOptions::default();
     let mut baseline_path = None;
     let mut current_path = None;
     for arg in args {
@@ -90,6 +92,15 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
                 }
                 mode = ComparisonMode::NetFailuresOnly;
             }
+            "--allow-different-profile" => {
+                compatibility_options.allow_different_profile = true;
+            }
+            "--allow-different-settings" => {
+                compatibility_options.allow_different_settings = true;
+            }
+            "--allow-different-tuning" => {
+                compatibility_options.allow_different_tuning = true;
+            }
             _ if baseline_path.is_none() => baseline_path = Some(arg),
             _ if current_path.is_none() => current_path = Some(arg),
             _ => return Err(usage()),
@@ -103,6 +114,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
     };
     Ok(CliArgs {
         mode,
+        compatibility_options,
         baseline_path,
         current_path,
     })
@@ -132,12 +144,13 @@ fn read_report(path: &str) -> Result<MediaMatchV3DiagnosticReport, String> {
 }
 
 fn usage() -> String {
-    "usage: v3_report_compare [--strict|--net-failures-only] <baseline-report.json> <current-report.json>".to_owned()
+    "usage: v3_report_compare [--strict|--net-failures-only] [--allow-different-profile] [--allow-different-settings] [--allow-different-tuning] <baseline-report.json> <current-report.json>".to_owned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sorotte_media_match::MediaMatchV3ReportCompatibility;
     use std::{
         fs,
         path::PathBuf,
@@ -158,6 +171,9 @@ mod tests {
             .expect("args should parse");
 
         assert_eq!(args.mode, ComparisonMode::Regression);
+        assert!(!args.compatibility_options.allow_different_profile);
+        assert!(!args.compatibility_options.allow_different_settings);
+        assert!(!args.compatibility_options.allow_different_tuning);
         assert_eq!(args.baseline_path, "baseline.json");
         assert_eq!(args.current_path, "current.json");
     }
@@ -184,6 +200,22 @@ mod tests {
         .expect("args should parse");
 
         assert_eq!(args.mode, ComparisonMode::NetFailuresOnly);
+    }
+
+    #[test]
+    fn parse_allow_compatibility_flags() {
+        let args = parse_args([
+            "--allow-different-profile".to_owned(),
+            "--allow-different-settings".to_owned(),
+            "--allow-different-tuning".to_owned(),
+            "baseline.json".to_owned(),
+            "current.json".to_owned(),
+        ])
+        .expect("args should parse");
+
+        assert!(args.compatibility_options.allow_different_profile);
+        assert!(args.compatibility_options.allow_different_settings);
+        assert!(args.compatibility_options.allow_different_tuning);
     }
 
     #[test]
@@ -240,6 +272,69 @@ mod tests {
     }
 
     #[test]
+    fn run_rejects_incompatible_profile_by_default() {
+        let root = temp_dir("v3-report-compare-profile-invalid");
+        let baseline = root.join("baseline.json");
+        let current = root.join("current.json");
+        let mut different_profile = report(true, Some("candidate"));
+        different_profile.profile = "combined-v3".to_owned();
+        write_report(&baseline, &report(true, Some("candidate")));
+        write_report(&current, &different_profile);
+
+        let error = run_with_args([
+            baseline.to_string_lossy().to_string(),
+            current.to_string_lossy().to_string(),
+        ])
+        .expect_err("different profile should be rejected");
+
+        assert!(error.contains("profile differs"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn run_allows_selected_profile_mismatch() {
+        let root = temp_dir("v3-report-compare-profile-allowed");
+        let baseline = root.join("baseline.json");
+        let current = root.join("current.json");
+        let mut different_profile = report(true, Some("candidate"));
+        different_profile.profile = "combined-v3".to_owned();
+        write_report(&baseline, &report(true, Some("candidate")));
+        write_report(&current, &different_profile);
+
+        let comparison = run_with_args([
+            "--allow-different-profile".to_owned(),
+            baseline.to_string_lossy().to_string(),
+            current.to_string_lossy().to_string(),
+        ])
+        .expect("allowed profile mismatch should compare");
+
+        assert!(!comparison.compatibility.profile_matches);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn run_rejects_invalid_report_before_compatibility_check() {
+        let root = temp_dir("v3-report-compare-invalid-before-compat");
+        let baseline = root.join("baseline.json");
+        let current = root.join("current.json");
+        let mut invalid = report(true, Some("candidate"));
+        invalid.summary.failed = 1;
+        let mut different_profile = report(true, Some("candidate"));
+        different_profile.profile = "combined-v3".to_owned();
+        write_report(&baseline, &invalid);
+        write_report(&current, &different_profile);
+
+        let error = run_with_args([
+            baseline.to_string_lossy().to_string(),
+            current.to_string_lossy().to_string(),
+        ])
+        .expect_err("invalid report should be rejected before compatibility");
+
+        assert!(error.contains("baseline report is invalid"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn selected_modes_use_distinct_failure_predicates() {
         let old_unresolved = comparison(false, true, false);
 
@@ -288,6 +383,12 @@ mod tests {
         };
         MediaMatchV3ReportComparison {
             comparison_mode: "regression".to_owned(),
+            compatibility: MediaMatchV3ReportCompatibility {
+                algorithm_version_matches: true,
+                profile_matches: true,
+                settings_hash_matches: true,
+                tuning_matches: true,
+            },
             summary: MediaMatchV3ReportComparisonSummary {
                 regression,
                 unresolved_failure,
@@ -300,8 +401,6 @@ mod tests {
                 new_failed_pairs: 0,
                 retrieval_misses: usize::from(unresolved_failure),
                 new_retrieval_misses: usize::from(regression),
-                duplicate_pairs_in_baseline: 0,
-                duplicate_pairs_in_current: 0,
             },
             baseline_failed,
             current_failed,
@@ -315,8 +414,6 @@ mod tests {
                 .into_iter()
                 .collect(),
             new_retrieval_misses: regression.then_some(key).into_iter().collect(),
-            duplicate_pairs_in_baseline: Vec::new(),
-            duplicate_pairs_in_current: Vec::new(),
             class_changes: Vec::new(),
             tier_changes: Vec::new(),
             retrieval_rank_changes: Vec::new(),
@@ -400,7 +497,7 @@ mod tests {
                 failed,
                 total_extraction_millis: 20,
                 total_audio_blob_bytes: 200,
-                total_video_blob_bytes: 100,
+                total_video_blob_bytes: 0,
                 total_raw_hit_rows_processed: 10,
                 total_retrieval_millis: 2,
             },

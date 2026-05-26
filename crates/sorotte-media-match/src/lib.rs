@@ -42,9 +42,11 @@ pub use identity::normalize_media_path;
 pub use matching::{MediaMatchCandidateDecision, decide_media_match, rank_media_match_candidates};
 pub use report_compare::{
     MediaMatchV3ReportComparison, MediaMatchV3ReportComparisonSummary,
+    MediaMatchV3ReportCompatibility, MediaMatchV3ReportCompatibilityOptions,
     MediaMatchV3ReportMetricDelta, MediaMatchV3ReportPairKey, MediaMatchV3ReportStatusChange,
     MediaMatchV3ReportValueChange, compare_media_match_v3_reports,
-    validate_media_match_v3_diagnostic_report,
+    compare_media_match_v3_reports_with_options, validate_media_match_v3_diagnostic_report,
+    validate_media_match_v3_report_pair_compatible,
 };
 pub use settings::{
     MediaExtractionSettings, MediaFingerprintProfile, media_extraction_settings_hash,

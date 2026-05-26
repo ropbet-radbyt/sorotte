@@ -33,6 +33,22 @@ impl MediaMatchV3ReportPairKey {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MediaMatchV3ReportCompatibilityOptions {
+    pub allow_different_profile: bool,
+    pub allow_different_settings: bool,
+    pub allow_different_tuning: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaMatchV3ReportCompatibility {
+    pub algorithm_version_matches: bool,
+    pub profile_matches: bool,
+    pub settings_hash_matches: bool,
+    pub tuning_matches: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaMatchV3ReportStatusChange {
@@ -75,14 +91,13 @@ pub struct MediaMatchV3ReportComparisonSummary {
     pub new_failed_pairs: usize,
     pub retrieval_misses: usize,
     pub new_retrieval_misses: usize,
-    pub duplicate_pairs_in_baseline: usize,
-    pub duplicate_pairs_in_current: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaMatchV3ReportComparison {
     pub comparison_mode: String,
+    pub compatibility: MediaMatchV3ReportCompatibility,
     pub summary: MediaMatchV3ReportComparisonSummary,
     pub baseline_failed: usize,
     pub current_failed: usize,
@@ -93,8 +108,6 @@ pub struct MediaMatchV3ReportComparison {
     pub new_failed_pairs_in_current: Vec<MediaMatchV3ReportPairKey>,
     pub retrieval_misses: Vec<MediaMatchV3ReportPairKey>,
     pub new_retrieval_misses: Vec<MediaMatchV3ReportPairKey>,
-    pub duplicate_pairs_in_baseline: Vec<MediaMatchV3ReportPairKey>,
-    pub duplicate_pairs_in_current: Vec<MediaMatchV3ReportPairKey>,
     pub class_changes: Vec<MediaMatchV3ReportValueChange>,
     pub tier_changes: Vec<MediaMatchV3ReportValueChange>,
     pub retrieval_rank_changes: Vec<MediaMatchV3ReportValueChange>,
@@ -113,16 +126,12 @@ impl MediaMatchV3ReportComparison {
             || !self.missing_pairs_in_current.is_empty()
             || !self.new_failed_pairs_in_current.is_empty()
             || !self.new_retrieval_misses.is_empty()
-            || !self.duplicate_pairs_in_baseline.is_empty()
-            || !self.duplicate_pairs_in_current.is_empty()
     }
 
     pub fn current_has_unresolved_failures(&self) -> bool {
         self.current_failed > 0
             || !self.retrieval_misses.is_empty()
             || !self.missing_pairs_in_current.is_empty()
-            || !self.duplicate_pairs_in_baseline.is_empty()
-            || !self.duplicate_pairs_in_current.is_empty()
     }
 }
 
@@ -209,6 +218,25 @@ pub fn validate_media_match_v3_diagnostic_report(
             report.summary.total_retrieval_millis
         ));
     }
+    let aggregate_totals = report_aggregate_fingerprint_totals(report);
+    if report.summary.total_extraction_millis != aggregate_totals.extraction_millis {
+        return Err(format!(
+            "summary.totalExtractionMillis={} does not match unique fingerprint total={}",
+            report.summary.total_extraction_millis, aggregate_totals.extraction_millis
+        ));
+    }
+    if report.summary.total_audio_blob_bytes != aggregate_totals.audio_blob_bytes {
+        return Err(format!(
+            "summary.totalAudioBlobBytes={} does not match unique fingerprint total={}",
+            report.summary.total_audio_blob_bytes, aggregate_totals.audio_blob_bytes
+        ));
+    }
+    if report.summary.total_video_blob_bytes != aggregate_totals.video_blob_bytes {
+        return Err(format!(
+            "summary.totalVideoBlobBytes={} does not match unique fingerprint total={}",
+            report.summary.total_video_blob_bytes, aggregate_totals.video_blob_bytes
+        ));
+    }
 
     let pairs = report_pairs_by_key(report);
     if let Some(key) = pairs.duplicate_keys.first() {
@@ -221,10 +249,65 @@ pub fn validate_media_match_v3_diagnostic_report(
     Ok(())
 }
 
+pub fn validate_media_match_v3_report_pair_compatible(
+    baseline: &MediaMatchV3DiagnosticReport,
+    current: &MediaMatchV3DiagnosticReport,
+    options: &MediaMatchV3ReportCompatibilityOptions,
+) -> Result<(), String> {
+    let compatibility = report_compatibility(baseline, current);
+    if !compatibility.algorithm_version_matches {
+        return Err(format!(
+            "algorithmVersion differs: baseline={}, current={}",
+            baseline.algorithm_version, current.algorithm_version
+        ));
+    }
+    if !options.allow_different_profile && !compatibility.profile_matches {
+        return Err(format!(
+            "profile differs: baseline='{}', current='{}'",
+            baseline.profile, current.profile
+        ));
+    }
+    if !options.allow_different_settings && !compatibility.settings_hash_matches {
+        return Err(format!(
+            "settingsHash differs: baseline='{}', current='{}'",
+            baseline.settings_hash, current.settings_hash
+        ));
+    }
+    if !options.allow_different_tuning && !compatibility.tuning_matches {
+        return Err("tuning differs between reports".to_owned());
+    }
+    Ok(())
+}
+
 pub fn compare_media_match_v3_reports(
     baseline: &MediaMatchV3DiagnosticReport,
     current: &MediaMatchV3DiagnosticReport,
+) -> Result<MediaMatchV3ReportComparison, String> {
+    compare_media_match_v3_reports_with_options(
+        baseline,
+        current,
+        &MediaMatchV3ReportCompatibilityOptions::default(),
+    )
+}
+
+pub fn compare_media_match_v3_reports_with_options(
+    baseline: &MediaMatchV3DiagnosticReport,
+    current: &MediaMatchV3DiagnosticReport,
+    options: &MediaMatchV3ReportCompatibilityOptions,
+) -> Result<MediaMatchV3ReportComparison, String> {
+    validate_media_match_v3_diagnostic_report(baseline)
+        .map_err(|error| format!("baseline report is invalid: {error}"))?;
+    validate_media_match_v3_diagnostic_report(current)
+        .map_err(|error| format!("current report is invalid: {error}"))?;
+    validate_media_match_v3_report_pair_compatible(baseline, current, options)?;
+    Ok(compare_media_match_v3_reports_unchecked(baseline, current))
+}
+
+fn compare_media_match_v3_reports_unchecked(
+    baseline: &MediaMatchV3DiagnosticReport,
+    current: &MediaMatchV3DiagnosticReport,
 ) -> MediaMatchV3ReportComparison {
+    let compatibility = report_compatibility(baseline, current);
     let baseline_pairs = report_pairs_by_key(baseline);
     let current_pairs = report_pairs_by_key(current);
     let baseline_keys = baseline_pairs
@@ -334,14 +417,10 @@ pub fn compare_media_match_v3_reports(
     let regression = !new_failures.is_empty()
         || !missing_pairs_in_current.is_empty()
         || !new_failed_pairs_in_current.is_empty()
-        || !new_retrieval_misses.is_empty()
-        || !baseline_pairs.duplicate_keys.is_empty()
-        || !current_pairs.duplicate_keys.is_empty();
+        || !new_retrieval_misses.is_empty();
     let unresolved_failure = current.summary.failed > 0
         || !retrieval_misses.is_empty()
-        || !missing_pairs_in_current.is_empty()
-        || !baseline_pairs.duplicate_keys.is_empty()
-        || !current_pairs.duplicate_keys.is_empty();
+        || !missing_pairs_in_current.is_empty();
     let summary = MediaMatchV3ReportComparisonSummary {
         regression,
         unresolved_failure,
@@ -354,12 +433,11 @@ pub fn compare_media_match_v3_reports(
         new_failed_pairs: new_failed_pairs_in_current.len(),
         retrieval_misses: retrieval_misses.len(),
         new_retrieval_misses: new_retrieval_misses.len(),
-        duplicate_pairs_in_baseline: baseline_pairs.duplicate_keys.len(),
-        duplicate_pairs_in_current: current_pairs.duplicate_keys.len(),
     };
 
     MediaMatchV3ReportComparison {
         comparison_mode: "regression".to_owned(),
+        compatibility,
         summary,
         baseline_failed: baseline.summary.failed,
         current_failed: current.summary.failed,
@@ -370,8 +448,6 @@ pub fn compare_media_match_v3_reports(
         new_failed_pairs_in_current,
         retrieval_misses,
         new_retrieval_misses,
-        duplicate_pairs_in_baseline: baseline_pairs.duplicate_keys,
-        duplicate_pairs_in_current: current_pairs.duplicate_keys,
         class_changes,
         tier_changes,
         retrieval_rank_changes,
@@ -424,6 +500,18 @@ fn report_pair_key(
             candidate_id: None,
             candidate_path: Some(candidate.path.clone()),
         }
+    }
+}
+
+fn report_compatibility(
+    baseline: &MediaMatchV3DiagnosticReport,
+    current: &MediaMatchV3DiagnosticReport,
+) -> MediaMatchV3ReportCompatibility {
+    MediaMatchV3ReportCompatibility {
+        algorithm_version_matches: baseline.algorithm_version == current.algorithm_version,
+        profile_matches: baseline.profile == current.profile,
+        settings_hash_matches: baseline.settings_hash == current.settings_hash,
+        tuning_matches: baseline.tuning == current.tuning,
     }
 }
 
@@ -521,6 +609,50 @@ struct FingerprintTotals {
     index_rows: i128,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct ReportAggregateFingerprintTotals {
+    extraction_millis: u128,
+    audio_blob_bytes: usize,
+    video_blob_bytes: usize,
+}
+
+fn report_aggregate_fingerprint_totals(
+    report: &MediaMatchV3DiagnosticReport,
+) -> ReportAggregateFingerprintTotals {
+    let mut seen = BTreeSet::<(String, String)>::new();
+    let mut totals = ReportAggregateFingerprintTotals::default();
+    for case in &report.cases {
+        add_aggregate_fingerprint_totals(
+            &case.query.path,
+            &case.query.diagnostics,
+            &mut seen,
+            &mut totals,
+        );
+        for candidate in &case.candidates {
+            add_aggregate_fingerprint_totals(
+                &candidate.path,
+                &candidate.diagnostics,
+                &mut seen,
+                &mut totals,
+            );
+        }
+    }
+    totals
+}
+
+fn add_aggregate_fingerprint_totals(
+    path: &str,
+    diagnostics: &MediaMatchV3DiagnosticSummary,
+    seen: &mut BTreeSet<(String, String)>,
+    totals: &mut ReportAggregateFingerprintTotals,
+) {
+    if seen.insert((path.to_owned(), diagnostics.profile.clone())) {
+        totals.extraction_millis += diagnostics.extraction_total_millis.unwrap_or_default();
+        totals.audio_blob_bytes += diagnostics.audio_blob_bytes;
+        totals.video_blob_bytes += diagnostics.video_blob_bytes;
+    }
+}
+
 fn fingerprint_totals(report: &MediaMatchV3DiagnosticReport) -> FingerprintTotals {
     let mut seen = BTreeSet::<String>::new();
     let mut totals = FingerprintTotals::default();
@@ -589,7 +721,8 @@ mod tests {
         let current =
             report_with_candidate("case", "candidate.mkv", false, "Reject", "Reject", None);
 
-        let comparison = compare_media_match_v3_reports(&baseline, &current);
+        let comparison =
+            compare_media_match_v3_reports(&baseline, &current).expect("reports should compare");
 
         assert!(comparison.current_has_more_failures());
         assert!(comparison.current_has_regressions());
@@ -623,7 +756,8 @@ mod tests {
             Some(1),
         );
 
-        let comparison = compare_media_match_v3_reports(&baseline, &current);
+        let comparison =
+            compare_media_match_v3_reports(&baseline, &current).expect("reports should compare");
 
         assert!(!comparison.current_has_more_failures());
         assert!(!comparison.current_has_regressions());
@@ -649,6 +783,9 @@ mod tests {
         baseline.summary.pair_count = 2;
         baseline.summary.passed = 1;
         baseline.summary.failed = 1;
+        baseline.summary.total_extraction_millis = 30;
+        baseline.summary.total_audio_blob_bytes = 300;
+        baseline.summary.total_video_blob_bytes = 0;
 
         let mut current =
             report_with_candidate("case", "new-failure.mkv", false, "Reject", "Reject", None);
@@ -666,8 +803,12 @@ mod tests {
         current.summary.pair_count = 2;
         current.summary.passed = 1;
         current.summary.failed = 1;
+        current.summary.total_extraction_millis = 30;
+        current.summary.total_audio_blob_bytes = 300;
+        current.summary.total_video_blob_bytes = 0;
 
-        let comparison = compare_media_match_v3_reports(&baseline, &current);
+        let comparison =
+            compare_media_match_v3_reports(&baseline, &current).expect("reports should compare");
 
         assert!(!comparison.current_has_more_failures());
         assert!(comparison.current_has_regressions());
@@ -682,7 +823,8 @@ mod tests {
         let current =
             report_with_candidate("case", "candidate.mkv", false, "Reject", "Reject", None);
 
-        let comparison = compare_media_match_v3_reports(&baseline, &current);
+        let comparison =
+            compare_media_match_v3_reports(&baseline, &current).expect("reports should compare");
 
         assert!(!comparison.current_has_regressions());
         assert!(comparison.current_has_unresolved_failures());
@@ -704,7 +846,8 @@ mod tests {
         let current =
             report_with_candidate("case", "candidate.mkv", false, "Reject", "Reject", None);
 
-        let comparison = compare_media_match_v3_reports(&baseline, &current);
+        let comparison =
+            compare_media_match_v3_reports(&baseline, &current).expect("reports should compare");
 
         assert!(comparison.current_has_regressions());
         assert_eq!(comparison.summary.new_retrieval_misses, 1);
@@ -730,8 +873,12 @@ mod tests {
         current.summary.pair_count = 2;
         current.summary.passed = 1;
         current.summary.failed = 1;
+        current.summary.total_extraction_millis = 30;
+        current.summary.total_audio_blob_bytes = 300;
+        current.summary.total_video_blob_bytes = 0;
 
-        let comparison = compare_media_match_v3_reports(&baseline, &current);
+        let comparison =
+            compare_media_match_v3_reports(&baseline, &current).expect("reports should compare");
 
         assert!(comparison.current_has_regressions());
         assert_eq!(comparison.summary.new_pairs, 1);
@@ -764,8 +911,12 @@ mod tests {
         current.summary.pair_count = 2;
         current.summary.passed = 2;
         current.summary.failed = 0;
+        current.summary.total_extraction_millis = 30;
+        current.summary.total_audio_blob_bytes = 300;
+        current.summary.total_video_blob_bytes = 0;
 
-        let comparison = compare_media_match_v3_reports(&baseline, &current);
+        let comparison =
+            compare_media_match_v3_reports(&baseline, &current).expect("reports should compare");
 
         assert!(!comparison.current_has_regressions());
         assert_eq!(comparison.summary.new_pairs, 1);
@@ -785,7 +936,8 @@ mod tests {
         let current =
             report_with_candidate("b", "current.mkv", true, "Strong", "SameCutStrong", Some(1));
 
-        let comparison = compare_media_match_v3_reports(&baseline, &current);
+        let comparison =
+            compare_media_match_v3_reports(&baseline, &current).expect("reports should compare");
 
         assert_eq!(comparison.missing_pairs_in_current[0].case_name, "a");
         assert!(comparison.current_has_regressions());
@@ -804,6 +956,9 @@ mod tests {
         baseline.summary.pair_count = 2;
         baseline.summary.passed = 0;
         baseline.summary.failed = 2;
+        baseline.summary.total_extraction_millis = 30;
+        baseline.summary.total_audio_blob_bytes = 300;
+        baseline.summary.total_video_blob_bytes = 0;
 
         let current = report_with_candidate(
             "case",
@@ -814,7 +969,8 @@ mod tests {
             Some(1),
         );
 
-        let comparison = compare_media_match_v3_reports(&baseline, &current);
+        let comparison =
+            compare_media_match_v3_reports(&baseline, &current).expect("reports should compare");
 
         assert!(!comparison.current_has_more_failures());
         assert!(comparison.current_has_regressions());
@@ -822,7 +978,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_report_keys_are_reported_as_regressions() {
+    fn report_validation_rejects_duplicate_report_keys() {
         let mut current = report_with_candidate_id(
             "case",
             "first.mkv",
@@ -846,21 +1002,14 @@ mod tests {
             .push(duplicate.cases[0].candidates[0].clone());
         current.summary.pair_count = 2;
         current.summary.passed = 2;
+        current.summary.total_extraction_millis = 30;
+        current.summary.total_audio_blob_bytes = 300;
+        current.summary.total_video_blob_bytes = 0;
 
-        let baseline = report_with_candidate_id(
-            "case",
-            "first.mkv",
-            Some("duplicate"),
-            true,
-            "Strong",
-            "SameCutStrong",
-            Some(1),
-        );
-        let comparison = compare_media_match_v3_reports(&baseline, &current);
+        let error = validate_media_match_v3_diagnostic_report(&current)
+            .expect_err("duplicate comparison keys should be invalid");
 
-        assert!(comparison.current_has_regressions());
-        assert_eq!(comparison.summary.duplicate_pairs_in_current, 1);
-        assert_eq!(comparison.duplicate_pairs_in_current.len(), 1);
+        assert!(error.contains("duplicate comparison key"));
     }
 
     #[test]
@@ -884,7 +1033,8 @@ mod tests {
             Some(1),
         );
 
-        let comparison = compare_media_match_v3_reports(&baseline, &current);
+        let comparison =
+            compare_media_match_v3_reports(&baseline, &current).expect("reports should compare");
 
         assert!(comparison.missing_pairs_in_current.is_empty());
         assert!(comparison.new_pairs_in_current.is_empty());
@@ -913,7 +1063,8 @@ mod tests {
             Some(1),
         );
 
-        let comparison = compare_media_match_v3_reports(&baseline, &current);
+        let comparison =
+            compare_media_match_v3_reports(&baseline, &current).expect("reports should compare");
 
         assert_eq!(
             comparison.missing_pairs_in_current[0]
@@ -946,8 +1097,10 @@ mod tests {
             Some(1),
         );
         current.summary.total_retrieval_millis = 9;
+        current.cases[0].retrieval.retrieval_elapsed_ms = 9;
 
-        let comparison = compare_media_match_v3_reports(&baseline, &current);
+        let comparison =
+            compare_media_match_v3_reports(&baseline, &current).expect("reports should compare");
         let delta = comparison
             .metric_deltas
             .iter()
@@ -1070,6 +1223,9 @@ mod tests {
             .push(duplicate.cases[0].candidates[0].clone());
         report.summary.pair_count = 2;
         report.summary.passed = 2;
+        report.summary.total_extraction_millis = 30;
+        report.summary.total_audio_blob_bytes = 300;
+        report.summary.total_video_blob_bytes = 0;
 
         let error = validate_media_match_v3_diagnostic_report(&report)
             .expect_err("duplicate comparison keys should be invalid");
@@ -1093,6 +1249,181 @@ mod tests {
             .expect_err("retrieval total mismatch should be invalid");
 
         assert!(error.contains("summary.totalRetrievalMillis"));
+    }
+
+    #[test]
+    fn report_validation_rejects_extraction_summary_mismatch() {
+        let mut report = report_with_candidate(
+            "case",
+            "candidate.mkv",
+            true,
+            "Strong",
+            "SameCutStrong",
+            Some(1),
+        );
+        report.summary.total_extraction_millis = 999;
+
+        let error = validate_media_match_v3_diagnostic_report(&report)
+            .expect_err("extraction total mismatch should be invalid");
+
+        assert!(error.contains("summary.totalExtractionMillis"));
+    }
+
+    #[test]
+    fn report_validation_rejects_audio_blob_summary_mismatch() {
+        let mut report = report_with_candidate(
+            "case",
+            "candidate.mkv",
+            true,
+            "Strong",
+            "SameCutStrong",
+            Some(1),
+        );
+        report.summary.total_audio_blob_bytes = 999;
+
+        let error = validate_media_match_v3_diagnostic_report(&report)
+            .expect_err("audio blob total mismatch should be invalid");
+
+        assert!(error.contains("summary.totalAudioBlobBytes"));
+    }
+
+    #[test]
+    fn report_validation_rejects_video_blob_summary_mismatch() {
+        let mut report = report_with_candidate(
+            "case",
+            "candidate.mkv",
+            true,
+            "Strong",
+            "SameCutStrong",
+            Some(1),
+        );
+        report.summary.total_video_blob_bytes = 999;
+
+        let error = validate_media_match_v3_diagnostic_report(&report)
+            .expect_err("video blob total mismatch should be invalid");
+
+        assert!(error.contains("summary.totalVideoBlobBytes"));
+    }
+
+    #[test]
+    fn report_validation_counts_duplicate_fingerprint_path_once() {
+        let mut report = report_with_candidate(
+            "case",
+            "candidate.mkv",
+            true,
+            "Strong",
+            "SameCutStrong",
+            Some(1),
+        );
+        report.cases[0].candidates[0].path = "query.mkv".to_owned();
+        report.summary.total_extraction_millis = 10;
+        report.summary.total_audio_blob_bytes = 100;
+        report.summary.total_video_blob_bytes = 0;
+
+        validate_media_match_v3_diagnostic_report(&report)
+            .expect("duplicate fingerprint path should be counted once");
+    }
+
+    #[test]
+    fn direct_compare_rejects_invalid_report() {
+        let baseline = report_with_candidate(
+            "case",
+            "candidate.mkv",
+            true,
+            "Strong",
+            "SameCutStrong",
+            Some(1),
+        );
+        let mut current = baseline.clone();
+        current.summary.failed = 1;
+
+        let error = compare_media_match_v3_reports(&baseline, &current)
+            .expect_err("invalid current report should be rejected");
+
+        assert!(error.contains("current report is invalid"));
+    }
+
+    #[test]
+    fn direct_compare_rejects_incompatible_profile() {
+        let baseline = report_with_candidate(
+            "case",
+            "candidate.mkv",
+            true,
+            "Strong",
+            "SameCutStrong",
+            Some(1),
+        );
+        let mut current = baseline.clone();
+        current.profile = "combined-v3".to_owned();
+
+        let error = compare_media_match_v3_reports(&baseline, &current)
+            .expect_err("different profile should be rejected");
+
+        assert!(error.contains("profile differs"));
+    }
+
+    #[test]
+    fn direct_compare_rejects_incompatible_settings_hash() {
+        let baseline = report_with_candidate(
+            "case",
+            "candidate.mkv",
+            true,
+            "Strong",
+            "SameCutStrong",
+            Some(1),
+        );
+        let mut current = baseline.clone();
+        current.settings_hash = "01".to_owned();
+
+        let error = compare_media_match_v3_reports(&baseline, &current)
+            .expect_err("different settings hash should be rejected");
+
+        assert!(error.contains("settingsHash differs"));
+    }
+
+    #[test]
+    fn direct_compare_rejects_incompatible_tuning() {
+        let baseline = report_with_candidate(
+            "case",
+            "candidate.mkv",
+            true,
+            "Strong",
+            "SameCutStrong",
+            Some(1),
+        );
+        let mut current = baseline.clone();
+        current.tuning.retrieval_prefilter_limit += 1;
+
+        let error = compare_media_match_v3_reports(&baseline, &current)
+            .expect_err("different tuning should be rejected");
+
+        assert!(error.contains("tuning differs"));
+    }
+
+    #[test]
+    fn compare_options_allow_selected_mismatch() {
+        let baseline = report_with_candidate(
+            "case",
+            "candidate.mkv",
+            true,
+            "Strong",
+            "SameCutStrong",
+            Some(1),
+        );
+        let mut current = baseline.clone();
+        current.settings_hash = "01".to_owned();
+
+        let comparison = compare_media_match_v3_reports_with_options(
+            &baseline,
+            &current,
+            &MediaMatchV3ReportCompatibilityOptions {
+                allow_different_settings: true,
+                ..MediaMatchV3ReportCompatibilityOptions::default()
+            },
+        )
+        .expect("allowed settings mismatch should compare");
+
+        assert!(!comparison.compatibility.settings_hash_matches);
     }
 
     fn report_with_candidate(
@@ -1184,7 +1515,7 @@ mod tests {
                 failed,
                 total_extraction_millis: 20,
                 total_audio_blob_bytes: 200,
-                total_video_blob_bytes: 100,
+                total_video_blob_bytes: 0,
                 total_raw_hit_rows_processed: 10,
                 total_retrieval_millis: 2,
             },
