@@ -1,13 +1,17 @@
 use std::{
-    env, fs,
+    env,
+    fmt::Write as _,
+    fs,
     path::{Path, PathBuf},
     process::ExitCode,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use sorotte_media_match::{
-    MediaMatchToolPaths, MediaMatchV3DiagnosticRunOptions,
-    media_match_v3_diagnostic_manifest_from_json, run_media_match_v3_diagnostic_manifest,
+    MediaMatchToolPaths, MediaMatchV3DiagnosticManifest, MediaMatchV3DiagnosticRunOptions,
+    MediaMatchV3ResolvedManifest, MediaMatchV3ResolvedManifestCase,
+    media_match_v3_diagnostic_manifest_from_json, resolve_media_match_v3_diagnostic_manifest,
+    run_media_match_v3_diagnostic_manifest,
 };
 
 fn main() -> ExitCode {
@@ -22,12 +26,26 @@ fn main() -> ExitCode {
 }
 
 fn run_cli() -> Result<bool, String> {
+    let mut stdout = String::new();
+    let result = run_cli_with_output(env::args().skip(1), &mut stdout);
+    if !stdout.is_empty() {
+        print!("{stdout}");
+    }
+    result
+}
+
+fn run_cli_with_output(
+    args: impl IntoIterator<Item = String>,
+    stdout: &mut String,
+) -> Result<bool, String> {
     let CliArgs {
         manifest_path,
         output_path,
         cache_root,
         keep_cache,
-    } = parse_args(env::args().skip(1))?;
+        mode,
+        selected_cases,
+    } = parse_args(args)?;
     let manifest_text = fs::read_to_string(&manifest_path).map_err(|error| {
         format!(
             "failed reading manifest '{}': {error}",
@@ -39,6 +57,18 @@ fn run_cli() -> Result<bool, String> {
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let manifest = filter_manifest_cases(manifest, &selected_cases)?;
+    if mode == CliMode::ListCases {
+        let resolved = resolve_media_match_v3_diagnostic_manifest(&manifest, &manifest_dir)?;
+        write_case_listing(&resolved, stdout);
+        return Ok(true);
+    }
+    if mode == CliMode::ValidateOnly {
+        let resolved = resolve_media_match_v3_diagnostic_manifest(&manifest, &manifest_dir)?;
+        validate_resolved_manifest_files_exist(&resolved)?;
+        stdout.push_str("media-match V3 diagnostic manifest is valid\n");
+        return Ok(true);
+    }
     let supplied_cache_root = cache_root.is_some();
     let retain_cache = supplied_cache_root || keep_cache;
     let cache_root = cache_root.unwrap_or_else(temp_cache_root);
@@ -78,9 +108,17 @@ fn run_cli() -> Result<bool, String> {
             format!("failed writing report '{}': {error}", output_path.display())
         })?;
     } else {
-        println!("{report_json}");
+        stdout.push_str(&report_json);
+        stdout.push('\n');
     }
     Ok(passed)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CliMode {
+    Run,
+    ListCases,
+    ValidateOnly,
 }
 
 struct CliArgs {
@@ -88,6 +126,8 @@ struct CliArgs {
     output_path: Option<PathBuf>,
     cache_root: Option<PathBuf>,
     keep_cache: bool,
+    mode: CliMode,
+    selected_cases: Vec<String>,
 }
 
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String> {
@@ -95,6 +135,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
     let mut output_path = None;
     let mut cache_root = None;
     let mut keep_cache = false;
+    let mut mode = CliMode::Run;
+    let mut selected_cases = Vec::new();
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -113,6 +155,24 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
             "--keep-cache" => {
                 keep_cache = true;
             }
+            "--list-cases" => {
+                if mode != CliMode::Run {
+                    return Err(usage());
+                }
+                mode = CliMode::ListCases;
+            }
+            "--validate-only" => {
+                if mode != CliMode::Run {
+                    return Err(usage());
+                }
+                mode = CliMode::ValidateOnly;
+            }
+            "--case" => {
+                let Some(value) = args.next() else {
+                    return Err(usage());
+                };
+                selected_cases.push(value);
+            }
             _ if manifest_path.is_none() => {
                 manifest_path = Some(PathBuf::from(arg));
             }
@@ -127,12 +187,103 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
         output_path,
         cache_root,
         keep_cache,
+        mode,
+        selected_cases,
     })
 }
 
 fn usage() -> String {
-    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache]"
+    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--list-cases|--validate-only] [--case name]"
         .to_owned()
+}
+
+fn filter_manifest_cases(
+    manifest: MediaMatchV3DiagnosticManifest,
+    selected_cases: &[String],
+) -> Result<MediaMatchV3DiagnosticManifest, String> {
+    if selected_cases.is_empty() {
+        return Ok(manifest);
+    }
+    let requested = selected_cases
+        .iter()
+        .map(|case_name| case_name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut found = std::collections::BTreeSet::new();
+    let cases = manifest
+        .cases
+        .into_iter()
+        .filter(|case| {
+            if requested.contains(case.name.as_str()) {
+                found.insert(case.name.clone());
+                true
+            } else {
+                false
+            }
+        })
+        .collect::<Vec<_>>();
+    let missing = requested
+        .iter()
+        .filter(|case_name| !found.contains::<str>(*case_name))
+        .map(|case_name| (*case_name).to_owned())
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(format!(
+            "unknown diagnostic case(s): {}",
+            missing.join(", ")
+        ));
+    }
+    Ok(MediaMatchV3DiagnosticManifest { cases, ..manifest })
+}
+
+fn write_case_listing(resolved: &MediaMatchV3ResolvedManifest, output: &mut String) {
+    for case in &resolved.cases {
+        let _ = writeln!(output, "case: {}", case.name);
+        let _ = writeln!(output, "  query: {}", case.query.display());
+        for candidate in &case.candidates {
+            match candidate.expectation.id.as_deref() {
+                Some(id) => {
+                    let _ = writeln!(
+                        output,
+                        "  candidate: id={} path={}",
+                        id,
+                        candidate.path.display()
+                    );
+                }
+                None => {
+                    let _ = writeln!(output, "  candidate: path={}", candidate.path.display());
+                }
+            }
+        }
+    }
+}
+
+fn validate_resolved_manifest_files_exist(
+    resolved: &MediaMatchV3ResolvedManifest,
+) -> Result<(), String> {
+    for case in &resolved.cases {
+        validate_manifest_file_exists(case, "query", &case.query)?;
+        for candidate in &case.candidates {
+            validate_manifest_file_exists(case, "candidate", &candidate.path)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_manifest_file_exists(
+    case: &MediaMatchV3ResolvedManifestCase,
+    role: &str,
+    path: &Path,
+) -> Result<(), String> {
+    if path.is_file() {
+        Ok(())
+    } else {
+        Err(format!(
+            "case '{}' {} file does not exist: {}",
+            case.name,
+            role,
+            path.display()
+        ))
+    }
 }
 
 fn tool_paths() -> MediaMatchToolPaths {
@@ -197,6 +348,8 @@ mod tests {
             "--cache-root".to_owned(),
             "cache".to_owned(),
             "--keep-cache".to_owned(),
+            "--case".to_owned(),
+            "copied-synthetic".to_owned(),
         ])
         .expect("args should parse");
 
@@ -204,6 +357,130 @@ mod tests {
         assert_eq!(args.output_path, Some(PathBuf::from("report.json")));
         assert_eq!(args.cache_root, Some(PathBuf::from("cache")));
         assert!(args.keep_cache);
+        assert_eq!(args.selected_cases, vec!["copied-synthetic"]);
+        assert_eq!(args.mode, CliMode::Run);
+    }
+
+    #[test]
+    fn parse_args_accepts_list_and_validate_modes() {
+        let list = parse_args(["manifest.json".to_owned(), "--list-cases".to_owned()])
+            .expect("list args should parse");
+        assert_eq!(list.mode, CliMode::ListCases);
+
+        let validate = parse_args(["manifest.json".to_owned(), "--validate-only".to_owned()])
+            .expect("validate args should parse");
+        assert_eq!(validate.mode, CliMode::ValidateOnly);
+    }
+
+    #[test]
+    fn list_cases_does_not_require_media_files() {
+        let root = temp_dir("v3-diagnostics-list");
+        let manifest_path = write_manifest(
+            &root,
+            serde_json::json!({
+                "profile": "audio-constellation-v3",
+                "cases": [
+                    {
+                        "name": "alpha",
+                        "query": "missing-query-a.mkv",
+                        "candidates": [{
+                            "id": "alpha-candidate",
+                            "path": "missing-candidate-a.mkv"
+                        }]
+                    },
+                    {
+                        "name": "beta",
+                        "query": "missing-query-b.mkv",
+                        "candidates": [{
+                            "path": "missing-candidate-b.mkv"
+                        }]
+                    }
+                ]
+            }),
+        );
+        let mut output = String::new();
+
+        let passed = run_cli_with_output(
+            [
+                manifest_path.to_string_lossy().to_string(),
+                "--list-cases".to_owned(),
+                "--case".to_owned(),
+                "alpha".to_owned(),
+            ],
+            &mut output,
+        )
+        .expect("case listing should not fingerprint or check media existence");
+
+        assert!(passed);
+        assert!(output.contains("case: alpha"));
+        assert!(output.contains("id=alpha-candidate"));
+        assert!(!output.contains("case: beta"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn validate_only_reports_missing_files() {
+        let root = temp_dir("v3-diagnostics-validate");
+        let manifest_path = write_manifest(
+            &root,
+            serde_json::json!({
+                "profile": "audio-constellation-v3",
+                "cases": [{
+                    "name": "missing",
+                    "query": "missing-query.mkv",
+                    "candidates": [{
+                        "path": "missing-candidate.mkv"
+                    }]
+                }]
+            }),
+        );
+        let mut output = String::new();
+
+        let error = run_cli_with_output(
+            [
+                manifest_path.to_string_lossy().to_string(),
+                "--validate-only".to_owned(),
+            ],
+            &mut output,
+        )
+        .expect_err("validate-only should reject missing files");
+
+        assert!(error.contains("does not exist"));
+        assert!(output.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unknown_case_filter_errors_clearly() {
+        let root = temp_dir("v3-diagnostics-case-filter");
+        let manifest_path = write_manifest(
+            &root,
+            serde_json::json!({
+                "profile": "audio-constellation-v3",
+                "cases": [{
+                    "name": "known",
+                    "query": "query.mkv",
+                    "candidates": [{
+                        "path": "candidate.mkv"
+                    }]
+                }]
+            }),
+        );
+        let mut output = String::new();
+
+        let error = run_cli_with_output(
+            [
+                manifest_path.to_string_lossy().to_string(),
+                "--list-cases".to_owned(),
+                "--case".to_owned(),
+                "unknown".to_owned(),
+            ],
+            &mut output,
+        )
+        .expect_err("unknown case filter should fail");
+
+        assert!(error.contains("unknown diagnostic case"));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -260,12 +537,13 @@ mod tests {
                 }]
             }]
         });
+        let cache_root = root.join("cache-root");
         let report = run_media_match_v3_diagnostic_manifest(
             &media_match_v3_diagnostic_manifest_from_json(&manifest.to_string())
                 .expect("manifest should parse"),
             MediaMatchV3DiagnosticRunOptions {
                 manifest_dir: root.clone(),
-                cache_root: root.join("cache-root"),
+                cache_root: cache_root.clone(),
                 cache_retained: true,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(123),
@@ -275,6 +553,13 @@ mod tests {
         let report_json = serde_json::to_value(&report).expect("report should serialize");
 
         assert_eq!(report.summary.failed, 0, "{report_json}");
+        assert_eq!(report.summary.fresh_fingerprint_count, 2, "{report_json}");
+        assert_eq!(
+            report.summary.sqlite_cache_fingerprint_count, 0,
+            "{report_json}"
+        );
+        assert_eq!(report.cases[0].query.source, "fresh");
+        assert_eq!(report.cases[0].candidates[0].source, "fresh");
         assert_eq!(report_json["generatedAtUnixMillis"], 123);
         assert!(
             report_json["cases"][0]["retrieval"]["queryBucketsTotal"]
@@ -293,6 +578,26 @@ mod tests {
                 .unwrap_or_default()
                 > 0
         );
+
+        let warm_report = run_media_match_v3_diagnostic_manifest(
+            &media_match_v3_diagnostic_manifest_from_json(&manifest.to_string())
+                .expect("manifest should parse"),
+            MediaMatchV3DiagnosticRunOptions {
+                manifest_dir: root.clone(),
+                cache_root,
+                cache_retained: true,
+                tools: tool_paths(),
+                generated_at_unix_millis: Some(124),
+            },
+        )
+        .expect("warm diagnostic harness run should use sqlite cache");
+
+        assert_eq!(warm_report.summary.failed, 0);
+        assert_eq!(warm_report.summary.fresh_fingerprint_count, 0);
+        assert_eq!(warm_report.summary.sqlite_cache_fingerprint_count, 2);
+        assert_eq!(warm_report.summary.total_extraction_millis, 0);
+        assert_eq!(warm_report.cases[0].query.source, "sqlite-cache");
+        assert_eq!(warm_report.cases[0].candidates[0].source, "sqlite-cache");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -349,6 +654,16 @@ mod tests {
                 .as_nanos()
         ));
         fs::create_dir_all(&path).expect("temp dir should be created");
+        path
+    }
+
+    fn write_manifest(root: &Path, value: serde_json::Value) -> PathBuf {
+        let path = root.join("manifest.json");
+        fs::write(
+            &path,
+            serde_json::to_vec_pretty(&value).expect("manifest should serialize"),
+        )
+        .expect("manifest should be written");
         path
     }
 }

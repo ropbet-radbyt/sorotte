@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -9,10 +11,15 @@ use crate::{
     MediaExtractionSettings, MediaMatchAutoplayPolicy, MediaMatchDecision, MediaMatchSettings,
     MediaMatchTier, MediaMatchToolPaths, MediaMatchV3DiagnosticSummary, MediaMatchV3RetrievalStats,
     V3Tuning, current_v3_tuning, decide_media_match, fingerprint_media_file_with_report,
-    media_extraction_settings_hash, media_match_v3_anchor_candidate_paths_with_stats,
-    normalize_media_path, open_media_match_v3_index, save_media_match_v3_record,
-    summarize_decision_v3_diagnostics, summarize_instrumented_record_v3_diagnostics,
+    load_media_match_v3_record_for_path, media_extraction_settings_hash,
+    media_match_v3_anchor_candidate_paths_with_stats, normalize_media_path,
+    open_media_match_v3_index, save_media_match_v3_record, summarize_decision_v3_diagnostics,
+    summarize_instrumented_record_v3_diagnostics, summarize_record_v3_diagnostics,
 };
+
+const FINGERPRINT_SOURCE_FRESH: &str = "fresh";
+const FINGERPRINT_SOURCE_MEMORY_CACHE: &str = "memory-cache";
+const FINGERPRINT_SOURCE_SQLITE_CACHE: &str = "sqlite-cache";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -158,6 +165,9 @@ pub struct MediaMatchV3DiagnosticSummaryReport {
     pub pair_count: usize,
     pub passed: usize,
     pub failed: usize,
+    pub fresh_fingerprint_count: usize,
+    pub memory_cache_fingerprint_count: usize,
+    pub sqlite_cache_fingerprint_count: usize,
     pub total_extraction_millis: u128,
     pub total_audio_blob_bytes: usize,
     pub total_video_blob_bytes: usize,
@@ -199,7 +209,7 @@ pub fn run_media_match_v3_diagnostic_manifest(
     let resolved = resolve_media_match_v3_diagnostic_manifest(manifest, &options.manifest_dir)?;
     let connection = open_media_match_v3_index(&options.cache_root)?;
     let autoplay_settings = diagnostic_decision_settings();
-    let mut cache = BTreeMap::<(String, [u8; 32]), InstrumentedMediaFingerprint>::new();
+    let mut cache = BTreeMap::<(String, [u8; 32]), CachedFingerprint>::new();
     let mut cases = Vec::new();
     let mut summary = MediaMatchV3DiagnosticSummaryReport {
         case_count: resolved.cases.len(),
@@ -207,14 +217,29 @@ pub fn run_media_match_v3_diagnostic_manifest(
     };
 
     for case in &resolved.cases {
-        let query = fingerprint_cached(&mut cache, &case.query, &options.tools, &settings)?;
-        save_media_match_v3_record(&connection, &query.fingerprint.record, None)?;
+        let query = fingerprint_cached(
+            &mut cache,
+            &connection,
+            &case.query,
+            &options.tools,
+            &settings,
+        )?;
+        if query.source == FINGERPRINT_SOURCE_FRESH {
+            save_media_match_v3_record(&connection, &query.fingerprint.record, None)?;
+        }
 
         let mut candidate_records = Vec::new();
         for candidate in &case.candidates {
-            let fingerprint =
-                fingerprint_cached(&mut cache, &candidate.path, &options.tools, &settings)?;
-            save_media_match_v3_record(&connection, &fingerprint.fingerprint.record, None)?;
+            let fingerprint = fingerprint_cached(
+                &mut cache,
+                &connection,
+                &candidate.path,
+                &options.tools,
+                &settings,
+            )?;
+            if fingerprint.source == FINGERPRINT_SOURCE_FRESH {
+                save_media_match_v3_record(&connection, &fingerprint.fingerprint.record, None)?;
+            }
             candidate_records.push((candidate, fingerprint));
         }
 
@@ -233,7 +258,7 @@ pub fn run_media_match_v3_diagnostic_manifest(
 
         let query_report = MediaMatchV3DiagnosticFingerprintReport {
             path: query.fingerprint.record.identity.normalized_path.clone(),
-            diagnostics: summarize_instrumented_record_v3_diagnostics(&query.fingerprint),
+            diagnostics: diagnostics_for_cached_fingerprint(&query),
             source: query.source.to_owned(),
         };
         let mut reports = Vec::new();
@@ -266,7 +291,7 @@ pub fn run_media_match_v3_diagnostic_manifest(
             reports.push(MediaMatchV3DiagnosticCandidateReport {
                 candidate_id: candidate.expectation.id.clone(),
                 path: normalized_candidate.clone(),
-                diagnostics: summarize_instrumented_record_v3_diagnostics(&fingerprint.fingerprint),
+                diagnostics: diagnostics_for_cached_fingerprint(&fingerprint),
                 source: fingerprint.source.to_owned(),
                 retrieved,
                 retrieval_rank,
@@ -288,8 +313,21 @@ pub fn run_media_match_v3_diagnostic_manifest(
     }
 
     for fingerprint in cache.values() {
-        let diagnostics = summarize_instrumented_record_v3_diagnostics(fingerprint);
-        summary.total_extraction_millis += fingerprint.report.timings.total_millis;
+        let diagnostics = diagnostics_for_cached_fingerprint(fingerprint);
+        match fingerprint.source {
+            FINGERPRINT_SOURCE_FRESH => {
+                summary.fresh_fingerprint_count += 1;
+                summary.total_extraction_millis +=
+                    fingerprint.fingerprint.report.timings.total_millis;
+            }
+            FINGERPRINT_SOURCE_SQLITE_CACHE => {
+                summary.sqlite_cache_fingerprint_count += 1;
+            }
+            FINGERPRINT_SOURCE_MEMORY_CACHE => {
+                summary.memory_cache_fingerprint_count += 1;
+            }
+            _ => {}
+        }
         summary.total_audio_blob_bytes += diagnostics.audio_blob_bytes;
         summary.total_video_blob_bytes += diagnostics.video_blob_bytes;
     }
@@ -457,26 +495,80 @@ impl MediaMatchV3DiagnosticDecisionReport {
 }
 
 fn fingerprint_cached(
-    cache: &mut BTreeMap<(String, [u8; 32]), InstrumentedMediaFingerprint>,
+    cache: &mut BTreeMap<(String, [u8; 32]), CachedFingerprint>,
+    connection: &Connection,
     path: &Path,
     tools: &MediaMatchToolPaths,
     settings: &MediaExtractionSettings,
 ) -> Result<CachedFingerprint, String> {
     let normalized_path = normalize_media_path(path);
-    let cache_key = (normalized_path, media_extraction_settings_hash(settings));
+    let settings_hash = media_extraction_settings_hash(settings);
+    let cache_key = (normalized_path.clone(), settings_hash);
     if let Some(fingerprint) = cache.get(&cache_key) {
         return Ok(CachedFingerprint {
-            fingerprint: fingerprint.clone(),
-            source: "cache",
+            fingerprint: fingerprint.fingerprint.clone(),
+            source: FINGERPRINT_SOURCE_MEMORY_CACHE,
+        });
+    }
+    let (modified_unix_millis, size_bytes) = media_file_identity_parts(path)?;
+    if let Some(record) = load_media_match_v3_record_for_path(
+        connection,
+        &normalized_path,
+        settings,
+        modified_unix_millis,
+        size_bytes,
+    )? {
+        let fingerprint = InstrumentedMediaFingerprint {
+            record,
+            report: Default::default(),
+        };
+        cache.insert(
+            cache_key,
+            CachedFingerprint {
+                fingerprint: fingerprint.clone(),
+                source: FINGERPRINT_SOURCE_SQLITE_CACHE,
+            },
+        );
+        return Ok(CachedFingerprint {
+            fingerprint,
+            source: FINGERPRINT_SOURCE_SQLITE_CACHE,
         });
     }
     let fingerprint = fingerprint_media_file_with_report(path, tools, settings, None)
         .map_err(|error| format!("failed fingerprinting '{}': {error}", path.display()))?;
-    cache.insert(cache_key, fingerprint.clone());
+    cache.insert(
+        cache_key,
+        CachedFingerprint {
+            fingerprint: fingerprint.clone(),
+            source: FINGERPRINT_SOURCE_FRESH,
+        },
+    );
     Ok(CachedFingerprint {
         fingerprint,
-        source: "fresh",
+        source: FINGERPRINT_SOURCE_FRESH,
     })
+}
+
+fn diagnostics_for_cached_fingerprint(
+    fingerprint: &CachedFingerprint,
+) -> MediaMatchV3DiagnosticSummary {
+    if fingerprint.source == FINGERPRINT_SOURCE_FRESH {
+        summarize_instrumented_record_v3_diagnostics(&fingerprint.fingerprint)
+    } else {
+        summarize_record_v3_diagnostics(&fingerprint.fingerprint.record)
+    }
+}
+
+fn media_file_identity_parts(path: &Path) -> Result<(u64, u64), String> {
+    let metadata = fs::metadata(path)
+        .map_err(|error| format!("failed reading metadata for '{}': {error}", path.display()))?;
+    let modified_unix_millis = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0);
+    Ok((modified_unix_millis, metadata.len()))
 }
 
 fn evaluate_diagnostic_expectation(
@@ -643,9 +735,14 @@ fn default_diagnostic_profile() -> String {
 #[cfg(test)]
 mod tests {
     use std::env;
+    use std::time::Duration;
 
     use super::*;
-    use crate::{MediaMatchEvidence, MediaTimelineAlignment, MetadataMatchEvidence};
+    use crate::{
+        AudioAnchor, MEDIA_MATCH_ALGORITHM_VERSION, MediaFileIdentity, MediaFingerprintRecord,
+        MediaMatchEvidence, MediaTimelineAlignment, MetadataMatchEvidence,
+        identity::container_fingerprint_from_metadata,
+    };
 
     #[test]
     fn manifest_parsing_accepts_canonical_shape() {
@@ -990,6 +1087,152 @@ mod tests {
         assert_eq!(value["cacheRetained"], true);
     }
 
+    #[test]
+    fn diagnostic_harness_uses_sqlite_cache_before_fresh_extraction() {
+        let root = temp_dir("v3-diagnostics-sqlite-cache");
+        let query = root.join("query.mkv");
+        let candidate = root.join("candidate.mkv");
+        fs::write(&query, b"query").expect("query should be written");
+        fs::write(&candidate, b"candidate").expect("candidate should be written");
+        let cache_root = root.join("cache");
+        let settings = MediaExtractionSettings::audio_constellation_v3();
+        let connection = open_media_match_v3_index(&cache_root).expect("index should open");
+        save_media_match_v3_record(&connection, &fixture_record(&query, &settings, 0), None)
+            .expect("query record should save");
+        save_media_match_v3_record(&connection, &fixture_record(&candidate, &settings, 0), None)
+            .expect("candidate record should save");
+        drop(connection);
+        let manifest = manifest_for_paths("sqlite-cache", &query, &[&candidate]);
+
+        let report = run_media_match_v3_diagnostic_manifest(
+            &manifest,
+            MediaMatchV3DiagnosticRunOptions {
+                manifest_dir: root.clone(),
+                cache_root: cache_root.clone(),
+                cache_retained: true,
+                tools: unavailable_tools(),
+                generated_at_unix_millis: Some(1),
+            },
+        )
+        .expect("sqlite cache should avoid fresh extraction");
+        let value = serde_json::to_value(&report).expect("report should serialize");
+
+        assert_eq!(
+            report.cases[0].query.source,
+            FINGERPRINT_SOURCE_SQLITE_CACHE
+        );
+        assert_eq!(
+            report.cases[0].candidates[0].source,
+            FINGERPRINT_SOURCE_SQLITE_CACHE
+        );
+        assert_eq!(report.summary.fresh_fingerprint_count, 0);
+        assert_eq!(report.summary.memory_cache_fingerprint_count, 0);
+        assert_eq!(report.summary.sqlite_cache_fingerprint_count, 2);
+        assert_eq!(report.summary.total_extraction_millis, 0);
+        assert_eq!(value["summary"]["freshFingerprintCount"], 0);
+        assert_eq!(value["summary"]["memoryCacheFingerprintCount"], 0);
+        assert_eq!(value["summary"]["sqliteCacheFingerprintCount"], 2);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn duplicate_path_reports_memory_cache_for_duplicate_use() {
+        let root = temp_dir("v3-diagnostics-memory-cache");
+        let media = root.join("same.mkv");
+        fs::write(&media, b"same").expect("media should be written");
+        let cache_root = root.join("cache");
+        let settings = MediaExtractionSettings::audio_constellation_v3();
+        let connection = open_media_match_v3_index(&cache_root).expect("index should open");
+        save_media_match_v3_record(&connection, &fixture_record(&media, &settings, 0), None)
+            .expect("record should save");
+        drop(connection);
+        let manifest = manifest_for_paths("memory-cache", &media, &[&media]);
+
+        let report = run_media_match_v3_diagnostic_manifest(
+            &manifest,
+            MediaMatchV3DiagnosticRunOptions {
+                manifest_dir: root.clone(),
+                cache_root: cache_root.clone(),
+                cache_retained: true,
+                tools: unavailable_tools(),
+                generated_at_unix_millis: Some(1),
+            },
+        )
+        .expect("duplicate path should use in-memory cache after sqlite load");
+
+        assert_eq!(
+            report.cases[0].query.source,
+            FINGERPRINT_SOURCE_SQLITE_CACHE
+        );
+        assert_eq!(
+            report.cases[0].candidates[0].source,
+            FINGERPRINT_SOURCE_MEMORY_CACHE
+        );
+        assert_eq!(report.summary.sqlite_cache_fingerprint_count, 1);
+        assert_eq!(report.summary.memory_cache_fingerprint_count, 0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn modified_file_invalidates_sqlite_cache() {
+        let root = temp_dir("v3-diagnostics-stale-cache");
+        let media = root.join("stale.mkv");
+        fs::write(&media, b"before").expect("media should be written");
+        let cache_root = root.join("cache");
+        let settings = MediaExtractionSettings::audio_constellation_v3();
+        let connection = open_media_match_v3_index(&cache_root).expect("index should open");
+        save_media_match_v3_record(&connection, &fixture_record(&media, &settings, 0), None)
+            .expect("record should save");
+        drop(connection);
+        fs::write(&media, b"after with different size").expect("media should change");
+        let manifest = manifest_for_paths("stale-cache", &media, &[]);
+
+        let error = run_media_match_v3_diagnostic_manifest(
+            &manifest,
+            MediaMatchV3DiagnosticRunOptions {
+                manifest_dir: root.clone(),
+                cache_root,
+                cache_retained: true,
+                tools: unavailable_tools(),
+                generated_at_unix_millis: Some(1),
+            },
+        )
+        .expect_err("stale cache should not be reused");
+
+        assert!(error.contains("failed fingerprinting"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn different_profile_does_not_reuse_sqlite_cache_record() {
+        let root = temp_dir("v3-diagnostics-settings-cache");
+        let media = root.join("profile.mkv");
+        fs::write(&media, b"profile").expect("media should be written");
+        let cache_root = root.join("cache");
+        let settings = MediaExtractionSettings::audio_constellation_v3();
+        let connection = open_media_match_v3_index(&cache_root).expect("index should open");
+        save_media_match_v3_record(&connection, &fixture_record(&media, &settings, 0), None)
+            .expect("record should save");
+        drop(connection);
+        let mut manifest = manifest_for_paths("profile-cache", &media, &[]);
+        manifest.profile = "combined-v3".to_owned();
+
+        let error = run_media_match_v3_diagnostic_manifest(
+            &manifest,
+            MediaMatchV3DiagnosticRunOptions {
+                manifest_dir: root.clone(),
+                cache_root,
+                cache_retained: true,
+                tools: unavailable_tools(),
+                generated_at_unix_millis: Some(1),
+            },
+        )
+        .expect_err("different settings hash should not reuse cached record");
+
+        assert!(error.contains("failed fingerprinting"));
+        let _ = fs::remove_dir_all(root);
+    }
+
     fn test_expectation_with_id(id: &str, path: &str) -> MediaMatchV3DiagnosticExpectation {
         MediaMatchV3DiagnosticExpectation {
             id: Some(id.to_owned()),
@@ -1040,5 +1283,87 @@ mod tests {
             },
             explanation: "strong".to_owned(),
         }
+    }
+
+    fn manifest_for_paths(
+        name: &str,
+        query: &Path,
+        candidates: &[&Path],
+    ) -> MediaMatchV3DiagnosticManifest {
+        MediaMatchV3DiagnosticManifest {
+            profile: "audio-constellation-v3".to_owned(),
+            base_dir: None,
+            cases: vec![MediaMatchV3DiagnosticManifestCase {
+                name: name.to_owned(),
+                query: query.to_string_lossy().to_string(),
+                candidates: candidates
+                    .iter()
+                    .map(|path| test_expectation_without_id(&path.to_string_lossy()))
+                    .collect(),
+            }],
+        }
+    }
+
+    fn fixture_record(
+        path: &Path,
+        settings: &MediaExtractionSettings,
+        bucket_offset: u32,
+    ) -> MediaFingerprintRecord {
+        let metadata = fs::metadata(path).expect("fixture metadata should be readable");
+        let modified_unix_millis = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+            .unwrap_or(0);
+        let size_bytes = metadata.len();
+        let identity = MediaFileIdentity::new(path, modified_unix_millis, size_bytes);
+        let duration_seconds = Some(180.0);
+        let container_fingerprint = container_fingerprint_from_metadata(
+            &identity.normalized_path,
+            modified_unix_millis,
+            size_bytes,
+            duration_seconds,
+        );
+        let audio_anchors = (0..24)
+            .map(|index| AudioAnchor {
+                bucket: bucket_offset + 10_000 + index,
+                t_ms: index * 7_500,
+                weight: 10,
+            })
+            .collect();
+        MediaFingerprintRecord {
+            identity,
+            algorithm_version: MEDIA_MATCH_ALGORITHM_VERSION,
+            extraction_settings: settings.clone(),
+            duration_seconds,
+            container_fingerprint,
+            video: None,
+            audio_anchors,
+            video_anchors: Vec::new(),
+            audio_error: None,
+            video_error: None,
+        }
+    }
+
+    fn unavailable_tools() -> MediaMatchToolPaths {
+        MediaMatchToolPaths {
+            ffmpeg: PathBuf::from("missing-sorotte-v3-diagnostics-ffmpeg"),
+            ffprobe: PathBuf::from("missing-sorotte-v3-diagnostics-ffprobe"),
+        }
+    }
+
+    fn temp_dir(prefix: &str) -> PathBuf {
+        let mut path = env::temp_dir();
+        path.push(format!(
+            "sorotte-{prefix}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or(Duration::ZERO)
+                .as_nanos()
+        ));
+        fs::create_dir_all(&path).expect("temp dir should be created");
+        path
     }
 }

@@ -26,9 +26,40 @@ Use `--keep-cache` to retain an automatically generated temporary cache:
 cargo run -p sorotte-media-match --bin v3_diagnostics -- manifest.json --keep-cache
 ```
 
+Use `--list-cases` to inspect a manifest without touching media files, and
+`--validate-only` to parse, resolve, and verify referenced files without
+fingerprinting:
+
+```powershell
+cargo run -p sorotte-media-match --bin v3_diagnostics -- manifest.json --list-cases
+cargo run -p sorotte-media-match --bin v3_diagnostics -- manifest.json --validate-only
+```
+
+Use `--case` one or more times to run or inspect only selected cases:
+
+```powershell
+cargo run -p sorotte-media-match --bin v3_diagnostics -- manifest.json --case same-episode-x264-x265 --output reports/one-case.json --cache-root .media-match-v3-cache
+```
+
 V3 requires only `ffmpeg` and `ffprobe`. The runner uses
 `SOROTTE_MEDIA_MATCH_FFMPEG` and `SOROTTE_MEDIA_MATCH_FFPROBE` when set;
 otherwise it resolves `ffmpeg` and `ffprobe` from `PATH`.
+
+With `--cache-root`, the runner reuses valid records from the shared
+`index-v3.sqlite3` cache before invoking `ffmpeg`. Cache reuse requires the
+normalized path, modified time, size, profile, and settings hash to match.
+Within one run, duplicate paths are served by an in-memory cache before SQLite.
+
+Fingerprint source labels:
+
+- `fresh`: extracted during this diagnostic run.
+- `memory-cache`: reused from the current process after the same path/settings
+  were already loaded or extracted in this run.
+- `sqlite-cache`: loaded from the persistent V3 SQLite cache.
+
+`summary.totalExtractionMillis` is current-run fresh extraction time only.
+Fingerprints loaded from `sqlite-cache` still report blob/index counts, but they
+do not add extraction time.
 
 ## Corpus Calibration Workflow
 
@@ -39,6 +70,18 @@ retrieval/audio alignment failures from video-hardening behavior:
 cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-before.json --cache-root .media-match-v3-cache
 cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.combined.json --output reports/combined-before.json --cache-root .media-match-v3-cache
 ```
+
+Warm-cache workflow:
+
+```powershell
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-cold.json --cache-root .media-match-v3-cache-audio
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-warm.json --cache-root .media-match-v3-cache-audio
+cargo run -p sorotte-media-match --bin v3_report_compare -- reports/audio-cold.json reports/audio-warm.json
+```
+
+Cold and warm reports may differ in `freshFingerprintCount`,
+`sqliteCacheFingerprintCount`, and `totalExtractionMillis`. That is expected
+when file identity and settings match and the warm run avoids re-extraction.
 
 After an algorithm or threshold change, rerun with the same manifests and cache
 root into new report names, then compare the JSON reports:
@@ -233,6 +276,8 @@ The JSON report includes:
 
 - `cacheRoot` and `cacheRetained`
 - algorithm version, profile, settings hash, and tuning values
+- fingerprint source counts: `freshFingerprintCount`,
+  `memoryCacheFingerprintCount`, and `sqliteCacheFingerprintCount`
 - extraction diagnostics: timings, audio/video landmark counts, blob bytes, and
   streaming audio metrics
 - retrieval diagnostics: bucket counts, skipped common buckets, raw hit rows,
