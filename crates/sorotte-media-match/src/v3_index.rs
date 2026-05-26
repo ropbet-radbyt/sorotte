@@ -115,6 +115,11 @@ pub fn initialize_media_match_v3_index(connection: &Connection) -> Result<(), St
         .execute_batch(
             "
             PRAGMA foreign_keys = ON;
+            DROP TABLE IF EXISTS fingerprints_v1;
+            DROP TABLE IF EXISTS audio_anchors;
+            DROP TABLE IF EXISTS video_anchors;
+            DROP TABLE IF EXISTS fingerprints;
+            DROP TABLE IF EXISTS media_files;
             CREATE TABLE IF NOT EXISTS metadata (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL

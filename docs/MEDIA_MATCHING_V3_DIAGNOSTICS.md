@@ -32,6 +32,10 @@ The runner uses `SOROTTE_MEDIA_MATCH_FFMPEG` and
 
 ## Manifest
 
+Start from
+[`docs/examples/media_matching_v3_manifest.example.json`](examples/media_matching_v3_manifest.example.json)
+and replace the placeholder paths with local media paths.
+
 ```json
 {
   "profile": "combined-v3",
@@ -99,4 +103,3 @@ resistance:
 - hard subtitles
 - crop or letterbox changes
 - long movie
-

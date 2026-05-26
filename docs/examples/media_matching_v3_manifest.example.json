@@ -1,0 +1,118 @@
+{
+  "profile": "combined-v3",
+  "baseDir": "replace-with-your-media-root",
+  "cases": [
+    {
+      "name": "remux-same-source",
+      "query": "remux/source-a.mkv",
+      "candidates": [
+        {
+          "path": "remux/source-a-remux.mkv",
+          "expectedClass": "SameCutStrong",
+          "minimumTier": "Strong",
+          "expectedOffsetMs": 0,
+          "maxOffsetErrorMs": 1000,
+          "autoplayEligible": true,
+          "mustBeRetrieved": true
+        }
+      ]
+    },
+    {
+      "name": "different-encode",
+      "query": "encodes/episode-x264.mkv",
+      "candidates": [
+        {
+          "path": "encodes/episode-x265-or-av1.mkv",
+          "expectedClass": "SameCutStrong",
+          "minimumTier": "Strong",
+          "expectedOffsetMs": 0,
+          "maxOffsetErrorMs": 1000,
+          "autoplayEligible": true,
+          "mustBeRetrieved": true
+        }
+      ]
+    },
+    {
+      "name": "offset-tv-vs-bd",
+      "query": "offsets/tv-version.mkv",
+      "candidates": [
+        {
+          "path": "offsets/bd-version.mkv",
+          "expectedClass": "SameCutStrong",
+          "minimumTier": "Strong",
+          "expectedOffsetMs": 5000,
+          "maxOffsetErrorMs": 1000,
+          "autoplayEligible": true,
+          "mustBeRetrieved": true
+        }
+      ]
+    },
+    {
+      "name": "different-cut-inserted-logo",
+      "query": "cuts/no-logo.mkv",
+      "candidates": [
+        {
+          "path": "cuts/with-inserted-logo.mkv",
+          "expectedClass": "SameMediaDifferentCut",
+          "minimumTier": "Probable",
+          "autoplayEligible": false,
+          "mustBeRetrieved": true
+        }
+      ]
+    },
+    {
+      "name": "wrong-episode-shared-op-ed",
+      "query": "series/episode-01.mkv",
+      "candidates": [
+        {
+          "path": "series/episode-02-shared-op-ed.mkv",
+          "expectedClass": "SharedIntroOutroOnly",
+          "minimumTier": "Reject",
+          "autoplayEligible": false,
+          "mustBeRetrieved": false
+        }
+      ]
+    },
+    {
+      "name": "dub-same-video-different-audio",
+      "query": "audio/japanese-audio.mkv",
+      "candidates": [
+        {
+          "path": "audio/english-dub-same-video.mkv",
+          "expectedClass": "SameVideoDifferentAudio",
+          "minimumTier": "Probable",
+          "autoplayEligible": false,
+          "mustBeRetrieved": true
+        }
+      ]
+    },
+    {
+      "name": "same-audio-different-video",
+      "query": "collisions/same-soundtrack-a.mkv",
+      "candidates": [
+        {
+          "path": "collisions/same-soundtrack-b.mkv",
+          "expectedClass": "SameAudioDifferentVideo",
+          "minimumTier": "Probable",
+          "autoplayEligible": false,
+          "mustBeRetrieved": true
+        }
+      ]
+    },
+    {
+      "name": "crop-letterbox",
+      "query": "video/full-frame.mkv",
+      "candidates": [
+        {
+          "path": "video/cropped-or-letterboxed.mkv",
+          "expectedClass": "SameCutStrong",
+          "minimumTier": "Strong",
+          "expectedOffsetMs": 0,
+          "maxOffsetErrorMs": 1000,
+          "autoplayEligible": true,
+          "mustBeRetrieved": true
+        }
+      ]
+    }
+  ]
+}

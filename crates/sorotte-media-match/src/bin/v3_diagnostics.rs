@@ -40,32 +40,35 @@ fn run_cli() -> Result<bool, String> {
         .map(Path::to_path_buf)
         .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let supplied_cache_root = cache_root.is_some();
+    let retain_cache = supplied_cache_root || keep_cache;
     let cache_root = cache_root.unwrap_or_else(temp_cache_root);
-    let mut report = run_media_match_v3_diagnostic_manifest(
+    let mut report = match run_media_match_v3_diagnostic_manifest(
         &manifest,
         MediaMatchV3DiagnosticRunOptions {
             manifest_dir,
             cache_root: cache_root.clone(),
-            cache_retained: supplied_cache_root || keep_cache,
+            cache_retained: retain_cache,
             tools: tool_paths(),
             generated_at_unix_millis: None,
         },
-    )?;
+    ) {
+        Ok(report) => report,
+        Err(error) => {
+            if !retain_cache {
+                cleanup_temporary_cache(&cache_root);
+            }
+            return Err(error);
+        }
+    };
     let passed = report.summary.failed == 0;
-    if supplied_cache_root || keep_cache || !passed {
+    if retain_cache {
         report.cache_retained = true;
         eprintln!(
             "media-match V3 diagnostic cache retained at {}",
             cache_root.display()
         );
-    } else if let Err(error) = fs::remove_dir_all(&cache_root) {
-        report.cache_retained = true;
-        eprintln!(
-            "warning: failed to remove temporary media-match V3 diagnostic cache '{}': {error}",
-            cache_root.display()
-        );
     } else {
-        report.cache_retained = false;
+        report.cache_retained = !cleanup_temporary_cache(&cache_root);
     }
     let report_json = serde_json::to_string_pretty(&report)
         .map_err(|error| format!("failed serializing report JSON: {error}"))?;
@@ -158,6 +161,20 @@ fn temp_cache_root() -> PathBuf {
     path
 }
 
+fn cleanup_temporary_cache(cache_root: &Path) -> bool {
+    match fs::remove_dir_all(cache_root) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) => {
+            eprintln!(
+                "warning: failed to remove temporary media-match V3 diagnostic cache '{}': {error}",
+                cache_root.display()
+            );
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -183,6 +200,21 @@ mod tests {
         assert_eq!(args.output_path, Some(PathBuf::from("report.json")));
         assert_eq!(args.cache_root, Some(PathBuf::from("cache")));
         assert!(args.keep_cache);
+    }
+
+    #[test]
+    fn cleanup_temporary_cache_removes_cache_root() {
+        let root = temp_dir("v3-diagnostics-cleanup");
+        fs::create_dir_all(root.join("cache").join("media-match"))
+            .expect("cache dir should be created");
+        fs::write(
+            root.join("cache").join("media-match").join("sentinel"),
+            b"x",
+        )
+        .expect("sentinel should be written");
+
+        assert!(cleanup_temporary_cache(&root));
+        assert!(!root.exists());
     }
 
     #[test]
