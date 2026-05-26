@@ -1,8 +1,10 @@
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::fmt;
 use std::io::Read;
-use std::path::{Component, Path, PathBuf};
+#[cfg(test)]
+use std::path::PathBuf;
+use std::path::{Component, Path};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -15,19 +17,22 @@ use std::time::UNIX_EPOCH;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
-use base64::Engine as _;
 use rustfft::{Fft, FftPlanner, num_complex::Complex};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+mod audio_v3;
 mod diagnostic_harness;
 mod diagnostics;
+mod extraction;
 mod settings;
 mod timeline_v3;
 mod types;
 mod v3_index;
+mod video_v3;
+mod wire;
 
+pub use audio_v3::AudioLandmarkV3;
 pub use diagnostic_harness::{
     MediaMatchV3DiagnosticCandidateReport, MediaMatchV3DiagnosticDecisionReport,
     MediaMatchV3DiagnosticExpectation, MediaMatchV3DiagnosticFingerprintReport,
@@ -43,6 +48,11 @@ pub use diagnostics::{
     MediaMatchV3DiagnosticSummary, summarize_decision_v3_diagnostics,
     summarize_instrumented_record_v3_diagnostics, summarize_record_v3_diagnostics,
 };
+pub use extraction::{
+    InstrumentedMediaFingerprint, MediaAudioStreamMetrics, MediaExtractionTimings,
+    MediaFingerprintError, MediaFingerprintExtractionReport, MediaMatchToolPaths,
+    MediaToolInvocationCounts, expected_media_tool_invocation_counts,
+};
 pub use settings::{MediaExtractionSettings, MediaFingerprintProfile};
 pub use timeline_v3::{
     classify_timeline_at_query_ms, map_candidate_position_to_query_ms,
@@ -50,9 +60,9 @@ pub use timeline_v3::{
 };
 pub use types::{
     AlignedSegmentV3, AudioMatchEvidence, MatchClassV3, MediaFileIdentity,
-    MediaMatchAutoplayPolicy, MediaMatchDecision, MediaMatchEvidence, MediaMatchSettings,
-    MediaMatchTier, MediaTimelineAlignment, MediaTimelineMapV3, MetadataMatchEvidence,
-    TimelinePositionMapResult, VideoMatchEvidence,
+    MediaMatchAutoplayPolicy, MediaMatchCache, MediaMatchDecision, MediaMatchEvidence,
+    MediaMatchSettings, MediaMatchTier, MediaTimelineAlignment, MediaTimelineMapV3,
+    MetadataMatchEvidence, TimelinePositionMapResult, VideoMatchEvidence,
 };
 pub use v3_index::{
     MediaMatchV3Index, MediaMatchV3IndexPaths, MediaMatchV3RetrievalStats, anchor_stats_v3_dirty,
@@ -64,9 +74,16 @@ pub use v3_index::{
     media_match_v3_index_path, open_media_match_v3_index, refresh_all_anchor_stats_v3,
     refresh_anchor_stats_v3, refresh_dirty_anchor_stats_v3_if_needed, save_media_match_v3_record,
 };
+pub use video_v3::VideoLandmarkV3;
+pub use wire::{
+    MediaMatchWireAnchorBlock, MediaMatchWireProfile, MediaMatchWireSignature,
+    decide_media_match_against_wire_signature, media_anchor_profile_from_wire_profile,
+    media_match_wire_anchor_profile_from_anchor_profile, media_match_wire_signature_from_records,
+    media_match_wire_signature_from_value, media_match_wire_value_from_records,
+};
 
-// TODO(media-match): continue the behavior-preserving module split into
-// wire/audio_v3/video_v3/extraction/anchors/matching modules.
+// TODO(media-match): continue extracting the remaining large anchor, audio,
+// video, and matching algorithm bodies into their existing focused modules.
 pub const MEDIA_MATCH_ALGORITHM_VERSION: u32 = 3;
 pub const MEDIA_MATCH_FILE_PAYLOAD_KEY: &str = "mediaMatch";
 pub const MEDIA_MATCH_WIRE_SCHEMA_V3: &str = "sorotte.mediaMatch.v3";
@@ -193,138 +210,6 @@ pub struct MediaFingerprintRecord {
     #[serde(default)]
     pub video_error: Option<String>,
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MediaMatchToolPaths {
-    pub ffmpeg: PathBuf,
-    pub ffprobe: PathBuf,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct MediaToolInvocationCounts {
-    pub ffmpeg: u32,
-    pub ffprobe: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct MediaExtractionTimings {
-    pub ffprobe_millis: u128,
-    pub audio_millis: u128,
-    pub video_millis: u128,
-    pub total_millis: u128,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct MediaAudioStreamMetrics {
-    pub streamed_bytes: usize,
-    pub streamed_samples: usize,
-    pub peak_frames: usize,
-    pub raw_landmarks_before_bounding: usize,
-    pub final_landmarks: usize,
-    pub max_buffer_samples: usize,
-    /// Compatibility alias for the largest retained raw-landmark buffer after
-    /// online compaction/finalization. Use `max_raw_landmarks_seen` for the
-    /// transient pre-compaction high-water mark.
-    pub max_raw_landmarks_buffered: usize,
-    pub max_raw_landmarks_seen: usize,
-    pub max_raw_landmarks_after_compaction: usize,
-    pub raw_landmark_compactions: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct MediaFingerprintExtractionReport {
-    pub invocations: MediaToolInvocationCounts,
-    pub timings: MediaExtractionTimings,
-    pub audio_stream: MediaAudioStreamMetrics,
-    pub audio_error: Option<String>,
-    pub video_error: Option<String>,
-    pub serialized_debug_record_bytes: usize,
-    pub audio_summary_bytes: usize,
-    pub video_summary_bytes: usize,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct InstrumentedMediaFingerprint {
-    pub record: MediaFingerprintRecord,
-    pub report: MediaFingerprintExtractionReport,
-}
-
-pub fn expected_media_tool_invocation_counts(
-    settings: &MediaExtractionSettings,
-) -> MediaToolInvocationCounts {
-    MediaToolInvocationCounts {
-        ffmpeg: if settings.profile.uses_video_by_default() {
-            2
-        } else {
-            1
-        },
-        ffprobe: 1,
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MediaFingerprintError {
-    FileMetadata {
-        path: String,
-        error: String,
-    },
-    ToolFailed {
-        tool: &'static str,
-        status: Option<i32>,
-        stderr: String,
-    },
-    TimedOut {
-        tool: &'static str,
-        timeout_seconds: u64,
-    },
-    Cancelled {
-        tool: &'static str,
-    },
-    InvalidToolOutput {
-        tool: &'static str,
-        reason: String,
-    },
-}
-
-impl fmt::Display for MediaFingerprintError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::FileMetadata { path, error } => {
-                write!(
-                    formatter,
-                    "failed reading media metadata for '{path}': {error}"
-                )
-            }
-            Self::ToolFailed {
-                tool,
-                status,
-                stderr,
-            } => {
-                let status = status
-                    .map(|status| status.to_string())
-                    .unwrap_or_else(|| "terminated".to_owned());
-                write!(formatter, "{tool} failed with status {status}: {stderr}")
-            }
-            Self::TimedOut {
-                tool,
-                timeout_seconds,
-            } => {
-                write!(
-                    formatter,
-                    "{tool} timed out after {timeout_seconds} seconds during media fingerprinting"
-                )
-            }
-            Self::Cancelled { tool } => {
-                write!(formatter, "{tool} was canceled during media fingerprinting")
-            }
-            Self::InvalidToolOutput { tool, reason } => {
-                write!(formatter, "{tool} output could not be parsed: {reason}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for MediaFingerprintError {}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MediaMatchCandidateDecision {
@@ -480,22 +365,6 @@ impl fmt::Display for MediaSummaryDecodeError {
 }
 
 impl std::error::Error for MediaSummaryDecodeError {}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AudioLandmarkV3 {
-    pub hash: u32,
-    pub t_ms: u32,
-    pub weight: u8,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VideoLandmarkV3 {
-    pub bucket: u32,
-    pub hash64: u64,
-    pub t_ms: u32,
-    pub kind: u8,
-    pub weight: u8,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MediaFingerprintBlobV3 {
@@ -1177,293 +1046,6 @@ pub fn decode_video_anchor_summary(
         });
     }
     Ok(anchors)
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MediaMatchWireSignature {
-    pub schema: String,
-    pub profiles: Vec<MediaMatchWireProfile>,
-}
-
-impl Default for MediaMatchWireSignature {
-    fn default() -> Self {
-        Self {
-            schema: MEDIA_MATCH_WIRE_SCHEMA_V3.to_owned(),
-            profiles: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MediaMatchWireProfile {
-    pub profile: String,
-    pub algorithm_version: u32,
-    pub duration_ms: Option<u32>,
-    pub audio: Option<MediaMatchWireAnchorBlock>,
-    pub video: Option<MediaMatchWireAnchorBlock>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MediaMatchWireAnchorBlock {
-    pub algorithm: String,
-    pub time_base_ms: u32,
-    pub anchors: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct MediaMatchCache {
-    pub records: BTreeMap<String, MediaFingerprintRecord>,
-}
-
-impl MediaMatchCache {
-    pub fn insert(&mut self, record: MediaFingerprintRecord) {
-        self.records
-            .insert(record.identity.normalized_path.clone(), record);
-    }
-
-    pub fn get_valid(
-        &self,
-        path: impl AsRef<Path>,
-        modified_unix_millis: u64,
-        size_bytes: u64,
-        algorithm_version: u32,
-        extraction_settings: &MediaExtractionSettings,
-    ) -> Option<&MediaFingerprintRecord> {
-        let normalized_path = normalize_media_path(path);
-        let record = self.records.get(&normalized_path)?;
-        record
-            .valid_for(
-                &normalized_path,
-                modified_unix_millis,
-                size_bytes,
-                algorithm_version,
-                extraction_settings,
-            )
-            .then_some(record)
-    }
-
-    pub fn remove_stale(
-        &mut self,
-        path: impl AsRef<Path>,
-        modified_unix_millis: u64,
-        size_bytes: u64,
-        algorithm_version: u32,
-        extraction_settings: &MediaExtractionSettings,
-    ) -> bool {
-        let normalized_path = normalize_media_path(path);
-        let stale = self.records.get(&normalized_path).is_some_and(|record| {
-            !record.valid_for(
-                &normalized_path,
-                modified_unix_millis,
-                size_bytes,
-                algorithm_version,
-                extraction_settings,
-            )
-        });
-        if stale {
-            self.records.remove(&normalized_path);
-        }
-        stale
-    }
-
-    pub fn clear(&mut self) {
-        self.records.clear();
-    }
-}
-
-pub fn media_match_wire_signature_from_records(
-    records: &[MediaFingerprintRecord],
-) -> MediaMatchWireSignature {
-    let mut signature = MediaMatchWireSignature::default();
-    for record in records {
-        if let Some(profile) = media_match_wire_anchor_profile_from_record(record) {
-            signature.profiles.push(profile);
-        }
-    }
-    signature
-}
-
-pub fn media_match_wire_value_from_records(records: &[MediaFingerprintRecord]) -> Option<Value> {
-    let signature = media_match_wire_signature_from_records(records);
-    if signature.profiles.is_empty() {
-        return None;
-    }
-    let value = serde_json::to_value(&signature).ok()?;
-    let bytes = serde_json::to_vec(&value).ok()?;
-    (bytes.len() <= MEDIA_MATCH_WIRE_MAX_BYTES).then_some(value)
-}
-
-pub fn media_match_wire_signature_from_value(
-    value: &Value,
-) -> Result<MediaMatchWireSignature, String> {
-    let bytes = serde_json::to_vec(value)
-        .map_err(|error| format!("media match wire signature could not serialize: {error}"))?;
-    if bytes.len() > MEDIA_MATCH_WIRE_MAX_BYTES {
-        return Err("media match wire signature exceeds the payload limit".to_owned());
-    }
-    let schema = value
-        .get("schema")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "media match wire signature has no schema".to_owned())?;
-    if schema != MEDIA_MATCH_WIRE_SCHEMA_V3 {
-        return Err("media match wire signature schema is unsupported".to_owned());
-    }
-    let signature: MediaMatchWireSignature = serde_json::from_value(value.clone())
-        .map_err(|error| format!("media match v3 wire signature is invalid: {error}"))?;
-    if signature.profiles.is_empty() {
-        return Err("media match wire signature has no profiles".to_owned());
-    }
-    for profile in &signature.profiles {
-        media_anchor_profile_from_wire_profile(profile)?;
-    }
-    Ok(signature)
-}
-
-pub fn decide_media_match_against_wire_signature(
-    query: &MediaFingerprintRecord,
-    signature: &MediaMatchWireSignature,
-    settings: &MediaMatchSettings,
-) -> MediaMatchDecision {
-    let query_profile = media_anchor_profile_from_record(query);
-    let mut ranked = signature
-        .profiles
-        .iter()
-        .filter_map(|profile| media_anchor_profile_from_wire_profile(profile).ok())
-        .map(|candidate| decide_media_match_anchors(&query_profile, &candidate, settings))
-        .collect::<Vec<_>>();
-    ranked.sort_by(|left, right| {
-        media_match_tier_rank(right.tier).cmp(&media_match_tier_rank(left.tier))
-    });
-    ranked
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| MediaMatchDecision::unknown("no comparable media match wire profiles"))
-}
-
-fn media_match_wire_anchor_profile_from_record(
-    record: &MediaFingerprintRecord,
-) -> Option<MediaMatchWireProfile> {
-    let anchor_profile = media_anchor_profile_from_record(record);
-    media_match_wire_anchor_profile_from_anchor_profile(
-        &anchor_profile,
-        &record.extraction_settings.audio_algorithm,
-        &record.extraction_settings.video_algorithm,
-    )
-}
-
-pub fn media_match_wire_anchor_profile_from_anchor_profile(
-    profile: &MediaAnchorProfile,
-    audio_algorithm: &str,
-    video_algorithm: &str,
-) -> Option<MediaMatchWireProfile> {
-    if profile.is_empty() {
-        return None;
-    }
-    let audio_summary = (!profile.audio_anchors.is_empty())
-        .then(|| encode_audio_anchor_summary(&profile.audio_anchors));
-    let video_summary = (!profile.video_anchors.is_empty())
-        .then(|| encode_video_anchor_summary(&profile.video_anchors));
-    Some(MediaMatchWireProfile {
-        profile: profile.profile.clone(),
-        algorithm_version: profile.version,
-        duration_ms: profile.duration_ms,
-        audio: audio_summary.map(|summary| MediaMatchWireAnchorBlock {
-            algorithm: audio_algorithm.to_owned(),
-            time_base_ms: 1,
-            anchors: base64::engine::general_purpose::STANDARD.encode(summary),
-        }),
-        video: video_summary.map(|summary| MediaMatchWireAnchorBlock {
-            algorithm: video_algorithm.to_owned(),
-            time_base_ms: 1,
-            anchors: base64::engine::general_purpose::STANDARD.encode(summary),
-        }),
-    })
-}
-
-pub fn media_anchor_profile_from_wire_profile(
-    profile: &MediaMatchWireProfile,
-) -> Result<MediaAnchorProfile, String> {
-    if profile.algorithm_version != MEDIA_MATCH_ANCHOR_VERSION {
-        return Err(format!(
-            "media match v3 profile '{}' uses unsupported algorithm version {}",
-            profile.profile, profile.algorithm_version
-        ));
-    }
-    let expected_settings = media_extraction_settings_for_profile_label(&profile.profile)
-        .ok_or_else(|| format!("media match v3 profile '{}' is unknown", profile.profile))?;
-    if let Some(block) = profile.audio.as_ref() {
-        validate_wire_anchor_block(
-            "audio",
-            block,
-            &expected_settings.audio_algorithm,
-            profile.profile.as_str(),
-        )?;
-    }
-    if let Some(block) = profile.video.as_ref() {
-        validate_wire_anchor_block(
-            "video",
-            block,
-            &expected_settings.video_algorithm,
-            profile.profile.as_str(),
-        )?;
-    }
-    let audio_summary = profile
-        .audio
-        .as_ref()
-        .map(|block| {
-            base64::engine::general_purpose::STANDARD
-                .decode(block.anchors.as_bytes())
-                .map_err(|error| format!("media match v3 audio anchors are not base64: {error}"))
-        })
-        .transpose()?;
-    let video_summary = profile
-        .video
-        .as_ref()
-        .map(|block| {
-            base64::engine::general_purpose::STANDARD
-                .decode(block.anchors.as_bytes())
-                .map_err(|error| format!("media match v3 video anchors are not base64: {error}"))
-        })
-        .transpose()?;
-    media_anchor_profile_from_summaries(
-        profile.profile.clone(),
-        profile.duration_ms,
-        audio_summary.as_deref(),
-        video_summary.as_deref(),
-    )
-    .map_err(|error| format!("media match v3 anchors could not decode: {error}"))
-}
-
-fn media_extraction_settings_for_profile_label(label: &str) -> Option<MediaExtractionSettings> {
-    match label {
-        "audio-constellation-v3" => Some(MediaExtractionSettings::audio_constellation_v3()),
-        "combined-v3" => Some(MediaExtractionSettings::combined_v3()),
-        _ => None,
-    }
-}
-
-fn validate_wire_anchor_block(
-    modality: &str,
-    block: &MediaMatchWireAnchorBlock,
-    expected_algorithm: &str,
-    profile_label: &str,
-) -> Result<(), String> {
-    if block.algorithm != expected_algorithm {
-        return Err(format!(
-            "media match v3 {modality} algorithm '{}' is unsupported for profile '{profile_label}'",
-            block.algorithm
-        ));
-    }
-    if block.time_base_ms != 1 {
-        return Err(format!(
-            "media match v3 {modality} time base {}ms is unsupported",
-            block.time_base_ms
-        ));
-    }
-    Ok(())
 }
 
 pub fn fingerprint_media_file(
@@ -5227,7 +4809,7 @@ fn ensure_tool_success(
     })
 }
 
-fn media_match_tier_rank(tier: MediaMatchTier) -> u8 {
+pub(crate) fn media_match_tier_rank(tier: MediaMatchTier) -> u8 {
     match tier {
         MediaMatchTier::Exact => 5,
         MediaMatchTier::Strong => 4,

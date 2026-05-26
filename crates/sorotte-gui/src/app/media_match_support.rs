@@ -2,16 +2,16 @@ use std::{
     collections::BTreeSet,
     env, fs,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Output, Stdio},
     sync::atomic::{AtomicBool, Ordering},
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
 #[cfg(windows)]
-use std::{io::Read, time::Duration};
+use std::io::Read;
 
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -50,6 +50,8 @@ const MEDIA_MATCH_INDEX_FILE: &str = "index-v3.sqlite3";
 const MEDIA_MATCH_INDEX_BACKUP_FILE: &str = "index-v3.previous.sqlite3";
 const MEDIA_MATCH_PREFILTER_THRESHOLD: usize = 64;
 const MEDIA_MATCH_PREFILTER_LIMIT: usize = 24;
+const MEDIA_MATCH_VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+const MEDIA_MATCH_VERSION_PROBE_POLL_INTERVAL: Duration = Duration::from_millis(25);
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 #[cfg(windows)]
@@ -2098,16 +2100,8 @@ fn find_executable_on_path(file_name: &str) -> Option<PathBuf> {
 }
 
 fn probe_executable_version(path: &Path, args: &[&str]) -> Result<String, String> {
-    let output = hidden_media_match_command(path)
-        .args(args)
-        .output()
-        .map_err(|error| {
-            format!(
-                "failed to run '{} {}': {error}",
-                path.display(),
-                args.join(" ")
-            )
-        })?;
+    let output =
+        probe_executable_output_with_timeout(path, args, MEDIA_MATCH_VERSION_PROBE_TIMEOUT)?;
     if !output.status.success() {
         return Err(format!(
             "exited with status {}",
@@ -2125,6 +2119,60 @@ fn probe_executable_version(path: &Path, args: &[&str]) -> Result<String, String
         .unwrap_or("version output empty")
         .trim();
     Ok(first_line.to_owned())
+}
+
+fn probe_executable_output_with_timeout(
+    path: &Path,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<Output, String> {
+    let mut child = hidden_media_match_command(path)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            format!(
+                "failed to run '{} {}': {error}",
+                path.display(),
+                args.join(" ")
+            )
+        })?;
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => {
+                return child.wait_with_output().map_err(|error| {
+                    format!(
+                        "failed collecting output from '{} {}': {error}",
+                        path.display(),
+                        args.join(" ")
+                    )
+                });
+            }
+            Ok(None) if started.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "timed out after {:.1}s running '{} {}'",
+                    timeout.as_secs_f64(),
+                    path.display(),
+                    args.join(" ")
+                ));
+            }
+            Ok(None) => std::thread::sleep(MEDIA_MATCH_VERSION_PROBE_POLL_INTERVAL),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "failed waiting for '{} {}': {error}",
+                    path.display(),
+                    args.join(" ")
+                ));
+            }
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -3122,6 +3170,32 @@ mod tests {
         assert!(diagnostic.contains("class=SameCutStrong"), "{diagnostic}");
         assert!(diagnostic.contains("segment=0"), "{diagnostic}");
         assert!(diagnostic.contains("local_offset=5000ms"), "{diagnostic}");
+    }
+
+    #[test]
+    fn executable_version_probe_times_out() {
+        let (executable, args) = slow_probe_command();
+        let error = probe_executable_output_with_timeout(
+            &executable,
+            &args,
+            std::time::Duration::from_millis(75),
+        )
+        .expect_err("slow probe command should time out");
+
+        assert!(error.contains("timed out"), "{error}");
+    }
+
+    #[cfg(windows)]
+    fn slow_probe_command() -> (PathBuf, Vec<&'static str>) {
+        (
+            PathBuf::from("powershell.exe"),
+            vec!["-NoProfile", "-Command", "Start-Sleep -Seconds 2"],
+        )
+    }
+
+    #[cfg(not(windows))]
+    fn slow_probe_command() -> (PathBuf, Vec<&'static str>) {
+        (PathBuf::from("/bin/sh"), vec!["-c", "sleep 2"])
     }
 
     #[test]

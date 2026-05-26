@@ -28,18 +28,12 @@ fn default_media_fingerprint_profile() -> MediaFingerprintProfile {
     MediaFingerprintProfile::AudioConstellationV3
 }
 
-fn default_audio_sample_seconds() -> u32 {
-    0
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MediaExtractionSettings {
     #[serde(default = "default_media_fingerprint_profile")]
     pub profile: MediaFingerprintProfile,
     pub frame_sample_interval_seconds: u32,
     pub max_frames: usize,
-    #[serde(default = "default_audio_sample_seconds")]
-    pub audio_sample_seconds: u32,
     pub audio_algorithm: String,
     pub video_algorithm: String,
 }
@@ -56,7 +50,6 @@ impl MediaExtractionSettings {
             profile: MediaFingerprintProfile::AudioConstellationV3,
             frame_sample_interval_seconds: 0,
             max_frames: 0,
-            audio_sample_seconds: 0,
             audio_algorithm: "sorotte-audio-constellation-v3".to_owned(),
             video_algorithm: "none".to_owned(),
         }
@@ -67,7 +60,6 @@ impl MediaExtractionSettings {
             profile: MediaFingerprintProfile::CombinedV3,
             frame_sample_interval_seconds: 10,
             max_frames: 64,
-            audio_sample_seconds: 0,
             audio_algorithm: "sorotte-audio-constellation-v3".to_owned(),
             video_algorithm: "sorotte-video-scene-v3".to_owned(),
         }

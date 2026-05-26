@@ -1,8 +1,8 @@
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 
 use serde::{Deserialize, Serialize};
 
-use crate::normalize_media_path;
+use crate::{MediaExtractionSettings, MediaFingerprintRecord, normalize_media_path};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -220,6 +220,67 @@ pub struct VideoMatchEvidence {
     pub best_offset_seconds: f64,
     pub drift_ratio: f64,
     pub mean_hamming_distance: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct MediaMatchCache {
+    pub records: BTreeMap<String, MediaFingerprintRecord>,
+}
+
+impl MediaMatchCache {
+    pub fn insert(&mut self, record: MediaFingerprintRecord) {
+        self.records
+            .insert(record.identity.normalized_path.clone(), record);
+    }
+
+    pub fn get_valid(
+        &self,
+        path: impl AsRef<Path>,
+        modified_unix_millis: u64,
+        size_bytes: u64,
+        algorithm_version: u32,
+        extraction_settings: &MediaExtractionSettings,
+    ) -> Option<&MediaFingerprintRecord> {
+        let normalized_path = normalize_media_path(path);
+        let record = self.records.get(&normalized_path)?;
+        record
+            .valid_for(
+                &normalized_path,
+                modified_unix_millis,
+                size_bytes,
+                algorithm_version,
+                extraction_settings,
+            )
+            .then_some(record)
+    }
+
+    pub fn remove_stale(
+        &mut self,
+        path: impl AsRef<Path>,
+        modified_unix_millis: u64,
+        size_bytes: u64,
+        algorithm_version: u32,
+        extraction_settings: &MediaExtractionSettings,
+    ) -> bool {
+        let normalized_path = normalize_media_path(path);
+        let stale = self.records.get(&normalized_path).is_some_and(|record| {
+            !record.valid_for(
+                &normalized_path,
+                modified_unix_millis,
+                size_bytes,
+                algorithm_version,
+                extraction_settings,
+            )
+        });
+        if stale {
+            self.records.remove(&normalized_path);
+        }
+        stale
+    }
+
+    pub fn clear(&mut self) {
+        self.records.clear();
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

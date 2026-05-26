@@ -61,7 +61,8 @@ fn run_cli() -> Result<bool, String> {
         }
     };
     let passed = report.summary.failed == 0;
-    if retain_cache {
+    let retain_cache_for_report = should_retain_cache_for_report(retain_cache, passed);
+    if retain_cache_for_report {
         report.cache_retained = true;
         eprintln!(
             "media-match V3 diagnostic cache retained at {}",
@@ -174,6 +175,10 @@ fn cleanup_temporary_cache(cache_root: &Path) -> bool {
     }
 }
 
+fn should_retain_cache_for_report(retain_cache_requested: bool, passed: bool) -> bool {
+    retain_cache_requested || !passed
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -214,6 +219,14 @@ mod tests {
 
         assert!(cleanup_temporary_cache(&root));
         assert!(!root.exists());
+    }
+
+    #[test]
+    fn failed_expectation_reports_retain_temporary_cache() {
+        assert!(!should_retain_cache_for_report(false, true));
+        assert!(should_retain_cache_for_report(false, false));
+        assert!(should_retain_cache_for_report(true, true));
+        assert!(should_retain_cache_for_report(true, false));
     }
 
     #[test]

@@ -26,9 +26,9 @@ Use `--keep-cache` to retain an automatically generated temporary cache:
 cargo run -p sorotte-media-match --bin v3_diagnostics -- manifest.json --keep-cache
 ```
 
-The runner uses `SOROTTE_MEDIA_MATCH_FFMPEG` and
-`SOROTTE_MEDIA_MATCH_FFPROBE` when set; otherwise it resolves `ffmpeg` and
-`ffprobe` from `PATH`.
+V3 requires only `ffmpeg` and `ffprobe`. The runner uses
+`SOROTTE_MEDIA_MATCH_FFMPEG` and `SOROTTE_MEDIA_MATCH_FFPROBE` when set;
+otherwise it resolves `ffmpeg` and `ffprobe` from `PATH`.
 
 ## Manifest
 
@@ -85,6 +85,19 @@ The JSON report includes:
 
 `mustBeRetrieved` fails a candidate when direct pairwise matching would pass but
 the shared V3 SQLite retrieval path did not shortlist that candidate.
+
+Treat retrieval misses differently from direct decision failures:
+
+- A retrieval miss means the indexed landmark query did not shortlist the
+  expected file. Inspect bucket counts, skipped-common counts, raw hit rows, and
+  retrieval rank first.
+- A direct decision failure means the candidate was compared but the evidence
+  did not satisfy the expected class/tier. Inspect aligned span, segment count,
+  edge-only status, audio/video conflict, offset, and piecewise fit metrics.
+
+Autoplay remains conservative: exact identity can be eligible, and the only
+non-exact V3 class eligible for strong same-media autoplay is `SameCutStrong`
+with tier `Strong` and user policy allowing it.
 
 ## Recommended Corpus
 
