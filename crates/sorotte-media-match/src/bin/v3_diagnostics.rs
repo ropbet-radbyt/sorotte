@@ -7,11 +7,13 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use serde::Serialize;
 use sorotte_media_match::{
-    MediaMatchToolPaths, MediaMatchV3DiagnosticIndexMode, MediaMatchV3DiagnosticManifest,
-    MediaMatchV3DiagnosticRunOptions, MediaMatchV3ResolvedManifest,
-    MediaMatchV3ResolvedManifestCase, media_match_v3_diagnostic_manifest_from_json,
-    resolve_media_match_v3_diagnostic_manifest, run_media_match_v3_diagnostic_manifest,
+    MediaDenseAudioProfile, MediaMatchToolPaths, MediaMatchV3DiagnosticIndexMode,
+    MediaMatchV3DiagnosticManifest, MediaMatchV3DiagnosticReport, MediaMatchV3DiagnosticRunOptions,
+    MediaMatchV3ResolvedManifest, MediaMatchV3ResolvedManifestCase,
+    media_match_v3_diagnostic_manifest_from_json, resolve_media_match_v3_diagnostic_manifest,
+    run_media_match_v3_diagnostic_manifest,
 };
 
 fn main() -> ExitCode {
@@ -45,6 +47,8 @@ fn run_cli_with_output(
         keep_cache,
         refresh_cache,
         index_mode,
+        dense_audio_profile,
+        bench_dense_audio_profiles,
         max_full_promotions_per_query,
         promote_expected_candidates,
         mode,
@@ -76,6 +80,48 @@ fn run_cli_with_output(
     let supplied_cache_root = cache_root.is_some();
     let retain_cache = supplied_cache_root || keep_cache;
     let cache_root = cache_root.unwrap_or_else(temp_cache_root);
+    if bench_dense_audio_profiles {
+        let mut report = match run_dense_audio_profile_benchmark(DenseAudioProfileBenchmarkRun {
+            manifest: &manifest,
+            manifest_dir: &manifest_dir,
+            cache_root: &cache_root,
+            cache_retained: retain_cache,
+            refresh_cache,
+            index_mode,
+            max_full_promotions_per_query,
+            promote_expected_candidates,
+        }) {
+            Ok(report) => report,
+            Err(error) => {
+                if !retain_cache {
+                    cleanup_temporary_cache(&cache_root);
+                }
+                return Err(error);
+            }
+        };
+        let passed = report.profiles.iter().all(|profile| profile.passed);
+        let retain_cache_for_report = should_retain_cache_for_report(retain_cache, passed);
+        if retain_cache_for_report {
+            report.cache_retained = true;
+            eprintln!(
+                "media-match V3 diagnostic cache retained at {}",
+                cache_root.display()
+            );
+        } else {
+            report.cache_retained = !cleanup_temporary_cache(&cache_root);
+        }
+        let report_json = serde_json::to_string_pretty(&report)
+            .map_err(|error| format!("failed serializing dense benchmark JSON: {error}"))?;
+        if let Some(output_path) = output_path {
+            fs::write(&output_path, report_json).map_err(|error| {
+                format!("failed writing report '{}': {error}", output_path.display())
+            })?;
+        } else {
+            stdout.push_str(&report_json);
+            stdout.push('\n');
+        }
+        return Ok(passed);
+    }
     let mut report = match run_media_match_v3_diagnostic_manifest(
         &manifest,
         MediaMatchV3DiagnosticRunOptions {
@@ -84,6 +130,7 @@ fn run_cli_with_output(
             cache_retained: retain_cache,
             refresh_cache,
             index_mode,
+            dense_audio_profile,
             max_full_promotions_per_query,
             promote_expected_candidates,
             tools: tool_paths(),
@@ -136,6 +183,8 @@ struct CliArgs {
     keep_cache: bool,
     refresh_cache: bool,
     index_mode: MediaMatchV3DiagnosticIndexMode,
+    dense_audio_profile: MediaDenseAudioProfile,
+    bench_dense_audio_profiles: bool,
     max_full_promotions_per_query: usize,
     promote_expected_candidates: bool,
     mode: CliMode,
@@ -149,6 +198,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
     let mut keep_cache = false;
     let mut refresh_cache = false;
     let mut index_mode = MediaMatchV3DiagnosticIndexMode::Full;
+    let mut dense_audio_profile = MediaDenseAudioProfile::DenseCurrent;
+    let mut bench_dense_audio_profiles = false;
     let mut max_full_promotions_per_query = 1usize;
     let mut promote_expected_candidates = false;
     let mut mode = CliMode::Run;
@@ -179,6 +230,15 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
                     return Err(usage());
                 };
                 index_mode = parse_index_mode(&value)?;
+            }
+            "--dense-audio-profile" => {
+                let Some(value) = args.next() else {
+                    return Err(usage());
+                };
+                dense_audio_profile = parse_dense_audio_profile(&value)?;
+            }
+            "--bench-dense-audio-profiles" => {
+                bench_dense_audio_profiles = true;
             }
             "--max-full-promotions" => {
                 let Some(value) = args.next() else {
@@ -223,6 +283,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
         keep_cache,
         refresh_cache,
         index_mode,
+        dense_audio_profile,
+        bench_dense_audio_profiles,
         max_full_promotions_per_query,
         promote_expected_candidates,
         mode,
@@ -231,7 +293,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
 }
 
 fn usage() -> String {
-    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--index-mode full|sparse-full|sampled-fast|sampled-normal|sampled|sampled-then-full|production] [--max-full-promotions n] [--promote-expected-candidates] [--list-cases|--validate-only] [--case name]"
+    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--index-mode full|sparse-full|sampled-fast|sampled-normal|sampled|sampled-then-full|production] [--dense-audio-profile dense-current|dense-realfft|dense-8k|dense-hop2048|dense-8k-hop2048|dense-8k-window1024-hop1024|dense-max-peaks-4|dense-pair-retain-16|dense-fast-combined-candidate] [--bench-dense-audio-profiles] [--max-full-promotions n] [--promote-expected-candidates] [--list-cases|--validate-only] [--case name]"
         .to_owned()
 }
 
@@ -245,6 +307,130 @@ fn parse_index_mode(value: &str) -> Result<MediaMatchV3DiagnosticIndexMode, Stri
         "production" => Ok(MediaMatchV3DiagnosticIndexMode::Production),
         _ => Err(usage()),
     }
+}
+
+fn parse_dense_audio_profile(value: &str) -> Result<MediaDenseAudioProfile, String> {
+    match value {
+        "dense-current" => Ok(MediaDenseAudioProfile::DenseCurrent),
+        "dense-realfft" => Ok(MediaDenseAudioProfile::DenseRealfft),
+        "dense-8k" => Ok(MediaDenseAudioProfile::Dense8k),
+        "dense-hop2048" => Ok(MediaDenseAudioProfile::DenseHop2048),
+        "dense-8k-hop2048" => Ok(MediaDenseAudioProfile::Dense8kHop2048),
+        "dense-8k-window1024-hop1024" => Ok(MediaDenseAudioProfile::Dense8kWindow1024Hop1024),
+        "dense-max-peaks-4" => Ok(MediaDenseAudioProfile::DenseMaxPeaks4),
+        "dense-pair-retain-16" => Ok(MediaDenseAudioProfile::DensePairRetain16),
+        "dense-fast-combined-candidate" => Ok(MediaDenseAudioProfile::DenseFastCombinedCandidate),
+        _ => Err(usage()),
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DenseAudioProfileBenchmarkReport {
+    index_mode: String,
+    cache_root: String,
+    cache_retained: bool,
+    generated_at_unix_millis: u64,
+    profiles: Vec<DenseAudioProfileBenchmarkProfileReport>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DenseAudioProfileBenchmarkProfileReport {
+    profile: String,
+    passed: bool,
+    summary: DenseAudioProfileBenchmarkProfileSummary,
+    report: MediaMatchV3DiagnosticReport,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DenseAudioProfileBenchmarkProfileSummary {
+    extraction_millis: u128,
+    run_wall_millis: u128,
+    decision_total_millis: u128,
+    failed: usize,
+    passed: usize,
+    total_raw_hit_rows_processed: i64,
+}
+
+struct DenseAudioProfileBenchmarkRun<'a> {
+    manifest: &'a MediaMatchV3DiagnosticManifest,
+    manifest_dir: &'a Path,
+    cache_root: &'a Path,
+    cache_retained: bool,
+    refresh_cache: bool,
+    index_mode: MediaMatchV3DiagnosticIndexMode,
+    max_full_promotions_per_query: usize,
+    promote_expected_candidates: bool,
+}
+
+fn run_dense_audio_profile_benchmark(
+    options: DenseAudioProfileBenchmarkRun<'_>,
+) -> Result<DenseAudioProfileBenchmarkReport, String> {
+    let DenseAudioProfileBenchmarkRun {
+        manifest,
+        manifest_dir,
+        cache_root,
+        cache_retained,
+        refresh_cache,
+        index_mode,
+        max_full_promotions_per_query,
+        promote_expected_candidates,
+    } = options;
+    if index_mode != MediaMatchV3DiagnosticIndexMode::Full {
+        return Err("--bench-dense-audio-profiles requires --index-mode full".to_owned());
+    }
+    let generated_at_unix_millis = current_unix_millis();
+    let profiles = [
+        MediaDenseAudioProfile::DenseCurrent,
+        MediaDenseAudioProfile::DenseRealfft,
+        MediaDenseAudioProfile::Dense8k,
+        MediaDenseAudioProfile::DenseHop2048,
+        MediaDenseAudioProfile::Dense8kHop2048,
+        MediaDenseAudioProfile::Dense8kWindow1024Hop1024,
+        MediaDenseAudioProfile::DenseMaxPeaks4,
+        MediaDenseAudioProfile::DensePairRetain16,
+        MediaDenseAudioProfile::DenseFastCombinedCandidate,
+    ];
+    let mut reports = Vec::with_capacity(profiles.len());
+    for profile in profiles {
+        let report = run_media_match_v3_diagnostic_manifest(
+            manifest,
+            MediaMatchV3DiagnosticRunOptions {
+                manifest_dir: manifest_dir.to_path_buf(),
+                cache_root: cache_root.to_path_buf(),
+                cache_retained,
+                refresh_cache,
+                index_mode,
+                dense_audio_profile: profile,
+                max_full_promotions_per_query,
+                promote_expected_candidates,
+                tools: tool_paths(),
+                generated_at_unix_millis: Some(generated_at_unix_millis),
+            },
+        )?;
+        reports.push(DenseAudioProfileBenchmarkProfileReport {
+            profile: profile.label().to_owned(),
+            passed: report.summary.failed == 0,
+            summary: DenseAudioProfileBenchmarkProfileSummary {
+                extraction_millis: report.summary.total_extraction_millis,
+                run_wall_millis: report.summary.run_wall_millis,
+                decision_total_millis: report.summary.decision_total_millis,
+                failed: report.summary.failed,
+                passed: report.summary.passed,
+                total_raw_hit_rows_processed: report.summary.total_raw_hit_rows_processed,
+            },
+            report,
+        });
+    }
+    Ok(DenseAudioProfileBenchmarkReport {
+        index_mode: index_mode.label().to_owned(),
+        cache_root: cache_root.to_string_lossy().to_string(),
+        cache_retained,
+        generated_at_unix_millis,
+        profiles: reports,
+    })
 }
 
 fn filter_manifest_cases(
@@ -362,6 +548,13 @@ fn temp_cache_root() -> PathBuf {
     path
 }
 
+fn current_unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or_default()
+}
+
 fn cleanup_temporary_cache(cache_root: &Path) -> bool {
     match fs::remove_dir_all(cache_root) {
         Ok(()) => true,
@@ -404,6 +597,8 @@ mod tests {
             "--refresh-cache".to_owned(),
             "--index-mode".to_owned(),
             "sampled".to_owned(),
+            "--dense-audio-profile".to_owned(),
+            "dense-8k-hop2048".to_owned(),
             "--max-full-promotions".to_owned(),
             "2".to_owned(),
             "--promote-expected-candidates".to_owned(),
@@ -421,6 +616,11 @@ mod tests {
             args.index_mode,
             MediaMatchV3DiagnosticIndexMode::SampledNormal
         );
+        assert_eq!(
+            args.dense_audio_profile,
+            MediaDenseAudioProfile::Dense8kHop2048
+        );
+        assert!(!args.bench_dense_audio_profiles);
         assert_eq!(args.max_full_promotions_per_query, 2);
         assert!(args.promote_expected_candidates);
         assert_eq!(args.selected_cases, vec!["copied-synthetic"]);
@@ -449,6 +649,21 @@ mod tests {
 
         assert_eq!(args.index_mode, MediaMatchV3DiagnosticIndexMode::Production);
         assert_eq!(args.max_full_promotions_per_query, 1);
+    }
+
+    #[test]
+    fn parse_args_accepts_dense_audio_profile_benchmark() {
+        let args = parse_args([
+            "manifest.json".to_owned(),
+            "--bench-dense-audio-profiles".to_owned(),
+        ])
+        .expect("dense benchmark mode should parse");
+
+        assert_eq!(
+            args.dense_audio_profile,
+            MediaDenseAudioProfile::DenseCurrent
+        );
+        assert!(args.bench_dense_audio_profiles);
     }
 
     #[test]
@@ -625,6 +840,7 @@ mod tests {
                 cache_retained: true,
                 refresh_cache: true,
                 index_mode: MediaMatchV3DiagnosticIndexMode::Full,
+                dense_audio_profile: MediaDenseAudioProfile::DenseCurrent,
                 max_full_promotions_per_query: 1,
                 promote_expected_candidates: false,
                 tools: tool_paths(),
@@ -683,6 +899,7 @@ mod tests {
                 cache_retained: true,
                 refresh_cache: false,
                 index_mode: MediaMatchV3DiagnosticIndexMode::Full,
+                dense_audio_profile: MediaDenseAudioProfile::DenseCurrent,
                 max_full_promotions_per_query: 1,
                 promote_expected_candidates: false,
                 tools: tool_paths(),
@@ -723,6 +940,7 @@ mod tests {
                 cache_retained: true,
                 refresh_cache: true,
                 index_mode: MediaMatchV3DiagnosticIndexMode::Full,
+                dense_audio_profile: MediaDenseAudioProfile::DenseCurrent,
                 max_full_promotions_per_query: 1,
                 promote_expected_candidates: false,
                 tools: tool_paths(),
@@ -776,6 +994,7 @@ mod tests {
                 cache_retained: true,
                 refresh_cache: true,
                 index_mode: MediaMatchV3DiagnosticIndexMode::Full,
+                dense_audio_profile: MediaDenseAudioProfile::DenseCurrent,
                 max_full_promotions_per_query: 1,
                 promote_expected_candidates: false,
                 tools: tool_paths(),

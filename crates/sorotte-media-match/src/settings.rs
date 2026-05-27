@@ -68,12 +68,45 @@ fn default_media_audio_index_mode() -> MediaAudioIndexMode {
     MediaAudioIndexMode::FullVerify
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MediaDenseAudioProfile {
+    #[default]
+    DenseCurrent,
+    DenseRealfft,
+    Dense8k,
+    DenseHop2048,
+    Dense8kHop2048,
+    Dense8kWindow1024Hop1024,
+    DenseMaxPeaks4,
+    DensePairRetain16,
+    DenseFastCombinedCandidate,
+}
+
+impl MediaDenseAudioProfile {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::DenseCurrent => "dense-current",
+            Self::DenseRealfft => "dense-realfft",
+            Self::Dense8k => "dense-8k",
+            Self::DenseHop2048 => "dense-hop2048",
+            Self::Dense8kHop2048 => "dense-8k-hop2048",
+            Self::Dense8kWindow1024Hop1024 => "dense-8k-window1024-hop1024",
+            Self::DenseMaxPeaks4 => "dense-max-peaks-4",
+            Self::DensePairRetain16 => "dense-pair-retain-16",
+            Self::DenseFastCombinedCandidate => "dense-fast-combined-candidate",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MediaExtractionSettings {
     #[serde(default = "default_media_fingerprint_profile")]
     pub profile: MediaFingerprintProfile,
     #[serde(default = "default_media_audio_index_mode")]
     pub audio_index_mode: MediaAudioIndexMode,
+    #[serde(default)]
+    pub dense_audio_profile: MediaDenseAudioProfile,
     pub frame_sample_interval_seconds: u32,
     pub max_frames: usize,
     pub audio_algorithm: String,
@@ -91,6 +124,7 @@ impl MediaExtractionSettings {
         Self {
             profile: MediaFingerprintProfile::AudioConstellationV3,
             audio_index_mode: MediaAudioIndexMode::FullVerify,
+            dense_audio_profile: MediaDenseAudioProfile::DenseCurrent,
             frame_sample_interval_seconds: 0,
             max_frames: 0,
             audio_algorithm: "sorotte-audio-constellation-v3".to_owned(),
@@ -102,6 +136,7 @@ impl MediaExtractionSettings {
         Self {
             profile: MediaFingerprintProfile::CombinedV3,
             audio_index_mode: MediaAudioIndexMode::FullVerify,
+            dense_audio_profile: MediaDenseAudioProfile::DenseCurrent,
             frame_sample_interval_seconds: 10,
             max_frames: 64,
             audio_algorithm: "sorotte-audio-constellation-v3".to_owned(),
@@ -131,6 +166,18 @@ impl MediaExtractionSettings {
             audio_algorithm: "sorotte-audio-constellation-v3-sparse-full".to_owned(),
             ..Self::audio_constellation_v3()
         }
+    }
+
+    pub fn with_dense_audio_profile(mut self, profile: MediaDenseAudioProfile) -> Self {
+        self.dense_audio_profile = profile;
+        if self.audio_index_mode.is_dense_full_verify() {
+            self.audio_algorithm = if profile == MediaDenseAudioProfile::DenseCurrent {
+                "sorotte-audio-constellation-v3".to_owned()
+            } else {
+                format!("sorotte-audio-constellation-v3-{}", profile.label())
+            };
+        }
+        self
     }
 }
 
@@ -212,6 +259,19 @@ mod tests {
         assert_ne!(full, sampled);
         assert_ne!(sampled_fast, sampled);
         assert_ne!(sparse_full, full);
+    }
+
+    #[test]
+    fn fingerprint_config_hash_changes_with_dense_audio_profile() {
+        let current = media_match_v3_fingerprint_config_hash(
+            &MediaExtractionSettings::audio_constellation_v3(),
+        );
+        let dense_8k = media_match_v3_fingerprint_config_hash(
+            &MediaExtractionSettings::audio_constellation_v3()
+                .with_dense_audio_profile(MediaDenseAudioProfile::Dense8k),
+        );
+
+        assert_ne!(current, dense_8k);
     }
 
     #[test]

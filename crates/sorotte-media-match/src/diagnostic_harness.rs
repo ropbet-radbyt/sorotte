@@ -8,10 +8,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     InstrumentedMediaFingerprint, MEDIA_MATCH_ANCHOR_VERSION, MatchClassV3, MediaAudioIndexMode,
-    MediaExtractionSettings, MediaMatchAutoplayPolicy, MediaMatchDecision, MediaMatchSettings,
-    MediaMatchTier, MediaMatchToolPaths, MediaMatchV3DiagnosticSummary, MediaMatchV3RetrievalStats,
-    MediaMatchV3SaveStats, V3Tuning, current_v3_tuning, decide_media_match,
-    fingerprint_media_file_with_report, load_media_match_v3_record_for_path,
+    MediaDenseAudioProfile, MediaExtractionSettings, MediaMatchAutoplayPolicy, MediaMatchDecision,
+    MediaMatchSettings, MediaMatchTier, MediaMatchToolPaths, MediaMatchV3DiagnosticSummary,
+    MediaMatchV3RetrievalStats, MediaMatchV3SaveStats, V3Tuning, current_v3_tuning,
+    decide_media_match, fingerprint_media_file_with_report, load_media_match_v3_record_for_path,
     media_extraction_settings_hash, media_match_v3_anchor_candidate_paths_with_stats,
     normalize_media_path, open_media_match_v3_index, save_media_match_v3_record_with_stats,
     summarize_decision_v3_diagnostics, summarize_instrumented_record_v3_diagnostics,
@@ -71,6 +71,7 @@ pub struct MediaMatchV3DiagnosticRunOptions {
     pub cache_retained: bool,
     pub refresh_cache: bool,
     pub index_mode: MediaMatchV3DiagnosticIndexMode,
+    pub dense_audio_profile: MediaDenseAudioProfile,
     pub max_full_promotions_per_query: usize,
     pub promote_expected_candidates: bool,
     pub tools: MediaMatchToolPaths,
@@ -128,6 +129,7 @@ pub struct MediaMatchV3DiagnosticReport {
     pub fingerprint_cache_version: u32,
     pub profile: String,
     pub index_mode: String,
+    pub dense_audio_profile: String,
     pub settings_hash: String,
     pub tuning: V3Tuning,
     pub cache_root: String,
@@ -194,6 +196,12 @@ pub struct MediaMatchV3DiagnosticDecisionReport {
     pub piecewise_pair_count: Option<usize>,
     pub piecewise_hypothesis_count: Option<usize>,
     pub piecewise_fit_millis: Option<u64>,
+    pub decision_pair_collection_millis: Option<u64>,
+    pub fast_audio_verifier_millis: Option<u64>,
+    pub global_fit_millis: Option<u64>,
+    pub timeline_map_millis: Option<u64>,
+    pub evidence_formatting_millis: Option<u64>,
+    pub total_decision_millis: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -281,7 +289,9 @@ pub fn run_media_match_v3_diagnostic_manifest(
 ) -> Result<MediaMatchV3DiagnosticReport, String> {
     let run_started_at = Instant::now();
     let index_mode = options.index_mode;
-    let mut settings = diagnostic_settings_for_profile(&manifest.profile)?;
+    let dense_audio_profile = options.dense_audio_profile;
+    let mut settings = diagnostic_settings_for_profile(&manifest.profile)?
+        .with_dense_audio_profile(dense_audio_profile);
     if !matches!(index_mode, MediaMatchV3DiagnosticIndexMode::Full) {
         let index_settings = match index_mode {
             MediaMatchV3DiagnosticIndexMode::SparseFull => {
@@ -308,6 +318,7 @@ pub fn run_media_match_v3_diagnostic_manifest(
             | MediaMatchV3DiagnosticIndexMode::Production
     ) {
         diagnostic_settings_for_profile(&manifest.profile)?
+            .with_dense_audio_profile(dense_audio_profile)
     } else {
         settings.clone()
     };
@@ -551,6 +562,7 @@ pub fn run_media_match_v3_diagnostic_manifest(
         fingerprint_cache_version: crate::MEDIA_MATCH_V3_FINGERPRINT_CACHE_VERSION,
         profile: settings.profile.label().to_owned(),
         index_mode: index_mode.label().to_owned(),
+        dense_audio_profile: dense_audio_profile.label().to_owned(),
         settings_hash: bytes_to_lower_hex(&settings_hash),
         tuning: current_v3_tuning(),
         cache_root: options.cache_root.to_string_lossy().to_string(),
@@ -764,6 +776,12 @@ impl MediaMatchV3DiagnosticDecisionReport {
             piecewise_pair_count: summary.piecewise_pair_count,
             piecewise_hypothesis_count: summary.piecewise_hypothesis_count,
             piecewise_fit_millis: summary.piecewise_fit_millis,
+            decision_pair_collection_millis: summary.decision_pair_collection_millis,
+            fast_audio_verifier_millis: summary.fast_audio_verifier_millis,
+            global_fit_millis: summary.global_fit_millis,
+            timeline_map_millis: summary.timeline_map_millis,
+            evidence_formatting_millis: summary.evidence_formatting_millis,
+            total_decision_millis: summary.total_decision_millis,
         }
     }
 }
@@ -1559,6 +1577,7 @@ mod tests {
                 cache_retained: true,
                 refresh_cache: false,
                 index_mode: MediaMatchV3DiagnosticIndexMode::Full,
+                dense_audio_profile: MediaDenseAudioProfile::DenseCurrent,
                 max_full_promotions_per_query: 1,
                 promote_expected_candidates: false,
                 tools: MediaMatchToolPaths {
@@ -1597,6 +1616,7 @@ mod tests {
                 cache_retained: true,
                 refresh_cache: false,
                 index_mode: MediaMatchV3DiagnosticIndexMode::Production,
+                dense_audio_profile: MediaDenseAudioProfile::DenseCurrent,
                 max_full_promotions_per_query: 1,
                 promote_expected_candidates: false,
                 tools: MediaMatchToolPaths {
@@ -1647,6 +1667,7 @@ mod tests {
                 cache_retained: true,
                 refresh_cache: false,
                 index_mode: MediaMatchV3DiagnosticIndexMode::Full,
+                dense_audio_profile: MediaDenseAudioProfile::DenseCurrent,
                 max_full_promotions_per_query: 1,
                 promote_expected_candidates: false,
                 tools: unavailable_tools(),
@@ -1701,6 +1722,7 @@ mod tests {
                 cache_retained: true,
                 refresh_cache: false,
                 index_mode: MediaMatchV3DiagnosticIndexMode::Full,
+                dense_audio_profile: MediaDenseAudioProfile::DenseCurrent,
                 max_full_promotions_per_query: 1,
                 promote_expected_candidates: false,
                 tools: unavailable_tools(),
@@ -1746,6 +1768,7 @@ mod tests {
                 cache_retained: true,
                 refresh_cache: false,
                 index_mode: MediaMatchV3DiagnosticIndexMode::Full,
+                dense_audio_profile: MediaDenseAudioProfile::DenseCurrent,
                 max_full_promotions_per_query: 1,
                 promote_expected_candidates: false,
                 tools: unavailable_tools(),
@@ -1780,6 +1803,7 @@ mod tests {
                 cache_retained: true,
                 refresh_cache: false,
                 index_mode: MediaMatchV3DiagnosticIndexMode::Full,
+                dense_audio_profile: MediaDenseAudioProfile::DenseCurrent,
                 max_full_promotions_per_query: 1,
                 promote_expected_candidates: false,
                 tools: unavailable_tools(),

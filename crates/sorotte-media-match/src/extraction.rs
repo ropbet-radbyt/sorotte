@@ -22,11 +22,14 @@ use crate::{
         video_anchors_from_record,
     },
     audio_v3::{
-        AudioConstellationV3PcmStream, AudioLandmarkV3,
+        AudioConstellationV3Config, AudioConstellationV3PcmStream, AudioLandmarkV3,
         bounded_time_distributed_audio_landmarks_v3_for_duration,
     },
     identity::{container_fingerprint_from_metadata, normalize_media_path},
-    settings::{MediaAudioIndexMode, MediaExtractionSettings, MediaFingerprintProfile},
+    settings::{
+        MediaAudioIndexMode, MediaDenseAudioProfile, MediaExtractionSettings,
+        MediaFingerprintProfile,
+    },
     tuning::{
         FFMPEG_AUDIO_V3_TIMEOUT, FFMPEG_FULL_VIDEO_TIMEOUT, FFPROBE_TIMEOUT,
         MEDIA_TOOL_POLL_INTERVAL, V3_AUDIO_SAMPLE_RATE, V3_AUDIO_SAMPLED_FAST_INDEX_LANDMARK_LIMIT,
@@ -89,6 +92,10 @@ pub struct MediaAudioStreamMetrics {
     pub channel_backpressure_millis: u128,
     pub max_queued_pcm_bytes: usize,
     pub candidate_pairs_considered: usize,
+    pub candidate_pairs_skipped_by_anchor_gate: usize,
+    pub candidate_pairs_skipped_by_target_gate: usize,
+    pub candidate_pairs_skipped_by_saturation: usize,
+    pub candidate_pairs_emitted: usize,
     pub landmarks_accepted_into_reservoir: usize,
     pub landmarks_rejected_by_reservoir: usize,
     pub ffmpeg_process_wall_millis: u128,
@@ -262,6 +269,7 @@ pub fn fingerprint_media_file_with_report(
             &tools.ffmpeg,
             path,
             duration_seconds,
+            extraction_settings.dense_audio_profile,
             cancel_flag,
         ),
         MediaAudioIndexMode::SparseFull => extract_audio_constellation_v3_sparse_full_with_metrics(
@@ -392,13 +400,15 @@ pub(crate) fn extract_audio_constellation_v3_with_metrics(
     ffmpeg: impl AsRef<Path>,
     media_path: impl AsRef<Path>,
     duration_seconds: Option<f64>,
+    dense_profile: MediaDenseAudioProfile,
     cancel_flag: Option<&AtomicBool>,
 ) -> Result<(Vec<AudioLandmarkV3>, MediaAudioStreamMetrics), MediaFingerprintError> {
-    extract_audio_constellation_v3_with_sample_rate_and_limit(
+    let config = AudioConstellationV3Config::dense(dense_profile);
+    extract_audio_constellation_v3_with_config_and_limit(
         ffmpeg,
         media_path,
         duration_seconds,
-        V3_AUDIO_SAMPLE_RATE,
+        config,
         V3_AUDIO_VERIFY_LANDMARK_LIMIT,
         cancel_flag,
     )
@@ -410,21 +420,21 @@ pub(crate) fn extract_audio_constellation_v3_sparse_full_with_metrics(
     duration_seconds: Option<f64>,
     cancel_flag: Option<&AtomicBool>,
 ) -> Result<(Vec<AudioLandmarkV3>, MediaAudioStreamMetrics), MediaFingerprintError> {
-    extract_audio_constellation_v3_with_sample_rate_and_limit(
+    extract_audio_constellation_v3_with_config_and_limit(
         ffmpeg,
         media_path,
         duration_seconds,
-        V3_AUDIO_SPARSE_FULL_SAMPLE_RATE,
+        AudioConstellationV3Config::with_sample_rate(V3_AUDIO_SPARSE_FULL_SAMPLE_RATE),
         V3_AUDIO_SPARSE_FULL_VERIFY_LANDMARK_LIMIT,
         cancel_flag,
     )
 }
 
-fn extract_audio_constellation_v3_with_sample_rate_and_limit(
+fn extract_audio_constellation_v3_with_config_and_limit(
     ffmpeg: impl AsRef<Path>,
     media_path: impl AsRef<Path>,
     duration_seconds: Option<f64>,
-    sample_rate: u32,
+    config: AudioConstellationV3Config,
     landmark_limit: usize,
     cancel_flag: Option<&AtomicBool>,
 ) -> Result<(Vec<AudioLandmarkV3>, MediaAudioStreamMetrics), MediaFingerprintError> {
@@ -437,8 +447,7 @@ fn extract_audio_constellation_v3_with_sample_rate_and_limit(
     let analyzer_queued_pcm_bytes = Arc::clone(&queued_pcm_bytes);
     let analyzer_thread = thread::spawn(move || {
         let analyzer_started_at = Instant::now();
-        let mut stream =
-            AudioConstellationV3PcmStream::with_landmark_limit(sample_rate, landmark_limit);
+        let mut stream = AudioConstellationV3PcmStream::with_config(config, landmark_limit);
         for chunk in pcm_receiver {
             analyzer_queued_pcm_bytes.fetch_sub(chunk.len(), Ordering::AcqRel);
             stream.push_bytes(&chunk)?;
@@ -464,7 +473,7 @@ fn extract_audio_constellation_v3_with_sample_rate_and_limit(
             "-ac".into(),
             "1".into(),
             "-ar".into(),
-            sample_rate.to_string().into(),
+            config.sample_rate.to_string().into(),
             "-f".into(),
             "s16le".into(),
             "-".into(),
@@ -550,6 +559,7 @@ pub(crate) fn extract_audio_constellation_v3_sampled_index_with_metrics(
             ffmpeg,
             media_path,
             duration_seconds,
+            MediaDenseAudioProfile::DenseCurrent,
             cancel_flag,
         );
     }
@@ -792,6 +802,18 @@ fn merge_audio_stream_metrics(
     target.candidate_pairs_considered = target
         .candidate_pairs_considered
         .saturating_add(source.candidate_pairs_considered);
+    target.candidate_pairs_skipped_by_anchor_gate = target
+        .candidate_pairs_skipped_by_anchor_gate
+        .saturating_add(source.candidate_pairs_skipped_by_anchor_gate);
+    target.candidate_pairs_skipped_by_target_gate = target
+        .candidate_pairs_skipped_by_target_gate
+        .saturating_add(source.candidate_pairs_skipped_by_target_gate);
+    target.candidate_pairs_skipped_by_saturation = target
+        .candidate_pairs_skipped_by_saturation
+        .saturating_add(source.candidate_pairs_skipped_by_saturation);
+    target.candidate_pairs_emitted = target
+        .candidate_pairs_emitted
+        .saturating_add(source.candidate_pairs_emitted);
     target.landmarks_accepted_into_reservoir = target
         .landmarks_accepted_into_reservoir
         .saturating_add(source.landmarks_accepted_into_reservoir);

@@ -81,6 +81,18 @@ pub struct MediaTimelineMapV3 {
     pub piecewise_segment_chain_count: usize,
     #[serde(default)]
     pub piecewise_fit_millis: u64,
+    #[serde(default)]
+    pub decision_pair_collection_millis: u64,
+    #[serde(default)]
+    pub fast_audio_verifier_millis: u64,
+    #[serde(default)]
+    pub global_fit_millis: u64,
+    #[serde(default)]
+    pub timeline_map_millis: u64,
+    #[serde(default)]
+    pub evidence_formatting_millis: u64,
+    #[serde(default)]
+    pub total_decision_millis: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

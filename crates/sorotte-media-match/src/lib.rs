@@ -49,8 +49,8 @@ pub use report_compare::{
     validate_media_match_v3_report_pair_compatible,
 };
 pub use settings::{
-    MEDIA_MATCH_V3_FINGERPRINT_CACHE_VERSION, MediaAudioIndexMode, MediaExtractionSettings,
-    MediaFingerprintProfile, media_extraction_settings_hash,
+    MEDIA_MATCH_V3_FINGERPRINT_CACHE_VERSION, MediaAudioIndexMode, MediaDenseAudioProfile,
+    MediaExtractionSettings, MediaFingerprintProfile, media_extraction_settings_hash,
     media_match_v3_fingerprint_config_hash,
 };
 pub use timeline_v3::{

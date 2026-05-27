@@ -1011,6 +1011,10 @@ fn v3_diagnostics_serializes_stable_stream_metric_names() {
                 channel_backpressure_millis: 4,
                 max_queued_pcm_bytes: 16_384,
                 candidate_pairs_considered: 7_200,
+                candidate_pairs_skipped_by_anchor_gate: 700,
+                candidate_pairs_skipped_by_target_gate: 800,
+                candidate_pairs_skipped_by_saturation: 60,
+                candidate_pairs_emitted: 360,
                 landmarks_accepted_into_reservoir: 300,
                 landmarks_rejected_by_reservoir: 60,
                 ffmpeg_process_wall_millis: 43,
@@ -1054,6 +1058,10 @@ fn v3_diagnostics_serializes_stable_stream_metric_names() {
     assert_eq!(value["channelBackpressureMillis"], 4);
     assert_eq!(value["maxQueuedPcmBytes"], 16_384);
     assert_eq!(value["candidatePairsConsidered"], 7_200);
+    assert_eq!(value["candidatePairsSkippedByAnchorGate"], 700);
+    assert_eq!(value["candidatePairsSkippedByTargetGate"], 800);
+    assert_eq!(value["candidatePairsSkippedBySaturation"], 60);
+    assert_eq!(value["candidatePairsEmitted"], 360);
     assert_eq!(value["landmarksAcceptedIntoReservoir"], 300);
     assert_eq!(value["landmarksRejectedByReservoir"], 60);
     assert!((value["reservoirAcceptanceRatio"].as_f64().unwrap() - (300.0 / 360.0)).abs() < 0.001);
@@ -1437,6 +1445,12 @@ fn test_timeline_map_v3(
         piecewise_segment_candidate_count: 1,
         piecewise_segment_chain_count: 1,
         piecewise_fit_millis: 0,
+        decision_pair_collection_millis: 0,
+        fast_audio_verifier_millis: 0,
+        global_fit_millis: 0,
+        timeline_map_millis: 0,
+        evidence_formatting_millis: 0,
+        total_decision_millis: 0,
     }
 }
 

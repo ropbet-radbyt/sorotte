@@ -85,6 +85,34 @@ Modes:
   `productionSampledIndexMillis`, `productionFullPromotionMillis`, and
   `productionTotalMillis`, plus sampled-indexed and full-promoted file counts.
 
+Dense full audio profiles are experimental verification benchmarks, not
+background indexing modes. `dense-current` is the correctness baseline. Use
+`--dense-audio-profile` to run one candidate profile, or
+`--bench-dense-audio-profiles` to produce a machine-readable JSON matrix for
+all current candidates:
+
+```powershell
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode full --dense-audio-profile dense-current --output reports/dense-current.json --cache-root .cache-dense-current --refresh-cache
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode full --dense-audio-profile dense-fast-combined-candidate --output reports/dense-fast-candidate.json --cache-root .cache-dense-fast --refresh-cache
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode full --bench-dense-audio-profiles --output reports/dense-profile-matrix.json --cache-root .cache-dense-matrix --refresh-cache
+cargo run -p sorotte-media-match --bin v3_report_compare -- --allow-different-settings --allow-different-tuning reports/dense-current.json reports/dense-fast-candidate.json
+```
+
+Benchmark profiles include `dense-current`, `dense-realfft`, `dense-8k`,
+`dense-hop2048`, `dense-8k-hop2048`,
+`dense-8k-window1024-hop1024`, `dense-max-peaks-4`,
+`dense-pair-retain-16`, and `dense-fast-combined-candidate`. The non-current
+profiles change the fingerprint config hash and should be compared with
+explicit compatibility allow flags. `dense-realfft` currently occupies the
+real-FFT benchmark slot without changing the default frontend; the lower-cost
+sample-rate, hop, peak, and pair-retain profiles are the active candidates until
+a dedicated real FFT backend is added without a new heavyweight dependency.
+Dense profile reports include decode/drain, analyzer, pairing, reservoir,
+candidate-pair, and direct-decision timing fields. Do not promote a dense
+candidate profile to default unless it preserves same-episode strength, wrong
+OP/ED rejection, retrieval rank, offset accuracy, and improves extraction by a
+material margin on a mixed corpus.
+
 V3 requires only `ffmpeg` and `ffprobe`. The runner uses
 `SOROTTE_MEDIA_MATCH_FFMPEG` and `SOROTTE_MEDIA_MATCH_FFPROBE` when set;
 otherwise it resolves `ffmpeg` and `ffprobe` from `PATH`.
@@ -129,7 +157,10 @@ dense full verification extraction around 13 seconds per 25-minute file on the
 tested Windows machine after online reservoirs removed repeated compactions.
 Dense full now reports separate PCM drain, analyzer-thread, channel
 backpressure, reservoir acceptance, and raw-emission counters so decode
-backpressure can be separated from Rust analysis cost. Sparse-full is still
+backpressure can be separated from Rust analysis cost. Direct decisions also
+report pair collection, fast audio verifier, global fit, timeline-map, evidence
+formatting, and total decision timing so verifier regressions are separate from
+extraction regressions. Sparse-full is still
 experimental: it is lower density and non-autoplay by policy, but it is not the
 default speed path unless future corpus reports show a substantial win.
 Sampled-fast is the target background-index path. Retrieval and same-cut

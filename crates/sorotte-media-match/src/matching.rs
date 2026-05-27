@@ -223,11 +223,23 @@ struct V3FastAudioProof {
     note: String,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct V3DecisionTimings {
+    pair_collection_millis: u64,
+    fast_audio_verifier_millis: u64,
+    global_fit_millis: u64,
+    timeline_map_millis: u64,
+    evidence_formatting_millis: u64,
+    total_decision_millis: u64,
+}
+
 pub fn decide_media_match_anchors(
     query: &MediaAnchorProfile,
     candidate: &MediaAnchorProfile,
     settings: &MediaMatchSettings,
 ) -> MediaMatchDecision {
+    let decision_started_at = Instant::now();
+    let mut timings = V3DecisionTimings::default();
     let mut evidence = MediaMatchEvidence {
         metadata: MetadataMatchEvidence {
             duration_delta_seconds: query.duration_ms.zip(candidate.duration_ms).map(
@@ -269,7 +281,9 @@ pub fn decide_media_match_anchors(
         );
     }
 
+    let started_at = Instant::now();
     let pairs = collect_anchor_match_pairs(query, candidate);
+    timings.pair_collection_millis = elapsed_millis_u64(started_at);
     if pairs.is_empty() {
         return decision(
             MediaMatchTier::Reject,
@@ -278,6 +292,7 @@ pub fn decide_media_match_anchors(
         );
     }
 
+    let global_fit_started_at = Instant::now();
     let Some((best_offset_ms, best_weight, second_weight)) = dominant_anchor_offset(&pairs) else {
         return decision(
             MediaMatchTier::Reject,
@@ -292,6 +307,7 @@ pub fn decide_media_match_anchors(
             "no anchors fit the dominant offset",
         );
     };
+    timings.global_fit_millis = elapsed_millis_u64(global_fit_started_at);
     let aligned = fit.aligned.clone();
 
     let audio_pairs = aligned
@@ -376,11 +392,18 @@ pub fn decide_media_match_anchors(
     let very_strong_single_modality =
         (audio_pairs >= 16 || video_pairs >= 10) && meaningful_span && margin_ok && continuity_ok;
     let weak_evidence = audio_pairs >= 2 || video_pairs >= 2 || aligned.len() >= 3;
-    if !query.audio_anchors.is_empty() && !candidate.audio_anchors.is_empty() {
-        evidence.notes.push(format_audio_offset_bin_diagnostics(
-            query, candidate, &pairs,
-        ));
+    let diagnostic_started_at = Instant::now();
+    let audio_offset_diagnostics = (!query.audio_anchors.is_empty()
+        && !candidate.audio_anchors.is_empty())
+    .then(|| audio_offset_bin_diagnostics(query, candidate, &pairs));
+    if let Some(diagnostics) = audio_offset_diagnostics.as_deref() {
+        evidence
+            .notes
+            .push(format_audio_offset_bin_diagnostics(&pairs, diagnostics));
     }
+    timings.evidence_formatting_millis = timings
+        .evidence_formatting_millis
+        .saturating_add(elapsed_millis_u64(diagnostic_started_at));
     let classification_context = V3ClassificationContext {
         duration_ok,
         meaningful_span,
@@ -388,14 +411,17 @@ pub fn decide_media_match_anchors(
         margin_ok,
         continuity_ok,
     };
+    let fast_audio_started_at = Instant::now();
     let fast_audio_proof = fast_audio_same_cut_proof(
         query,
         candidate,
         &pairs,
+        audio_offset_diagnostics.as_deref(),
         &fit,
         second_best_offset_margin,
         classification_context,
     );
+    timings.fast_audio_verifier_millis = elapsed_millis_u64(fast_audio_started_at);
     let (timeline_analysis, v3_class) = if let Some(proof) = fast_audio_proof {
         evidence.notes.push(proof.note);
         (proof.analysis, proof.class)
@@ -409,6 +435,7 @@ pub fn decide_media_match_anchors(
         && !candidate.video_anchors.is_empty()
         && timeline_analysis.video_pairs < V3_SEGMENT_VIDEO_MIN_PAIRS
         && !timeline_analysis.audio_video_conflict;
+    let evidence_started_at = Instant::now();
     evidence.notes.push(format!(
         "v3 segments={} span={:.1}s largest_gap={:.1}s edge_only={} audio_video_conflict={} video_inconclusive={} best_segment_score={} second_segment_score={} pair_count={} hypotheses={} segment_candidates={} chained_segments={} piecewise_fit_ms={}",
         timeline_analysis.segments.len(),
@@ -425,6 +452,9 @@ pub fn decide_media_match_anchors(
         timeline_analysis.piecewise_segment_chain_count,
         timeline_analysis.piecewise_fit_millis
     ));
+    timings.evidence_formatting_millis = timings
+        .evidence_formatting_millis
+        .saturating_add(elapsed_millis_u64(evidence_started_at));
 
     let tier = match v3_class {
         MatchClassV3::SameCutStrong
@@ -454,7 +484,12 @@ pub fn decide_media_match_anchors(
             }
         }
     };
-    let timeline_map = media_timeline_map_v3_from_analysis(v3_class, &timeline_analysis);
+    let timeline_started_at = Instant::now();
+    timings.total_decision_millis = elapsed_millis_u64(decision_started_at);
+    let mut timeline_map =
+        media_timeline_map_v3_from_analysis(v3_class, &timeline_analysis, timings);
+    timeline_map.timeline_map_millis = elapsed_millis_u64(timeline_started_at);
+    timeline_map.total_decision_millis = elapsed_millis_u64(decision_started_at);
     evidence.timeline_map_v3 = Some(timeline_map);
 
     let explanation = match v3_class {
@@ -946,6 +981,7 @@ fn fast_audio_same_cut_proof(
     query: &MediaAnchorProfile,
     candidate: &MediaAnchorProfile,
     pairs: &[AnchorMatchPair],
+    diagnostics: Option<&[V3AudioOffsetBinDiagnostic]>,
     fit: &AnchorScaleOffsetFit,
     second_best_offset_margin: f64,
     context: V3ClassificationContext,
@@ -953,7 +989,13 @@ fn fast_audio_same_cut_proof(
     if !query.video_anchors.is_empty() || !candidate.video_anchors.is_empty() {
         return None;
     }
-    let diagnostics = audio_offset_bin_diagnostics(query, candidate, pairs);
+    let owned_diagnostics;
+    let diagnostics = if let Some(diagnostics) = diagnostics {
+        diagnostics
+    } else {
+        owned_diagnostics = audio_offset_bin_diagnostics(query, candidate, pairs);
+        &owned_diagnostics
+    };
     let best = diagnostics
         .iter()
         .take(V3_FAST_AUDIO_TOP_OFFSET_BINS)
@@ -1057,11 +1099,9 @@ fn audio_pairs_for_offset_ms(pairs: &[AnchorMatchPair], offset_ms: i64) -> Vec<A
 }
 
 fn format_audio_offset_bin_diagnostics(
-    query: &MediaAnchorProfile,
-    candidate: &MediaAnchorProfile,
     pairs: &[AnchorMatchPair],
+    diagnostics: &[V3AudioOffsetBinDiagnostic],
 ) -> String {
-    let diagnostics = audio_offset_bin_diagnostics(query, candidate, pairs);
     let total_audio_pairs = pairs
         .iter()
         .filter(|pair| pair.modality == AnchorModality::Audio)
@@ -1726,6 +1766,7 @@ fn classify_v3_timeline(
 fn media_timeline_map_v3_from_analysis(
     global_class: MatchClassV3,
     analysis: &V3TimelineAnalysis,
+    timings: V3DecisionTimings,
 ) -> MediaTimelineMapV3 {
     let segments = analysis
         .segments
@@ -1763,6 +1804,12 @@ fn media_timeline_map_v3_from_analysis(
         piecewise_segment_candidate_count: analysis.piecewise_segment_candidate_count,
         piecewise_segment_chain_count: analysis.piecewise_segment_chain_count,
         piecewise_fit_millis: analysis.piecewise_fit_millis,
+        decision_pair_collection_millis: timings.pair_collection_millis,
+        fast_audio_verifier_millis: timings.fast_audio_verifier_millis,
+        global_fit_millis: timings.global_fit_millis,
+        timeline_map_millis: timings.timeline_map_millis,
+        evidence_formatting_millis: timings.evidence_formatting_millis,
+        total_decision_millis: timings.total_decision_millis,
     }
 }
 
@@ -1980,7 +2027,17 @@ fn media_timeline_map_v3_from_evidence(
         piecewise_segment_candidate_count: 0,
         piecewise_segment_chain_count: segment_count,
         piecewise_fit_millis: 0,
+        decision_pair_collection_millis: 0,
+        fast_audio_verifier_millis: 0,
+        global_fit_millis: 0,
+        timeline_map_millis: 0,
+        evidence_formatting_millis: 0,
+        total_decision_millis: 0,
     }
+}
+
+fn elapsed_millis_u64(started_at: Instant) -> u64 {
+    started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
 }
 
 fn media_match_class_v3_from_evidence(
