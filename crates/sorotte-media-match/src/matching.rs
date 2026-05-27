@@ -3,6 +3,7 @@ use std::time::Instant;
 
 use crate::{
     anchors::{AudioAnchor, MediaAnchorProfile, VideoAnchor, media_anchor_profile_from_record},
+    settings::MediaAudioIndexMode,
     tuning::{
         DEFAULT_ANCHOR_ALIGNMENT_TOLERANCE_MS, DEFAULT_ANCHOR_OFFSET_BIN_MS,
         MAX_BROAD_SCALE_FIT_PAIRS, V3_EDGE_REGION_MAX_MS, V3_EDGE_REGION_MIN_MS,
@@ -540,7 +541,43 @@ pub fn decide_media_match(
 
     let query_profile = media_anchor_profile_from_record(query);
     let candidate_profile = media_anchor_profile_from_record(candidate);
-    decide_media_match_anchors(&query_profile, &candidate_profile, settings)
+    let decision = decide_media_match_anchors(&query_profile, &candidate_profile, settings);
+    cap_sampled_audio_record_decision_if_needed(decision, query, candidate)
+}
+
+fn cap_sampled_audio_record_decision_if_needed(
+    mut decision: MediaMatchDecision,
+    query: &MediaFingerprintRecord,
+    candidate: &MediaFingerprintRecord,
+) -> MediaMatchDecision {
+    let sampled = matches!(
+        query.extraction_settings.audio_index_mode,
+        MediaAudioIndexMode::SampledFast | MediaAudioIndexMode::SampledNormal
+    ) || matches!(
+        candidate.extraction_settings.audio_index_mode,
+        MediaAudioIndexMode::SampledFast | MediaAudioIndexMode::SampledNormal
+    );
+    if !sampled || decision.tier != MediaMatchTier::Strong {
+        return decision;
+    }
+    decision.tier = MediaMatchTier::Probable;
+    if decision.evidence.v3_class == Some(MatchClassV3::SameCutStrong) {
+        decision.evidence.v3_class = Some(MatchClassV3::SameCutProbable);
+    }
+    if let Some(map) = &mut decision.evidence.timeline_map_v3
+        && map.global_class == MatchClassV3::SameCutStrong
+    {
+        map.global_class = MatchClassV3::SameCutProbable;
+        map.current_position_class = MatchClassV3::SameCutProbable;
+    }
+    decision.evidence.notes.push(
+        "sampled audio index record caps direct decision below Strong; full verification is required for SameCutStrong autoplay".to_owned(),
+    );
+    decision.explanation = format!(
+        "{}; sampled audio index requires full verification for Strong",
+        decision.explanation
+    );
+    decision
 }
 
 /// Legacy diagnostic helper for direct frame-hash sequence alignment.

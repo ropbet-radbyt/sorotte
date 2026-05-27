@@ -52,20 +52,27 @@ Use `--index-mode` to separate retrieval calibration from full verification:
 
 ```powershell
 cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-full.json --cache-root .media-match-v3-cache-audio --index-mode full
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-sampled.json --cache-root .media-match-v3-cache-audio-sampled --index-mode sampled
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-sampled-then-full.json --cache-root .media-match-v3-cache-audio-promote --index-mode sampled-then-full
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.sampled.json --output reports/audio-sampled-fast.json --cache-root .media-match-v3-cache-audio-sampled-fast --index-mode sampled-fast
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.sampled.json --output reports/audio-sampled-normal.json --cache-root .media-match-v3-cache-audio-sampled-normal --index-mode sampled-normal
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-sampled-then-full.json --cache-root .media-match-v3-cache-audio-promote --index-mode sampled-then-full --max-full-promotions 1
 ```
 
 Modes:
 
 - `full`: full-file verification fingerprints are used for both retrieval and
   direct decisions.
-- `sampled`: body-distributed audio windows are decoded for a fast retrieval
-  index. Direct decisions are capped below `Strong`; sampled-only records are
-  not autoplay-eligible as `SameCutStrong`.
+- `sampled-fast`: body-distributed audio windows are decoded for a fast
+  retrieval index, using fewer/shorter windows and a smaller target landmark
+  set. This is the intended first-pass background indexing mode.
+- `sampled-normal` (also accepted as `sampled`): uses the larger sampled
+  window set for fallback retrieval calibration.
+- Sampled-only direct decisions are capped below `Strong`; sampled-only records
+  are not autoplay-eligible as `SameCutStrong`.
 - `sampled-then-full`: build the sampled index first, retrieve against that
-  steady-state index, then full-verify the reported query/candidate pairs for
-  direct decisions.
+  steady-state index, then full-verify promoted query/candidate pairs for
+  direct decisions. By default only the top retrieved candidate per query is
+  promoted; use `--max-full-promotions N` or `--promote-expected-candidates`
+  when a diagnostic run intentionally needs broader full verification.
 
 V3 requires only `ffmpeg` and `ffprobe`. The runner uses
 `SOROTTE_MEDIA_MATCH_FFMPEG` and `SOROTTE_MEDIA_MATCH_FFPROBE` when set;
@@ -107,10 +114,12 @@ A duplicate candidate path can have row source `memory-cache` while the unique
 counts still count only the first source for that path/settings key.
 
 Current real-corpus measurements on the Bakemonogatari audio-only manifest put
-full verification extraction around 16 seconds per 25-minute file on the tested
-Windows machine. Retrieval and same-cut verification are fast once fingerprints
-exist. Use sampled index mode for fast background shortlist calibration, and use
-full verification for any `Strong` / `SameCutStrong` autoplay-eligible result.
+full verification extraction around 13-16 seconds per 25-minute file on the
+tested Windows machine. Sampled-normal indexing is around 2 seconds per file on
+that corpus, and sampled-fast is the target background-index path. Retrieval and
+same-cut verification are fast once fingerprints exist. Use sampled index mode
+for fast background shortlist calibration, and use full verification for any
+`Strong` / `SameCutStrong` autoplay-eligible result.
 
 ## Corpus Calibration Workflow
 
@@ -292,7 +301,10 @@ Use these issue categories consistently:
 
 Start from
 [`docs/examples/media_matching_v3_manifest.example.json`](examples/media_matching_v3_manifest.example.json)
-and replace the placeholder paths with local media paths.
+for full verification runs, or
+[`docs/examples/media_matching_v3_manifest.sampled.example.json`](examples/media_matching_v3_manifest.sampled.example.json)
+for sampled-index retrieval-only runs, and replace the placeholder paths with
+local media paths.
 
 ```json
 {
@@ -350,7 +362,7 @@ The JSON report includes:
 - extraction diagnostics: timings, audio/video landmark counts, blob bytes, and
   streaming audio metrics, including ffmpeg process wall time, analyzer time,
   pairing time, reservoir trimming time, final selection time, and sampled/full
-  decoded audio seconds
+  decoded audio seconds/windows
 - retrieval diagnostics: bucket counts, skipped common buckets, raw hit rows,
   scored candidates, elapsed time, and retrieved candidate paths
 - decision diagnostics: tier, V3 class, explanation, offset, scale, segment
@@ -360,6 +372,12 @@ The JSON report includes:
 
 `mustBeRetrieved` fails a candidate when direct pairwise matching would pass but
 the shared V3 SQLite retrieval path did not shortlist that candidate.
+For sampled-index manifests, prefer retrieval-only expectations:
+`expectedRetrieved: true`, `maxRetrievalRank: 1`, and
+`skipDecisionExpectation: true`. That lets sampled-only runs pass when the
+retrieval index is healthy without requiring `Strong`, `SameCutStrong`, or
+autoplay eligibility. Use full verification manifests for those stronger
+expectations.
 
 Treat retrieval misses differently from direct decision failures:
 
@@ -397,7 +415,8 @@ isolated fixture without checking the broader corpus.
 - Cold extraction cost: inspect `ffmpegProcessWallMillis`, `analyzerMillis`,
   `pairingMillis`, `compactionMillis`, `finalSelectionMillis`,
   `sqliteSaveMillis`, and `indexInsertMillis`. If full extraction is the
-  bottleneck, compare with `--index-mode sampled` before changing thresholds.
+  bottleneck, compare with `--index-mode sampled-fast` and
+  `--index-mode sampled-normal` before changing thresholds.
 
 ## Dry-Run Command Sequence
 
@@ -444,11 +463,11 @@ Manual real-corpus validation checklist:
 
 1. Run `v3_diagnostics --validate-only` for the manifest.
 2. Run `v3_diagnostics --list-cases` and confirm the case IDs are expected.
-3. Run the cold `audio-constellation-v3` report with `--refresh-cache`.
-4. Run the warm `audio-constellation-v3` report with the same cache root.
-5. Self-compare the warm audio report with `v3_report_compare`.
-6. Run the cold `combined-v3` report with `--refresh-cache`.
-7. Run the warm `combined-v3` report with the same cache root.
+3. Run sampled-fast audio retrieval with retrieval-only expectations.
+4. Run sampled-normal audio retrieval for any cases sampled-fast misses.
+5. Run full audio verification with `--refresh-cache` for truth labels.
+6. Self-compare the warm full audio report with `v3_report_compare`.
+7. Run cold and warm `combined-v3` reports only after audio retrieval/alignment is understood.
 8. Self-compare the warm combined report with `v3_report_compare`.
 9. Fill in the calibration notes template for every failure or suspicious cost.
 10. Do not tune thresholds until failures are categorized.

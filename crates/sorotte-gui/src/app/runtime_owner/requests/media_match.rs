@@ -777,7 +777,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 let fast_result = if current_player_path.is_none() {
                     if let Some(remote_candidate) = remote_candidate {
                         let extraction_settings =
-                            sorotte_media_match::MediaExtractionSettings::audio_constellation_v3();
+                            sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3();
                         media_match_tool_paths_for_settings(&root, &extraction_settings).and_then(|tools| {
                             rebuild_persisted_media_match_remote_candidates_with_progress_and_cancel(
                                 MediaMatchRemoteCandidateRebuildRequest {
@@ -799,7 +799,7 @@ impl GuiPersistedConfigRuntimeOwner {
                         })
                     } else {
                         let extraction_settings =
-                            sorotte_media_match::MediaExtractionSettings::audio_constellation_v3();
+                            sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3();
                         rebuild_persisted_media_match_index_with_extraction_settings_and_cancel(
                             &root,
                             &search_roots,
@@ -815,7 +815,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     }
                 } else if let Some(candidates) = candidates {
                     let extraction_settings =
-                        sorotte_media_match::MediaExtractionSettings::audio_constellation_v3();
+                        sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3();
                     media_match_tool_paths_for_settings(&root, &extraction_settings).and_then(|tools| {
                         rebuild_persisted_media_match_candidates_with_progress_and_cancel(
                             MediaMatchCandidateRebuildRequest {
@@ -835,7 +835,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     })
                 } else {
                     let extraction_settings =
-                        sorotte_media_match::MediaExtractionSettings::audio_constellation_v3();
+                        sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3();
                     rebuild_persisted_media_match_index_with_extraction_settings_and_cancel(
                         &root,
                         &search_roots,

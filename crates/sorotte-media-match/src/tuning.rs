@@ -44,9 +44,19 @@ pub(crate) const V3_AUDIO_PAIR_FANOUT: usize = 8;
 pub(crate) const V3_AUDIO_PAIR_CANDIDATE_RETAIN: usize = V3_AUDIO_PAIR_FANOUT * 4;
 pub(crate) const V3_AUDIO_VERIFY_LANDMARK_LIMIT: usize = 2048;
 pub(crate) const V3_AUDIO_INDEX_LANDMARK_LIMIT: usize = 512;
-pub(crate) const V3_AUDIO_SAMPLED_INDEX_LANDMARK_LIMIT: usize = 512;
-pub(crate) const V3_AUDIO_SAMPLED_INDEX_WINDOW_SECONDS: u32 = 30;
-pub(crate) const V3_AUDIO_SAMPLED_INDEX_WINDOW_COUNT: usize = 5;
+pub(crate) const V3_AUDIO_SAMPLED_FAST_INDEX_LANDMARK_LIMIT: usize = 384;
+pub(crate) const V3_AUDIO_SAMPLED_FAST_TARGET_LANDMARKS: usize = 320;
+pub(crate) const V3_AUDIO_SAMPLED_FAST_WINDOW_SECONDS: u32 = 20;
+pub(crate) const V3_AUDIO_SAMPLED_FAST_MIN_WINDOWS: usize = 3;
+pub(crate) const V3_AUDIO_SAMPLED_FAST_MAX_WINDOWS: usize = 3;
+pub(crate) const V3_AUDIO_SAMPLED_FAST_SAMPLE_RATE: u32 = 8_000;
+pub(crate) const V3_AUDIO_SAMPLED_NORMAL_INDEX_LANDMARK_LIMIT: usize = 512;
+pub(crate) const V3_AUDIO_SAMPLED_NORMAL_TARGET_LANDMARKS: usize = 384;
+pub(crate) const V3_AUDIO_SAMPLED_NORMAL_WINDOW_SECONDS: u32 = 30;
+pub(crate) const V3_AUDIO_SAMPLED_NORMAL_MIN_WINDOWS: usize = 3;
+pub(crate) const V3_AUDIO_SAMPLED_NORMAL_MAX_WINDOWS: usize = 5;
+pub(crate) const V3_AUDIO_SAMPLED_NORMAL_SAMPLE_RATE: u32 = 11_025;
+pub(crate) const V3_AUDIO_SAMPLED_MIN_BODY_REGIONS: usize = 4;
 // Streaming audio keeps only a winnowed raw landmark buffer; this bounds noisy/long files
 // while preserving enough oversampling for the final time-distributed selector.
 pub(crate) const V3_AUDIO_RAW_LANDMARK_BUFFER_LIMIT: usize = V3_AUDIO_VERIFY_LANDMARK_LIMIT * 8;
@@ -108,9 +118,19 @@ pub struct V3Tuning {
     pub audio_pair_candidate_retain: usize,
     pub audio_verify_landmark_limit: usize,
     pub audio_index_landmark_limit: usize,
-    pub audio_sampled_index_landmark_limit: usize,
-    pub audio_sampled_index_window_seconds: u32,
-    pub audio_sampled_index_window_count: usize,
+    pub audio_sampled_fast_index_landmark_limit: usize,
+    pub audio_sampled_fast_target_landmarks: usize,
+    pub audio_sampled_fast_window_seconds: u32,
+    pub audio_sampled_fast_min_windows: usize,
+    pub audio_sampled_fast_max_windows: usize,
+    pub audio_sampled_fast_sample_rate: u32,
+    pub audio_sampled_normal_index_landmark_limit: usize,
+    pub audio_sampled_normal_target_landmarks: usize,
+    pub audio_sampled_normal_window_seconds: u32,
+    pub audio_sampled_normal_min_windows: usize,
+    pub audio_sampled_normal_max_windows: usize,
+    pub audio_sampled_normal_sample_rate: u32,
+    pub audio_sampled_min_body_regions: usize,
     pub audio_raw_landmark_buffer_limit: usize,
     pub audio_raw_landmark_retain_limit: usize,
     pub audio_raw_region_retain_limit: usize,
@@ -149,9 +169,19 @@ pub fn current_v3_tuning() -> V3Tuning {
         audio_pair_candidate_retain: V3_AUDIO_PAIR_CANDIDATE_RETAIN,
         audio_verify_landmark_limit: V3_AUDIO_VERIFY_LANDMARK_LIMIT,
         audio_index_landmark_limit: V3_AUDIO_INDEX_LANDMARK_LIMIT,
-        audio_sampled_index_landmark_limit: V3_AUDIO_SAMPLED_INDEX_LANDMARK_LIMIT,
-        audio_sampled_index_window_seconds: V3_AUDIO_SAMPLED_INDEX_WINDOW_SECONDS,
-        audio_sampled_index_window_count: V3_AUDIO_SAMPLED_INDEX_WINDOW_COUNT,
+        audio_sampled_fast_index_landmark_limit: V3_AUDIO_SAMPLED_FAST_INDEX_LANDMARK_LIMIT,
+        audio_sampled_fast_target_landmarks: V3_AUDIO_SAMPLED_FAST_TARGET_LANDMARKS,
+        audio_sampled_fast_window_seconds: V3_AUDIO_SAMPLED_FAST_WINDOW_SECONDS,
+        audio_sampled_fast_min_windows: V3_AUDIO_SAMPLED_FAST_MIN_WINDOWS,
+        audio_sampled_fast_max_windows: V3_AUDIO_SAMPLED_FAST_MAX_WINDOWS,
+        audio_sampled_fast_sample_rate: V3_AUDIO_SAMPLED_FAST_SAMPLE_RATE,
+        audio_sampled_normal_index_landmark_limit: V3_AUDIO_SAMPLED_NORMAL_INDEX_LANDMARK_LIMIT,
+        audio_sampled_normal_target_landmarks: V3_AUDIO_SAMPLED_NORMAL_TARGET_LANDMARKS,
+        audio_sampled_normal_window_seconds: V3_AUDIO_SAMPLED_NORMAL_WINDOW_SECONDS,
+        audio_sampled_normal_min_windows: V3_AUDIO_SAMPLED_NORMAL_MIN_WINDOWS,
+        audio_sampled_normal_max_windows: V3_AUDIO_SAMPLED_NORMAL_MAX_WINDOWS,
+        audio_sampled_normal_sample_rate: V3_AUDIO_SAMPLED_NORMAL_SAMPLE_RATE,
+        audio_sampled_min_body_regions: V3_AUDIO_SAMPLED_MIN_BODY_REGIONS,
         audio_raw_landmark_buffer_limit: V3_AUDIO_RAW_LANDMARK_BUFFER_LIMIT,
         audio_raw_landmark_retain_limit: V3_AUDIO_RAW_LANDMARK_RETAIN_LIMIT,
         audio_raw_region_retain_limit: V3_AUDIO_RAW_REGION_RETAIN_LIMIT,
@@ -189,16 +219,24 @@ mod tests {
             Some(V3_AUDIO_INDEX_LANDMARK_LIMIT as u64)
         );
         assert_eq!(
-            value["audioSampledIndexLandmarkLimit"].as_u64(),
-            Some(V3_AUDIO_SAMPLED_INDEX_LANDMARK_LIMIT as u64)
+            value["audioSampledFastIndexLandmarkLimit"].as_u64(),
+            Some(V3_AUDIO_SAMPLED_FAST_INDEX_LANDMARK_LIMIT as u64)
         );
         assert_eq!(
-            value["audioSampledIndexWindowSeconds"].as_u64(),
-            Some(u64::from(V3_AUDIO_SAMPLED_INDEX_WINDOW_SECONDS))
+            value["audioSampledFastWindowSeconds"].as_u64(),
+            Some(u64::from(V3_AUDIO_SAMPLED_FAST_WINDOW_SECONDS))
         );
         assert_eq!(
-            value["audioSampledIndexWindowCount"].as_u64(),
-            Some(V3_AUDIO_SAMPLED_INDEX_WINDOW_COUNT as u64)
+            value["audioSampledNormalIndexLandmarkLimit"].as_u64(),
+            Some(V3_AUDIO_SAMPLED_NORMAL_INDEX_LANDMARK_LIMIT as u64)
+        );
+        assert_eq!(
+            value["audioSampledNormalWindowSeconds"].as_u64(),
+            Some(u64::from(V3_AUDIO_SAMPLED_NORMAL_WINDOW_SECONDS))
+        );
+        assert_eq!(
+            value["audioSampledNormalMaxWindows"].as_u64(),
+            Some(V3_AUDIO_SAMPLED_NORMAL_MAX_WINDOWS as u64)
         );
         assert_eq!(
             value["audioRawRegionRetainLimit"].as_u64(),

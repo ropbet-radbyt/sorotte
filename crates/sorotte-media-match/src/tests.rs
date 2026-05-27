@@ -1008,6 +1008,7 @@ fn v3_diagnostics_serializes_stable_stream_metric_names() {
                 pcm_decode_drain_millis: 41,
                 ffmpeg_decode_stream_millis: 41,
                 sampled_audio_seconds_decoded: 0,
+                sampled_audio_windows_decoded: 0,
                 full_audio_seconds_decoded: 120,
             },
             ..MediaFingerprintExtractionReport::default()
@@ -1036,7 +1037,10 @@ fn v3_diagnostics_serializes_stable_stream_metric_names() {
     assert_eq!(value["pairingMillis"], 11);
     assert_eq!(value["compactionMillis"], 7);
     assert_eq!(value["finalSelectionMillis"], 3);
+    assert_eq!(value["sampledAudioSecondsDecoded"], 0);
+    assert_eq!(value["sampledAudioWindowsDecoded"], 0);
     assert_eq!(value["fullAudioSecondsDecoded"], 120);
+    assert_eq!(value["indexQuality"], "full-verify");
 }
 
 #[test]
@@ -1474,6 +1478,29 @@ fn same_cut_strong_single_segment_is_autoplay_eligible() {
     assert_eq!(map.global_class, MatchClassV3::SameCutStrong);
     assert_eq!(map.segments.len(), 1);
     assert!(map.total_aligned_span_ms >= 600_000);
+}
+
+#[test]
+fn sampled_only_same_cut_is_probable_and_not_autoplay_eligible() {
+    let audio = v3_audio_times(120_000, 18, 45_000);
+    let query_profile = v3_profile_from_times(1_200_000, &audio, &[]);
+    let candidate_profile =
+        v3_profile_from_times(1_200_000, &v3_shift_audio_times(&audio, 5_000, 0), &[]);
+    let mut query = record_from_anchor_profile("query.mkv", 10, query_profile);
+    let mut candidate = record_from_anchor_profile("candidate.mkv", 11, candidate_profile);
+    query.extraction_settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
+    candidate.extraction_settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
+    let mut settings = enabled_settings();
+    settings.autoplay_policy = MediaMatchAutoplayPolicy::AllowStrongSameMedia;
+
+    let decision = decide_media_match(&query, &candidate, &settings);
+
+    assert_eq!(decision.tier, MediaMatchTier::Probable);
+    assert_eq!(
+        decision.evidence.v3_class,
+        Some(MatchClassV3::SameCutProbable)
+    );
+    assert!(!decision.same_media_for_autoplay(&settings));
 }
 
 #[test]

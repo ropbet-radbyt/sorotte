@@ -3841,6 +3841,8 @@ mod tests {
                 cache_retained: true,
                 refresh_cache: false,
                 index_mode: sorotte_media_match::MediaMatchV3DiagnosticIndexMode::Full,
+                max_full_promotions_per_query: 1,
+                promote_expected_candidates: false,
                 tools,
                 generated_at_unix_millis: Some(123),
             },

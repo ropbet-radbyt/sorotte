@@ -25,7 +25,7 @@ const FINGERPRINT_SOURCE_FRESH: &str = "fresh";
 const FINGERPRINT_SOURCE_MEMORY_CACHE: &str = "memory-cache";
 const FINGERPRINT_SOURCE_SQLITE_CACHE: &str = "sqlite-cache";
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaMatchV3DiagnosticManifest {
     #[serde(default = "default_diagnostic_profile")]
@@ -35,7 +35,7 @@ pub struct MediaMatchV3DiagnosticManifest {
     pub cases: Vec<MediaMatchV3DiagnosticManifestCase>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaMatchV3DiagnosticManifestCase {
     pub name: String,
@@ -43,7 +43,7 @@ pub struct MediaMatchV3DiagnosticManifestCase {
     pub candidates: Vec<MediaMatchV3DiagnosticExpectation>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaMatchV3DiagnosticExpectation {
     #[serde(default)]
@@ -56,6 +56,12 @@ pub struct MediaMatchV3DiagnosticExpectation {
     pub autoplay_eligible: Option<bool>,
     #[serde(default)]
     pub must_be_retrieved: bool,
+    #[serde(default)]
+    pub expected_retrieved: Option<bool>,
+    #[serde(default)]
+    pub max_retrieval_rank: Option<usize>,
+    #[serde(default)]
+    pub skip_decision_expectation: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +71,8 @@ pub struct MediaMatchV3DiagnosticRunOptions {
     pub cache_retained: bool,
     pub refresh_cache: bool,
     pub index_mode: MediaMatchV3DiagnosticIndexMode,
+    pub max_full_promotions_per_query: usize,
+    pub promote_expected_candidates: bool,
     pub tools: MediaMatchToolPaths,
     pub generated_at_unix_millis: Option<u64>,
 }
@@ -74,7 +82,8 @@ pub struct MediaMatchV3DiagnosticRunOptions {
 pub enum MediaMatchV3DiagnosticIndexMode {
     #[default]
     Full,
-    Sampled,
+    SampledFast,
+    SampledNormal,
     SampledThenFull,
 }
 
@@ -82,7 +91,8 @@ impl MediaMatchV3DiagnosticIndexMode {
     pub fn label(self) -> &'static str {
         match self {
             Self::Full => "full",
-            Self::Sampled => "sampled",
+            Self::SampledFast => "sampled-fast",
+            Self::SampledNormal => "sampled-normal",
             Self::SampledThenFull => "sampled-then-full",
         }
     }
@@ -155,6 +165,8 @@ pub struct MediaMatchV3DiagnosticCandidateReport {
     pub index_insert_millis: u128,
     pub retrieved: bool,
     pub retrieval_rank: Option<usize>,
+    pub promotion_reason: Option<String>,
+    pub full_promotion_millis: u128,
     pub decision: MediaMatchV3DiagnosticDecisionReport,
     pub expectation: Option<MediaMatchV3DiagnosticExpectation>,
     pub passed: bool,
@@ -222,6 +234,8 @@ pub struct MediaMatchV3DiagnosticSummaryReport {
     pub sampled_fingerprint_count: usize,
     pub full_fingerprint_count: usize,
     pub candidates_promoted_to_full_verify: usize,
+    pub full_promotion_millis: u128,
+    pub full_promotion_cache_hits: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -260,10 +274,18 @@ pub fn run_media_match_v3_diagnostic_manifest(
     let mut settings = diagnostic_settings_for_profile(&manifest.profile)?;
     if matches!(
         index_mode,
-        MediaMatchV3DiagnosticIndexMode::Sampled | MediaMatchV3DiagnosticIndexMode::SampledThenFull
+        MediaMatchV3DiagnosticIndexMode::SampledFast
+            | MediaMatchV3DiagnosticIndexMode::SampledNormal
+            | MediaMatchV3DiagnosticIndexMode::SampledThenFull
     ) {
-        settings.audio_index_mode = MediaAudioIndexMode::SampledIndex;
-        settings.audio_algorithm = "sorotte-audio-constellation-v3-sampled-index".to_owned();
+        let sampled_settings = match index_mode {
+            MediaMatchV3DiagnosticIndexMode::SampledFast => {
+                MediaExtractionSettings::sampled_fast_audio_index_v3()
+            }
+            _ => MediaExtractionSettings::sampled_audio_index_v3(),
+        };
+        settings.audio_index_mode = sampled_settings.audio_index_mode;
+        settings.audio_algorithm = sampled_settings.audio_algorithm;
     }
     let verify_settings = if matches!(index_mode, MediaMatchV3DiagnosticIndexMode::SampledThenFull)
     {
@@ -352,9 +374,29 @@ pub fn run_media_match_v3_diagnostic_manifest(
                     )
                 })?
                 .clone();
+            let sampled_normalized_candidate = index_fingerprint
+                .fingerprint
+                .record
+                .identity
+                .normalized_path
+                .clone();
+            let retrieval_rank = retrieval_report
+                .retrieved_candidates
+                .iter()
+                .position(|path| path == &sampled_normalized_candidate)
+                .map(|index| index + 1);
+            let retrieved = retrieval_rank.is_some();
             let mut query_for_decision = query.clone();
             let mut fingerprint = index_fingerprint;
-            if matches!(index_mode, MediaMatchV3DiagnosticIndexMode::SampledThenFull) {
+            let mut promotion_reason = None;
+            let mut full_promotion_millis = 0;
+            if matches!(index_mode, MediaMatchV3DiagnosticIndexMode::SampledThenFull)
+                && let Some(reason) = sampled_then_full_promotion_reason(
+                    &candidate.expectation,
+                    retrieval_rank,
+                    &options,
+                )
+            {
                 let promotion_started_at = Instant::now();
                 query_for_decision = fingerprint_cached(
                     &mut cache,
@@ -364,6 +406,9 @@ pub fn run_media_match_v3_diagnostic_manifest(
                     &verify_settings,
                     options.refresh_cache,
                 )?;
+                if query_for_decision.source != FINGERPRINT_SOURCE_FRESH {
+                    summary.full_promotion_cache_hits += 1;
+                }
                 save_fresh_fingerprint_if_needed(&mut cache, &mut query_for_decision, &connection)?;
                 fingerprint = fingerprint_cached(
                     &mut cache,
@@ -373,9 +418,15 @@ pub fn run_media_match_v3_diagnostic_manifest(
                     &verify_settings,
                     options.refresh_cache,
                 )?;
+                if fingerprint.source != FINGERPRINT_SOURCE_FRESH {
+                    summary.full_promotion_cache_hits += 1;
+                }
                 save_fresh_fingerprint_if_needed(&mut cache, &mut fingerprint, &connection)?;
-                summary.fingerprint_total_millis += promotion_started_at.elapsed().as_millis();
+                full_promotion_millis = promotion_started_at.elapsed().as_millis();
+                summary.fingerprint_total_millis += full_promotion_millis;
+                summary.full_promotion_millis += full_promotion_millis;
                 summary.candidates_promoted_to_full_verify += 1;
+                promotion_reason = Some(reason);
             }
             let decision_started_at = Instant::now();
             let decision = cap_sampled_index_decision_if_needed(
@@ -388,17 +439,12 @@ pub fn run_media_match_v3_diagnostic_manifest(
             );
             summary.decision_total_millis += decision_started_at.elapsed().as_millis();
             let normalized_candidate = &fingerprint.fingerprint.record.identity.normalized_path;
-            let retrieval_rank = retrieval_report
-                .retrieved_candidates
-                .iter()
-                .position(|path| path == normalized_candidate)
-                .map(|index| index + 1);
-            let retrieved = retrieval_rank.is_some();
             let failures = evaluate_diagnostic_expectation(
                 &decision,
                 &candidate.expectation,
                 &autoplay_settings,
                 retrieved,
+                retrieval_rank,
             );
             let passed = failures.is_empty();
             summary.pair_count += 1;
@@ -418,6 +464,8 @@ pub fn run_media_match_v3_diagnostic_manifest(
                 index_insert_millis: fingerprint.save_stats.index_insert_millis,
                 retrieved,
                 retrieval_rank,
+                promotion_reason,
+                full_promotion_millis,
                 decision: MediaMatchV3DiagnosticDecisionReport::from_decision(
                     &decision,
                     &autoplay_settings,
@@ -446,7 +494,9 @@ pub fn run_media_match_v3_diagnostic_manifest(
             .extraction_settings
             .audio_index_mode
         {
-            MediaAudioIndexMode::SampledIndex => summary.sampled_fingerprint_count += 1,
+            MediaAudioIndexMode::SampledFast | MediaAudioIndexMode::SampledNormal => {
+                summary.sampled_fingerprint_count += 1
+            }
             MediaAudioIndexMode::FullVerify => summary.full_fingerprint_count += 1,
         }
         match fingerprint.source {
@@ -581,6 +631,12 @@ pub fn validate_media_match_v3_diagnostic_manifest(
             } else if !no_id_candidate_paths.insert(candidate.path.clone()) {
                 return Err(format!(
                     "case '{}' has duplicate candidate path '{}' without an id",
+                    case.name, candidate.path
+                ));
+            }
+            if candidate.max_retrieval_rank == Some(0) {
+                return Err(format!(
+                    "case '{}' candidate '{}' has maxRetrievalRank=0; ranks are 1-based",
                     case.name, candidate.path
                 ));
             }
@@ -735,7 +791,11 @@ fn cap_sampled_index_decision_if_needed(
     mut decision: MediaMatchDecision,
     index_mode: MediaMatchV3DiagnosticIndexMode,
 ) -> MediaMatchDecision {
-    if !matches!(index_mode, MediaMatchV3DiagnosticIndexMode::Sampled) {
+    if !matches!(
+        index_mode,
+        MediaMatchV3DiagnosticIndexMode::SampledFast
+            | MediaMatchV3DiagnosticIndexMode::SampledNormal
+    ) {
         return decision;
     }
     if decision.tier == MediaMatchTier::Strong {
@@ -759,6 +819,24 @@ fn cap_sampled_index_decision_if_needed(
         );
     }
     decision
+}
+
+fn sampled_then_full_promotion_reason(
+    expected: &MediaMatchV3DiagnosticExpectation,
+    retrieval_rank: Option<usize>,
+    options: &MediaMatchV3DiagnosticRunOptions,
+) -> Option<String> {
+    if options.promote_expected_candidates {
+        return Some("expected-candidate".to_owned());
+    }
+    let max_promotions = options.max_full_promotions_per_query.max(1);
+    match retrieval_rank {
+        Some(rank) if rank <= max_promotions => Some(format!("retrieval-rank-{rank}")),
+        _ if expected.autoplay_eligible == Some(true) && retrieval_rank == Some(1) => {
+            Some("autoplay-expected-top-candidate".to_owned())
+        }
+        _ => None,
+    }
 }
 
 fn diagnostics_for_cached_fingerprint(
@@ -797,8 +875,33 @@ fn evaluate_diagnostic_expectation(
     expected: &MediaMatchV3DiagnosticExpectation,
     autoplay_settings: &MediaMatchSettings,
     retrieved: bool,
+    retrieval_rank: Option<usize>,
 ) -> Vec<String> {
     let mut failures = Vec::new();
+    if let Some(expected_retrieved) = expected.expected_retrieved
+        && retrieved != expected_retrieved
+    {
+        failures.push(format!(
+            "expected retrieved={expected_retrieved}, got {retrieved}"
+        ));
+    }
+    if let Some(max_retrieval_rank) = expected.max_retrieval_rank {
+        match retrieval_rank {
+            Some(rank) if rank <= max_retrieval_rank => {}
+            Some(rank) => failures.push(format!(
+                "expected retrieval rank <= {max_retrieval_rank}, got {rank}"
+            )),
+            None => failures.push(format!(
+                "expected retrieval rank <= {max_retrieval_rank}, but candidate was absent"
+            )),
+        }
+    }
+    if expected.must_be_retrieved && !retrieved {
+        failures.push("expected candidate to be retrieved, but it was absent".to_owned());
+    }
+    if expected.skip_decision_expectation {
+        return failures;
+    }
     if let Some(expected_class) = expected.expected_class.as_deref() {
         match parse_match_class(expected_class) {
             Some(class) if Some(class) == decision.evidence.v3_class => {}
@@ -851,9 +954,6 @@ fn evaluate_diagnostic_expectation(
                 "expected autoplayEligible={expected_autoplay}, got {actual}"
             ));
         }
-    }
-    if expected.must_be_retrieved && !retrieved {
-        failures.push("expected candidate to be retrieved, but it was absent".to_owned());
     }
     failures
 }
@@ -982,7 +1082,10 @@ mod tests {
                   "expectedOffsetMs": 5000,
                   "maxOffsetErrorMs": 1000,
                   "autoplayEligible": true,
-                  "mustBeRetrieved": true
+                  "mustBeRetrieved": true,
+                  "expectedRetrieved": true,
+                  "maxRetrievalRank": 1,
+                  "skipDecisionExpectation": false
                 }]
               }]
             }"#,
@@ -1001,6 +1104,11 @@ mod tests {
             Some(5000)
         );
         assert!(manifest.cases[0].candidates[0].must_be_retrieved);
+        assert_eq!(
+            manifest.cases[0].candidates[0].expected_retrieved,
+            Some(true)
+        );
+        assert_eq!(manifest.cases[0].candidates[0].max_retrieval_rank, Some(1));
         serde_json::to_string(&manifest).expect("canonical manifest should serialize");
     }
 
@@ -1021,6 +1129,9 @@ mod tests {
                     max_offset_error_ms: None,
                     autoplay_eligible: None,
                     must_be_retrieved: false,
+                    expected_retrieved: None,
+                    max_retrieval_rank: None,
+                    skip_decision_expectation: false,
                 }],
             }],
         };
@@ -1176,6 +1287,9 @@ mod tests {
                     max_offset_error_ms: None,
                     autoplay_eligible: None,
                     must_be_retrieved: false,
+                    expected_retrieved: None,
+                    max_retrieval_rank: None,
+                    skip_decision_expectation: false,
                 }],
             }],
         };
@@ -1227,6 +1341,9 @@ mod tests {
             max_offset_error_ms: Some(1000),
             autoplay_eligible: Some(true),
             must_be_retrieved: true,
+            expected_retrieved: None,
+            max_retrieval_rank: None,
+            skip_decision_expectation: false,
         };
 
         let pass = evaluate_diagnostic_expectation(
@@ -1234,12 +1351,14 @@ mod tests {
             &expected,
             &settings,
             true,
+            Some(1),
         );
         let fail = evaluate_diagnostic_expectation(
             &decision_with_offset_ms(8000),
             &expected,
             &settings,
             false,
+            None,
         );
 
         assert!(pass.is_empty(), "{pass:?}");
@@ -1267,6 +1386,9 @@ mod tests {
             max_offset_error_ms: Some(1000),
             autoplay_eligible: None,
             must_be_retrieved: false,
+            expected_retrieved: None,
+            max_retrieval_rank: None,
+            skip_decision_expectation: false,
         };
 
         let failures = evaluate_diagnostic_expectation(
@@ -1274,9 +1396,41 @@ mod tests {
             &expected,
             &settings,
             false,
+            None,
         );
 
         assert!(failures.is_empty(), "{failures:?}");
+    }
+
+    #[test]
+    fn retrieval_only_expectation_skips_sampled_decision_requirements() {
+        let settings = diagnostic_decision_settings();
+        let expected = MediaMatchV3DiagnosticExpectation {
+            path: "candidate.mkv".to_owned(),
+            expected_class: Some("SameCutStrong".to_owned()),
+            minimum_tier: Some("Strong".to_owned()),
+            autoplay_eligible: Some(true),
+            expected_retrieved: Some(true),
+            max_retrieval_rank: Some(1),
+            skip_decision_expectation: true,
+            ..MediaMatchV3DiagnosticExpectation::default()
+        };
+        let mut sampled_decision = decision_with_offset_ms(0);
+        sampled_decision.tier = MediaMatchTier::Probable;
+        sampled_decision.evidence.v3_class = Some(MatchClassV3::SameCutProbable);
+
+        let pass =
+            evaluate_diagnostic_expectation(&sampled_decision, &expected, &settings, true, Some(1));
+        let fail =
+            evaluate_diagnostic_expectation(&sampled_decision, &expected, &settings, true, Some(2));
+
+        assert!(pass.is_empty(), "{pass:?}");
+        assert!(
+            fail.iter()
+                .any(|failure| failure.contains("expected retrieval rank <= 1")),
+            "{fail:?}"
+        );
+        assert!(!sampled_decision.same_media_for_autoplay(&settings));
     }
 
     #[test]
@@ -1284,7 +1438,7 @@ mod tests {
         let settings = diagnostic_decision_settings();
         let decision = cap_sampled_index_decision_if_needed(
             decision_with_offset_ms(0),
-            MediaMatchV3DiagnosticIndexMode::Sampled,
+            MediaMatchV3DiagnosticIndexMode::SampledNormal,
         );
 
         assert_eq!(decision.tier, MediaMatchTier::Probable);
@@ -1312,6 +1466,8 @@ mod tests {
                 cache_retained: true,
                 refresh_cache: false,
                 index_mode: MediaMatchV3DiagnosticIndexMode::Full,
+                max_full_promotions_per_query: 1,
+                promote_expected_candidates: false,
                 tools: MediaMatchToolPaths {
                     ffmpeg: PathBuf::from("ffmpeg"),
                     ffprobe: PathBuf::from("ffprobe"),
@@ -1355,6 +1511,8 @@ mod tests {
                 cache_retained: true,
                 refresh_cache: false,
                 index_mode: MediaMatchV3DiagnosticIndexMode::Full,
+                max_full_promotions_per_query: 1,
+                promote_expected_candidates: false,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
             },
@@ -1407,6 +1565,8 @@ mod tests {
                 cache_retained: true,
                 refresh_cache: false,
                 index_mode: MediaMatchV3DiagnosticIndexMode::Full,
+                max_full_promotions_per_query: 1,
+                promote_expected_candidates: false,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
             },
@@ -1450,6 +1610,8 @@ mod tests {
                 cache_retained: true,
                 refresh_cache: false,
                 index_mode: MediaMatchV3DiagnosticIndexMode::Full,
+                max_full_promotions_per_query: 1,
+                promote_expected_candidates: false,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
             },
@@ -1482,6 +1644,8 @@ mod tests {
                 cache_retained: true,
                 refresh_cache: false,
                 index_mode: MediaMatchV3DiagnosticIndexMode::Full,
+                max_full_promotions_per_query: 1,
+                promote_expected_candidates: false,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
             },
@@ -1537,6 +1701,9 @@ mod tests {
             max_offset_error_ms: None,
             autoplay_eligible: None,
             must_be_retrieved: false,
+            expected_retrieved: None,
+            max_retrieval_rank: None,
+            skip_decision_expectation: false,
         }
     }
 
@@ -1550,6 +1717,9 @@ mod tests {
             max_offset_error_ms: None,
             autoplay_eligible: None,
             must_be_retrieved: false,
+            expected_retrieved: None,
+            max_retrieval_rank: None,
+            skip_decision_expectation: false,
         }
     }
 

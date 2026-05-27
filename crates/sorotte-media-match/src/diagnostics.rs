@@ -17,6 +17,7 @@ use crate::{
 pub struct MediaMatchV3DiagnosticSummary {
     pub file_path: Option<String>,
     pub profile: String,
+    pub index_quality: String,
     pub duration_ms: Option<u32>,
     pub extraction_total_millis: Option<u128>,
     pub extraction_audio_millis: Option<u128>,
@@ -51,6 +52,7 @@ pub struct MediaMatchV3DiagnosticSummary {
     pub compaction_millis: Option<u128>,
     pub final_selection_millis: Option<u128>,
     pub sampled_audio_seconds_decoded: Option<u32>,
+    pub sampled_audio_windows_decoded: Option<usize>,
     pub full_audio_seconds_decoded: Option<u32>,
     pub notes: Vec<String>,
 }
@@ -92,7 +94,7 @@ fn summarize_record_v3_diagnostics_with_report(
     let audio_stream = report.map(|report| &report.audio_stream);
     if let Some(report) = report {
         notes.push(format!(
-            "streamedBytes={} streamedSamples={} peakFrames={} rawLandmarksEmitted={} rawLandmarksBeforeBounding={} finalLandmarks={} maxBufferSamples={} maxRawLandmarksSeen={} maxRawLandmarksAfterCompaction={} rawLandmarkCompactions={} ffmpegProcessWallMillis={} pcmDecodeDrainMillis={} analyzerMillis={} pairingMillis={} compactionMillis={} finalSelectionMillis={} ffmpegDecodeStreamMillis={} sampledAudioSecondsDecoded={} fullAudioSecondsDecoded={}",
+            "streamedBytes={} streamedSamples={} peakFrames={} rawLandmarksEmitted={} rawLandmarksBeforeBounding={} finalLandmarks={} maxBufferSamples={} maxRawLandmarksSeen={} maxRawLandmarksAfterCompaction={} rawLandmarkCompactions={} ffmpegProcessWallMillis={} pcmDecodeDrainMillis={} analyzerMillis={} pairingMillis={} compactionMillis={} finalSelectionMillis={} ffmpegDecodeStreamMillis={} sampledAudioSecondsDecoded={} sampledAudioWindowsDecoded={} fullAudioSecondsDecoded={}",
             report.audio_stream.streamed_bytes,
             report.audio_stream.streamed_samples,
             report.audio_stream.peak_frames,
@@ -111,6 +113,7 @@ fn summarize_record_v3_diagnostics_with_report(
             report.audio_stream.final_selection_millis,
             report.audio_stream.ffmpeg_decode_stream_millis,
             report.audio_stream.sampled_audio_seconds_decoded,
+            report.audio_stream.sampled_audio_windows_decoded,
             report.audio_stream.full_audio_seconds_decoded
         ));
     }
@@ -128,6 +131,11 @@ fn summarize_record_v3_diagnostics_with_report(
     MediaMatchV3DiagnosticSummary {
         file_path: Some(record.identity.normalized_path.clone()),
         profile: record.extraction_settings.profile.label().to_owned(),
+        index_quality: record
+            .extraction_settings
+            .audio_index_mode
+            .label()
+            .to_owned(),
         duration_ms,
         extraction_total_millis: report.map(|report| report.timings.total_millis),
         extraction_audio_millis: report.map(|report| report.timings.audio_millis),
@@ -165,6 +173,8 @@ fn summarize_record_v3_diagnostics_with_report(
         final_selection_millis: audio_stream.map(|stream| stream.final_selection_millis),
         sampled_audio_seconds_decoded: audio_stream
             .map(|stream| stream.sampled_audio_seconds_decoded),
+        sampled_audio_windows_decoded: audio_stream
+            .map(|stream| stream.sampled_audio_windows_decoded),
         full_audio_seconds_decoded: audio_stream.map(|stream| stream.full_audio_seconds_decoded),
         notes,
     }
@@ -191,6 +201,7 @@ pub fn summarize_decision_v3_diagnostics(
     MediaMatchV3DiagnosticSummary {
         file_path: None,
         profile: "decision".to_owned(),
+        index_quality: "decision".to_owned(),
         duration_ms: None,
         extraction_total_millis: None,
         extraction_audio_millis: None,
@@ -228,6 +239,7 @@ pub fn summarize_decision_v3_diagnostics(
         compaction_millis: None,
         final_selection_millis: None,
         sampled_audio_seconds_decoded: None,
+        sampled_audio_windows_decoded: None,
         full_audio_seconds_decoded: None,
         notes,
     }

@@ -45,6 +45,8 @@ fn run_cli_with_output(
         keep_cache,
         refresh_cache,
         index_mode,
+        max_full_promotions_per_query,
+        promote_expected_candidates,
         mode,
         selected_cases,
     } = parse_args(args)?;
@@ -82,6 +84,8 @@ fn run_cli_with_output(
             cache_retained: retain_cache,
             refresh_cache,
             index_mode,
+            max_full_promotions_per_query,
+            promote_expected_candidates,
             tools: tool_paths(),
             generated_at_unix_millis: None,
         },
@@ -132,6 +136,8 @@ struct CliArgs {
     keep_cache: bool,
     refresh_cache: bool,
     index_mode: MediaMatchV3DiagnosticIndexMode,
+    max_full_promotions_per_query: usize,
+    promote_expected_candidates: bool,
     mode: CliMode,
     selected_cases: Vec<String>,
 }
@@ -143,6 +149,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
     let mut keep_cache = false;
     let mut refresh_cache = false;
     let mut index_mode = MediaMatchV3DiagnosticIndexMode::Full;
+    let mut max_full_promotions_per_query = 1usize;
+    let mut promote_expected_candidates = false;
     let mut mode = CliMode::Run;
     let mut selected_cases = Vec::new();
     let mut args = args.into_iter();
@@ -171,6 +179,15 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
                     return Err(usage());
                 };
                 index_mode = parse_index_mode(&value)?;
+            }
+            "--max-full-promotions" => {
+                let Some(value) = args.next() else {
+                    return Err(usage());
+                };
+                max_full_promotions_per_query = value.parse::<usize>().map_err(|_| usage())?.max(1);
+            }
+            "--promote-expected-candidates" => {
+                promote_expected_candidates = true;
             }
             "--list-cases" => {
                 if mode != CliMode::Run {
@@ -206,20 +223,23 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
         keep_cache,
         refresh_cache,
         index_mode,
+        max_full_promotions_per_query,
+        promote_expected_candidates,
         mode,
         selected_cases,
     })
 }
 
 fn usage() -> String {
-    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--index-mode full|sampled|sampled-then-full] [--list-cases|--validate-only] [--case name]"
+    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--index-mode full|sampled-fast|sampled-normal|sampled|sampled-then-full] [--max-full-promotions n] [--promote-expected-candidates] [--list-cases|--validate-only] [--case name]"
         .to_owned()
 }
 
 fn parse_index_mode(value: &str) -> Result<MediaMatchV3DiagnosticIndexMode, String> {
     match value {
         "full" => Ok(MediaMatchV3DiagnosticIndexMode::Full),
-        "sampled" => Ok(MediaMatchV3DiagnosticIndexMode::Sampled),
+        "sampled-fast" => Ok(MediaMatchV3DiagnosticIndexMode::SampledFast),
+        "sampled" | "sampled-normal" => Ok(MediaMatchV3DiagnosticIndexMode::SampledNormal),
         "sampled-then-full" => Ok(MediaMatchV3DiagnosticIndexMode::SampledThenFull),
         _ => Err(usage()),
     }
@@ -382,6 +402,9 @@ mod tests {
             "--refresh-cache".to_owned(),
             "--index-mode".to_owned(),
             "sampled".to_owned(),
+            "--max-full-promotions".to_owned(),
+            "2".to_owned(),
+            "--promote-expected-candidates".to_owned(),
             "--case".to_owned(),
             "copied-synthetic".to_owned(),
         ])
@@ -392,7 +415,12 @@ mod tests {
         assert_eq!(args.cache_root, Some(PathBuf::from("cache")));
         assert!(args.keep_cache);
         assert!(args.refresh_cache);
-        assert_eq!(args.index_mode, MediaMatchV3DiagnosticIndexMode::Sampled);
+        assert_eq!(
+            args.index_mode,
+            MediaMatchV3DiagnosticIndexMode::SampledNormal
+        );
+        assert_eq!(args.max_full_promotions_per_query, 2);
+        assert!(args.promote_expected_candidates);
         assert_eq!(args.selected_cases, vec!["copied-synthetic"]);
         assert_eq!(args.mode, CliMode::Run);
     }
@@ -582,6 +610,8 @@ mod tests {
                 cache_retained: true,
                 refresh_cache: true,
                 index_mode: MediaMatchV3DiagnosticIndexMode::Full,
+                max_full_promotions_per_query: 1,
+                promote_expected_candidates: false,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(123),
             },
@@ -638,6 +668,8 @@ mod tests {
                 cache_retained: true,
                 refresh_cache: false,
                 index_mode: MediaMatchV3DiagnosticIndexMode::Full,
+                max_full_promotions_per_query: 1,
+                promote_expected_candidates: false,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(124),
             },
@@ -676,6 +708,8 @@ mod tests {
                 cache_retained: true,
                 refresh_cache: true,
                 index_mode: MediaMatchV3DiagnosticIndexMode::Full,
+                max_full_promotions_per_query: 1,
+                promote_expected_candidates: false,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(125),
             },
@@ -727,6 +761,8 @@ mod tests {
                 cache_retained: true,
                 refresh_cache: true,
                 index_mode: MediaMatchV3DiagnosticIndexMode::Full,
+                max_full_promotions_per_query: 1,
+                promote_expected_candidates: false,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(126),
             },

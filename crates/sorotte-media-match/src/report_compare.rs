@@ -154,6 +154,8 @@ pub fn validate_media_match_v3_diagnostic_report(
     let mut failed = 0usize;
     let mut total_raw_hit_rows_processed = 0i64;
     let mut total_retrieval_millis = 0u128;
+    let mut total_full_promotion_millis = 0u128;
+    let mut promoted_candidates = 0usize;
     let mut report_source_counts = FingerprintSourceCounts::default();
 
     for case in &report.cases {
@@ -185,6 +187,10 @@ pub fn validate_media_match_v3_diagnostic_report(
                 passed += 1;
             } else {
                 failed += 1;
+            }
+            total_full_promotion_millis += candidate.full_promotion_millis;
+            if candidate.promotion_reason.is_some() {
+                promoted_candidates += 1;
             }
         }
     }
@@ -224,6 +230,18 @@ pub fn validate_media_match_v3_diagnostic_report(
         return Err(format!(
             "summary.totalRetrievalMillis={} does not match retrieval total={total_retrieval_millis}",
             report.summary.total_retrieval_millis
+        ));
+    }
+    if report.summary.full_promotion_millis != total_full_promotion_millis {
+        return Err(format!(
+            "summary.fullPromotionMillis={} does not match candidate total={total_full_promotion_millis}",
+            report.summary.full_promotion_millis
+        ));
+    }
+    if report.summary.candidates_promoted_to_full_verify != promoted_candidates {
+        return Err(format!(
+            "summary.candidatesPromotedToFullVerify={} does not match promoted candidates={promoted_candidates}",
+            report.summary.candidates_promoted_to_full_verify
         ));
     }
     let aggregate_totals = report_aggregate_fingerprint_totals(report);
@@ -755,6 +773,16 @@ fn report_metric_deltas(
             "candidatesPromotedToFullVerify",
             baseline.summary.candidates_promoted_to_full_verify as i128,
             current.summary.candidates_promoted_to_full_verify as i128,
+        ),
+        metric_delta(
+            "fullPromotionMillis",
+            baseline.summary.full_promotion_millis as i128,
+            current.summary.full_promotion_millis as i128,
+        ),
+        metric_delta(
+            "fullPromotionCacheHits",
+            baseline.summary.full_promotion_cache_hits as i128,
+            current.summary.full_promotion_cache_hits as i128,
         ),
     ]
 }
@@ -1796,6 +1824,8 @@ mod tests {
                     index_insert_millis: 0,
                     retrieved: retrieval_rank.is_some(),
                     retrieval_rank,
+                    promotion_reason: None,
+                    full_promotion_millis: 0,
                     decision: MediaMatchV3DiagnosticDecisionReport {
                         tier: tier.to_owned(),
                         class: Some(class.to_owned()),
@@ -1821,6 +1851,9 @@ mod tests {
                         max_offset_error_ms: Some(1_000),
                         autoplay_eligible: Some(true),
                         must_be_retrieved: true,
+                        expected_retrieved: None,
+                        max_retrieval_rank: None,
+                        skip_decision_expectation: false,
                     }),
                     passed,
                     failure_reason: (!passed).then(|| "failed".to_owned()),
@@ -1866,6 +1899,7 @@ mod tests {
         MediaMatchV3DiagnosticSummary {
             file_path: Some(path.to_owned()),
             profile: "audio-constellation-v3".to_owned(),
+            index_quality: "full-verify".to_owned(),
             duration_ms: Some(60_000),
             extraction_total_millis: Some(10),
             extraction_audio_millis: Some(8),
@@ -1900,6 +1934,7 @@ mod tests {
             compaction_millis: None,
             final_selection_millis: None,
             sampled_audio_seconds_decoded: None,
+            sampled_audio_windows_decoded: None,
             full_audio_seconds_decoded: None,
             notes: Vec::new(),
         }

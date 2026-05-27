@@ -1,0 +1,45 @@
+{
+  "profile": "audio-constellation-v3",
+  "baseDir": "replace-with-your-media-root",
+  "cases": [
+    {
+      "name": "sampled-remux-same-source",
+      "query": "remux/source-a.mkv",
+      "candidates": [
+        {
+          "id": "sampled-remux-source-a",
+          "path": "remux/source-a-remux.mkv",
+          "expectedRetrieved": true,
+          "maxRetrievalRank": 1,
+          "skipDecisionExpectation": true
+        }
+      ]
+    },
+    {
+      "name": "sampled-different-encode",
+      "query": "encodes/episode-x264.mkv",
+      "candidates": [
+        {
+          "id": "sampled-different-encode-episode",
+          "path": "encodes/episode-x265-or-av1.mkv",
+          "expectedRetrieved": true,
+          "maxRetrievalRank": 1,
+          "skipDecisionExpectation": true
+        }
+      ]
+    },
+    {
+      "name": "sampled-offset-tv-vs-bd",
+      "query": "offsets/tv-version.mkv",
+      "candidates": [
+        {
+          "id": "sampled-tv-bd-offset",
+          "path": "offsets/bd-version.mkv",
+          "expectedRetrieved": true,
+          "maxRetrievalRank": 1,
+          "skipDecisionExpectation": true
+        }
+      ]
+    }
+  ]
+}

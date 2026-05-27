@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fmt;
 use std::io::Read;
@@ -28,8 +29,13 @@ use crate::{
     settings::{MediaAudioIndexMode, MediaExtractionSettings, MediaFingerprintProfile},
     tuning::{
         FFMPEG_AUDIO_V3_TIMEOUT, FFMPEG_FULL_VIDEO_TIMEOUT, FFPROBE_TIMEOUT,
-        MEDIA_TOOL_POLL_INTERVAL, V3_AUDIO_SAMPLE_RATE, V3_AUDIO_SAMPLED_INDEX_LANDMARK_LIMIT,
-        V3_AUDIO_SAMPLED_INDEX_WINDOW_COUNT, V3_AUDIO_SAMPLED_INDEX_WINDOW_SECONDS,
+        MEDIA_TOOL_POLL_INTERVAL, V3_AUDIO_SAMPLE_RATE, V3_AUDIO_SAMPLED_FAST_INDEX_LANDMARK_LIMIT,
+        V3_AUDIO_SAMPLED_FAST_MAX_WINDOWS, V3_AUDIO_SAMPLED_FAST_MIN_WINDOWS,
+        V3_AUDIO_SAMPLED_FAST_SAMPLE_RATE, V3_AUDIO_SAMPLED_FAST_TARGET_LANDMARKS,
+        V3_AUDIO_SAMPLED_FAST_WINDOW_SECONDS, V3_AUDIO_SAMPLED_MIN_BODY_REGIONS,
+        V3_AUDIO_SAMPLED_NORMAL_INDEX_LANDMARK_LIMIT, V3_AUDIO_SAMPLED_NORMAL_MAX_WINDOWS,
+        V3_AUDIO_SAMPLED_NORMAL_MIN_WINDOWS, V3_AUDIO_SAMPLED_NORMAL_SAMPLE_RATE,
+        V3_AUDIO_SAMPLED_NORMAL_TARGET_LANDMARKS, V3_AUDIO_SAMPLED_NORMAL_WINDOW_SECONDS,
         VIDEO_FRAME_BYTES, VIDEO_FRAME_HEIGHT, VIDEO_FRAME_WIDTH,
     },
     types::{MediaFileIdentity, MediaFingerprintRecord},
@@ -79,6 +85,7 @@ pub struct MediaAudioStreamMetrics {
     pub pcm_decode_drain_millis: u128,
     pub ffmpeg_decode_stream_millis: u128,
     pub sampled_audio_seconds_decoded: u32,
+    pub sampled_audio_windows_decoded: usize,
     pub full_audio_seconds_decoded: u32,
 }
 
@@ -247,11 +254,12 @@ pub fn fingerprint_media_file_with_report(
             duration_seconds,
             cancel_flag,
         ),
-        MediaAudioIndexMode::SampledIndex => {
+        MediaAudioIndexMode::SampledFast | MediaAudioIndexMode::SampledNormal => {
             extract_audio_constellation_v3_sampled_index_with_metrics(
                 &tools.ffmpeg,
                 path,
                 duration_seconds,
+                extraction_settings.audio_index_mode,
                 cancel_flag,
             )
         }
@@ -437,9 +445,11 @@ pub(crate) fn extract_audio_constellation_v3_sampled_index_with_metrics(
     ffmpeg: impl AsRef<Path>,
     media_path: impl AsRef<Path>,
     duration_seconds: Option<f64>,
+    index_mode: MediaAudioIndexMode,
     cancel_flag: Option<&AtomicBool>,
 ) -> Result<(Vec<AudioLandmarkV3>, MediaAudioStreamMetrics), MediaFingerprintError> {
-    let windows = sampled_audio_windows_v3(duration_seconds);
+    let config = sampled_audio_index_config(index_mode);
+    let windows = sampled_audio_windows_v3(duration_seconds, config);
     if windows.is_empty() {
         return extract_audio_constellation_v3_with_metrics(
             ffmpeg,
@@ -452,10 +462,12 @@ pub(crate) fn extract_audio_constellation_v3_sampled_index_with_metrics(
     let mut all_landmarks = Vec::new();
     let mut combined_metrics = MediaAudioStreamMetrics::default();
     let mut process_wall_millis = 0u128;
-    for (start_seconds, window_seconds) in windows {
+    let mut body_regions = BTreeSet::new();
+    let mut unique_hashes = BTreeSet::new();
+    for (window_index, (start_seconds, window_seconds)) in windows.into_iter().enumerate() {
         let started_at = Instant::now();
         let stream = Arc::new(Mutex::new(AudioConstellationV3PcmStream::new(
-            V3_AUDIO_SAMPLE_RATE,
+            config.sample_rate,
         )));
         let stream_reader = Arc::clone(&stream);
         run_tool_streaming_stdout(
@@ -475,7 +487,7 @@ pub(crate) fn extract_audio_constellation_v3_sampled_index_with_metrics(
                 "-ac".into(),
                 "1".into(),
                 "-ar".into(),
-                V3_AUDIO_SAMPLE_RATE.to_string().into(),
+                config.sample_rate.to_string().into(),
                 "-f".into(),
                 "s16le".into(),
                 "-".into(),
@@ -512,11 +524,24 @@ pub(crate) fn extract_audio_constellation_v3_sampled_index_with_metrics(
         for landmark in &mut landmarks {
             landmark.t_ms = landmark.t_ms.saturating_add(start_ms);
         }
+        for landmark in &landmarks {
+            body_regions.insert(landmark.t_ms / 60_000);
+            unique_hashes.insert(landmark.hash);
+        }
         all_landmarks.extend(landmarks);
         merge_audio_stream_metrics(&mut combined_metrics, &metrics);
         combined_metrics.sampled_audio_seconds_decoded = combined_metrics
             .sampled_audio_seconds_decoded
             .saturating_add(window_seconds);
+        combined_metrics.sampled_audio_windows_decoded += 1;
+        let windows_decoded = window_index + 1;
+        if windows_decoded >= config.min_windows
+            && all_landmarks.len() >= config.target_landmarks
+            && body_regions.len() >= config.min_body_regions
+            && unique_hashes.len() >= config.target_landmarks.saturating_mul(3) / 4
+        {
+            break;
+        }
     }
 
     let selection_started_at = Instant::now();
@@ -524,7 +549,7 @@ pub(crate) fn extract_audio_constellation_v3_sampled_index_with_metrics(
     let raw_before_bounding = bounded.len();
     bounded = bounded_time_distributed_audio_landmarks_v3_for_duration(
         &mut bounded,
-        V3_AUDIO_SAMPLED_INDEX_LANDMARK_LIMIT,
+        config.max_landmarks,
         duration_seconds,
     );
     combined_metrics.final_selection_millis = combined_metrics
@@ -544,13 +569,60 @@ pub(crate) fn extract_audio_constellation_v3_sampled_index_with_metrics(
     Ok((bounded, combined_metrics))
 }
 
-fn sampled_audio_windows_v3(duration_seconds: Option<f64>) -> Vec<(f64, u32)> {
+#[derive(Debug, Clone, Copy)]
+struct SampledAudioIndexConfig {
+    sample_rate: u32,
+    window_seconds: u32,
+    min_windows: usize,
+    max_windows: usize,
+    target_landmarks: usize,
+    max_landmarks: usize,
+    min_body_regions: usize,
+}
+
+fn sampled_audio_index_config(index_mode: MediaAudioIndexMode) -> SampledAudioIndexConfig {
+    match index_mode {
+        MediaAudioIndexMode::FullVerify => SampledAudioIndexConfig {
+            sample_rate: V3_AUDIO_SAMPLE_RATE,
+            window_seconds: V3_AUDIO_SAMPLED_NORMAL_WINDOW_SECONDS,
+            min_windows: V3_AUDIO_SAMPLED_NORMAL_MIN_WINDOWS,
+            max_windows: V3_AUDIO_SAMPLED_NORMAL_MAX_WINDOWS,
+            target_landmarks: V3_AUDIO_SAMPLED_NORMAL_TARGET_LANDMARKS,
+            max_landmarks: V3_AUDIO_SAMPLED_NORMAL_INDEX_LANDMARK_LIMIT,
+            min_body_regions: V3_AUDIO_SAMPLED_MIN_BODY_REGIONS,
+        },
+        MediaAudioIndexMode::SampledFast => SampledAudioIndexConfig {
+            sample_rate: V3_AUDIO_SAMPLED_FAST_SAMPLE_RATE,
+            window_seconds: V3_AUDIO_SAMPLED_FAST_WINDOW_SECONDS,
+            min_windows: V3_AUDIO_SAMPLED_FAST_MIN_WINDOWS,
+            max_windows: V3_AUDIO_SAMPLED_FAST_MAX_WINDOWS,
+            target_landmarks: V3_AUDIO_SAMPLED_FAST_TARGET_LANDMARKS,
+            max_landmarks: V3_AUDIO_SAMPLED_FAST_INDEX_LANDMARK_LIMIT,
+            min_body_regions: V3_AUDIO_SAMPLED_MIN_BODY_REGIONS
+                .min(V3_AUDIO_SAMPLED_FAST_MAX_WINDOWS),
+        },
+        MediaAudioIndexMode::SampledNormal => SampledAudioIndexConfig {
+            sample_rate: V3_AUDIO_SAMPLED_NORMAL_SAMPLE_RATE,
+            window_seconds: V3_AUDIO_SAMPLED_NORMAL_WINDOW_SECONDS,
+            min_windows: V3_AUDIO_SAMPLED_NORMAL_MIN_WINDOWS,
+            max_windows: V3_AUDIO_SAMPLED_NORMAL_MAX_WINDOWS,
+            target_landmarks: V3_AUDIO_SAMPLED_NORMAL_TARGET_LANDMARKS,
+            max_landmarks: V3_AUDIO_SAMPLED_NORMAL_INDEX_LANDMARK_LIMIT,
+            min_body_regions: V3_AUDIO_SAMPLED_MIN_BODY_REGIONS,
+        },
+    }
+}
+
+fn sampled_audio_windows_v3(
+    duration_seconds: Option<f64>,
+    config: SampledAudioIndexConfig,
+) -> Vec<(f64, u32)> {
     let duration = duration_seconds.unwrap_or(0.0);
-    if !duration.is_finite() || duration <= f64::from(V3_AUDIO_SAMPLED_INDEX_WINDOW_SECONDS) {
+    if !duration.is_finite() || duration <= f64::from(config.window_seconds) {
         return Vec::new();
     }
-    let window = V3_AUDIO_SAMPLED_INDEX_WINDOW_SECONDS;
-    let count = V3_AUDIO_SAMPLED_INDEX_WINDOW_COUNT;
+    let window = config.window_seconds;
+    let count = config.max_windows;
     let edge_skip: f64 = if duration >= 600.0 { 180.0 } else { 30.0 };
     let body_start = edge_skip.min((duration - f64::from(window)).max(0.0));
     let body_end = (duration - edge_skip - f64::from(window)).max(body_start);
@@ -604,6 +676,9 @@ fn merge_audio_stream_metrics(
     target.final_selection_millis = target
         .final_selection_millis
         .saturating_add(source.final_selection_millis);
+    target.sampled_audio_windows_decoded = target
+        .sampled_audio_windows_decoded
+        .saturating_add(source.sampled_audio_windows_decoded);
 }
 
 pub(crate) fn extract_video_fingerprint_with_cancellation(
