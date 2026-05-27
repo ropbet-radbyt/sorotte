@@ -8,6 +8,7 @@ use crate::{
         audio_landmarks_v3_from_record, encode_media_fingerprint_blob_v3,
         video_index_landmarks_v3_from_record, video_landmarks_v3_from_record,
     },
+    audio_v3::AudioLandmarkV3,
     identity::duration_seconds_to_millis,
 };
 
@@ -64,6 +65,7 @@ fn summarize_record_v3_diagnostics_with_report(
     let duration_ms = record.duration_seconds.and_then(duration_seconds_to_millis);
     let audio_landmarks = audio_landmarks_v3_from_record(record);
     let video_landmarks = video_landmarks_v3_from_record(record);
+    let audio_index_landmarks = audio_index_landmarks_v3_from_record(record);
     let duration_ms_u64 = duration_ms.map(u64::from);
     let audio_blob_bytes = encode_media_fingerprint_blob_v3(&MediaFingerprintBlobV3 {
         duration_ms: duration_ms_u64,
@@ -81,7 +83,7 @@ fn summarize_record_v3_diagnostics_with_report(
     let audio_stream = report.map(|report| &report.audio_stream);
     if let Some(report) = report {
         notes.push(format!(
-            "streamedBytes={} streamedSamples={} peakFrames={} rawLandmarksBeforeBounding={} finalLandmarks={} maxBufferSamples={} maxRawLandmarksSeen={} maxRawLandmarksAfterCompaction={} rawLandmarkCompactions={}",
+            "streamedBytes={} streamedSamples={} peakFrames={} rawLandmarksBeforeBounding={} finalLandmarks={} maxBufferSamples={} maxRawLandmarksSeen={} maxRawLandmarksAfterCompaction={} rawLandmarkCompactions={} analyzerMillis={} compactionMillis={} finalSelectionMillis={} ffmpegDecodeStreamMillis={}",
             report.audio_stream.streamed_bytes,
             report.audio_stream.streamed_samples,
             report.audio_stream.peak_frames,
@@ -90,9 +92,24 @@ fn summarize_record_v3_diagnostics_with_report(
             report.audio_stream.max_buffer_samples,
             report.audio_stream.max_raw_landmarks_seen,
             report.audio_stream.max_raw_landmarks_after_compaction,
-            report.audio_stream.raw_landmark_compactions
+            report.audio_stream.raw_landmark_compactions,
+            report.audio_stream.analyzer_millis,
+            report.audio_stream.compaction_millis,
+            report.audio_stream.final_selection_millis,
+            report.audio_stream.ffmpeg_decode_stream_millis
         ));
     }
+    let (audio_edge_count, audio_body_count) =
+        audio_edge_body_counts(&audio_landmarks, duration_ms);
+    notes.push(format!(
+        "audioRegionCounts60s verify=[{}] index=[{}] edgeLandmarks={} bodyLandmarks={} averageWeight={:.2} medianWeight={:.2}",
+        format_audio_region_counts(&audio_landmarks),
+        format_audio_region_counts(&audio_index_landmarks),
+        audio_edge_count,
+        audio_body_count,
+        average_audio_landmark_weight(&audio_landmarks),
+        median_audio_landmark_weight(&audio_landmarks)
+    ));
     MediaMatchV3DiagnosticSummary {
         file_path: Some(record.identity.normalized_path.clone()),
         profile: record.extraction_settings.profile.label().to_owned(),
@@ -102,7 +119,7 @@ fn summarize_record_v3_diagnostics_with_report(
         extraction_video_millis: report.map(|report| report.timings.video_millis),
         audio_verify_count: audio_landmarks.len(),
         video_verify_count: video_landmarks.len(),
-        audio_index_count: audio_index_landmarks_v3_from_record(record).len(),
+        audio_index_count: audio_index_landmarks.len(),
         video_index_count: video_index_landmarks_v3_from_record(record).len(),
         audio_blob_bytes,
         video_blob_bytes,
@@ -180,4 +197,59 @@ pub fn summarize_decision_v3_diagnostics(
         raw_landmark_compactions: None,
         notes,
     }
+}
+
+fn format_audio_region_counts(landmarks: &[AudioLandmarkV3]) -> String {
+    if landmarks.is_empty() {
+        return String::new();
+    }
+    let mut counts = std::collections::BTreeMap::<u32, usize>::new();
+    for landmark in landmarks {
+        *counts.entry(landmark.t_ms / 60_000).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .map(|(region, count)| format!("{}:{}", region * 60, count))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn audio_edge_body_counts(
+    landmarks: &[AudioLandmarkV3],
+    duration_ms: Option<u32>,
+) -> (usize, usize) {
+    let Some(duration_ms) = duration_ms else {
+        return (0, landmarks.len());
+    };
+    let edge_ms = ((f64::from(duration_ms) * 0.10).round() as u32).clamp(120_000, 240_000);
+    let edge_count = landmarks
+        .iter()
+        .filter(|landmark| {
+            landmark.t_ms < edge_ms || landmark.t_ms >= duration_ms.saturating_sub(edge_ms)
+        })
+        .count();
+    (edge_count, landmarks.len().saturating_sub(edge_count))
+}
+
+fn average_audio_landmark_weight(landmarks: &[AudioLandmarkV3]) -> f64 {
+    if landmarks.is_empty() {
+        return 0.0;
+    }
+    landmarks
+        .iter()
+        .map(|landmark| f64::from(landmark.weight))
+        .sum::<f64>()
+        / landmarks.len() as f64
+}
+
+fn median_audio_landmark_weight(landmarks: &[AudioLandmarkV3]) -> f64 {
+    if landmarks.is_empty() {
+        return 0.0;
+    }
+    let mut weights = landmarks
+        .iter()
+        .map(|landmark| landmark.weight)
+        .collect::<Vec<_>>();
+    weights.sort_unstable();
+    f64::from(weights[weights.len() / 2])
 }

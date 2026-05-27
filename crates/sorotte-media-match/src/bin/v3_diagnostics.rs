@@ -533,19 +533,18 @@ mod tests {
         let root = temp_dir("v3-diagnostics");
         let media_dir = root.join("media");
         fs::create_dir_all(&media_dir).expect("media dir should be created");
-        let query = media_dir.join("query.mkv");
-        let candidate = media_dir.join("candidate.mkv");
-        generate_synthetic_media(&ffmpeg, &query);
+        let query = media_dir.join("query.wav");
+        let candidate = media_dir.join("candidate.wav");
+        generate_synthetic_audio(&ffmpeg, &query);
         fs::copy(&query, &candidate).expect("candidate copy should succeed");
         let manifest = serde_json::json!({
-            "profile": "combined-v3",
+            "profile": "audio-constellation-v3",
             "baseDir": "media",
             "cases": [{
                 "name": "copied-synthetic",
-                "query": "query.mkv",
+                "query": "query.wav",
                 "candidates": [{
-                    "path": "candidate.mkv",
-                    "minimumTier": "Probable",
+                    "path": "candidate.wav",
                     "mustBeRetrieved": true
                 }]
             }]
@@ -683,13 +682,13 @@ mod tests {
         assert_report_self_compares(&refresh_report);
 
         let duplicate_manifest = serde_json::json!({
-            "profile": "combined-v3",
+            "profile": "audio-constellation-v3",
             "baseDir": "media",
             "cases": [{
                 "name": "duplicate-synthetic",
-                "query": "query.mkv",
+                "query": "query.wav",
                 "candidates": [{
-                    "path": "query.mkv"
+                    "path": "query.wav"
                 }]
             }]
         });
@@ -761,7 +760,7 @@ mod tests {
         status.success().then_some(path)
     }
 
-    fn generate_synthetic_media(ffmpeg: &Path, path: &Path) {
+    fn generate_synthetic_audio(ffmpeg: &Path, path: &Path) {
         let status = Command::new(ffmpeg)
             .args([
                 "-v",
@@ -770,23 +769,14 @@ mod tests {
                 "-f",
                 "lavfi",
                 "-i",
-                "testsrc2=size=96x96:rate=1:duration=90",
-                "-f",
-                "lavfi",
-                "-i",
-                "aevalsrc=sin(2*PI*440*t)+0.5*sin(2*PI*880*t):s=44100:d=90",
-                "-shortest",
-                "-c:v",
-                "libx264",
-                "-pix_fmt",
-                "yuv420p",
+                "aevalsrc=0.7*sin(2*PI*(220+30*t)*t)+0.4*sin(2*PI*(660+17*t)*t):s=44100:d=24",
                 "-c:a",
-                "aac",
+                "pcm_s16le",
             ])
             .arg(path)
             .status()
             .expect("ffmpeg should run");
-        assert!(status.success(), "ffmpeg synthetic media generation failed");
+        assert!(status.success(), "ffmpeg synthetic audio generation failed");
     }
 
     fn temp_dir(prefix: &str) -> PathBuf {

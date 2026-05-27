@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     MEDIA_MATCH_ANCHOR_VERSION,
-    audio_v3::{AudioLandmarkV3, bounded_time_distributed_audio_landmarks_v3},
+    audio_v3::{AudioLandmarkV3, bounded_time_distributed_audio_landmarks_v3_for_duration},
     identity::duration_seconds_to_millis,
     settings::{MediaFingerprintProfile, media_extraction_settings_hash},
     tuning::{
@@ -594,7 +594,11 @@ pub fn audio_landmarks_v3_from_record(record: &MediaFingerprintRecord) -> Vec<Au
             weight: anchor.weight.min(u16::from(u8::MAX)).max(1) as u8,
         })
         .collect::<Vec<_>>();
-    bounded_time_distributed_audio_landmarks_v3(&mut landmarks, V3_AUDIO_VERIFY_LANDMARK_LIMIT)
+    bounded_time_distributed_audio_landmarks_v3_for_duration(
+        &mut landmarks,
+        V3_AUDIO_VERIFY_LANDMARK_LIMIT,
+        record.duration_seconds,
+    )
 }
 
 pub fn video_landmarks_v3_from_record(record: &MediaFingerprintRecord) -> Vec<VideoLandmarkV3> {
@@ -624,7 +628,11 @@ pub fn audio_index_landmarks_v3_from_record(
     record: &MediaFingerprintRecord,
 ) -> Vec<AudioLandmarkV3> {
     let mut landmarks = audio_landmarks_v3_from_record(record);
-    bounded_time_distributed_audio_landmarks_v3(&mut landmarks, V3_AUDIO_INDEX_LANDMARK_LIMIT)
+    bounded_time_distributed_audio_landmarks_v3_for_duration(
+        &mut landmarks,
+        V3_AUDIO_INDEX_LANDMARK_LIMIT,
+        record.duration_seconds,
+    )
 }
 
 pub fn video_index_landmarks_v3_from_record(

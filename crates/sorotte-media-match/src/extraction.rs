@@ -66,6 +66,10 @@ pub struct MediaAudioStreamMetrics {
     pub max_raw_landmarks_seen: usize,
     pub max_raw_landmarks_after_compaction: usize,
     pub raw_landmark_compactions: usize,
+    pub analyzer_millis: u128,
+    pub compaction_millis: u128,
+    pub final_selection_millis: u128,
+    pub ffmpeg_decode_stream_millis: u128,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -350,6 +354,7 @@ pub(crate) fn extract_audio_constellation_v3_with_metrics(
         V3_AUDIO_SAMPLE_RATE,
     )));
     let stream_reader = Arc::clone(&stream);
+    let decode_started_at = Instant::now();
     run_tool_streaming_stdout(
         "ffmpeg",
         ffmpeg.as_ref(),
@@ -380,6 +385,7 @@ pub(crate) fn extract_audio_constellation_v3_with_metrics(
                 .push_bytes(chunk)
         },
     )?;
+    let decode_stream_millis = decode_started_at.elapsed().as_millis();
     let stream = Arc::try_unwrap(stream).map_err(|_| MediaFingerprintError::InvalidToolOutput {
         tool: "ffmpeg",
         reason: "audio stream state was still shared after ffmpeg exit".to_owned(),
@@ -390,7 +396,8 @@ pub(crate) fn extract_audio_constellation_v3_with_metrics(
             tool: "ffmpeg",
             reason: "audio stream state was poisoned".to_owned(),
         })?;
-    let (landmarks, metrics) = stream.finish(duration_seconds)?;
+    let (landmarks, mut metrics) = stream.finish(duration_seconds)?;
+    metrics.ffmpeg_decode_stream_millis = decode_stream_millis;
     if landmarks.is_empty() {
         return Err(MediaFingerprintError::InvalidToolOutput {
             tool: "ffmpeg",

@@ -6,6 +6,8 @@ use crate::{
     tuning::{
         DEFAULT_ANCHOR_ALIGNMENT_TOLERANCE_MS, DEFAULT_ANCHOR_OFFSET_BIN_MS,
         MAX_BROAD_SCALE_FIT_PAIRS, V3_EDGE_REGION_MAX_MS, V3_EDGE_REGION_MIN_MS,
+        V3_FAST_AUDIO_MIN_BODY_PAIRS, V3_FAST_AUDIO_MIN_BODY_REGIONS,
+        V3_FAST_AUDIO_MIN_BODY_SPAN_MS, V3_FAST_AUDIO_TOP_OFFSET_BINS, V3_PIECEWISE_MAX_HYPOTHESES,
         V3_PIECEWISE_MAX_HYPOTHESIS_PAIRS, V3_SEGMENT_AUDIO_MIN_PAIRS,
         V3_SEGMENT_AUDIO_MIN_SPAN_MS, V3_SEGMENT_AUDIO_VIDEO_MIN_PAIRS,
         V3_SEGMENT_AUDIO_VIDEO_MIN_SPAN_MS, V3_SEGMENT_MERGE_GAP_MS, V3_SEGMENT_MERGE_SCALE_PPM,
@@ -199,6 +201,28 @@ struct V3ClassificationContext {
     continuity_ok: bool,
 }
 
+#[derive(Debug, Clone)]
+struct V3AudioOffsetBinDiagnostic {
+    offset_ms: i64,
+    weighted_score: u32,
+    pair_count: usize,
+    query_span_ms: u32,
+    candidate_span_ms: u32,
+    body_pair_count: usize,
+    edge_pair_count: usize,
+    body_span_ms: u32,
+    edge_span_ms: u32,
+    body_region_count: usize,
+    largest_body_gap_ms: u32,
+}
+
+#[derive(Debug, Clone)]
+struct V3FastAudioProof {
+    class: MatchClassV3,
+    analysis: V3TimelineAnalysis,
+    note: String,
+}
+
 pub fn decide_media_match_anchors(
     query: &MediaAnchorProfile,
     candidate: &MediaAnchorProfile,
@@ -268,7 +292,7 @@ pub fn decide_media_match_anchors(
             "no anchors fit the dominant offset",
         );
     };
-    let aligned = fit.aligned;
+    let aligned = fit.aligned.clone();
 
     let audio_pairs = aligned
         .iter()
@@ -352,19 +376,35 @@ pub fn decide_media_match_anchors(
     let very_strong_single_modality =
         (audio_pairs >= 16 || video_pairs >= 10) && meaningful_span && margin_ok && continuity_ok;
     let weak_evidence = audio_pairs >= 2 || video_pairs >= 2 || aligned.len() >= 3;
-    let timeline_analysis = build_v3_timeline_analysis(query, candidate, &pairs);
-    let v3_class = classify_v3_timeline(
+    if !query.audio_anchors.is_empty() && !candidate.audio_anchors.is_empty() {
+        evidence.notes.push(format_audio_offset_bin_diagnostics(
+            query, candidate, &pairs,
+        ));
+    }
+    let classification_context = V3ClassificationContext {
+        duration_ok,
+        meaningful_span,
+        drift_ok,
+        margin_ok,
+        continuity_ok,
+    };
+    let fast_audio_proof = fast_audio_same_cut_proof(
         query,
         candidate,
-        &timeline_analysis,
-        V3ClassificationContext {
-            duration_ok,
-            meaningful_span,
-            drift_ok,
-            margin_ok,
-            continuity_ok,
-        },
+        &pairs,
+        &fit,
+        second_best_offset_margin,
+        classification_context,
     );
+    let (timeline_analysis, v3_class) = if let Some(proof) = fast_audio_proof {
+        evidence.notes.push(proof.note);
+        (proof.analysis, proof.class)
+    } else {
+        let timeline_analysis = build_v3_timeline_analysis(query, candidate, &pairs);
+        let v3_class =
+            classify_v3_timeline(query, candidate, &timeline_analysis, classification_context);
+        (timeline_analysis, v3_class)
+    };
     let video_inconclusive = !query.video_anchors.is_empty()
         && !candidate.video_anchors.is_empty()
         && timeline_analysis.video_pairs < V3_SEGMENT_VIDEO_MIN_PAIRS
@@ -713,7 +753,8 @@ fn fit_anchor_scale_offset(
     }
 
     let mut candidates = vec![(1.0, voted_offset_ms as f64)];
-    add_scale_offset_candidates_from_pairs(&seeded, &mut candidates);
+    let seeded_candidates = broad_scale_fit_sample(&seeded);
+    add_scale_offset_candidates_from_pairs(&seeded_candidates, &mut candidates);
     if seeded.len() < pairs.len() {
         let broad_pairs = broad_scale_fit_sample(pairs);
         add_scale_offset_candidates_from_pairs(&broad_pairs, &mut candidates);
@@ -862,6 +903,214 @@ fn max_anchor_fit_residual_ms(pairs: &[AnchorMatchPair], scale: f64, offset: f64
             (f64::from(pair.candidate_t_ms) - predicted).abs()
         })
         .fold(0.0, f64::max)
+}
+
+fn fast_audio_same_cut_proof(
+    query: &MediaAnchorProfile,
+    candidate: &MediaAnchorProfile,
+    pairs: &[AnchorMatchPair],
+    fit: &AnchorScaleOffsetFit,
+    second_best_offset_margin: f64,
+    context: V3ClassificationContext,
+) -> Option<V3FastAudioProof> {
+    if !query.video_anchors.is_empty() || !candidate.video_anchors.is_empty() {
+        return None;
+    }
+    let diagnostics = audio_offset_bin_diagnostics(query, candidate, pairs);
+    let best = diagnostics
+        .iter()
+        .take(V3_FAST_AUDIO_TOP_OFFSET_BINS)
+        .next()?;
+    let enough_body_pairs = best.body_pair_count >= V3_FAST_AUDIO_MIN_BODY_PAIRS
+        && best.body_region_count >= V3_FAST_AUDIO_MIN_BODY_REGIONS;
+    let enough_body_span = best.body_span_ms >= V3_FAST_AUDIO_MIN_BODY_SPAN_MS;
+    let largest_body_gap_ratio = if best.body_span_ms > 0 {
+        f64::from(best.largest_body_gap_ms) / f64::from(best.body_span_ms)
+    } else {
+        1.0
+    };
+    let continuity_ok = context.continuity_ok && largest_body_gap_ratio <= 0.65;
+    let edge_only = best.body_pair_count == 0 || best.body_span_ms < 45_000;
+    let mut blocked = Vec::new();
+    if edge_only {
+        blocked.push("edge_only");
+    }
+    if !enough_body_span {
+        blocked.push("insufficient_body_span");
+    }
+    if second_best_offset_margin < 0.35 {
+        blocked.push("weak_margin");
+    }
+    if !context.drift_ok {
+        blocked.push("drift");
+    }
+    if !context.duration_ok {
+        blocked.push("duration");
+    }
+    if !continuity_ok {
+        blocked.push("continuity");
+    }
+    if edge_only || !enough_body_pairs || !enough_body_span || !context.duration_ok {
+        return None;
+    }
+    let class = if blocked.is_empty() {
+        MatchClassV3::SameCutStrong
+    } else if context.drift_ok && continuity_ok && second_best_offset_margin >= 0.20 {
+        MatchClassV3::SameCutProbable
+    } else {
+        return None;
+    };
+    let inliers = audio_pairs_for_offset_ms(pairs, best.offset_ms);
+    let (scale, offset) = least_squares_anchor_fit(&inliers)
+        .unwrap_or((f64::from(fit.scale_ppm) / 1_000_000.0, fit.offset_ms as f64));
+    let segment = v3_segment_candidate_from_pairs(&inliers, scale, offset)?;
+    let weighted_score = segment.weighted_score;
+    let analysis = V3TimelineAnalysis {
+        segments: vec![segment],
+        total_aligned_span_ms: best.body_span_ms.max(best.query_span_ms),
+        largest_gap_ms: best.largest_body_gap_ms,
+        edge_only: false,
+        audio_video_conflict: false,
+        best_segment_score: weighted_score,
+        second_best_segment_score: diagnostics
+            .get(1)
+            .map(|diagnostic| diagnostic.weighted_score)
+            .unwrap_or(0),
+        audio_pairs: inliers.len(),
+        video_pairs: 0,
+        piecewise_pair_count: pairs.len(),
+        piecewise_hypothesis_count: 0,
+        piecewise_segment_candidate_count: 1,
+        piecewise_segment_chain_count: 1,
+        piecewise_fit_millis: 0,
+    };
+    let note = format!(
+        "fast_audio_verifier class={:?} total_audio_pairs={} best_offset_ms={} body_pairs={} body_regions={} body_span={:.1}s edge_span={:.1}s largest_body_gap={:.1}s margin={:.3} blocked=[{}]",
+        class,
+        pairs
+            .iter()
+            .filter(|pair| pair.modality == AnchorModality::Audio)
+            .count(),
+        best.offset_ms,
+        best.body_pair_count,
+        best.body_region_count,
+        f64::from(best.body_span_ms) / 1000.0,
+        f64::from(best.edge_span_ms) / 1000.0,
+        f64::from(best.largest_body_gap_ms) / 1000.0,
+        second_best_offset_margin,
+        blocked.join(",")
+    );
+    Some(V3FastAudioProof {
+        class,
+        analysis,
+        note,
+    })
+}
+
+fn audio_pairs_for_offset_ms(pairs: &[AnchorMatchPair], offset_ms: i64) -> Vec<AnchorMatchPair> {
+    pairs
+        .iter()
+        .copied()
+        .filter(|pair| {
+            pair.modality == AnchorModality::Audio
+                && (i64::from(pair.candidate_t_ms) - i64::from(pair.query_t_ms) - offset_ms).abs()
+                    <= DEFAULT_ANCHOR_ALIGNMENT_TOLERANCE_MS
+        })
+        .collect()
+}
+
+fn format_audio_offset_bin_diagnostics(
+    query: &MediaAnchorProfile,
+    candidate: &MediaAnchorProfile,
+    pairs: &[AnchorMatchPair],
+) -> String {
+    let diagnostics = audio_offset_bin_diagnostics(query, candidate, pairs);
+    let total_audio_pairs = pairs
+        .iter()
+        .filter(|pair| pair.modality == AnchorModality::Audio)
+        .count();
+    let bins = diagnostics
+        .iter()
+        .take(10)
+        .map(|diagnostic| {
+            format!(
+                "{{offset_ms:{} score:{} pairs:{} q_span_ms:{} c_span_ms:{} body_pairs:{} edge_pairs:{} body_span_ms:{} edge_span_ms:{} largest_body_gap_ms:{}}}",
+                diagnostic.offset_ms,
+                diagnostic.weighted_score,
+                diagnostic.pair_count,
+                diagnostic.query_span_ms,
+                diagnostic.candidate_span_ms,
+                diagnostic.body_pair_count,
+                diagnostic.edge_pair_count,
+                diagnostic.body_span_ms,
+                diagnostic.edge_span_ms,
+                diagnostic.largest_body_gap_ms
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("audio_pair_diagnostics total_audio_pairs={total_audio_pairs} top_offset_bins=[{bins}]")
+}
+
+fn audio_offset_bin_diagnostics(
+    query: &MediaAnchorProfile,
+    candidate: &MediaAnchorProfile,
+    pairs: &[AnchorMatchPair],
+) -> Vec<V3AudioOffsetBinDiagnostic> {
+    let mut bins = HashMap::<i64, Vec<AnchorMatchPair>>::new();
+    for pair in pairs
+        .iter()
+        .copied()
+        .filter(|pair| pair.modality == AnchorModality::Audio)
+    {
+        let offset = i64::from(pair.candidate_t_ms) - i64::from(pair.query_t_ms);
+        bins.entry(rounded_offset_bin(offset))
+            .or_default()
+            .push(pair);
+    }
+    let mut diagnostics = bins
+        .into_iter()
+        .map(|(bin, pairs)| {
+            let weighted_score = pairs
+                .iter()
+                .map(|pair| u32::from(pair.weight.max(1)))
+                .sum::<u32>();
+            let body_pairs = pairs
+                .iter()
+                .copied()
+                .filter(|pair| audio_pair_is_body(query, candidate, *pair))
+                .collect::<Vec<_>>();
+            let edge_pair_count = pairs.len().saturating_sub(body_pairs.len());
+            let mut body_regions = body_pairs
+                .iter()
+                .map(|pair| pair.query_t_ms / 60_000)
+                .collect::<Vec<_>>();
+            body_regions.sort_unstable();
+            body_regions.dedup();
+            V3AudioOffsetBinDiagnostic {
+                offset_ms: bin * DEFAULT_ANCHOR_OFFSET_BIN_MS,
+                weighted_score,
+                pair_count: pairs.len(),
+                query_span_ms: aligned_anchor_span_ms(&pairs),
+                candidate_span_ms: candidate_anchor_span_ms(&pairs),
+                body_pair_count: body_pairs.len(),
+                edge_pair_count,
+                body_span_ms: aligned_anchor_span_ms(&body_pairs),
+                edge_span_ms: audio_edge_span_ms(query, candidate, &pairs),
+                body_region_count: body_regions.len(),
+                largest_body_gap_ms: largest_query_gap_ms(&body_pairs),
+            }
+        })
+        .collect::<Vec<_>>();
+    diagnostics.sort_by(|left, right| {
+        right
+            .weighted_score
+            .cmp(&left.weighted_score)
+            .then_with(|| right.body_span_ms.cmp(&left.body_span_ms))
+            .then_with(|| right.body_pair_count.cmp(&left.body_pair_count))
+            .then_with(|| left.offset_ms.cmp(&right.offset_ms))
+    });
+    diagnostics
 }
 
 fn build_v3_timeline_analysis(
@@ -1028,8 +1277,11 @@ fn add_v3_piecewise_hypotheses_from_pairs(
     pairs: &[AnchorMatchPair],
     hypotheses: &mut Vec<(f64, f64)>,
 ) {
-    for (left_index, left) in pairs.iter().enumerate() {
+    'outer: for (left_index, left) in pairs.iter().enumerate() {
         for right in pairs.iter().skip(left_index + 1) {
+            if hypotheses.len() >= V3_PIECEWISE_MAX_HYPOTHESES {
+                break 'outer;
+            }
             let query_delta = right.query_t_ms.abs_diff(left.query_t_ms);
             if query_delta < V3_SEGMENT_MIN_PAIR_DELTA_MS {
                 continue;
@@ -1512,6 +1764,52 @@ fn aligned_anchor_bounds(pairs: &[AnchorMatchPair]) -> (u32, u32, u32, u32) {
 fn aligned_anchor_span_ms(pairs: &[AnchorMatchPair]) -> u32 {
     let (first_query, last_query, _, _) = aligned_anchor_bounds(pairs);
     last_query.saturating_sub(first_query)
+}
+
+fn candidate_anchor_span_ms(pairs: &[AnchorMatchPair]) -> u32 {
+    let (_, _, first_candidate, last_candidate) = aligned_anchor_bounds(pairs);
+    last_candidate.saturating_sub(first_candidate)
+}
+
+fn audio_pair_is_body(
+    query: &MediaAnchorProfile,
+    candidate: &MediaAnchorProfile,
+    pair: AnchorMatchPair,
+) -> bool {
+    !v3_time_is_edge(pair.query_t_ms, query.duration_ms)
+        && !v3_time_is_edge(pair.candidate_t_ms, candidate.duration_ms)
+}
+
+fn v3_time_is_edge(t_ms: u32, duration_ms: Option<u32>) -> bool {
+    let edge_ms = v3_edge_region_ms(duration_ms);
+    t_ms <= edge_ms || duration_ms.is_some_and(|duration| t_ms >= duration.saturating_sub(edge_ms))
+}
+
+fn audio_edge_span_ms(
+    query: &MediaAnchorProfile,
+    candidate: &MediaAnchorProfile,
+    pairs: &[AnchorMatchPair],
+) -> u32 {
+    let edge_pairs = pairs
+        .iter()
+        .copied()
+        .filter(|pair| !audio_pair_is_body(query, candidate, *pair))
+        .collect::<Vec<_>>();
+    aligned_anchor_span_ms(&edge_pairs)
+}
+
+fn largest_query_gap_ms(pairs: &[AnchorMatchPair]) -> u32 {
+    if pairs.len() < 2 {
+        return 0;
+    }
+    let mut times = pairs.iter().map(|pair| pair.query_t_ms).collect::<Vec<_>>();
+    times.sort_unstable();
+    times.dedup();
+    times
+        .windows(2)
+        .map(|pair| pair[1].saturating_sub(pair[0]))
+        .max()
+        .unwrap_or(0)
 }
 
 fn aligned_anchor_largest_gap_ratio(pairs: &[AnchorMatchPair]) -> f64 {

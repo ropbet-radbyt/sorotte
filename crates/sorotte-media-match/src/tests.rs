@@ -999,6 +999,10 @@ fn v3_diagnostics_serializes_stable_stream_metric_names() {
                 max_raw_landmarks_seen: 1_100,
                 max_raw_landmarks_after_compaction: 512,
                 raw_landmark_compactions: 2,
+                analyzer_millis: 31,
+                compaction_millis: 7,
+                final_selection_millis: 3,
+                ffmpeg_decode_stream_millis: 41,
             },
             ..MediaFingerprintExtractionReport::default()
         },
@@ -1523,6 +1527,85 @@ fn piecewise_hypothesis_pair_selection_is_capped_and_preserves_modalities() {
         selected
             .iter()
             .any(|pair| pair.modality == AnchorModality::Video)
+    );
+}
+
+#[test]
+fn audio_only_body_same_cut_uses_fast_verifier() {
+    let audio = v3_audio_times(180_000, 28, 36_000);
+    let query = v3_profile_from_times(1_400_000, &audio, &[]);
+    let candidate = v3_profile_from_times(1_400_000, &v3_shift_audio_times(&audio, 750, 0), &[]);
+
+    let decision = decide_media_match_anchors(&query, &candidate, &enabled_settings());
+
+    assert_eq!(
+        decision.evidence.v3_class,
+        Some(MatchClassV3::SameCutStrong),
+        "{decision:?}"
+    );
+    let map = decision.evidence.timeline_map_v3.expect("timeline map");
+    assert_eq!(map.piecewise_fit_millis, 0, "{map:?}");
+    assert_eq!(map.piecewise_hypothesis_count, 0, "{map:?}");
+    assert!(
+        decision
+            .evidence
+            .notes
+            .iter()
+            .any(|note| note.contains("fast_audio_verifier class=SameCutStrong")),
+        "{:?}",
+        decision.evidence.notes
+    );
+}
+
+#[test]
+fn wrong_episode_shared_edges_do_not_pass_fast_audio_verifier() {
+    let audio = vec![
+        (1_000, 0),
+        (1_001, 30_000),
+        (1_002, 60_000),
+        (1_003, 1_100_000),
+        (1_004, 1_130_000),
+        (1_005, 1_160_000),
+    ];
+    let query = v3_profile_from_times(1_200_000, &audio, &[]);
+    let candidate = v3_profile_from_times(1_200_000, &v3_shift_audio_times(&audio, 0, 0), &[]);
+
+    let decision = decide_media_match_anchors(&query, &candidate, &enabled_settings());
+
+    assert!(!matches!(decision.tier, MediaMatchTier::Strong));
+    assert!(
+        !decision
+            .evidence
+            .notes
+            .iter()
+            .any(|note| note.contains("fast_audio_verifier class=SameCutStrong"))
+    );
+    assert!(matches!(
+        decision.evidence.v3_class,
+        Some(MatchClassV3::SharedIntroOutroOnly | MatchClassV3::Reject)
+    ));
+}
+
+#[test]
+fn piecewise_hypothesis_generation_is_hard_capped() {
+    let audio = v3_audio_times(120_000, 220, 5_000);
+    let mut candidate =
+        v3_profile_from_times(1_400_000, &v3_shift_audio_times(&audio, 5_000, 0), &[]);
+    candidate.video_anchors.push(VideoAnchor {
+        bucket: 42,
+        t_ms: 500_000,
+        hash64: 42,
+        kind: V3_VIDEO_KIND_LUMA_FRAME,
+        weight: 1,
+    });
+    let query = v3_profile_from_times(1_400_000, &audio, &[]);
+
+    let decision = decide_media_match_anchors(&query, &candidate, &enabled_settings());
+    let map = decision.evidence.timeline_map_v3.expect("timeline map");
+
+    assert!(
+        map.piecewise_hypothesis_count <= V3_PIECEWISE_MAX_HYPOTHESES,
+        "{map:?}"
     );
 }
 

@@ -22,21 +22,28 @@ pub(crate) const V3_SEGMENT_MERGE_SCALE_PPM: i32 = 2_500;
 pub(crate) const V3_EDGE_REGION_MIN_MS: u32 = 120_000;
 pub(crate) const V3_EDGE_REGION_MAX_MS: u32 = 300_000;
 pub(crate) const V3_PIECEWISE_MAX_HYPOTHESIS_PAIRS: usize = 512;
+pub(crate) const V3_PIECEWISE_MAX_HYPOTHESES: usize = 2_000;
 pub(crate) const MAX_BROAD_SCALE_FIT_PAIRS: usize = 128;
+pub(crate) const V3_FAST_AUDIO_TOP_OFFSET_BINS: usize = 6;
+pub(crate) const V3_FAST_AUDIO_MIN_BODY_PAIRS: usize = 24;
+pub(crate) const V3_FAST_AUDIO_MIN_BODY_REGIONS: usize = 4;
+pub(crate) const V3_FAST_AUDIO_MIN_BODY_SPAN_MS: u32 = 300_000;
 
 // V3 native audio constellation extraction thresholds.
 pub(crate) const V3_AUDIO_SAMPLE_RATE: u32 = 11_025;
 pub(crate) const V3_AUDIO_WINDOW_SAMPLES: usize = 2048;
-pub(crate) const V3_AUDIO_HOP_SAMPLES: usize = 512;
+pub(crate) const V3_AUDIO_HOP_SAMPLES: usize = 1024;
 pub(crate) const V3_AUDIO_MIN_FREQ_HZ: f32 = 250.0;
 pub(crate) const V3_AUDIO_MAX_FREQ_HZ: f32 = 5_000.0;
 pub(crate) const V3_AUDIO_MAX_PEAKS_PER_FRAME: usize = 6;
 pub(crate) const V3_AUDIO_PEAK_NEIGHBORHOOD: usize = 2;
-pub(crate) const V3_AUDIO_PAIR_MIN_DELTA_FRAMES: usize = 8;
-pub(crate) const V3_AUDIO_PAIR_MAX_DELTA_FRAMES: usize = 108;
+pub(crate) const V3_AUDIO_PAIR_MIN_DELTA_FRAMES: usize = 4;
+pub(crate) const V3_AUDIO_PAIR_MAX_DELTA_FRAMES: usize = 54;
+pub(crate) const V3_AUDIO_PAIR_DELTA_STRIDE_FRAMES: usize = 2;
 pub(crate) const V3_AUDIO_PAIR_FANOUT: usize = 8;
-pub(crate) const V3_AUDIO_VERIFY_LANDMARK_LIMIT: usize = 768;
-pub(crate) const V3_AUDIO_INDEX_LANDMARK_LIMIT: usize = 192;
+pub(crate) const V3_AUDIO_PAIR_CANDIDATE_RETAIN: usize = V3_AUDIO_PAIR_FANOUT * 4;
+pub(crate) const V3_AUDIO_VERIFY_LANDMARK_LIMIT: usize = 2048;
+pub(crate) const V3_AUDIO_INDEX_LANDMARK_LIMIT: usize = 512;
 // Streaming audio keeps only a winnowed raw landmark buffer; this bounds noisy/long files
 // while preserving enough oversampling for the final time-distributed selector.
 pub(crate) const V3_AUDIO_RAW_LANDMARK_BUFFER_LIMIT: usize = V3_AUDIO_VERIFY_LANDMARK_LIMIT * 8;
@@ -84,6 +91,16 @@ pub struct V3Tuning {
     pub segment_audio_min_pairs: usize,
     pub segment_video_min_pairs: usize,
     pub piecewise_max_hypothesis_pairs: usize,
+    pub piecewise_max_hypotheses: usize,
+    pub fast_audio_top_offset_bins: usize,
+    pub fast_audio_min_body_pairs: usize,
+    pub fast_audio_min_body_regions: usize,
+    pub fast_audio_min_body_span_ms: u32,
+    pub audio_hop_samples: usize,
+    pub audio_pair_min_delta_frames: usize,
+    pub audio_pair_max_delta_frames: usize,
+    pub audio_pair_delta_stride_frames: usize,
+    pub audio_pair_candidate_retain: usize,
     pub audio_verify_landmark_limit: usize,
     pub audio_index_landmark_limit: usize,
     pub audio_raw_landmark_buffer_limit: usize,
@@ -111,6 +128,16 @@ pub fn current_v3_tuning() -> V3Tuning {
         segment_audio_min_pairs: V3_SEGMENT_AUDIO_MIN_PAIRS,
         segment_video_min_pairs: V3_SEGMENT_VIDEO_MIN_PAIRS,
         piecewise_max_hypothesis_pairs: V3_PIECEWISE_MAX_HYPOTHESIS_PAIRS,
+        piecewise_max_hypotheses: V3_PIECEWISE_MAX_HYPOTHESES,
+        fast_audio_top_offset_bins: V3_FAST_AUDIO_TOP_OFFSET_BINS,
+        fast_audio_min_body_pairs: V3_FAST_AUDIO_MIN_BODY_PAIRS,
+        fast_audio_min_body_regions: V3_FAST_AUDIO_MIN_BODY_REGIONS,
+        fast_audio_min_body_span_ms: V3_FAST_AUDIO_MIN_BODY_SPAN_MS,
+        audio_hop_samples: V3_AUDIO_HOP_SAMPLES,
+        audio_pair_min_delta_frames: V3_AUDIO_PAIR_MIN_DELTA_FRAMES,
+        audio_pair_max_delta_frames: V3_AUDIO_PAIR_MAX_DELTA_FRAMES,
+        audio_pair_delta_stride_frames: V3_AUDIO_PAIR_DELTA_STRIDE_FRAMES,
+        audio_pair_candidate_retain: V3_AUDIO_PAIR_CANDIDATE_RETAIN,
         audio_verify_landmark_limit: V3_AUDIO_VERIFY_LANDMARK_LIMIT,
         audio_index_landmark_limit: V3_AUDIO_INDEX_LANDMARK_LIMIT,
         audio_raw_landmark_buffer_limit: V3_AUDIO_RAW_LANDMARK_BUFFER_LIMIT,
