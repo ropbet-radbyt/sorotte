@@ -404,6 +404,19 @@ roots and report sequences per profile. Compare reports before tuning thresholds
 When first failures appear, classify them as retrieval miss, direct decision
 mismatch, class too weak, class too strong, offset error, or cost/storage issue.
 
+Manual real-corpus validation checklist:
+
+1. Run `v3_diagnostics --validate-only` for the manifest.
+2. Run `v3_diagnostics --list-cases` and confirm the case IDs are expected.
+3. Run the cold `audio-constellation-v3` report with `--refresh-cache`.
+4. Run the warm `audio-constellation-v3` report with the same cache root.
+5. Self-compare the warm audio report with `v3_report_compare`.
+6. Run the cold `combined-v3` report with `--refresh-cache`.
+7. Run the warm `combined-v3` report with the same cache root.
+8. Self-compare the warm combined report with `v3_report_compare`.
+9. Fill in the calibration notes template for every failure or suspicious cost.
+10. Do not tune thresholds until failures are categorized.
+
 ## Recommended Corpus
 
 Use a corpus with cases that stress retrieval, alignment, and false-positive

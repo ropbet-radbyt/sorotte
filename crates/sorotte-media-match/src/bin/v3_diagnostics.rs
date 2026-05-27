@@ -346,6 +346,9 @@ mod tests {
     };
 
     use super::*;
+    use sorotte_media_match::{
+        compare_media_match_v3_reports, validate_media_match_v3_diagnostic_report,
+    };
 
     #[test]
     fn parse_args_accepts_output_and_cache_root() {
@@ -555,7 +558,7 @@ mod tests {
                 manifest_dir: root.clone(),
                 cache_root: cache_root.clone(),
                 cache_retained: true,
-                refresh_cache: false,
+                refresh_cache: true,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(123),
             },
@@ -600,6 +603,8 @@ mod tests {
                 .unwrap_or_default()
                 > 0
         );
+        validate_media_match_v3_diagnostic_report(&report).expect("cold report should validate");
+        assert_report_self_compares(&report);
 
         let warm_report = run_media_match_v3_diagnostic_manifest(
             &media_match_v3_diagnostic_manifest_from_json(&manifest.to_string())
@@ -623,6 +628,20 @@ mod tests {
         assert_eq!(warm_report.summary.total_extraction_millis, 0);
         assert_eq!(warm_report.cases[0].query.source, "sqlite-cache");
         assert_eq!(warm_report.cases[0].candidates[0].source, "sqlite-cache");
+        assert!(
+            warm_report.summary.total_extraction_millis <= report.summary.total_extraction_millis
+        );
+        assert_eq!(
+            warm_report.cases[0].candidates[0].decision.tier,
+            report.cases[0].candidates[0].decision.tier
+        );
+        assert_eq!(
+            warm_report.cases[0].candidates[0].decision.class,
+            report.cases[0].candidates[0].decision.class
+        );
+        validate_media_match_v3_diagnostic_report(&warm_report)
+            .expect("warm report should validate");
+        assert_report_self_compares(&warm_report);
 
         let refresh_report = run_media_match_v3_diagnostic_manifest(
             &media_match_v3_diagnostic_manifest_from_json(&manifest.to_string())
@@ -651,6 +670,17 @@ mod tests {
         );
         assert_eq!(refresh_report.cases[0].query.source, "fresh");
         assert_eq!(refresh_report.cases[0].candidates[0].source, "fresh");
+        assert_eq!(
+            refresh_report.cases[0].candidates[0].decision.tier,
+            report.cases[0].candidates[0].decision.tier
+        );
+        assert_eq!(
+            refresh_report.cases[0].candidates[0].decision.class,
+            report.cases[0].candidates[0].decision.class
+        );
+        validate_media_match_v3_diagnostic_report(&refresh_report)
+            .expect("refresh report should validate");
+        assert_report_self_compares(&refresh_report);
 
         let duplicate_manifest = serde_json::json!({
             "profile": "combined-v3",
@@ -701,7 +731,20 @@ mod tests {
             duplicate_refresh_report.cases[0].candidates[0].source,
             "memory-cache"
         );
+        validate_media_match_v3_diagnostic_report(&duplicate_refresh_report)
+            .expect("duplicate refresh report should validate");
+        assert_report_self_compares(&duplicate_refresh_report);
         let _ = fs::remove_dir_all(root);
+    }
+
+    fn assert_report_self_compares(report: &sorotte_media_match::MediaMatchV3DiagnosticReport) {
+        let comparison =
+            compare_media_match_v3_reports(report, report).expect("report should self-compare");
+        assert!(!comparison.current_has_regressions());
+        assert!(!comparison.current_has_unresolved_failures());
+        assert_eq!(comparison.summary.missing_pairs, 0);
+        assert_eq!(comparison.summary.new_pairs, 0);
+        assert_eq!(comparison.summary.new_failures, 0);
     }
 
     fn test_tool_path(env_key: &str, default_name: &str) -> Option<PathBuf> {

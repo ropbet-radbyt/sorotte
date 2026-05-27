@@ -1272,6 +1272,41 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn fingerprint_config_hash_mismatch_does_not_reuse_sqlite_cache_record() {
+        let root = temp_dir("v3-diagnostics-hash-cache");
+        let media = root.join("hash.mkv");
+        fs::write(&media, b"hash").expect("media should be written");
+        let cache_root = root.join("cache");
+        let settings = MediaExtractionSettings::audio_constellation_v3();
+        let connection = open_media_match_v3_index(&cache_root).expect("index should open");
+        save_media_match_v3_record(&connection, &fixture_record(&media, &settings, 0), None)
+            .expect("record should save");
+        connection
+            .execute(
+                "UPDATE fingerprints_v3 SET settings_hash = ?1",
+                [vec![0xff; 32]],
+            )
+            .expect("stored settings hash should be changed");
+        let (modified_unix_millis, size_bytes) =
+            media_file_identity_parts(&media).expect("identity should load");
+
+        let loaded = load_media_match_v3_record_for_path(
+            &connection,
+            &normalize_media_path(&media),
+            &settings,
+            modified_unix_millis,
+            size_bytes,
+        )
+        .expect("cache lookup should not fail");
+
+        assert!(
+            loaded.is_none(),
+            "changed fingerprint config hash should miss the SQLite record"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
     fn test_expectation_with_id(id: &str, path: &str) -> MediaMatchV3DiagnosticExpectation {
         MediaMatchV3DiagnosticExpectation {
             id: Some(id.to_owned()),
