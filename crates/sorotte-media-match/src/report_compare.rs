@@ -244,6 +244,16 @@ pub fn validate_media_match_v3_diagnostic_report(
             report.summary.candidates_promoted_to_full_verify
         ));
     }
+    let expected_production_total = report
+        .summary
+        .production_sampled_index_millis
+        .saturating_add(report.summary.production_full_promotion_millis);
+    if report.summary.production_total_millis != expected_production_total {
+        return Err(format!(
+            "summary.productionTotalMillis={} does not match production sampled+promotion total={expected_production_total}",
+            report.summary.production_total_millis
+        ));
+    }
     let aggregate_totals = report_aggregate_fingerprint_totals(report);
     if report.summary.total_extraction_millis != aggregate_totals.extraction_millis {
         return Err(format!(
@@ -784,6 +794,31 @@ fn report_metric_deltas(
             baseline.summary.full_promotion_cache_hits as i128,
             current.summary.full_promotion_cache_hits as i128,
         ),
+        metric_delta(
+            "productionSampledIndexMillis",
+            baseline.summary.production_sampled_index_millis as i128,
+            current.summary.production_sampled_index_millis as i128,
+        ),
+        metric_delta(
+            "productionFullPromotionMillis",
+            baseline.summary.production_full_promotion_millis as i128,
+            current.summary.production_full_promotion_millis as i128,
+        ),
+        metric_delta(
+            "productionTotalMillis",
+            baseline.summary.production_total_millis as i128,
+            current.summary.production_total_millis as i128,
+        ),
+        metric_delta(
+            "sampledIndexedFileCount",
+            baseline.summary.sampled_indexed_file_count as i128,
+            current.summary.sampled_indexed_file_count as i128,
+        ),
+        metric_delta(
+            "fullPromotedFileCount",
+            baseline.summary.full_promoted_file_count as i128,
+            current.summary.full_promoted_file_count as i128,
+        ),
     ]
 }
 
@@ -967,6 +1002,49 @@ mod tests {
             false
         );
         assert_eq!(value["compatibilityOptions"]["allowDifferentTuning"], false);
+    }
+
+    #[test]
+    fn comparison_reports_production_metric_deltas() {
+        let mut baseline = report_with_candidate(
+            "case",
+            "candidate.mkv",
+            true,
+            "Strong",
+            "SameCutStrong",
+            Some(1),
+        );
+        baseline.summary.production_sampled_index_millis = 100;
+        baseline.summary.production_full_promotion_millis = 40;
+        baseline.summary.production_total_millis = 140;
+        baseline.summary.sampled_indexed_file_count = 2;
+        baseline.summary.full_promoted_file_count = 1;
+
+        let mut current = baseline.clone();
+        current.summary.production_sampled_index_millis = 80;
+        current.summary.production_full_promotion_millis = 50;
+        current.summary.production_total_millis = 130;
+        current.summary.sampled_indexed_file_count = 3;
+        current.summary.full_promoted_file_count = 2;
+
+        let comparison =
+            compare_media_match_v3_reports(&baseline, &current).expect("reports should compare");
+        let value = serde_json::to_value(&comparison).expect("comparison should serialize");
+        let metrics = value["metricDeltas"]
+            .as_array()
+            .expect("metric deltas should be an array");
+
+        assert!(metrics.iter().any(|metric| {
+            metric["field"] == "productionTotalMillis" && metric["delta"] == -10
+        }));
+        assert!(metrics.iter().any(|metric| {
+            metric["field"] == "sampledIndexedFileCount" && metric["delta"] == 1
+        }));
+        assert!(
+            metrics.iter().any(|metric| {
+                metric["field"] == "fullPromotedFileCount" && metric["delta"] == 1
+            })
+        );
     }
 
     #[test]
@@ -1528,6 +1606,26 @@ mod tests {
             .expect_err("retrieval total mismatch should be invalid");
 
         assert!(error.contains("summary.totalRetrievalMillis"));
+    }
+
+    #[test]
+    fn report_validation_rejects_production_total_mismatch() {
+        let mut report = report_with_candidate(
+            "case",
+            "candidate.mkv",
+            true,
+            "Strong",
+            "SameCutStrong",
+            Some(1),
+        );
+        report.summary.production_sampled_index_millis = 100;
+        report.summary.production_full_promotion_millis = 50;
+        report.summary.production_total_millis = 151;
+
+        let error = validate_media_match_v3_diagnostic_report(&report)
+            .expect_err("production total mismatch should be invalid");
+
+        assert!(error.contains("summary.productionTotalMillis"));
     }
 
     #[test]

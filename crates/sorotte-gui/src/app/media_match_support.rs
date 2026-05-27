@@ -1,9 +1,14 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet, VecDeque},
     env, fs,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -48,6 +53,7 @@ const MEDIA_MATCH_INDEX_FILE: &str = "index-v3.sqlite3";
 const MEDIA_MATCH_INDEX_BACKUP_FILE: &str = "index-v3.previous.sqlite3";
 const MEDIA_MATCH_PREFILTER_THRESHOLD: usize = 64;
 const MEDIA_MATCH_PREFILTER_LIMIT: usize = 24;
+pub(super) const MEDIA_MATCH_MAX_FULL_PROMOTIONS_PER_QUERY: usize = 1;
 const MEDIA_MATCH_VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const MEDIA_MATCH_VERSION_PROBE_POLL_INTERVAL: Duration = Duration::from_millis(25);
 #[cfg(windows)]
@@ -147,6 +153,15 @@ struct MediaMatchRebuildInstrumentation {
     video_index_rows: usize,
     stats_refreshes: u32,
     stats_refresh_millis: u128,
+    background_index_worker_count: usize,
+    sampled_fast_worker_count: usize,
+    full_verify_worker_count: usize,
+    extraction_queue_wait_millis: u128,
+    extraction_worker_wall_millis: u128,
+    sqlite_writer_millis: u128,
+    files_indexed: usize,
+    cancelled_file_count: usize,
+    resumed_file_count: usize,
 }
 
 impl MediaMatchRebuildInstrumentation {
@@ -200,15 +215,53 @@ impl MediaMatchRebuildInstrumentation {
         self.stats_refresh_millis += elapsed_millis;
     }
 
+    fn add_parallel_stats(&mut self, stats: &MediaMatchParallelExtractionStats) {
+        self.background_index_worker_count = self
+            .background_index_worker_count
+            .max(stats.background_index_worker_count);
+        self.sampled_fast_worker_count = self
+            .sampled_fast_worker_count
+            .max(stats.sampled_fast_worker_count);
+        self.full_verify_worker_count = self
+            .full_verify_worker_count
+            .max(stats.full_verify_worker_count);
+        self.extraction_queue_wait_millis = self
+            .extraction_queue_wait_millis
+            .saturating_add(stats.extraction_queue_wait_millis);
+        self.extraction_worker_wall_millis = self
+            .extraction_worker_wall_millis
+            .saturating_add(stats.extraction_worker_wall_millis);
+        self.files_indexed = self.files_indexed.saturating_add(stats.files_indexed);
+        self.cancelled_file_count = self
+            .cancelled_file_count
+            .saturating_add(stats.cancelled_file_count);
+        self.resumed_file_count = self
+            .resumed_file_count
+            .saturating_add(stats.resumed_file_count);
+    }
+
+    fn add_sqlite_writer_millis(&mut self, elapsed_millis: u128) {
+        self.sqlite_writer_millis = self.sqlite_writer_millis.saturating_add(elapsed_millis);
+    }
+
     fn summary(&self) -> String {
         format!(
-            "tools ffmpeg/ffprobe={}/{}, extract={}ms (probe {}ms, audio {}ms, video {}ms), v3 audio stream streamedBytes/streamedSamples/peakFrames/rawLandmarksEmitted/rawLandmarksBeforeBounding/finalLandmarks/maxBufferSamples/maxRawLandmarksSeen/maxRawLandmarksAfterCompaction/rawLandmarkCompactions/pcmDrainThreadMillis/analyzerThreadMillis/channelBackpressureMillis/maxQueuedPcmBytes/candidatePairsConsidered/landmarksAccepted/landmarksRejected={}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}, v3 blob bytes audio/video={}/{}, v3 index rows audio/video={}/{}, stats refreshes={} in {}ms (debug record bytes={})",
+            "tools ffmpeg/ffprobe={}/{}, extract={}ms (probe {}ms, audio {}ms, video {}ms), workers background/sampledFast/fullVerify={}/{}/{}, queueWait={}ms workerWall={}ms sqliteWriter={}ms filesIndexed={} cancelled={} resumed={}, v3 audio stream streamedBytes/streamedSamples/peakFrames/rawLandmarksEmitted/rawLandmarksBeforeBounding/finalLandmarks/maxBufferSamples/maxRawLandmarksSeen/maxRawLandmarksAfterCompaction/rawLandmarkCompactions/pcmDrainThreadMillis/analyzerThreadMillis/channelBackpressureMillis/maxQueuedPcmBytes/candidatePairsConsidered/landmarksAccepted/landmarksRejected={}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}, v3 blob bytes audio/video={}/{}, v3 index rows audio/video={}/{}, stats refreshes={} in {}ms (debug record bytes={})",
             self.ffmpeg_invocations,
             self.ffprobe_invocations,
             self.extraction_millis,
             self.ffprobe_millis,
             self.audio_millis,
             self.video_millis,
+            self.background_index_worker_count,
+            self.sampled_fast_worker_count,
+            self.full_verify_worker_count,
+            self.extraction_queue_wait_millis,
+            self.extraction_worker_wall_millis,
+            self.sqlite_writer_millis,
+            self.files_indexed,
+            self.cancelled_file_count,
+            self.resumed_file_count,
             self.audio_streamed_bytes,
             self.audio_streamed_samples,
             self.audio_stream_peak_frames,
@@ -235,6 +288,34 @@ impl MediaMatchRebuildInstrumentation {
             self.debug_record_bytes
         )
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct MediaMatchParallelExtractionStats {
+    background_index_worker_count: usize,
+    sampled_fast_worker_count: usize,
+    full_verify_worker_count: usize,
+    extraction_queue_wait_millis: u128,
+    extraction_worker_wall_millis: u128,
+    files_indexed: usize,
+    cancelled_file_count: usize,
+    resumed_file_count: usize,
+}
+
+type MediaMatchParallelExtractionResult = Result<
+    (
+        MediaFingerprintRecord,
+        sorotte_media_match::MediaFingerprintExtractionReport,
+    ),
+    MediaFingerprintError,
+>;
+
+#[derive(Debug)]
+struct MediaMatchParallelExtractionOutput {
+    path: PathBuf,
+    queue_wait_millis: u128,
+    worker_wall_millis: u128,
+    result: MediaMatchParallelExtractionResult,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -729,11 +810,37 @@ where
     let checkpoint_connection = open_media_match_sqlite_index(request.root)?;
     let mut next_cache = initial_media_match_rebuild_cache(&existing_cache, selected.prefiltered);
     let mut instrumentation = MediaMatchRebuildInstrumentation::default();
+    let mut parallel_fresh_results = BTreeMap::new();
+    if request.extraction_settings.audio_index_mode.is_sampled() && fresh_work_total > 1 {
+        let fresh_paths = selected
+            .paths
+            .iter()
+            .filter(|path| {
+                !media_match_cache_has_valid_record(
+                    &existing_cache,
+                    path,
+                    request.extraction_settings,
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let (results, stats) = parallel_fresh_media_fingerprints(
+            fresh_paths,
+            request.tools,
+            request.extraction_settings,
+            request.cancel_flag,
+        )?;
+        instrumentation.add_parallel_stats(&stats);
+        parallel_fresh_results = results;
+    }
 
     for (index, path) in selected.paths.iter().enumerate() {
+        let normalized_path = normalize_media_path(path);
+        let has_parallel_result = parallel_fresh_results.contains_key(&normalized_path);
         if request
             .cancel_flag
             .is_some_and(|flag| flag.load(Ordering::Relaxed))
+            && !has_parallel_result
         {
             return Err("Media Matching index rebuild was canceled.".to_owned());
         }
@@ -749,20 +856,42 @@ where
             )),
             progress_fraction,
         ));
-        match cached_or_fresh_media_fingerprint(
-            &existing_cache,
-            path,
-            request.tools,
-            request.extraction_settings,
-            request.cancel_flag,
-        ) {
+        let parallel_result = path_needs_fingerprint
+            .then(|| parallel_fresh_results.remove(&normalized_path))
+            .flatten();
+        let from_parallel_result = parallel_result.is_some();
+        let fingerprint_result = if path_needs_fingerprint {
+            if let Some(result) = parallel_result {
+                result.map(|(record, report)| (record, false, Some(report)))
+            } else {
+                cached_or_fresh_media_fingerprint(
+                    &existing_cache,
+                    path,
+                    request.tools,
+                    request.extraction_settings,
+                    request.cancel_flag,
+                )
+            }
+        } else {
+            cached_or_fresh_media_fingerprint(
+                &existing_cache,
+                path,
+                request.tools,
+                request.extraction_settings,
+                request.cancel_flag,
+            )
+        };
+        match fingerprint_result {
             Ok((record, was_reused, report)) => {
                 if was_reused {
                     reused += 1;
                 } else {
                     fingerprinted += 1;
                     fresh_work_done += 1;
+                    let sqlite_started_at = Instant::now();
                     save_media_match_record_to_sqlite(&checkpoint_connection, &record)?;
+                    instrumentation
+                        .add_sqlite_writer_millis(sqlite_started_at.elapsed().as_millis());
                     if let Some(report) = report {
                         instrumentation.add_report(&report);
                     }
@@ -782,7 +911,12 @@ where
                 }
             }
             Err(MediaFingerprintError::Cancelled { .. }) => {
-                return Err("Media Matching index rebuild was canceled.".to_owned());
+                if from_parallel_result {
+                    skipped += 1;
+                    fresh_work_done += 1;
+                } else {
+                    return Err("Media Matching index rebuild was canceled.".to_owned());
+                }
             }
             Err(_) => {
                 skipped += 1;
@@ -791,6 +925,13 @@ where
                 }
             }
         }
+    }
+
+    if request
+        .cancel_flag
+        .is_some_and(|flag| flag.load(Ordering::Relaxed))
+    {
+        return Err("Media Matching index rebuild was canceled.".to_owned());
     }
 
     refresh_media_match_v3_anchor_stats_for_settings(
@@ -1725,6 +1866,130 @@ fn cached_or_fresh_media_fingerprint(
     .map(|fingerprint| (fingerprint.record, false, Some(fingerprint.report)))
 }
 
+fn parallel_fresh_media_fingerprints(
+    paths: Vec<PathBuf>,
+    tools: &MediaMatchToolPaths,
+    extraction_settings: &MediaExtractionSettings,
+    cancel_flag: Option<&AtomicBool>,
+) -> Result<
+    (
+        BTreeMap<String, MediaMatchParallelExtractionResult>,
+        MediaMatchParallelExtractionStats,
+    ),
+    String,
+> {
+    if paths.is_empty() {
+        return Ok(Default::default());
+    }
+    let worker_count = media_match_extraction_worker_count(extraction_settings).min(paths.len());
+    let jobs = Arc::new(Mutex::new(
+        paths
+            .iter()
+            .cloned()
+            .map(|path| (path, Instant::now()))
+            .collect::<VecDeque<_>>(),
+    ));
+    let (tx, rx) = mpsc::channel::<MediaMatchParallelExtractionOutput>();
+    let tools = tools.clone();
+    let extraction_settings = extraction_settings.clone();
+    let no_cancel = AtomicBool::new(false);
+    let cancel_flag = cancel_flag.unwrap_or(&no_cancel);
+    let mut outputs = Vec::new();
+
+    thread::scope(|scope| {
+        for _ in 0..worker_count {
+            let jobs = Arc::clone(&jobs);
+            let tx = tx.clone();
+            let tools = tools.clone();
+            let extraction_settings = extraction_settings.clone();
+            scope.spawn(move || {
+                loop {
+                    if cancel_flag.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let Some((path, queued_at)) =
+                        jobs.lock().ok().and_then(|mut jobs| jobs.pop_front())
+                    else {
+                        break;
+                    };
+                    let queue_wait_millis = queued_at.elapsed().as_millis();
+                    let worker_started_at = Instant::now();
+                    let result = fingerprint_media_file_cancellable_with_report(
+                        &path,
+                        &tools,
+                        &extraction_settings,
+                        cancel_flag,
+                    )
+                    .map(|fingerprint| (fingerprint.record, fingerprint.report));
+                    let output = MediaMatchParallelExtractionOutput {
+                        path,
+                        queue_wait_millis,
+                        worker_wall_millis: worker_started_at.elapsed().as_millis(),
+                        result,
+                    };
+                    if tx.send(output).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        drop(tx);
+        outputs.extend(rx);
+    });
+
+    let cancel_requested = cancel_flag.load(Ordering::Relaxed);
+    let mut stats = MediaMatchParallelExtractionStats {
+        background_index_worker_count: worker_count,
+        sampled_fast_worker_count: if extraction_settings.audio_index_mode.is_sampled() {
+            worker_count
+        } else {
+            0
+        },
+        full_verify_worker_count: if extraction_settings.audio_index_mode.is_dense_full_verify() {
+            worker_count
+        } else {
+            0
+        },
+        ..MediaMatchParallelExtractionStats::default()
+    };
+    let mut results = BTreeMap::new();
+    for output in outputs {
+        stats.extraction_queue_wait_millis = stats
+            .extraction_queue_wait_millis
+            .saturating_add(output.queue_wait_millis);
+        stats.extraction_worker_wall_millis = stats
+            .extraction_worker_wall_millis
+            .saturating_add(output.worker_wall_millis);
+        if output.result.is_ok() {
+            stats.files_indexed += 1;
+        }
+        if matches!(&output.result, Err(MediaFingerprintError::Cancelled { .. })) {
+            stats.cancelled_file_count += 1;
+        }
+        results.insert(normalize_media_path(&output.path), output.result);
+    }
+    if cancel_requested {
+        stats.cancelled_file_count = stats
+            .cancelled_file_count
+            .saturating_add(paths.len().saturating_sub(results.len()));
+    }
+    Ok((results, stats))
+}
+
+fn media_match_extraction_worker_count(extraction_settings: &MediaExtractionSettings) -> usize {
+    let cores = thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
+        .max(1);
+    if extraction_settings.audio_index_mode.is_sampled() {
+        cores.clamp(1, 8)
+    } else if extraction_settings.audio_index_mode.is_dense_full_verify() {
+        (cores / 2).clamp(1, 4)
+    } else {
+        cores.clamp(1, 4)
+    }
+}
+
 fn media_match_cache_has_valid_record(
     existing_cache: &MediaMatchCache,
     path: &Path,
@@ -1860,6 +2125,89 @@ fn summarize_current_media_match(
             format_media_match_evidence_summary(&best.decision)
         )),
     )
+}
+
+pub(super) fn media_match_full_promotion_candidates_for_current(
+    root: &Path,
+    candidates: &[PathBuf],
+    current_player_path: Option<&str>,
+    settings: &MediaMatchSettings,
+    sampled_extraction_settings: &MediaExtractionSettings,
+    max_full_promotions_per_query: usize,
+) -> Vec<PathBuf> {
+    let Some(current_player_path) = current_player_path else {
+        return candidates.to_vec();
+    };
+    let normalized_current_path = normalize_media_path(current_player_path);
+    let mut selected = Vec::new();
+    let mut seen = BTreeSet::new();
+    if let Some(current) = candidates
+        .iter()
+        .find(|path| normalize_media_path(path) == normalized_current_path)
+        .cloned()
+        .or_else(|| Some(PathBuf::from(current_player_path)))
+    {
+        seen.insert(normalize_media_path(&current));
+        selected.push(current);
+    }
+
+    let max_promotions = max_full_promotions_per_query.max(1);
+    let candidate_by_normalized_path = candidates
+        .iter()
+        .filter_map(|path| {
+            let normalized = normalize_media_path(path);
+            (normalized != normalized_current_path).then(|| (normalized, path.clone()))
+        })
+        .collect::<BTreeMap<_, _>>();
+    if candidate_by_normalized_path.is_empty() {
+        return selected;
+    }
+
+    let cache =
+        load_media_match_cache_for_settings(root, sampled_extraction_settings).unwrap_or_default();
+    if let Some(query) = cache.records.get(&normalized_current_path) {
+        let (anchor_candidates, _) = open_media_match_sqlite_index(root)
+            .and_then(|connection| {
+                media_match_v3_anchor_candidate_paths_with_stats(
+                    &connection,
+                    &normalized_current_path,
+                    sampled_extraction_settings,
+                )
+            })
+            .unwrap_or_default();
+        let anchor_candidate_set = anchor_candidates.into_iter().collect::<BTreeSet<_>>();
+        let use_anchor_candidates = !anchor_candidate_set.is_empty();
+        let ranked = rank_media_match_candidates(
+            query,
+            cache.records.values().filter(|record| {
+                candidate_by_normalized_path.contains_key(&record.identity.normalized_path)
+                    && (!use_anchor_candidates
+                        || anchor_candidate_set.contains(&record.identity.normalized_path))
+            }),
+            settings,
+        );
+        for ranked_candidate in ranked.into_iter().take(max_promotions) {
+            if let Some(path) = candidate_by_normalized_path.get(&ranked_candidate.candidate_path)
+                && seen.insert(ranked_candidate.candidate_path)
+            {
+                selected.push(path.clone());
+            }
+        }
+    }
+
+    if selected.len() <= 1 {
+        let target_len = selected.len().saturating_add(max_promotions);
+        for (normalized, path) in candidate_by_normalized_path {
+            if seen.insert(normalized) {
+                selected.push(path);
+            }
+            if selected.len() >= target_len {
+                break;
+            }
+        }
+    }
+
+    selected
 }
 
 pub(super) fn media_match_cached_strong_candidate_for_remote_signature(
@@ -4310,6 +4658,98 @@ mod tests {
         assert_eq!(fingerprints, 0);
         assert!(result.message.contains("inventoried 2 discovered files"));
         assert!(result.message.contains("No active local media path"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn sampled_background_worker_count_is_capped_and_full_verify_is_lower() {
+        let sampled = media_match_extraction_worker_count(
+            &MediaExtractionSettings::sampled_fast_audio_index_v3(),
+        );
+        let full =
+            media_match_extraction_worker_count(&MediaExtractionSettings::audio_constellation_v3());
+
+        assert!((1..=8).contains(&sampled), "sampled workers={sampled}");
+        assert!((1..=4).contains(&full), "full workers={full}");
+    }
+
+    #[test]
+    fn parallel_sampled_rebuild_cancel_reports_unscheduled_files_without_invoking_tools() {
+        let cancel = AtomicBool::new(true);
+        let tools = MediaMatchToolPaths {
+            ffmpeg: PathBuf::from("ffmpeg-not-used"),
+            ffprobe: PathBuf::from("ffprobe-not-used"),
+        };
+
+        let (results, stats) = parallel_fresh_media_fingerprints(
+            vec![PathBuf::from("one.mkv"), PathBuf::from("two.mkv")],
+            &tools,
+            &MediaExtractionSettings::sampled_fast_audio_index_v3(),
+            Some(&cancel),
+        )
+        .expect("pre-cancelled worker pool should report cancelled work, not tool errors");
+
+        assert!(results.is_empty());
+        assert_eq!(stats.cancelled_file_count, 2);
+        assert_eq!(stats.files_indexed, 0);
+    }
+
+    #[test]
+    fn full_promotion_candidates_select_current_and_top_sampled_candidate() {
+        let root = unique_media_match_test_root("full-promotion-top");
+        let media_dir = root.join("media");
+        std::fs::create_dir_all(&media_dir).expect("media dir should be created");
+        let current_path = media_dir.join("episode-current.mkv");
+        let top_path = media_dir.join("episode-top.mkv");
+        let other_path = media_dir.join("episode-other.mkv");
+        for path in [&current_path, &top_path, &other_path] {
+            std::fs::write(path, b"media").expect("test media placeholder should be written");
+        }
+        let sampled_settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
+        let mut query = fake_media_match_record_for_file(&current_path, sampled_settings.clone());
+        let mut top = fake_media_match_record_for_file(&top_path, sampled_settings.clone());
+        let mut other = fake_media_match_record_for_file(&other_path, sampled_settings.clone());
+        query.audio_anchors = (0..24)
+            .map(|index| AudioAnchor {
+                bucket: 10_000 + index,
+                t_ms: 30_000 + (index * 5_000),
+                weight: 4,
+            })
+            .collect();
+        top.audio_anchors = query
+            .audio_anchors
+            .iter()
+            .map(|anchor| AudioAnchor {
+                bucket: anchor.bucket,
+                t_ms: anchor.t_ms + 2_000,
+                weight: anchor.weight,
+            })
+            .collect();
+        other.audio_anchors = (0..24)
+            .map(|index| AudioAnchor {
+                bucket: 20_000 + index,
+                t_ms: 30_000 + (index * 5_000),
+                weight: 1,
+            })
+            .collect();
+        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
+        for record in [&query, &top, &other] {
+            save_media_match_v3_record(&connection, record, None)
+                .expect("sampled record should save");
+        }
+        drop(connection);
+        let settings = enabled_media_match_settings();
+
+        let selected = media_match_full_promotion_candidates_for_current(
+            &root,
+            &[current_path.clone(), top_path.clone(), other_path],
+            current_path.to_str(),
+            &settings,
+            &sampled_settings,
+            MEDIA_MATCH_MAX_FULL_PROMOTIONS_PER_QUERY,
+        );
+
+        assert_eq!(selected, vec![current_path, top_path]);
         let _ = std::fs::remove_dir_all(&root);
     }
 

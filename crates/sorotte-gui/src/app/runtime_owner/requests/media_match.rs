@@ -873,7 +873,18 @@ impl GuiPersistedConfigRuntimeOwner {
                     )));
                     return;
                 }
-                let extraction_settings = sorotte_media_match::MediaExtractionSettings::combined_v3();
+                let sampled_extraction_settings =
+                    sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3();
+                let hardening_candidates = media_match_full_promotion_candidates_for_current(
+                    &root,
+                    &hardening_candidates,
+                    current_player_path.as_deref(),
+                    &settings,
+                    &sampled_extraction_settings,
+                    MEDIA_MATCH_MAX_FULL_PROMOTIONS_PER_QUERY,
+                );
+                let extraction_settings =
+                    sorotte_media_match::MediaExtractionSettings::combined_v3();
                 let full_result = media_match_tool_paths_for_settings(&root, &extraction_settings).and_then(|tools| {
                     rebuild_persisted_media_match_candidates_with_progress_and_cancel(
                         MediaMatchCandidateRebuildRequest {

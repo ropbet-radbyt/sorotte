@@ -86,6 +86,7 @@ pub enum MediaMatchV3DiagnosticIndexMode {
     SampledFast,
     SampledNormal,
     SampledThenFull,
+    Production,
 }
 
 impl MediaMatchV3DiagnosticIndexMode {
@@ -96,6 +97,7 @@ impl MediaMatchV3DiagnosticIndexMode {
             Self::SampledFast => "sampled-fast",
             Self::SampledNormal => "sampled-normal",
             Self::SampledThenFull => "sampled-then-full",
+            Self::Production => "production",
         }
     }
 }
@@ -238,6 +240,12 @@ pub struct MediaMatchV3DiagnosticSummaryReport {
     pub candidates_promoted_to_full_verify: usize,
     pub full_promotion_millis: u128,
     pub full_promotion_cache_hits: usize,
+    pub production_sampled_index_millis: u128,
+    pub production_full_promotion_millis: u128,
+    pub production_total_millis: u128,
+    pub sampled_indexed_file_count: usize,
+    pub full_promoted_file_count: usize,
+    pub max_full_promotions_per_query: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -286,13 +294,19 @@ pub fn run_media_match_v3_diagnostic_manifest(
             | MediaMatchV3DiagnosticIndexMode::SampledThenFull => {
                 MediaExtractionSettings::sampled_audio_index_v3()
             }
+            MediaMatchV3DiagnosticIndexMode::Production => {
+                MediaExtractionSettings::sampled_fast_audio_index_v3()
+            }
             MediaMatchV3DiagnosticIndexMode::Full => unreachable!("handled above"),
         };
         settings.audio_index_mode = index_settings.audio_index_mode;
         settings.audio_algorithm = index_settings.audio_algorithm;
     }
-    let verify_settings = if matches!(index_mode, MediaMatchV3DiagnosticIndexMode::SampledThenFull)
-    {
+    let verify_settings = if matches!(
+        index_mode,
+        MediaMatchV3DiagnosticIndexMode::SampledThenFull
+            | MediaMatchV3DiagnosticIndexMode::Production
+    ) {
         diagnostic_settings_for_profile(&manifest.profile)?
     } else {
         settings.clone()
@@ -309,6 +323,7 @@ pub fn run_media_match_v3_diagnostic_manifest(
     let mut summary = MediaMatchV3DiagnosticSummaryReport {
         case_count: resolved.cases.len(),
         cache_open_millis,
+        max_full_promotions_per_query: options.max_full_promotions_per_query.max(1),
         ..MediaMatchV3DiagnosticSummaryReport::default()
     };
 
@@ -338,6 +353,9 @@ pub fn run_media_match_v3_diagnostic_manifest(
         }
     }
     summary.fingerprint_total_millis = fingerprint_started_at.elapsed().as_millis();
+    if matches!(index_mode, MediaMatchV3DiagnosticIndexMode::Production) {
+        summary.production_sampled_index_millis = summary.fingerprint_total_millis;
+    }
 
     for (case_index, case) in resolved.cases.iter().enumerate() {
         let query = occurrence_cache
@@ -394,7 +412,12 @@ pub fn run_media_match_v3_diagnostic_manifest(
             let mut fingerprint = index_fingerprint;
             let mut promotion_reason = None;
             let mut full_promotion_millis = 0;
-            if matches!(index_mode, MediaMatchV3DiagnosticIndexMode::SampledThenFull)
+            let production_promotion = matches!(
+                index_mode,
+                MediaMatchV3DiagnosticIndexMode::SampledThenFull
+                    | MediaMatchV3DiagnosticIndexMode::Production
+            );
+            if production_promotion
                 && let Some(reason) = sampled_then_full_promotion_reason(
                     &candidate.expectation,
                     retrieval_rank,
@@ -429,17 +452,22 @@ pub fn run_media_match_v3_diagnostic_manifest(
                 full_promotion_millis = promotion_started_at.elapsed().as_millis();
                 summary.fingerprint_total_millis += full_promotion_millis;
                 summary.full_promotion_millis += full_promotion_millis;
+                if matches!(index_mode, MediaMatchV3DiagnosticIndexMode::Production) {
+                    summary.production_full_promotion_millis += full_promotion_millis;
+                }
                 summary.candidates_promoted_to_full_verify += 1;
+                summary.full_promoted_file_count += 1;
                 promotion_reason = Some(reason);
             }
             let decision_started_at = Instant::now();
-            let decision = cap_sampled_index_decision_if_needed(
+            let decision = cap_sampled_record_decision_if_needed(
                 decide_media_match(
                     &query_for_decision.fingerprint.record,
                     &fingerprint.fingerprint.record,
                     &autoplay_settings,
                 ),
-                index_mode,
+                &query_for_decision.fingerprint.record,
+                &fingerprint.fingerprint.record,
             );
             summary.decision_total_millis += decision_started_at.elapsed().as_millis();
             let normalized_candidate = &fingerprint.fingerprint.record.identity.normalized_path;
@@ -488,7 +516,6 @@ pub fn run_media_match_v3_diagnostic_manifest(
     }
 
     for fingerprint in cache.values() {
-        let diagnostics = diagnostics_for_cached_fingerprint(fingerprint);
         summary.sqlite_load_millis += fingerprint.sqlite_load_millis;
         summary.sqlite_save_millis += fingerprint.save_stats.sqlite_save_millis;
         summary.sqlite_index_insert_millis += fingerprint.save_stats.index_insert_millis;
@@ -499,31 +526,25 @@ pub fn run_media_match_v3_diagnostic_manifest(
             .audio_index_mode
         {
             MediaAudioIndexMode::SampledFast | MediaAudioIndexMode::SampledNormal => {
-                summary.sampled_fingerprint_count += 1
+                summary.sampled_fingerprint_count += 1;
+                summary.sampled_indexed_file_count += 1;
             }
             MediaAudioIndexMode::FullVerify | MediaAudioIndexMode::SparseFull => {
                 summary.full_fingerprint_count += 1
             }
         }
-        match fingerprint.source {
-            FINGERPRINT_SOURCE_FRESH => {
-                summary.unique_fresh_fingerprint_count += 1;
-                summary.total_extraction_millis +=
-                    fingerprint.fingerprint.report.timings.total_millis;
-            }
-            FINGERPRINT_SOURCE_SQLITE_CACHE => {
-                summary.unique_sqlite_cache_fingerprint_count += 1;
-            }
-            FINGERPRINT_SOURCE_MEMORY_CACHE => {
-                summary.unique_memory_cache_fingerprint_count += 1;
-            }
-            _ => {}
-        }
-        summary.total_audio_blob_bytes += diagnostics.audio_blob_bytes;
-        summary.total_video_blob_bytes += diagnostics.video_blob_bytes;
     }
+    if matches!(index_mode, MediaMatchV3DiagnosticIndexMode::Production) {
+        summary.full_promoted_file_count = summary.full_fingerprint_count;
+    }
+    apply_report_row_fingerprint_totals(&mut summary, &cases);
 
     summary.run_wall_millis = run_started_at.elapsed().as_millis();
+    if matches!(index_mode, MediaMatchV3DiagnosticIndexMode::Production) {
+        summary.production_total_millis = summary
+            .production_sampled_index_millis
+            .saturating_add(summary.production_full_promotion_millis);
+    }
 
     Ok(MediaMatchV3DiagnosticReport {
         algorithm_version: MEDIA_MATCH_ANCHOR_VERSION,
@@ -540,6 +561,58 @@ pub fn run_media_match_v3_diagnostic_manifest(
         cases,
         summary,
     })
+}
+
+fn apply_report_row_fingerprint_totals(
+    summary: &mut MediaMatchV3DiagnosticSummaryReport,
+    cases: &[MediaMatchV3DiagnosticCaseReport],
+) {
+    let mut seen = BTreeSet::<(String, String)>::new();
+    summary.total_extraction_millis = 0;
+    summary.total_audio_blob_bytes = 0;
+    summary.total_video_blob_bytes = 0;
+    summary.unique_fresh_fingerprint_count = 0;
+    summary.unique_memory_cache_fingerprint_count = 0;
+    summary.unique_sqlite_cache_fingerprint_count = 0;
+    for case in cases {
+        add_report_row_fingerprint_totals(
+            &case.query.path,
+            &case.query.diagnostics,
+            &case.query.source,
+            &mut seen,
+            summary,
+        );
+        for candidate in &case.candidates {
+            add_report_row_fingerprint_totals(
+                &candidate.path,
+                &candidate.diagnostics,
+                &candidate.source,
+                &mut seen,
+                summary,
+            );
+        }
+    }
+}
+
+fn add_report_row_fingerprint_totals(
+    path: &str,
+    diagnostics: &MediaMatchV3DiagnosticSummary,
+    source: &str,
+    seen: &mut BTreeSet<(String, String)>,
+    summary: &mut MediaMatchV3DiagnosticSummaryReport,
+) {
+    if !seen.insert((path.to_owned(), diagnostics.profile.clone())) {
+        return;
+    }
+    summary.total_extraction_millis += diagnostics.extraction_total_millis.unwrap_or_default();
+    summary.total_audio_blob_bytes += diagnostics.audio_blob_bytes;
+    summary.total_video_blob_bytes += diagnostics.video_blob_bytes;
+    match source {
+        FINGERPRINT_SOURCE_FRESH => summary.unique_fresh_fingerprint_count += 1,
+        FINGERPRINT_SOURCE_MEMORY_CACHE => summary.unique_memory_cache_fingerprint_count += 1,
+        FINGERPRINT_SOURCE_SQLITE_CACHE => summary.unique_sqlite_cache_fingerprint_count += 1,
+        _ => {}
+    }
 }
 
 pub fn resolve_media_match_v3_diagnostic_manifest(
@@ -825,6 +898,20 @@ fn cap_sampled_index_decision_if_needed(
         );
     }
     decision
+}
+
+fn cap_sampled_record_decision_if_needed(
+    decision: MediaMatchDecision,
+    query: &crate::MediaFingerprintRecord,
+    candidate: &crate::MediaFingerprintRecord,
+) -> MediaMatchDecision {
+    if query.extraction_settings.audio_index_mode.is_sampled()
+        || candidate.extraction_settings.audio_index_mode.is_sampled()
+    {
+        cap_sampled_index_decision_if_needed(decision, MediaMatchV3DiagnosticIndexMode::SampledFast)
+    } else {
+        decision
+    }
 }
 
 fn sampled_then_full_promotion_reason(
@@ -1490,6 +1577,49 @@ mod tests {
             value["fingerprintCacheVersion"],
             crate::MEDIA_MATCH_V3_FINGERPRINT_CACHE_VERSION
         );
+    }
+
+    #[test]
+    fn production_mode_reports_promotion_summary_fields() {
+        let root = temp_dir("v3-diagnostics-production-summary");
+        let cache_root = root.join("cache");
+        let manifest = MediaMatchV3DiagnosticManifest {
+            profile: "audio-constellation-v3".to_owned(),
+            base_dir: None,
+            cases: Vec::new(),
+        };
+
+        let report = run_media_match_v3_diagnostic_manifest(
+            &manifest,
+            MediaMatchV3DiagnosticRunOptions {
+                manifest_dir: root.clone(),
+                cache_root,
+                cache_retained: true,
+                refresh_cache: false,
+                index_mode: MediaMatchV3DiagnosticIndexMode::Production,
+                max_full_promotions_per_query: 1,
+                promote_expected_candidates: false,
+                tools: MediaMatchToolPaths {
+                    ffmpeg: PathBuf::from("ffmpeg"),
+                    ffprobe: PathBuf::from("ffprobe"),
+                },
+                generated_at_unix_millis: Some(123),
+            },
+        )
+        .expect("empty production diagnostic manifest should run");
+        let value = serde_json::to_value(&report).expect("report should serialize");
+
+        assert_eq!(report.index_mode, "production");
+        assert_eq!(report.summary.max_full_promotions_per_query, 1);
+        assert_eq!(report.summary.production_sampled_index_millis, 0);
+        assert_eq!(report.summary.production_full_promotion_millis, 0);
+        assert_eq!(report.summary.production_total_millis, 0);
+        assert_eq!(value["summary"]["maxFullPromotionsPerQuery"], 1);
+        assert_eq!(value["summary"]["productionSampledIndexMillis"], 0);
+        assert_eq!(value["summary"]["productionFullPromotionMillis"], 0);
+        assert_eq!(value["summary"]["productionTotalMillis"], 0);
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

@@ -56,6 +56,7 @@ cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --out
 cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.sampled.json --output reports/audio-sampled-fast.json --cache-root .media-match-v3-cache-audio-sampled-fast --index-mode sampled-fast
 cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.sampled.json --output reports/audio-sampled-normal.json --cache-root .media-match-v3-cache-audio-sampled-normal --index-mode sampled-normal
 cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-sampled-then-full.json --cache-root .media-match-v3-cache-audio-promote --index-mode sampled-then-full --max-full-promotions 1
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-production.json --cache-root .media-match-v3-cache-audio-production --index-mode production --max-full-promotions 1
 ```
 
 Modes:
@@ -78,6 +79,11 @@ Modes:
   direct decisions. By default only the top retrieved candidate per query is
   promoted; use `--max-full-promotions N` or `--promote-expected-candidates`
   when a diagnostic run intentionally needs broader full verification.
+- `production`: simulate the runtime policy. It builds sampled-fast records for
+  every selected manifest file, retrieves from that index, then dense
+  full-verifies only the top promoted candidate(s). The report separates
+  `productionSampledIndexMillis`, `productionFullPromotionMillis`, and
+  `productionTotalMillis`, plus sampled-indexed and full-promoted file counts.
 
 V3 requires only `ffmpeg` and `ffprobe`. The runner uses
 `SOROTTE_MEDIA_MATCH_FFMPEG` and `SOROTTE_MEDIA_MATCH_FFPROBE` when set;
@@ -430,8 +436,11 @@ isolated fixture without checking the broader corpus.
   `pairingMillis`, `reservoirMillis`, `landmarksAcceptedIntoReservoir`,
   `landmarksRejectedByReservoir`, `finalSelectionMillis`, `sqliteSaveMillis`,
   and `indexInsertMillis`. If full extraction is the bottleneck, compare with
-  `--index-mode sampled-fast` and `--index-mode sampled-normal` before changing
-  thresholds.
+  `--index-mode sampled-fast`, `--index-mode sampled-normal`, and
+  `--index-mode production` before changing thresholds. Runtime rebuild logs
+  also include `background/sampledFast/fullVerify` worker counts,
+  `queueWait`, `workerWall`, `sqliteWriter`, and indexed/cancelled/resumed file
+  counts.
 
 ## Dry-Run Command Sequence
 
@@ -480,14 +489,16 @@ Manual real-corpus validation checklist:
 2. Run `v3_diagnostics --list-cases` and confirm the case IDs are expected.
 3. Run sampled-fast audio retrieval with retrieval-only expectations.
 4. Run sampled-normal audio retrieval for any cases sampled-fast misses.
-5. Run sparse-full audio with full-duration but non-autoplay expectations when
+5. Run production mode to measure sampled-fast indexing plus top-candidate full
+   promotion.
+6. Run sparse-full audio with full-duration but non-autoplay expectations when
    probing lower-cost verification.
-6. Run dense full audio verification with `--refresh-cache` for truth labels.
-7. Self-compare the warm full audio report with `v3_report_compare`.
-8. Run cold and warm `combined-v3` reports only after audio retrieval/alignment is understood.
-9. Self-compare the warm combined report with `v3_report_compare`.
-10. Fill in the calibration notes template for every failure or suspicious cost.
-10. Do not tune thresholds until failures are categorized.
+7. Run dense full audio verification with `--refresh-cache` for truth labels.
+8. Self-compare the warm full audio report with `v3_report_compare`.
+9. Run cold and warm `combined-v3` reports only after audio retrieval/alignment is understood.
+10. Self-compare the warm combined report with `v3_report_compare`.
+11. Fill in the calibration notes template for every failure or suspicious cost.
+12. Do not tune thresholds until failures are categorized.
 
 ## Recommended Corpus
 

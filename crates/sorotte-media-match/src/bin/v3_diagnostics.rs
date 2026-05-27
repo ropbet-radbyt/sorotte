@@ -231,7 +231,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
 }
 
 fn usage() -> String {
-    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--index-mode full|sparse-full|sampled-fast|sampled-normal|sampled|sampled-then-full] [--max-full-promotions n] [--promote-expected-candidates] [--list-cases|--validate-only] [--case name]"
+    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--index-mode full|sparse-full|sampled-fast|sampled-normal|sampled|sampled-then-full|production] [--max-full-promotions n] [--promote-expected-candidates] [--list-cases|--validate-only] [--case name]"
         .to_owned()
 }
 
@@ -242,6 +242,7 @@ fn parse_index_mode(value: &str) -> Result<MediaMatchV3DiagnosticIndexMode, Stri
         "sampled-fast" => Ok(MediaMatchV3DiagnosticIndexMode::SampledFast),
         "sampled" | "sampled-normal" => Ok(MediaMatchV3DiagnosticIndexMode::SampledNormal),
         "sampled-then-full" => Ok(MediaMatchV3DiagnosticIndexMode::SampledThenFull),
+        "production" => Ok(MediaMatchV3DiagnosticIndexMode::Production),
         _ => Err(usage()),
     }
 }
@@ -435,6 +436,19 @@ mod tests {
         let validate = parse_args(["manifest.json".to_owned(), "--validate-only".to_owned()])
             .expect("validate args should parse");
         assert_eq!(validate.mode, CliMode::ValidateOnly);
+    }
+
+    #[test]
+    fn parse_args_accepts_production_index_mode() {
+        let args = parse_args([
+            "manifest.json".to_owned(),
+            "--index-mode".to_owned(),
+            "production".to_owned(),
+        ])
+        .expect("production mode should parse");
+
+        assert_eq!(args.index_mode, MediaMatchV3DiagnosticIndexMode::Production);
+        assert_eq!(args.max_full_promotions_per_query, 1);
     }
 
     #[test]
