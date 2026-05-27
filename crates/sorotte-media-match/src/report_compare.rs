@@ -1203,6 +1203,27 @@ mod tests {
     }
 
     #[test]
+    fn cold_vs_warm_source_count_deltas_do_not_fail_regression_mode() {
+        let baseline = report_with_candidate(
+            "case",
+            "candidate.mkv",
+            true,
+            "Strong",
+            "SameCutStrong",
+            Some(1),
+        );
+        let mut current = baseline.clone();
+        mark_report_sources(&mut current, "sqlite-cache");
+
+        let comparison =
+            compare_media_match_v3_reports(&baseline, &current).expect("reports should compare");
+
+        assert!(!comparison.current_has_regressions());
+        assert_metric_delta(&comparison, "freshFingerprintCount", 2, 0, -2);
+        assert_metric_delta(&comparison, "sqliteCacheFingerprintCount", 0, 2, 2);
+    }
+
+    #[test]
     fn report_validation_accepts_generated_style_report() {
         let report = report_with_candidate(
             "case",
@@ -1573,6 +1594,7 @@ mod tests {
         let failed = if passed { 0 } else { 1 };
         MediaMatchV3DiagnosticReport {
             algorithm_version: 3,
+            fingerprint_cache_version: crate::MEDIA_MATCH_V3_FINGERPRINT_CACHE_VERSION,
             profile: "audio-constellation-v3".to_owned(),
             settings_hash: "00".to_owned(),
             tuning: current_v3_tuning(),
@@ -1681,5 +1703,39 @@ mod tests {
             raw_landmark_compactions: None,
             notes: Vec::new(),
         }
+    }
+
+    fn mark_report_sources(report: &mut MediaMatchV3DiagnosticReport, source: &str) {
+        report.cases[0].query.source = source.to_owned();
+        report.cases[0].query.diagnostics.extraction_total_millis = None;
+        report.cases[0].query.diagnostics.extraction_audio_millis = None;
+        report.cases[0].query.diagnostics.extraction_video_millis = None;
+        for candidate in &mut report.cases[0].candidates {
+            candidate.source = source.to_owned();
+            candidate.diagnostics.extraction_total_millis = None;
+            candidate.diagnostics.extraction_audio_millis = None;
+            candidate.diagnostics.extraction_video_millis = None;
+        }
+        report.summary.fresh_fingerprint_count = usize::from(source == "fresh") * 2;
+        report.summary.memory_cache_fingerprint_count = usize::from(source == "memory-cache") * 2;
+        report.summary.sqlite_cache_fingerprint_count = usize::from(source == "sqlite-cache") * 2;
+        report.summary.total_extraction_millis = if source == "fresh" { 20 } else { 0 };
+    }
+
+    fn assert_metric_delta(
+        comparison: &MediaMatchV3ReportComparison,
+        field: &str,
+        baseline: i128,
+        current: i128,
+        delta: i128,
+    ) {
+        let actual = comparison
+            .metric_deltas
+            .iter()
+            .find(|metric| metric.field == field)
+            .unwrap_or_else(|| panic!("{field} metric delta should be reported"));
+        assert_eq!(actual.baseline, baseline);
+        assert_eq!(actual.current, current);
+        assert_eq!(actual.delta, delta);
     }
 }

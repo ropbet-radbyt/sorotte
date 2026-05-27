@@ -43,6 +43,7 @@ fn run_cli_with_output(
         output_path,
         cache_root,
         keep_cache,
+        refresh_cache,
         mode,
         selected_cases,
     } = parse_args(args)?;
@@ -78,6 +79,7 @@ fn run_cli_with_output(
             manifest_dir,
             cache_root: cache_root.clone(),
             cache_retained: retain_cache,
+            refresh_cache,
             tools: tool_paths(),
             generated_at_unix_millis: None,
         },
@@ -126,6 +128,7 @@ struct CliArgs {
     output_path: Option<PathBuf>,
     cache_root: Option<PathBuf>,
     keep_cache: bool,
+    refresh_cache: bool,
     mode: CliMode,
     selected_cases: Vec<String>,
 }
@@ -135,6 +138,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
     let mut output_path = None;
     let mut cache_root = None;
     let mut keep_cache = false;
+    let mut refresh_cache = false;
     let mut mode = CliMode::Run;
     let mut selected_cases = Vec::new();
     let mut args = args.into_iter();
@@ -154,6 +158,9 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
             }
             "--keep-cache" => {
                 keep_cache = true;
+            }
+            "--refresh-cache" => {
+                refresh_cache = true;
             }
             "--list-cases" => {
                 if mode != CliMode::Run {
@@ -187,13 +194,14 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
         output_path,
         cache_root,
         keep_cache,
+        refresh_cache,
         mode,
         selected_cases,
     })
 }
 
 fn usage() -> String {
-    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--list-cases|--validate-only] [--case name]"
+    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--list-cases|--validate-only] [--case name]"
         .to_owned()
 }
 
@@ -348,6 +356,7 @@ mod tests {
             "--cache-root".to_owned(),
             "cache".to_owned(),
             "--keep-cache".to_owned(),
+            "--refresh-cache".to_owned(),
             "--case".to_owned(),
             "copied-synthetic".to_owned(),
         ])
@@ -357,6 +366,7 @@ mod tests {
         assert_eq!(args.output_path, Some(PathBuf::from("report.json")));
         assert_eq!(args.cache_root, Some(PathBuf::from("cache")));
         assert!(args.keep_cache);
+        assert!(args.refresh_cache);
         assert_eq!(args.selected_cases, vec!["copied-synthetic"]);
         assert_eq!(args.mode, CliMode::Run);
     }
@@ -545,6 +555,7 @@ mod tests {
                 manifest_dir: root.clone(),
                 cache_root: cache_root.clone(),
                 cache_retained: true,
+                refresh_cache: false,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(123),
             },
@@ -584,8 +595,9 @@ mod tests {
                 .expect("manifest should parse"),
             MediaMatchV3DiagnosticRunOptions {
                 manifest_dir: root.clone(),
-                cache_root,
+                cache_root: cache_root.clone(),
                 cache_retained: true,
+                refresh_cache: false,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(124),
             },
@@ -598,6 +610,59 @@ mod tests {
         assert_eq!(warm_report.summary.total_extraction_millis, 0);
         assert_eq!(warm_report.cases[0].query.source, "sqlite-cache");
         assert_eq!(warm_report.cases[0].candidates[0].source, "sqlite-cache");
+
+        let refresh_report = run_media_match_v3_diagnostic_manifest(
+            &media_match_v3_diagnostic_manifest_from_json(&manifest.to_string())
+                .expect("manifest should parse"),
+            MediaMatchV3DiagnosticRunOptions {
+                manifest_dir: root.clone(),
+                cache_root: cache_root.clone(),
+                cache_retained: true,
+                refresh_cache: true,
+                tools: tool_paths(),
+                generated_at_unix_millis: Some(125),
+            },
+        )
+        .expect("refresh run should bypass sqlite cache");
+
+        assert_eq!(refresh_report.summary.failed, 0);
+        assert_eq!(refresh_report.summary.fresh_fingerprint_count, 2);
+        assert_eq!(refresh_report.summary.sqlite_cache_fingerprint_count, 0);
+        assert_eq!(refresh_report.cases[0].query.source, "fresh");
+        assert_eq!(refresh_report.cases[0].candidates[0].source, "fresh");
+
+        let duplicate_manifest = serde_json::json!({
+            "profile": "combined-v3",
+            "baseDir": "media",
+            "cases": [{
+                "name": "duplicate-synthetic",
+                "query": "query.mkv",
+                "candidates": [{
+                    "path": "query.mkv"
+                }]
+            }]
+        });
+        let duplicate_refresh_report = run_media_match_v3_diagnostic_manifest(
+            &media_match_v3_diagnostic_manifest_from_json(&duplicate_manifest.to_string())
+                .expect("duplicate manifest should parse"),
+            MediaMatchV3DiagnosticRunOptions {
+                manifest_dir: root.clone(),
+                cache_root,
+                cache_retained: true,
+                refresh_cache: true,
+                tools: tool_paths(),
+                generated_at_unix_millis: Some(126),
+            },
+        )
+        .expect("refresh run should still use memory-cache for duplicate paths");
+
+        assert_eq!(duplicate_refresh_report.summary.failed, 0);
+        assert_eq!(duplicate_refresh_report.summary.fresh_fingerprint_count, 1);
+        assert_eq!(duplicate_refresh_report.cases[0].query.source, "fresh");
+        assert_eq!(
+            duplicate_refresh_report.cases[0].candidates[0].source,
+            "memory-cache"
+        );
         let _ = fs::remove_dir_all(root);
     }
 

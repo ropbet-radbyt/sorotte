@@ -41,13 +41,23 @@ Use `--case` one or more times to run or inspect only selected cases:
 cargo run -p sorotte-media-match --bin v3_diagnostics -- manifest.json --case same-episode-x264-x265 --output reports/one-case.json --cache-root .media-match-v3-cache
 ```
 
+Use `--refresh-cache` to ignore matching SQLite fingerprint records for the
+selected manifest/cases, re-extract them, and overwrite those V3 cache rows:
+
+```powershell
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-refresh.json --cache-root .media-match-v3-cache-audio --refresh-cache
+```
+
 V3 requires only `ffmpeg` and `ffprobe`. The runner uses
 `SOROTTE_MEDIA_MATCH_FFMPEG` and `SOROTTE_MEDIA_MATCH_FFPROBE` when set;
 otherwise it resolves `ffmpeg` and `ffprobe` from `PATH`.
 
 With `--cache-root`, the runner reuses valid records from the shared
 `index-v3.sqlite3` cache before invoking `ffmpeg`. Cache reuse requires the
-normalized path, modified time, size, profile, and settings hash to match.
+normalized path, modified time, size, profile, and fingerprint config hash to
+match. The report's `settingsHash` is this V3 fingerprint config hash; it
+includes the extraction settings, media-match algorithm version, fingerprint
+cache version, V3 schema/version markers, and the reported V3 tuning values.
 Within one run, duplicate paths are served by an in-memory cache before SQLite.
 
 Fingerprint source labels:
@@ -60,6 +70,10 @@ Fingerprint source labels:
 `summary.totalExtractionMillis` is current-run fresh extraction time only.
 Fingerprints loaded from `sqlite-cache` still report blob/index counts, but they
 do not add extraction time.
+The summary source-count fields count unique path/settings fingerprints, not
+every report row. A duplicate candidate path can have row source `memory-cache`
+while the summary still counts only the first unique source for that
+path/settings key.
 
 ## Corpus Calibration Workflow
 
@@ -82,6 +96,16 @@ cargo run -p sorotte-media-match --bin v3_report_compare -- reports/audio-cold.j
 Cold and warm reports may differ in `freshFingerprintCount`,
 `sqliteCacheFingerprintCount`, and `totalExtractionMillis`. That is expected
 when file identity and settings match and the warm run avoids re-extraction.
+
+When testing an extraction-code change, either rely on the fingerprint config
+hash changing with the cache version/tuning/settings change, or pass
+`--refresh-cache`. Do not assume an old cache is valid after changing audio or
+video landmark generation. The current hash intentionally includes the reported
+V3 tuning values, so tuning changes may create a new cache namespace even when a
+specific threshold is retrieval-only. Retrieval or classification code changes
+that do not change the reported tuning/hash can reuse the same cache root. For a
+cold extraction performance run, use a new cache root or `--refresh-cache` and
+inspect fresh extraction timings, blob bytes, and index rows.
 
 After an algorithm or threshold change, rerun with the same manifests and cache
 root into new report names, then compare the JSON reports:
@@ -275,7 +299,8 @@ Profiles:
 The JSON report includes:
 
 - `cacheRoot` and `cacheRetained`
-- algorithm version, profile, settings hash, and tuning values
+- algorithm version, fingerprint cache version, profile, fingerprint config
+  hash, and tuning values
 - fingerprint source counts: `freshFingerprintCount`,
   `memoryCacheFingerprintCount`, and `sqliteCacheFingerprintCount`
 - extraction diagnostics: timings, audio/video landmark counts, blob bytes, and

@@ -3839,6 +3839,7 @@ mod tests {
                 manifest_dir: root.clone(),
                 cache_root: root.join("diagnostic-cache"),
                 cache_retained: true,
+                refresh_cache: false,
                 tools,
                 generated_at_unix_millis: Some(123),
             },

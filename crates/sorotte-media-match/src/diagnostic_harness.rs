@@ -59,6 +59,7 @@ pub struct MediaMatchV3DiagnosticRunOptions {
     pub manifest_dir: PathBuf,
     pub cache_root: PathBuf,
     pub cache_retained: bool,
+    pub refresh_cache: bool,
     pub tools: MediaMatchToolPaths,
     pub generated_at_unix_millis: Option<u64>,
 }
@@ -86,6 +87,7 @@ pub struct MediaMatchV3ResolvedManifestCandidate {
 #[serde(rename_all = "camelCase")]
 pub struct MediaMatchV3DiagnosticReport {
     pub algorithm_version: u32,
+    pub fingerprint_cache_version: u32,
     pub profile: String,
     pub settings_hash: String,
     pub tuning: V3Tuning,
@@ -223,6 +225,7 @@ pub fn run_media_match_v3_diagnostic_manifest(
             &case.query,
             &options.tools,
             &settings,
+            options.refresh_cache,
         )?;
         if query.source == FINGERPRINT_SOURCE_FRESH {
             save_media_match_v3_record(&connection, &query.fingerprint.record, None)?;
@@ -236,6 +239,7 @@ pub fn run_media_match_v3_diagnostic_manifest(
                 &candidate.path,
                 &options.tools,
                 &settings,
+                options.refresh_cache,
             )?;
             if fingerprint.source == FINGERPRINT_SOURCE_FRESH {
                 save_media_match_v3_record(&connection, &fingerprint.fingerprint.record, None)?;
@@ -334,6 +338,7 @@ pub fn run_media_match_v3_diagnostic_manifest(
 
     Ok(MediaMatchV3DiagnosticReport {
         algorithm_version: MEDIA_MATCH_ANCHOR_VERSION,
+        fingerprint_cache_version: crate::MEDIA_MATCH_V3_FINGERPRINT_CACHE_VERSION,
         profile: settings.profile.label().to_owned(),
         settings_hash: bytes_to_lower_hex(&settings_hash),
         tuning: current_v3_tuning(),
@@ -500,6 +505,7 @@ fn fingerprint_cached(
     path: &Path,
     tools: &MediaMatchToolPaths,
     settings: &MediaExtractionSettings,
+    refresh_cache: bool,
 ) -> Result<CachedFingerprint, String> {
     let normalized_path = normalize_media_path(path);
     let settings_hash = media_extraction_settings_hash(settings);
@@ -511,13 +517,15 @@ fn fingerprint_cached(
         });
     }
     let (modified_unix_millis, size_bytes) = media_file_identity_parts(path)?;
-    if let Some(record) = load_media_match_v3_record_for_path(
-        connection,
-        &normalized_path,
-        settings,
-        modified_unix_millis,
-        size_bytes,
-    )? {
+    if !refresh_cache
+        && let Some(record) = load_media_match_v3_record_for_path(
+            connection,
+            &normalized_path,
+            settings,
+            modified_unix_millis,
+            size_bytes,
+        )?
+    {
         let fingerprint = InstrumentedMediaFingerprint {
             record,
             report: Default::default(),
@@ -1073,6 +1081,7 @@ mod tests {
                 manifest_dir: PathBuf::from("C:/manifest"),
                 cache_root: cache_root.clone(),
                 cache_retained: true,
+                refresh_cache: false,
                 tools: MediaMatchToolPaths {
                     ffmpeg: PathBuf::from("ffmpeg"),
                     ffprobe: PathBuf::from("ffprobe"),
@@ -1085,6 +1094,10 @@ mod tests {
 
         assert_eq!(value["cacheRoot"], cache_root.to_string_lossy().as_ref());
         assert_eq!(value["cacheRetained"], true);
+        assert_eq!(
+            value["fingerprintCacheVersion"],
+            crate::MEDIA_MATCH_V3_FINGERPRINT_CACHE_VERSION
+        );
     }
 
     #[test]
@@ -1110,6 +1123,7 @@ mod tests {
                 manifest_dir: root.clone(),
                 cache_root: cache_root.clone(),
                 cache_retained: true,
+                refresh_cache: false,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
             },
@@ -1154,6 +1168,7 @@ mod tests {
                 manifest_dir: root.clone(),
                 cache_root: cache_root.clone(),
                 cache_retained: true,
+                refresh_cache: false,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
             },
@@ -1193,6 +1208,7 @@ mod tests {
                 manifest_dir: root.clone(),
                 cache_root,
                 cache_retained: true,
+                refresh_cache: false,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
             },
@@ -1223,6 +1239,7 @@ mod tests {
                 manifest_dir: root.clone(),
                 cache_root,
                 cache_retained: true,
+                refresh_cache: false,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
             },

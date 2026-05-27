@@ -437,6 +437,8 @@ mod tests {
         let failed = usize::from(!passed);
         MediaMatchV3DiagnosticReport {
             algorithm_version: 3,
+            fingerprint_cache_version:
+                sorotte_media_match::MEDIA_MATCH_V3_FINGERPRINT_CACHE_VERSION,
             profile: "audio-constellation-v3".to_owned(),
             settings_hash: "00".to_owned(),
             tuning: current_v3_tuning(),

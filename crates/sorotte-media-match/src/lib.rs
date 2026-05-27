@@ -49,7 +49,8 @@ pub use report_compare::{
     validate_media_match_v3_report_pair_compatible,
 };
 pub use settings::{
-    MediaExtractionSettings, MediaFingerprintProfile, media_extraction_settings_hash,
+    MEDIA_MATCH_V3_FINGERPRINT_CACHE_VERSION, MediaExtractionSettings, MediaFingerprintProfile,
+    media_extraction_settings_hash, media_match_v3_fingerprint_config_hash,
 };
 pub use timeline_v3::{
     classify_timeline_at_query_ms, map_candidate_position_to_query_ms,
