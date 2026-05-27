@@ -40,6 +40,7 @@ pub struct MediaMatchV3DiagnosticSummary {
     pub peak_frames: Option<usize>,
     pub raw_landmarks_emitted: Option<usize>,
     pub raw_landmarks_before_bounding: Option<usize>,
+    pub raw_landmarks_kept_before_final: Option<usize>,
     pub final_landmarks: Option<usize>,
     pub max_buffer_samples: Option<usize>,
     pub max_raw_landmarks_seen: Option<usize>,
@@ -48,12 +49,15 @@ pub struct MediaMatchV3DiagnosticSummary {
     pub ffmpeg_process_wall_millis: Option<u128>,
     pub pcm_decode_drain_millis: Option<u128>,
     pub analyzer_millis: Option<u128>,
+    pub peak_selection_millis: Option<u128>,
     pub pairing_millis: Option<u128>,
     pub compaction_millis: Option<u128>,
+    pub reservoir_millis: Option<u128>,
     pub final_selection_millis: Option<u128>,
     pub sampled_audio_seconds_decoded: Option<u32>,
     pub sampled_audio_windows_decoded: Option<usize>,
     pub full_audio_seconds_decoded: Option<u32>,
+    pub effective_decoded_seconds_per_second: Option<f64>,
     pub notes: Vec<String>,
 }
 
@@ -94,11 +98,12 @@ fn summarize_record_v3_diagnostics_with_report(
     let audio_stream = report.map(|report| &report.audio_stream);
     if let Some(report) = report {
         notes.push(format!(
-            "streamedBytes={} streamedSamples={} peakFrames={} rawLandmarksEmitted={} rawLandmarksBeforeBounding={} finalLandmarks={} maxBufferSamples={} maxRawLandmarksSeen={} maxRawLandmarksAfterCompaction={} rawLandmarkCompactions={} ffmpegProcessWallMillis={} pcmDecodeDrainMillis={} analyzerMillis={} pairingMillis={} compactionMillis={} finalSelectionMillis={} ffmpegDecodeStreamMillis={} sampledAudioSecondsDecoded={} sampledAudioWindowsDecoded={} fullAudioSecondsDecoded={}",
+            "streamedBytes={} streamedSamples={} peakFrames={} rawLandmarksEmitted={} rawLandmarksBeforeBounding={} rawLandmarksKeptBeforeFinal={} finalLandmarks={} maxBufferSamples={} maxRawLandmarksSeen={} maxRawLandmarksAfterCompaction={} rawLandmarkCompactions={} ffmpegProcessWallMillis={} pcmDecodeDrainMillis={} analyzerMillis={} peakSelectionMillis={} pairingMillis={} compactionMillis={} reservoirMillis={} finalSelectionMillis={} ffmpegDecodeStreamMillis={} sampledAudioSecondsDecoded={} sampledAudioWindowsDecoded={} fullAudioSecondsDecoded={} effectiveDecodedSecondsPerSecond={:.2}",
             report.audio_stream.streamed_bytes,
             report.audio_stream.streamed_samples,
             report.audio_stream.peak_frames,
             report.audio_stream.raw_landmarks_emitted,
+            report.audio_stream.raw_landmarks_before_bounding,
             report.audio_stream.raw_landmarks_before_bounding,
             report.audio_stream.final_landmarks,
             report.audio_stream.max_buffer_samples,
@@ -108,13 +113,16 @@ fn summarize_record_v3_diagnostics_with_report(
             report.audio_stream.ffmpeg_process_wall_millis,
             report.audio_stream.pcm_decode_drain_millis,
             report.audio_stream.analyzer_millis,
+            report.audio_stream.peak_selection_millis,
             report.audio_stream.pairing_millis,
             report.audio_stream.compaction_millis,
+            report.audio_stream.reservoir_millis,
             report.audio_stream.final_selection_millis,
             report.audio_stream.ffmpeg_decode_stream_millis,
             report.audio_stream.sampled_audio_seconds_decoded,
             report.audio_stream.sampled_audio_windows_decoded,
-            report.audio_stream.full_audio_seconds_decoded
+            report.audio_stream.full_audio_seconds_decoded,
+            effective_decoded_seconds_per_second(&report.audio_stream).unwrap_or(0.0)
         ));
     }
     let (audio_edge_count, audio_body_count) =
@@ -159,6 +167,8 @@ fn summarize_record_v3_diagnostics_with_report(
         raw_landmarks_emitted: audio_stream.map(|stream| stream.raw_landmarks_emitted),
         raw_landmarks_before_bounding: audio_stream
             .map(|stream| stream.raw_landmarks_before_bounding),
+        raw_landmarks_kept_before_final: audio_stream
+            .map(|stream| stream.raw_landmarks_before_bounding),
         final_landmarks: audio_stream.map(|stream| stream.final_landmarks),
         max_buffer_samples: audio_stream.map(|stream| stream.max_buffer_samples),
         max_raw_landmarks_seen: audio_stream.map(|stream| stream.max_raw_landmarks_seen),
@@ -168,14 +178,18 @@ fn summarize_record_v3_diagnostics_with_report(
         ffmpeg_process_wall_millis: audio_stream.map(|stream| stream.ffmpeg_process_wall_millis),
         pcm_decode_drain_millis: audio_stream.map(|stream| stream.pcm_decode_drain_millis),
         analyzer_millis: audio_stream.map(|stream| stream.analyzer_millis),
+        peak_selection_millis: audio_stream.map(|stream| stream.peak_selection_millis),
         pairing_millis: audio_stream.map(|stream| stream.pairing_millis),
         compaction_millis: audio_stream.map(|stream| stream.compaction_millis),
+        reservoir_millis: audio_stream.map(|stream| stream.reservoir_millis),
         final_selection_millis: audio_stream.map(|stream| stream.final_selection_millis),
         sampled_audio_seconds_decoded: audio_stream
             .map(|stream| stream.sampled_audio_seconds_decoded),
         sampled_audio_windows_decoded: audio_stream
             .map(|stream| stream.sampled_audio_windows_decoded),
         full_audio_seconds_decoded: audio_stream.map(|stream| stream.full_audio_seconds_decoded),
+        effective_decoded_seconds_per_second: audio_stream
+            .and_then(effective_decoded_seconds_per_second),
         notes,
     }
 }
@@ -227,6 +241,7 @@ pub fn summarize_decision_v3_diagnostics(
         peak_frames: None,
         raw_landmarks_emitted: None,
         raw_landmarks_before_bounding: None,
+        raw_landmarks_kept_before_final: None,
         final_landmarks: None,
         max_buffer_samples: None,
         max_raw_landmarks_seen: None,
@@ -235,14 +250,26 @@ pub fn summarize_decision_v3_diagnostics(
         ffmpeg_process_wall_millis: None,
         pcm_decode_drain_millis: None,
         analyzer_millis: None,
+        peak_selection_millis: None,
         pairing_millis: None,
         compaction_millis: None,
+        reservoir_millis: None,
         final_selection_millis: None,
         sampled_audio_seconds_decoded: None,
         sampled_audio_windows_decoded: None,
         full_audio_seconds_decoded: None,
+        effective_decoded_seconds_per_second: None,
         notes,
     }
+}
+
+fn effective_decoded_seconds_per_second(stream: &crate::MediaAudioStreamMetrics) -> Option<f64> {
+    let decoded_seconds = u64::from(stream.sampled_audio_seconds_decoded)
+        + u64::from(stream.full_audio_seconds_decoded);
+    if decoded_seconds == 0 || stream.ffmpeg_process_wall_millis == 0 {
+        return None;
+    }
+    Some(decoded_seconds as f64 / (stream.ffmpeg_process_wall_millis as f64 / 1000.0))
 }
 
 fn format_audio_region_counts(landmarks: &[AudioLandmarkV3]) -> String {

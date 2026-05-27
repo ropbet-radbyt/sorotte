@@ -3,7 +3,6 @@ use std::time::Instant;
 
 use crate::{
     anchors::{AudioAnchor, MediaAnchorProfile, VideoAnchor, media_anchor_profile_from_record},
-    settings::MediaAudioIndexMode,
     tuning::{
         DEFAULT_ANCHOR_ALIGNMENT_TOLERANCE_MS, DEFAULT_ANCHOR_OFFSET_BIN_MS,
         MAX_BROAD_SCALE_FIT_PAIRS, V3_EDGE_REGION_MAX_MS, V3_EDGE_REGION_MIN_MS,
@@ -550,14 +549,15 @@ fn cap_sampled_audio_record_decision_if_needed(
     query: &MediaFingerprintRecord,
     candidate: &MediaFingerprintRecord,
 ) -> MediaMatchDecision {
-    let sampled = matches!(
-        query.extraction_settings.audio_index_mode,
-        MediaAudioIndexMode::SampledFast | MediaAudioIndexMode::SampledNormal
-    ) || matches!(
-        candidate.extraction_settings.audio_index_mode,
-        MediaAudioIndexMode::SampledFast | MediaAudioIndexMode::SampledNormal
-    );
-    if !sampled || decision.tier != MediaMatchTier::Strong {
+    let requires_dense_full_verify = !query
+        .extraction_settings
+        .audio_index_mode
+        .is_dense_full_verify()
+        || !candidate
+            .extraction_settings
+            .audio_index_mode
+            .is_dense_full_verify();
+    if !requires_dense_full_verify || decision.tier != MediaMatchTier::Strong {
         return decision;
     }
     decision.tier = MediaMatchTier::Probable;
@@ -571,10 +571,10 @@ fn cap_sampled_audio_record_decision_if_needed(
         map.current_position_class = MatchClassV3::SameCutProbable;
     }
     decision.evidence.notes.push(
-        "sampled audio index record caps direct decision below Strong; full verification is required for SameCutStrong autoplay".to_owned(),
+        "non-dense audio index record caps direct decision below Strong; dense full verification is required for SameCutStrong autoplay".to_owned(),
     );
     decision.explanation = format!(
-        "{}; sampled audio index requires full verification for Strong",
+        "{}; dense full verification is required for Strong",
         decision.explanation
     );
     decision

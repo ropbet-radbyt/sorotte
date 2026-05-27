@@ -40,6 +40,7 @@ fn default_media_fingerprint_profile() -> MediaFingerprintProfile {
 #[serde(rename_all = "kebab-case")]
 pub enum MediaAudioIndexMode {
     FullVerify,
+    SparseFull,
     SampledFast,
     SampledNormal,
 }
@@ -48,6 +49,7 @@ impl MediaAudioIndexMode {
     pub fn label(self) -> &'static str {
         match self {
             Self::FullVerify => "full-verify",
+            Self::SparseFull => "sparse-full",
             Self::SampledFast => "sampled-fast",
             Self::SampledNormal => "sampled-normal",
         }
@@ -55,6 +57,10 @@ impl MediaAudioIndexMode {
 
     pub fn is_sampled(self) -> bool {
         matches!(self, Self::SampledFast | Self::SampledNormal)
+    }
+
+    pub fn is_dense_full_verify(self) -> bool {
+        matches!(self, Self::FullVerify)
     }
 }
 
@@ -115,6 +121,14 @@ impl MediaExtractionSettings {
         Self {
             audio_index_mode: MediaAudioIndexMode::SampledFast,
             audio_algorithm: "sorotte-audio-constellation-v3-sampled-fast".to_owned(),
+            ..Self::audio_constellation_v3()
+        }
+    }
+
+    pub fn sparse_full_audio_v3() -> Self {
+        Self {
+            audio_index_mode: MediaAudioIndexMode::SparseFull,
+            audio_algorithm: "sorotte-audio-constellation-v3-sparse-full".to_owned(),
             ..Self::audio_constellation_v3()
         }
     }
@@ -191,9 +205,13 @@ mod tests {
         let sampled_fast = media_match_v3_fingerprint_config_hash(
             &MediaExtractionSettings::sampled_fast_audio_index_v3(),
         );
+        let sparse_full = media_match_v3_fingerprint_config_hash(
+            &MediaExtractionSettings::sparse_full_audio_v3(),
+        );
 
         assert_ne!(full, sampled);
         assert_ne!(sampled_fast, sampled);
+        assert_ne!(sparse_full, full);
     }
 
     #[test]

@@ -559,6 +559,7 @@ mod tests {
             peak_frames: None,
             raw_landmarks_emitted: None,
             raw_landmarks_before_bounding: None,
+            raw_landmarks_kept_before_final: None,
             final_landmarks: None,
             max_buffer_samples: None,
             max_raw_landmarks_seen: None,
@@ -567,12 +568,15 @@ mod tests {
             ffmpeg_process_wall_millis: None,
             pcm_decode_drain_millis: None,
             analyzer_millis: None,
+            peak_selection_millis: None,
             pairing_millis: None,
             compaction_millis: None,
+            reservoir_millis: None,
             final_selection_millis: None,
             sampled_audio_seconds_decoded: None,
             sampled_audio_windows_decoded: None,
             full_audio_seconds_decoded: None,
+            effective_decoded_seconds_per_second: None,
             notes: Vec::new(),
         }
     }

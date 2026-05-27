@@ -82,6 +82,7 @@ pub struct MediaMatchV3DiagnosticRunOptions {
 pub enum MediaMatchV3DiagnosticIndexMode {
     #[default]
     Full,
+    SparseFull,
     SampledFast,
     SampledNormal,
     SampledThenFull,
@@ -91,6 +92,7 @@ impl MediaMatchV3DiagnosticIndexMode {
     pub fn label(self) -> &'static str {
         match self {
             Self::Full => "full",
+            Self::SparseFull => "sparse-full",
             Self::SampledFast => "sampled-fast",
             Self::SampledNormal => "sampled-normal",
             Self::SampledThenFull => "sampled-then-full",
@@ -272,20 +274,22 @@ pub fn run_media_match_v3_diagnostic_manifest(
     let run_started_at = Instant::now();
     let index_mode = options.index_mode;
     let mut settings = diagnostic_settings_for_profile(&manifest.profile)?;
-    if matches!(
-        index_mode,
-        MediaMatchV3DiagnosticIndexMode::SampledFast
-            | MediaMatchV3DiagnosticIndexMode::SampledNormal
-            | MediaMatchV3DiagnosticIndexMode::SampledThenFull
-    ) {
-        let sampled_settings = match index_mode {
+    if !matches!(index_mode, MediaMatchV3DiagnosticIndexMode::Full) {
+        let index_settings = match index_mode {
+            MediaMatchV3DiagnosticIndexMode::SparseFull => {
+                MediaExtractionSettings::sparse_full_audio_v3()
+            }
             MediaMatchV3DiagnosticIndexMode::SampledFast => {
                 MediaExtractionSettings::sampled_fast_audio_index_v3()
             }
-            _ => MediaExtractionSettings::sampled_audio_index_v3(),
+            MediaMatchV3DiagnosticIndexMode::SampledNormal
+            | MediaMatchV3DiagnosticIndexMode::SampledThenFull => {
+                MediaExtractionSettings::sampled_audio_index_v3()
+            }
+            MediaMatchV3DiagnosticIndexMode::Full => unreachable!("handled above"),
         };
-        settings.audio_index_mode = sampled_settings.audio_index_mode;
-        settings.audio_algorithm = sampled_settings.audio_algorithm;
+        settings.audio_index_mode = index_settings.audio_index_mode;
+        settings.audio_algorithm = index_settings.audio_algorithm;
     }
     let verify_settings = if matches!(index_mode, MediaMatchV3DiagnosticIndexMode::SampledThenFull)
     {
@@ -497,7 +501,9 @@ pub fn run_media_match_v3_diagnostic_manifest(
             MediaAudioIndexMode::SampledFast | MediaAudioIndexMode::SampledNormal => {
                 summary.sampled_fingerprint_count += 1
             }
-            MediaAudioIndexMode::FullVerify => summary.full_fingerprint_count += 1,
+            MediaAudioIndexMode::FullVerify | MediaAudioIndexMode::SparseFull => {
+                summary.full_fingerprint_count += 1
+            }
         }
         match fingerprint.source {
             FINGERPRINT_SOURCE_FRESH => {

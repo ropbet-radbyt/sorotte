@@ -231,13 +231,14 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
 }
 
 fn usage() -> String {
-    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--index-mode full|sampled-fast|sampled-normal|sampled|sampled-then-full] [--max-full-promotions n] [--promote-expected-candidates] [--list-cases|--validate-only] [--case name]"
+    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--index-mode full|sparse-full|sampled-fast|sampled-normal|sampled|sampled-then-full] [--max-full-promotions n] [--promote-expected-candidates] [--list-cases|--validate-only] [--case name]"
         .to_owned()
 }
 
 fn parse_index_mode(value: &str) -> Result<MediaMatchV3DiagnosticIndexMode, String> {
     match value {
         "full" => Ok(MediaMatchV3DiagnosticIndexMode::Full),
+        "sparse-full" => Ok(MediaMatchV3DiagnosticIndexMode::SparseFull),
         "sampled-fast" => Ok(MediaMatchV3DiagnosticIndexMode::SampledFast),
         "sampled" | "sampled-normal" => Ok(MediaMatchV3DiagnosticIndexMode::SampledNormal),
         "sampled-then-full" => Ok(MediaMatchV3DiagnosticIndexMode::SampledThenFull),

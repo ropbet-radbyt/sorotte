@@ -44,6 +44,8 @@ pub(crate) const V3_AUDIO_PAIR_FANOUT: usize = 8;
 pub(crate) const V3_AUDIO_PAIR_CANDIDATE_RETAIN: usize = V3_AUDIO_PAIR_FANOUT * 4;
 pub(crate) const V3_AUDIO_VERIFY_LANDMARK_LIMIT: usize = 2048;
 pub(crate) const V3_AUDIO_INDEX_LANDMARK_LIMIT: usize = 512;
+pub(crate) const V3_AUDIO_SPARSE_FULL_SAMPLE_RATE: u32 = 8_000;
+pub(crate) const V3_AUDIO_SPARSE_FULL_VERIFY_LANDMARK_LIMIT: usize = 1024;
 pub(crate) const V3_AUDIO_SAMPLED_FAST_INDEX_LANDMARK_LIMIT: usize = 384;
 pub(crate) const V3_AUDIO_SAMPLED_FAST_TARGET_LANDMARKS: usize = 320;
 pub(crate) const V3_AUDIO_SAMPLED_FAST_WINDOW_SECONDS: u32 = 20;
@@ -61,8 +63,7 @@ pub(crate) const V3_AUDIO_SAMPLED_MIN_BODY_REGIONS: usize = 4;
 // while preserving enough oversampling for the final time-distributed selector.
 pub(crate) const V3_AUDIO_RAW_LANDMARK_BUFFER_LIMIT: usize = V3_AUDIO_VERIFY_LANDMARK_LIMIT * 8;
 pub(crate) const V3_AUDIO_RAW_LANDMARK_RETAIN_LIMIT: usize = V3_AUDIO_VERIFY_LANDMARK_LIMIT * 4;
-pub(crate) const V3_AUDIO_RAW_REGION_RETAIN_LIMIT: usize = 512;
-pub(crate) const V3_AUDIO_RAW_REGION_TRIM_BURST: usize = 128;
+pub(crate) const V3_AUDIO_RAW_REGION_RETAIN_LIMIT: usize = 256;
 
 // V3 video retrieval and descriptor thresholds.
 pub(crate) const VIDEO_LSH_BANDS: u32 = 4;
@@ -118,6 +119,8 @@ pub struct V3Tuning {
     pub audio_pair_candidate_retain: usize,
     pub audio_verify_landmark_limit: usize,
     pub audio_index_landmark_limit: usize,
+    pub audio_sparse_full_sample_rate: u32,
+    pub audio_sparse_full_verify_landmark_limit: usize,
     pub audio_sampled_fast_index_landmark_limit: usize,
     pub audio_sampled_fast_target_landmarks: usize,
     pub audio_sampled_fast_window_seconds: u32,
@@ -169,6 +172,8 @@ pub fn current_v3_tuning() -> V3Tuning {
         audio_pair_candidate_retain: V3_AUDIO_PAIR_CANDIDATE_RETAIN,
         audio_verify_landmark_limit: V3_AUDIO_VERIFY_LANDMARK_LIMIT,
         audio_index_landmark_limit: V3_AUDIO_INDEX_LANDMARK_LIMIT,
+        audio_sparse_full_sample_rate: V3_AUDIO_SPARSE_FULL_SAMPLE_RATE,
+        audio_sparse_full_verify_landmark_limit: V3_AUDIO_SPARSE_FULL_VERIFY_LANDMARK_LIMIT,
         audio_sampled_fast_index_landmark_limit: V3_AUDIO_SAMPLED_FAST_INDEX_LANDMARK_LIMIT,
         audio_sampled_fast_target_landmarks: V3_AUDIO_SAMPLED_FAST_TARGET_LANDMARKS,
         audio_sampled_fast_window_seconds: V3_AUDIO_SAMPLED_FAST_WINDOW_SECONDS,
@@ -217,6 +222,14 @@ mod tests {
         assert_eq!(
             value["audioIndexLandmarkLimit"].as_u64(),
             Some(V3_AUDIO_INDEX_LANDMARK_LIMIT as u64)
+        );
+        assert_eq!(
+            value["audioSparseFullSampleRate"].as_u64(),
+            Some(u64::from(V3_AUDIO_SPARSE_FULL_SAMPLE_RATE))
+        );
+        assert_eq!(
+            value["audioSparseFullVerifyLandmarkLimit"].as_u64(),
+            Some(V3_AUDIO_SPARSE_FULL_VERIFY_LANDMARK_LIMIT as u64)
         );
         assert_eq!(
             value["audioSampledFastIndexLandmarkLimit"].as_u64(),

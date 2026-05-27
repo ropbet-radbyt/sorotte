@@ -1001,8 +1001,10 @@ fn v3_diagnostics_serializes_stable_stream_metric_names() {
                 max_raw_landmarks_after_compaction: 512,
                 raw_landmark_compactions: 2,
                 analyzer_millis: 31,
+                peak_selection_millis: 9,
                 pairing_millis: 11,
                 compaction_millis: 7,
+                reservoir_millis: 5,
                 final_selection_millis: 3,
                 ffmpeg_process_wall_millis: 43,
                 pcm_decode_drain_millis: 41,
@@ -1023,6 +1025,7 @@ fn v3_diagnostics_serializes_stable_stream_metric_names() {
     assert_eq!(value["peakFrames"], 12);
     assert_eq!(value["rawLandmarksEmitted"], 360);
     assert_eq!(value["rawLandmarksBeforeBounding"], 300);
+    assert_eq!(value["rawLandmarksKeptBeforeFinal"], 300);
     assert_eq!(value["finalLandmarks"], 96);
     assert_eq!(
         value["maxBufferSamples"],
@@ -1034,12 +1037,18 @@ fn v3_diagnostics_serializes_stable_stream_metric_names() {
     assert_eq!(value["ffmpegProcessWallMillis"], 43);
     assert_eq!(value["pcmDecodeDrainMillis"], 41);
     assert_eq!(value["analyzerMillis"], 31);
+    assert_eq!(value["peakSelectionMillis"], 9);
     assert_eq!(value["pairingMillis"], 11);
     assert_eq!(value["compactionMillis"], 7);
+    assert_eq!(value["reservoirMillis"], 5);
     assert_eq!(value["finalSelectionMillis"], 3);
     assert_eq!(value["sampledAudioSecondsDecoded"], 0);
     assert_eq!(value["sampledAudioWindowsDecoded"], 0);
     assert_eq!(value["fullAudioSecondsDecoded"], 120);
+    assert!(
+        (value["effectiveDecodedSecondsPerSecond"].as_f64().unwrap() - (120.0 / 0.043)).abs()
+            < 0.001
+    );
     assert_eq!(value["indexQuality"], "full-verify");
 }
 
@@ -1151,9 +1160,13 @@ fn v3_audio_streaming_builder_keeps_rolling_buffer_bounded() {
         metrics.max_raw_landmarks_after_compaction <= V3_AUDIO_RAW_LANDMARK_BUFFER_LIMIT,
         "{metrics:?}"
     );
+    assert_eq!(
+        metrics.raw_landmark_compactions, 0,
+        "online region reservoirs should avoid repeated sort/truncate compactions: {metrics:?}"
+    );
     assert!(
-        metrics.raw_landmark_compactions > 0,
-        "long synthetic audio should exercise per-region reservoir trimming: {metrics:?}"
+        metrics.reservoir_millis > 0,
+        "long synthetic audio should exercise online reservoir insertion: {metrics:?}"
     );
     assert!(metrics.streamed_samples > V3_AUDIO_WINDOW_SAMPLES * 100);
 }
@@ -1490,6 +1503,29 @@ fn sampled_only_same_cut_is_probable_and_not_autoplay_eligible() {
     let mut candidate = record_from_anchor_profile("candidate.mkv", 11, candidate_profile);
     query.extraction_settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
     candidate.extraction_settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
+    let mut settings = enabled_settings();
+    settings.autoplay_policy = MediaMatchAutoplayPolicy::AllowStrongSameMedia;
+
+    let decision = decide_media_match(&query, &candidate, &settings);
+
+    assert_eq!(decision.tier, MediaMatchTier::Probable);
+    assert_eq!(
+        decision.evidence.v3_class,
+        Some(MatchClassV3::SameCutProbable)
+    );
+    assert!(!decision.same_media_for_autoplay(&settings));
+}
+
+#[test]
+fn sparse_full_same_cut_is_probable_and_not_autoplay_eligible() {
+    let audio = v3_audio_times(120_000, 18, 45_000);
+    let query_profile = v3_profile_from_times(1_200_000, &audio, &[]);
+    let candidate_profile =
+        v3_profile_from_times(1_200_000, &v3_shift_audio_times(&audio, 5_000, 0), &[]);
+    let mut query = record_from_anchor_profile("query.mkv", 10, query_profile);
+    let mut candidate = record_from_anchor_profile("candidate.mkv", 11, candidate_profile);
+    query.extraction_settings = MediaExtractionSettings::sparse_full_audio_v3();
+    candidate.extraction_settings = MediaExtractionSettings::sparse_full_audio_v3();
     let mut settings = enabled_settings();
     settings.autoplay_policy = MediaMatchAutoplayPolicy::AllowStrongSameMedia;
 

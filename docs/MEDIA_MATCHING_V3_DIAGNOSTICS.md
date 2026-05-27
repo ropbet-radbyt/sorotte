@@ -52,6 +52,7 @@ Use `--index-mode` to separate retrieval calibration from full verification:
 
 ```powershell
 cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-full.json --cache-root .media-match-v3-cache-audio --index-mode full
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-sparse-full.json --cache-root .media-match-v3-cache-audio-sparse-full --index-mode sparse-full
 cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.sampled.json --output reports/audio-sampled-fast.json --cache-root .media-match-v3-cache-audio-sampled-fast --index-mode sampled-fast
 cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.sampled.json --output reports/audio-sampled-normal.json --cache-root .media-match-v3-cache-audio-sampled-normal --index-mode sampled-normal
 cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-sampled-then-full.json --cache-root .media-match-v3-cache-audio-promote --index-mode sampled-then-full --max-full-promotions 1
@@ -61,6 +62,10 @@ Modes:
 
 - `full`: full-file verification fingerprints are used for both retrieval and
   direct decisions.
+- `sparse-full`: full-duration audio is decoded with lower-cost extraction
+  settings and a smaller final landmark set. It is useful for likely/current
+  candidates, but direct decisions are still capped below `Strong`; dense
+  `full` verification is still required for `SameCutStrong` autoplay.
 - `sampled-fast`: body-distributed audio windows are decoded for a fast
   retrieval index, using fewer/shorter windows and a smaller target landmark
   set. This is the intended first-pass background indexing mode.
@@ -114,12 +119,15 @@ A duplicate candidate path can have row source `memory-cache` while the unique
 counts still count only the first source for that path/settings key.
 
 Current real-corpus measurements on the Bakemonogatari audio-only manifest put
-full verification extraction around 13-16 seconds per 25-minute file on the
-tested Windows machine. Sampled-normal indexing is around 2 seconds per file on
-that corpus, and sampled-fast is the target background-index path. Retrieval and
-same-cut verification are fast once fingerprints exist. Use sampled index mode
-for fast background shortlist calibration, and use full verification for any
-`Strong` / `SameCutStrong` autoplay-eligible result.
+dense full verification extraction around 13 seconds per 25-minute file on the
+tested Windows machine after online reservoirs removed repeated compactions.
+Sparse-full is roughly 10 seconds per file on that corpus and remains
+non-autoplay by policy. Sampled-normal indexing is around 2 seconds per file,
+and sampled-fast is the target background-index path. Retrieval and same-cut
+verification are fast once fingerprints exist. Use sampled index mode for fast
+background shortlist calibration, sparse-full for lower-cost full-duration
+probing, and dense full verification for any `Strong` / `SameCutStrong`
+autoplay-eligible result.
 
 ## Corpus Calibration Workflow
 
@@ -465,11 +473,13 @@ Manual real-corpus validation checklist:
 2. Run `v3_diagnostics --list-cases` and confirm the case IDs are expected.
 3. Run sampled-fast audio retrieval with retrieval-only expectations.
 4. Run sampled-normal audio retrieval for any cases sampled-fast misses.
-5. Run full audio verification with `--refresh-cache` for truth labels.
-6. Self-compare the warm full audio report with `v3_report_compare`.
-7. Run cold and warm `combined-v3` reports only after audio retrieval/alignment is understood.
-8. Self-compare the warm combined report with `v3_report_compare`.
-9. Fill in the calibration notes template for every failure or suspicious cost.
+5. Run sparse-full audio with full-duration but non-autoplay expectations when
+   probing lower-cost verification.
+6. Run dense full audio verification with `--refresh-cache` for truth labels.
+7. Self-compare the warm full audio report with `v3_report_compare`.
+8. Run cold and warm `combined-v3` reports only after audio retrieval/alignment is understood.
+9. Self-compare the warm combined report with `v3_report_compare`.
+10. Fill in the calibration notes template for every failure or suspicious cost.
 10. Do not tune thresholds until failures are categorized.
 
 ## Recommended Corpus

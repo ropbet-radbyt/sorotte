@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -12,7 +12,7 @@ use crate::{
         V3_AUDIO_MIN_FREQ_HZ, V3_AUDIO_PAIR_CANDIDATE_RETAIN, V3_AUDIO_PAIR_DELTA_STRIDE_FRAMES,
         V3_AUDIO_PAIR_FANOUT, V3_AUDIO_PAIR_MAX_DELTA_FRAMES, V3_AUDIO_PAIR_MIN_DELTA_FRAMES,
         V3_AUDIO_PEAK_NEIGHBORHOOD, V3_AUDIO_RAW_REGION_RETAIN_LIMIT,
-        V3_AUDIO_RAW_REGION_TRIM_BURST, V3_AUDIO_VERIFY_LANDMARK_LIMIT, V3_AUDIO_WINDOW_SAMPLES,
+        V3_AUDIO_VERIFY_LANDMARK_LIMIT, V3_AUDIO_WINDOW_SAMPLES,
     },
     video_v3::stable_hash_u64,
 };
@@ -36,9 +36,13 @@ pub(crate) struct AudioConstellationV3PcmStream {
 
 impl AudioConstellationV3PcmStream {
     pub(crate) fn new(sample_rate: u32) -> Self {
+        Self::with_landmark_limit(sample_rate, V3_AUDIO_VERIFY_LANDMARK_LIMIT)
+    }
+
+    pub(crate) fn with_landmark_limit(sample_rate: u32, landmark_limit: usize) -> Self {
         Self {
             pending_byte: None,
-            builder: AudioConstellationV3Builder::new(sample_rate),
+            builder: AudioConstellationV3Builder::new(sample_rate, landmark_limit),
             streamed_bytes: 0,
             streamed_samples: 0,
         }
@@ -92,6 +96,7 @@ impl AudioConstellationV3PcmStream {
 
 struct AudioConstellationV3Builder {
     sample_rate: u32,
+    landmark_limit: usize,
     analyzer: Option<AudioSpectralAnalyzerV3>,
     rolling_samples: Vec<i16>,
     recent_frames: VecDeque<AudioPeakFrameV3>,
@@ -102,13 +107,16 @@ struct AudioConstellationV3Builder {
     analyzer_nanos: u128,
     compaction_nanos: u128,
     pairing_nanos: u128,
+    peak_selection_nanos: u128,
+    reservoir_nanos: u128,
 }
 
 impl AudioConstellationV3Builder {
-    pub(crate) fn new(sample_rate: u32) -> Self {
+    pub(crate) fn new(sample_rate: u32, landmark_limit: usize) -> Self {
         let analyzer = (sample_rate != 0).then(|| AudioSpectralAnalyzerV3::new(sample_rate));
         Self {
             sample_rate,
+            landmark_limit,
             analyzer,
             rolling_samples: Vec::with_capacity(V3_AUDIO_WINDOW_SAMPLES),
             recent_frames: VecDeque::new(),
@@ -119,6 +127,8 @@ impl AudioConstellationV3Builder {
             analyzer_nanos: 0,
             compaction_nanos: 0,
             pairing_nanos: 0,
+            peak_selection_nanos: 0,
+            reservoir_nanos: 0,
         }
     }
 
@@ -136,15 +146,19 @@ impl AudioConstellationV3Builder {
             self.max_buffer_samples = self.max_buffer_samples.max(self.rolling_samples.len());
             while self.rolling_samples.len() >= V3_AUDIO_WINDOW_SAMPLES {
                 let analyzer_started_at = Instant::now();
-                let peaks = self
+                let (peaks, peak_selection_nanos) = self
                     .analyzer
                     .as_mut()
                     .expect("analyzer exists")
                     .peaks_for_frame(&self.rolling_samples[..V3_AUDIO_WINDOW_SAMPLES]);
                 self.analyzer_nanos += analyzer_started_at.elapsed().as_nanos();
+                self.peak_selection_nanos += peak_selection_nanos;
                 self.process_peak_frame(self.next_frame_index, peaks);
                 self.next_frame_index += 1;
-                self.rolling_samples.drain(..V3_AUDIO_HOP_SAMPLES);
+                let remaining = V3_AUDIO_WINDOW_SAMPLES.saturating_sub(V3_AUDIO_HOP_SAMPLES);
+                self.rolling_samples
+                    .copy_within(V3_AUDIO_HOP_SAMPLES..V3_AUDIO_WINDOW_SAMPLES, 0);
+                self.rolling_samples.truncate(remaining);
                 self.max_buffer_samples = self.max_buffer_samples.max(self.rolling_samples.len());
             }
         }
@@ -198,13 +212,13 @@ impl AudioConstellationV3Builder {
                 let strength = ((anchor_peak.magnitude + candidate.target_magnitude) * 4.0)
                     .round()
                     .clamp(1.0, f32::from(u8::MAX)) as u8;
-                let compaction_started_at = Instant::now();
+                let reservoir_started_at = Instant::now();
                 self.raw_landmarks.push(AudioLandmarkV3 {
                     hash,
                     t_ms,
                     weight: strength,
                 });
-                self.compaction_nanos += compaction_started_at.elapsed().as_nanos();
+                self.reservoir_nanos += reservoir_started_at.elapsed().as_nanos();
             }
         }
     }
@@ -225,6 +239,7 @@ impl AudioConstellationV3Builder {
         let landmarks = finish_bounded_audio_landmarks_v3(
             self.raw_landmarks.into_landmarks(),
             duration_seconds,
+            self.landmark_limit,
         );
         let final_selection_millis = selection_started_at.elapsed().as_millis();
         let metrics = MediaAudioStreamMetrics {
@@ -238,7 +253,9 @@ impl AudioConstellationV3Builder {
             raw_landmark_compactions,
             analyzer_millis: self.analyzer_nanos / 1_000_000,
             compaction_millis: self.compaction_nanos / 1_000_000,
+            reservoir_millis: self.reservoir_nanos / 1_000_000,
             pairing_millis: self.pairing_nanos / 1_000_000,
+            peak_selection_millis: self.peak_selection_nanos / 1_000_000,
             final_selection_millis,
             ..MediaAudioStreamMetrics::default()
         };
@@ -247,7 +264,7 @@ impl AudioConstellationV3Builder {
 }
 
 struct AudioLandmarkReservoirV3 {
-    regions: HashMap<u32, Vec<AudioLandmarkV3>>,
+    regions: HashMap<u32, AudioLandmarkRegionReservoirV3>,
     emitted_count: usize,
     max_retained: usize,
     trim_count: usize,
@@ -266,26 +283,28 @@ impl AudioLandmarkReservoirV3 {
     fn push(&mut self, landmark: AudioLandmarkV3) {
         self.emitted_count += 1;
         let region = landmark.t_ms / 60_000;
-        let bucket = self.regions.entry(region).or_default();
-        bucket.push(landmark);
-        if bucket.len() > V3_AUDIO_RAW_REGION_RETAIN_LIMIT + V3_AUDIO_RAW_REGION_TRIM_BURST {
-            trim_audio_landmark_region_v3(bucket, V3_AUDIO_RAW_REGION_RETAIN_LIMIT);
-            self.trim_count += 1;
-        }
+        self.regions
+            .entry(region)
+            .or_insert_with(|| {
+                AudioLandmarkRegionReservoirV3::new(V3_AUDIO_RAW_REGION_RETAIN_LIMIT)
+            })
+            .push(landmark);
         self.max_retained = self.max_retained.max(self.len());
     }
 
     fn len(&self) -> usize {
-        self.regions.values().map(Vec::len).sum()
+        self.regions
+            .values()
+            .map(AudioLandmarkRegionReservoirV3::len)
+            .sum()
     }
 
     fn into_landmarks(self) -> Vec<AudioLandmarkV3> {
         let mut landmarks = Vec::with_capacity(self.len());
         let mut regions = self.regions.into_iter().collect::<Vec<_>>();
         regions.sort_by_key(|(region, _)| *region);
-        for (_, mut region_landmarks) in regions {
-            trim_audio_landmark_region_v3(&mut region_landmarks, V3_AUDIO_RAW_REGION_RETAIN_LIMIT);
-            landmarks.extend(region_landmarks);
+        for (_, region_landmarks) in regions {
+            landmarks.extend(region_landmarks.into_landmarks());
         }
         landmarks.sort_by_key(|landmark| {
             (
@@ -295,6 +314,132 @@ impl AudioLandmarkReservoirV3 {
             )
         });
         landmarks
+    }
+}
+
+struct AudioLandmarkRegionReservoirV3 {
+    retain_limit: usize,
+    landmarks: HashMap<AudioLandmarkKeyV3, AudioLandmarkV3>,
+    heap: BinaryHeap<AudioLandmarkHeapEntryV3>,
+}
+
+impl AudioLandmarkRegionReservoirV3 {
+    fn new(retain_limit: usize) -> Self {
+        Self {
+            retain_limit,
+            landmarks: HashMap::new(),
+            heap: BinaryHeap::new(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.landmarks.len()
+    }
+
+    fn push(&mut self, landmark: AudioLandmarkV3) {
+        if self.retain_limit == 0 {
+            return;
+        }
+        let key = AudioLandmarkKeyV3::from_landmark(landmark);
+        if let Some(existing) = self.landmarks.get_mut(&key) {
+            if landmark.weight > existing.weight {
+                *existing = landmark;
+                self.heap
+                    .push(AudioLandmarkHeapEntryV3::from_landmark(landmark));
+            }
+            return;
+        }
+        if self.landmarks.len() < self.retain_limit {
+            self.landmarks.insert(key, landmark);
+            self.heap
+                .push(AudioLandmarkHeapEntryV3::from_landmark(landmark));
+            return;
+        }
+        self.discard_stale_heap_entries();
+        let candidate = AudioLandmarkHeapEntryV3::from_landmark(landmark);
+        let Some(worst) = self.heap.peek().copied() else {
+            self.landmarks.insert(key, landmark);
+            self.heap.push(candidate);
+            return;
+        };
+        if candidate >= worst {
+            return;
+        }
+        self.heap.pop();
+        self.landmarks.remove(&worst.key);
+        self.landmarks.insert(key, landmark);
+        self.heap.push(candidate);
+    }
+
+    fn discard_stale_heap_entries(&mut self) {
+        while self.heap.peek().is_some_and(|entry| {
+            self.landmarks
+                .get(&entry.key)
+                .is_none_or(|landmark| landmark.weight != entry.weight)
+        }) {
+            self.heap.pop();
+        }
+    }
+
+    fn into_landmarks(self) -> Vec<AudioLandmarkV3> {
+        let mut landmarks = self.landmarks.into_values().collect::<Vec<_>>();
+        landmarks.sort_by_key(|landmark| {
+            (
+                landmark.t_ms,
+                landmark.hash,
+                std::cmp::Reverse(landmark.weight),
+            )
+        });
+        landmarks
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct AudioLandmarkKeyV3 {
+    hash: u32,
+    t_ms: u32,
+}
+
+impl AudioLandmarkKeyV3 {
+    fn from_landmark(landmark: AudioLandmarkV3) -> Self {
+        Self {
+            hash: landmark.hash,
+            t_ms: landmark.t_ms,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AudioLandmarkHeapEntryV3 {
+    key: AudioLandmarkKeyV3,
+    weight: u8,
+}
+
+impl AudioLandmarkHeapEntryV3 {
+    fn from_landmark(landmark: AudioLandmarkV3) -> Self {
+        Self {
+            key: AudioLandmarkKeyV3::from_landmark(landmark),
+            weight: landmark.weight,
+        }
+    }
+
+    fn inverse_weight(self) -> u8 {
+        u8::MAX.saturating_sub(self.weight)
+    }
+}
+
+impl Ord for AudioLandmarkHeapEntryV3 {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.inverse_weight()
+            .cmp(&other.inverse_weight())
+            .then_with(|| self.key.t_ms.cmp(&other.key.t_ms))
+            .then_with(|| self.key.hash.cmp(&other.key.hash))
+    }
+}
+
+impl PartialOrd for AudioLandmarkHeapEntryV3 {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -342,6 +487,7 @@ struct AudioSpectralAnalyzerV3 {
     hann: Vec<f32>,
     fft: Arc<dyn Fft<f32>>,
     buffer: Vec<Complex<f32>>,
+    magnitudes: Vec<(usize, f32)>,
 }
 
 impl AudioSpectralAnalyzerV3 {
@@ -356,16 +502,24 @@ impl AudioSpectralAnalyzerV3 {
             hann,
             fft,
             buffer: vec![Complex::new(0.0f32, 0.0f32); V3_AUDIO_WINDOW_SAMPLES],
+            magnitudes: Vec::with_capacity(max_bin.saturating_sub(min_bin)),
         }
     }
 
-    fn peaks_for_frame(&mut self, samples: &[i16]) -> Vec<AudioSpectralPeakV3> {
+    fn peaks_for_frame(&mut self, samples: &[i16]) -> (Vec<AudioSpectralPeakV3>, u128) {
         for (index, slot) in self.buffer.iter_mut().enumerate() {
             let sample = samples[index] as f32 / f32::from(i16::MAX);
             *slot = Complex::new(sample * self.hann[index], 0.0);
         }
         self.fft.process(&mut self.buffer);
-        audio_spectral_peaks_from_fft_bins(&self.buffer, self.min_bin, self.max_bin)
+        let peak_started_at = Instant::now();
+        let peaks = audio_spectral_peaks_from_fft_bins(
+            &self.buffer,
+            self.min_bin,
+            self.max_bin,
+            &mut self.magnitudes,
+        );
+        (peaks, peak_started_at.elapsed().as_nanos())
     }
 }
 
@@ -375,7 +529,7 @@ pub(crate) fn audio_constellation_landmarks_v3_from_pcm_streaming(
     sample_rate: u32,
     duration_seconds: Option<f64>,
 ) -> (Vec<AudioLandmarkV3>, MediaAudioStreamMetrics) {
-    let mut builder = AudioConstellationV3Builder::new(sample_rate);
+    let mut builder = AudioConstellationV3Builder::new(sample_rate, V3_AUDIO_VERIFY_LANDMARK_LIMIT);
     builder.push_pcm_i16(samples);
     let (landmarks, mut metrics) = builder.finish_with_metrics(duration_seconds);
     metrics.streamed_samples = samples.len();
@@ -389,7 +543,7 @@ pub(crate) fn audio_constellation_landmarks_v3_from_pcm_chunks(
     sample_rate: u32,
     duration_seconds: Option<f64>,
 ) -> (Vec<AudioLandmarkV3>, MediaAudioStreamMetrics) {
-    let mut builder = AudioConstellationV3Builder::new(sample_rate);
+    let mut builder = AudioConstellationV3Builder::new(sample_rate, V3_AUDIO_VERIFY_LANDMARK_LIMIT);
     let mut samples = 0usize;
     for chunk in chunks {
         samples += chunk.len();
@@ -404,6 +558,7 @@ pub(crate) fn audio_constellation_landmarks_v3_from_pcm_chunks(
 fn finish_bounded_audio_landmarks_v3(
     mut raw: Vec<AudioLandmarkV3>,
     duration_seconds: Option<f64>,
+    landmark_limit: usize,
 ) -> Vec<AudioLandmarkV3> {
     dedupe_audio_landmarks_v3(&mut raw);
     if let Some(duration) = duration_seconds.filter(|value| value.is_finite() && *value > 120.0) {
@@ -411,31 +566,9 @@ fn finish_bounded_audio_landmarks_v3(
     }
     bounded_time_distributed_audio_landmarks_v3_for_duration(
         &mut raw,
-        V3_AUDIO_VERIFY_LANDMARK_LIMIT,
+        landmark_limit,
         duration_seconds,
     )
-}
-
-fn trim_audio_landmark_region_v3(landmarks: &mut Vec<AudioLandmarkV3>, retain_limit: usize) {
-    dedupe_audio_landmarks_v3(landmarks);
-    if landmarks.len() <= retain_limit {
-        return;
-    }
-    landmarks.sort_by_key(|landmark| {
-        (
-            std::cmp::Reverse(landmark.weight),
-            landmark.t_ms,
-            landmark.hash,
-        )
-    });
-    landmarks.truncate(retain_limit);
-    landmarks.sort_by_key(|landmark| {
-        (
-            landmark.t_ms,
-            landmark.hash,
-            std::cmp::Reverse(landmark.weight),
-        )
-    });
 }
 
 #[cfg(test)]
@@ -495,13 +628,13 @@ fn audio_spectral_peaks_from_fft_bins(
     buffer: &[Complex<f32>],
     min_bin: usize,
     max_bin: usize,
+    magnitudes: &mut Vec<(usize, f32)>,
 ) -> Vec<AudioSpectralPeakV3> {
-    let magnitudes = (min_bin..max_bin)
-        .map(|bin| {
-            let value = buffer[bin].norm_sqr().max(f32::MIN_POSITIVE).log10();
-            (bin, value)
-        })
-        .collect::<Vec<_>>();
+    magnitudes.clear();
+    magnitudes.extend((min_bin..max_bin).map(|bin| {
+        let value = buffer[bin].norm_sqr().max(f32::MIN_POSITIVE).log10();
+        (bin, value)
+    }));
     let mean = if magnitudes.is_empty() {
         0.0
     } else {
