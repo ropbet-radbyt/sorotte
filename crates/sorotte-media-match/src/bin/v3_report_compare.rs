@@ -441,6 +441,7 @@ mod tests {
             fingerprint_cache_version:
                 sorotte_media_match::MEDIA_MATCH_V3_FINGERPRINT_CACHE_VERSION,
             profile: "audio-constellation-v3".to_owned(),
+            index_mode: "full".to_owned(),
             settings_hash: "00".to_owned(),
             tuning: current_v3_tuning(),
             cache_root: "cache".to_owned(),
@@ -452,6 +453,9 @@ mod tests {
                     path: "query.mkv".to_owned(),
                     diagnostics: diagnostic_summary("query.mkv"),
                     source: "fresh".to_owned(),
+                    sqlite_save_millis: 0,
+                    blob_encode_millis: 0,
+                    index_insert_millis: 0,
                 },
                 retrieval: MediaMatchV3DiagnosticRetrievalReport {
                     raw_hit_rows_processed: 10,
@@ -463,6 +467,9 @@ mod tests {
                     path: "candidate.mkv".to_owned(),
                     diagnostics: diagnostic_summary("candidate.mkv"),
                     source: "fresh".to_owned(),
+                    sqlite_save_millis: 0,
+                    blob_encode_millis: 0,
+                    index_insert_millis: 0,
                     retrieved: true,
                     retrieval_rank: Some(1),
                     decision: MediaMatchV3DiagnosticDecisionReport {
@@ -511,6 +518,11 @@ mod tests {
                 total_video_blob_bytes: 0,
                 total_raw_hit_rows_processed: 10,
                 total_retrieval_millis: 2,
+                run_wall_millis: 20,
+                fingerprint_total_millis: 20,
+                retrieval_total_millis: 2,
+                full_fingerprint_count: 2,
+                ..MediaMatchV3DiagnosticSummaryReport::default()
             },
         }
     }
@@ -539,12 +551,21 @@ mod tests {
             streamed_bytes: None,
             streamed_samples: None,
             peak_frames: None,
+            raw_landmarks_emitted: None,
             raw_landmarks_before_bounding: None,
             final_landmarks: None,
             max_buffer_samples: None,
             max_raw_landmarks_seen: None,
             max_raw_landmarks_after_compaction: None,
             raw_landmark_compactions: None,
+            ffmpeg_process_wall_millis: None,
+            pcm_decode_drain_millis: None,
+            analyzer_millis: None,
+            pairing_millis: None,
+            compaction_millis: None,
+            final_selection_millis: None,
+            sampled_audio_seconds_decoded: None,
+            full_audio_seconds_decoded: None,
             notes: Vec::new(),
         }
     }

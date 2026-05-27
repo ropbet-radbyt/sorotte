@@ -57,6 +57,14 @@ pub struct MediaMatchV3RetrievalStats {
     pub retrieval_elapsed_ms: u128,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaMatchV3SaveStats {
+    pub sqlite_save_millis: u128,
+    pub blob_encode_millis: u128,
+    pub index_insert_millis: u128,
+}
+
 #[derive(Debug, Clone, Default)]
 struct V3CandidateRetrievalScore {
     file_id: i64,
@@ -190,6 +198,16 @@ pub fn save_media_match_v3_record(
     record: &MediaFingerprintRecord,
     error: Option<&str>,
 ) -> Result<(), String> {
+    save_media_match_v3_record_with_stats(connection, record, error).map(|_| ())
+}
+
+pub fn save_media_match_v3_record_with_stats(
+    connection: &Connection,
+    record: &MediaFingerprintRecord,
+    error: Option<&str>,
+) -> Result<MediaMatchV3SaveStats, String> {
+    let save_started_at = Instant::now();
+    let mut stats = MediaMatchV3SaveStats::default();
     let transaction = connection
         .unchecked_transaction()
         .map_err(|error| format!("failed starting media-match v3 save transaction: {error}"))?;
@@ -269,6 +287,7 @@ pub fn save_media_match_v3_record(
         validate_video_landmarks_v3(&video.v3_landmarks)
             .map_err(|error| format!("invalid media-match V3 video fingerprint: {error}"))?;
     }
+    let blob_started_at = Instant::now();
     let blob = media_fingerprint_blob_v3_from_record(record);
     validate_video_landmarks_v3(&blob.video_landmarks)
         .map_err(|error| format!("invalid media-match V3 video fingerprint: {error}"))?;
@@ -288,9 +307,11 @@ pub fn save_media_match_v3_record(
     });
     let audio_index = audio_index_landmarks_v3_from_record(record);
     let video_index = video_index_landmarks_v3_from_record(record);
+    stats.blob_encode_millis = blob_started_at.elapsed().as_millis();
     validate_video_landmarks_v3(&video_index)
         .map_err(|error| format!("invalid media-match V3 video index: {error}"))?;
     let settings_hash = media_extraction_settings_hash(&record.extraction_settings).to_vec();
+    let index_started_at = Instant::now();
     transaction
         .execute(
             "DELETE FROM anchor_index_v3
@@ -325,6 +346,7 @@ pub fn save_media_match_v3_record(
         )?;
     }
     mark_anchor_stats_v3_dirty(&transaction, &settings_hash)?;
+    stats.index_insert_millis = index_started_at.elapsed().as_millis();
     let status = if error.is_some() {
         "error"
     } else if combined_error.is_some() {
@@ -370,7 +392,9 @@ pub fn save_media_match_v3_record(
         .map_err(|error| format!("failed checkpointing media-match v3 fingerprint row: {error}"))?;
     transaction
         .commit()
-        .map_err(|error| format!("failed committing media-match v3 save transaction: {error}"))
+        .map_err(|error| format!("failed committing media-match v3 save transaction: {error}"))?;
+    stats.sqlite_save_millis = save_started_at.elapsed().as_millis();
+    Ok(stats)
 }
 
 pub fn load_media_match_v3_cache_for_settings(

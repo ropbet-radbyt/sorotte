@@ -8,10 +8,10 @@ use std::{
 };
 
 use sorotte_media_match::{
-    MediaMatchToolPaths, MediaMatchV3DiagnosticManifest, MediaMatchV3DiagnosticRunOptions,
-    MediaMatchV3ResolvedManifest, MediaMatchV3ResolvedManifestCase,
-    media_match_v3_diagnostic_manifest_from_json, resolve_media_match_v3_diagnostic_manifest,
-    run_media_match_v3_diagnostic_manifest,
+    MediaMatchToolPaths, MediaMatchV3DiagnosticIndexMode, MediaMatchV3DiagnosticManifest,
+    MediaMatchV3DiagnosticRunOptions, MediaMatchV3ResolvedManifest,
+    MediaMatchV3ResolvedManifestCase, media_match_v3_diagnostic_manifest_from_json,
+    resolve_media_match_v3_diagnostic_manifest, run_media_match_v3_diagnostic_manifest,
 };
 
 fn main() -> ExitCode {
@@ -44,6 +44,7 @@ fn run_cli_with_output(
         cache_root,
         keep_cache,
         refresh_cache,
+        index_mode,
         mode,
         selected_cases,
     } = parse_args(args)?;
@@ -80,6 +81,7 @@ fn run_cli_with_output(
             cache_root: cache_root.clone(),
             cache_retained: retain_cache,
             refresh_cache,
+            index_mode,
             tools: tool_paths(),
             generated_at_unix_millis: None,
         },
@@ -129,6 +131,7 @@ struct CliArgs {
     cache_root: Option<PathBuf>,
     keep_cache: bool,
     refresh_cache: bool,
+    index_mode: MediaMatchV3DiagnosticIndexMode,
     mode: CliMode,
     selected_cases: Vec<String>,
 }
@@ -139,6 +142,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
     let mut cache_root = None;
     let mut keep_cache = false;
     let mut refresh_cache = false;
+    let mut index_mode = MediaMatchV3DiagnosticIndexMode::Full;
     let mut mode = CliMode::Run;
     let mut selected_cases = Vec::new();
     let mut args = args.into_iter();
@@ -161,6 +165,12 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
             }
             "--refresh-cache" => {
                 refresh_cache = true;
+            }
+            "--index-mode" => {
+                let Some(value) = args.next() else {
+                    return Err(usage());
+                };
+                index_mode = parse_index_mode(&value)?;
             }
             "--list-cases" => {
                 if mode != CliMode::Run {
@@ -195,14 +205,24 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
         cache_root,
         keep_cache,
         refresh_cache,
+        index_mode,
         mode,
         selected_cases,
     })
 }
 
 fn usage() -> String {
-    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--list-cases|--validate-only] [--case name]"
+    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--index-mode full|sampled|sampled-then-full] [--list-cases|--validate-only] [--case name]"
         .to_owned()
+}
+
+fn parse_index_mode(value: &str) -> Result<MediaMatchV3DiagnosticIndexMode, String> {
+    match value {
+        "full" => Ok(MediaMatchV3DiagnosticIndexMode::Full),
+        "sampled" => Ok(MediaMatchV3DiagnosticIndexMode::Sampled),
+        "sampled-then-full" => Ok(MediaMatchV3DiagnosticIndexMode::SampledThenFull),
+        _ => Err(usage()),
+    }
 }
 
 fn filter_manifest_cases(
@@ -360,6 +380,8 @@ mod tests {
             "cache".to_owned(),
             "--keep-cache".to_owned(),
             "--refresh-cache".to_owned(),
+            "--index-mode".to_owned(),
+            "sampled".to_owned(),
             "--case".to_owned(),
             "copied-synthetic".to_owned(),
         ])
@@ -370,6 +392,7 @@ mod tests {
         assert_eq!(args.cache_root, Some(PathBuf::from("cache")));
         assert!(args.keep_cache);
         assert!(args.refresh_cache);
+        assert_eq!(args.index_mode, MediaMatchV3DiagnosticIndexMode::Sampled);
         assert_eq!(args.selected_cases, vec!["copied-synthetic"]);
         assert_eq!(args.mode, CliMode::Run);
     }
@@ -558,6 +581,7 @@ mod tests {
                 cache_root: cache_root.clone(),
                 cache_retained: true,
                 refresh_cache: true,
+                index_mode: MediaMatchV3DiagnosticIndexMode::Full,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(123),
             },
@@ -613,6 +637,7 @@ mod tests {
                 cache_root: cache_root.clone(),
                 cache_retained: true,
                 refresh_cache: false,
+                index_mode: MediaMatchV3DiagnosticIndexMode::Full,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(124),
             },
@@ -650,6 +675,7 @@ mod tests {
                 cache_root: cache_root.clone(),
                 cache_retained: true,
                 refresh_cache: true,
+                index_mode: MediaMatchV3DiagnosticIndexMode::Full,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(125),
             },
@@ -700,6 +726,7 @@ mod tests {
                 cache_root,
                 cache_retained: true,
                 refresh_cache: true,
+                index_mode: MediaMatchV3DiagnosticIndexMode::Full,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(126),
             },

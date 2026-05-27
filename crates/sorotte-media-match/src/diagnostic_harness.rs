@@ -1,21 +1,25 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    InstrumentedMediaFingerprint, MEDIA_MATCH_ANCHOR_VERSION, MatchClassV3,
+    InstrumentedMediaFingerprint, MEDIA_MATCH_ANCHOR_VERSION, MatchClassV3, MediaAudioIndexMode,
     MediaExtractionSettings, MediaMatchAutoplayPolicy, MediaMatchDecision, MediaMatchSettings,
     MediaMatchTier, MediaMatchToolPaths, MediaMatchV3DiagnosticSummary, MediaMatchV3RetrievalStats,
-    V3Tuning, current_v3_tuning, decide_media_match, fingerprint_media_file_with_report,
-    load_media_match_v3_record_for_path, media_extraction_settings_hash,
-    media_match_v3_anchor_candidate_paths_with_stats, normalize_media_path,
-    open_media_match_v3_index, save_media_match_v3_record, summarize_decision_v3_diagnostics,
-    summarize_instrumented_record_v3_diagnostics, summarize_record_v3_diagnostics,
+    MediaMatchV3SaveStats, V3Tuning, current_v3_tuning, decide_media_match,
+    fingerprint_media_file_with_report, load_media_match_v3_record_for_path,
+    media_extraction_settings_hash, media_match_v3_anchor_candidate_paths_with_stats,
+    normalize_media_path, open_media_match_v3_index, save_media_match_v3_record_with_stats,
+    summarize_decision_v3_diagnostics, summarize_instrumented_record_v3_diagnostics,
+    summarize_record_v3_diagnostics,
 };
+
+#[cfg(test)]
+use crate::save_media_match_v3_record;
 
 const FINGERPRINT_SOURCE_FRESH: &str = "fresh";
 const FINGERPRINT_SOURCE_MEMORY_CACHE: &str = "memory-cache";
@@ -60,8 +64,28 @@ pub struct MediaMatchV3DiagnosticRunOptions {
     pub cache_root: PathBuf,
     pub cache_retained: bool,
     pub refresh_cache: bool,
+    pub index_mode: MediaMatchV3DiagnosticIndexMode,
     pub tools: MediaMatchToolPaths,
     pub generated_at_unix_millis: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MediaMatchV3DiagnosticIndexMode {
+    #[default]
+    Full,
+    Sampled,
+    SampledThenFull,
+}
+
+impl MediaMatchV3DiagnosticIndexMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Sampled => "sampled",
+            Self::SampledThenFull => "sampled-then-full",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -89,6 +113,7 @@ pub struct MediaMatchV3DiagnosticReport {
     pub algorithm_version: u32,
     pub fingerprint_cache_version: u32,
     pub profile: String,
+    pub index_mode: String,
     pub settings_hash: String,
     pub tuning: V3Tuning,
     pub cache_root: String,
@@ -113,6 +138,9 @@ pub struct MediaMatchV3DiagnosticFingerprintReport {
     pub path: String,
     pub diagnostics: MediaMatchV3DiagnosticSummary,
     pub source: String,
+    pub sqlite_save_millis: u128,
+    pub blob_encode_millis: u128,
+    pub index_insert_millis: u128,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,6 +150,9 @@ pub struct MediaMatchV3DiagnosticCandidateReport {
     pub path: String,
     pub diagnostics: MediaMatchV3DiagnosticSummary,
     pub source: String,
+    pub sqlite_save_millis: u128,
+    pub blob_encode_millis: u128,
+    pub index_insert_millis: u128,
     pub retrieved: bool,
     pub retrieval_rank: Option<usize>,
     pub decision: MediaMatchV3DiagnosticDecisionReport,
@@ -178,12 +209,27 @@ pub struct MediaMatchV3DiagnosticSummaryReport {
     pub total_video_blob_bytes: usize,
     pub total_raw_hit_rows_processed: i64,
     pub total_retrieval_millis: u128,
+    pub run_wall_millis: u128,
+    pub manifest_parse_millis: u128,
+    pub cache_open_millis: u128,
+    pub fingerprint_total_millis: u128,
+    pub sqlite_load_millis: u128,
+    pub sqlite_save_millis: u128,
+    pub sqlite_index_insert_millis: u128,
+    pub retrieval_total_millis: u128,
+    pub decision_total_millis: u128,
+    pub report_serialize_millis: u128,
+    pub sampled_fingerprint_count: usize,
+    pub full_fingerprint_count: usize,
+    pub candidates_promoted_to_full_verify: usize,
 }
 
 #[derive(Debug, Clone)]
 struct CachedFingerprint {
     fingerprint: InstrumentedMediaFingerprint,
     source: &'static str,
+    sqlite_load_millis: u128,
+    save_stats: MediaMatchV3SaveStats,
 }
 
 pub fn media_match_v3_diagnostic_manifest_from_json(
@@ -209,20 +255,40 @@ pub fn run_media_match_v3_diagnostic_manifest(
     manifest: &MediaMatchV3DiagnosticManifest,
     options: MediaMatchV3DiagnosticRunOptions,
 ) -> Result<MediaMatchV3DiagnosticReport, String> {
-    let settings = diagnostic_settings_for_profile(&manifest.profile)?;
+    let run_started_at = Instant::now();
+    let index_mode = options.index_mode;
+    let mut settings = diagnostic_settings_for_profile(&manifest.profile)?;
+    if matches!(
+        index_mode,
+        MediaMatchV3DiagnosticIndexMode::Sampled | MediaMatchV3DiagnosticIndexMode::SampledThenFull
+    ) {
+        settings.audio_index_mode = MediaAudioIndexMode::SampledIndex;
+        settings.audio_algorithm = "sorotte-audio-constellation-v3-sampled-index".to_owned();
+    }
+    let verify_settings = if matches!(index_mode, MediaMatchV3DiagnosticIndexMode::SampledThenFull)
+    {
+        diagnostic_settings_for_profile(&manifest.profile)?
+    } else {
+        settings.clone()
+    };
     let settings_hash = media_extraction_settings_hash(&settings);
     let resolved = resolve_media_match_v3_diagnostic_manifest(manifest, &options.manifest_dir)?;
+    let cache_open_started_at = Instant::now();
     let connection = open_media_match_v3_index(&options.cache_root)?;
+    let cache_open_millis = cache_open_started_at.elapsed().as_millis();
     let autoplay_settings = diagnostic_decision_settings();
     let mut cache = BTreeMap::<(String, [u8; 32]), CachedFingerprint>::new();
+    let mut occurrence_cache = BTreeMap::<(usize, usize), CachedFingerprint>::new();
     let mut cases = Vec::new();
     let mut summary = MediaMatchV3DiagnosticSummaryReport {
         case_count: resolved.cases.len(),
+        cache_open_millis,
         ..MediaMatchV3DiagnosticSummaryReport::default()
     };
 
-    for case in &resolved.cases {
-        let query = fingerprint_cached(
+    let fingerprint_started_at = Instant::now();
+    for (case_index, case) in resolved.cases.iter().enumerate() {
+        let mut query = fingerprint_cached(
             &mut cache,
             &connection,
             &case.query,
@@ -230,13 +296,10 @@ pub fn run_media_match_v3_diagnostic_manifest(
             &settings,
             options.refresh_cache,
         )?;
-        if query.source == FINGERPRINT_SOURCE_FRESH {
-            save_media_match_v3_record(&connection, &query.fingerprint.record, None)?;
-        }
-
-        let mut candidate_records = Vec::new();
-        for candidate in &case.candidates {
-            let fingerprint = fingerprint_cached(
+        save_fresh_fingerprint_if_needed(&mut cache, &mut query, &connection)?;
+        occurrence_cache.insert((case_index, 0), query);
+        for (candidate_index, candidate) in case.candidates.iter().enumerate() {
+            let mut fingerprint = fingerprint_cached(
                 &mut cache,
                 &connection,
                 &candidate.path,
@@ -244,12 +307,17 @@ pub fn run_media_match_v3_diagnostic_manifest(
                 &settings,
                 options.refresh_cache,
             )?;
-            if fingerprint.source == FINGERPRINT_SOURCE_FRESH {
-                save_media_match_v3_record(&connection, &fingerprint.fingerprint.record, None)?;
-            }
-            candidate_records.push((candidate, fingerprint));
+            save_fresh_fingerprint_if_needed(&mut cache, &mut fingerprint, &connection)?;
+            occurrence_cache.insert((case_index, candidate_index + 1), fingerprint);
         }
+    }
+    summary.fingerprint_total_millis = fingerprint_started_at.elapsed().as_millis();
 
+    for (case_index, case) in resolved.cases.iter().enumerate() {
+        let query = occurrence_cache
+            .get(&(case_index, 0))
+            .ok_or_else(|| format!("missing diagnostic query fingerprint for '{}'", case.name))?
+            .clone();
         let (retrieved_candidates, retrieval_stats) =
             media_match_v3_anchor_candidate_paths_with_stats(
                 &connection,
@@ -262,20 +330,63 @@ pub fn run_media_match_v3_diagnostic_manifest(
         );
         summary.total_raw_hit_rows_processed += retrieval_report.raw_hit_rows_processed;
         summary.total_retrieval_millis += retrieval_report.retrieval_elapsed_ms;
+        summary.retrieval_total_millis += retrieval_report.retrieval_elapsed_ms;
 
         let query_report = MediaMatchV3DiagnosticFingerprintReport {
             path: query.fingerprint.record.identity.normalized_path.clone(),
             diagnostics: diagnostics_for_cached_fingerprint(&query),
             source: query.source.to_owned(),
+            sqlite_save_millis: query.save_stats.sqlite_save_millis,
+            blob_encode_millis: query.save_stats.blob_encode_millis,
+            index_insert_millis: query.save_stats.index_insert_millis,
         };
         increment_report_source_count(&mut summary, query.source);
         let mut reports = Vec::new();
-        for (candidate, fingerprint) in candidate_records {
-            let decision = decide_media_match(
-                &query.fingerprint.record,
-                &fingerprint.fingerprint.record,
-                &autoplay_settings,
+        for (candidate_index, candidate) in case.candidates.iter().enumerate() {
+            let index_fingerprint = occurrence_cache
+                .get(&(case_index, candidate_index + 1))
+                .ok_or_else(|| {
+                    format!(
+                        "missing diagnostic candidate fingerprint for '{}'",
+                        candidate.path.display()
+                    )
+                })?
+                .clone();
+            let mut query_for_decision = query.clone();
+            let mut fingerprint = index_fingerprint;
+            if matches!(index_mode, MediaMatchV3DiagnosticIndexMode::SampledThenFull) {
+                let promotion_started_at = Instant::now();
+                query_for_decision = fingerprint_cached(
+                    &mut cache,
+                    &connection,
+                    &case.query,
+                    &options.tools,
+                    &verify_settings,
+                    options.refresh_cache,
+                )?;
+                save_fresh_fingerprint_if_needed(&mut cache, &mut query_for_decision, &connection)?;
+                fingerprint = fingerprint_cached(
+                    &mut cache,
+                    &connection,
+                    &candidate.path,
+                    &options.tools,
+                    &verify_settings,
+                    options.refresh_cache,
+                )?;
+                save_fresh_fingerprint_if_needed(&mut cache, &mut fingerprint, &connection)?;
+                summary.fingerprint_total_millis += promotion_started_at.elapsed().as_millis();
+                summary.candidates_promoted_to_full_verify += 1;
+            }
+            let decision_started_at = Instant::now();
+            let decision = cap_sampled_index_decision_if_needed(
+                decide_media_match(
+                    &query_for_decision.fingerprint.record,
+                    &fingerprint.fingerprint.record,
+                    &autoplay_settings,
+                ),
+                index_mode,
             );
+            summary.decision_total_millis += decision_started_at.elapsed().as_millis();
             let normalized_candidate = &fingerprint.fingerprint.record.identity.normalized_path;
             let retrieval_rank = retrieval_report
                 .retrieved_candidates
@@ -302,6 +413,9 @@ pub fn run_media_match_v3_diagnostic_manifest(
                 path: normalized_candidate.clone(),
                 diagnostics: diagnostics_for_cached_fingerprint(&fingerprint),
                 source: fingerprint.source.to_owned(),
+                sqlite_save_millis: fingerprint.save_stats.sqlite_save_millis,
+                blob_encode_millis: fingerprint.save_stats.blob_encode_millis,
+                index_insert_millis: fingerprint.save_stats.index_insert_millis,
                 retrieved,
                 retrieval_rank,
                 decision: MediaMatchV3DiagnosticDecisionReport::from_decision(
@@ -323,6 +437,18 @@ pub fn run_media_match_v3_diagnostic_manifest(
 
     for fingerprint in cache.values() {
         let diagnostics = diagnostics_for_cached_fingerprint(fingerprint);
+        summary.sqlite_load_millis += fingerprint.sqlite_load_millis;
+        summary.sqlite_save_millis += fingerprint.save_stats.sqlite_save_millis;
+        summary.sqlite_index_insert_millis += fingerprint.save_stats.index_insert_millis;
+        match fingerprint
+            .fingerprint
+            .record
+            .extraction_settings
+            .audio_index_mode
+        {
+            MediaAudioIndexMode::SampledIndex => summary.sampled_fingerprint_count += 1,
+            MediaAudioIndexMode::FullVerify => summary.full_fingerprint_count += 1,
+        }
         match fingerprint.source {
             FINGERPRINT_SOURCE_FRESH => {
                 summary.unique_fresh_fingerprint_count += 1;
@@ -341,10 +467,13 @@ pub fn run_media_match_v3_diagnostic_manifest(
         summary.total_video_blob_bytes += diagnostics.video_blob_bytes;
     }
 
+    summary.run_wall_millis = run_started_at.elapsed().as_millis();
+
     Ok(MediaMatchV3DiagnosticReport {
         algorithm_version: MEDIA_MATCH_ANCHOR_VERSION,
         fingerprint_cache_version: crate::MEDIA_MATCH_V3_FINGERPRINT_CACHE_VERSION,
         profile: settings.profile.label().to_owned(),
+        index_mode: index_mode.label().to_owned(),
         settings_hash: bytes_to_lower_hex(&settings_hash),
         tuning: current_v3_tuning(),
         cache_root: options.cache_root.to_string_lossy().to_string(),
@@ -519,9 +648,12 @@ fn fingerprint_cached(
         return Ok(CachedFingerprint {
             fingerprint: fingerprint.fingerprint.clone(),
             source: FINGERPRINT_SOURCE_MEMORY_CACHE,
+            sqlite_load_millis: 0,
+            save_stats: MediaMatchV3SaveStats::default(),
         });
     }
     let (modified_unix_millis, size_bytes) = media_file_identity_parts(path)?;
+    let sqlite_load_started_at = Instant::now();
     if !refresh_cache
         && let Some(record) = load_media_match_v3_record_for_path(
             connection,
@@ -531,6 +663,7 @@ fn fingerprint_cached(
             size_bytes,
         )?
     {
+        let sqlite_load_millis = sqlite_load_started_at.elapsed().as_millis();
         let fingerprint = InstrumentedMediaFingerprint {
             record,
             report: Default::default(),
@@ -540,11 +673,15 @@ fn fingerprint_cached(
             CachedFingerprint {
                 fingerprint: fingerprint.clone(),
                 source: FINGERPRINT_SOURCE_SQLITE_CACHE,
+                sqlite_load_millis,
+                save_stats: MediaMatchV3SaveStats::default(),
             },
         );
         return Ok(CachedFingerprint {
             fingerprint,
             source: FINGERPRINT_SOURCE_SQLITE_CACHE,
+            sqlite_load_millis,
+            save_stats: MediaMatchV3SaveStats::default(),
         });
     }
     let fingerprint = fingerprint_media_file_with_report(path, tools, settings, None)
@@ -554,12 +691,74 @@ fn fingerprint_cached(
         CachedFingerprint {
             fingerprint: fingerprint.clone(),
             source: FINGERPRINT_SOURCE_FRESH,
+            sqlite_load_millis: 0,
+            save_stats: MediaMatchV3SaveStats::default(),
         },
     );
     Ok(CachedFingerprint {
         fingerprint,
         source: FINGERPRINT_SOURCE_FRESH,
+        sqlite_load_millis: 0,
+        save_stats: MediaMatchV3SaveStats::default(),
     })
+}
+
+fn save_fresh_fingerprint_if_needed(
+    cache: &mut BTreeMap<(String, [u8; 32]), CachedFingerprint>,
+    fingerprint: &mut CachedFingerprint,
+    connection: &Connection,
+) -> Result<(), String> {
+    if fingerprint.source != FINGERPRINT_SOURCE_FRESH
+        || fingerprint.save_stats.sqlite_save_millis != 0
+    {
+        return Ok(());
+    }
+    let save_stats =
+        save_media_match_v3_record_with_stats(connection, &fingerprint.fingerprint.record, None)?;
+    fingerprint.save_stats = save_stats;
+    let cache_key = (
+        fingerprint
+            .fingerprint
+            .record
+            .identity
+            .normalized_path
+            .clone(),
+        media_extraction_settings_hash(&fingerprint.fingerprint.record.extraction_settings),
+    );
+    if let Some(cached) = cache.get_mut(&cache_key) {
+        cached.save_stats = save_stats;
+    }
+    Ok(())
+}
+
+fn cap_sampled_index_decision_if_needed(
+    mut decision: MediaMatchDecision,
+    index_mode: MediaMatchV3DiagnosticIndexMode,
+) -> MediaMatchDecision {
+    if !matches!(index_mode, MediaMatchV3DiagnosticIndexMode::Sampled) {
+        return decision;
+    }
+    if decision.tier == MediaMatchTier::Strong {
+        decision.tier = MediaMatchTier::Probable;
+        if decision.evidence.v3_class == Some(MatchClassV3::SameCutStrong) {
+            decision.evidence.v3_class = Some(MatchClassV3::SameCutProbable);
+        }
+        if let Some(map) = &mut decision.evidence.timeline_map_v3
+            && map.global_class == MatchClassV3::SameCutStrong
+        {
+            map.global_class = MatchClassV3::SameCutProbable;
+            map.current_position_class = MatchClassV3::SameCutProbable;
+        }
+        decision
+            .evidence
+            .notes
+            .push("sampled index mode caps direct decision below Strong; full verification is required for SameCutStrong autoplay".to_owned());
+        decision.explanation = format!(
+            "{}; sampled index requires full verification for Strong",
+            decision.explanation
+        );
+    }
+    decision
 }
 
 fn diagnostics_for_cached_fingerprint(
@@ -1081,6 +1280,22 @@ mod tests {
     }
 
     #[test]
+    fn sampled_index_decision_is_capped_below_autoplay_strong() {
+        let settings = diagnostic_decision_settings();
+        let decision = cap_sampled_index_decision_if_needed(
+            decision_with_offset_ms(0),
+            MediaMatchV3DiagnosticIndexMode::Sampled,
+        );
+
+        assert_eq!(decision.tier, MediaMatchTier::Probable);
+        assert_eq!(
+            decision.evidence.v3_class,
+            Some(MatchClassV3::SameCutProbable)
+        );
+        assert!(!decision.same_media_for_autoplay(&settings));
+    }
+
+    #[test]
     fn diagnostic_report_includes_cache_root_and_retention() {
         let cache_root = PathBuf::from("C:/diagnostic-cache");
         let manifest = MediaMatchV3DiagnosticManifest {
@@ -1096,6 +1311,7 @@ mod tests {
                 cache_root: cache_root.clone(),
                 cache_retained: true,
                 refresh_cache: false,
+                index_mode: MediaMatchV3DiagnosticIndexMode::Full,
                 tools: MediaMatchToolPaths {
                     ffmpeg: PathBuf::from("ffmpeg"),
                     ffprobe: PathBuf::from("ffprobe"),
@@ -1138,6 +1354,7 @@ mod tests {
                 cache_root: cache_root.clone(),
                 cache_retained: true,
                 refresh_cache: false,
+                index_mode: MediaMatchV3DiagnosticIndexMode::Full,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
             },
@@ -1189,6 +1406,7 @@ mod tests {
                 cache_root: cache_root.clone(),
                 cache_retained: true,
                 refresh_cache: false,
+                index_mode: MediaMatchV3DiagnosticIndexMode::Full,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
             },
@@ -1231,6 +1449,7 @@ mod tests {
                 cache_root,
                 cache_retained: true,
                 refresh_cache: false,
+                index_mode: MediaMatchV3DiagnosticIndexMode::Full,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
             },
@@ -1262,6 +1481,7 @@ mod tests {
                 cache_root,
                 cache_retained: true,
                 refresh_cache: false,
+                index_mode: MediaMatchV3DiagnosticIndexMode::Full,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
             },

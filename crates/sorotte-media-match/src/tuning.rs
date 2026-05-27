@@ -44,10 +44,15 @@ pub(crate) const V3_AUDIO_PAIR_FANOUT: usize = 8;
 pub(crate) const V3_AUDIO_PAIR_CANDIDATE_RETAIN: usize = V3_AUDIO_PAIR_FANOUT * 4;
 pub(crate) const V3_AUDIO_VERIFY_LANDMARK_LIMIT: usize = 2048;
 pub(crate) const V3_AUDIO_INDEX_LANDMARK_LIMIT: usize = 512;
+pub(crate) const V3_AUDIO_SAMPLED_INDEX_LANDMARK_LIMIT: usize = 512;
+pub(crate) const V3_AUDIO_SAMPLED_INDEX_WINDOW_SECONDS: u32 = 30;
+pub(crate) const V3_AUDIO_SAMPLED_INDEX_WINDOW_COUNT: usize = 5;
 // Streaming audio keeps only a winnowed raw landmark buffer; this bounds noisy/long files
 // while preserving enough oversampling for the final time-distributed selector.
 pub(crate) const V3_AUDIO_RAW_LANDMARK_BUFFER_LIMIT: usize = V3_AUDIO_VERIFY_LANDMARK_LIMIT * 8;
 pub(crate) const V3_AUDIO_RAW_LANDMARK_RETAIN_LIMIT: usize = V3_AUDIO_VERIFY_LANDMARK_LIMIT * 4;
+pub(crate) const V3_AUDIO_RAW_REGION_RETAIN_LIMIT: usize = 512;
+pub(crate) const V3_AUDIO_RAW_REGION_TRIM_BURST: usize = 128;
 
 // V3 video retrieval and descriptor thresholds.
 pub(crate) const VIDEO_LSH_BANDS: u32 = 4;
@@ -103,8 +108,12 @@ pub struct V3Tuning {
     pub audio_pair_candidate_retain: usize,
     pub audio_verify_landmark_limit: usize,
     pub audio_index_landmark_limit: usize,
+    pub audio_sampled_index_landmark_limit: usize,
+    pub audio_sampled_index_window_seconds: u32,
+    pub audio_sampled_index_window_count: usize,
     pub audio_raw_landmark_buffer_limit: usize,
     pub audio_raw_landmark_retain_limit: usize,
+    pub audio_raw_region_retain_limit: usize,
     pub video_verify_landmark_limit: usize,
     pub video_index_landmark_limit: usize,
     pub retrieval_prefilter_limit: usize,
@@ -140,8 +149,12 @@ pub fn current_v3_tuning() -> V3Tuning {
         audio_pair_candidate_retain: V3_AUDIO_PAIR_CANDIDATE_RETAIN,
         audio_verify_landmark_limit: V3_AUDIO_VERIFY_LANDMARK_LIMIT,
         audio_index_landmark_limit: V3_AUDIO_INDEX_LANDMARK_LIMIT,
+        audio_sampled_index_landmark_limit: V3_AUDIO_SAMPLED_INDEX_LANDMARK_LIMIT,
+        audio_sampled_index_window_seconds: V3_AUDIO_SAMPLED_INDEX_WINDOW_SECONDS,
+        audio_sampled_index_window_count: V3_AUDIO_SAMPLED_INDEX_WINDOW_COUNT,
         audio_raw_landmark_buffer_limit: V3_AUDIO_RAW_LANDMARK_BUFFER_LIMIT,
         audio_raw_landmark_retain_limit: V3_AUDIO_RAW_LANDMARK_RETAIN_LIMIT,
+        audio_raw_region_retain_limit: V3_AUDIO_RAW_REGION_RETAIN_LIMIT,
         video_verify_landmark_limit: V3_VIDEO_VERIFY_LANDMARK_LIMIT,
         video_index_landmark_limit: V3_VIDEO_INDEX_LANDMARK_LIMIT,
         retrieval_prefilter_limit: V3_RETRIEVAL_PREFILTER_LIMIT,
@@ -174,6 +187,22 @@ mod tests {
         assert_eq!(
             value["audioIndexLandmarkLimit"].as_u64(),
             Some(V3_AUDIO_INDEX_LANDMARK_LIMIT as u64)
+        );
+        assert_eq!(
+            value["audioSampledIndexLandmarkLimit"].as_u64(),
+            Some(V3_AUDIO_SAMPLED_INDEX_LANDMARK_LIMIT as u64)
+        );
+        assert_eq!(
+            value["audioSampledIndexWindowSeconds"].as_u64(),
+            Some(u64::from(V3_AUDIO_SAMPLED_INDEX_WINDOW_SECONDS))
+        );
+        assert_eq!(
+            value["audioSampledIndexWindowCount"].as_u64(),
+            Some(V3_AUDIO_SAMPLED_INDEX_WINDOW_COUNT as u64)
+        );
+        assert_eq!(
+            value["audioRawRegionRetainLimit"].as_u64(),
+            Some(V3_AUDIO_RAW_REGION_RETAIN_LIMIT as u64)
         );
         assert_eq!(
             value["videoVerifyLandmarkLimit"].as_u64(),

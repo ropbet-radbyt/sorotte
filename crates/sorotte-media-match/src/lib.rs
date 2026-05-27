@@ -19,14 +19,14 @@ pub use anchors::{AudioAnchor, VideoAnchor};
 pub use diagnostic_harness::{
     MediaMatchV3DiagnosticCandidateReport, MediaMatchV3DiagnosticCaseReport,
     MediaMatchV3DiagnosticDecisionReport, MediaMatchV3DiagnosticExpectation,
-    MediaMatchV3DiagnosticFingerprintReport, MediaMatchV3DiagnosticManifest,
-    MediaMatchV3DiagnosticManifestCase, MediaMatchV3DiagnosticReport,
-    MediaMatchV3DiagnosticRetrievalReport, MediaMatchV3DiagnosticRunOptions,
-    MediaMatchV3DiagnosticSummaryReport, MediaMatchV3ResolvedManifest,
-    MediaMatchV3ResolvedManifestCandidate, MediaMatchV3ResolvedManifestCase,
-    media_match_v3_diagnostic_manifest_from_json, media_match_v3_diagnostic_manifest_report_json,
-    resolve_media_match_v3_diagnostic_manifest, run_media_match_v3_diagnostic_manifest,
-    validate_media_match_v3_diagnostic_manifest,
+    MediaMatchV3DiagnosticFingerprintReport, MediaMatchV3DiagnosticIndexMode,
+    MediaMatchV3DiagnosticManifest, MediaMatchV3DiagnosticManifestCase,
+    MediaMatchV3DiagnosticReport, MediaMatchV3DiagnosticRetrievalReport,
+    MediaMatchV3DiagnosticRunOptions, MediaMatchV3DiagnosticSummaryReport,
+    MediaMatchV3ResolvedManifest, MediaMatchV3ResolvedManifestCandidate,
+    MediaMatchV3ResolvedManifestCase, media_match_v3_diagnostic_manifest_from_json,
+    media_match_v3_diagnostic_manifest_report_json, resolve_media_match_v3_diagnostic_manifest,
+    run_media_match_v3_diagnostic_manifest, validate_media_match_v3_diagnostic_manifest,
 };
 pub use diagnostics::{
     MediaMatchV3DiagnosticSummary, summarize_decision_v3_diagnostics,
@@ -49,8 +49,9 @@ pub use report_compare::{
     validate_media_match_v3_report_pair_compatible,
 };
 pub use settings::{
-    MEDIA_MATCH_V3_FINGERPRINT_CACHE_VERSION, MediaExtractionSettings, MediaFingerprintProfile,
-    media_extraction_settings_hash, media_match_v3_fingerprint_config_hash,
+    MEDIA_MATCH_V3_FINGERPRINT_CACHE_VERSION, MediaAudioIndexMode, MediaExtractionSettings,
+    MediaFingerprintProfile, media_extraction_settings_hash,
+    media_match_v3_fingerprint_config_hash,
 };
 pub use timeline_v3::{
     classify_timeline_at_query_ms, map_candidate_position_to_query_ms,
@@ -66,14 +67,15 @@ pub use types::{
 // The GUI/runtime owns cache location and rebuild lifecycle; these wrappers keep the SQL/index
 // implementation centralized in this crate while still letting runtime code maintain the cache.
 pub use v3_index::{
-    MediaMatchV3RetrievalStats, anchor_stats_v3_dirty, clear_all_anchor_stats_v3_dirty,
-    clear_anchor_stats_v3_dirty, delete_media_match_v3_file_and_fingerprints,
-    delete_media_match_v3_fingerprints_and_anchors, initialize_media_match_v3_index,
-    load_media_match_v3_cache_for_settings, load_media_match_v3_record_for_path,
-    mark_anchor_stats_v3_dirty, mark_anchor_stats_v3_dirty_for_file,
-    media_match_v3_anchor_candidate_paths_with_stats, media_match_v3_index_path,
-    open_media_match_v3_index, refresh_all_anchor_stats_v3, refresh_anchor_stats_v3,
-    refresh_dirty_anchor_stats_v3_if_needed, save_media_match_v3_record,
+    MediaMatchV3RetrievalStats, MediaMatchV3SaveStats, anchor_stats_v3_dirty,
+    clear_all_anchor_stats_v3_dirty, clear_anchor_stats_v3_dirty,
+    delete_media_match_v3_file_and_fingerprints, delete_media_match_v3_fingerprints_and_anchors,
+    initialize_media_match_v3_index, load_media_match_v3_cache_for_settings,
+    load_media_match_v3_record_for_path, mark_anchor_stats_v3_dirty,
+    mark_anchor_stats_v3_dirty_for_file, media_match_v3_anchor_candidate_paths_with_stats,
+    media_match_v3_index_path, open_media_match_v3_index, refresh_all_anchor_stats_v3,
+    refresh_anchor_stats_v3, refresh_dirty_anchor_stats_v3_if_needed, save_media_match_v3_record,
+    save_media_match_v3_record_with_stats,
 };
 // These descriptor types and kind helpers are intentionally public: GUI/runtime tests build
 // V3 fixture records directly, and valid test fixtures need kind-encoded video buckets.

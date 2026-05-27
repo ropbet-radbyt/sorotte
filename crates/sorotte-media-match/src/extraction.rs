@@ -20,13 +20,17 @@ use crate::{
         audio_anchors_from_record, media_fingerprint_wire_summary_from_record,
         video_anchors_from_record,
     },
-    audio_v3::{AudioConstellationV3PcmStream, AudioLandmarkV3},
+    audio_v3::{
+        AudioConstellationV3PcmStream, AudioLandmarkV3,
+        bounded_time_distributed_audio_landmarks_v3_for_duration,
+    },
     identity::{container_fingerprint_from_metadata, normalize_media_path},
-    settings::{MediaExtractionSettings, MediaFingerprintProfile},
+    settings::{MediaAudioIndexMode, MediaExtractionSettings, MediaFingerprintProfile},
     tuning::{
         FFMPEG_AUDIO_V3_TIMEOUT, FFMPEG_FULL_VIDEO_TIMEOUT, FFPROBE_TIMEOUT,
-        MEDIA_TOOL_POLL_INTERVAL, V3_AUDIO_SAMPLE_RATE, VIDEO_FRAME_BYTES, VIDEO_FRAME_HEIGHT,
-        VIDEO_FRAME_WIDTH,
+        MEDIA_TOOL_POLL_INTERVAL, V3_AUDIO_SAMPLE_RATE, V3_AUDIO_SAMPLED_INDEX_LANDMARK_LIMIT,
+        V3_AUDIO_SAMPLED_INDEX_WINDOW_COUNT, V3_AUDIO_SAMPLED_INDEX_WINDOW_SECONDS,
+        VIDEO_FRAME_BYTES, VIDEO_FRAME_HEIGHT, VIDEO_FRAME_WIDTH,
     },
     types::{MediaFileIdentity, MediaFingerprintRecord},
     video_v3::{
@@ -60,6 +64,7 @@ pub struct MediaAudioStreamMetrics {
     pub streamed_bytes: usize,
     pub streamed_samples: usize,
     pub peak_frames: usize,
+    pub raw_landmarks_emitted: usize,
     pub raw_landmarks_before_bounding: usize,
     pub final_landmarks: usize,
     pub max_buffer_samples: usize,
@@ -67,9 +72,14 @@ pub struct MediaAudioStreamMetrics {
     pub max_raw_landmarks_after_compaction: usize,
     pub raw_landmark_compactions: usize,
     pub analyzer_millis: u128,
+    pub pairing_millis: u128,
     pub compaction_millis: u128,
     pub final_selection_millis: u128,
+    pub ffmpeg_process_wall_millis: u128,
+    pub pcm_decode_drain_millis: u128,
     pub ffmpeg_decode_stream_millis: u128,
+    pub sampled_audio_seconds_decoded: u32,
+    pub full_audio_seconds_decoded: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -230,12 +240,22 @@ pub fn fingerprint_media_file_with_report(
     );
     let mut audio_anchors = Vec::new();
     let started_at = Instant::now();
-    let audio_result = extract_audio_constellation_v3_with_metrics(
-        &tools.ffmpeg,
-        path,
-        duration_seconds,
-        cancel_flag,
-    );
+    let audio_result = match extraction_settings.audio_index_mode {
+        MediaAudioIndexMode::FullVerify => extract_audio_constellation_v3_with_metrics(
+            &tools.ffmpeg,
+            path,
+            duration_seconds,
+            cancel_flag,
+        ),
+        MediaAudioIndexMode::SampledIndex => {
+            extract_audio_constellation_v3_sampled_index_with_metrics(
+                &tools.ffmpeg,
+                path,
+                duration_seconds,
+                cancel_flag,
+            )
+        }
+    };
     report.invocations.ffmpeg += 1;
     report.timings.audio_millis = started_at.elapsed().as_millis();
     match audio_result {
@@ -397,7 +417,13 @@ pub(crate) fn extract_audio_constellation_v3_with_metrics(
             reason: "audio stream state was poisoned".to_owned(),
         })?;
     let (landmarks, mut metrics) = stream.finish(duration_seconds)?;
+    metrics.ffmpeg_process_wall_millis = decode_stream_millis;
+    metrics.pcm_decode_drain_millis = decode_stream_millis;
     metrics.ffmpeg_decode_stream_millis = decode_stream_millis;
+    metrics.full_audio_seconds_decoded = duration_seconds
+        .filter(|duration| duration.is_finite() && *duration > 0.0)
+        .map(|duration| duration.ceil() as u32)
+        .unwrap_or(0);
     if landmarks.is_empty() {
         return Err(MediaFingerprintError::InvalidToolOutput {
             tool: "ffmpeg",
@@ -405,6 +431,179 @@ pub(crate) fn extract_audio_constellation_v3_with_metrics(
         });
     }
     Ok((landmarks, metrics))
+}
+
+pub(crate) fn extract_audio_constellation_v3_sampled_index_with_metrics(
+    ffmpeg: impl AsRef<Path>,
+    media_path: impl AsRef<Path>,
+    duration_seconds: Option<f64>,
+    cancel_flag: Option<&AtomicBool>,
+) -> Result<(Vec<AudioLandmarkV3>, MediaAudioStreamMetrics), MediaFingerprintError> {
+    let windows = sampled_audio_windows_v3(duration_seconds);
+    if windows.is_empty() {
+        return extract_audio_constellation_v3_with_metrics(
+            ffmpeg,
+            media_path,
+            duration_seconds,
+            cancel_flag,
+        );
+    }
+
+    let mut all_landmarks = Vec::new();
+    let mut combined_metrics = MediaAudioStreamMetrics::default();
+    let mut process_wall_millis = 0u128;
+    for (start_seconds, window_seconds) in windows {
+        let started_at = Instant::now();
+        let stream = Arc::new(Mutex::new(AudioConstellationV3PcmStream::new(
+            V3_AUDIO_SAMPLE_RATE,
+        )));
+        let stream_reader = Arc::clone(&stream);
+        run_tool_streaming_stdout(
+            "ffmpeg",
+            ffmpeg.as_ref(),
+            [
+                "-v".into(),
+                "error".into(),
+                "-nostdin".into(),
+                "-ss".into(),
+                format!("{start_seconds:.3}").into(),
+                "-t".into(),
+                window_seconds.to_string().into(),
+                "-i".into(),
+                media_path.as_ref().as_os_str().to_os_string(),
+                "-vn".into(),
+                "-ac".into(),
+                "1".into(),
+                "-ar".into(),
+                V3_AUDIO_SAMPLE_RATE.to_string().into(),
+                "-f".into(),
+                "s16le".into(),
+                "-".into(),
+            ],
+            cancel_flag,
+            FFMPEG_AUDIO_V3_TIMEOUT,
+            move |chunk| {
+                stream_reader
+                    .lock()
+                    .map_err(|_| MediaFingerprintError::InvalidToolOutput {
+                        tool: "ffmpeg",
+                        reason: "audio stream state was poisoned".to_owned(),
+                    })?
+                    .push_bytes(chunk)
+            },
+        )?;
+        let window_wall = started_at.elapsed().as_millis();
+        process_wall_millis += window_wall;
+        let stream =
+            Arc::try_unwrap(stream).map_err(|_| MediaFingerprintError::InvalidToolOutput {
+                tool: "ffmpeg",
+                reason: "audio stream state was still shared after ffmpeg exit".to_owned(),
+            })?;
+        let stream = stream
+            .into_inner()
+            .map_err(|_| MediaFingerprintError::InvalidToolOutput {
+                tool: "ffmpeg",
+                reason: "audio stream state was poisoned".to_owned(),
+            })?;
+        let (mut landmarks, metrics) = stream.finish(Some(f64::from(window_seconds)))?;
+        let start_ms = (start_seconds * 1000.0)
+            .round()
+            .clamp(0.0, f64::from(u32::MAX)) as u32;
+        for landmark in &mut landmarks {
+            landmark.t_ms = landmark.t_ms.saturating_add(start_ms);
+        }
+        all_landmarks.extend(landmarks);
+        merge_audio_stream_metrics(&mut combined_metrics, &metrics);
+        combined_metrics.sampled_audio_seconds_decoded = combined_metrics
+            .sampled_audio_seconds_decoded
+            .saturating_add(window_seconds);
+    }
+
+    let selection_started_at = Instant::now();
+    let mut bounded = all_landmarks;
+    let raw_before_bounding = bounded.len();
+    bounded = bounded_time_distributed_audio_landmarks_v3_for_duration(
+        &mut bounded,
+        V3_AUDIO_SAMPLED_INDEX_LANDMARK_LIMIT,
+        duration_seconds,
+    );
+    combined_metrics.final_selection_millis = combined_metrics
+        .final_selection_millis
+        .saturating_add(selection_started_at.elapsed().as_millis());
+    combined_metrics.final_landmarks = bounded.len();
+    combined_metrics.raw_landmarks_before_bounding = raw_before_bounding;
+    combined_metrics.ffmpeg_process_wall_millis = process_wall_millis;
+    combined_metrics.pcm_decode_drain_millis = process_wall_millis;
+    combined_metrics.ffmpeg_decode_stream_millis = process_wall_millis;
+    if bounded.is_empty() {
+        return Err(MediaFingerprintError::InvalidToolOutput {
+            tool: "ffmpeg",
+            reason: "sampled decoded audio did not produce constellation landmarks".to_owned(),
+        });
+    }
+    Ok((bounded, combined_metrics))
+}
+
+fn sampled_audio_windows_v3(duration_seconds: Option<f64>) -> Vec<(f64, u32)> {
+    let duration = duration_seconds.unwrap_or(0.0);
+    if !duration.is_finite() || duration <= f64::from(V3_AUDIO_SAMPLED_INDEX_WINDOW_SECONDS) {
+        return Vec::new();
+    }
+    let window = V3_AUDIO_SAMPLED_INDEX_WINDOW_SECONDS;
+    let count = V3_AUDIO_SAMPLED_INDEX_WINDOW_COUNT;
+    let edge_skip: f64 = if duration >= 600.0 { 180.0 } else { 30.0 };
+    let body_start = edge_skip.min((duration - f64::from(window)).max(0.0));
+    let body_end = (duration - edge_skip - f64::from(window)).max(body_start);
+    let mut starts = Vec::new();
+    if count <= 1 || body_end <= body_start {
+        starts.push(body_start);
+    } else {
+        for index in 0..count {
+            let fraction = index as f64 / (count - 1) as f64;
+            starts.push(body_start + (body_end - body_start) * fraction);
+        }
+    }
+    starts
+        .into_iter()
+        .map(|start| (start.max(0.0), window))
+        .collect()
+}
+
+fn merge_audio_stream_metrics(
+    target: &mut MediaAudioStreamMetrics,
+    source: &MediaAudioStreamMetrics,
+) {
+    target.streamed_bytes = target.streamed_bytes.saturating_add(source.streamed_bytes);
+    target.streamed_samples = target
+        .streamed_samples
+        .saturating_add(source.streamed_samples);
+    target.peak_frames = target.peak_frames.saturating_add(source.peak_frames);
+    target.raw_landmarks_emitted = target
+        .raw_landmarks_emitted
+        .saturating_add(source.raw_landmarks_emitted);
+    target.raw_landmarks_before_bounding = target
+        .raw_landmarks_before_bounding
+        .saturating_add(source.raw_landmarks_before_bounding);
+    target.max_buffer_samples = target.max_buffer_samples.max(source.max_buffer_samples);
+    target.max_raw_landmarks_seen = target
+        .max_raw_landmarks_seen
+        .max(source.max_raw_landmarks_seen);
+    target.max_raw_landmarks_after_compaction = target
+        .max_raw_landmarks_after_compaction
+        .max(source.max_raw_landmarks_after_compaction);
+    target.raw_landmark_compactions = target
+        .raw_landmark_compactions
+        .saturating_add(source.raw_landmark_compactions);
+    target.analyzer_millis = target
+        .analyzer_millis
+        .saturating_add(source.analyzer_millis);
+    target.pairing_millis = target.pairing_millis.saturating_add(source.pairing_millis);
+    target.compaction_millis = target
+        .compaction_millis
+        .saturating_add(source.compaction_millis);
+    target.final_selection_millis = target
+        .final_selection_millis
+        .saturating_add(source.final_selection_millis);
 }
 
 pub(crate) fn extract_video_fingerprint_with_cancellation(

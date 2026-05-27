@@ -36,10 +36,36 @@ fn default_media_fingerprint_profile() -> MediaFingerprintProfile {
     MediaFingerprintProfile::AudioConstellationV3
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MediaAudioIndexMode {
+    FullVerify,
+    SampledIndex,
+}
+
+impl MediaAudioIndexMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::FullVerify => "full-verify",
+            Self::SampledIndex => "sampled-index",
+        }
+    }
+
+    pub fn is_sampled(self) -> bool {
+        matches!(self, Self::SampledIndex)
+    }
+}
+
+fn default_media_audio_index_mode() -> MediaAudioIndexMode {
+    MediaAudioIndexMode::FullVerify
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MediaExtractionSettings {
     #[serde(default = "default_media_fingerprint_profile")]
     pub profile: MediaFingerprintProfile,
+    #[serde(default = "default_media_audio_index_mode")]
+    pub audio_index_mode: MediaAudioIndexMode,
     pub frame_sample_interval_seconds: u32,
     pub max_frames: usize,
     pub audio_algorithm: String,
@@ -56,6 +82,7 @@ impl MediaExtractionSettings {
     pub fn audio_constellation_v3() -> Self {
         Self {
             profile: MediaFingerprintProfile::AudioConstellationV3,
+            audio_index_mode: MediaAudioIndexMode::FullVerify,
             frame_sample_interval_seconds: 0,
             max_frames: 0,
             audio_algorithm: "sorotte-audio-constellation-v3".to_owned(),
@@ -66,10 +93,19 @@ impl MediaExtractionSettings {
     pub fn combined_v3() -> Self {
         Self {
             profile: MediaFingerprintProfile::CombinedV3,
+            audio_index_mode: MediaAudioIndexMode::FullVerify,
             frame_sample_interval_seconds: 10,
             max_frames: 64,
             audio_algorithm: "sorotte-audio-constellation-v3".to_owned(),
             video_algorithm: "sorotte-video-scene-v3".to_owned(),
+        }
+    }
+
+    pub fn sampled_audio_index_v3() -> Self {
+        Self {
+            audio_index_mode: MediaAudioIndexMode::SampledIndex,
+            audio_algorithm: "sorotte-audio-constellation-v3-sampled-index".to_owned(),
+            ..Self::audio_constellation_v3()
         }
     }
 }
@@ -132,6 +168,18 @@ mod tests {
             media_match_v3_fingerprint_config_hash(&MediaExtractionSettings::combined_v3());
 
         assert_ne!(audio, combined);
+    }
+
+    #[test]
+    fn fingerprint_config_hash_changes_with_audio_index_mode() {
+        let full = media_match_v3_fingerprint_config_hash(
+            &MediaExtractionSettings::audio_constellation_v3(),
+        );
+        let sampled = media_match_v3_fingerprint_config_hash(
+            &MediaExtractionSettings::sampled_audio_index_v3(),
+        );
+
+        assert_ne!(full, sampled);
     }
 
     #[test]

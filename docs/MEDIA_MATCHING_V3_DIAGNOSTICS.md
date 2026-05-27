@@ -48,6 +48,25 @@ selected manifest/cases, re-extract them, and overwrite those V3 cache rows:
 cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-refresh.json --cache-root .media-match-v3-cache-audio --refresh-cache
 ```
 
+Use `--index-mode` to separate retrieval calibration from full verification:
+
+```powershell
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-full.json --cache-root .media-match-v3-cache-audio --index-mode full
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-sampled.json --cache-root .media-match-v3-cache-audio-sampled --index-mode sampled
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-sampled-then-full.json --cache-root .media-match-v3-cache-audio-promote --index-mode sampled-then-full
+```
+
+Modes:
+
+- `full`: full-file verification fingerprints are used for both retrieval and
+  direct decisions.
+- `sampled`: body-distributed audio windows are decoded for a fast retrieval
+  index. Direct decisions are capped below `Strong`; sampled-only records are
+  not autoplay-eligible as `SameCutStrong`.
+- `sampled-then-full`: build the sampled index first, retrieve against that
+  steady-state index, then full-verify the reported query/candidate pairs for
+  direct decisions.
+
 V3 requires only `ffmpeg` and `ffprobe`. The runner uses
 `SOROTTE_MEDIA_MATCH_FFMPEG` and `SOROTTE_MEDIA_MATCH_FFPROBE` when set;
 otherwise it resolves `ffmpeg` and `ffprobe` from `PATH`.
@@ -70,6 +89,11 @@ Fingerprint source labels:
 `summary.totalExtractionMillis` is current-run fresh extraction time only.
 Fingerprints loaded from `sqlite-cache` still report blob/index counts, but they
 do not add extraction time.
+Diagnostic runs use two-pass indexing: first every selected query/candidate
+fingerprint is loaded or extracted and saved into the V3 SQLite index, then
+retrieval and direct decisions are evaluated. This makes cold and warm retrieval
+quality comparable because every case queries against the same selected indexed
+population.
 The summary has two source-count families:
 
 - `uniqueFreshFingerprintCount`, `uniqueMemoryCacheFingerprintCount`, and
@@ -81,6 +105,12 @@ The summary has two source-count families:
 
 A duplicate candidate path can have row source `memory-cache` while the unique
 counts still count only the first source for that path/settings key.
+
+Current real-corpus measurements on the Bakemonogatari audio-only manifest put
+full verification extraction around 16 seconds per 25-minute file on the tested
+Windows machine. Retrieval and same-cut verification are fast once fingerprints
+exist. Use sampled index mode for fast background shortlist calibration, and use
+full verification for any `Strong` / `SameCutStrong` autoplay-eligible result.
 
 ## Corpus Calibration Workflow
 
@@ -318,7 +348,9 @@ The JSON report includes:
   (`freshFingerprintReportCount`, `memoryCacheFingerprintReportCount`,
   `sqliteCacheFingerprintReportCount`)
 - extraction diagnostics: timings, audio/video landmark counts, blob bytes, and
-  streaming audio metrics
+  streaming audio metrics, including ffmpeg process wall time, analyzer time,
+  pairing time, reservoir trimming time, final selection time, and sampled/full
+  decoded audio seconds
 - retrieval diagnostics: bucket counts, skipped common buckets, raw hit rows,
   scored candidates, elapsed time, and retrieved candidate paths
 - decision diagnostics: tier, V3 class, explanation, offset, scale, segment
@@ -362,6 +394,10 @@ isolated fixture without checking the broader corpus.
 - Large raw hit row count or common-bucket pressure: inspect skipped-common
   buckets, raw hit rows, and whether static/common audio or video landmarks need
   better rarity filtering.
+- Cold extraction cost: inspect `ffmpegProcessWallMillis`, `analyzerMillis`,
+  `pairingMillis`, `compactionMillis`, `finalSelectionMillis`,
+  `sqliteSaveMillis`, and `indexInsertMillis`. If full extraction is the
+  bottleneck, compare with `--index-mode sampled` before changing thresholds.
 
 ## Dry-Run Command Sequence
 

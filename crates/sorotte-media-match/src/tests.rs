@@ -993,6 +993,7 @@ fn v3_diagnostics_serializes_stable_stream_metric_names() {
                 streamed_bytes: 10_000,
                 streamed_samples: 5_000,
                 peak_frames: 12,
+                raw_landmarks_emitted: 360,
                 raw_landmarks_before_bounding: 300,
                 final_landmarks: 96,
                 max_buffer_samples: V3_AUDIO_WINDOW_SAMPLES + V3_AUDIO_HOP_SAMPLES,
@@ -1000,9 +1001,14 @@ fn v3_diagnostics_serializes_stable_stream_metric_names() {
                 max_raw_landmarks_after_compaction: 512,
                 raw_landmark_compactions: 2,
                 analyzer_millis: 31,
+                pairing_millis: 11,
                 compaction_millis: 7,
                 final_selection_millis: 3,
+                ffmpeg_process_wall_millis: 43,
+                pcm_decode_drain_millis: 41,
                 ffmpeg_decode_stream_millis: 41,
+                sampled_audio_seconds_decoded: 0,
+                full_audio_seconds_decoded: 120,
             },
             ..MediaFingerprintExtractionReport::default()
         },
@@ -1014,6 +1020,7 @@ fn v3_diagnostics_serializes_stable_stream_metric_names() {
     assert_eq!(value["streamedBytes"], 10_000);
     assert_eq!(value["streamedSamples"], 5_000);
     assert_eq!(value["peakFrames"], 12);
+    assert_eq!(value["rawLandmarksEmitted"], 360);
     assert_eq!(value["rawLandmarksBeforeBounding"], 300);
     assert_eq!(value["finalLandmarks"], 96);
     assert_eq!(
@@ -1023,6 +1030,13 @@ fn v3_diagnostics_serializes_stable_stream_metric_names() {
     assert_eq!(value["maxRawLandmarksSeen"], 1_100);
     assert_eq!(value["maxRawLandmarksAfterCompaction"], 512);
     assert_eq!(value["rawLandmarkCompactions"], 2);
+    assert_eq!(value["ffmpegProcessWallMillis"], 43);
+    assert_eq!(value["pcmDecodeDrainMillis"], 41);
+    assert_eq!(value["analyzerMillis"], 31);
+    assert_eq!(value["pairingMillis"], 11);
+    assert_eq!(value["compactionMillis"], 7);
+    assert_eq!(value["finalSelectionMillis"], 3);
+    assert_eq!(value["fullAudioSecondsDecoded"], 120);
 }
 
 #[test]
@@ -1121,23 +1135,21 @@ fn v3_audio_streaming_builder_keeps_rolling_buffer_bounded() {
         metrics.max_raw_landmarks_after_compaction <= V3_AUDIO_RAW_LANDMARK_BUFFER_LIMIT,
         "{metrics:?}"
     );
-    let bounded_burst =
-        V3_AUDIO_PAIR_FANOUT * V3_AUDIO_MAX_PEAKS_PER_FRAME * V3_AUDIO_PAIR_MAX_DELTA_FRAMES;
     assert!(
-        metrics.max_raw_landmarks_seen <= V3_AUDIO_RAW_LANDMARK_BUFFER_LIMIT + bounded_burst,
+        metrics.max_raw_landmarks_seen <= V3_AUDIO_RAW_LANDMARK_BUFFER_LIMIT,
         "{metrics:?}"
     );
     assert!(
-        metrics.max_raw_landmarks_seen > V3_AUDIO_RAW_LANDMARK_RETAIN_LIMIT,
-        "long synthetic audio should report a pre-compaction peak: {metrics:?}"
+        metrics.raw_landmarks_emitted > metrics.max_raw_landmarks_seen,
+        "reservoir should emit more raw landmarks than it retains: {metrics:?}"
     );
     assert!(
-        metrics.max_raw_landmarks_after_compaction <= V3_AUDIO_RAW_LANDMARK_RETAIN_LIMIT,
+        metrics.max_raw_landmarks_after_compaction <= V3_AUDIO_RAW_LANDMARK_BUFFER_LIMIT,
         "{metrics:?}"
     );
     assert!(
         metrics.raw_landmark_compactions > 0,
-        "long synthetic audio should exercise raw landmark compaction: {metrics:?}"
+        "long synthetic audio should exercise per-region reservoir trimming: {metrics:?}"
     );
     assert!(metrics.streamed_samples > V3_AUDIO_WINDOW_SAMPLES * 100);
 }

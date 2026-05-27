@@ -3840,6 +3840,7 @@ mod tests {
                 cache_root: root.join("diagnostic-cache"),
                 cache_retained: true,
                 refresh_cache: false,
+                index_mode: sorotte_media_match::MediaMatchV3DiagnosticIndexMode::Full,
                 tools,
                 generated_at_unix_millis: Some(123),
             },

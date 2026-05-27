@@ -11,9 +11,8 @@ use crate::{
         V3_AUDIO_HOP_SAMPLES, V3_AUDIO_MAX_FREQ_HZ, V3_AUDIO_MAX_PEAKS_PER_FRAME,
         V3_AUDIO_MIN_FREQ_HZ, V3_AUDIO_PAIR_CANDIDATE_RETAIN, V3_AUDIO_PAIR_DELTA_STRIDE_FRAMES,
         V3_AUDIO_PAIR_FANOUT, V3_AUDIO_PAIR_MAX_DELTA_FRAMES, V3_AUDIO_PAIR_MIN_DELTA_FRAMES,
-        V3_AUDIO_PEAK_NEIGHBORHOOD, V3_AUDIO_RAW_LANDMARK_BUFFER_LIMIT,
-        V3_AUDIO_RAW_LANDMARK_RETAIN_LIMIT, V3_AUDIO_VERIFY_LANDMARK_LIMIT,
-        V3_AUDIO_WINDOW_SAMPLES,
+        V3_AUDIO_PEAK_NEIGHBORHOOD, V3_AUDIO_RAW_REGION_RETAIN_LIMIT,
+        V3_AUDIO_RAW_REGION_TRIM_BURST, V3_AUDIO_VERIFY_LANDMARK_LIMIT, V3_AUDIO_WINDOW_SAMPLES,
     },
     video_v3::stable_hash_u64,
 };
@@ -96,15 +95,13 @@ struct AudioConstellationV3Builder {
     analyzer: Option<AudioSpectralAnalyzerV3>,
     rolling_samples: Vec<i16>,
     recent_frames: VecDeque<AudioPeakFrameV3>,
-    raw_landmarks: Vec<AudioLandmarkV3>,
+    raw_landmarks: AudioLandmarkReservoirV3,
     next_frame_index: usize,
     peak_frames: usize,
     max_buffer_samples: usize,
-    max_raw_landmarks_seen: usize,
-    max_raw_landmarks_after_compaction: usize,
-    raw_landmark_compactions: usize,
     analyzer_nanos: u128,
     compaction_nanos: u128,
+    pairing_nanos: u128,
 }
 
 impl AudioConstellationV3Builder {
@@ -115,15 +112,13 @@ impl AudioConstellationV3Builder {
             analyzer,
             rolling_samples: Vec::with_capacity(V3_AUDIO_WINDOW_SAMPLES),
             recent_frames: VecDeque::new(),
-            raw_landmarks: Vec::new(),
+            raw_landmarks: AudioLandmarkReservoirV3::new(),
             next_frame_index: 0,
             peak_frames: 0,
             max_buffer_samples: 0,
-            max_raw_landmarks_seen: 0,
-            max_raw_landmarks_after_compaction: 0,
-            raw_landmark_compactions: 0,
             analyzer_nanos: 0,
             compaction_nanos: 0,
+            pairing_nanos: 0,
         }
     }
 
@@ -156,6 +151,7 @@ impl AudioConstellationV3Builder {
     }
 
     fn process_peak_frame(&mut self, frame_index: usize, peaks: Vec<AudioSpectralPeakV3>) {
+        let pairing_started_at = Instant::now();
         for anchor_frame in &mut self.recent_frames {
             let delta_frames = frame_index.saturating_sub(anchor_frame.frame_index);
             if !(V3_AUDIO_PAIR_MIN_DELTA_FRAMES..=V3_AUDIO_PAIR_MAX_DELTA_FRAMES)
@@ -173,6 +169,7 @@ impl AudioConstellationV3Builder {
                 }
             }
         }
+        self.pairing_nanos += pairing_started_at.elapsed().as_nanos();
         while self.recent_frames.front().is_some_and(|frame| {
             frame_index.saturating_sub(frame.frame_index) >= V3_AUDIO_PAIR_MAX_DELTA_FRAMES
         }) {
@@ -201,30 +198,14 @@ impl AudioConstellationV3Builder {
                 let strength = ((anchor_peak.magnitude + candidate.target_magnitude) * 4.0)
                     .round()
                     .clamp(1.0, f32::from(u8::MAX)) as u8;
+                let compaction_started_at = Instant::now();
                 self.raw_landmarks.push(AudioLandmarkV3 {
                     hash,
                     t_ms,
                     weight: strength,
                 });
-                self.max_raw_landmarks_seen =
-                    self.max_raw_landmarks_seen.max(self.raw_landmarks.len());
+                self.compaction_nanos += compaction_started_at.elapsed().as_nanos();
             }
-        }
-        self.compact_raw_landmarks_if_needed();
-    }
-
-    fn compact_raw_landmarks_if_needed(&mut self) {
-        if self.raw_landmarks.len() > V3_AUDIO_RAW_LANDMARK_BUFFER_LIMIT {
-            let started_at = Instant::now();
-            compact_audio_landmark_buffer_v3(
-                &mut self.raw_landmarks,
-                V3_AUDIO_RAW_LANDMARK_RETAIN_LIMIT,
-            );
-            self.compaction_nanos += started_at.elapsed().as_nanos();
-            self.raw_landmark_compactions += 1;
-            self.max_raw_landmarks_after_compaction = self
-                .max_raw_landmarks_after_compaction
-                .max(self.raw_landmarks.len());
         }
     }
 
@@ -235,29 +216,85 @@ impl AudioConstellationV3Builder {
         while let Some(frame) = self.recent_frames.pop_front() {
             self.emit_closed_peak_frame(frame);
         }
+        let raw_emitted = self.raw_landmarks.emitted_count;
         let raw_count = self.raw_landmarks.len();
-        let max_raw_landmarks_after_compaction = if self.raw_landmark_compactions == 0 {
-            raw_count
-        } else {
-            self.max_raw_landmarks_after_compaction
-        };
+        let max_retained = self.raw_landmarks.max_retained.max(raw_count);
+        let max_raw_landmarks_after_compaction = max_retained;
+        let raw_landmark_compactions = self.raw_landmarks.trim_count;
         let selection_started_at = Instant::now();
-        let landmarks = finish_bounded_audio_landmarks_v3(self.raw_landmarks, duration_seconds);
+        let landmarks = finish_bounded_audio_landmarks_v3(
+            self.raw_landmarks.into_landmarks(),
+            duration_seconds,
+        );
         let final_selection_millis = selection_started_at.elapsed().as_millis();
         let metrics = MediaAudioStreamMetrics {
             peak_frames: self.peak_frames,
             raw_landmarks_before_bounding: raw_count,
             final_landmarks: landmarks.len(),
             max_buffer_samples: self.max_buffer_samples,
-            max_raw_landmarks_seen: self.max_raw_landmarks_seen.max(raw_count),
+            raw_landmarks_emitted: raw_emitted,
+            max_raw_landmarks_seen: max_retained,
             max_raw_landmarks_after_compaction,
-            raw_landmark_compactions: self.raw_landmark_compactions,
+            raw_landmark_compactions,
             analyzer_millis: self.analyzer_nanos / 1_000_000,
             compaction_millis: self.compaction_nanos / 1_000_000,
+            pairing_millis: self.pairing_nanos / 1_000_000,
             final_selection_millis,
             ..MediaAudioStreamMetrics::default()
         };
         (landmarks, metrics)
+    }
+}
+
+struct AudioLandmarkReservoirV3 {
+    regions: HashMap<u32, Vec<AudioLandmarkV3>>,
+    emitted_count: usize,
+    max_retained: usize,
+    trim_count: usize,
+}
+
+impl AudioLandmarkReservoirV3 {
+    fn new() -> Self {
+        Self {
+            regions: HashMap::new(),
+            emitted_count: 0,
+            max_retained: 0,
+            trim_count: 0,
+        }
+    }
+
+    fn push(&mut self, landmark: AudioLandmarkV3) {
+        self.emitted_count += 1;
+        let region = landmark.t_ms / 60_000;
+        let bucket = self.regions.entry(region).or_default();
+        bucket.push(landmark);
+        if bucket.len() > V3_AUDIO_RAW_REGION_RETAIN_LIMIT + V3_AUDIO_RAW_REGION_TRIM_BURST {
+            trim_audio_landmark_region_v3(bucket, V3_AUDIO_RAW_REGION_RETAIN_LIMIT);
+            self.trim_count += 1;
+        }
+        self.max_retained = self.max_retained.max(self.len());
+    }
+
+    fn len(&self) -> usize {
+        self.regions.values().map(Vec::len).sum()
+    }
+
+    fn into_landmarks(self) -> Vec<AudioLandmarkV3> {
+        let mut landmarks = Vec::with_capacity(self.len());
+        let mut regions = self.regions.into_iter().collect::<Vec<_>>();
+        regions.sort_by_key(|(region, _)| *region);
+        for (_, mut region_landmarks) in regions {
+            trim_audio_landmark_region_v3(&mut region_landmarks, V3_AUDIO_RAW_REGION_RETAIN_LIMIT);
+            landmarks.extend(region_landmarks);
+        }
+        landmarks.sort_by_key(|landmark| {
+            (
+                landmark.t_ms,
+                landmark.hash,
+                std::cmp::Reverse(landmark.weight),
+            )
+        });
+        landmarks
     }
 }
 
@@ -379,61 +416,26 @@ fn finish_bounded_audio_landmarks_v3(
     )
 }
 
-fn compact_audio_landmark_buffer_v3(landmarks: &mut Vec<AudioLandmarkV3>, retain_limit: usize) {
+fn trim_audio_landmark_region_v3(landmarks: &mut Vec<AudioLandmarkV3>, retain_limit: usize) {
     dedupe_audio_landmarks_v3(landmarks);
     if landmarks.len() <= retain_limit {
         return;
     }
-    let mut by_weight = landmarks.clone();
-    by_weight.sort_by_key(|landmark| {
+    landmarks.sort_by_key(|landmark| {
         (
             std::cmp::Reverse(landmark.weight),
             landmark.t_ms,
             landmark.hash,
         )
     });
-    let high_weight_limit = retain_limit / 2;
-    let mut selected = by_weight
-        .into_iter()
-        .take(high_weight_limit)
-        .collect::<Vec<_>>();
-    let mut selected_keys = selected
-        .iter()
-        .map(|landmark| (landmark.hash, landmark.t_ms))
-        .collect::<HashSet<_>>();
-    let distributed_limit = retain_limit.saturating_sub(selected.len());
-    let mut distributed = bounded_time_distributed_audio_landmarks_v3(landmarks, distributed_limit);
-    for landmark in distributed.drain(..) {
-        if selected_keys.insert((landmark.hash, landmark.t_ms)) {
-            selected.push(landmark);
-        }
-    }
-    if selected.len() < retain_limit {
-        let mut remaining = landmarks.clone();
-        remaining.sort_by_key(|landmark| {
-            (
-                landmark.t_ms,
-                std::cmp::Reverse(landmark.weight),
-                landmark.hash,
-            )
-        });
-        for landmark in remaining {
-            if selected.len() >= retain_limit {
-                break;
-            }
-            if selected_keys.insert((landmark.hash, landmark.t_ms)) {
-                selected.push(landmark);
-            }
-        }
-    }
-    selected.sort_by_key(|landmark| {
+    landmarks.truncate(retain_limit);
+    landmarks.sort_by_key(|landmark| {
         (
             landmark.t_ms,
             landmark.hash,
             std::cmp::Reverse(landmark.weight),
         )
     });
-    *landmarks = selected;
 }
 
 #[cfg(test)]
@@ -702,13 +704,6 @@ fn downweight_edge_audio_landmarks_v3(landmarks: &mut [AudioLandmarkV3], duratio
             landmark.weight = landmark.weight.saturating_sub(landmark.weight / 2).max(1);
         }
     }
-}
-
-pub(crate) fn bounded_time_distributed_audio_landmarks_v3(
-    landmarks: &mut [AudioLandmarkV3],
-    max_landmarks: usize,
-) -> Vec<AudioLandmarkV3> {
-    bounded_time_distributed_audio_landmarks_v3_for_duration(landmarks, max_landmarks, None)
 }
 
 pub(crate) fn bounded_time_distributed_audio_landmarks_v3_for_duration(
