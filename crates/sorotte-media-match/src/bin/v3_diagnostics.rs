@@ -564,9 +564,20 @@ mod tests {
         let report_json = serde_json::to_value(&report).expect("report should serialize");
 
         assert_eq!(report.summary.failed, 0, "{report_json}");
-        assert_eq!(report.summary.fresh_fingerprint_count, 2, "{report_json}");
         assert_eq!(
-            report.summary.sqlite_cache_fingerprint_count, 0,
+            report.summary.unique_fresh_fingerprint_count, 2,
+            "{report_json}"
+        );
+        assert_eq!(
+            report.summary.fresh_fingerprint_report_count, 2,
+            "{report_json}"
+        );
+        assert_eq!(
+            report.summary.unique_sqlite_cache_fingerprint_count, 0,
+            "{report_json}"
+        );
+        assert_eq!(
+            report.summary.sqlite_cache_fingerprint_report_count, 0,
             "{report_json}"
         );
         assert_eq!(report.cases[0].query.source, "fresh");
@@ -605,8 +616,10 @@ mod tests {
         .expect("warm diagnostic harness run should use sqlite cache");
 
         assert_eq!(warm_report.summary.failed, 0);
-        assert_eq!(warm_report.summary.fresh_fingerprint_count, 0);
-        assert_eq!(warm_report.summary.sqlite_cache_fingerprint_count, 2);
+        assert_eq!(warm_report.summary.unique_fresh_fingerprint_count, 0);
+        assert_eq!(warm_report.summary.unique_sqlite_cache_fingerprint_count, 2);
+        assert_eq!(warm_report.summary.fresh_fingerprint_report_count, 0);
+        assert_eq!(warm_report.summary.sqlite_cache_fingerprint_report_count, 2);
         assert_eq!(warm_report.summary.total_extraction_millis, 0);
         assert_eq!(warm_report.cases[0].query.source, "sqlite-cache");
         assert_eq!(warm_report.cases[0].candidates[0].source, "sqlite-cache");
@@ -626,8 +639,16 @@ mod tests {
         .expect("refresh run should bypass sqlite cache");
 
         assert_eq!(refresh_report.summary.failed, 0);
-        assert_eq!(refresh_report.summary.fresh_fingerprint_count, 2);
-        assert_eq!(refresh_report.summary.sqlite_cache_fingerprint_count, 0);
+        assert_eq!(refresh_report.summary.unique_fresh_fingerprint_count, 2);
+        assert_eq!(
+            refresh_report.summary.unique_sqlite_cache_fingerprint_count,
+            0
+        );
+        assert_eq!(refresh_report.summary.fresh_fingerprint_report_count, 2);
+        assert_eq!(
+            refresh_report.summary.sqlite_cache_fingerprint_report_count,
+            0
+        );
         assert_eq!(refresh_report.cases[0].query.source, "fresh");
         assert_eq!(refresh_report.cases[0].candidates[0].source, "fresh");
 
@@ -657,7 +678,24 @@ mod tests {
         .expect("refresh run should still use memory-cache for duplicate paths");
 
         assert_eq!(duplicate_refresh_report.summary.failed, 0);
-        assert_eq!(duplicate_refresh_report.summary.fresh_fingerprint_count, 1);
+        assert_eq!(
+            duplicate_refresh_report
+                .summary
+                .unique_fresh_fingerprint_count,
+            1
+        );
+        assert_eq!(
+            duplicate_refresh_report
+                .summary
+                .fresh_fingerprint_report_count,
+            1
+        );
+        assert_eq!(
+            duplicate_refresh_report
+                .summary
+                .memory_cache_fingerprint_report_count,
+            1
+        );
         assert_eq!(duplicate_refresh_report.cases[0].query.source, "fresh");
         assert_eq!(
             duplicate_refresh_report.cases[0].candidates[0].source,

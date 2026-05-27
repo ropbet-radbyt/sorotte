@@ -70,10 +70,17 @@ Fingerprint source labels:
 `summary.totalExtractionMillis` is current-run fresh extraction time only.
 Fingerprints loaded from `sqlite-cache` still report blob/index counts, but they
 do not add extraction time.
-The summary source-count fields count unique path/settings fingerprints, not
-every report row. A duplicate candidate path can have row source `memory-cache`
-while the summary still counts only the first unique source for that
-path/settings key.
+The summary has two source-count families:
+
+- `uniqueFreshFingerprintCount`, `uniqueMemoryCacheFingerprintCount`, and
+  `uniqueSqliteCacheFingerprintCount` count each normalized path/settings
+  fingerprint once per report.
+- `freshFingerprintReportCount`, `memoryCacheFingerprintReportCount`, and
+  `sqliteCacheFingerprintReportCount` count every query/candidate report row
+  source occurrence.
+
+A duplicate candidate path can have row source `memory-cache` while the unique
+counts still count only the first source for that path/settings key.
 
 ## Corpus Calibration Workflow
 
@@ -93,9 +100,11 @@ cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --out
 cargo run -p sorotte-media-match --bin v3_report_compare -- reports/audio-cold.json reports/audio-warm.json
 ```
 
-Cold and warm reports may differ in `freshFingerprintCount`,
-`sqliteCacheFingerprintCount`, and `totalExtractionMillis`. That is expected
-when file identity and settings match and the warm run avoids re-extraction.
+Cold and warm reports may differ in `uniqueFreshFingerprintCount`,
+`uniqueSqliteCacheFingerprintCount`, `freshFingerprintReportCount`,
+`sqliteCacheFingerprintReportCount`, and `totalExtractionMillis`. That is
+expected when file identity and settings match and the warm run avoids
+re-extraction.
 
 When testing an extraction-code change, either rely on the fingerprint config
 hash changing with the cache version/tuning/settings change, or pass
@@ -126,8 +135,9 @@ retrieval miss that was not already a miss in the baseline. A resolved failure
 does not cancel out a new failure.
 
 Reports must be compatible by default. `v3_report_compare` rejects comparisons
-unless `algorithmVersion`, `profile`, `settingsHash`, and `tuning` all match.
-Use explicit allow flags only for exploratory comparisons:
+unless `algorithmVersion`, `fingerprintCacheVersion`, `profile`, `settingsHash`,
+and `tuning` all match. Use explicit allow flags only for exploratory
+comparisons:
 
 ```powershell
 v3_report_compare [--strict|--net-failures-only] [--allow-different-profile] [--allow-different-settings] [--allow-different-tuning] baseline.json current.json
@@ -181,10 +191,11 @@ The comparison output includes a top-level `summary` with regression status and
 unresolved-failure status plus counts for baseline/current failures, new
 failures, resolved failures, missing pairs, new pairs, new failed pairs,
 retrieval misses, and new retrieval misses. It also reports aggregate deltas,
-including extraction time, retrieval time, blob bytes, index rows, and raw hit
-rows. A top-level `compatibility` block records whether algorithm version,
-profile, settings hash, and tuning matched. A `compatibilityOptions` block
-records which mismatches were intentionally allowed for that comparison.
+including extraction time, retrieval time, source-count metrics, blob bytes,
+index rows, and raw hit rows. A top-level `compatibility` block records whether
+algorithm version, fingerprint cache version, profile, settings hash, and tuning
+matched. A `compatibilityOptions` block records which mismatches were
+intentionally allowed for that comparison.
 
 Generated reports should never contain duplicate comparison keys. Validation
 rejects duplicate keys before comparison because they make pair-level comparison
@@ -301,8 +312,11 @@ The JSON report includes:
 - `cacheRoot` and `cacheRetained`
 - algorithm version, fingerprint cache version, profile, fingerprint config
   hash, and tuning values
-- fingerprint source counts: `freshFingerprintCount`,
-  `memoryCacheFingerprintCount`, and `sqliteCacheFingerprintCount`
+- fingerprint source counts: unique counts
+  (`uniqueFreshFingerprintCount`, `uniqueMemoryCacheFingerprintCount`,
+  `uniqueSqliteCacheFingerprintCount`) and report-row occurrence counts
+  (`freshFingerprintReportCount`, `memoryCacheFingerprintReportCount`,
+  `sqliteCacheFingerprintReportCount`)
 - extraction diagnostics: timings, audio/video landmark counts, blob bytes, and
   streaming audio metrics
 - retrieval diagnostics: bucket counts, skipped common buckets, raw hit rows,

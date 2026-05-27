@@ -45,6 +45,7 @@ pub struct MediaMatchV3ReportCompatibilityOptions {
 #[serde(rename_all = "camelCase")]
 pub struct MediaMatchV3ReportCompatibility {
     pub algorithm_version_matches: bool,
+    pub fingerprint_cache_version_matches: bool,
     pub profile_matches: bool,
     pub settings_hash_matches: bool,
     pub tuning_matches: bool,
@@ -153,14 +154,17 @@ pub fn validate_media_match_v3_diagnostic_report(
     let mut failed = 0usize;
     let mut total_raw_hit_rows_processed = 0i64;
     let mut total_retrieval_millis = 0u128;
+    let mut report_source_counts = FingerprintSourceCounts::default();
 
     for case in &report.cases {
         pair_count += case.candidates.len();
         total_raw_hit_rows_processed += case.retrieval.raw_hit_rows_processed;
         total_retrieval_millis += case.retrieval.retrieval_elapsed_ms;
         validate_fingerprint_source(&case.name, "query", &case.query.source)?;
+        report_source_counts.increment(&case.query.source);
         for candidate in &case.candidates {
             validate_fingerprint_source(&case.name, &candidate.path, &candidate.source)?;
+            report_source_counts.increment(&candidate.source);
             if let Some(candidate_id) = candidate.candidate_id.as_deref()
                 && candidate_id.trim().is_empty()
             {
@@ -241,22 +245,55 @@ pub fn validate_media_match_v3_diagnostic_report(
             report.summary.total_video_blob_bytes, aggregate_totals.video_blob_bytes
         ));
     }
-    if report.summary.fresh_fingerprint_count != aggregate_totals.fresh_count {
+    if report.summary.unique_fresh_fingerprint_count != aggregate_totals.fresh_count {
         return Err(format!(
-            "summary.freshFingerprintCount={} does not match unique fingerprint total={}",
-            report.summary.fresh_fingerprint_count, aggregate_totals.fresh_count
+            "summary.uniqueFreshFingerprintCount={} does not match unique fingerprint total={}",
+            report.summary.unique_fresh_fingerprint_count, aggregate_totals.fresh_count
         ));
     }
-    if report.summary.memory_cache_fingerprint_count != aggregate_totals.memory_cache_count {
+    if report.summary.unique_memory_cache_fingerprint_count != aggregate_totals.memory_cache_count {
         return Err(format!(
-            "summary.memoryCacheFingerprintCount={} does not match unique fingerprint total={}",
-            report.summary.memory_cache_fingerprint_count, aggregate_totals.memory_cache_count
+            "summary.uniqueMemoryCacheFingerprintCount={} does not match unique fingerprint total={}",
+            report.summary.unique_memory_cache_fingerprint_count,
+            aggregate_totals.memory_cache_count
         ));
     }
-    if report.summary.sqlite_cache_fingerprint_count != aggregate_totals.sqlite_cache_count {
+    if report.summary.unique_sqlite_cache_fingerprint_count != aggregate_totals.sqlite_cache_count {
         return Err(format!(
-            "summary.sqliteCacheFingerprintCount={} does not match unique fingerprint total={}",
-            report.summary.sqlite_cache_fingerprint_count, aggregate_totals.sqlite_cache_count
+            "summary.uniqueSqliteCacheFingerprintCount={} does not match unique fingerprint total={}",
+            report.summary.unique_sqlite_cache_fingerprint_count,
+            aggregate_totals.sqlite_cache_count
+        ));
+    }
+    if report.summary.fresh_fingerprint_report_count != report_source_counts.fresh {
+        return Err(format!(
+            "summary.freshFingerprintReportCount={} does not match report row total={}",
+            report.summary.fresh_fingerprint_report_count, report_source_counts.fresh
+        ));
+    }
+    if report.summary.memory_cache_fingerprint_report_count != report_source_counts.memory_cache {
+        return Err(format!(
+            "summary.memoryCacheFingerprintReportCount={} does not match report row total={}",
+            report.summary.memory_cache_fingerprint_report_count, report_source_counts.memory_cache
+        ));
+    }
+    if report.summary.sqlite_cache_fingerprint_report_count != report_source_counts.sqlite_cache {
+        return Err(format!(
+            "summary.sqliteCacheFingerprintReportCount={} does not match report row total={}",
+            report.summary.sqlite_cache_fingerprint_report_count, report_source_counts.sqlite_cache
+        ));
+    }
+    if report.summary.fresh_fingerprint_report_count
+        + report.summary.memory_cache_fingerprint_report_count
+        + report.summary.sqlite_cache_fingerprint_report_count
+        != report.summary.case_count + report.summary.pair_count
+    {
+        return Err(format!(
+            "fingerprint report source counts sum to {}, expected query+candidate row count={}",
+            report.summary.fresh_fingerprint_report_count
+                + report.summary.memory_cache_fingerprint_report_count
+                + report.summary.sqlite_cache_fingerprint_report_count,
+            report.summary.case_count + report.summary.pair_count
         ));
     }
 
@@ -290,6 +327,12 @@ pub fn validate_media_match_v3_report_pair_compatible(
         return Err(format!(
             "algorithmVersion differs: baseline={}, current={}",
             baseline.algorithm_version, current.algorithm_version
+        ));
+    }
+    if !compatibility.fingerprint_cache_version_matches {
+        return Err(format!(
+            "fingerprintCacheVersion differs: baseline={}, current={}",
+            baseline.fingerprint_cache_version, current.fingerprint_cache_version
         ));
     }
     if !options.allow_different_profile && !compatibility.profile_matches {
@@ -544,6 +587,8 @@ fn report_compatibility(
 ) -> MediaMatchV3ReportCompatibility {
     MediaMatchV3ReportCompatibility {
         algorithm_version_matches: baseline.algorithm_version == current.algorithm_version,
+        fingerprint_cache_version_matches: baseline.fingerprint_cache_version
+            == current.fingerprint_cache_version,
         profile_matches: baseline.profile == current.profile,
         settings_hash_matches: baseline.settings_hash == current.settings_hash,
         tuning_matches: baseline.tuning == current.tuning,
@@ -637,19 +682,34 @@ fn report_metric_deltas(
             current.summary.total_retrieval_millis as i128,
         ),
         metric_delta(
-            "freshFingerprintCount",
-            baseline.summary.fresh_fingerprint_count as i128,
-            current.summary.fresh_fingerprint_count as i128,
+            "uniqueFreshFingerprintCount",
+            baseline.summary.unique_fresh_fingerprint_count as i128,
+            current.summary.unique_fresh_fingerprint_count as i128,
         ),
         metric_delta(
-            "memoryCacheFingerprintCount",
-            baseline.summary.memory_cache_fingerprint_count as i128,
-            current.summary.memory_cache_fingerprint_count as i128,
+            "uniqueMemoryCacheFingerprintCount",
+            baseline.summary.unique_memory_cache_fingerprint_count as i128,
+            current.summary.unique_memory_cache_fingerprint_count as i128,
         ),
         metric_delta(
-            "sqliteCacheFingerprintCount",
-            baseline.summary.sqlite_cache_fingerprint_count as i128,
-            current.summary.sqlite_cache_fingerprint_count as i128,
+            "uniqueSqliteCacheFingerprintCount",
+            baseline.summary.unique_sqlite_cache_fingerprint_count as i128,
+            current.summary.unique_sqlite_cache_fingerprint_count as i128,
+        ),
+        metric_delta(
+            "freshFingerprintReportCount",
+            baseline.summary.fresh_fingerprint_report_count as i128,
+            current.summary.fresh_fingerprint_report_count as i128,
+        ),
+        metric_delta(
+            "memoryCacheFingerprintReportCount",
+            baseline.summary.memory_cache_fingerprint_report_count as i128,
+            current.summary.memory_cache_fingerprint_report_count as i128,
+        ),
+        metric_delta(
+            "sqliteCacheFingerprintReportCount",
+            baseline.summary.sqlite_cache_fingerprint_report_count as i128,
+            current.summary.sqlite_cache_fingerprint_report_count as i128,
         ),
     ]
 }
@@ -667,6 +727,24 @@ struct ReportAggregateFingerprintTotals {
     fresh_count: usize,
     memory_cache_count: usize,
     sqlite_cache_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct FingerprintSourceCounts {
+    fresh: usize,
+    memory_cache: usize,
+    sqlite_cache: usize,
+}
+
+impl FingerprintSourceCounts {
+    fn increment(&mut self, source: &str) {
+        match source {
+            "fresh" => self.fresh += 1,
+            "memory-cache" => self.memory_cache += 1,
+            "sqlite-cache" => self.sqlite_cache += 1,
+            _ => {}
+        }
+    }
 }
 
 fn report_aggregate_fingerprint_totals(
@@ -804,6 +882,10 @@ mod tests {
         assert_eq!(value["summary"]["resolvedFailures"], 0);
         assert_eq!(value["comparisonMode"], "regression");
         assert_eq!(
+            value["compatibility"]["fingerprintCacheVersionMatches"],
+            true
+        );
+        assert_eq!(
             value["compatibilityOptions"]["allowDifferentProfile"],
             false
         );
@@ -854,7 +936,8 @@ mod tests {
         baseline.summary.pair_count = 2;
         baseline.summary.passed = 1;
         baseline.summary.failed = 1;
-        baseline.summary.fresh_fingerprint_count = 3;
+        baseline.summary.unique_fresh_fingerprint_count = 3;
+        baseline.summary.fresh_fingerprint_report_count = 3;
         baseline.summary.total_extraction_millis = 30;
         baseline.summary.total_audio_blob_bytes = 300;
         baseline.summary.total_video_blob_bytes = 0;
@@ -875,7 +958,8 @@ mod tests {
         current.summary.pair_count = 2;
         current.summary.passed = 1;
         current.summary.failed = 1;
-        current.summary.fresh_fingerprint_count = 3;
+        current.summary.unique_fresh_fingerprint_count = 3;
+        current.summary.fresh_fingerprint_report_count = 3;
         current.summary.total_extraction_millis = 30;
         current.summary.total_audio_blob_bytes = 300;
         current.summary.total_video_blob_bytes = 0;
@@ -946,7 +1030,8 @@ mod tests {
         current.summary.pair_count = 2;
         current.summary.passed = 1;
         current.summary.failed = 1;
-        current.summary.fresh_fingerprint_count = 3;
+        current.summary.unique_fresh_fingerprint_count = 3;
+        current.summary.fresh_fingerprint_report_count = 3;
         current.summary.total_extraction_millis = 30;
         current.summary.total_audio_blob_bytes = 300;
         current.summary.total_video_blob_bytes = 0;
@@ -985,7 +1070,8 @@ mod tests {
         current.summary.pair_count = 2;
         current.summary.passed = 2;
         current.summary.failed = 0;
-        current.summary.fresh_fingerprint_count = 3;
+        current.summary.unique_fresh_fingerprint_count = 3;
+        current.summary.fresh_fingerprint_report_count = 3;
         current.summary.total_extraction_millis = 30;
         current.summary.total_audio_blob_bytes = 300;
         current.summary.total_video_blob_bytes = 0;
@@ -1031,7 +1117,8 @@ mod tests {
         baseline.summary.pair_count = 2;
         baseline.summary.passed = 0;
         baseline.summary.failed = 2;
-        baseline.summary.fresh_fingerprint_count = 3;
+        baseline.summary.unique_fresh_fingerprint_count = 3;
+        baseline.summary.fresh_fingerprint_report_count = 3;
         baseline.summary.total_extraction_millis = 30;
         baseline.summary.total_audio_blob_bytes = 300;
         baseline.summary.total_video_blob_bytes = 0;
@@ -1078,7 +1165,8 @@ mod tests {
             .push(duplicate.cases[0].candidates[0].clone());
         current.summary.pair_count = 2;
         current.summary.passed = 2;
-        current.summary.fresh_fingerprint_count = 3;
+        current.summary.unique_fresh_fingerprint_count = 3;
+        current.summary.fresh_fingerprint_report_count = 3;
         current.summary.total_extraction_millis = 30;
         current.summary.total_audio_blob_bytes = 300;
         current.summary.total_video_blob_bytes = 0;
@@ -1188,9 +1276,12 @@ mod tests {
         assert_eq!(delta.current, 9);
         assert_eq!(delta.delta, 7);
         for field in [
-            "freshFingerprintCount",
-            "memoryCacheFingerprintCount",
-            "sqliteCacheFingerprintCount",
+            "uniqueFreshFingerprintCount",
+            "uniqueMemoryCacheFingerprintCount",
+            "uniqueSqliteCacheFingerprintCount",
+            "freshFingerprintReportCount",
+            "memoryCacheFingerprintReportCount",
+            "sqliteCacheFingerprintReportCount",
         ] {
             assert!(
                 comparison
@@ -1219,8 +1310,10 @@ mod tests {
             compare_media_match_v3_reports(&baseline, &current).expect("reports should compare");
 
         assert!(!comparison.current_has_regressions());
-        assert_metric_delta(&comparison, "freshFingerprintCount", 2, 0, -2);
-        assert_metric_delta(&comparison, "sqliteCacheFingerprintCount", 0, 2, 2);
+        assert_metric_delta(&comparison, "uniqueFreshFingerprintCount", 2, 0, -2);
+        assert_metric_delta(&comparison, "uniqueSqliteCacheFingerprintCount", 0, 2, 2);
+        assert_metric_delta(&comparison, "freshFingerprintReportCount", 2, 0, -2);
+        assert_metric_delta(&comparison, "sqliteCacheFingerprintReportCount", 0, 2, 2);
     }
 
     #[test]
@@ -1334,7 +1427,8 @@ mod tests {
             .push(duplicate.cases[0].candidates[0].clone());
         report.summary.pair_count = 2;
         report.summary.passed = 2;
-        report.summary.fresh_fingerprint_count = 3;
+        report.summary.unique_fresh_fingerprint_count = 3;
+        report.summary.fresh_fingerprint_report_count = 3;
         report.summary.total_extraction_millis = 30;
         report.summary.total_audio_blob_bytes = 300;
         report.summary.total_video_blob_bytes = 0;
@@ -1391,12 +1485,30 @@ mod tests {
             "SameCutStrong",
             Some(1),
         );
-        report.summary.fresh_fingerprint_count = 99;
+        report.summary.unique_fresh_fingerprint_count = 99;
 
         let error = validate_media_match_v3_diagnostic_report(&report)
             .expect_err("source count mismatch should be invalid");
 
-        assert!(error.contains("summary.freshFingerprintCount"));
+        assert!(error.contains("summary.uniqueFreshFingerprintCount"));
+    }
+
+    #[test]
+    fn report_validation_rejects_report_source_count_mismatch() {
+        let mut report = report_with_candidate(
+            "case",
+            "candidate.mkv",
+            true,
+            "Strong",
+            "SameCutStrong",
+            Some(1),
+        );
+        report.summary.fresh_fingerprint_report_count = 99;
+
+        let error = validate_media_match_v3_diagnostic_report(&report)
+            .expect_err("report source count mismatch should be invalid");
+
+        assert!(error.contains("summary.freshFingerprintReportCount"));
     }
 
     #[test]
@@ -1446,7 +1558,7 @@ mod tests {
             Some(1),
         );
         report.cases[0].candidates[0].path = "query.mkv".to_owned();
-        report.summary.fresh_fingerprint_count = 1;
+        report.summary.unique_fresh_fingerprint_count = 1;
         report.summary.total_extraction_millis = 10;
         report.summary.total_audio_blob_bytes = 100;
         report.summary.total_video_blob_bytes = 0;
@@ -1510,6 +1622,25 @@ mod tests {
             .expect_err("different settings hash should be rejected");
 
         assert!(error.contains("settingsHash differs"));
+    }
+
+    #[test]
+    fn direct_compare_rejects_incompatible_fingerprint_cache_version() {
+        let baseline = report_with_candidate(
+            "case",
+            "candidate.mkv",
+            true,
+            "Strong",
+            "SameCutStrong",
+            Some(1),
+        );
+        let mut current = baseline.clone();
+        current.fingerprint_cache_version += 1;
+
+        let error = compare_media_match_v3_reports(&baseline, &current)
+            .expect_err("different fingerprint cache version should be rejected");
+
+        assert!(error.contains("fingerprintCacheVersion differs"));
     }
 
     #[test]
@@ -1651,9 +1782,12 @@ mod tests {
                 pair_count: 1,
                 passed: if passed { 1 } else { 0 },
                 failed,
-                fresh_fingerprint_count: 2,
-                memory_cache_fingerprint_count: 0,
-                sqlite_cache_fingerprint_count: 0,
+                unique_fresh_fingerprint_count: 2,
+                unique_memory_cache_fingerprint_count: 0,
+                unique_sqlite_cache_fingerprint_count: 0,
+                fresh_fingerprint_report_count: 2,
+                memory_cache_fingerprint_report_count: 0,
+                sqlite_cache_fingerprint_report_count: 0,
                 total_extraction_millis: 20,
                 total_audio_blob_bytes: 200,
                 total_video_blob_bytes: 0,
@@ -1716,9 +1850,16 @@ mod tests {
             candidate.diagnostics.extraction_audio_millis = None;
             candidate.diagnostics.extraction_video_millis = None;
         }
-        report.summary.fresh_fingerprint_count = usize::from(source == "fresh") * 2;
-        report.summary.memory_cache_fingerprint_count = usize::from(source == "memory-cache") * 2;
-        report.summary.sqlite_cache_fingerprint_count = usize::from(source == "sqlite-cache") * 2;
+        report.summary.unique_fresh_fingerprint_count = usize::from(source == "fresh") * 2;
+        report.summary.unique_memory_cache_fingerprint_count =
+            usize::from(source == "memory-cache") * 2;
+        report.summary.unique_sqlite_cache_fingerprint_count =
+            usize::from(source == "sqlite-cache") * 2;
+        report.summary.fresh_fingerprint_report_count = usize::from(source == "fresh") * 2;
+        report.summary.memory_cache_fingerprint_report_count =
+            usize::from(source == "memory-cache") * 2;
+        report.summary.sqlite_cache_fingerprint_report_count =
+            usize::from(source == "sqlite-cache") * 2;
         report.summary.total_extraction_millis = if source == "fresh" { 20 } else { 0 };
     }
 

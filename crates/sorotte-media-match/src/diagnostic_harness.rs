@@ -167,9 +167,12 @@ pub struct MediaMatchV3DiagnosticSummaryReport {
     pub pair_count: usize,
     pub passed: usize,
     pub failed: usize,
-    pub fresh_fingerprint_count: usize,
-    pub memory_cache_fingerprint_count: usize,
-    pub sqlite_cache_fingerprint_count: usize,
+    pub unique_fresh_fingerprint_count: usize,
+    pub unique_memory_cache_fingerprint_count: usize,
+    pub unique_sqlite_cache_fingerprint_count: usize,
+    pub fresh_fingerprint_report_count: usize,
+    pub memory_cache_fingerprint_report_count: usize,
+    pub sqlite_cache_fingerprint_report_count: usize,
     pub total_extraction_millis: u128,
     pub total_audio_blob_bytes: usize,
     pub total_video_blob_bytes: usize,
@@ -265,6 +268,7 @@ pub fn run_media_match_v3_diagnostic_manifest(
             diagnostics: diagnostics_for_cached_fingerprint(&query),
             source: query.source.to_owned(),
         };
+        increment_report_source_count(&mut summary, query.source);
         let mut reports = Vec::new();
         for (candidate, fingerprint) in candidate_records {
             let decision = decide_media_match(
@@ -292,6 +296,7 @@ pub fn run_media_match_v3_diagnostic_manifest(
             } else {
                 summary.failed += 1;
             }
+            increment_report_source_count(&mut summary, fingerprint.source);
             reports.push(MediaMatchV3DiagnosticCandidateReport {
                 candidate_id: candidate.expectation.id.clone(),
                 path: normalized_candidate.clone(),
@@ -320,15 +325,15 @@ pub fn run_media_match_v3_diagnostic_manifest(
         let diagnostics = diagnostics_for_cached_fingerprint(fingerprint);
         match fingerprint.source {
             FINGERPRINT_SOURCE_FRESH => {
-                summary.fresh_fingerprint_count += 1;
+                summary.unique_fresh_fingerprint_count += 1;
                 summary.total_extraction_millis +=
                     fingerprint.fingerprint.report.timings.total_millis;
             }
             FINGERPRINT_SOURCE_SQLITE_CACHE => {
-                summary.sqlite_cache_fingerprint_count += 1;
+                summary.unique_sqlite_cache_fingerprint_count += 1;
             }
             FINGERPRINT_SOURCE_MEMORY_CACHE => {
-                summary.memory_cache_fingerprint_count += 1;
+                summary.unique_memory_cache_fingerprint_count += 1;
             }
             _ => {}
         }
@@ -564,6 +569,15 @@ fn diagnostics_for_cached_fingerprint(
         summarize_instrumented_record_v3_diagnostics(&fingerprint.fingerprint)
     } else {
         summarize_record_v3_diagnostics(&fingerprint.fingerprint.record)
+    }
+}
+
+fn increment_report_source_count(summary: &mut MediaMatchV3DiagnosticSummaryReport, source: &str) {
+    match source {
+        FINGERPRINT_SOURCE_FRESH => summary.fresh_fingerprint_report_count += 1,
+        FINGERPRINT_SOURCE_MEMORY_CACHE => summary.memory_cache_fingerprint_report_count += 1,
+        FINGERPRINT_SOURCE_SQLITE_CACHE => summary.sqlite_cache_fingerprint_report_count += 1,
+        _ => {}
     }
 }
 
@@ -1139,13 +1153,19 @@ mod tests {
             report.cases[0].candidates[0].source,
             FINGERPRINT_SOURCE_SQLITE_CACHE
         );
-        assert_eq!(report.summary.fresh_fingerprint_count, 0);
-        assert_eq!(report.summary.memory_cache_fingerprint_count, 0);
-        assert_eq!(report.summary.sqlite_cache_fingerprint_count, 2);
+        assert_eq!(report.summary.unique_fresh_fingerprint_count, 0);
+        assert_eq!(report.summary.unique_memory_cache_fingerprint_count, 0);
+        assert_eq!(report.summary.unique_sqlite_cache_fingerprint_count, 2);
+        assert_eq!(report.summary.fresh_fingerprint_report_count, 0);
+        assert_eq!(report.summary.memory_cache_fingerprint_report_count, 0);
+        assert_eq!(report.summary.sqlite_cache_fingerprint_report_count, 2);
         assert_eq!(report.summary.total_extraction_millis, 0);
-        assert_eq!(value["summary"]["freshFingerprintCount"], 0);
-        assert_eq!(value["summary"]["memoryCacheFingerprintCount"], 0);
-        assert_eq!(value["summary"]["sqliteCacheFingerprintCount"], 2);
+        assert_eq!(value["summary"]["uniqueFreshFingerprintCount"], 0);
+        assert_eq!(value["summary"]["uniqueMemoryCacheFingerprintCount"], 0);
+        assert_eq!(value["summary"]["uniqueSqliteCacheFingerprintCount"], 2);
+        assert_eq!(value["summary"]["freshFingerprintReportCount"], 0);
+        assert_eq!(value["summary"]["memoryCacheFingerprintReportCount"], 0);
+        assert_eq!(value["summary"]["sqliteCacheFingerprintReportCount"], 2);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1183,8 +1203,10 @@ mod tests {
             report.cases[0].candidates[0].source,
             FINGERPRINT_SOURCE_MEMORY_CACHE
         );
-        assert_eq!(report.summary.sqlite_cache_fingerprint_count, 1);
-        assert_eq!(report.summary.memory_cache_fingerprint_count, 0);
+        assert_eq!(report.summary.unique_sqlite_cache_fingerprint_count, 1);
+        assert_eq!(report.summary.unique_memory_cache_fingerprint_count, 0);
+        assert_eq!(report.summary.sqlite_cache_fingerprint_report_count, 1);
+        assert_eq!(report.summary.memory_cache_fingerprint_report_count, 1);
         let _ = fs::remove_dir_all(root);
     }
 

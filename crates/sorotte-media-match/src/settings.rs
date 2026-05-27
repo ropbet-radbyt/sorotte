@@ -79,15 +79,17 @@ pub fn media_extraction_settings_hash(settings: &MediaExtractionSettings) -> [u8
 }
 
 pub fn media_match_v3_fingerprint_config_hash(settings: &MediaExtractionSettings) -> [u8; 32] {
-    media_match_v3_fingerprint_config_hash_with_version(
+    media_match_v3_fingerprint_config_hash_with_version_and_tuning(
         settings,
         MEDIA_MATCH_V3_FINGERPRINT_CACHE_VERSION,
+        current_v3_tuning(),
     )
 }
 
-fn media_match_v3_fingerprint_config_hash_with_version(
+fn media_match_v3_fingerprint_config_hash_with_version_and_tuning(
     settings: &MediaExtractionSettings,
     cache_version: u32,
+    tuning: crate::V3Tuning,
 ) -> [u8; 32] {
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
@@ -100,13 +102,16 @@ fn media_match_v3_fingerprint_config_hash_with_version(
         tuning: crate::V3Tuning,
     }
 
+    // During V3 development the cache namespace intentionally includes the
+    // full tuning snapshot, including retrieval-only values, so diagnostic
+    // cache reuse is conservative across calibration and algorithm changes.
     let config = FingerprintConfig {
         cache_version,
         algorithm_version: MEDIA_MATCH_ALGORITHM_VERSION,
         anchor_version: MEDIA_MATCH_ANCHOR_VERSION,
         wire_schema: MEDIA_MATCH_WIRE_SCHEMA_V3,
         settings,
-        tuning: current_v3_tuning(),
+        tuning,
     };
     let bytes = serde_json::to_vec(&config).unwrap_or_default();
     let mut hasher = Sha256::new();
@@ -132,13 +137,35 @@ mod tests {
     #[test]
     fn fingerprint_config_hash_changes_with_cache_version() {
         let settings = MediaExtractionSettings::audio_constellation_v3();
-        let current = media_match_v3_fingerprint_config_hash_with_version(
+        let current = media_match_v3_fingerprint_config_hash_with_version_and_tuning(
             &settings,
             MEDIA_MATCH_V3_FINGERPRINT_CACHE_VERSION,
+            current_v3_tuning(),
         );
-        let bumped = media_match_v3_fingerprint_config_hash_with_version(
+        let bumped = media_match_v3_fingerprint_config_hash_with_version_and_tuning(
             &settings,
             MEDIA_MATCH_V3_FINGERPRINT_CACHE_VERSION + 1,
+            current_v3_tuning(),
+        );
+
+        assert_ne!(current, bumped);
+    }
+
+    #[test]
+    fn fingerprint_config_hash_changes_with_tuning_snapshot() {
+        let settings = MediaExtractionSettings::audio_constellation_v3();
+        let tuning = current_v3_tuning();
+        let current = media_match_v3_fingerprint_config_hash_with_version_and_tuning(
+            &settings,
+            MEDIA_MATCH_V3_FINGERPRINT_CACHE_VERSION,
+            tuning,
+        );
+        let mut changed = tuning;
+        changed.retrieval_prefilter_limit += 1;
+        let bumped = media_match_v3_fingerprint_config_hash_with_version_and_tuning(
+            &settings,
+            MEDIA_MATCH_V3_FINGERPRINT_CACHE_VERSION,
+            changed,
         );
 
         assert_ne!(current, bumped);
