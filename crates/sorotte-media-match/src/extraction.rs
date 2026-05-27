@@ -4,7 +4,7 @@ use std::fmt;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
@@ -84,6 +84,13 @@ pub struct MediaAudioStreamMetrics {
     pub compaction_millis: u128,
     pub reservoir_millis: u128,
     pub final_selection_millis: u128,
+    pub pcm_drain_thread_millis: u128,
+    pub analyzer_thread_millis: u128,
+    pub channel_backpressure_millis: u128,
+    pub max_queued_pcm_bytes: usize,
+    pub candidate_pairs_considered: usize,
+    pub landmarks_accepted_into_reservoir: usize,
+    pub landmarks_rejected_by_reservoir: usize,
     pub ffmpeg_process_wall_millis: u128,
     pub pcm_decode_drain_millis: u128,
     pub ffmpeg_decode_stream_millis: u128,
@@ -421,12 +428,30 @@ fn extract_audio_constellation_v3_with_sample_rate_and_limit(
     landmark_limit: usize,
     cancel_flag: Option<&AtomicBool>,
 ) -> Result<(Vec<AudioLandmarkV3>, MediaAudioStreamMetrics), MediaFingerprintError> {
-    let stream = Arc::new(Mutex::new(
-        AudioConstellationV3PcmStream::with_landmark_limit(sample_rate, landmark_limit),
-    ));
-    let stream_reader = Arc::clone(&stream);
+    const PCM_CHUNK_QUEUE_LIMIT: usize = 8;
+
+    let (pcm_sender, pcm_receiver) = mpsc::sync_channel::<Vec<u8>>(PCM_CHUNK_QUEUE_LIMIT);
+    let queued_pcm_bytes = Arc::new(AtomicUsize::new(0));
+    let max_queued_pcm_bytes = Arc::new(AtomicUsize::new(0));
+    let channel_backpressure_nanos = Arc::new(AtomicU64::new(0));
+    let analyzer_queued_pcm_bytes = Arc::clone(&queued_pcm_bytes);
+    let analyzer_thread = thread::spawn(move || {
+        let analyzer_started_at = Instant::now();
+        let mut stream =
+            AudioConstellationV3PcmStream::with_landmark_limit(sample_rate, landmark_limit);
+        for chunk in pcm_receiver {
+            analyzer_queued_pcm_bytes.fetch_sub(chunk.len(), Ordering::AcqRel);
+            stream.push_bytes(&chunk)?;
+        }
+        let (landmarks, mut metrics) = stream.finish(duration_seconds)?;
+        metrics.analyzer_thread_millis = analyzer_started_at.elapsed().as_millis();
+        Ok::<_, MediaFingerprintError>((landmarks, metrics))
+    });
+    let sender_queued_pcm_bytes = Arc::clone(&queued_pcm_bytes);
+    let sender_max_queued_pcm_bytes = Arc::clone(&max_queued_pcm_bytes);
+    let sender_backpressure_nanos = Arc::clone(&channel_backpressure_nanos);
     let decode_started_at = Instant::now();
-    run_tool_streaming_stdout(
+    let streaming_result = run_tool_streaming_stdout(
         "ffmpeg",
         ffmpeg.as_ref(),
         [
@@ -447,27 +472,44 @@ fn extract_audio_constellation_v3_with_sample_rate_and_limit(
         cancel_flag,
         FFMPEG_AUDIO_V3_TIMEOUT,
         move |chunk| {
-            stream_reader
-                .lock()
-                .map_err(|_| MediaFingerprintError::InvalidToolOutput {
+            let queued =
+                sender_queued_pcm_bytes.fetch_add(chunk.len(), Ordering::AcqRel) + chunk.len();
+            update_atomic_max_usize(&sender_max_queued_pcm_bytes, queued);
+            let send_started_at = Instant::now();
+            let result = pcm_sender.send(chunk.to_vec()).map_err(|_| {
+                sender_queued_pcm_bytes.fetch_sub(chunk.len(), Ordering::AcqRel);
+                MediaFingerprintError::InvalidToolOutput {
                     tool: "ffmpeg",
-                    reason: "audio stream state was poisoned".to_owned(),
-                })?
-                .push_bytes(chunk)
+                    reason: "audio analyzer stopped while ffmpeg was streaming PCM".to_owned(),
+                }
+            });
+            sender_backpressure_nanos.fetch_add(
+                send_started_at
+                    .elapsed()
+                    .as_nanos()
+                    .min(u128::from(u64::MAX)) as u64,
+                Ordering::Relaxed,
+            );
+            result
         },
-    )?;
+    );
     let decode_stream_millis = decode_started_at.elapsed().as_millis();
-    let stream = Arc::try_unwrap(stream).map_err(|_| MediaFingerprintError::InvalidToolOutput {
-        tool: "ffmpeg",
-        reason: "audio stream state was still shared after ffmpeg exit".to_owned(),
-    })?;
-    let stream = stream
-        .into_inner()
-        .map_err(|_| MediaFingerprintError::InvalidToolOutput {
-            tool: "ffmpeg",
-            reason: "audio stream state was poisoned".to_owned(),
-        })?;
-    let (landmarks, mut metrics) = stream.finish(duration_seconds)?;
+    let analyzer_result =
+        analyzer_thread
+            .join()
+            .map_err(|_| MediaFingerprintError::InvalidToolOutput {
+                tool: "ffmpeg",
+                reason: "audio analyzer thread panicked".to_owned(),
+            })?;
+    if let Err(error) = streaming_result {
+        let _ = analyzer_result;
+        return Err(error);
+    }
+    let (landmarks, mut metrics) = analyzer_result?;
+    metrics.pcm_drain_thread_millis = decode_stream_millis;
+    metrics.channel_backpressure_millis =
+        u128::from(channel_backpressure_nanos.load(Ordering::Relaxed)) / 1_000_000;
+    metrics.max_queued_pcm_bytes = max_queued_pcm_bytes.load(Ordering::Relaxed);
     metrics.ffmpeg_process_wall_millis = decode_stream_millis;
     metrics.pcm_decode_drain_millis = decode_stream_millis;
     metrics.ffmpeg_decode_stream_millis = decode_stream_millis;
@@ -482,6 +524,16 @@ fn extract_audio_constellation_v3_with_sample_rate_and_limit(
         });
     }
     Ok((landmarks, metrics))
+}
+
+fn update_atomic_max_usize(target: &AtomicUsize, value: usize) {
+    let mut current = target.load(Ordering::Relaxed);
+    while value > current {
+        match target.compare_exchange_weak(current, value, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(next) => current = next,
+        }
+    }
 }
 
 pub(crate) fn extract_audio_constellation_v3_sampled_index_with_metrics(
@@ -727,6 +779,25 @@ fn merge_audio_stream_metrics(
     target.final_selection_millis = target
         .final_selection_millis
         .saturating_add(source.final_selection_millis);
+    target.pcm_drain_thread_millis = target
+        .pcm_drain_thread_millis
+        .saturating_add(source.pcm_drain_thread_millis);
+    target.analyzer_thread_millis = target
+        .analyzer_thread_millis
+        .saturating_add(source.analyzer_thread_millis);
+    target.channel_backpressure_millis = target
+        .channel_backpressure_millis
+        .saturating_add(source.channel_backpressure_millis);
+    target.max_queued_pcm_bytes = target.max_queued_pcm_bytes.max(source.max_queued_pcm_bytes);
+    target.candidate_pairs_considered = target
+        .candidate_pairs_considered
+        .saturating_add(source.candidate_pairs_considered);
+    target.landmarks_accepted_into_reservoir = target
+        .landmarks_accepted_into_reservoir
+        .saturating_add(source.landmarks_accepted_into_reservoir);
+    target.landmarks_rejected_by_reservoir = target
+        .landmarks_rejected_by_reservoir
+        .saturating_add(source.landmarks_rejected_by_reservoir);
     target.sampled_audio_windows_decoded = target
         .sampled_audio_windows_decoded
         .saturating_add(source.sampled_audio_windows_decoded);

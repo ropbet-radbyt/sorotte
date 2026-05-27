@@ -109,6 +109,7 @@ struct AudioConstellationV3Builder {
     pairing_nanos: u128,
     peak_selection_nanos: u128,
     reservoir_nanos: u128,
+    candidate_pairs_considered: usize,
 }
 
 impl AudioConstellationV3Builder {
@@ -129,6 +130,7 @@ impl AudioConstellationV3Builder {
             pairing_nanos: 0,
             peak_selection_nanos: 0,
             reservoir_nanos: 0,
+            candidate_pairs_considered: 0,
         }
     }
 
@@ -175,6 +177,8 @@ impl AudioConstellationV3Builder {
                 continue;
             }
             for (peak_index, anchor_peak) in anchor_frame.peaks.iter().enumerate() {
+                self.candidate_pairs_considered =
+                    self.candidate_pairs_considered.saturating_add(peaks.len());
                 for target_peak in &peaks {
                     push_audio_pair_target_candidate_v3(
                         &mut anchor_frame.target_candidates_per_peak[peak_index],
@@ -231,6 +235,8 @@ impl AudioConstellationV3Builder {
             self.emit_closed_peak_frame(frame);
         }
         let raw_emitted = self.raw_landmarks.emitted_count;
+        let accepted_into_reservoir = self.raw_landmarks.accepted_count;
+        let rejected_by_reservoir = self.raw_landmarks.rejected_count;
         let raw_count = self.raw_landmarks.len();
         let max_retained = self.raw_landmarks.max_retained.max(raw_count);
         let max_raw_landmarks_after_compaction = max_retained;
@@ -257,6 +263,9 @@ impl AudioConstellationV3Builder {
             pairing_millis: self.pairing_nanos / 1_000_000,
             peak_selection_millis: self.peak_selection_nanos / 1_000_000,
             final_selection_millis,
+            candidate_pairs_considered: self.candidate_pairs_considered,
+            landmarks_accepted_into_reservoir: accepted_into_reservoir,
+            landmarks_rejected_by_reservoir: rejected_by_reservoir,
             ..MediaAudioStreamMetrics::default()
         };
         (landmarks, metrics)
@@ -266,6 +275,8 @@ impl AudioConstellationV3Builder {
 struct AudioLandmarkReservoirV3 {
     regions: HashMap<u32, AudioLandmarkRegionReservoirV3>,
     emitted_count: usize,
+    accepted_count: usize,
+    rejected_count: usize,
     max_retained: usize,
     trim_count: usize,
 }
@@ -275,20 +286,28 @@ impl AudioLandmarkReservoirV3 {
         Self {
             regions: HashMap::new(),
             emitted_count: 0,
+            accepted_count: 0,
+            rejected_count: 0,
             max_retained: 0,
             trim_count: 0,
         }
     }
 
     fn push(&mut self, landmark: AudioLandmarkV3) {
-        self.emitted_count += 1;
         let region = landmark.t_ms / 60_000;
-        self.regions
+        let accepted = self
+            .regions
             .entry(region)
             .or_insert_with(|| {
                 AudioLandmarkRegionReservoirV3::new(V3_AUDIO_RAW_REGION_RETAIN_LIMIT)
             })
             .push(landmark);
+        if accepted {
+            self.emitted_count += 1;
+            self.accepted_count += 1;
+        } else {
+            self.rejected_count += 1;
+        }
         self.max_retained = self.max_retained.max(self.len());
     }
 
@@ -336,9 +355,9 @@ impl AudioLandmarkRegionReservoirV3 {
         self.landmarks.len()
     }
 
-    fn push(&mut self, landmark: AudioLandmarkV3) {
+    fn push(&mut self, landmark: AudioLandmarkV3) -> bool {
         if self.retain_limit == 0 {
-            return;
+            return false;
         }
         let key = AudioLandmarkKeyV3::from_landmark(landmark);
         if let Some(existing) = self.landmarks.get_mut(&key) {
@@ -346,29 +365,31 @@ impl AudioLandmarkRegionReservoirV3 {
                 *existing = landmark;
                 self.heap
                     .push(AudioLandmarkHeapEntryV3::from_landmark(landmark));
+                return true;
             }
-            return;
+            return false;
         }
         if self.landmarks.len() < self.retain_limit {
             self.landmarks.insert(key, landmark);
             self.heap
                 .push(AudioLandmarkHeapEntryV3::from_landmark(landmark));
-            return;
+            return true;
         }
         self.discard_stale_heap_entries();
         let candidate = AudioLandmarkHeapEntryV3::from_landmark(landmark);
         let Some(worst) = self.heap.peek().copied() else {
             self.landmarks.insert(key, landmark);
             self.heap.push(candidate);
-            return;
+            return true;
         };
         if candidate >= worst {
-            return;
+            return false;
         }
         self.heap.pop();
         self.landmarks.remove(&worst.key);
         self.landmarks.insert(key, landmark);
         self.heap.push(candidate);
+        true
     }
 
     fn discard_stale_heap_entries(&mut self) {
@@ -1049,6 +1070,39 @@ mod tests {
             audio_landmark_hash_v3(800, 900, 20),
             audio_landmark_hash_v3(801, 901, 19)
         );
+    }
+
+    #[test]
+    fn audio_region_reservoir_reports_acceptance_and_rejection() {
+        let mut reservoir = AudioLandmarkReservoirV3::new();
+        for index in 0..V3_AUDIO_RAW_REGION_RETAIN_LIMIT {
+            reservoir.push(AudioLandmarkV3 {
+                hash: index as u32,
+                t_ms: 60_000,
+                weight: 20,
+            });
+        }
+        reservoir.push(AudioLandmarkV3 {
+            hash: 999_001,
+            t_ms: 60_000,
+            weight: 1,
+        });
+        reservoir.push(AudioLandmarkV3 {
+            hash: 999_002,
+            t_ms: 60_000,
+            weight: 40,
+        });
+
+        assert_eq!(reservoir.len(), V3_AUDIO_RAW_REGION_RETAIN_LIMIT);
+        assert_eq!(
+            reservoir.emitted_count,
+            V3_AUDIO_RAW_REGION_RETAIN_LIMIT + 1
+        );
+        assert_eq!(
+            reservoir.accepted_count,
+            V3_AUDIO_RAW_REGION_RETAIN_LIMIT + 1
+        );
+        assert_eq!(reservoir.rejected_count, 1);
     }
 
     #[test]

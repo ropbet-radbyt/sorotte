@@ -54,6 +54,14 @@ pub struct MediaMatchV3DiagnosticSummary {
     pub compaction_millis: Option<u128>,
     pub reservoir_millis: Option<u128>,
     pub final_selection_millis: Option<u128>,
+    pub pcm_drain_thread_millis: Option<u128>,
+    pub analyzer_thread_millis: Option<u128>,
+    pub channel_backpressure_millis: Option<u128>,
+    pub max_queued_pcm_bytes: Option<usize>,
+    pub candidate_pairs_considered: Option<usize>,
+    pub landmarks_accepted_into_reservoir: Option<usize>,
+    pub landmarks_rejected_by_reservoir: Option<usize>,
+    pub reservoir_acceptance_ratio: Option<f64>,
     pub sampled_audio_seconds_decoded: Option<u32>,
     pub sampled_audio_windows_decoded: Option<usize>,
     pub full_audio_seconds_decoded: Option<u32>,
@@ -98,7 +106,7 @@ fn summarize_record_v3_diagnostics_with_report(
     let audio_stream = report.map(|report| &report.audio_stream);
     if let Some(report) = report {
         notes.push(format!(
-            "streamedBytes={} streamedSamples={} peakFrames={} rawLandmarksEmitted={} rawLandmarksBeforeBounding={} rawLandmarksKeptBeforeFinal={} finalLandmarks={} maxBufferSamples={} maxRawLandmarksSeen={} maxRawLandmarksAfterCompaction={} rawLandmarkCompactions={} ffmpegProcessWallMillis={} pcmDecodeDrainMillis={} analyzerMillis={} peakSelectionMillis={} pairingMillis={} compactionMillis={} reservoirMillis={} finalSelectionMillis={} ffmpegDecodeStreamMillis={} sampledAudioSecondsDecoded={} sampledAudioWindowsDecoded={} fullAudioSecondsDecoded={} effectiveDecodedSecondsPerSecond={:.2}",
+            "streamedBytes={} streamedSamples={} peakFrames={} rawLandmarksEmitted={} rawLandmarksBeforeBounding={} rawLandmarksKeptBeforeFinal={} finalLandmarks={} maxBufferSamples={} maxRawLandmarksSeen={} maxRawLandmarksAfterCompaction={} rawLandmarkCompactions={} ffmpegProcessWallMillis={} pcmDecodeDrainMillis={} pcmDrainThreadMillis={} analyzerThreadMillis={} channelBackpressureMillis={} maxQueuedPcmBytes={} analyzerMillis={} peakSelectionMillis={} pairingMillis={} compactionMillis={} reservoirMillis={} finalSelectionMillis={} candidatePairsConsidered={} landmarksAcceptedIntoReservoir={} landmarksRejectedByReservoir={} reservoirAcceptanceRatio={:.4} ffmpegDecodeStreamMillis={} sampledAudioSecondsDecoded={} sampledAudioWindowsDecoded={} fullAudioSecondsDecoded={} effectiveDecodedSecondsPerSecond={:.2}",
             report.audio_stream.streamed_bytes,
             report.audio_stream.streamed_samples,
             report.audio_stream.peak_frames,
@@ -112,12 +120,20 @@ fn summarize_record_v3_diagnostics_with_report(
             report.audio_stream.raw_landmark_compactions,
             report.audio_stream.ffmpeg_process_wall_millis,
             report.audio_stream.pcm_decode_drain_millis,
+            report.audio_stream.pcm_drain_thread_millis,
+            report.audio_stream.analyzer_thread_millis,
+            report.audio_stream.channel_backpressure_millis,
+            report.audio_stream.max_queued_pcm_bytes,
             report.audio_stream.analyzer_millis,
             report.audio_stream.peak_selection_millis,
             report.audio_stream.pairing_millis,
             report.audio_stream.compaction_millis,
             report.audio_stream.reservoir_millis,
             report.audio_stream.final_selection_millis,
+            report.audio_stream.candidate_pairs_considered,
+            report.audio_stream.landmarks_accepted_into_reservoir,
+            report.audio_stream.landmarks_rejected_by_reservoir,
+            reservoir_acceptance_ratio(&report.audio_stream).unwrap_or(0.0),
             report.audio_stream.ffmpeg_decode_stream_millis,
             report.audio_stream.sampled_audio_seconds_decoded,
             report.audio_stream.sampled_audio_windows_decoded,
@@ -183,6 +199,16 @@ fn summarize_record_v3_diagnostics_with_report(
         compaction_millis: audio_stream.map(|stream| stream.compaction_millis),
         reservoir_millis: audio_stream.map(|stream| stream.reservoir_millis),
         final_selection_millis: audio_stream.map(|stream| stream.final_selection_millis),
+        pcm_drain_thread_millis: audio_stream.map(|stream| stream.pcm_drain_thread_millis),
+        analyzer_thread_millis: audio_stream.map(|stream| stream.analyzer_thread_millis),
+        channel_backpressure_millis: audio_stream.map(|stream| stream.channel_backpressure_millis),
+        max_queued_pcm_bytes: audio_stream.map(|stream| stream.max_queued_pcm_bytes),
+        candidate_pairs_considered: audio_stream.map(|stream| stream.candidate_pairs_considered),
+        landmarks_accepted_into_reservoir: audio_stream
+            .map(|stream| stream.landmarks_accepted_into_reservoir),
+        landmarks_rejected_by_reservoir: audio_stream
+            .map(|stream| stream.landmarks_rejected_by_reservoir),
+        reservoir_acceptance_ratio: audio_stream.and_then(reservoir_acceptance_ratio),
         sampled_audio_seconds_decoded: audio_stream
             .map(|stream| stream.sampled_audio_seconds_decoded),
         sampled_audio_windows_decoded: audio_stream
@@ -255,12 +281,30 @@ pub fn summarize_decision_v3_diagnostics(
         compaction_millis: None,
         reservoir_millis: None,
         final_selection_millis: None,
+        pcm_drain_thread_millis: None,
+        analyzer_thread_millis: None,
+        channel_backpressure_millis: None,
+        max_queued_pcm_bytes: None,
+        candidate_pairs_considered: None,
+        landmarks_accepted_into_reservoir: None,
+        landmarks_rejected_by_reservoir: None,
+        reservoir_acceptance_ratio: None,
         sampled_audio_seconds_decoded: None,
         sampled_audio_windows_decoded: None,
         full_audio_seconds_decoded: None,
         effective_decoded_seconds_per_second: None,
         notes,
     }
+}
+
+fn reservoir_acceptance_ratio(stream: &crate::MediaAudioStreamMetrics) -> Option<f64> {
+    let total = stream
+        .landmarks_accepted_into_reservoir
+        .saturating_add(stream.landmarks_rejected_by_reservoir);
+    if total == 0 {
+        return None;
+    }
+    Some(stream.landmarks_accepted_into_reservoir as f64 / total as f64)
 }
 
 fn effective_decoded_seconds_per_second(stream: &crate::MediaAudioStreamMetrics) -> Option<f64> {

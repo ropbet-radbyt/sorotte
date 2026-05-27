@@ -127,11 +127,19 @@ struct MediaMatchRebuildInstrumentation {
     audio_streamed_samples: usize,
     audio_stream_peak_frames: usize,
     audio_stream_raw_landmarks: usize,
+    audio_stream_raw_landmarks_emitted: usize,
     audio_stream_final_landmarks: usize,
     max_audio_stream_buffer_samples: usize,
     max_audio_stream_raw_landmarks_seen: usize,
     max_audio_stream_raw_landmarks_after_compaction: usize,
     audio_stream_raw_compactions: usize,
+    audio_stream_pcm_drain_millis: u128,
+    audio_stream_analyzer_thread_millis: u128,
+    audio_stream_backpressure_millis: u128,
+    max_audio_stream_queued_pcm_bytes: usize,
+    audio_stream_candidate_pairs_considered: usize,
+    audio_stream_landmarks_accepted: usize,
+    audio_stream_landmarks_rejected: usize,
     debug_record_bytes: usize,
     audio_blob_bytes: usize,
     video_blob_bytes: usize,
@@ -152,6 +160,7 @@ impl MediaMatchRebuildInstrumentation {
         self.audio_streamed_bytes += report.audio_stream.streamed_bytes;
         self.audio_streamed_samples += report.audio_stream.streamed_samples;
         self.audio_stream_peak_frames += report.audio_stream.peak_frames;
+        self.audio_stream_raw_landmarks_emitted += report.audio_stream.raw_landmarks_emitted;
         self.audio_stream_raw_landmarks += report.audio_stream.raw_landmarks_before_bounding;
         self.audio_stream_final_landmarks += report.audio_stream.final_landmarks;
         self.max_audio_stream_buffer_samples = self
@@ -164,6 +173,17 @@ impl MediaMatchRebuildInstrumentation {
             .max_audio_stream_raw_landmarks_after_compaction
             .max(report.audio_stream.max_raw_landmarks_after_compaction);
         self.audio_stream_raw_compactions += report.audio_stream.raw_landmark_compactions;
+        self.audio_stream_pcm_drain_millis += report.audio_stream.pcm_drain_thread_millis;
+        self.audio_stream_analyzer_thread_millis += report.audio_stream.analyzer_thread_millis;
+        self.audio_stream_backpressure_millis += report.audio_stream.channel_backpressure_millis;
+        self.max_audio_stream_queued_pcm_bytes = self
+            .max_audio_stream_queued_pcm_bytes
+            .max(report.audio_stream.max_queued_pcm_bytes);
+        self.audio_stream_candidate_pairs_considered +=
+            report.audio_stream.candidate_pairs_considered;
+        self.audio_stream_landmarks_accepted +=
+            report.audio_stream.landmarks_accepted_into_reservoir;
+        self.audio_stream_landmarks_rejected += report.audio_stream.landmarks_rejected_by_reservoir;
         self.debug_record_bytes += report.serialized_debug_record_bytes;
     }
 
@@ -182,7 +202,7 @@ impl MediaMatchRebuildInstrumentation {
 
     fn summary(&self) -> String {
         format!(
-            "tools ffmpeg/ffprobe={}/{}, extract={}ms (probe {}ms, audio {}ms, video {}ms), v3 audio stream streamedBytes/streamedSamples/peakFrames/rawLandmarksBeforeBounding/finalLandmarks/maxBufferSamples/maxRawLandmarksSeen/maxRawLandmarksAfterCompaction/rawLandmarkCompactions={}/{}/{}/{}/{}/{}/{}/{}/{}, v3 blob bytes audio/video={}/{}, v3 index rows audio/video={}/{}, stats refreshes={} in {}ms (debug record bytes={})",
+            "tools ffmpeg/ffprobe={}/{}, extract={}ms (probe {}ms, audio {}ms, video {}ms), v3 audio stream streamedBytes/streamedSamples/peakFrames/rawLandmarksEmitted/rawLandmarksBeforeBounding/finalLandmarks/maxBufferSamples/maxRawLandmarksSeen/maxRawLandmarksAfterCompaction/rawLandmarkCompactions/pcmDrainThreadMillis/analyzerThreadMillis/channelBackpressureMillis/maxQueuedPcmBytes/candidatePairsConsidered/landmarksAccepted/landmarksRejected={}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}, v3 blob bytes audio/video={}/{}, v3 index rows audio/video={}/{}, stats refreshes={} in {}ms (debug record bytes={})",
             self.ffmpeg_invocations,
             self.ffprobe_invocations,
             self.extraction_millis,
@@ -192,12 +212,20 @@ impl MediaMatchRebuildInstrumentation {
             self.audio_streamed_bytes,
             self.audio_streamed_samples,
             self.audio_stream_peak_frames,
+            self.audio_stream_raw_landmarks_emitted,
             self.audio_stream_raw_landmarks,
             self.audio_stream_final_landmarks,
             self.max_audio_stream_buffer_samples,
             self.max_audio_stream_raw_landmarks_seen,
             self.max_audio_stream_raw_landmarks_after_compaction,
             self.audio_stream_raw_compactions,
+            self.audio_stream_pcm_drain_millis,
+            self.audio_stream_analyzer_thread_millis,
+            self.audio_stream_backpressure_millis,
+            self.max_audio_stream_queued_pcm_bytes,
+            self.audio_stream_candidate_pairs_considered,
+            self.audio_stream_landmarks_accepted,
+            self.audio_stream_landmarks_rejected,
             self.audio_blob_bytes,
             self.video_blob_bytes,
             self.audio_index_rows,

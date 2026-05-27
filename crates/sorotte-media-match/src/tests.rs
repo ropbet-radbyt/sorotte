@@ -1006,6 +1006,13 @@ fn v3_diagnostics_serializes_stable_stream_metric_names() {
                 compaction_millis: 7,
                 reservoir_millis: 5,
                 final_selection_millis: 3,
+                pcm_drain_thread_millis: 42,
+                analyzer_thread_millis: 39,
+                channel_backpressure_millis: 4,
+                max_queued_pcm_bytes: 16_384,
+                candidate_pairs_considered: 7_200,
+                landmarks_accepted_into_reservoir: 300,
+                landmarks_rejected_by_reservoir: 60,
                 ffmpeg_process_wall_millis: 43,
                 pcm_decode_drain_millis: 41,
                 ffmpeg_decode_stream_millis: 41,
@@ -1042,6 +1049,14 @@ fn v3_diagnostics_serializes_stable_stream_metric_names() {
     assert_eq!(value["compactionMillis"], 7);
     assert_eq!(value["reservoirMillis"], 5);
     assert_eq!(value["finalSelectionMillis"], 3);
+    assert_eq!(value["pcmDrainThreadMillis"], 42);
+    assert_eq!(value["analyzerThreadMillis"], 39);
+    assert_eq!(value["channelBackpressureMillis"], 4);
+    assert_eq!(value["maxQueuedPcmBytes"], 16_384);
+    assert_eq!(value["candidatePairsConsidered"], 7_200);
+    assert_eq!(value["landmarksAcceptedIntoReservoir"], 300);
+    assert_eq!(value["landmarksRejectedByReservoir"], 60);
+    assert!((value["reservoirAcceptanceRatio"].as_f64().unwrap() - (300.0 / 360.0)).abs() < 0.001);
     assert_eq!(value["sampledAudioSecondsDecoded"], 0);
     assert_eq!(value["sampledAudioWindowsDecoded"], 0);
     assert_eq!(value["fullAudioSecondsDecoded"], 120);

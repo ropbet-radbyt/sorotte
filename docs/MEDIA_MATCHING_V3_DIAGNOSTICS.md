@@ -121,13 +121,15 @@ counts still count only the first source for that path/settings key.
 Current real-corpus measurements on the Bakemonogatari audio-only manifest put
 dense full verification extraction around 13 seconds per 25-minute file on the
 tested Windows machine after online reservoirs removed repeated compactions.
-Sparse-full is roughly 10 seconds per file on that corpus and remains
-non-autoplay by policy. Sampled-normal indexing is around 2 seconds per file,
-and sampled-fast is the target background-index path. Retrieval and same-cut
+Dense full now reports separate PCM drain, analyzer-thread, channel
+backpressure, reservoir acceptance, and raw-emission counters so decode
+backpressure can be separated from Rust analysis cost. Sparse-full is still
+experimental: it is lower density and non-autoplay by policy, but it is not the
+default speed path unless future corpus reports show a substantial win.
+Sampled-fast is the target background-index path. Retrieval and same-cut
 verification are fast once fingerprints exist. Use sampled index mode for fast
-background shortlist calibration, sparse-full for lower-cost full-duration
-probing, and dense full verification for any `Strong` / `SameCutStrong`
-autoplay-eligible result.
+background shortlist calibration and dense full verification for any `Strong` /
+`SameCutStrong` autoplay-eligible result.
 
 ## Corpus Calibration Workflow
 
@@ -368,9 +370,11 @@ The JSON report includes:
   (`freshFingerprintReportCount`, `memoryCacheFingerprintReportCount`,
   `sqliteCacheFingerprintReportCount`)
 - extraction diagnostics: timings, audio/video landmark counts, blob bytes, and
-  streaming audio metrics, including ffmpeg process wall time, analyzer time,
-  pairing time, reservoir trimming time, final selection time, and sampled/full
-  decoded audio seconds/windows
+  streaming audio metrics, including ffmpeg process wall time, PCM drain thread
+  time, analyzer thread time, channel backpressure time, queued PCM bytes,
+  analyzer time, peak selection time, pairing time, reservoir time, reservoir
+  acceptance/rejection counts, final selection time, and sampled/full decoded
+  audio seconds/windows
 - retrieval diagnostics: bucket counts, skipped common buckets, raw hit rows,
   scored candidates, elapsed time, and retrieved candidate paths
 - decision diagnostics: tier, V3 class, explanation, offset, scale, segment
@@ -420,11 +424,14 @@ isolated fixture without checking the broader corpus.
 - Large raw hit row count or common-bucket pressure: inspect skipped-common
   buckets, raw hit rows, and whether static/common audio or video landmarks need
   better rarity filtering.
-- Cold extraction cost: inspect `ffmpegProcessWallMillis`, `analyzerMillis`,
-  `pairingMillis`, `compactionMillis`, `finalSelectionMillis`,
-  `sqliteSaveMillis`, and `indexInsertMillis`. If full extraction is the
-  bottleneck, compare with `--index-mode sampled-fast` and
-  `--index-mode sampled-normal` before changing thresholds.
+- Cold extraction cost: inspect `ffmpegProcessWallMillis`,
+  `pcmDrainThreadMillis`, `analyzerThreadMillis`, `channelBackpressureMillis`,
+  `maxQueuedPcmBytes`, `analyzerMillis`, `peakSelectionMillis`,
+  `pairingMillis`, `reservoirMillis`, `landmarksAcceptedIntoReservoir`,
+  `landmarksRejectedByReservoir`, `finalSelectionMillis`, `sqliteSaveMillis`,
+  and `indexInsertMillis`. If full extraction is the bottleneck, compare with
+  `--index-mode sampled-fast` and `--index-mode sampled-normal` before changing
+  thresholds.
 
 ## Dry-Run Command Sequence
 
