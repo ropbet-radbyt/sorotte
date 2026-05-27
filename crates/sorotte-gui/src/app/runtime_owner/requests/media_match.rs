@@ -31,6 +31,13 @@ struct GuiMediaMatchRemoteTarget {
     media_match_signature: serde_json::Value,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GuiMediaMatchExactPlaylistPlan {
+    None,
+    ExactNoFingerprint { path: String },
+    ExactNeedsSignature { path: String },
+}
+
 impl GuiPersistedConfigRuntimeOwner {
     fn usable_media_match_peer_file_name(file_name: Option<String>) -> Option<String> {
         file_name
@@ -479,6 +486,174 @@ impl GuiPersistedConfigRuntimeOwner {
         )
     }
 
+    fn media_match_exact_playlist_signature_trigger_key(path: &str) -> String {
+        format!("exact-playlist-signature={path}")
+    }
+
+    fn media_match_exact_playlist_plan_for_state(
+        &self,
+        projected_state: &SorotteGuiShellAppState,
+        root: &Path,
+    ) -> GuiMediaMatchExactPlaylistPlan {
+        let Some(target) = self.current_shared_playlist_target(projected_state) else {
+            return GuiMediaMatchExactPlaylistPlan::None;
+        };
+        if !self.current_player_matches_media_target(&target) {
+            return GuiMediaMatchExactPlaylistPlan::None;
+        }
+        let Some(path) = self
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.as_deref())
+            .filter(|path| Path::new(path).is_file())
+            .map(str::to_owned)
+        else {
+            return GuiMediaMatchExactPlaylistPlan::None;
+        };
+
+        if projected_state.media_match.settings.wire_sharing_enabled
+            && media_match_record_for_path(
+                root,
+                &path,
+                &MediaExtractionSettings::audio_constellation_v3(),
+            )
+            .is_none()
+        {
+            return GuiMediaMatchExactPlaylistPlan::ExactNeedsSignature { path };
+        }
+
+        GuiMediaMatchExactPlaylistPlan::ExactNoFingerprint { path }
+    }
+
+    fn queue_exact_playlist_signature_worker(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        root: PathBuf,
+        path: String,
+        force_restart: bool,
+        notify_on_finish: bool,
+    ) -> bool {
+        let trigger_key = Self::media_match_exact_playlist_signature_trigger_key(&path);
+        if self.media_match_background_worker_rx.is_some() {
+            if !force_restart
+                && self.media_match_background_trigger_key.as_deref() == Some(trigger_key.as_str())
+            {
+                return true;
+            }
+            let disposition = if force_restart {
+                GuiMediaMatchBackgroundCancelDisposition::RestorePrevious
+            } else {
+                GuiMediaMatchBackgroundCancelDisposition::KeepCheckpoint
+            };
+            self.request_media_match_background_worker_cancel(
+                handle,
+                projected_state,
+                disposition,
+                "canceling broad Media Matching work for exact playlist fingerprint",
+            );
+            return true;
+        } else if !force_restart
+            && self.media_match_background_trigger_key.as_deref() == Some(trigger_key.as_str())
+        {
+            return true;
+        }
+
+        let tool_snapshot =
+            self.refresh_media_match_runtime_snapshot(&projected_state.media_match.settings);
+        if tool_snapshot.health != GuiMediaMatchToolHealth::Healthy {
+            if notify_on_finish {
+                let message = tool_snapshot.message.unwrap_or_else(|| {
+                    "Media Matching tools are not ready for playlist fingerprint sharing."
+                        .to_owned()
+                });
+                Self::push_runtime_error_notification(handle, projected_state, message);
+            }
+            return false;
+        }
+
+        let settings = projected_state.media_match.settings.clone();
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let worker_cancel_flag = Arc::clone(&cancel_flag);
+        let (tx, rx) = mpsc::channel();
+        let backup_existed = match prepare_media_match_index_rebuild_backup(&root) {
+            Ok(backup_existed) => backup_existed,
+            Err(error) => {
+                if notify_on_finish {
+                    Self::push_runtime_error_notification(handle, projected_state, error);
+                }
+                return false;
+            }
+        };
+        let backup_root = root.clone();
+        let worker_path = path.clone();
+
+        match thread::Builder::new()
+            .name("sorotte-gui-media-match-exact-signature".to_owned())
+            .spawn(move || {
+                let progress_tx = tx.clone();
+                let extraction_settings = MediaExtractionSettings::audio_constellation_v3();
+                let result = media_match_tool_paths_for_settings(&root, &extraction_settings)
+                    .and_then(|tools| {
+                        rebuild_persisted_media_match_candidates_with_progress_and_cancel(
+                            MediaMatchCandidateRebuildRequest {
+                                root: &root,
+                                candidates: vec![PathBuf::from(&worker_path)],
+                                current_player_path: Some(worker_path.as_str()),
+                                settings: &settings,
+                                tools: &tools,
+                                extraction_settings: &extraction_settings,
+                                cancel_flag: Some(worker_cancel_flag.as_ref()),
+                            },
+                            |progress| {
+                                let _ = progress_tx
+                                    .send(GuiMediaMatchBackgroundWorkerEvent::Progress(progress));
+                            },
+                        )
+                    });
+                let result = result.map(|mut result| {
+                    result.message = format!(
+                        "Media Matching playlist fingerprint ready. {}",
+                        result.message
+                    );
+                    result
+                });
+                let _ = tx.send(GuiMediaMatchBackgroundWorkerEvent::Finished(result));
+            }) {
+            Ok(_thread) => {
+                self.media_match_background_worker_rx = Some(rx);
+                self.media_match_background_worker_cancel = Some(cancel_flag);
+                self.media_match_background_trigger_key = Some(trigger_key);
+                self.media_match_background_index_backup = Some(GuiMediaMatchIndexRebuildBackup {
+                    root: backup_root.clone(),
+                    backup_existed,
+                });
+                self.media_match_background_cancel_disposition = None;
+                self.publish_media_match_background_status(
+                    handle,
+                    projected_state,
+                    "queued: exact playlist fingerprint sharing",
+                );
+                true
+            }
+            Err(error) => {
+                self.media_match_background_worker_cancel = None;
+                self.media_match_background_worker_rx = None;
+                let _ = discard_media_match_index_rebuild_backup(&backup_root);
+                if notify_on_finish {
+                    Self::push_runtime_error_notification(
+                        handle,
+                        projected_state,
+                        format!(
+                            "Could not start Media Matching playlist fingerprint worker: {error}"
+                        ),
+                    );
+                }
+                false
+            }
+        }
+    }
+
     fn media_match_remote_targets_for_state(
         &self,
         projected_state: &SorotteGuiShellAppState,
@@ -681,6 +856,38 @@ impl GuiPersistedConfigRuntimeOwner {
             }
             return false;
         };
+        match self.media_match_exact_playlist_plan_for_state(projected_state, &root) {
+            GuiMediaMatchExactPlaylistPlan::None => {}
+            GuiMediaMatchExactPlaylistPlan::ExactNoFingerprint { .. } => {
+                if self.media_match_background_worker_rx.is_some() {
+                    self.request_media_match_background_worker_cancel(
+                        handle,
+                        projected_state,
+                        GuiMediaMatchBackgroundCancelDisposition::KeepCheckpoint,
+                        "idle: exact shared-playlist file already loaded",
+                    );
+                    return true;
+                }
+                self.media_match_background_trigger_key =
+                    Some("exact-playlist-no-fingerprint".to_owned());
+                self.publish_media_match_background_status(
+                    handle,
+                    projected_state,
+                    "idle: exact shared-playlist file already loaded",
+                );
+                return true;
+            }
+            GuiMediaMatchExactPlaylistPlan::ExactNeedsSignature { path } => {
+                return self.queue_exact_playlist_signature_worker(
+                    handle,
+                    projected_state,
+                    root,
+                    path,
+                    force_restart,
+                    notify_on_finish,
+                );
+            }
+        }
         let search_roots = self.automatic_media_search_roots(projected_state);
         if search_roots.is_empty() {
             if notify_on_finish {
@@ -1823,6 +2030,141 @@ mod tests {
         assert_eq!(
             owner.media_match_current_local_path_for_state(&state),
             Some(media_path.to_string_lossy().into_owned())
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn exact_shared_playlist_match_skips_background_fingerprinting_without_wire_sharing() {
+        let mut root = std::env::temp_dir();
+        root.push(format!(
+            "sorotte-gui-media-match-runtime-exact-skip-{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            let _ = std::fs::remove_dir_all(&root);
+        }
+        std::fs::create_dir_all(&root).expect("test root should be created");
+        let config_path = root.join("sorotte.ini");
+        let media_path = root.join("episode.mkv");
+        std::fs::write(&media_path, b"not real media").expect("media file should be created");
+        let saved_settings = StoredClientSettingsMvp {
+            media_match_fingerprinting_enabled: Some(true),
+            media_match_wire_sharing_enabled: Some(false),
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        };
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+        state.apply_shared_playlist_entries(vec!["episode.mkv".to_owned()], Some(0), false);
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
+        owner.active_shared_playlist_index = Some(0);
+        owner.player_local_file = Some(
+            sorotte_player_api::LocalFileUpdate::new("episode.mkv")
+                .with_path(media_path.to_string_lossy().into_owned()),
+        );
+        let handle = GuiQueuedRuntimeBridgeHandle::default();
+
+        assert_eq!(
+            owner.media_match_exact_playlist_plan_for_state(&state, &root),
+            GuiMediaMatchExactPlaylistPlan::ExactNoFingerprint {
+                path: media_path.to_string_lossy().into_owned(),
+            }
+        );
+        assert!(owner.queue_media_match_background_worker(
+            &handle,
+            &mut state,
+            "test exact",
+            false,
+            true,
+        ));
+        assert!(owner.media_match_background_worker_rx.is_none());
+        assert_eq!(
+            owner
+                .media_match_runtime_snapshot
+                .background_status
+                .as_deref(),
+            Some("idle: exact shared-playlist file already loaded")
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn exact_shared_playlist_match_needs_only_signature_fingerprint_when_sharing_enabled() {
+        let mut root = std::env::temp_dir();
+        root.push(format!(
+            "sorotte-gui-media-match-runtime-exact-signature-{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            let _ = std::fs::remove_dir_all(&root);
+        }
+        std::fs::create_dir_all(&root).expect("test root should be created");
+        let config_path = root.join("sorotte.ini");
+        let media_path = root.join("episode.mkv");
+        std::fs::write(&media_path, b"not real media").expect("media file should be created");
+        let saved_settings = StoredClientSettingsMvp {
+            media_match_fingerprinting_enabled: Some(true),
+            media_match_wire_sharing_enabled: Some(true),
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        };
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+        state.apply_shared_playlist_entries(vec!["episode.mkv".to_owned()], Some(0), false);
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
+        owner.active_shared_playlist_index = Some(0);
+        owner.player_local_file = Some(
+            sorotte_player_api::LocalFileUpdate::new("episode.mkv")
+                .with_path(media_path.to_string_lossy().into_owned()),
+        );
+
+        assert_eq!(
+            owner.media_match_exact_playlist_plan_for_state(&state, &root),
+            GuiMediaMatchExactPlaylistPlan::ExactNeedsSignature {
+                path: media_path.to_string_lossy().into_owned(),
+            }
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn exact_shared_playlist_plan_does_not_treat_different_path_bearing_target_as_exact() {
+        let mut root = std::env::temp_dir();
+        root.push(format!(
+            "sorotte-gui-media-match-runtime-exact-path-context-{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            let _ = std::fs::remove_dir_all(&root);
+        }
+        std::fs::create_dir_all(&root).expect("test root should be created");
+        let config_path = root.join("sorotte.ini");
+        let media_path = root.join("episode.mkv");
+        let other_root = root.join("other");
+        std::fs::create_dir_all(&other_root).expect("other root should be created");
+        let other_path = other_root.join("episode.mkv");
+        std::fs::write(&media_path, b"not real media").expect("media file should be created");
+        let saved_settings = StoredClientSettingsMvp {
+            media_match_fingerprinting_enabled: Some(true),
+            media_match_wire_sharing_enabled: Some(true),
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        };
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+        state.apply_shared_playlist_entries(
+            vec![other_path.to_string_lossy().into_owned()],
+            Some(0),
+            false,
+        );
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
+        owner.active_shared_playlist_index = Some(0);
+        owner.player_local_file = Some(
+            sorotte_player_api::LocalFileUpdate::new("episode.mkv")
+                .with_path(media_path.to_string_lossy().into_owned()),
+        );
+
+        assert_eq!(
+            owner.media_match_exact_playlist_plan_for_state(&state, &root),
+            GuiMediaMatchExactPlaylistPlan::None
         );
         let _ = std::fs::remove_dir_all(&root);
     }
