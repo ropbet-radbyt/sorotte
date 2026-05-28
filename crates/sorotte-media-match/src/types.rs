@@ -88,6 +88,18 @@ pub struct MediaTimelineMapV3 {
     #[serde(default)]
     pub global_fit_millis: u64,
     #[serde(default)]
+    pub offset_histogram_millis: u64,
+    #[serde(default)]
+    pub fast_global_fit_millis: u64,
+    #[serde(default)]
+    pub broad_global_fit_millis: u64,
+    #[serde(default)]
+    pub global_fit_candidate_count: usize,
+    #[serde(default)]
+    pub global_fit_inlier_count: usize,
+    #[serde(default)]
+    pub global_fit_fallback_used: bool,
+    #[serde(default)]
     pub timeline_map_millis: u64,
     #[serde(default)]
     pub evidence_formatting_millis: u64,

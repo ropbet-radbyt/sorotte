@@ -82,6 +82,13 @@ impl AudioConstellationV3Config {
                 pair_candidate_retain: 16,
                 ..Self::default_dense()
             },
+            MediaDenseAudioProfile::DenseGated => Self {
+                pair_candidate_retain: 12,
+                pair_fanout: 4,
+                anchor_peaks_per_frame: 3,
+                target_peaks_per_frame: 3,
+                ..Self::default_dense()
+            },
             MediaDenseAudioProfile::DenseFastCombinedCandidate => {
                 let config = Self {
                     sample_rate: 8_000,
@@ -230,6 +237,10 @@ struct AudioConstellationV3Builder {
     candidate_pairs_skipped_by_anchor_gate: usize,
     candidate_pairs_skipped_by_target_gate: usize,
     candidate_pairs_emitted: usize,
+    anchor_peaks_considered: usize,
+    anchor_peaks_selected: usize,
+    target_peaks_considered: usize,
+    target_peaks_selected: usize,
 }
 
 impl AudioConstellationV3Builder {
@@ -254,6 +265,10 @@ impl AudioConstellationV3Builder {
             candidate_pairs_skipped_by_anchor_gate: 0,
             candidate_pairs_skipped_by_target_gate: 0,
             candidate_pairs_emitted: 0,
+            anchor_peaks_considered: 0,
+            anchor_peaks_selected: 0,
+            target_peaks_considered: 0,
+            target_peaks_selected: 0,
         }
     }
 
@@ -310,6 +325,12 @@ impl AudioConstellationV3Builder {
                 .anchor_peaks_per_frame
                 .min(anchor_frame.peaks.len());
             let target_limit = self.config.target_peaks_per_frame.min(peaks.len());
+            self.anchor_peaks_considered = self
+                .anchor_peaks_considered
+                .saturating_add(anchor_frame.peaks.len());
+            self.anchor_peaks_selected = self.anchor_peaks_selected.saturating_add(anchor_limit);
+            self.target_peaks_considered = self.target_peaks_considered.saturating_add(peaks.len());
+            self.target_peaks_selected = self.target_peaks_selected.saturating_add(target_limit);
             self.candidate_pairs_skipped_by_anchor_gate =
                 self.candidate_pairs_skipped_by_anchor_gate.saturating_add(
                     anchor_frame
@@ -420,6 +441,13 @@ impl AudioConstellationV3Builder {
             candidate_pairs_emitted: self.candidate_pairs_emitted,
             landmarks_accepted_into_reservoir: accepted_into_reservoir,
             landmarks_rejected_by_reservoir: rejected_by_reservoir,
+            anchor_peaks_considered: self.anchor_peaks_considered,
+            anchor_peaks_selected: self.anchor_peaks_selected,
+            anchor_peaks_skipped_by_gate: self
+                .anchor_peaks_considered
+                .saturating_sub(self.anchor_peaks_selected),
+            target_peaks_considered: self.target_peaks_considered,
+            target_peaks_selected: self.target_peaks_selected,
             ..MediaAudioStreamMetrics::default()
         };
         (landmarks, metrics)
@@ -1322,5 +1350,20 @@ mod tests {
         assert!(fast.hop_samples > current.hop_samples);
         assert!(fast.max_peaks_per_frame < current.max_peaks_per_frame);
         assert!(fast.pair_candidate_retain < current.pair_candidate_retain);
+    }
+
+    #[test]
+    fn dense_gated_profile_preserves_spectral_defaults_but_limits_pairing() {
+        let current = AudioConstellationV3Config::dense(MediaDenseAudioProfile::DenseCurrent);
+        let gated = AudioConstellationV3Config::dense(MediaDenseAudioProfile::DenseGated);
+
+        assert_eq!(gated.sample_rate, current.sample_rate);
+        assert_eq!(gated.window_samples, current.window_samples);
+        assert_eq!(gated.hop_samples, current.hop_samples);
+        assert_eq!(gated.max_peaks_per_frame, current.max_peaks_per_frame);
+        assert!(gated.anchor_peaks_per_frame < current.anchor_peaks_per_frame);
+        assert!(gated.target_peaks_per_frame < current.target_peaks_per_frame);
+        assert!(gated.pair_candidate_retain < current.pair_candidate_retain);
+        assert!(gated.pair_fanout < current.pair_fanout);
     }
 }

@@ -96,6 +96,11 @@ pub struct MediaAudioStreamMetrics {
     pub candidate_pairs_skipped_by_target_gate: usize,
     pub candidate_pairs_skipped_by_saturation: usize,
     pub candidate_pairs_emitted: usize,
+    pub anchor_peaks_considered: usize,
+    pub anchor_peaks_selected: usize,
+    pub anchor_peaks_skipped_by_gate: usize,
+    pub target_peaks_considered: usize,
+    pub target_peaks_selected: usize,
     pub landmarks_accepted_into_reservoir: usize,
     pub landmarks_rejected_by_reservoir: usize,
     pub ffmpeg_process_wall_millis: u128,
@@ -814,6 +819,21 @@ fn merge_audio_stream_metrics(
     target.candidate_pairs_emitted = target
         .candidate_pairs_emitted
         .saturating_add(source.candidate_pairs_emitted);
+    target.anchor_peaks_considered = target
+        .anchor_peaks_considered
+        .saturating_add(source.anchor_peaks_considered);
+    target.anchor_peaks_selected = target
+        .anchor_peaks_selected
+        .saturating_add(source.anchor_peaks_selected);
+    target.anchor_peaks_skipped_by_gate = target
+        .anchor_peaks_skipped_by_gate
+        .saturating_add(source.anchor_peaks_skipped_by_gate);
+    target.target_peaks_considered = target
+        .target_peaks_considered
+        .saturating_add(source.target_peaks_considered);
+    target.target_peaks_selected = target
+        .target_peaks_selected
+        .saturating_add(source.target_peaks_selected);
     target.landmarks_accepted_into_reservoir = target
         .landmarks_accepted_into_reservoir
         .saturating_add(source.landmarks_accepted_into_reservoir);

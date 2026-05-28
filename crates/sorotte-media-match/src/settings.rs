@@ -80,6 +80,7 @@ pub enum MediaDenseAudioProfile {
     Dense8kWindow1024Hop1024,
     DenseMaxPeaks4,
     DensePairRetain16,
+    DenseGated,
     DenseFastCombinedCandidate,
 }
 
@@ -94,6 +95,7 @@ impl MediaDenseAudioProfile {
             Self::Dense8kWindow1024Hop1024 => "dense-8k-window1024-hop1024",
             Self::DenseMaxPeaks4 => "dense-max-peaks-4",
             Self::DensePairRetain16 => "dense-pair-retain-16",
+            Self::DenseGated => "dense-gated",
             Self::DenseFastCombinedCandidate => "dense-fast-combined-candidate",
         }
     }

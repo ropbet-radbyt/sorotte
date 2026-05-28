@@ -228,9 +228,24 @@ struct V3DecisionTimings {
     pair_collection_millis: u64,
     fast_audio_verifier_millis: u64,
     global_fit_millis: u64,
+    offset_histogram_millis: u64,
+    fast_global_fit_millis: u64,
+    broad_global_fit_millis: u64,
+    global_fit_candidate_count: usize,
+    global_fit_inlier_count: usize,
+    global_fit_fallback_used: bool,
     timeline_map_millis: u64,
     evidence_formatting_millis: u64,
     total_decision_millis: u64,
+}
+
+#[derive(Debug, Clone)]
+struct InitialAnchorFit {
+    fit: AnchorScaleOffsetFit,
+    best_weight: u32,
+    second_weight: u32,
+    candidate_count: usize,
+    fallback_used: bool,
 }
 
 pub fn decide_media_match_anchors(
@@ -292,23 +307,87 @@ pub fn decide_media_match_anchors(
         );
     }
 
+    let offset_histogram_started_at = Instant::now();
+    let audio_offset_diagnostics = (!query.audio_anchors.is_empty()
+        && !candidate.audio_anchors.is_empty())
+    .then(|| audio_offset_bin_diagnostics(query, candidate, &pairs));
+    let dominant_offset = dominant_anchor_offset(&pairs);
+    timings.offset_histogram_millis = elapsed_millis_u64(offset_histogram_started_at);
+
     let global_fit_started_at = Instant::now();
-    let Some((best_offset_ms, best_weight, second_weight)) = dominant_anchor_offset(&pairs) else {
-        return decision(
-            MediaMatchTier::Reject,
-            evidence,
-            "anchor offsets did not form a dominant hypothesis",
-        );
-    };
-    let Some(fit) = fit_anchor_scale_offset(&pairs, best_offset_ms) else {
-        return decision(
-            MediaMatchTier::Reject,
-            evidence,
-            "no anchors fit the dominant offset",
-        );
+    let fast_fit_started_at = Instant::now();
+    let fast_fit = fast_audio_global_fit(
+        query,
+        candidate,
+        &pairs,
+        audio_offset_diagnostics.as_deref(),
+    );
+    timings.fast_global_fit_millis = elapsed_millis_u64(fast_fit_started_at);
+    let initial_fit = if let Some(initial_fit) = fast_fit {
+        initial_fit
+    } else {
+        let Some((best_offset_ms, best_weight, second_weight)) = dominant_offset else {
+            return decision(
+                MediaMatchTier::Reject,
+                evidence,
+                "anchor offsets did not form a dominant hypothesis",
+            );
+        };
+        let broad_fit_started_at = Instant::now();
+        let Some((fit, candidate_count)) = fit_anchor_scale_offset(&pairs, best_offset_ms) else {
+            return decision(
+                MediaMatchTier::Reject,
+                evidence,
+                "no anchors fit the dominant offset",
+            );
+        };
+        timings.broad_global_fit_millis = elapsed_millis_u64(broad_fit_started_at);
+        InitialAnchorFit {
+            fit,
+            best_weight,
+            second_weight,
+            candidate_count,
+            fallback_used: true,
+        }
     };
     timings.global_fit_millis = elapsed_millis_u64(global_fit_started_at);
+    timings.global_fit_candidate_count = initial_fit.candidate_count;
+    timings.global_fit_inlier_count = initial_fit.fit.aligned.len();
+    timings.global_fit_fallback_used = initial_fit.fallback_used;
+    let best_weight = initial_fit.best_weight;
+    let second_weight = initial_fit.second_weight;
+    let fallback_used = initial_fit.fallback_used;
+    let fit = initial_fit.fit;
     let aligned = fit.aligned.clone();
+
+    if !query.audio_anchors.is_empty()
+        && !candidate.audio_anchors.is_empty()
+        && let Some(diagnostics) = audio_offset_diagnostics.as_deref()
+    {
+        let diagnostic_started_at = Instant::now();
+        evidence
+            .notes
+            .push(format_audio_offset_bin_diagnostics(&pairs, diagnostics));
+        timings.evidence_formatting_millis = timings
+            .evidence_formatting_millis
+            .saturating_add(elapsed_millis_u64(diagnostic_started_at));
+    }
+
+    if fallback_used {
+        evidence.notes.push(format!(
+            "global_fit fallback=broad candidates={} inliers={} broad_ms={}",
+            timings.global_fit_candidate_count,
+            timings.global_fit_inlier_count,
+            timings.broad_global_fit_millis
+        ));
+    } else {
+        evidence.notes.push(format!(
+            "global_fit fallback=fast_audio candidates={} inliers={} fast_ms={}",
+            timings.global_fit_candidate_count,
+            timings.global_fit_inlier_count,
+            timings.fast_global_fit_millis
+        ));
+    }
 
     let audio_pairs = aligned
         .iter()
@@ -392,18 +471,6 @@ pub fn decide_media_match_anchors(
     let very_strong_single_modality =
         (audio_pairs >= 16 || video_pairs >= 10) && meaningful_span && margin_ok && continuity_ok;
     let weak_evidence = audio_pairs >= 2 || video_pairs >= 2 || aligned.len() >= 3;
-    let diagnostic_started_at = Instant::now();
-    let audio_offset_diagnostics = (!query.audio_anchors.is_empty()
-        && !candidate.audio_anchors.is_empty())
-    .then(|| audio_offset_bin_diagnostics(query, candidate, &pairs));
-    if let Some(diagnostics) = audio_offset_diagnostics.as_deref() {
-        evidence
-            .notes
-            .push(format_audio_offset_bin_diagnostics(&pairs, diagnostics));
-    }
-    timings.evidence_formatting_millis = timings
-        .evidence_formatting_millis
-        .saturating_add(elapsed_millis_u64(diagnostic_started_at));
     let classification_context = V3ClassificationContext {
         duration_ok,
         meaningful_span,
@@ -811,7 +878,7 @@ fn rounded_offset_bin(offset_ms: i64) -> i64 {
 fn fit_anchor_scale_offset(
     pairs: &[AnchorMatchPair],
     voted_offset_ms: i64,
-) -> Option<AnchorScaleOffsetFit> {
+) -> Option<(AnchorScaleOffsetFit, usize)> {
     let seeded = pairs
         .iter()
         .copied()
@@ -831,6 +898,7 @@ fn fit_anchor_scale_offset(
         let broad_pairs = broad_scale_fit_sample(pairs);
         add_scale_offset_candidates_from_pairs(&broad_pairs, &mut candidates);
     }
+    let candidate_count = candidates.len();
 
     let mut best: Option<AnchorFitCandidate> = None;
     for (scale, offset) in candidates {
@@ -885,11 +953,74 @@ fn fit_anchor_scale_offset(
     let scale_ppm = (best.scale * 1_000_000.0)
         .round()
         .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
-    Some(AnchorScaleOffsetFit {
-        offset_ms: best.offset.round().clamp(i64::MIN as f64, i64::MAX as f64) as i64,
-        scale_ppm,
-        drift_ratio,
-        aligned: best.aligned,
+    Some((
+        AnchorScaleOffsetFit {
+            offset_ms: best.offset.round().clamp(i64::MIN as f64, i64::MAX as f64) as i64,
+            scale_ppm,
+            drift_ratio,
+            aligned: best.aligned,
+        },
+        candidate_count,
+    ))
+}
+
+fn fast_audio_global_fit(
+    query: &MediaAnchorProfile,
+    candidate: &MediaAnchorProfile,
+    pairs: &[AnchorMatchPair],
+    diagnostics: Option<&[V3AudioOffsetBinDiagnostic]>,
+) -> Option<InitialAnchorFit> {
+    if !query.video_anchors.is_empty() || !candidate.video_anchors.is_empty() {
+        return None;
+    }
+    let diagnostics = diagnostics?;
+    let best = diagnostics.first()?;
+    let second_weight = diagnostics
+        .get(1)
+        .map(|diagnostic| diagnostic.weighted_score)
+        .unwrap_or(0);
+    let margin = if best.weighted_score > 0 {
+        1.0 - (f64::from(second_weight) / f64::from(best.weighted_score))
+    } else {
+        0.0
+    };
+    if best.body_pair_count < V3_FAST_AUDIO_MIN_BODY_PAIRS
+        || best.body_region_count < V3_FAST_AUDIO_MIN_BODY_REGIONS
+        || best.body_span_ms < V3_FAST_AUDIO_MIN_BODY_SPAN_MS
+        || margin < 0.20
+    {
+        return None;
+    }
+    let seeded = audio_pairs_for_offset_ms(pairs, best.offset_ms);
+    if seeded.len() < 2 {
+        return None;
+    }
+    let (scale, offset) = least_squares_anchor_fit(&seeded).unwrap_or((1.0, best.offset_ms as f64));
+    let aligned = anchor_fit_inliers(&seeded, scale, offset);
+    if aligned.len() < V3_FAST_AUDIO_MIN_BODY_PAIRS {
+        return None;
+    }
+    let max_residual = max_anchor_fit_residual_ms(&aligned, scale, offset);
+    let span_ms = aligned_anchor_span_ms(&aligned);
+    let drift_ratio = if span_ms > 0 {
+        max_residual / f64::from(span_ms)
+    } else {
+        0.0
+    };
+    let scale_ppm = (scale * 1_000_000.0)
+        .round()
+        .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
+    Some(InitialAnchorFit {
+        fit: AnchorScaleOffsetFit {
+            offset_ms: offset.round().clamp(i64::MIN as f64, i64::MAX as f64) as i64,
+            scale_ppm,
+            drift_ratio,
+            aligned,
+        },
+        best_weight: best.weighted_score,
+        second_weight,
+        candidate_count: 1,
+        fallback_used: false,
     })
 }
 
@@ -1807,6 +1938,12 @@ fn media_timeline_map_v3_from_analysis(
         decision_pair_collection_millis: timings.pair_collection_millis,
         fast_audio_verifier_millis: timings.fast_audio_verifier_millis,
         global_fit_millis: timings.global_fit_millis,
+        offset_histogram_millis: timings.offset_histogram_millis,
+        fast_global_fit_millis: timings.fast_global_fit_millis,
+        broad_global_fit_millis: timings.broad_global_fit_millis,
+        global_fit_candidate_count: timings.global_fit_candidate_count,
+        global_fit_inlier_count: timings.global_fit_inlier_count,
+        global_fit_fallback_used: timings.global_fit_fallback_used,
         timeline_map_millis: timings.timeline_map_millis,
         evidence_formatting_millis: timings.evidence_formatting_millis,
         total_decision_millis: timings.total_decision_millis,
@@ -2030,6 +2167,12 @@ fn media_timeline_map_v3_from_evidence(
         decision_pair_collection_millis: 0,
         fast_audio_verifier_millis: 0,
         global_fit_millis: 0,
+        offset_histogram_millis: 0,
+        fast_global_fit_millis: 0,
+        broad_global_fit_millis: 0,
+        global_fit_candidate_count: 0,
+        global_fit_inlier_count: 0,
+        global_fit_fallback_used: false,
         timeline_map_millis: 0,
         evidence_formatting_millis: 0,
         total_decision_millis: 0,

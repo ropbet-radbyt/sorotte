@@ -93,20 +93,29 @@ all current candidates:
 
 ```powershell
 cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode full --dense-audio-profile dense-current --output reports/dense-current.json --cache-root .cache-dense-current --refresh-cache
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode full --dense-audio-profile dense-gated --output reports/dense-gated.json --cache-root .cache-dense-gated --refresh-cache
 cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode full --dense-audio-profile dense-fast-combined-candidate --output reports/dense-fast-candidate.json --cache-root .cache-dense-fast --refresh-cache
 cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode full --bench-dense-audio-profiles --output reports/dense-profile-matrix.json --cache-root .cache-dense-matrix --refresh-cache
-cargo run -p sorotte-media-match --bin v3_report_compare -- --allow-different-settings --allow-different-tuning reports/dense-current.json reports/dense-fast-candidate.json
+cargo run -p sorotte-media-match --bin v3_report_compare -- --allow-different-settings --allow-different-tuning reports/dense-current.json reports/dense-gated.json
 ```
 
 Benchmark profiles include `dense-current`, `dense-realfft`, `dense-8k`,
 `dense-hop2048`, `dense-8k-hop2048`,
 `dense-8k-window1024-hop1024`, `dense-max-peaks-4`,
-`dense-pair-retain-16`, and `dense-fast-combined-candidate`. The non-current
+`dense-pair-retain-16`, `dense-gated`, and
+`dense-fast-combined-candidate`. The non-current
 profiles change the fingerprint config hash and should be compared with
 explicit compatibility allow flags. `dense-realfft` currently occupies the
 real-FFT benchmark slot without changing the default frontend; the lower-cost
 sample-rate, hop, peak, and pair-retain profiles are the active candidates until
 a dedicated real FFT backend is added without a new heavyweight dependency.
+`dense-gated` keeps the dense-current spectral settings but adds anchor/target
+pair gates to reduce candidate-pair enumeration. A successful gated run should
+preserve the same class/tier/offset behavior while lowering
+`candidatePairsConsidered`, raising `candidatePairsSkippedByAnchorGate` or
+`candidatePairsSkippedByTargetGate`, and reducing direct-decision broad global
+fit time. Dense-current currently has two separate pair explosions to watch:
+extraction candidate pairs and direct global-fit pair rescans.
 Dense profile reports include decode/drain, analyzer, pairing, reservoir,
 candidate-pair, and direct-decision timing fields. Do not promote a dense
 candidate profile to default unless it preserves same-episode strength, wrong

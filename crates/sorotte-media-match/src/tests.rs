@@ -1015,6 +1015,11 @@ fn v3_diagnostics_serializes_stable_stream_metric_names() {
                 candidate_pairs_skipped_by_target_gate: 800,
                 candidate_pairs_skipped_by_saturation: 60,
                 candidate_pairs_emitted: 360,
+                anchor_peaks_considered: 1_200,
+                anchor_peaks_selected: 900,
+                anchor_peaks_skipped_by_gate: 300,
+                target_peaks_considered: 1_000,
+                target_peaks_selected: 850,
                 landmarks_accepted_into_reservoir: 300,
                 landmarks_rejected_by_reservoir: 60,
                 ffmpeg_process_wall_millis: 43,
@@ -1062,6 +1067,11 @@ fn v3_diagnostics_serializes_stable_stream_metric_names() {
     assert_eq!(value["candidatePairsSkippedByTargetGate"], 800);
     assert_eq!(value["candidatePairsSkippedBySaturation"], 60);
     assert_eq!(value["candidatePairsEmitted"], 360);
+    assert_eq!(value["anchorPeaksConsidered"], 1_200);
+    assert_eq!(value["anchorPeaksSelected"], 900);
+    assert_eq!(value["anchorPeaksSkippedByGate"], 300);
+    assert_eq!(value["targetPeaksConsidered"], 1_000);
+    assert_eq!(value["targetPeaksSelected"], 850);
     assert_eq!(value["landmarksAcceptedIntoReservoir"], 300);
     assert_eq!(value["landmarksRejectedByReservoir"], 60);
     assert!((value["reservoirAcceptanceRatio"].as_f64().unwrap() - (300.0 / 360.0)).abs() < 0.001);
@@ -1448,6 +1458,12 @@ fn test_timeline_map_v3(
         decision_pair_collection_millis: 0,
         fast_audio_verifier_millis: 0,
         global_fit_millis: 0,
+        offset_histogram_millis: 0,
+        fast_global_fit_millis: 0,
+        broad_global_fit_millis: 0,
+        global_fit_candidate_count: 0,
+        global_fit_inlier_count: 0,
+        global_fit_fallback_used: false,
         timeline_map_millis: 0,
         evidence_formatting_millis: 0,
         total_decision_millis: 0,
@@ -1470,13 +1486,12 @@ fn v3_audio_only_offset_recovery_is_within_one_second() {
     assert!((alignment.offset_seconds - 1.0).abs() <= 1.0);
     assert_eq!(alignment.aligned_video_anchors, 0);
     assert!(alignment.aligned_audio_anchors >= 16);
-    assert!(
-        decision
-            .evidence
-            .timeline_map_v3
-            .as_ref()
-            .is_some_and(|map| !map.segments.is_empty())
-    );
+    let map = decision
+        .evidence
+        .timeline_map_v3
+        .as_ref()
+        .expect("timeline map");
+    assert!(!map.segments.is_empty());
 }
 
 #[test]
@@ -1648,6 +1663,9 @@ fn audio_only_body_same_cut_uses_fast_verifier() {
         "{decision:?}"
     );
     let map = decision.evidence.timeline_map_v3.expect("timeline map");
+    assert!(!map.global_fit_fallback_used, "{map:?}");
+    assert_eq!(map.broad_global_fit_millis, 0, "{map:?}");
+    assert!(map.global_fit_inlier_count >= 24, "{map:?}");
     assert_eq!(map.piecewise_fit_millis, 0, "{map:?}");
     assert_eq!(map.piecewise_hypothesis_count, 0, "{map:?}");
     assert!(

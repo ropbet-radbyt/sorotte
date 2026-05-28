@@ -293,7 +293,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
 }
 
 fn usage() -> String {
-    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--index-mode full|sparse-full|sampled-fast|sampled-normal|sampled|sampled-then-full|production] [--dense-audio-profile dense-current|dense-realfft|dense-8k|dense-hop2048|dense-8k-hop2048|dense-8k-window1024-hop1024|dense-max-peaks-4|dense-pair-retain-16|dense-fast-combined-candidate] [--bench-dense-audio-profiles] [--max-full-promotions n] [--promote-expected-candidates] [--list-cases|--validate-only] [--case name]"
+    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--index-mode full|sparse-full|sampled-fast|sampled-normal|sampled|sampled-then-full|production] [--dense-audio-profile dense-current|dense-realfft|dense-8k|dense-hop2048|dense-8k-hop2048|dense-8k-window1024-hop1024|dense-max-peaks-4|dense-pair-retain-16|dense-gated|dense-fast-combined-candidate] [--bench-dense-audio-profiles] [--max-full-promotions n] [--promote-expected-candidates] [--list-cases|--validate-only] [--case name]"
         .to_owned()
 }
 
@@ -319,6 +319,7 @@ fn parse_dense_audio_profile(value: &str) -> Result<MediaDenseAudioProfile, Stri
         "dense-8k-window1024-hop1024" => Ok(MediaDenseAudioProfile::Dense8kWindow1024Hop1024),
         "dense-max-peaks-4" => Ok(MediaDenseAudioProfile::DenseMaxPeaks4),
         "dense-pair-retain-16" => Ok(MediaDenseAudioProfile::DensePairRetain16),
+        "dense-gated" => Ok(MediaDenseAudioProfile::DenseGated),
         "dense-fast-combined-candidate" => Ok(MediaDenseAudioProfile::DenseFastCombinedCandidate),
         _ => Err(usage()),
     }
@@ -391,6 +392,7 @@ fn run_dense_audio_profile_benchmark(
         MediaDenseAudioProfile::Dense8kWindow1024Hop1024,
         MediaDenseAudioProfile::DenseMaxPeaks4,
         MediaDenseAudioProfile::DensePairRetain16,
+        MediaDenseAudioProfile::DenseGated,
         MediaDenseAudioProfile::DenseFastCombinedCandidate,
     ];
     let mut reports = Vec::with_capacity(profiles.len());
