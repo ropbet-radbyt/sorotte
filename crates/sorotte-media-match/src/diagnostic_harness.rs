@@ -195,6 +195,10 @@ pub struct MediaMatchV3DiagnosticCandidateReport {
     pub index_insert_millis: u128,
     pub retrieved: bool,
     pub retrieval_rank: Option<usize>,
+    #[serde(default)]
+    pub sampled_retrieval_rank: Option<usize>,
+    #[serde(default)]
+    pub final_verified_rank: Option<usize>,
     pub promotion_reason: Option<String>,
     pub full_promotion_millis: u128,
     pub decision: MediaMatchV3DiagnosticDecisionReport,
@@ -344,6 +348,12 @@ pub struct MediaMatchV3DiagnosticSummaryReport {
     pub sampled_indexed_file_count: usize,
     pub full_promoted_file_count: usize,
     pub max_full_promotions_per_query: usize,
+    #[serde(default)]
+    pub sampled_fast_worker_count: usize,
+    #[serde(default)]
+    pub full_verify_worker_count: usize,
+    #[serde(default)]
+    pub files_per_minute: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -534,6 +544,15 @@ pub fn run_media_match_v3_diagnostic_manifest(
                 positive_rank_by_id.insert(id.to_owned(), retrieval_rank);
             }
             let retrieved = retrieval_rank.is_some();
+            let sampled_retrieval_rank = matches!(
+                index_mode,
+                MediaMatchV3DiagnosticIndexMode::SampledFast
+                    | MediaMatchV3DiagnosticIndexMode::SampledNormal
+                    | MediaMatchV3DiagnosticIndexMode::SampledThenFull
+                    | MediaMatchV3DiagnosticIndexMode::Production
+            )
+            .then_some(retrieval_rank)
+            .flatten();
             let mut query_for_decision = query.clone();
             let mut fingerprint = index_fingerprint;
             let mut promotion_reason = None;
@@ -612,6 +631,7 @@ pub fn run_media_match_v3_diagnostic_manifest(
                 summary.failed += 1;
             }
             increment_report_source_count(&mut summary, fingerprint.source);
+            let final_verified_rank = promotion_reason.as_ref().and(retrieval_rank);
             reports.push(MediaMatchV3DiagnosticCandidateReport {
                 candidate_id: candidate.expectation.id.clone(),
                 path: normalized_candidate.clone(),
@@ -622,6 +642,8 @@ pub fn run_media_match_v3_diagnostic_manifest(
                 index_insert_millis: fingerprint.save_stats.index_insert_millis,
                 retrieved,
                 retrieval_rank,
+                sampled_retrieval_rank,
+                final_verified_rank,
                 promotion_reason,
                 full_promotion_millis,
                 decision: MediaMatchV3DiagnosticDecisionReport::from_decision(
@@ -726,6 +748,7 @@ pub fn run_media_match_v3_diagnostic_manifest(
             .production_sampled_index_millis
             .saturating_add(summary.production_full_promotion_millis);
     }
+    apply_production_throughput_summary(&mut summary, index_mode);
 
     Ok(MediaMatchV3DiagnosticReport {
         algorithm_version: MEDIA_MATCH_ANCHOR_VERSION,
@@ -743,6 +766,47 @@ pub fn run_media_match_v3_diagnostic_manifest(
         cases,
         summary,
     })
+}
+
+fn apply_production_throughput_summary(
+    summary: &mut MediaMatchV3DiagnosticSummaryReport,
+    index_mode: MediaMatchV3DiagnosticIndexMode,
+) {
+    let uses_sampled_index = matches!(
+        index_mode,
+        MediaMatchV3DiagnosticIndexMode::SampledFast
+            | MediaMatchV3DiagnosticIndexMode::SampledNormal
+            | MediaMatchV3DiagnosticIndexMode::SampledThenFull
+            | MediaMatchV3DiagnosticIndexMode::Production
+    );
+    summary.sampled_fast_worker_count =
+        usize::from(summary.sampled_indexed_file_count > 0 && uses_sampled_index);
+    summary.full_verify_worker_count = usize::from(summary.full_fingerprint_count > 0);
+    let (files, millis) = if matches!(index_mode, MediaMatchV3DiagnosticIndexMode::Production) {
+        (
+            summary.sampled_indexed_file_count,
+            summary.production_sampled_index_millis,
+        )
+    } else {
+        (
+            summary
+                .sampled_indexed_file_count
+                .saturating_add(summary.full_fingerprint_count),
+            summary.fingerprint_total_millis,
+        )
+    };
+    summary.files_per_minute = files_per_minute(files, millis);
+}
+
+fn files_per_minute(files: usize, millis: u128) -> u64 {
+    if files == 0 || millis == 0 {
+        return 0;
+    }
+    let rounded = (files as u128)
+        .saturating_mul(60_000)
+        .saturating_add(millis / 2)
+        / millis;
+    rounded.min(u64::MAX as u128) as u64
 }
 
 fn apply_report_row_fingerprint_totals(
@@ -2213,10 +2277,16 @@ mod tests {
         assert_eq!(report.summary.production_sampled_index_millis, 0);
         assert_eq!(report.summary.production_full_promotion_millis, 0);
         assert_eq!(report.summary.production_total_millis, 0);
+        assert_eq!(report.summary.sampled_fast_worker_count, 0);
+        assert_eq!(report.summary.full_verify_worker_count, 0);
+        assert_eq!(report.summary.files_per_minute, 0);
         assert_eq!(value["summary"]["maxFullPromotionsPerQuery"], 1);
         assert_eq!(value["summary"]["productionSampledIndexMillis"], 0);
         assert_eq!(value["summary"]["productionFullPromotionMillis"], 0);
         assert_eq!(value["summary"]["productionTotalMillis"], 0);
+        assert_eq!(value["summary"]["sampledFastWorkerCount"], 0);
+        assert_eq!(value["summary"]["fullVerifyWorkerCount"], 0);
+        assert_eq!(value["summary"]["filesPerMinute"], 0);
 
         let _ = fs::remove_dir_all(root);
     }

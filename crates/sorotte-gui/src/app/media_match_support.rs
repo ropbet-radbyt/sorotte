@@ -244,9 +244,20 @@ impl MediaMatchRebuildInstrumentation {
         self.sqlite_writer_millis = self.sqlite_writer_millis.saturating_add(elapsed_millis);
     }
 
+    fn files_per_minute(&self) -> u64 {
+        if self.files_indexed == 0 || self.extraction_worker_wall_millis == 0 {
+            return 0;
+        }
+        let rounded = (self.files_indexed as u128)
+            .saturating_mul(60_000)
+            .saturating_add(self.extraction_worker_wall_millis / 2)
+            / self.extraction_worker_wall_millis;
+        rounded.min(u64::MAX as u128) as u64
+    }
+
     fn summary(&self) -> String {
         format!(
-            "tools ffmpeg/ffprobe={}/{}, extract={}ms (probe {}ms, audio {}ms, video {}ms), workers background/sampledFast/fullVerify={}/{}/{}, queueWait={}ms workerWall={}ms sqliteWriter={}ms filesIndexed={} cancelled={} resumed={}, v3 audio stream streamedBytes/streamedSamples/peakFrames/rawLandmarksEmitted/rawLandmarksBeforeBounding/finalLandmarks/maxBufferSamples/maxRawLandmarksSeen/maxRawLandmarksAfterCompaction/rawLandmarkCompactions/pcmDrainThreadMillis/analyzerThreadMillis/channelBackpressureMillis/maxQueuedPcmBytes/candidatePairsConsidered/landmarksAccepted/landmarksRejected={}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}, v3 blob bytes audio/video={}/{}, v3 index rows audio/video={}/{}, stats refreshes={} in {}ms (debug record bytes={})",
+            "tools ffmpeg/ffprobe={}/{}, extract={}ms (probe {}ms, audio {}ms, video {}ms), workers background/sampledFast/fullVerify={}/{}/{}, queueWait={}ms workerWall={}ms sqliteWriter={}ms filesIndexed={} filesPerMinute={} cancelled={} resumed={}, v3 audio stream streamedBytes/streamedSamples/peakFrames/rawLandmarksEmitted/rawLandmarksBeforeBounding/finalLandmarks/maxBufferSamples/maxRawLandmarksSeen/maxRawLandmarksAfterCompaction/rawLandmarkCompactions/pcmDrainThreadMillis/analyzerThreadMillis/channelBackpressureMillis/maxQueuedPcmBytes/candidatePairsConsidered/landmarksAccepted/landmarksRejected={}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}, v3 blob bytes audio/video={}/{}, v3 index rows audio/video={}/{}, stats refreshes={} in {}ms (debug record bytes={})",
             self.ffmpeg_invocations,
             self.ffprobe_invocations,
             self.extraction_millis,
@@ -260,6 +271,7 @@ impl MediaMatchRebuildInstrumentation {
             self.extraction_worker_wall_millis,
             self.sqlite_writer_millis,
             self.files_indexed,
+            self.files_per_minute(),
             self.cancelled_file_count,
             self.resumed_file_count,
             self.audio_streamed_bytes,

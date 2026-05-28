@@ -83,7 +83,10 @@ Modes:
   every selected manifest file, retrieves from that index, then dense
   full-verifies only the top promoted candidate(s). The report separates
   `productionSampledIndexMillis`, `productionFullPromotionMillis`, and
-  `productionTotalMillis`, plus sampled-indexed and full-promoted file counts.
+  `productionTotalMillis`, plus sampled-indexed and full-promoted file counts,
+  worker counts, and integer `filesPerMinute` throughput. Candidate rows also
+  include `sampledRetrievalRank` and `finalVerifiedRank` when production
+  promotion verifies a sampled hit.
 
 Dense full audio profiles are experimental verification benchmarks, not
 background indexing modes. `dense-current` is the correctness baseline. Use
@@ -102,7 +105,8 @@ cargo run -p sorotte-media-match --bin v3_report_compare -- --allow-different-se
 Benchmark profiles include `dense-current`, `dense-realfft`, `dense-8k`,
 `dense-hop2048`, `dense-8k-hop2048`,
 `dense-8k-window1024-hop1024`, `dense-max-peaks-4`,
-`dense-pair-retain-16`, `dense-gated` (also accepted as `dense-gated-v2`), and
+`dense-pair-retain-16` (also accepted as `dense-pair-retain-lower`),
+`dense-gated` (also accepted as `dense-gated-v2`), and
 `dense-fast-combined-candidate`. The non-current
 profiles change the fingerprint config hash and should be compared with
 explicit compatibility allow flags. `dense-realfft` currently occupies the
@@ -176,6 +180,12 @@ Sampled-fast is the target background-index path. Retrieval and same-cut
 verification are fast once fingerprints exist. Use sampled index mode for fast
 background shortlist calibration and dense full verification for any `Strong` /
 `SameCutStrong` autoplay-eligible result.
+
+Runtime/background rebuilds follow the same split: sampled-fast records are
+created in parallel for the library index, while dense full verification is
+reserved for the current/open media and top sampled retrieval candidate(s). The
+default promotion budget is one candidate per query; sampled-only matches stay
+`Probable` and not autoplay eligible.
 
 For retrieval calibration, add case-level `hardNegatives` for same-series wrong
 episodes, shared OP/ED cases, adjacent episodes, music-heavy episodes, and

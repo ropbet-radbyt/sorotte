@@ -473,6 +473,8 @@ mod tests {
                     index_insert_millis: 0,
                     retrieved: true,
                     retrieval_rank: Some(1),
+                    sampled_retrieval_rank: Some(1),
+                    final_verified_rank: None,
                     promotion_reason: None,
                     full_promotion_millis: 0,
                     decision: MediaMatchV3DiagnosticDecisionReport {

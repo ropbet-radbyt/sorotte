@@ -1091,7 +1091,8 @@ impl GuiPersistedConfigRuntimeOwner {
                     MEDIA_MATCH_MAX_FULL_PROMOTIONS_PER_QUERY,
                 );
                 let extraction_settings =
-                    sorotte_media_match::MediaExtractionSettings::combined_v3();
+                    sorotte_media_match::MediaExtractionSettings::combined_v3()
+                        .with_dense_audio_profile(sorotte_media_match::MediaDenseAudioProfile::DenseGated);
                 let full_result = media_match_tool_paths_for_settings(&root, &extraction_settings).and_then(|tools| {
                     rebuild_persisted_media_match_candidates_with_progress_and_cancel(
                         MediaMatchCandidateRebuildRequest {

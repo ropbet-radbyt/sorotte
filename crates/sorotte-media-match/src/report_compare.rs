@@ -882,6 +882,21 @@ fn report_metric_deltas(
             baseline.summary.full_promoted_file_count as i128,
             current.summary.full_promoted_file_count as i128,
         ),
+        metric_delta(
+            "sampledFastWorkerCount",
+            baseline.summary.sampled_fast_worker_count as i128,
+            current.summary.sampled_fast_worker_count as i128,
+        ),
+        metric_delta(
+            "fullVerifyWorkerCount",
+            baseline.summary.full_verify_worker_count as i128,
+            current.summary.full_verify_worker_count as i128,
+        ),
+        metric_delta(
+            "filesPerMinute",
+            baseline.summary.files_per_minute as i128,
+            current.summary.files_per_minute as i128,
+        ),
     ]
 }
 
@@ -1099,6 +1114,9 @@ mod tests {
         baseline.summary.production_total_millis = 140;
         baseline.summary.sampled_indexed_file_count = 2;
         baseline.summary.full_promoted_file_count = 1;
+        baseline.summary.sampled_fast_worker_count = 1;
+        baseline.summary.full_verify_worker_count = 1;
+        baseline.summary.files_per_minute = 120;
 
         let mut current = baseline.clone();
         current.summary.production_sampled_index_millis = 80;
@@ -1106,6 +1124,9 @@ mod tests {
         current.summary.production_total_millis = 130;
         current.summary.sampled_indexed_file_count = 3;
         current.summary.full_promoted_file_count = 2;
+        current.summary.sampled_fast_worker_count = 2;
+        current.summary.full_verify_worker_count = 1;
+        current.summary.files_per_minute = 180;
 
         let comparison =
             compare_media_match_v3_reports(&baseline, &current).expect("reports should compare");
@@ -1124,6 +1145,16 @@ mod tests {
             metrics.iter().any(|metric| {
                 metric["field"] == "fullPromotedFileCount" && metric["delta"] == 1
             })
+        );
+        assert!(
+            metrics.iter().any(|metric| {
+                metric["field"] == "sampledFastWorkerCount" && metric["delta"] == 1
+            })
+        );
+        assert!(
+            metrics
+                .iter()
+                .any(|metric| metric["field"] == "filesPerMinute" && metric["delta"] == 60)
         );
     }
 
@@ -2003,6 +2034,8 @@ mod tests {
                     index_insert_millis: 0,
                     retrieved: retrieval_rank.is_some(),
                     retrieval_rank,
+                    sampled_retrieval_rank: retrieval_rank,
+                    final_verified_rank: None,
                     promotion_reason: None,
                     full_promotion_millis: 0,
                     decision: MediaMatchV3DiagnosticDecisionReport {
