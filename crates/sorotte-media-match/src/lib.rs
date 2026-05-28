@@ -19,12 +19,14 @@ pub use anchors::{AudioAnchor, VideoAnchor};
 pub use diagnostic_harness::{
     MediaMatchV3DiagnosticCandidateReport, MediaMatchV3DiagnosticCaseReport,
     MediaMatchV3DiagnosticDecisionReport, MediaMatchV3DiagnosticExpectation,
-    MediaMatchV3DiagnosticFingerprintReport, MediaMatchV3DiagnosticIndexMode,
+    MediaMatchV3DiagnosticFingerprintReport, MediaMatchV3DiagnosticHardNegative,
+    MediaMatchV3DiagnosticHardNegativeReport, MediaMatchV3DiagnosticIndexMode,
     MediaMatchV3DiagnosticManifest, MediaMatchV3DiagnosticManifestCase,
-    MediaMatchV3DiagnosticReport, MediaMatchV3DiagnosticRetrievalReport,
-    MediaMatchV3DiagnosticRunOptions, MediaMatchV3DiagnosticSummaryReport,
-    MediaMatchV3ResolvedManifest, MediaMatchV3ResolvedManifestCandidate,
-    MediaMatchV3ResolvedManifestCase, media_match_v3_diagnostic_manifest_from_json,
+    MediaMatchV3DiagnosticReport, MediaMatchV3DiagnosticRetrievalCandidateReport,
+    MediaMatchV3DiagnosticRetrievalReport, MediaMatchV3DiagnosticRunOptions,
+    MediaMatchV3DiagnosticSummaryReport, MediaMatchV3ResolvedManifest,
+    MediaMatchV3ResolvedManifestCandidate, MediaMatchV3ResolvedManifestCase,
+    MediaMatchV3ResolvedManifestHardNegative, media_match_v3_diagnostic_manifest_from_json,
     media_match_v3_diagnostic_manifest_report_json, resolve_media_match_v3_diagnostic_manifest,
     run_media_match_v3_diagnostic_manifest, validate_media_match_v3_diagnostic_manifest,
 };
@@ -67,14 +69,15 @@ pub use types::{
 // The GUI/runtime owns cache location and rebuild lifecycle; these wrappers keep the SQL/index
 // implementation centralized in this crate while still letting runtime code maintain the cache.
 pub use v3_index::{
-    MediaMatchV3RetrievalStats, MediaMatchV3SaveStats, anchor_stats_v3_dirty,
-    clear_all_anchor_stats_v3_dirty, clear_anchor_stats_v3_dirty,
+    MediaMatchV3RetrievalStats, MediaMatchV3RetrievedCandidate, MediaMatchV3SaveStats,
+    anchor_stats_v3_dirty, clear_all_anchor_stats_v3_dirty, clear_anchor_stats_v3_dirty,
     delete_media_match_v3_file_and_fingerprints, delete_media_match_v3_fingerprints_and_anchors,
     initialize_media_match_v3_index, load_media_match_v3_cache_for_settings,
     load_media_match_v3_record_for_path, mark_anchor_stats_v3_dirty,
-    mark_anchor_stats_v3_dirty_for_file, media_match_v3_anchor_candidate_paths_with_stats,
-    media_match_v3_index_path, open_media_match_v3_index, refresh_all_anchor_stats_v3,
-    refresh_anchor_stats_v3, refresh_dirty_anchor_stats_v3_if_needed, save_media_match_v3_record,
+    mark_anchor_stats_v3_dirty_for_file, media_match_v3_anchor_candidate_details_with_stats,
+    media_match_v3_anchor_candidate_paths_with_stats, media_match_v3_index_path,
+    open_media_match_v3_index, refresh_all_anchor_stats_v3, refresh_anchor_stats_v3,
+    refresh_dirty_anchor_stats_v3_if_needed, save_media_match_v3_record,
     save_media_match_v3_record_with_stats,
 };
 // These descriptor types and kind helpers are intentionally public: GUI/runtime tests build

@@ -57,6 +57,25 @@ pub struct MediaMatchV3RetrievalStats {
     pub retrieval_elapsed_ms: u128,
 }
 
+#[derive(Debug, Clone, Serialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaMatchV3RetrievedCandidate {
+    pub normalized_path: String,
+    pub rank: usize,
+    pub total_score: i64,
+    pub best_offset_bin_ms: i64,
+    pub best_offset_score: i64,
+    pub second_offset_score: i64,
+    pub distinct_query_regions: i64,
+    pub distinct_candidate_regions: i64,
+    pub body_region_count: i64,
+    pub edge_region_count: i64,
+    pub approximate_span_ms: i64,
+    pub audio_hits: i64,
+    pub video_hits: i64,
+    pub score_ratio_to_next: Option<f64>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaMatchV3SaveStats {
@@ -537,6 +556,31 @@ pub fn media_match_v3_anchor_candidate_paths_with_stats(
     normalized_current_path: &str,
     extraction_settings: &MediaExtractionSettings,
 ) -> Result<(Vec<String>, MediaMatchV3RetrievalStats), String> {
+    let (candidates, stats) = media_match_v3_anchor_candidate_details_with_stats(
+        connection,
+        normalized_current_path,
+        extraction_settings,
+    )?;
+    Ok((
+        candidates
+            .into_iter()
+            .map(|candidate| candidate.normalized_path)
+            .collect(),
+        stats,
+    ))
+}
+
+pub fn media_match_v3_anchor_candidate_details_with_stats(
+    connection: &Connection,
+    normalized_current_path: &str,
+    extraction_settings: &MediaExtractionSettings,
+) -> Result<
+    (
+        Vec<MediaMatchV3RetrievedCandidate>,
+        MediaMatchV3RetrievalStats,
+    ),
+    String,
+> {
     let started_at = Instant::now();
     let mut stats = MediaMatchV3RetrievalStats::default();
     let settings_hash = media_extraction_settings_hash(extraction_settings).to_vec();
@@ -553,6 +597,14 @@ pub fn media_match_v3_anchor_candidate_paths_with_stats(
         stats.retrieval_elapsed_ms = started_at.elapsed().as_millis();
         return Ok((Vec::new(), stats));
     };
+    let query_duration_ms = connection
+        .query_row(
+            "SELECT duration_ms FROM media_files_v3 WHERE file_id = ?1",
+            [current_file_id],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .ok()
+        .flatten();
     let indexed_file_count = connection
         .query_row(
             "SELECT COUNT(DISTINCT file_id)
@@ -704,18 +756,42 @@ pub fn media_match_v3_anchor_candidate_paths_with_stats(
             .then_with(|| right.total_score.cmp(&left.total_score))
             .then_with(|| left.file_id.cmp(&right.file_id))
     });
-    let mut paths = Vec::new();
-    for score in ranked.into_iter().take(V3_RETRIEVAL_PREFILTER_LIMIT) {
-        if let Ok(path) = connection.query_row(
-            "SELECT normalized_path FROM media_files_v3 WHERE file_id = ?1",
+    let ranked_limit = ranked.len().min(V3_RETRIEVAL_PREFILTER_LIMIT);
+    let mut candidates = Vec::new();
+    for index in 0..ranked_limit {
+        let score = &ranked[index];
+        if let Ok((path, candidate_duration_ms)) = connection.query_row(
+            "SELECT normalized_path, duration_ms FROM media_files_v3 WHERE file_id = ?1",
             [score.file_id],
-            |row| row.get::<_, String>(0),
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?)),
         ) {
-            paths.push(path);
+            let (body_region_count, edge_region_count) =
+                score.best_offset_body_edge_region_counts(query_duration_ms, candidate_duration_ms);
+            candidates.push(MediaMatchV3RetrievedCandidate {
+                normalized_path: path,
+                rank: index + 1,
+                total_score: score.total_score,
+                best_offset_bin_ms: score
+                    .best_offset_bin
+                    .saturating_mul(V3_RETRIEVAL_OFFSET_BIN_MS),
+                best_offset_score: score.best_offset_score,
+                second_offset_score: score.second_offset_score,
+                distinct_query_regions: score.distinct_query_regions,
+                distinct_candidate_regions: score.distinct_candidate_regions,
+                body_region_count,
+                edge_region_count,
+                approximate_span_ms: score.approximate_span_ms,
+                audio_hits: score.audio_hits,
+                video_hits: score.video_hits,
+                score_ratio_to_next: ranked.get(index + 1).and_then(|next| {
+                    (next.best_offset_score > 0)
+                        .then(|| score.best_offset_score as f64 / next.best_offset_score as f64)
+                }),
+            });
         }
     }
     stats.retrieval_elapsed_ms = started_at.elapsed().as_millis();
-    Ok((paths, stats))
+    Ok((candidates, stats))
 }
 
 pub fn refresh_dirty_anchor_stats_v3_if_needed(
@@ -1032,6 +1108,34 @@ impl V3CandidateRetrievalScore {
             })
             .unwrap_or(0)
     }
+
+    fn best_offset_body_edge_region_counts(
+        &self,
+        query_duration_ms: Option<i64>,
+        candidate_duration_ms: Option<i64>,
+    ) -> (i64, i64) {
+        let Some(offset_score) = self.offset_bins.get(&self.best_offset_bin) else {
+            return (0, 0);
+        };
+        let mut body_regions = BTreeSet::new();
+        let mut edge_regions = BTreeSet::new();
+        for (query_t_ms, candidate_t_ms) in offset_score
+            .query_times
+            .iter()
+            .copied()
+            .zip(offset_score.candidate_times.iter().copied())
+        {
+            let query_region = query_t_ms / V3_RETRIEVAL_REGION_MS;
+            if media_match_v3_time_is_edge(query_t_ms, query_duration_ms)
+                || media_match_v3_time_is_edge(candidate_t_ms, candidate_duration_ms)
+            {
+                edge_regions.insert(query_region);
+            } else {
+                body_regions.insert(query_region);
+            }
+        }
+        (body_regions.len() as i64, edge_regions.len() as i64)
+    }
 }
 
 fn media_match_v3_document_frequency_weight(document_frequency: i64) -> i64 {
@@ -1049,6 +1153,14 @@ fn media_match_v3_rounded_offset_bin(offset_ms: i64) -> i64 {
     } else {
         (offset_ms - (V3_RETRIEVAL_OFFSET_BIN_MS / 2)) / V3_RETRIEVAL_OFFSET_BIN_MS
     }
+}
+
+fn media_match_v3_time_is_edge(time_ms: i64, duration_ms: Option<i64>) -> bool {
+    const EDGE_REGION_MS: i64 = 180_000;
+    time_ms < EDGE_REGION_MS
+        || duration_ms
+            .map(|duration_ms| duration_ms.saturating_sub(time_ms) < EDGE_REGION_MS)
+            .unwrap_or(false)
 }
 
 fn media_match_v3_longest_contiguous_span_ms(times: &[i64]) -> i64 {

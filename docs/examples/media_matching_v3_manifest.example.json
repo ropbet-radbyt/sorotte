@@ -14,7 +14,38 @@
           "expectedOffsetMs": 0,
           "maxOffsetErrorMs": 1000,
           "autoplayEligible": true,
-          "mustBeRetrieved": true
+          "mustBeRetrieved": true,
+          "expectedRetrieved": true,
+          "maxRetrievalRank": 1
+        }
+      ],
+      "hardNegatives": [
+        {
+          "id": "remux-wrong-episode-shared-op",
+          "path": "remux/wrong-episode-shared-op-ed.mkv",
+          "mustNotBeTopRank": true,
+          "mustNotBeatCandidateId": "remux-source-a"
+        }
+      ]
+    },
+    {
+      "name": "sampled-fast-retrieval-only",
+      "query": "sampled/episode-01-x264.mkv",
+      "candidates": [
+        {
+          "id": "sampled-episode-01-x265",
+          "path": "sampled/episode-01-x265.mkv",
+          "expectedRetrieved": true,
+          "maxRetrievalRank": 1,
+          "skipDecisionExpectation": true
+        }
+      ],
+      "hardNegatives": [
+        {
+          "id": "sampled-episode-02-shared-op-ed",
+          "path": "sampled/episode-02-shared-op-ed.mkv",
+          "mustNotBeTopRank": true,
+          "mustNotBeatCandidateId": "sampled-episode-01-x265"
         }
       ]
     },

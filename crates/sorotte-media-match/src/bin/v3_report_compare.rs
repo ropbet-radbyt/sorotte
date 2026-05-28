@@ -519,6 +519,7 @@ mod tests {
                     passed,
                     failure_reason: (!passed).then(|| "failed".to_owned()),
                 }],
+                hard_negatives: Vec::new(),
             }],
             summary: MediaMatchV3DiagnosticSummaryReport {
                 case_count: 1,

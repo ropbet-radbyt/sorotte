@@ -125,16 +125,11 @@ impl MediaMatchV3ReportComparison {
     }
 
     pub fn current_has_regressions(&self) -> bool {
-        !self.new_failures.is_empty()
-            || !self.missing_pairs_in_current.is_empty()
-            || !self.new_failed_pairs_in_current.is_empty()
-            || !self.new_retrieval_misses.is_empty()
+        self.summary.regression
     }
 
     pub fn current_has_unresolved_failures(&self) -> bool {
-        self.current_failed > 0
-            || !self.retrieval_misses.is_empty()
-            || !self.missing_pairs_in_current.is_empty()
+        self.summary.unresolved_failure
     }
 }
 
@@ -152,6 +147,9 @@ pub fn validate_media_match_v3_diagnostic_report(
     let mut pair_count = 0usize;
     let mut passed = 0usize;
     let mut failed = 0usize;
+    let mut hard_negative_count = 0usize;
+    let mut hard_negative_passed = 0usize;
+    let mut hard_negative_failed = 0usize;
     let mut total_raw_hit_rows_processed = 0i64;
     let mut total_retrieval_millis = 0u128;
     let mut total_full_promotion_millis = 0u128;
@@ -193,6 +191,24 @@ pub fn validate_media_match_v3_diagnostic_report(
                 promoted_candidates += 1;
             }
         }
+        for hard_negative in &case.hard_negatives {
+            validate_fingerprint_source(&case.name, &hard_negative.path, &hard_negative.source)?;
+            report_source_counts.increment(&hard_negative.source);
+            if let Some(candidate_id) = hard_negative.candidate_id.as_deref()
+                && candidate_id.trim().is_empty()
+            {
+                return Err(format!(
+                    "case '{}' hard negative '{}' has a blank candidateId",
+                    case.name, hard_negative.path
+                ));
+            }
+            hard_negative_count += 1;
+            if hard_negative.passed {
+                hard_negative_passed += 1;
+            } else {
+                hard_negative_failed += 1;
+            }
+        }
     }
 
     if report.summary.pair_count != pair_count {
@@ -218,6 +234,24 @@ pub fn validate_media_match_v3_diagnostic_report(
             "summary.passed + summary.failed = {} does not match summary.pairCount={}",
             report.summary.passed + report.summary.failed,
             report.summary.pair_count
+        ));
+    }
+    if report.summary.hard_negative_count != hard_negative_count {
+        return Err(format!(
+            "summary.hardNegativeCount={} does not match hard-negative count={hard_negative_count}",
+            report.summary.hard_negative_count
+        ));
+    }
+    if report.summary.hard_negative_passed != hard_negative_passed {
+        return Err(format!(
+            "summary.hardNegativePassed={} does not match passed hard-negatives={hard_negative_passed}",
+            report.summary.hard_negative_passed
+        ));
+    }
+    if report.summary.hard_negative_failed != hard_negative_failed {
+        return Err(format!(
+            "summary.hardNegativeFailed={} does not match failed hard-negatives={hard_negative_failed}",
+            report.summary.hard_negative_failed
         ));
     }
     if report.summary.total_raw_hit_rows_processed != total_raw_hit_rows_processed {
@@ -314,14 +348,18 @@ pub fn validate_media_match_v3_diagnostic_report(
     if report.summary.fresh_fingerprint_report_count
         + report.summary.memory_cache_fingerprint_report_count
         + report.summary.sqlite_cache_fingerprint_report_count
-        != report.summary.case_count + report.summary.pair_count
+        != report.summary.case_count
+            + report.summary.pair_count
+            + report.summary.hard_negative_count
     {
         return Err(format!(
-            "fingerprint report source counts sum to {}, expected query+candidate row count={}",
+            "fingerprint report source counts sum to {}, expected query+candidate+hard-negative row count={}",
             report.summary.fresh_fingerprint_report_count
                 + report.summary.memory_cache_fingerprint_report_count
                 + report.summary.sqlite_cache_fingerprint_report_count,
-            report.summary.case_count + report.summary.pair_count
+            report.summary.case_count
+                + report.summary.pair_count
+                + report.summary.hard_negative_count
         ));
     }
 
@@ -519,18 +557,28 @@ fn compare_media_match_v3_reports_unchecked(
         })
         .cloned()
         .collect::<Vec<_>>();
+    let baseline_failed = baseline
+        .summary
+        .failed
+        .saturating_add(baseline.summary.hard_negative_failed);
+    let current_failed = current
+        .summary
+        .failed
+        .saturating_add(current.summary.hard_negative_failed);
+    let hard_negative_regression =
+        current.summary.hard_negative_failed > baseline.summary.hard_negative_failed;
     let regression = !new_failures.is_empty()
         || !missing_pairs_in_current.is_empty()
         || !new_failed_pairs_in_current.is_empty()
-        || !new_retrieval_misses.is_empty();
-    let unresolved_failure = current.summary.failed > 0
-        || !retrieval_misses.is_empty()
-        || !missing_pairs_in_current.is_empty();
+        || !new_retrieval_misses.is_empty()
+        || hard_negative_regression;
+    let unresolved_failure =
+        current_failed > 0 || !retrieval_misses.is_empty() || !missing_pairs_in_current.is_empty();
     let summary = MediaMatchV3ReportComparisonSummary {
         regression,
         unresolved_failure,
-        baseline_failed: baseline.summary.failed,
-        current_failed: current.summary.failed,
+        baseline_failed,
+        current_failed,
         new_failures: new_failures.len(),
         resolved_failures: resolved_failures.len(),
         missing_pairs: missing_pairs_in_current.len(),
@@ -545,8 +593,8 @@ fn compare_media_match_v3_reports_unchecked(
         compatibility,
         compatibility_options,
         summary,
-        baseline_failed: baseline.summary.failed,
-        current_failed: current.summary.failed,
+        baseline_failed,
+        current_failed,
         new_failures,
         resolved_failures,
         missing_pairs_in_current,
@@ -770,6 +818,21 @@ fn report_metric_deltas(
             current.summary.sqlite_cache_fingerprint_report_count as i128,
         ),
         metric_delta(
+            "hardNegativeCount",
+            baseline.summary.hard_negative_count as i128,
+            current.summary.hard_negative_count as i128,
+        ),
+        metric_delta(
+            "hardNegativePassed",
+            baseline.summary.hard_negative_passed as i128,
+            current.summary.hard_negative_passed as i128,
+        ),
+        metric_delta(
+            "hardNegativeFailed",
+            baseline.summary.hard_negative_failed as i128,
+            current.summary.hard_negative_failed as i128,
+        ),
+        metric_delta(
             "sampledFingerprintCount",
             baseline.summary.sampled_fingerprint_count as i128,
             current.summary.sampled_fingerprint_count as i128,
@@ -877,6 +940,15 @@ fn report_aggregate_fingerprint_totals(
                 &mut totals,
             );
         }
+        for hard_negative in &case.hard_negatives {
+            add_aggregate_fingerprint_totals(
+                &hard_negative.path,
+                &hard_negative.diagnostics,
+                &hard_negative.source,
+                &mut seen,
+                &mut totals,
+            );
+        }
     }
     totals
 }
@@ -910,6 +982,14 @@ fn fingerprint_totals(report: &MediaMatchV3DiagnosticReport) -> FingerprintTotal
             add_summary_totals(
                 &candidate.path,
                 &candidate.diagnostics,
+                &mut seen,
+                &mut totals,
+            );
+        }
+        for hard_negative in &case.hard_negatives {
+            add_summary_totals(
+                &hard_negative.path,
+                &hard_negative.diagnostics,
                 &mut seen,
                 &mut totals,
             );
@@ -1969,6 +2049,7 @@ mod tests {
                     passed,
                     failure_reason: (!passed).then(|| "failed".to_owned()),
                 }],
+                hard_negatives: Vec::new(),
             }],
             summary: MediaMatchV3DiagnosticSummaryReport {
                 case_count: 1,

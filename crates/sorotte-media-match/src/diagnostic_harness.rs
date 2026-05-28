@@ -10,10 +10,11 @@ use crate::{
     InstrumentedMediaFingerprint, MEDIA_MATCH_ANCHOR_VERSION, MatchClassV3, MediaAudioIndexMode,
     MediaDenseAudioProfile, MediaExtractionSettings, MediaMatchAutoplayPolicy, MediaMatchDecision,
     MediaMatchSettings, MediaMatchTier, MediaMatchToolPaths, MediaMatchV3DiagnosticSummary,
-    MediaMatchV3RetrievalStats, MediaMatchV3SaveStats, V3Tuning, current_v3_tuning,
-    decide_media_match, fingerprint_media_file_with_report, load_media_match_v3_record_for_path,
-    media_extraction_settings_hash, media_match_v3_anchor_candidate_paths_with_stats,
-    normalize_media_path, open_media_match_v3_index, save_media_match_v3_record_with_stats,
+    MediaMatchV3RetrievalStats, MediaMatchV3RetrievedCandidate, MediaMatchV3SaveStats, V3Tuning,
+    current_v3_tuning, decide_media_match, fingerprint_media_file_with_report,
+    load_media_match_v3_record_for_path, media_extraction_settings_hash,
+    media_match_v3_anchor_candidate_details_with_stats, normalize_media_path,
+    open_media_match_v3_index, save_media_match_v3_record_with_stats,
     summarize_decision_v3_diagnostics, summarize_instrumented_record_v3_diagnostics,
     summarize_record_v3_diagnostics,
 };
@@ -41,6 +42,8 @@ pub struct MediaMatchV3DiagnosticManifestCase {
     pub name: String,
     pub query: String,
     pub candidates: Vec<MediaMatchV3DiagnosticExpectation>,
+    #[serde(default)]
+    pub hard_negatives: Vec<MediaMatchV3DiagnosticHardNegative>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -62,6 +65,18 @@ pub struct MediaMatchV3DiagnosticExpectation {
     pub max_retrieval_rank: Option<usize>,
     #[serde(default)]
     pub skip_decision_expectation: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaMatchV3DiagnosticHardNegative {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub path: String,
+    #[serde(default)]
+    pub must_not_be_top_rank: bool,
+    #[serde(default)]
+    pub must_not_beat_candidate_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -114,12 +129,19 @@ pub struct MediaMatchV3ResolvedManifestCase {
     pub name: String,
     pub query: PathBuf,
     pub candidates: Vec<MediaMatchV3ResolvedManifestCandidate>,
+    pub hard_negatives: Vec<MediaMatchV3ResolvedManifestHardNegative>,
 }
 
 #[derive(Debug, Clone)]
 pub struct MediaMatchV3ResolvedManifestCandidate {
     pub path: PathBuf,
     pub expectation: MediaMatchV3DiagnosticExpectation,
+}
+
+#[derive(Debug, Clone)]
+pub struct MediaMatchV3ResolvedManifestHardNegative {
+    pub path: PathBuf,
+    pub expectation: MediaMatchV3DiagnosticHardNegative,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,6 +168,8 @@ pub struct MediaMatchV3DiagnosticCaseReport {
     pub query: MediaMatchV3DiagnosticFingerprintReport,
     pub retrieval: MediaMatchV3DiagnosticRetrievalReport,
     pub candidates: Vec<MediaMatchV3DiagnosticCandidateReport>,
+    #[serde(default)]
+    pub hard_negatives: Vec<MediaMatchV3DiagnosticHardNegativeReport>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -175,6 +199,24 @@ pub struct MediaMatchV3DiagnosticCandidateReport {
     pub full_promotion_millis: u128,
     pub decision: MediaMatchV3DiagnosticDecisionReport,
     pub expectation: Option<MediaMatchV3DiagnosticExpectation>,
+    pub passed: bool,
+    pub failure_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaMatchV3DiagnosticHardNegativeReport {
+    pub candidate_id: Option<String>,
+    pub path: String,
+    pub diagnostics: MediaMatchV3DiagnosticSummary,
+    pub source: String,
+    pub sqlite_save_millis: u128,
+    pub blob_encode_millis: u128,
+    pub index_insert_millis: u128,
+    pub retrieved: bool,
+    pub retrieval_rank: Option<usize>,
+    pub must_not_be_top_rank: bool,
+    pub must_not_beat_candidate_id: Option<String>,
     pub passed: bool,
     pub failure_reason: Option<String>,
 }
@@ -219,6 +261,45 @@ pub struct MediaMatchV3DiagnosticRetrievalReport {
     pub candidates_scored: i64,
     pub retrieval_elapsed_ms: u128,
     pub retrieved_candidates: Vec<String>,
+    #[serde(default)]
+    pub retrieved_candidate_details: Vec<MediaMatchV3DiagnosticRetrievalCandidateReport>,
+    pub correct_candidate_rank: Option<usize>,
+    pub hard_negative_best_rank: Option<usize>,
+    pub hard_negative_count_above_correct: usize,
+    pub top1_is_expected: bool,
+    pub top_k_expected_present: bool,
+    pub retrieval_margin: Option<MediaMatchV3DiagnosticRetrievalMarginReport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaMatchV3DiagnosticRetrievalCandidateReport {
+    pub candidate_id: Option<String>,
+    pub path: String,
+    pub rank: usize,
+    pub total_score: i64,
+    pub best_offset_bin_ms: i64,
+    pub best_offset_score: i64,
+    pub second_offset_score: i64,
+    pub distinct_query_regions: i64,
+    pub distinct_candidate_regions: i64,
+    pub body_region_count: i64,
+    pub edge_region_count: i64,
+    pub approximate_span_ms: i64,
+    pub audio_hits: i64,
+    pub video_hits: i64,
+    pub score_ratio_to_next: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaMatchV3DiagnosticRetrievalMarginReport {
+    pub top1_score: Option<i64>,
+    pub top2_score: Option<i64>,
+    pub expected_score: Option<i64>,
+    pub best_negative_score: Option<i64>,
+    pub expected_best_offset_score: Option<i64>,
+    pub best_negative_offset_score: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -228,6 +309,9 @@ pub struct MediaMatchV3DiagnosticSummaryReport {
     pub pair_count: usize,
     pub passed: usize,
     pub failed: usize,
+    pub hard_negative_count: usize,
+    pub hard_negative_passed: usize,
+    pub hard_negative_failed: usize,
     pub unique_fresh_fingerprint_count: usize,
     pub unique_memory_cache_fingerprint_count: usize,
     pub unique_sqlite_cache_fingerprint_count: usize,
@@ -368,6 +452,21 @@ pub fn run_media_match_v3_diagnostic_manifest(
             save_fresh_fingerprint_if_needed(&mut cache, &mut fingerprint, &connection)?;
             occurrence_cache.insert((case_index, candidate_index + 1), fingerprint);
         }
+        for (hard_negative_index, hard_negative) in case.hard_negatives.iter().enumerate() {
+            let mut fingerprint = fingerprint_cached(
+                &mut cache,
+                &connection,
+                &hard_negative.path,
+                &options.tools,
+                &settings,
+                options.refresh_cache,
+            )?;
+            save_fresh_fingerprint_if_needed(&mut cache, &mut fingerprint, &connection)?;
+            occurrence_cache.insert(
+                (case_index, case.candidates.len() + hard_negative_index + 1),
+                fingerprint,
+            );
+        }
     }
     summary.fingerprint_total_millis = fingerprint_started_at.elapsed().as_millis();
     if matches!(index_mode, MediaMatchV3DiagnosticIndexMode::Production) {
@@ -380,14 +479,20 @@ pub fn run_media_match_v3_diagnostic_manifest(
             .ok_or_else(|| format!("missing diagnostic query fingerprint for '{}'", case.name))?
             .clone();
         let (retrieved_candidates, retrieval_stats) =
-            media_match_v3_anchor_candidate_paths_with_stats(
+            media_match_v3_anchor_candidate_details_with_stats(
                 &connection,
                 &query.fingerprint.record.identity.normalized_path,
                 &settings,
             )?;
+        let known_candidate_ids = known_candidate_ids_for_case(case);
+        let expected_candidate_paths = expected_candidate_paths_for_case(case);
+        let hard_negative_paths = hard_negative_paths_for_case(case);
         let retrieval_report = MediaMatchV3DiagnosticRetrievalReport::from_stats(
             retrieval_stats,
             retrieved_candidates,
+            &known_candidate_ids,
+            &expected_candidate_paths,
+            &hard_negative_paths,
         );
         summary.total_raw_hit_rows_processed += retrieval_report.raw_hit_rows_processed;
         summary.total_retrieval_millis += retrieval_report.retrieval_elapsed_ms;
@@ -403,6 +508,7 @@ pub fn run_media_match_v3_diagnostic_manifest(
         };
         increment_report_source_count(&mut summary, query.source);
         let mut reports = Vec::new();
+        let mut positive_rank_by_id = BTreeMap::new();
         for (candidate_index, candidate) in case.candidates.iter().enumerate() {
             let index_fingerprint = occurrence_cache
                 .get(&(case_index, candidate_index + 1))
@@ -424,6 +530,9 @@ pub fn run_media_match_v3_diagnostic_manifest(
                 .iter()
                 .position(|path| path == &sampled_normalized_candidate)
                 .map(|index| index + 1);
+            if let Some(id) = candidate.expectation.id.as_deref() {
+                positive_rank_by_id.insert(id.to_owned(), retrieval_rank);
+            }
             let retrieved = retrieval_rank.is_some();
             let mut query_for_decision = query.clone();
             let mut fingerprint = index_fingerprint;
@@ -524,11 +633,66 @@ pub fn run_media_match_v3_diagnostic_manifest(
                 failure_reason: (!failures.is_empty()).then(|| failures.join("; ")),
             });
         }
+        let mut hard_negative_reports = Vec::new();
+        for (hard_negative_index, hard_negative) in case.hard_negatives.iter().enumerate() {
+            let fingerprint = occurrence_cache
+                .get(&(case_index, case.candidates.len() + hard_negative_index + 1))
+                .ok_or_else(|| {
+                    format!(
+                        "missing diagnostic hard-negative fingerprint for '{}'",
+                        hard_negative.path.display()
+                    )
+                })?
+                .clone();
+            let normalized_path = fingerprint
+                .fingerprint
+                .record
+                .identity
+                .normalized_path
+                .clone();
+            let retrieval_rank = retrieval_report
+                .retrieved_candidates
+                .iter()
+                .position(|path| path == &normalized_path)
+                .map(|index| index + 1);
+            let failures = evaluate_hard_negative_expectation(
+                &hard_negative.expectation,
+                retrieval_rank,
+                &positive_rank_by_id,
+            );
+            let passed = failures.is_empty();
+            summary.hard_negative_count += 1;
+            if passed {
+                summary.hard_negative_passed += 1;
+            } else {
+                summary.hard_negative_failed += 1;
+            }
+            increment_report_source_count(&mut summary, fingerprint.source);
+            hard_negative_reports.push(MediaMatchV3DiagnosticHardNegativeReport {
+                candidate_id: hard_negative.expectation.id.clone(),
+                path: normalized_path,
+                diagnostics: diagnostics_for_cached_fingerprint(&fingerprint),
+                source: fingerprint.source.to_owned(),
+                sqlite_save_millis: fingerprint.save_stats.sqlite_save_millis,
+                blob_encode_millis: fingerprint.save_stats.blob_encode_millis,
+                index_insert_millis: fingerprint.save_stats.index_insert_millis,
+                retrieved: retrieval_rank.is_some(),
+                retrieval_rank,
+                must_not_be_top_rank: hard_negative.expectation.must_not_be_top_rank,
+                must_not_beat_candidate_id: hard_negative
+                    .expectation
+                    .must_not_beat_candidate_id
+                    .clone(),
+                passed,
+                failure_reason: (!failures.is_empty()).then(|| failures.join("; ")),
+            });
+        }
         cases.push(MediaMatchV3DiagnosticCaseReport {
             name: case.name.clone(),
             query: query_report,
             retrieval: retrieval_report,
             candidates: reports,
+            hard_negatives: hard_negative_reports,
         });
     }
 
@@ -609,6 +773,15 @@ fn apply_report_row_fingerprint_totals(
                 summary,
             );
         }
+        for hard_negative in &case.hard_negatives {
+            add_report_row_fingerprint_totals(
+                &hard_negative.path,
+                &hard_negative.diagnostics,
+                &hard_negative.source,
+                &mut seen,
+                summary,
+            );
+        }
     }
 }
 
@@ -682,10 +855,44 @@ pub fn resolve_media_match_v3_diagnostic_manifest(
                     Ok(MediaMatchV3ResolvedManifestCandidate { path, expectation })
                 })
                 .collect::<Result<Vec<_>, String>>()?;
+            let hard_negatives = case
+                .hard_negatives
+                .iter()
+                .map(|hard_negative| {
+                    let path = resolve_manifest_path(manifest_dir, &base, &hard_negative.path);
+                    let mut expectation = hard_negative.clone();
+                    if let Some(id) = expectation.id.as_deref() {
+                        let trimmed = id.trim();
+                        if trimmed.is_empty() {
+                            return Err(format!(
+                                "case '{}' hard negative '{}' has a blank id",
+                                case.name, hard_negative.path
+                            ));
+                        }
+                        if !candidate_ids.insert(trimmed.to_owned()) {
+                            return Err(format!(
+                                "case '{}' has duplicate candidate/hard-negative id '{}'",
+                                case.name, trimmed
+                            ));
+                        }
+                        expectation.id = Some(trimmed.to_owned());
+                    } else {
+                        let key = path.to_string_lossy().to_string();
+                        if !no_id_candidate_paths.insert(key.clone()) {
+                            return Err(format!(
+                                "case '{}' has duplicate candidate/hard-negative path '{}' without an id",
+                                case.name, key
+                            ));
+                        }
+                    }
+                    Ok(MediaMatchV3ResolvedManifestHardNegative { path, expectation })
+                })
+                .collect::<Result<Vec<_>, String>>()?;
             Ok(MediaMatchV3ResolvedManifestCase {
                 name: case.name.clone(),
                 query: resolve_manifest_path(manifest_dir, &base, &case.query),
                 candidates,
+                hard_negatives,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -706,6 +913,7 @@ pub fn validate_media_match_v3_diagnostic_manifest(
             return Err(format!("case '{}' has a blank query path", case.name));
         }
         let mut candidate_ids = BTreeSet::new();
+        let mut positive_candidate_ids = BTreeSet::new();
         let mut no_id_candidate_paths = BTreeSet::new();
         for candidate in &case.candidates {
             if candidate.path.trim().is_empty() {
@@ -725,6 +933,7 @@ pub fn validate_media_match_v3_diagnostic_manifest(
                         case.name, trimmed
                     ));
                 }
+                positive_candidate_ids.insert(trimmed.to_owned());
             } else if !no_id_candidate_paths.insert(candidate.path.clone()) {
                 return Err(format!(
                     "case '{}' has duplicate candidate path '{}' without an id",
@@ -738,19 +947,194 @@ pub fn validate_media_match_v3_diagnostic_manifest(
                 ));
             }
         }
+        for hard_negative in &case.hard_negatives {
+            if hard_negative.path.trim().is_empty() {
+                return Err(format!(
+                    "case '{}' has a blank hard-negative path",
+                    case.name
+                ));
+            }
+            if let Some(id) = hard_negative.id.as_deref() {
+                let trimmed = id.trim();
+                if trimmed.is_empty() {
+                    return Err(format!(
+                        "case '{}' hard negative '{}' has a blank id",
+                        case.name, hard_negative.path
+                    ));
+                }
+                if !candidate_ids.insert(trimmed.to_owned()) {
+                    return Err(format!(
+                        "case '{}' has duplicate candidate/hard-negative id '{}'",
+                        case.name, trimmed
+                    ));
+                }
+            } else if !no_id_candidate_paths.insert(hard_negative.path.clone()) {
+                return Err(format!(
+                    "case '{}' has duplicate candidate/hard-negative path '{}' without an id",
+                    case.name, hard_negative.path
+                ));
+            }
+            if let Some(target_id) = hard_negative.must_not_beat_candidate_id.as_deref()
+                && target_id.trim().is_empty()
+            {
+                return Err(format!(
+                    "case '{}' hard negative '{}' has a blank mustNotBeatCandidateId",
+                    case.name, hard_negative.path
+                ));
+            }
+            if let Some(target_id) = hard_negative.must_not_beat_candidate_id.as_deref()
+                && !positive_candidate_ids.contains(target_id.trim())
+            {
+                return Err(format!(
+                    "case '{}' hard negative '{}' references unknown mustNotBeatCandidateId '{}'",
+                    case.name, hard_negative.path, target_id
+                ));
+            }
+        }
     }
     Ok(())
 }
 
+fn known_candidate_ids_for_case(
+    case: &MediaMatchV3ResolvedManifestCase,
+) -> BTreeMap<String, String> {
+    let mut ids = BTreeMap::new();
+    for candidate in &case.candidates {
+        if let Some(id) = candidate.expectation.id.as_deref() {
+            ids.insert(normalize_media_path(&candidate.path), id.to_owned());
+        }
+    }
+    for hard_negative in &case.hard_negatives {
+        if let Some(id) = hard_negative.expectation.id.as_deref() {
+            ids.insert(normalize_media_path(&hard_negative.path), id.to_owned());
+        }
+    }
+    ids
+}
+
+fn expected_candidate_paths_for_case(case: &MediaMatchV3ResolvedManifestCase) -> BTreeSet<String> {
+    case.candidates
+        .iter()
+        .map(|candidate| normalize_media_path(&candidate.path))
+        .collect()
+}
+
+fn hard_negative_paths_for_case(case: &MediaMatchV3ResolvedManifestCase) -> BTreeSet<String> {
+    case.hard_negatives
+        .iter()
+        .map(|hard_negative| normalize_media_path(&hard_negative.path))
+        .collect()
+}
+
+fn retrieval_margin_report(
+    retrieved_candidates: &[MediaMatchV3RetrievedCandidate],
+    expected_candidate_paths: &BTreeSet<String>,
+    hard_negative_paths: &BTreeSet<String>,
+) -> Option<MediaMatchV3DiagnosticRetrievalMarginReport> {
+    if retrieved_candidates.is_empty() {
+        return None;
+    }
+    let expected = retrieved_candidates
+        .iter()
+        .filter(|candidate| expected_candidate_paths.contains(&candidate.normalized_path))
+        .max_by_key(|candidate| candidate.total_score);
+    let hard_negative = retrieved_candidates
+        .iter()
+        .filter(|candidate| hard_negative_paths.contains(&candidate.normalized_path))
+        .max_by_key(|candidate| candidate.total_score);
+    Some(MediaMatchV3DiagnosticRetrievalMarginReport {
+        top1_score: retrieved_candidates
+            .first()
+            .map(|candidate| candidate.total_score),
+        top2_score: retrieved_candidates
+            .get(1)
+            .map(|candidate| candidate.total_score),
+        expected_score: expected.map(|candidate| candidate.total_score),
+        best_negative_score: hard_negative.map(|candidate| candidate.total_score),
+        expected_best_offset_score: expected.map(|candidate| candidate.best_offset_score),
+        best_negative_offset_score: hard_negative.map(|candidate| candidate.best_offset_score),
+    })
+}
+
 impl MediaMatchV3DiagnosticRetrievalReport {
-    fn from_stats(stats: MediaMatchV3RetrievalStats, retrieved_candidates: Vec<String>) -> Self {
+    fn from_stats(
+        stats: MediaMatchV3RetrievalStats,
+        retrieved_candidates: Vec<MediaMatchV3RetrievedCandidate>,
+        known_candidate_ids: &BTreeMap<String, String>,
+        expected_candidate_paths: &BTreeSet<String>,
+        hard_negative_paths: &BTreeSet<String>,
+    ) -> Self {
+        let details = retrieved_candidates
+            .iter()
+            .map(|candidate| MediaMatchV3DiagnosticRetrievalCandidateReport {
+                candidate_id: known_candidate_ids.get(&candidate.normalized_path).cloned(),
+                path: candidate.normalized_path.clone(),
+                rank: candidate.rank,
+                total_score: candidate.total_score,
+                best_offset_bin_ms: candidate.best_offset_bin_ms,
+                best_offset_score: candidate.best_offset_score,
+                second_offset_score: candidate.second_offset_score,
+                distinct_query_regions: candidate.distinct_query_regions,
+                distinct_candidate_regions: candidate.distinct_candidate_regions,
+                body_region_count: candidate.body_region_count,
+                edge_region_count: candidate.edge_region_count,
+                approximate_span_ms: candidate.approximate_span_ms,
+                audio_hits: candidate.audio_hits,
+                video_hits: candidate.video_hits,
+                score_ratio_to_next: candidate.score_ratio_to_next,
+            })
+            .collect::<Vec<_>>();
+        let retrieved_paths = retrieved_candidates
+            .iter()
+            .map(|candidate| candidate.normalized_path.clone())
+            .collect::<Vec<_>>();
+        let correct_candidate_rank = retrieved_candidates
+            .iter()
+            .filter(|candidate| expected_candidate_paths.contains(&candidate.normalized_path))
+            .map(|candidate| candidate.rank)
+            .min();
+        let hard_negative_best_rank = retrieved_candidates
+            .iter()
+            .filter(|candidate| hard_negative_paths.contains(&candidate.normalized_path))
+            .map(|candidate| candidate.rank)
+            .min();
+        let hard_negative_count_above_correct = correct_candidate_rank
+            .map(|correct_rank| {
+                retrieved_candidates
+                    .iter()
+                    .filter(|candidate| {
+                        hard_negative_paths.contains(&candidate.normalized_path)
+                            && candidate.rank < correct_rank
+                    })
+                    .count()
+            })
+            .unwrap_or_default();
+        let top1_is_expected = retrieved_candidates
+            .first()
+            .is_some_and(|candidate| expected_candidate_paths.contains(&candidate.normalized_path));
+        let top_k_expected_present = !expected_candidate_paths.is_empty()
+            && expected_candidate_paths
+                .iter()
+                .all(|path| retrieved_paths.iter().any(|retrieved| retrieved == path));
+        let retrieval_margin = retrieval_margin_report(
+            &retrieved_candidates,
+            expected_candidate_paths,
+            hard_negative_paths,
+        );
         Self {
             query_buckets_total: stats.query_buckets_total,
             query_buckets_skipped_common: stats.query_buckets_skipped_common,
             raw_hit_rows_processed: stats.raw_hit_rows_processed,
             candidates_scored: stats.candidates_scored,
             retrieval_elapsed_ms: stats.retrieval_elapsed_ms,
-            retrieved_candidates,
+            retrieved_candidates: retrieved_paths,
+            retrieved_candidate_details: details,
+            correct_candidate_rank,
+            hard_negative_best_rank,
+            hard_negative_count_above_correct,
+            top1_is_expected,
+            top_k_expected_present,
+            retrieval_margin,
         }
     }
 }
@@ -1081,6 +1465,36 @@ fn evaluate_diagnostic_expectation(
     failures
 }
 
+fn evaluate_hard_negative_expectation(
+    expected: &MediaMatchV3DiagnosticHardNegative,
+    retrieval_rank: Option<usize>,
+    positive_rank_by_id: &BTreeMap<String, Option<usize>>,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    if expected.must_not_be_top_rank && retrieval_rank == Some(1) {
+        failures.push("hard negative was retrieved at rank 1".to_owned());
+    }
+    if let Some(target_id) = expected.must_not_beat_candidate_id.as_deref() {
+        match (
+            retrieval_rank,
+            positive_rank_by_id.get(target_id).copied().flatten(),
+        ) {
+            (Some(hard_negative_rank), Some(target_rank)) if hard_negative_rank < target_rank => {
+                failures.push(format!(
+                    "hard negative rank {hard_negative_rank} beat candidate id '{target_id}' rank {target_rank}"
+                ));
+            }
+            (Some(hard_negative_rank), None) => {
+                failures.push(format!(
+                    "hard negative rank {hard_negative_rank} was retrieved but target candidate id '{target_id}' was absent"
+                ));
+            }
+            _ => {}
+        }
+    }
+    failures
+}
+
 fn resolve_manifest_path(_manifest_dir: &Path, base_dir: &Path, path: &str) -> PathBuf {
     let path = PathBuf::from(path);
     if path.is_absolute() {
@@ -1256,6 +1670,7 @@ mod tests {
                     max_retrieval_rank: None,
                     skip_decision_expectation: false,
                 }],
+                hard_negatives: Vec::new(),
             }],
         };
         let manifest_dir = PathBuf::from("C:/manifest-root");
@@ -1282,6 +1697,7 @@ mod tests {
                     test_expectation_with_id("same-id", "candidate-a.mkv"),
                     test_expectation_with_id("same-id", "candidate-b.mkv"),
                 ],
+                hard_negatives: Vec::new(),
             }],
         };
 
@@ -1303,6 +1719,7 @@ mod tests {
                 name: "blank".to_owned(),
                 query: "query.mkv".to_owned(),
                 candidates: vec![test_expectation_with_id("  ", "candidate.mkv")],
+                hard_negatives: Vec::new(),
             }],
         };
 
@@ -1327,6 +1744,7 @@ mod tests {
                     test_expectation_without_id("candidate.mkv"),
                     test_expectation_without_id("candidate.mkv"),
                 ],
+                hard_negatives: Vec::new(),
             }],
         };
 
@@ -1340,6 +1758,150 @@ mod tests {
     }
 
     #[test]
+    fn manifest_rejects_duplicate_candidate_and_hard_negative_ids() {
+        let manifest = MediaMatchV3DiagnosticManifest {
+            profile: "audio-constellation-v3".to_owned(),
+            base_dir: None,
+            cases: vec![MediaMatchV3DiagnosticManifestCase {
+                name: "hard-negative".to_owned(),
+                query: "query.mkv".to_owned(),
+                candidates: vec![test_expectation_with_id("same-id", "candidate.mkv")],
+                hard_negatives: vec![MediaMatchV3DiagnosticHardNegative {
+                    id: Some("same-id".to_owned()),
+                    path: "wrong-episode.mkv".to_owned(),
+                    must_not_be_top_rank: true,
+                    must_not_beat_candidate_id: Some("same-id".to_owned()),
+                }],
+            }],
+        };
+
+        let error = validate_media_match_v3_diagnostic_manifest(&manifest)
+            .expect_err("duplicate candidate/hard-negative ids should be rejected");
+
+        assert!(error.contains("duplicate candidate/hard-negative id"));
+    }
+
+    #[test]
+    fn manifest_validation_rejects_blank_hard_negative_id() {
+        let manifest = MediaMatchV3DiagnosticManifest {
+            profile: "audio-constellation-v3".to_owned(),
+            base_dir: None,
+            cases: vec![MediaMatchV3DiagnosticManifestCase {
+                name: "hard-negative".to_owned(),
+                query: "query.mkv".to_owned(),
+                candidates: Vec::new(),
+                hard_negatives: vec![MediaMatchV3DiagnosticHardNegative {
+                    id: Some(" ".to_owned()),
+                    path: "wrong-episode.mkv".to_owned(),
+                    must_not_be_top_rank: false,
+                    must_not_beat_candidate_id: None,
+                }],
+            }],
+        };
+
+        let error = validate_media_match_v3_diagnostic_manifest(&manifest)
+            .expect_err("blank hard-negative id should be rejected");
+
+        assert!(error.contains("blank id"));
+    }
+
+    #[test]
+    fn retrieval_report_includes_scores_and_hard_negative_margin() {
+        let stats = MediaMatchV3RetrievalStats {
+            query_buckets_total: 5,
+            query_buckets_skipped_common: 1,
+            raw_hit_rows_processed: 20,
+            candidates_scored: 2,
+            retrieval_elapsed_ms: 7,
+        };
+        let candidates = vec![
+            MediaMatchV3RetrievedCandidate {
+                normalized_path: "correct.mkv".to_owned(),
+                rank: 1,
+                total_score: 100,
+                best_offset_bin_ms: 0,
+                best_offset_score: 70,
+                second_offset_score: 10,
+                distinct_query_regions: 4,
+                distinct_candidate_regions: 4,
+                body_region_count: 3,
+                edge_region_count: 1,
+                approximate_span_ms: 180_000,
+                audio_hits: 12,
+                video_hits: 0,
+                score_ratio_to_next: Some(2.0),
+            },
+            MediaMatchV3RetrievedCandidate {
+                normalized_path: "wrong.mkv".to_owned(),
+                rank: 2,
+                total_score: 50,
+                best_offset_bin_ms: 90_000,
+                best_offset_score: 30,
+                second_offset_score: 4,
+                distinct_query_regions: 2,
+                distinct_candidate_regions: 2,
+                body_region_count: 1,
+                edge_region_count: 1,
+                approximate_span_ms: 60_000,
+                audio_hits: 5,
+                video_hits: 0,
+                score_ratio_to_next: None,
+            },
+        ];
+        let known_ids = BTreeMap::from([
+            ("correct.mkv".to_owned(), "correct-id".to_owned()),
+            ("wrong.mkv".to_owned(), "wrong-id".to_owned()),
+        ]);
+        let expected_paths = BTreeSet::from(["correct.mkv".to_owned()]);
+        let hard_negative_paths = BTreeSet::from(["wrong.mkv".to_owned()]);
+
+        let report = MediaMatchV3DiagnosticRetrievalReport::from_stats(
+            stats,
+            candidates,
+            &known_ids,
+            &expected_paths,
+            &hard_negative_paths,
+        );
+
+        assert_eq!(report.retrieved_candidate_details.len(), 2);
+        assert_eq!(
+            report.retrieved_candidate_details[0]
+                .candidate_id
+                .as_deref(),
+            Some("correct-id")
+        );
+        assert_eq!(report.correct_candidate_rank, Some(1));
+        assert_eq!(report.hard_negative_best_rank, Some(2));
+        assert_eq!(report.hard_negative_count_above_correct, 0);
+        assert!(report.top1_is_expected);
+        assert!(report.top_k_expected_present);
+        let margin = report.retrieval_margin.expect("margin should be present");
+        assert_eq!(margin.top1_score, Some(100));
+        assert_eq!(margin.top2_score, Some(50));
+        assert_eq!(margin.expected_score, Some(100));
+        assert_eq!(margin.best_negative_score, Some(50));
+        assert_eq!(margin.expected_best_offset_score, Some(70));
+        assert_eq!(margin.best_negative_offset_score, Some(30));
+    }
+
+    #[test]
+    fn hard_negative_expectation_fails_when_it_beats_target_candidate() {
+        let expected = MediaMatchV3DiagnosticHardNegative {
+            id: Some("wrong".to_owned()),
+            path: "wrong.mkv".to_owned(),
+            must_not_be_top_rank: true,
+            must_not_beat_candidate_id: Some("correct".to_owned()),
+        };
+        let positive_rank_by_id = BTreeMap::from([("correct".to_owned(), Some(2usize))]);
+
+        let failures = evaluate_hard_negative_expectation(&expected, Some(1), &positive_rank_by_id);
+
+        assert_eq!(failures.len(), 2);
+        assert!(failures[0].contains("rank 1"));
+        assert!(failures[1].contains("beat candidate id"));
+    }
+
+    #[test]
     fn manifest_validation_rejects_blank_case_name() {
         let manifest = MediaMatchV3DiagnosticManifest {
             profile: "audio-constellation-v3".to_owned(),
@@ -1348,6 +1910,7 @@ mod tests {
                 name: " ".to_owned(),
                 query: "query.mkv".to_owned(),
                 candidates: Vec::new(),
+                hard_negatives: Vec::new(),
             }],
         };
 
@@ -1366,6 +1929,7 @@ mod tests {
                 name: "case".to_owned(),
                 query: " ".to_owned(),
                 candidates: Vec::new(),
+                hard_negatives: Vec::new(),
             }],
         };
 
@@ -1384,6 +1948,7 @@ mod tests {
                 name: "case".to_owned(),
                 query: "query.mkv".to_owned(),
                 candidates: vec![test_expectation_without_id(" ")],
+                hard_negatives: Vec::new(),
             }],
         };
 
@@ -1414,6 +1979,7 @@ mod tests {
                     max_retrieval_rank: None,
                     skip_decision_expectation: false,
                 }],
+                hard_negatives: Vec::new(),
             }],
         };
         let manifest_dir = PathBuf::from("C:/manifest-root");
@@ -1443,6 +2009,7 @@ mod tests {
                 name: "absolute".to_owned(),
                 query: absolute.to_string_lossy().to_string(),
                 candidates: Vec::new(),
+                hard_negatives: Vec::new(),
             }],
         };
 
@@ -1936,6 +2503,7 @@ mod tests {
                     .iter()
                     .map(|path| test_expectation_without_id(&path.to_string_lossy()))
                     .collect(),
+                hard_negatives: Vec::new(),
             }],
         }
     }

@@ -145,7 +145,7 @@ fn run_cli_with_output(
             return Err(error);
         }
     };
-    let passed = report.summary.failed == 0;
+    let passed = report.summary.failed == 0 && report.summary.hard_negative_failed == 0;
     let retain_cache_for_report = should_retain_cache_for_report(retain_cache, passed);
     if retain_cache_for_report {
         report.cache_retained = true;
@@ -293,7 +293,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
 }
 
 fn usage() -> String {
-    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--index-mode full|sparse-full|sampled-fast|sampled-normal|sampled|sampled-then-full|production] [--dense-audio-profile dense-current|dense-realfft|dense-8k|dense-hop2048|dense-8k-hop2048|dense-8k-window1024-hop1024|dense-max-peaks-4|dense-pair-retain-16|dense-gated|dense-fast-combined-candidate] [--bench-dense-audio-profiles] [--max-full-promotions n] [--promote-expected-candidates] [--list-cases|--validate-only] [--case name]"
+    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--index-mode full|sparse-full|sampled-fast|sampled-normal|sampled|sampled-then-full|production] [--dense-audio-profile dense-current|dense-realfft|dense-8k|dense-hop2048|dense-8k-hop2048|dense-8k-window1024-hop1024|dense-max-peaks-4|dense-pair-retain-16|dense-gated|dense-gated-v2|dense-fast-combined-candidate] [--bench-dense-audio-profiles] [--max-full-promotions n] [--promote-expected-candidates] [--list-cases|--validate-only] [--case name]"
         .to_owned()
 }
 
@@ -319,7 +319,7 @@ fn parse_dense_audio_profile(value: &str) -> Result<MediaDenseAudioProfile, Stri
         "dense-8k-window1024-hop1024" => Ok(MediaDenseAudioProfile::Dense8kWindow1024Hop1024),
         "dense-max-peaks-4" => Ok(MediaDenseAudioProfile::DenseMaxPeaks4),
         "dense-pair-retain-16" => Ok(MediaDenseAudioProfile::DensePairRetain16),
-        "dense-gated" => Ok(MediaDenseAudioProfile::DenseGated),
+        "dense-gated" | "dense-gated-v2" => Ok(MediaDenseAudioProfile::DenseGated),
         "dense-fast-combined-candidate" => Ok(MediaDenseAudioProfile::DenseFastCombinedCandidate),
         _ => Err(usage()),
     }
@@ -492,6 +492,25 @@ fn write_case_listing(resolved: &MediaMatchV3ResolvedManifest, output: &mut Stri
                 }
             }
         }
+        for hard_negative in &case.hard_negatives {
+            match hard_negative.expectation.id.as_deref() {
+                Some(id) => {
+                    let _ = writeln!(
+                        output,
+                        "  hard-negative: id={} path={}",
+                        id,
+                        hard_negative.path.display()
+                    );
+                }
+                None => {
+                    let _ = writeln!(
+                        output,
+                        "  hard-negative: path={}",
+                        hard_negative.path.display()
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -502,6 +521,9 @@ fn validate_resolved_manifest_files_exist(
         validate_manifest_file_exists(case, "query", &case.query)?;
         for candidate in &case.candidates {
             validate_manifest_file_exists(case, "candidate", &candidate.path)?;
+        }
+        for hard_negative in &case.hard_negatives {
+            validate_manifest_file_exists(case, "hard-negative", &hard_negative.path)?;
         }
     }
     Ok(())

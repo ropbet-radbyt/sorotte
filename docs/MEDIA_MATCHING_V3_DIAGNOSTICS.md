@@ -93,16 +93,16 @@ all current candidates:
 
 ```powershell
 cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode full --dense-audio-profile dense-current --output reports/dense-current.json --cache-root .cache-dense-current --refresh-cache
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode full --dense-audio-profile dense-gated --output reports/dense-gated.json --cache-root .cache-dense-gated --refresh-cache
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode full --dense-audio-profile dense-gated-v2 --output reports/dense-gated-v2.json --cache-root .cache-dense-gated-v2 --refresh-cache
 cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode full --dense-audio-profile dense-fast-combined-candidate --output reports/dense-fast-candidate.json --cache-root .cache-dense-fast --refresh-cache
 cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode full --bench-dense-audio-profiles --output reports/dense-profile-matrix.json --cache-root .cache-dense-matrix --refresh-cache
-cargo run -p sorotte-media-match --bin v3_report_compare -- --allow-different-settings --allow-different-tuning reports/dense-current.json reports/dense-gated.json
+cargo run -p sorotte-media-match --bin v3_report_compare -- --allow-different-settings --allow-different-tuning reports/dense-current.json reports/dense-gated-v2.json
 ```
 
 Benchmark profiles include `dense-current`, `dense-realfft`, `dense-8k`,
 `dense-hop2048`, `dense-8k-hop2048`,
 `dense-8k-window1024-hop1024`, `dense-max-peaks-4`,
-`dense-pair-retain-16`, `dense-gated`, and
+`dense-pair-retain-16`, `dense-gated` (also accepted as `dense-gated-v2`), and
 `dense-fast-combined-candidate`. The non-current
 profiles change the fingerprint config hash and should be compared with
 explicit compatibility allow flags. `dense-realfft` currently occupies the
@@ -155,8 +155,8 @@ The summary has two source-count families:
   `uniqueSqliteCacheFingerprintCount` count each normalized path/settings
   fingerprint once per report.
 - `freshFingerprintReportCount`, `memoryCacheFingerprintReportCount`, and
-  `sqliteCacheFingerprintReportCount` count every query/candidate report row
-  source occurrence.
+  `sqliteCacheFingerprintReportCount` count every query, candidate, and
+  hard-negative report row source occurrence.
 
 A duplicate candidate path can have row source `memory-cache` while the unique
 counts still count only the first source for that path/settings key.
@@ -176,6 +176,21 @@ Sampled-fast is the target background-index path. Retrieval and same-cut
 verification are fast once fingerprints exist. Use sampled index mode for fast
 background shortlist calibration and dense full verification for any `Strong` /
 `SameCutStrong` autoplay-eligible result.
+
+For retrieval calibration, add case-level `hardNegatives` for same-series wrong
+episodes, shared OP/ED cases, adjacent episodes, music-heavy episodes, and
+recap/preview-heavy episodes. Hard negatives are fingerprinted into the same
+sampled index but are reported separately from positive candidate expectations.
+Use `mustNotBeTopRank` when a negative must never win rank 1, and
+`mustNotBeatCandidateId` when it must not outrank the expected candidate with
+that `id`. Reports include `hardNegativeBestRank`,
+`hardNegativeCountAboveCorrect`, `top1IsExpected`, `topKExpectedPresent`, and a
+`retrievalMargin` block with top, expected, and best-negative score/offset
+scores. Each returned candidate also has `retrievedCandidateDetails` with rank,
+total score, best offset bin, best and second offset scores, body/edge region
+counts, approximate span, audio/video hit counts, and ratio to the next
+candidate. Sampled-only hard-negative diagnostics do not make any candidate
+autoplay eligible.
 
 ## Corpus Calibration Workflow
 
