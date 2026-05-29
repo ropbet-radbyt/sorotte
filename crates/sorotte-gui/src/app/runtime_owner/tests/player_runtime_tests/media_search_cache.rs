@@ -83,7 +83,10 @@ fn gui_persisted_config_runtime_owner_opens_media_match_candidate_when_playlist_
             ),
             algorithm_version: sorotte_media_match::MEDIA_MATCH_ALGORITHM_VERSION,
             extraction_settings:
-                sorotte_media_match::MediaExtractionSettings::audio_constellation_v3(),
+                sorotte_media_match::MediaExtractionSettings::audio_constellation_v3()
+                    .with_dense_audio_profile(
+                        sorotte_media_match::MediaDenseAudioProfile::DenseGated,
+                    ),
             duration_seconds: Some(900.0),
             container_fingerprint: format!("container:{}", path.display()),
             video: None,

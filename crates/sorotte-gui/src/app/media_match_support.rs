@@ -92,6 +92,7 @@ pub(super) struct MediaMatchIndexRebuildResult {
     pub(super) current_decision: Option<String>,
     pub(super) nearest_match: Option<String>,
     pub(super) last_evidence: Option<String>,
+    pub(super) full_promotion_candidates: Vec<PathBuf>,
 }
 
 pub(super) struct MediaMatchCandidateRebuildRequest<'a> {
@@ -107,6 +108,7 @@ pub(super) struct MediaMatchCandidateRebuildRequest<'a> {
 pub(super) struct MediaMatchRemoteCandidateRebuildRequest<'a> {
     pub(super) root: &'a Path,
     pub(super) search_roots: &'a [PathBuf],
+    pub(super) candidates: Option<Vec<PathBuf>>,
     pub(super) target_file_name: &'a str,
     pub(super) media_match_signature: &'a serde_json::Value,
     pub(super) settings: &'a MediaMatchSettings,
@@ -744,6 +746,7 @@ where
             current_decision: Some("unknown: no resolved current local file".to_owned()),
             nearest_match: None,
             last_evidence: None,
+            full_promotion_candidates: Vec::new(),
         });
     }
     let tools = media_match_tool_paths_for_settings(root, extraction_settings)?;
@@ -816,6 +819,7 @@ where
             current_decision,
             nearest_match,
             last_evidence,
+            full_promotion_candidates: Vec::new(),
         });
     }
 
@@ -990,6 +994,7 @@ where
         current_decision,
         nearest_match,
         last_evidence,
+        full_promotion_candidates: Vec::new(),
     })
 }
 
@@ -1006,14 +1011,26 @@ where
         Some(format!("{} roots", request.search_roots.len())),
         0.05,
     ));
-    let candidates = collect_media_match_candidates(request.search_roots);
-    inventory_media_match_candidates(
-        request.root,
-        request.search_roots,
-        &candidates,
-        request.cancel_flag,
-    )?;
-    let selected = select_remote_media_match_candidates(&candidates, request.target_file_name);
+    let explicit_candidates = request.candidates.as_ref();
+    let candidates = explicit_candidates
+        .cloned()
+        .unwrap_or_else(|| collect_media_match_candidates(request.search_roots));
+    if explicit_candidates.is_none() {
+        inventory_media_match_candidates(
+            request.root,
+            request.search_roots,
+            &candidates,
+            request.cancel_flag,
+        )?;
+    }
+    let selected = explicit_candidates.map_or_else(
+        || select_remote_media_match_candidates(&candidates, request.target_file_name),
+        |paths| MediaMatchRebuildCandidateSelection {
+            paths: paths.clone(),
+            discovered_files: paths.len(),
+            prefiltered: false,
+        },
+    );
     let existing_cache =
         load_media_match_cache_for_settings(request.root, request.extraction_settings)
             .unwrap_or_default();
@@ -1157,6 +1174,25 @@ where
         1.0,
     ));
 
+    let full_promotion_candidates = best_match
+        .as_ref()
+        .filter(|best| {
+            matches!(
+                best.decision.tier,
+                MediaMatchTier::Exact | MediaMatchTier::Strong | MediaMatchTier::Probable
+            )
+        })
+        .map(|best| {
+            selected
+                .paths
+                .iter()
+                .find(|path| normalize_media_path(path) == best.path)
+                .cloned()
+                .unwrap_or_else(|| PathBuf::from(&best.path))
+        })
+        .into_iter()
+        .collect::<Vec<_>>();
+
     let (message, current_decision, nearest_match, last_evidence) = if let Some(best) = best_match
         .as_ref()
         .filter(|best| media_match_tier_is_strong_or_exact(best.decision.tier))
@@ -1178,6 +1214,12 @@ where
             Some(format_media_match_evidence_summary(&best.decision)),
         )
     } else if let Some(best) = best_match {
+        let tier = media_match_tier_label(best.decision.tier);
+        let current_decision = if best.decision.tier == MediaMatchTier::Probable {
+            format!("{tier}: room media candidate needs full verification")
+        } else {
+            "unknown: no strong local match for room media yet".to_owned()
+        };
         (
             format!(
                 "Media Matching indexed room candidates across {scope} ({} reused, {} fingerprinted, {} skipped; {}).",
@@ -1186,7 +1228,7 @@ where
                 skipped,
                 instrumentation.summary()
             ),
-            Some("unknown: no strong local match for room media yet".to_owned()),
+            Some(current_decision),
             Some(format!(
                 "Nearest local room candidate: {} ({})",
                 best.path, best.decision.explanation
@@ -1214,6 +1256,7 @@ where
         current_decision,
         nearest_match,
         last_evidence,
+        full_promotion_candidates,
     })
 }
 
@@ -1737,13 +1780,30 @@ fn media_match_filename_score(
 }
 
 fn media_match_filename_tokens(path: &Path) -> Vec<String> {
-    let stem = path
-        .file_stem()
-        .and_then(|name| name.to_str())
-        .unwrap_or_default();
+    let mut tokens = Vec::new();
+    let mut parent_names = path
+        .parent()
+        .into_iter()
+        .flat_map(|parent| parent.ancestors())
+        .filter_map(|parent| parent.file_name().and_then(|name| name.to_str()))
+        .take(2)
+        .collect::<Vec<_>>();
+    parent_names.reverse();
+    for parent_name in parent_names {
+        tokens.extend(media_match_filename_component_tokens(parent_name));
+    }
+    tokens.extend(media_match_filename_component_tokens(
+        path.file_stem()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default(),
+    ));
+    tokens
+}
+
+fn media_match_filename_component_tokens(component: &str) -> Vec<String> {
     let mut without_groups = String::new();
     let mut square_depth = 0u32;
-    for character in stem.chars() {
+    for character in component.chars() {
         match character {
             '[' => square_depth = square_depth.saturating_add(1),
             ']' => square_depth = square_depth.saturating_sub(1),
@@ -3822,6 +3882,68 @@ mod tests {
     }
 
     #[test]
+    fn media_match_remote_sampled_match_returns_full_promotion_candidate() {
+        let root = unique_media_match_test_root("remote-sampled-promotion-candidate");
+        let media_dir = root.join("media");
+        std::fs::create_dir_all(&media_dir).expect("media dir should be created");
+        let local_path = media_dir.join("[ANE] Bakemonogatari - Ep04 [BDRip].mkv");
+        std::fs::write(&local_path, b"local-encode").expect("local media should be written");
+        let sampled_settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
+
+        let mut local_record =
+            fake_media_match_record_for_file(&local_path, sampled_settings.clone());
+        local_record.duration_seconds = Some(900.0);
+        local_record.audio_anchors = (0u32..24)
+            .map(|index| AudioAnchor {
+                bucket: 100 + index,
+                t_ms: 30_000 + (index * 30_000),
+                weight: 4,
+            })
+            .collect();
+        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
+        save_media_match_v3_record(&connection, &local_record, None)
+            .expect("sampled record should save");
+        drop(connection);
+
+        let mut remote_record =
+            fake_media_match_record("[MTBB-Minis] Bakemonogatari - 04 [19103080].mkv");
+        remote_record.duration_seconds = local_record.duration_seconds;
+        remote_record.audio_anchors = local_record.audio_anchors.clone();
+        let signature = media_match_wire_value_from_records(std::slice::from_ref(&remote_record))
+            .expect("wire signature should serialize");
+        let tools = MediaMatchToolPaths {
+            ffmpeg: PathBuf::from("ffmpeg-not-used"),
+            ffprobe: PathBuf::from("ffprobe-not-used"),
+        };
+
+        let result = rebuild_persisted_media_match_remote_candidates_with_progress_and_cancel(
+            MediaMatchRemoteCandidateRebuildRequest {
+                root: &root,
+                search_roots: std::slice::from_ref(&media_dir),
+                candidates: None,
+                target_file_name: "[MTBB-Minis] Bakemonogatari - 04 [19103080].mkv",
+                media_match_signature: &signature,
+                settings: &enabled_media_match_settings(),
+                tools: &tools,
+                extraction_settings: &sampled_settings,
+                cancel_flag: None,
+            },
+            |_| {},
+        )
+        .expect("cached sampled remote match should rebuild without invoking tools");
+
+        assert!(
+            result.current_decision.as_deref().is_some_and(|decision| {
+                decision.starts_with("strong:") || decision.starts_with("probable:")
+            }),
+            "{:?}",
+            result.current_decision
+        );
+        assert_eq!(result.full_promotion_candidates, vec![local_path]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn media_match_sqlite_loads_only_matching_settings_hash() {
         let root = unique_media_match_test_root("sqlite-settings-hash");
         let media_dir = root.join("media");
@@ -4982,6 +5104,25 @@ mod tests {
     }
 
     #[test]
+    fn media_match_filename_profile_uses_parent_arc_context_for_monogatari() {
+        let query = media_match_filename_profile(Path::new(
+            "[Coalgirls]_Otorimonogatari_01_(BD_1080p).mkv",
+        ));
+        let matching_candidate = media_match_filename_profile(Path::new(
+            "C:/Users/shaun/Documents/workspace/[MTBB-Minis] Monogatari Series (BD 1080p)/08 - Otorimonogatari/[MTBB-Minis] Monogatari Series Second Season - 10 [BD 1080p].mkv",
+        ));
+        let wrong_candidate = media_match_filename_profile(Path::new(
+            "C:/Users/shaun/Documents/workspace/[MTBB-Minis] Monogatari Series (BD 1080p)/07 - Onimonogatari/[MTBB-Minis] Monogatari Series Second Season - 09 [BD 1080p].mkv",
+        ));
+
+        assert!(matching_candidate.series_tokens.contains("otorimonogatari"));
+        assert!(
+            media_match_filename_score(&query, &matching_candidate)
+                > media_match_filename_score(&query, &wrong_candidate)
+        );
+    }
+
+    #[test]
     fn media_match_rebuild_selection_prefilters_large_roots_for_current_file() {
         let root = unique_media_match_test_root("prefilter");
         let current_dir = root.join("downloads");
@@ -5007,6 +5148,28 @@ mod tests {
         assert!(selection.paths.contains(&matching_path));
         assert!(selection.paths.len() <= MEDIA_MATCH_PREFILTER_LIMIT + 1);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn media_match_remote_prefilter_keeps_monogatari_parent_arc_candidate() {
+        let matching_path = PathBuf::from(
+            "C:/Users/shaun/Documents/workspace/[MTBB-Minis] Monogatari Series (BD 1080p)/08 - Otorimonogatari/[MTBB-Minis] Monogatari Series Second Season - 10 [BD 1080p].mkv",
+        );
+        let mut candidates = vec![matching_path.clone()];
+        candidates.extend((0..MEDIA_MATCH_PREFILTER_THRESHOLD + 10).map(|index| {
+            PathBuf::from(format!(
+                "C:/Users/shaun/Documents/workspace/[MTBB-Minis] Monogatari Series (BD 1080p)/07 - Onimonogatari/[MTBB-Minis] Monogatari Series Second Season - {index:02} [BD 1080p].mkv"
+            ))
+        }));
+
+        let selection = select_remote_media_match_candidates(
+            &candidates,
+            "[Coalgirls]_Otorimonogatari_01_(BD_1080p).mkv",
+        );
+
+        assert!(selection.prefiltered);
+        assert!(selection.paths.contains(&matching_path));
+        assert_eq!(selection.paths.first(), Some(&matching_path));
     }
 
     #[test]

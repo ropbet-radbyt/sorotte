@@ -9,7 +9,7 @@ use std::{
 };
 
 use sorotte_media_match::{
-    MediaExtractionSettings, MediaMatchDecision, MediaMatchTier,
+    MediaDenseAudioProfile, MediaExtractionSettings, MediaMatchDecision, MediaMatchTier,
     decide_media_match_against_wire_signature, media_match_wire_signature_from_value,
 };
 
@@ -29,6 +29,11 @@ use super::*;
 struct GuiMediaMatchRemoteTarget {
     target_file_name: String,
     media_match_signature: serde_json::Value,
+}
+
+fn media_match_full_verify_extraction_settings() -> MediaExtractionSettings {
+    MediaExtractionSettings::audio_constellation_v3()
+        .with_dense_audio_profile(MediaDenseAudioProfile::DenseGated)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -190,7 +195,7 @@ impl GuiPersistedConfigRuntimeOwner {
             let Some(local_record) = media_match_record_for_path(
                 &root,
                 &current_path,
-                &MediaExtractionSettings::audio_constellation_v3(),
+                &media_match_full_verify_extraction_settings(),
             ) else {
                 let status = "pending local fingerprint".to_owned();
                 let gate_tiers = BTreeMap::new();
@@ -515,7 +520,7 @@ impl GuiPersistedConfigRuntimeOwner {
             && media_match_record_for_path(
                 root,
                 &path,
-                &MediaExtractionSettings::audio_constellation_v3(),
+                &media_match_full_verify_extraction_settings(),
             )
             .is_none()
         {
@@ -592,7 +597,7 @@ impl GuiPersistedConfigRuntimeOwner {
             .name("sorotte-gui-media-match-exact-signature".to_owned())
             .spawn(move || {
                 let progress_tx = tx.clone();
-                let extraction_settings = MediaExtractionSettings::audio_constellation_v3();
+                let extraction_settings = media_match_full_verify_extraction_settings();
                 let result = media_match_tool_paths_for_settings(&root, &extraction_settings)
                     .and_then(|tools| {
                         rebuild_persisted_media_match_candidates_with_progress_and_cancel(
@@ -732,7 +737,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 &remote.target_file_name,
                 &remote.media_match_signature,
                 &projected_state.media_match.settings,
-                &MediaExtractionSettings::audio_constellation_v3(),
+                &media_match_full_verify_extraction_settings(),
             ) {
                 return Some(candidate.path);
             }
@@ -977,12 +982,8 @@ impl GuiPersistedConfigRuntimeOwner {
             .name("sorotte-gui-media-match-background".to_owned())
             .spawn(move || {
                 let progress_tx = tx.clone();
-                let hardening_candidates = current_player_path
-                    .is_some()
-                    .then(|| candidates.clone())
-                    .flatten();
                 let fast_result = if current_player_path.is_none() {
-                    if let Some(remote_candidate) = remote_candidate {
+                    if let Some(remote_candidate) = remote_candidate.clone() {
                         let extraction_settings =
                             sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3();
                         media_match_tool_paths_for_settings(&root, &extraction_settings).and_then(|tools| {
@@ -990,6 +991,7 @@ impl GuiPersistedConfigRuntimeOwner {
                                 MediaMatchRemoteCandidateRebuildRequest {
                                     root: &root,
                                     search_roots: &search_roots,
+                                    candidates: None,
                                     target_file_name: &remote_candidate.target_file_name,
                                     media_match_signature: &remote_candidate.media_match_signature,
                                     settings: &settings,
@@ -1020,7 +1022,7 @@ impl GuiPersistedConfigRuntimeOwner {
                             },
                         )
                     }
-                } else if let Some(candidates) = candidates {
+                } else if let Some(candidates) = candidates.clone() {
                     let extraction_settings =
                         sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3();
                     media_match_tool_paths_for_settings(&root, &extraction_settings).and_then(|tools| {
@@ -1063,11 +1065,25 @@ impl GuiPersistedConfigRuntimeOwner {
                     .is_some_and(|decision| {
                         decision.starts_with("strong:") || decision.starts_with("probable:")
                     });
-                if !strong_fast_match {
+                let remote_promotion_candidates = (current_player_path.is_none())
+                    .then(|| {
+                        fast_result
+                            .as_ref()
+                            .ok()
+                            .map(|result| result.full_promotion_candidates.clone())
+                            .filter(|candidates| !candidates.is_empty())
+                    })
+                    .flatten();
+                if !strong_fast_match && remote_promotion_candidates.is_none() {
                     let _ = tx.send(GuiMediaMatchBackgroundWorkerEvent::Finished(fast_result));
                     return;
                 }
-                let Some(hardening_candidates) = hardening_candidates else {
+                let Some(mut hardening_candidates) = current_player_path
+                    .is_some()
+                    .then(|| candidates.clone())
+                    .flatten()
+                    .or(remote_promotion_candidates)
+                else {
                     let _ = tx.send(GuiMediaMatchBackgroundWorkerEvent::Finished(fast_result));
                     return;
                 };
@@ -1082,34 +1098,62 @@ impl GuiPersistedConfigRuntimeOwner {
                 }
                 let sampled_extraction_settings =
                     sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3();
-                let hardening_candidates = media_match_full_promotion_candidates_for_current(
-                    &root,
-                    &hardening_candidates,
-                    current_player_path.as_deref(),
-                    &settings,
-                    &sampled_extraction_settings,
-                    MEDIA_MATCH_MAX_FULL_PROMOTIONS_PER_QUERY,
-                );
+                if current_player_path.is_some() {
+                    hardening_candidates = media_match_full_promotion_candidates_for_current(
+                        &root,
+                        &hardening_candidates,
+                        current_player_path.as_deref(),
+                        &settings,
+                        &sampled_extraction_settings,
+                        MEDIA_MATCH_MAX_FULL_PROMOTIONS_PER_QUERY,
+                    );
+                } else {
+                    hardening_candidates.truncate(MEDIA_MATCH_MAX_FULL_PROMOTIONS_PER_QUERY.max(1));
+                }
                 let extraction_settings =
-                    sorotte_media_match::MediaExtractionSettings::combined_v3()
-                        .with_dense_audio_profile(sorotte_media_match::MediaDenseAudioProfile::DenseGated);
-                let full_result = media_match_tool_paths_for_settings(&root, &extraction_settings).and_then(|tools| {
-                    rebuild_persisted_media_match_candidates_with_progress_and_cancel(
-                        MediaMatchCandidateRebuildRequest {
-                            root: &root,
-                            candidates: hardening_candidates,
-                            current_player_path: current_player_path.as_deref(),
-                            settings: &settings,
-                            tools: &tools,
-                            extraction_settings: &extraction_settings,
-                            cancel_flag: Some(worker_cancel_flag.as_ref()),
+                    media_match_full_verify_extraction_settings();
+                let full_result =
+                    media_match_tool_paths_for_settings(&root, &extraction_settings).and_then(
+                        |tools| {
+                            if let Some(remote_candidate) = remote_candidate {
+                                rebuild_persisted_media_match_remote_candidates_with_progress_and_cancel(
+                                    MediaMatchRemoteCandidateRebuildRequest {
+                                        root: &root,
+                                        search_roots: &search_roots,
+                                        candidates: Some(hardening_candidates),
+                                        target_file_name: &remote_candidate.target_file_name,
+                                        media_match_signature: &remote_candidate.media_match_signature,
+                                        settings: &settings,
+                                        tools: &tools,
+                                        extraction_settings: &extraction_settings,
+                                        cancel_flag: Some(worker_cancel_flag.as_ref()),
+                                    },
+                                    |progress| {
+                                        let _ = progress_tx.send(
+                                            GuiMediaMatchBackgroundWorkerEvent::Progress(progress),
+                                        );
+                                    },
+                                )
+                            } else {
+                                rebuild_persisted_media_match_candidates_with_progress_and_cancel(
+                                    MediaMatchCandidateRebuildRequest {
+                                        root: &root,
+                                        candidates: hardening_candidates,
+                                        current_player_path: current_player_path.as_deref(),
+                                        settings: &settings,
+                                        tools: &tools,
+                                        extraction_settings: &extraction_settings,
+                                        cancel_flag: Some(worker_cancel_flag.as_ref()),
+                                    },
+                                    |progress| {
+                                        let _ = progress_tx.send(
+                                            GuiMediaMatchBackgroundWorkerEvent::Progress(progress),
+                                        );
+                                    },
+                                )
+                            }
                         },
-                        |progress| {
-                            let _ = progress_tx
-                                .send(GuiMediaMatchBackgroundWorkerEvent::Progress(progress));
-                        },
-                    )
-                });
+                    );
                 let full_result = full_result.map(|mut result| {
                     result.message =
                         format!("Media Matching full hardening complete. {}", result.message);
