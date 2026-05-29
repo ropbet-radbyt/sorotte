@@ -555,6 +555,7 @@ mod tests {
                 full_fingerprint_count: 2,
                 ..MediaMatchV3DiagnosticSummaryReport::default()
             },
+            sqlite_size: None,
         }
     }
 

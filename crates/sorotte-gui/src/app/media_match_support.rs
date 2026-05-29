@@ -1382,7 +1382,8 @@ fn media_match_sqlite_storage_status(root: &Path) -> Result<String, String> {
                 COALESCE(SUM(audio_index_count), 0),
                 COALESCE(SUM(video_index_count), 0)
              FROM fingerprints_v3
-             WHERE algorithm_version = ?1",
+             JOIN settings_v3 ON settings_v3.settings_id = fingerprints_v3.settings_id
+             WHERE settings_v3.algorithm_version = ?1",
                 [i64::from(MEDIA_MATCH_ANCHOR_VERSION)],
                 |row| {
                     Ok((
@@ -2775,7 +2776,8 @@ fn media_match_sqlite_all_settings_counts(root: &Path) -> Result<(usize, usize, 
             .query_row(
                 "SELECT COUNT(*)
                  FROM fingerprints_v3
-                 WHERE algorithm_version = ?1 AND settings_hash = ?2",
+                 JOIN settings_v3 ON settings_v3.settings_id = fingerprints_v3.settings_id
+                 WHERE settings_v3.algorithm_version = ?1 AND settings_v3.settings_hash = ?2",
                 params![
                     i64::from(MEDIA_MATCH_ANCHOR_VERSION),
                     media_extraction_settings_hash(&settings).to_vec()
@@ -2802,8 +2804,9 @@ fn media_match_sqlite_active_settings_counts(root: &Path) -> Result<(usize, usiz
             .query_row(
                 "SELECT COUNT(*)
                  FROM fingerprints_v3
-                 WHERE algorithm_version = ?1
-                   AND settings_hash = ?2",
+                 JOIN settings_v3 ON settings_v3.settings_id = fingerprints_v3.settings_id
+                 WHERE settings_v3.algorithm_version = ?1
+                   AND settings_v3.settings_hash = ?2",
                 params![
                     i64::from(MEDIA_MATCH_ANCHOR_VERSION),
                     media_extraction_settings_hash(settings).to_vec(),
@@ -3098,9 +3101,10 @@ mod tests {
                 "SELECT fingerprints_v3.updated_unix_millis
                  FROM fingerprints_v3
                  JOIN media_files_v3 ON media_files_v3.file_id = fingerprints_v3.file_id
+                 JOIN settings_v3 ON settings_v3.settings_id = fingerprints_v3.settings_id
                  WHERE media_files_v3.normalized_path = ?1
-                   AND fingerprints_v3.algorithm_version = ?2
-                   AND fingerprints_v3.settings_hash = ?3",
+                   AND settings_v3.algorithm_version = ?2
+                   AND settings_v3.settings_hash = ?3",
                 params![
                     record.identity.normalized_path,
                     i64::from(MEDIA_MATCH_ANCHOR_VERSION),
@@ -3119,11 +3123,12 @@ mod tests {
         connection
             .query_row(
                 "SELECT document_frequency
-                 FROM anchor_stats_v3
-                 WHERE algorithm_version = ?1
-                   AND settings_hash = ?2
-                   AND modality = ?3
-                   AND bucket = ?4",
+                 FROM anchor_buckets_v3
+                 JOIN settings_v3 ON settings_v3.settings_id = anchor_buckets_v3.settings_id
+                 WHERE settings_v3.algorithm_version = ?1
+                   AND settings_v3.settings_hash = ?2
+                   AND anchor_buckets_v3.modality = ?3
+                   AND anchor_buckets_v3.bucket = ?4",
                 params![
                     i64::from(MEDIA_MATCH_ANCHOR_VERSION),
                     settings_hash,
@@ -3242,9 +3247,11 @@ mod tests {
         );
 
         let stats_before = connection
-            .query_row("SELECT COUNT(*) FROM anchor_stats_v3", [], |row| {
-                row.get::<_, i64>(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM anchor_buckets_v3 WHERE document_frequency > 0",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
             .expect("stats count should load");
         assert_eq!(
             stats_before, 0,
@@ -3259,9 +3266,11 @@ mod tests {
         )
         .expect("batch stats refresh should succeed");
         let stats_after = connection
-            .query_row("SELECT COUNT(*) FROM anchor_stats_v3", [], |row| {
-                row.get::<_, i64>(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM anchor_buckets_v3 WHERE document_frequency > 0",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
             .expect("stats count should load");
 
         assert!(stats_after > 0);
@@ -4171,9 +4180,10 @@ mod tests {
                 "SELECT COUNT(*)
                  FROM fingerprints_v3
                  JOIN media_files_v3 ON media_files_v3.file_id = fingerprints_v3.file_id
+                 JOIN settings_v3 ON settings_v3.settings_id = fingerprints_v3.settings_id
                  WHERE media_files_v3.normalized_path = ?1
-                   AND fingerprints_v3.algorithm_version = ?2
-                   AND fingerprints_v3.settings_hash = ?3",
+                   AND settings_v3.algorithm_version = ?2
+                   AND settings_v3.settings_hash = ?3",
                 params![
                     candidate_normalized_path,
                     i64::from(MEDIA_MATCH_ANCHOR_VERSION),
@@ -4755,7 +4765,8 @@ mod tests {
             .query_row(
                 "SELECT COALESCE(SUM(COALESCE(LENGTH(audio_blob), 0) + COALESCE(LENGTH(video_blob), 0)), 0)
                  FROM fingerprints_v3
-                 WHERE algorithm_version = ?1",
+                 JOIN settings_v3 ON settings_v3.settings_id = fingerprints_v3.settings_id
+                 WHERE settings_v3.algorithm_version = ?1",
                 params![i64::from(MEDIA_MATCH_ANCHOR_VERSION)],
                 |row| row.get::<_, i64>(0),
             )

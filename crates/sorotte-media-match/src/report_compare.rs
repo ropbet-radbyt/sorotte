@@ -312,6 +312,26 @@ pub fn validate_media_match_v3_diagnostic_report(
             report.summary.robust_rerank_millis_total
         ));
     }
+    if let Some(sqlite_size) = report.sqlite_size.as_ref() {
+        if report.summary.db_total_bytes != sqlite_size.total_bytes {
+            return Err(format!(
+                "summary.dbTotalBytes={} does not match sqlite size total={}",
+                report.summary.db_total_bytes, sqlite_size.total_bytes
+            ));
+        }
+        if report.summary.db_anchor_index_bytes != sqlite_size.anchor_index_bytes {
+            return Err(format!(
+                "summary.dbAnchorIndexBytes={} does not match sqlite anchor bytes={}",
+                report.summary.db_anchor_index_bytes, sqlite_size.anchor_index_bytes
+            ));
+        }
+        if report.summary.db_index_bytes != sqlite_size.db_index_bytes {
+            return Err(format!(
+                "summary.dbIndexBytes={} does not match sqlite index bytes={}",
+                report.summary.db_index_bytes, sqlite_size.db_index_bytes
+            ));
+        }
+    }
     validate_retrieval_percentile_summary(report)?;
     if report.summary.full_promotion_millis != total_full_promotion_millis {
         return Err(format!(
@@ -920,6 +940,31 @@ fn report_metric_deltas(
             "robustRerankMillisTotal",
             baseline.summary.robust_rerank_millis_total as i128,
             current.summary.robust_rerank_millis_total as i128,
+        ),
+        metric_delta(
+            "dbTotalBytes",
+            baseline.summary.db_total_bytes as i128,
+            current.summary.db_total_bytes as i128,
+        ),
+        metric_delta(
+            "dbAnchorIndexBytes",
+            baseline.summary.db_anchor_index_bytes as i128,
+            current.summary.db_anchor_index_bytes as i128,
+        ),
+        metric_delta(
+            "dbFingerprintBytes",
+            baseline.summary.db_fingerprint_bytes as i128,
+            current.summary.db_fingerprint_bytes as i128,
+        ),
+        metric_delta(
+            "dbStatsBytes",
+            baseline.summary.db_stats_bytes as i128,
+            current.summary.db_stats_bytes as i128,
+        ),
+        metric_delta(
+            "dbIndexBytes",
+            baseline.summary.db_index_bytes as i128,
+            current.summary.db_index_bytes as i128,
         ),
         metric_delta(
             "runWallMillis",
@@ -2285,6 +2330,7 @@ mod tests {
                 full_fingerprint_count: 2,
                 ..MediaMatchV3DiagnosticSummaryReport::default()
             },
+            sqlite_size: None,
         }
     }
 

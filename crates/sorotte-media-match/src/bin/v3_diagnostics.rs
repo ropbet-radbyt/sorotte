@@ -7,14 +7,15 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use rusqlite::Connection;
 use serde::Serialize;
 use sorotte_media_match::{
     MediaDenseAudioProfile, MediaMatchToolPaths, MediaMatchV3DiagnosticIndexMode,
     MediaMatchV3DiagnosticManifest, MediaMatchV3DiagnosticReport, MediaMatchV3DiagnosticRunOptions,
     MediaMatchV3ResolvedManifest, MediaMatchV3ResolvedManifestCase, MediaMatchV3RetrievalStrategy,
-    media_match_v3_diagnostic_manifest_from_json, open_media_match_v3_index,
-    refresh_all_anchor_stats_v3, resolve_media_match_v3_diagnostic_manifest,
-    run_media_match_v3_diagnostic_manifest,
+    media_match_v3_diagnostic_manifest_from_json, media_match_v3_index_path,
+    media_match_v3_sqlite_size_report, open_media_match_v3_index, refresh_all_anchor_stats_v3,
+    resolve_media_match_v3_diagnostic_manifest, run_media_match_v3_diagnostic_manifest,
 };
 
 fn main() -> ExitCode {
@@ -57,6 +58,33 @@ fn run_cli_with_output(
         mode,
         selected_cases,
     } = parse_args(args)?;
+    if mode == CliMode::CacheSizeReport {
+        let Some(cache_root) = cache_root else {
+            return Err("--cache-size-report requires --cache-root".to_owned());
+        };
+        let index_path = media_match_v3_index_path(&cache_root);
+        let connection = Connection::open(&index_path).map_err(|error| {
+            format!(
+                "failed opening media-match SQLite index '{}': {error}",
+                index_path.display()
+            )
+        })?;
+        let report = media_match_v3_sqlite_size_report(&cache_root, &connection)?;
+        let report_json = serde_json::to_string_pretty(&report)
+            .map_err(|error| format!("failed serializing cache size JSON: {error}"))?;
+        if let Some(output_path) = output_path {
+            fs::write(&output_path, report_json).map_err(|error| {
+                format!("failed writing report '{}': {error}", output_path.display())
+            })?;
+        } else {
+            stdout.push_str(&report_json);
+            stdout.push('\n');
+        }
+        return Ok(true);
+    }
+    let Some(manifest_path) = manifest_path else {
+        return Err(usage());
+    };
     let manifest_text = fs::read_to_string(&manifest_path).map_err(|error| {
         format!(
             "failed reading manifest '{}': {error}",
@@ -189,10 +217,11 @@ enum CliMode {
     ListCases,
     ValidateOnly,
     PrepareIndexStats,
+    CacheSizeReport,
 }
 
 struct CliArgs {
-    manifest_path: PathBuf,
+    manifest_path: Option<PathBuf>,
     output_path: Option<PathBuf>,
     cache_root: Option<PathBuf>,
     keep_cache: bool,
@@ -295,6 +324,12 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
                 }
                 mode = CliMode::PrepareIndexStats;
             }
+            "--cache-size-report" => {
+                if mode != CliMode::Run {
+                    return Err(usage());
+                }
+                mode = CliMode::CacheSizeReport;
+            }
             "--case" => {
                 let Some(value) = args.next() else {
                     return Err(usage());
@@ -307,9 +342,9 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
             _ => return Err(usage()),
         }
     }
-    let Some(manifest_path) = manifest_path else {
+    if manifest_path.is_none() && mode != CliMode::CacheSizeReport {
         return Err(usage());
-    };
+    }
     Ok(CliArgs {
         manifest_path,
         output_path,
@@ -329,7 +364,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
 }
 
 fn usage() -> String {
-    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--index-mode full|sparse-full|sampled-fast|sampled-normal|sampled|sampled-then-full|production] [--dense-audio-profile dense-current|dense-realfft|dense-8k|dense-hop2048|dense-8k-hop2048|dense-8k-window1024-hop1024|dense-max-peaks-4|dense-pair-retain-16|dense-pair-retain-lower|dense-gated|dense-gated-v2|dense-fast-combined-candidate] [--retrieval-strategy auto|temp-table|bucket-fetch] [--bench-dense-audio-profiles] [--max-full-promotions n] [--promote-expected-candidates] [--retrieval-benchmark-only] [--list-cases|--validate-only|--prepare-index-stats] [--case name]"
+    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--index-mode full|sparse-full|sampled-fast|sampled-normal|sampled|sampled-then-full|production] [--dense-audio-profile dense-current|dense-realfft|dense-8k|dense-hop2048|dense-8k-hop2048|dense-8k-window1024-hop1024|dense-max-peaks-4|dense-pair-retain-16|dense-pair-retain-lower|dense-gated|dense-gated-v2|dense-fast-combined-candidate] [--retrieval-strategy auto|temp-table|bucket-fetch] [--bench-dense-audio-profiles] [--max-full-promotions n] [--promote-expected-candidates] [--retrieval-benchmark-only] [--list-cases|--validate-only|--prepare-index-stats|--cache-size-report] [--case name]"
         .to_owned()
 }
 
@@ -683,7 +718,7 @@ mod tests {
         ])
         .expect("args should parse");
 
-        assert_eq!(args.manifest_path, PathBuf::from("manifest.json"));
+        assert_eq!(args.manifest_path, Some(PathBuf::from("manifest.json")));
         assert_eq!(args.output_path, Some(PathBuf::from("report.json")));
         assert_eq!(args.cache_root, Some(PathBuf::from("cache")));
         assert!(args.keep_cache);
@@ -724,6 +759,15 @@ mod tests {
         ])
         .expect("prepare args should parse");
         assert_eq!(prepare.mode, CliMode::PrepareIndexStats);
+
+        let cache_size = parse_args([
+            "--cache-size-report".to_owned(),
+            "--cache-root".to_owned(),
+            "cache".to_owned(),
+        ])
+        .expect("cache-size args should parse without a manifest");
+        assert_eq!(cache_size.mode, CliMode::CacheSizeReport);
+        assert_eq!(cache_size.manifest_path, None);
     }
 
     #[test]

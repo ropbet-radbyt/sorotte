@@ -11,12 +11,12 @@ use crate::{
     MediaDenseAudioProfile, MediaExtractionSettings, MediaMatchAutoplayPolicy, MediaMatchDecision,
     MediaMatchSettings, MediaMatchTier, MediaMatchToolPaths, MediaMatchV3DiagnosticSummary,
     MediaMatchV3RetrievalStats, MediaMatchV3RetrievalStrategy, MediaMatchV3RetrievedCandidate,
-    MediaMatchV3SaveStats, V3Tuning, current_v3_tuning, decide_media_match,
-    fingerprint_media_file_with_report, load_media_match_v3_record_for_path,
+    MediaMatchV3SaveStats, MediaMatchV3SqliteSizeReport, V3Tuning, current_v3_tuning,
+    decide_media_match, fingerprint_media_file_with_report, load_media_match_v3_record_for_path,
     media_extraction_settings_hash, media_match_v3_anchor_candidate_details_with_strategy,
-    normalize_media_path, open_media_match_v3_index, save_media_match_v3_record_with_stats,
-    summarize_decision_v3_diagnostics, summarize_instrumented_record_v3_diagnostics,
-    summarize_record_v3_diagnostics,
+    media_match_v3_sqlite_size_report, normalize_media_path, open_media_match_v3_index,
+    save_media_match_v3_record_with_stats, summarize_decision_v3_diagnostics,
+    summarize_instrumented_record_v3_diagnostics, summarize_record_v3_diagnostics,
 };
 
 #[cfg(test)]
@@ -165,6 +165,8 @@ pub struct MediaMatchV3DiagnosticReport {
     pub generated_at_unix_millis: u64,
     pub cases: Vec<MediaMatchV3DiagnosticCaseReport>,
     pub summary: MediaMatchV3DiagnosticSummaryReport,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sqlite_size: Option<MediaMatchV3SqliteSizeReport>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -449,6 +451,20 @@ pub struct MediaMatchV3DiagnosticSummaryReport {
     pub candidate_metadata_load_millis_total: u128,
     #[serde(default)]
     pub robust_rerank_millis_total: u128,
+    #[serde(default)]
+    pub db_total_bytes: u64,
+    #[serde(default)]
+    pub db_anchor_index_bytes: u64,
+    #[serde(default)]
+    pub db_fingerprint_bytes: u64,
+    #[serde(default)]
+    pub db_stats_bytes: u64,
+    #[serde(default)]
+    pub db_index_bytes: u64,
+    #[serde(default)]
+    pub db_bytes_per_fingerprint: f64,
+    #[serde(default)]
+    pub db_bytes_per_anchor: f64,
     pub decision_total_millis: u128,
     pub report_serialize_millis: u128,
     pub sampled_fingerprint_count: usize,
@@ -905,6 +921,26 @@ pub fn run_media_match_v3_diagnostic_manifest(
             .saturating_add(summary.production_full_promotion_millis);
     }
     apply_production_throughput_summary(&mut summary, index_mode);
+    let sqlite_size = media_match_v3_sqlite_size_report(&options.cache_root, &connection).ok();
+    if let Some(sqlite_size) = sqlite_size.as_ref() {
+        summary.db_total_bytes = sqlite_size.total_bytes;
+        summary.db_anchor_index_bytes = sqlite_size.anchor_index_bytes;
+        summary.db_fingerprint_bytes = sqlite_size
+            .object_bytes
+            .iter()
+            .filter(|object| object.name.contains("fingerprints_v3"))
+            .map(|object| object.bytes)
+            .sum();
+        summary.db_stats_bytes = sqlite_size
+            .object_bytes
+            .iter()
+            .filter(|object| object.name.contains("anchor_stats_v3"))
+            .map(|object| object.bytes)
+            .sum();
+        summary.db_index_bytes = sqlite_size.db_index_bytes;
+        summary.db_bytes_per_fingerprint = sqlite_size.db_bytes_per_fingerprint;
+        summary.db_bytes_per_anchor = sqlite_size.db_bytes_per_anchor;
+    }
 
     Ok(MediaMatchV3DiagnosticReport {
         algorithm_version: MEDIA_MATCH_ANCHOR_VERSION,
@@ -921,6 +957,7 @@ pub fn run_media_match_v3_diagnostic_manifest(
             .unwrap_or_else(current_unix_millis),
         cases,
         summary,
+        sqlite_size,
     })
 }
 
@@ -2846,7 +2883,7 @@ mod tests {
             .expect("record should save");
         connection
             .execute(
-                "UPDATE fingerprints_v3 SET settings_hash = ?1",
+                "UPDATE settings_v3 SET settings_hash = ?1",
                 [vec![0xff; 32]],
             )
             .expect("stored settings hash should be changed");

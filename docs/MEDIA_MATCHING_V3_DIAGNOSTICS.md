@@ -256,6 +256,37 @@ remains the stricter rank-quality gate.
 }
 ```
 
+## Cache Size Reports
+
+Use `--cache-size-report` to inspect a V3 SQLite cache without running
+fingerprinting or retrieval:
+
+```powershell
+cargo run -p sorotte-media-match --bin v3_diagnostics -- --cache-size-report --cache-root .media-match-v3-cache-audio-sampled-fast --output reports/cache-size.json
+```
+
+The report includes page counts, free pages, table/index row counts, dbstat
+object sizes when SQLite exposes the `dbstat` virtual table, fingerprint blob
+bytes, anchor-index bytes, bytes per fingerprint, and bytes per anchor.
+Diagnostic run reports also copy the high-level size fields into `summary`:
+`dbTotalBytes`, `dbAnchorIndexBytes`, `dbFingerprintBytes`, `dbStatsBytes`,
+`dbIndexBytes`, `dbBytesPerFingerprint`, and `dbBytesPerAnchor`.
+
+Current V3 cache schema stores the 32-byte settings hash once in `settings_v3`
+and stores sampled-fast anchors as normalized bucket/occurrence rows:
+`anchor_buckets_v3(settingsId, modality, bucket, documentFrequency)` plus
+`anchor_occurrences_v3(bucketId, fileId, tMs, weight)`. This replaces the older
+per-anchor settings-hash layout and removes the separate `anchor_stats_v3`
+table for current caches. V3 cache schema resets are expected during active
+development; use `--cache-size-report` before and after rebuilding when
+measuring storage changes.
+
+On the 4,007-file sampled-fast noisy Monogatari/Anime cache, the compact schema
+reduced the SQLite file from roughly 510 MiB to roughly 87 MiB while preserving
+the same 1,536,000 anchor occurrences. Treat those numbers as machine/cache
+specific, but sampled-fast caches should now be closer to the tens-of-MiB range
+than the hundreds-of-MiB range for a few thousand files.
+
 ## Corpus Calibration Workflow
 
 Run the audio-first profile before the combined profile. This separates

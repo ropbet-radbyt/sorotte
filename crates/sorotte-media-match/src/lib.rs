@@ -70,7 +70,8 @@ pub use types::{
 // implementation centralized in this crate while still letting runtime code maintain the cache.
 pub use v3_index::{
     MediaMatchV3RetrievalStats, MediaMatchV3RetrievalStrategy, MediaMatchV3RetrievedCandidate,
-    MediaMatchV3SaveStats, anchor_stats_v3_dirty, clear_all_anchor_stats_v3_dirty,
+    MediaMatchV3SaveStats, MediaMatchV3SqliteObjectBytes, MediaMatchV3SqliteRowCount,
+    MediaMatchV3SqliteSizeReport, anchor_stats_v3_dirty, clear_all_anchor_stats_v3_dirty,
     clear_anchor_stats_v3_dirty, delete_media_match_v3_file_and_fingerprints,
     delete_media_match_v3_fingerprints_and_anchors, initialize_media_match_v3_index,
     load_media_match_v3_cache_for_settings, load_media_match_v3_record_for_path,
@@ -78,8 +79,8 @@ pub use v3_index::{
     media_match_v3_anchor_candidate_details_with_stats,
     media_match_v3_anchor_candidate_details_with_strategy,
     media_match_v3_anchor_candidate_paths_with_stats, media_match_v3_index_path,
-    open_media_match_v3_index, refresh_all_anchor_stats_v3, refresh_anchor_stats_v3,
-    refresh_dirty_anchor_stats_v3_if_needed, save_media_match_v3_record,
+    media_match_v3_sqlite_size_report, open_media_match_v3_index, refresh_all_anchor_stats_v3,
+    refresh_anchor_stats_v3, refresh_dirty_anchor_stats_v3_if_needed, save_media_match_v3_record,
     save_media_match_v3_record_with_stats,
 };
 // These descriptor types and kind helpers are intentionally public: GUI/runtime tests build
