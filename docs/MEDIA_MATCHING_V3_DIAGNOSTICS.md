@@ -83,11 +83,15 @@ Modes:
 - `production`: simulate the runtime policy. It builds sampled-fast records for
   every selected manifest file, retrieves from that index, then dense
   full-verifies only the top promoted candidate(s). The report separates
-  `productionSampledIndexMillis`, `productionFullPromotionMillis`, and
-  `productionTotalMillis`, plus sampled-indexed and full-promoted file counts,
-  worker counts, and integer `filesPerMinute` throughput. Candidate rows also
-  include `sampledRetrievalRank` and `finalVerifiedRank` when production
-  promotion verifies a sampled hit.
+  `productionSampledIndexMillis`, `productionRetrievalMillis`,
+  `productionFullPromotionMillis`, and `productionTotalMillis`, plus
+  sampled-indexed, sampled-cache-hit, full-promoted, skipped, and failed file
+  counts. Worker diagnostics include `sampledFastWorkerCount`,
+  `fullVerifyWorkerCount`, `extractionQueueWaitMillis`,
+  `extractionWorkerWallMillis`, `sqliteWriterMillis`, and
+  `sqliteWriteQueueDepthMax`. Candidate rows also include
+  `sampledRetrievalRank`, `withinPromotionBudget`, promoted ranks, and
+  `finalVerifiedRank` when production promotion verifies a sampled hit.
 
 Dense full audio profiles are experimental verification benchmarks, not
 background indexing modes. `dense-current` is the correctness baseline. Use
@@ -267,7 +271,11 @@ cargo run -p sorotte-media-match --bin v3_diagnostics -- --cache-size-report --c
 
 The report includes page counts, free pages, table/index row counts, dbstat
 object sizes when SQLite exposes the `dbstat` virtual table, fingerprint blob
-bytes, anchor-index bytes, bytes per fingerprint, and bytes per anchor.
+bytes, anchor-index bytes, bytes per fingerprint, bytes per anchor, and a
+read-only `compressedPostingsEstimate` when the compact occurrence table is
+available. The postings estimate simulates varint-delta packed postings and is
+only a feasibility signal for a later read-optimized cache format; it does not
+change the production schema.
 Diagnostic run reports also copy the high-level size fields into `summary`:
 `dbTotalBytes`, `dbAnchorIndexBytes`, `dbFingerprintBytes`, `dbStatsBytes`,
 `dbIndexBytes`, `dbBytesPerFingerprint`, and `dbBytesPerAnchor`.
@@ -282,10 +290,12 @@ development; use `--cache-size-report` before and after rebuilding when
 measuring storage changes.
 
 On the 4,007-file sampled-fast noisy Monogatari/Anime cache, the compact schema
-reduced the SQLite file from roughly 510 MiB to roughly 87 MiB while preserving
-the same 1,536,000 anchor occurrences. Treat those numbers as machine/cache
-specific, but sampled-fast caches should now be closer to the tens-of-MiB range
-than the hundreds-of-MiB range for a few thousand files.
+reduced the SQLite file from roughly 510 MiB to about 86.77 MiB while preserving
+the same 1,536,000 anchor occurrences. Anchor/index storage dropped from about
+493.04 MiB to about 69.78 MiB, or roughly 47.6 bytes per anchor occurrence.
+Treat those numbers as machine/cache specific, but sampled-fast caches should
+now be closer to the tens-of-MiB range than the hundreds-of-MiB range for a few
+thousand files.
 
 ## Corpus Calibration Workflow
 
@@ -310,6 +320,28 @@ Cold and warm reports may differ in `uniqueFreshFingerprintCount`,
 `sqliteCacheFingerprintReportCount`, and `totalExtractionMillis`. That is
 expected when file identity and settings match and the warm run avoids
 re-extraction.
+
+Cold sampled-fast indexing now uses a streaming producer/writer pipeline in the
+diagnostic harness. Sampled-fast extraction workers produce completed
+fingerprints into a bounded result queue, and the coordinator writes each record
+to SQLite as soon as it is available. This overlaps extraction with cache
+checkpointing and keeps completed records valid for resume if a long run is
+cancelled. Inspect `producerWorkerCount`, `resultQueueDepthMax`,
+`resultQueueWaitMillis`, `writerIdleMillis`, `writerBusyMillis`,
+`writerRecordsInserted`, `writerRowsInserted`, `writerCommitMillis`,
+`extractionWorkerActiveMillis`, `extractionWorkerIdleMillis`, and
+`endToEndIndexWallMillis` when comparing cold-index runs. The first streaming
+writer pass still reports one writer batch per saved record; larger SQLite
+batch transactions are a separate optimization target.
+
+Fresh sampled-fast reports also include per-file distribution fields:
+`freshFingerprintMillisP50/P75/P95/P99/Max`,
+`freshFingerprintFfmpegWallMillisP50/P95`,
+`freshFingerprintAnalyzerMillisP50/P95`,
+`freshSampledAudioSecondsDecodedP50/P95`,
+`freshSampledAudioWindowsDecodedP50/P95`, and
+`slowestFreshFingerprints`. Use these to distinguish real slow files from queue
+or writer pressure before changing sampling parameters.
 
 When testing an extraction-code change, either rely on the fingerprint config
 hash changing with the cache version/tuning/settings change, or pass
@@ -585,12 +617,19 @@ isolated fixture without checking the broader corpus.
   `maxQueuedPcmBytes`, `analyzerMillis`, `peakSelectionMillis`,
   `pairingMillis`, `reservoirMillis`, `landmarksAcceptedIntoReservoir`,
   `landmarksRejectedByReservoir`, `finalSelectionMillis`, `sqliteSaveMillis`,
-  and `indexInsertMillis`. If full extraction is the bottleneck, compare with
-  `--index-mode sampled-fast`, `--index-mode sampled-normal`, and
-  `--index-mode production` before changing thresholds. Runtime rebuild logs
-  also include `background/sampledFast/fullVerify` worker counts,
-  `queueWait`, `workerWall`, `sqliteWriter`, and indexed/cancelled/resumed file
-  counts.
+  and `indexInsertMillis`. For cold sampled-fast corpus indexing, also inspect
+  `writerBusyMillis`, `writerIdleMillis`, `resultQueueDepthMax`,
+  `writerRecordsInserted`, `writerRowsInserted`, `writerCommitMillis`,
+  `endToEndIndexWallMillis`, and `slowestFreshFingerprints`. If full extraction
+  is the bottleneck, compare with `--index-mode sampled-fast`,
+  `--index-mode sampled-normal`, and `--index-mode production` before changing
+  thresholds. Runtime rebuild logs also include
+  `background/sampledFast/fullVerify` worker counts, `queueWait`, `workerWall`,
+  `sqliteWriter`, maximum SQLite write queue depth, and
+  indexed/skipped/failed/cancelled/resumed file counts. Sampled-fast background
+  rebuilds should use several workers, while dense full verification should use
+  fewer workers and controlled `ffmpeg -threads 1` processes to avoid
+  oversubscription.
 
 ## Dry-Run Command Sequence
 

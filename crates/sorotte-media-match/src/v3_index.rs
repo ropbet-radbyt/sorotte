@@ -117,6 +117,8 @@ pub struct MediaMatchV3SqliteSizeReport {
     pub db_index_bytes: u64,
     pub db_bytes_per_fingerprint: f64,
     pub db_bytes_per_anchor: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compressed_postings_estimate: Option<MediaMatchV3CompressedPostingsEstimate>,
 }
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize, Default, PartialEq)]
@@ -133,6 +135,18 @@ pub struct MediaMatchV3SqliteRowCount {
     pub table: String,
     pub row_count: u64,
     pub avg_bytes_per_row: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaMatchV3CompressedPostingsEstimate {
+    pub estimated_postings_bytes: u64,
+    pub current_occurrence_bytes: u64,
+    pub estimated_savings_percent: f64,
+    pub bucket_count: u64,
+    pub occurrence_count: u64,
+    pub best_bucket_bytes: u64,
+    pub worst_bucket_bytes: u64,
 }
 
 impl MediaMatchV3RetrievalStats {
@@ -358,6 +372,8 @@ pub fn media_match_v3_sqlite_size_report(
     let metadata_bytes = object_byte("metadata")
         + object_byte("settings_v3")
         + object_byte("sqlite_autoindex_settings_v3_1");
+    let compressed_postings_estimate =
+        estimate_compressed_postings_size_v3(connection, anchor_index_bytes).ok();
     Ok(MediaMatchV3SqliteSizeReport {
         database_path: database_path.display().to_string(),
         page_size,
@@ -377,6 +393,7 @@ pub fn media_match_v3_sqlite_size_report(
         db_index_bytes,
         db_bytes_per_fingerprint: ratio_u64(total_bytes, fingerprint_rows),
         db_bytes_per_anchor: ratio_u64(total_bytes, anchor_rows),
+        compressed_postings_estimate,
     })
 }
 
@@ -486,6 +503,107 @@ fn ratio_u64(numerator: u64, denominator: u64) -> f64 {
     } else {
         numerator as f64 / denominator as f64
     }
+}
+
+fn estimate_compressed_postings_size_v3(
+    connection: &Connection,
+    current_occurrence_bytes: u64,
+) -> Result<MediaMatchV3CompressedPostingsEstimate, String> {
+    if !sqlite_table_exists(connection, "anchor_occurrences_v3")? {
+        return Err("compact anchor occurrence table is unavailable".to_owned());
+    }
+    let mut statement = connection
+        .prepare(
+            "SELECT bucket_id, file_id, t_ms, weight
+             FROM anchor_occurrences_v3
+             ORDER BY bucket_id, file_id, t_ms",
+        )
+        .map_err(|error| format!("failed preparing compressed postings estimate: {error}"))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, u64>(0)?,
+                row.get::<_, u64>(1)?,
+                row.get::<_, u64>(2)?,
+                row.get::<_, u64>(3)?,
+            ))
+        })
+        .map_err(|error| format!("failed querying compressed postings estimate: {error}"))?;
+
+    let mut estimated_postings_bytes = 0u64;
+    let mut bucket_count = 0u64;
+    let mut occurrence_count = 0u64;
+    let mut best_bucket_bytes = u64::MAX;
+    let mut worst_bucket_bytes = 0u64;
+    let mut current_bucket = None;
+    let mut current_bucket_bytes = 0u64;
+    let mut previous_file_id = 0u64;
+    let mut previous_t_ms = 0u64;
+
+    for row in rows {
+        let (bucket_id, file_id, t_ms, weight) =
+            row.map_err(|error| format!("failed reading compressed postings row: {error}"))?;
+        if current_bucket != Some(bucket_id) {
+            if current_bucket.is_some() {
+                best_bucket_bytes = best_bucket_bytes.min(current_bucket_bytes);
+                worst_bucket_bytes = worst_bucket_bytes.max(current_bucket_bytes);
+            }
+            current_bucket = Some(bucket_id);
+            bucket_count += 1;
+            previous_file_id = 0;
+            previous_t_ms = 0;
+            let bucket_header_bytes = varint_len_u64(bucket_id);
+            current_bucket_bytes = bucket_header_bytes;
+            estimated_postings_bytes = estimated_postings_bytes.saturating_add(bucket_header_bytes);
+        }
+        let file_delta = file_id.saturating_sub(previous_file_id);
+        let t_delta = if file_id == previous_file_id {
+            t_ms.saturating_sub(previous_t_ms)
+        } else {
+            t_ms
+        };
+        let row_bytes = varint_len_u64(file_delta)
+            .saturating_add(varint_len_u64(t_delta))
+            .saturating_add(varint_len_u64(weight));
+        current_bucket_bytes = current_bucket_bytes.saturating_add(row_bytes);
+        estimated_postings_bytes = estimated_postings_bytes.saturating_add(row_bytes);
+        previous_file_id = file_id;
+        previous_t_ms = t_ms;
+        occurrence_count += 1;
+    }
+    if current_bucket.is_some() {
+        best_bucket_bytes = best_bucket_bytes.min(current_bucket_bytes);
+        worst_bucket_bytes = worst_bucket_bytes.max(current_bucket_bytes);
+    }
+    if best_bucket_bytes == u64::MAX {
+        best_bucket_bytes = 0;
+    }
+    estimated_postings_bytes =
+        estimated_postings_bytes.saturating_add(bucket_count.saturating_mul(2));
+    let estimated_savings_percent = if current_occurrence_bytes == 0 {
+        0.0
+    } else {
+        let savings = current_occurrence_bytes.saturating_sub(estimated_postings_bytes);
+        (savings as f64 * 100.0) / current_occurrence_bytes as f64
+    };
+    Ok(MediaMatchV3CompressedPostingsEstimate {
+        estimated_postings_bytes,
+        current_occurrence_bytes,
+        estimated_savings_percent,
+        bucket_count,
+        occurrence_count,
+        best_bucket_bytes,
+        worst_bucket_bytes,
+    })
+}
+
+fn varint_len_u64(mut value: u64) -> u64 {
+    let mut bytes = 1;
+    while value >= 0x80 {
+        value >>= 7;
+        bytes += 1;
+    }
+    bytes
 }
 
 pub fn open_media_match_v3_index(root: &Path) -> Result<Connection, String> {
@@ -1951,12 +2069,18 @@ fn insert_anchor_index_v3(
         row.bucket,
     )?;
     connection
-        .execute(
+        .prepare_cached(
             "INSERT OR REPLACE INTO anchor_occurrences_v3 (
                 bucket_id, file_id, t_ms, weight
             ) VALUES (?1, ?2, ?3, ?4)",
-            params![bucket_id, row.file_id, i64::from(row.t_ms), row.weight],
         )
+        .map_err(|error| format!("failed preparing media-match v3 anchor index insert: {error}"))?
+        .execute(params![
+            bucket_id,
+            row.file_id,
+            i64::from(row.t_ms),
+            row.weight
+        ])
         .map(|_| ())
         .map_err(|error| format!("failed writing media-match v3 anchor index row: {error}"))
 }
@@ -1973,7 +2097,7 @@ fn anchor_bucket_id_v3(
     }
     let now = current_unix_millis() as i64;
     connection
-        .execute(
+        .prepare_cached(
             "INSERT OR IGNORE INTO anchor_buckets_v3 (
                 settings_id,
                 modality,
@@ -1981,17 +2105,20 @@ fn anchor_bucket_id_v3(
                 document_frequency,
                 updated_unix_millis
             ) VALUES (?1, ?2, ?3, 0, ?4)",
-            params![settings_id, modality, i64::from(bucket), now],
         )
+        .map_err(|error| format!("failed preparing media-match v3 anchor bucket insert: {error}"))?
+        .execute(params![settings_id, modality, i64::from(bucket), now])
         .map_err(|error| format!("failed writing media-match v3 anchor bucket: {error}"))?;
     let bucket_id = connection
-        .query_row(
+        .prepare_cached(
             "SELECT bucket_id
              FROM anchor_buckets_v3
              WHERE settings_id = ?1 AND modality = ?2 AND bucket = ?3",
-            params![settings_id, modality, i64::from(bucket)],
-            |row| row.get::<_, i64>(0),
         )
+        .map_err(|error| format!("failed preparing media-match v3 anchor bucket lookup: {error}"))?
+        .query_row(params![settings_id, modality, i64::from(bucket)], |row| {
+            row.get::<_, i64>(0)
+        })
         .map_err(|error| format!("failed reading media-match v3 anchor bucket id: {error}"))?;
     bucket_ids.insert((modality, bucket), bucket_id);
     Ok(bucket_id)
@@ -2296,6 +2423,47 @@ mod tests {
             !sqlite_table_has_column(&connection, "fingerprints_v3", "settings_hash")
                 .expect("fingerprint column check")
         );
+    }
+
+    #[test]
+    fn compact_schema_size_report_guards_anchor_storage_shape() {
+        let root = std::env::temp_dir().join(format!(
+            "sorotte-v3-size-report-{}-{}",
+            std::process::id(),
+            current_unix_millis()
+        ));
+        let connection = open_media_match_v3_index(&root).expect("index should open");
+        for record in [
+            test_audio_record("query.mkv", &[(100, 1_000), (200, 2_000)]),
+            test_audio_record("candidate.mkv", &[(100, 1_080), (300, 3_000)]),
+        ] {
+            save_media_match_v3_record(&connection, &record, None).expect("record should save");
+        }
+
+        let report =
+            media_match_v3_sqlite_size_report(&root, &connection).expect("size report should run");
+        let row_count = |name: &str| {
+            report
+                .row_counts
+                .iter()
+                .find(|row| row.table == name)
+                .map(|row| row.row_count)
+        };
+
+        assert_eq!(row_count("settings_v3"), Some(1));
+        assert_eq!(row_count("fingerprints_v3"), Some(2));
+        assert_eq!(row_count("anchor_buckets_v3"), Some(3));
+        assert_eq!(row_count("anchor_occurrences_v3"), Some(4));
+        assert!(!sqlite_table_exists(&connection, "anchor_index_v3").expect("old table check"));
+        assert!(!sqlite_table_exists(&connection, "anchor_stats_v3").expect("old stats check"));
+        let estimate = report
+            .compressed_postings_estimate
+            .expect("compact occurrence table should support postings estimate");
+        assert_eq!(estimate.occurrence_count, 4);
+        assert_eq!(estimate.bucket_count, 3);
+        assert!(estimate.estimated_postings_bytes > 0);
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

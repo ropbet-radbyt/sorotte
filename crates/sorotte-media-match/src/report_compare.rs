@@ -348,10 +348,11 @@ pub fn validate_media_match_v3_diagnostic_report(
     let expected_production_total = report
         .summary
         .production_sampled_index_millis
+        .saturating_add(report.summary.production_retrieval_millis)
         .saturating_add(report.summary.production_full_promotion_millis);
     if report.summary.production_total_millis != expected_production_total {
         return Err(format!(
-            "summary.productionTotalMillis={} does not match production sampled+promotion total={expected_production_total}",
+            "summary.productionTotalMillis={} does not match production sampled+retrieval+promotion total={expected_production_total}",
             report.summary.production_total_millis
         ));
     }
@@ -1072,6 +1073,11 @@ fn report_metric_deltas(
             current.summary.production_sampled_index_millis as i128,
         ),
         metric_delta(
+            "productionRetrievalMillis",
+            baseline.summary.production_retrieval_millis as i128,
+            current.summary.production_retrieval_millis as i128,
+        ),
+        metric_delta(
             "productionFullPromotionMillis",
             baseline.summary.production_full_promotion_millis as i128,
             current.summary.production_full_promotion_millis as i128,
@@ -1085,6 +1091,11 @@ fn report_metric_deltas(
             "sampledIndexedFileCount",
             baseline.summary.sampled_indexed_file_count as i128,
             current.summary.sampled_indexed_file_count as i128,
+        ),
+        metric_delta(
+            "sampledCacheHitCount",
+            baseline.summary.sampled_cache_hit_count as i128,
+            current.summary.sampled_cache_hit_count as i128,
         ),
         metric_delta(
             "fullPromotedFileCount",
@@ -1105,6 +1116,131 @@ fn report_metric_deltas(
             "filesPerMinute",
             baseline.summary.files_per_minute as i128,
             current.summary.files_per_minute as i128,
+        ),
+        metric_delta(
+            "filesSkippedFromCache",
+            baseline.summary.files_skipped_from_cache as i128,
+            current.summary.files_skipped_from_cache as i128,
+        ),
+        metric_delta(
+            "filesFailed",
+            baseline.summary.files_failed as i128,
+            current.summary.files_failed as i128,
+        ),
+        metric_delta(
+            "extractionWorkerWallMillis",
+            baseline.summary.extraction_worker_wall_millis as i128,
+            current.summary.extraction_worker_wall_millis as i128,
+        ),
+        metric_delta(
+            "extractionQueueWaitMillis",
+            baseline.summary.extraction_queue_wait_millis as i128,
+            current.summary.extraction_queue_wait_millis as i128,
+        ),
+        metric_delta(
+            "sqliteWriterMillis",
+            baseline.summary.sqlite_writer_millis as i128,
+            current.summary.sqlite_writer_millis as i128,
+        ),
+        metric_delta(
+            "sqliteWriteQueueDepthMax",
+            baseline.summary.sqlite_write_queue_depth_max as i128,
+            current.summary.sqlite_write_queue_depth_max as i128,
+        ),
+        metric_delta(
+            "producerWorkerCount",
+            baseline.summary.producer_worker_count as i128,
+            current.summary.producer_worker_count as i128,
+        ),
+        metric_delta(
+            "resultQueueDepthMax",
+            baseline.summary.result_queue_depth_max as i128,
+            current.summary.result_queue_depth_max as i128,
+        ),
+        metric_delta(
+            "resultQueueWaitMillis",
+            baseline.summary.result_queue_wait_millis as i128,
+            current.summary.result_queue_wait_millis as i128,
+        ),
+        metric_delta(
+            "writerIdleMillis",
+            baseline.summary.writer_idle_millis as i128,
+            current.summary.writer_idle_millis as i128,
+        ),
+        metric_delta(
+            "writerBusyMillis",
+            baseline.summary.writer_busy_millis as i128,
+            current.summary.writer_busy_millis as i128,
+        ),
+        metric_delta(
+            "writerBatchCount",
+            baseline.summary.writer_batch_count as i128,
+            current.summary.writer_batch_count as i128,
+        ),
+        metric_delta(
+            "writerRowsInserted",
+            baseline.summary.writer_rows_inserted as i128,
+            current.summary.writer_rows_inserted as i128,
+        ),
+        metric_delta(
+            "writerRecordsInserted",
+            baseline.summary.writer_records_inserted as i128,
+            current.summary.writer_records_inserted as i128,
+        ),
+        metric_delta(
+            "writerCommitMillis",
+            baseline.summary.writer_commit_millis as i128,
+            current.summary.writer_commit_millis as i128,
+        ),
+        metric_delta(
+            "extractionWorkerIdleMillis",
+            baseline.summary.extraction_worker_idle_millis as i128,
+            current.summary.extraction_worker_idle_millis as i128,
+        ),
+        metric_delta(
+            "extractionWorkerActiveMillis",
+            baseline.summary.extraction_worker_active_millis as i128,
+            current.summary.extraction_worker_active_millis as i128,
+        ),
+        metric_delta(
+            "endToEndIndexWallMillis",
+            baseline.summary.end_to_end_index_wall_millis as i128,
+            current.summary.end_to_end_index_wall_millis as i128,
+        ),
+        metric_delta(
+            "freshFingerprintMillisP50",
+            baseline.summary.fresh_fingerprint_millis_p50 as i128,
+            current.summary.fresh_fingerprint_millis_p50 as i128,
+        ),
+        metric_delta(
+            "freshFingerprintMillisP95",
+            baseline.summary.fresh_fingerprint_millis_p95 as i128,
+            current.summary.fresh_fingerprint_millis_p95 as i128,
+        ),
+        metric_delta(
+            "freshFingerprintMillisMax",
+            baseline.summary.fresh_fingerprint_millis_max as i128,
+            current.summary.fresh_fingerprint_millis_max as i128,
+        ),
+        metric_delta(
+            "freshFingerprintFfmpegWallMillisP95",
+            baseline.summary.fresh_fingerprint_ffmpeg_wall_millis_p95 as i128,
+            current.summary.fresh_fingerprint_ffmpeg_wall_millis_p95 as i128,
+        ),
+        metric_delta(
+            "freshFingerprintAnalyzerMillisP95",
+            baseline.summary.fresh_fingerprint_analyzer_millis_p95 as i128,
+            current.summary.fresh_fingerprint_analyzer_millis_p95 as i128,
+        ),
+        metric_delta(
+            "cancelledFileCount",
+            baseline.summary.cancelled_file_count as i128,
+            current.summary.cancelled_file_count as i128,
+        ),
+        metric_delta(
+            "resumedFileCount",
+            baseline.summary.resumed_file_count as i128,
+            current.summary.resumed_file_count as i128,
         ),
     ]
 }
@@ -1326,6 +1462,10 @@ mod tests {
         baseline.summary.sampled_fast_worker_count = 1;
         baseline.summary.full_verify_worker_count = 1;
         baseline.summary.files_per_minute = 120;
+        baseline.summary.writer_busy_millis = 30;
+        baseline.summary.writer_records_inserted = 2;
+        baseline.summary.end_to_end_index_wall_millis = 150;
+        baseline.summary.fresh_fingerprint_millis_p95 = 900;
 
         let mut current = baseline.clone();
         current.summary.production_sampled_index_millis = 80;
@@ -1336,6 +1476,10 @@ mod tests {
         current.summary.sampled_fast_worker_count = 2;
         current.summary.full_verify_worker_count = 1;
         current.summary.files_per_minute = 180;
+        current.summary.writer_busy_millis = 20;
+        current.summary.writer_records_inserted = 3;
+        current.summary.end_to_end_index_wall_millis = 110;
+        current.summary.fresh_fingerprint_millis_p95 = 700;
 
         let comparison =
             compare_media_match_v3_reports(&baseline, &current).expect("reports should compare");
@@ -1365,6 +1509,17 @@ mod tests {
                 .iter()
                 .any(|metric| metric["field"] == "filesPerMinute" && metric["delta"] == 60)
         );
+        assert!(
+            metrics.iter().any(|metric| {
+                metric["field"] == "writerRecordsInserted" && metric["delta"] == 1
+            })
+        );
+        assert!(metrics.iter().any(|metric| {
+            metric["field"] == "endToEndIndexWallMillis" && metric["delta"] == -40
+        }));
+        assert!(metrics.iter().any(|metric| {
+            metric["field"] == "freshFingerprintMillisP95" && metric["delta"] == -200
+        }));
     }
 
     #[test]

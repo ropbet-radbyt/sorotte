@@ -731,23 +731,41 @@ where
     let candidates = collect_media_match_candidates(search_roots);
     if current_player_path.is_none() {
         inventory_media_match_candidates(root, search_roots, &candidates, cancel_flag)?;
-        let cache_status = media_match_cache_status(root);
-        progress(MediaMatchToolProgress::new(
-            "Media Matching inventory updated",
-            Some(cache_status.clone()),
-            1.0,
-        ));
-        return Ok(MediaMatchIndexRebuildResult {
-            message: format!(
-                "Media Matching inventoried {} discovered files. No active local media path could be resolved, so fingerprinting is idle until the player or selected playlist item resolves to a local file.",
-                candidates.len()
-            ),
-            cache_status,
-            current_decision: Some("unknown: no resolved current local file".to_owned()),
-            nearest_match: None,
-            last_evidence: None,
-            full_promotion_candidates: Vec::new(),
-        });
+        match media_match_tool_paths_for_settings(root, extraction_settings) {
+            Ok(tools) => {
+                return rebuild_persisted_media_match_candidates_with_progress_and_cancel(
+                    MediaMatchCandidateRebuildRequest {
+                        root,
+                        candidates,
+                        current_player_path,
+                        settings,
+                        tools: &tools,
+                        extraction_settings,
+                        cancel_flag,
+                    },
+                    progress,
+                );
+            }
+            Err(error) => {
+                let cache_status = media_match_cache_status(root);
+                progress(MediaMatchToolProgress::new(
+                    "Media Matching inventory updated",
+                    Some(cache_status.clone()),
+                    1.0,
+                ));
+                return Ok(MediaMatchIndexRebuildResult {
+                    message: format!(
+                        "Media Matching inventoried {} discovered files. No active local media path could be resolved and sampled-fast indexing is waiting for Media Matching tools: {error}",
+                        candidates.len()
+                    ),
+                    cache_status,
+                    current_decision: Some("unknown: no resolved current local file".to_owned()),
+                    nearest_match: None,
+                    last_evidence: None,
+                    full_promotion_candidates: Vec::new(),
+                });
+            }
+        }
     }
     let tools = media_match_tool_paths_for_settings(root, extraction_settings)?;
     rebuild_persisted_media_match_candidates_with_progress_and_cancel(
@@ -853,17 +871,20 @@ where
     for (index, path) in selected.paths.iter().enumerate() {
         let normalized_path = normalize_media_path(path);
         let has_parallel_result = parallel_fresh_results.contains_key(&normalized_path);
-        if request
-            .cancel_flag
-            .is_some_and(|flag| flag.load(Ordering::Relaxed))
-            && !has_parallel_result
-        {
-            return Err("Media Matching index rebuild was canceled.".to_owned());
-        }
         let denominator = total.max(1);
         let progress_fraction = 0.1 + (0.82 * (index as f32 / denominator as f32));
         let path_needs_fingerprint =
             !media_match_cache_has_valid_record(&existing_cache, path, request.extraction_settings);
+        if request
+            .cancel_flag
+            .is_some_and(|flag| flag.load(Ordering::Relaxed))
+            && path_needs_fingerprint
+            && !has_parallel_result
+        {
+            skipped += 1;
+            fresh_work_done += 1;
+            continue;
+        }
         progress(MediaMatchToolProgress::new(
             "Fingerprinting media",
             Some(format!(
@@ -4855,19 +4876,21 @@ mod tests {
     }
 
     #[test]
-    fn full_promotion_candidates_select_current_and_top_sampled_candidate() {
+    fn full_promotion_candidates_select_current_and_top_sampled_candidates() {
         let root = unique_media_match_test_root("full-promotion-top");
         let media_dir = root.join("media");
         std::fs::create_dir_all(&media_dir).expect("media dir should be created");
         let current_path = media_dir.join("episode-current.mkv");
         let top_path = media_dir.join("episode-top.mkv");
+        let second_path = media_dir.join("episode-second.mkv");
         let other_path = media_dir.join("episode-other.mkv");
-        for path in [&current_path, &top_path, &other_path] {
+        for path in [&current_path, &top_path, &second_path, &other_path] {
             std::fs::write(path, b"media").expect("test media placeholder should be written");
         }
         let sampled_settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
         let mut query = fake_media_match_record_for_file(&current_path, sampled_settings.clone());
         let mut top = fake_media_match_record_for_file(&top_path, sampled_settings.clone());
+        let mut second = fake_media_match_record_for_file(&second_path, sampled_settings.clone());
         let mut other = fake_media_match_record_for_file(&other_path, sampled_settings.clone());
         query.audio_anchors = (0..24)
             .map(|index| AudioAnchor {
@@ -4885,6 +4908,16 @@ mod tests {
                 weight: anchor.weight,
             })
             .collect();
+        second.audio_anchors = query
+            .audio_anchors
+            .iter()
+            .take(12)
+            .map(|anchor| AudioAnchor {
+                bucket: anchor.bucket,
+                t_ms: anchor.t_ms + 4_000,
+                weight: anchor.weight,
+            })
+            .collect();
         other.audio_anchors = (0..24)
             .map(|index| AudioAnchor {
                 bucket: 20_000 + index,
@@ -4893,7 +4926,7 @@ mod tests {
             })
             .collect();
         let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
-        for record in [&query, &top, &other] {
+        for record in [&query, &top, &second, &other] {
             save_media_match_v3_record(&connection, record, None)
                 .expect("sampled record should save");
         }
@@ -4902,14 +4935,19 @@ mod tests {
 
         let selected = media_match_full_promotion_candidates_for_current(
             &root,
-            &[current_path.clone(), top_path.clone(), other_path],
+            &[
+                current_path.clone(),
+                top_path.clone(),
+                second_path.clone(),
+                other_path,
+            ],
             current_path.to_str(),
             &settings,
             &sampled_settings,
             MEDIA_MATCH_MAX_FULL_PROMOTIONS_PER_QUERY,
         );
 
-        assert_eq!(selected, vec![current_path, top_path]);
+        assert_eq!(selected, vec![current_path, top_path, second_path]);
         let _ = std::fs::remove_dir_all(&root);
     }
 

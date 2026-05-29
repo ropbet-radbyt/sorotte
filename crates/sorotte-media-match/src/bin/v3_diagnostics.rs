@@ -1016,6 +1016,18 @@ mod tests {
             report.summary.sqlite_cache_fingerprint_report_count, 0,
             "{report_json}"
         );
+        assert!(report.summary.producer_worker_count >= 1, "{report_json}");
+        assert_eq!(report.summary.writer_records_inserted, 2, "{report_json}");
+        assert!(report.summary.writer_rows_inserted > 0, "{report_json}");
+        assert!(
+            report.summary.end_to_end_index_wall_millis > 0,
+            "{report_json}"
+        );
+        assert_eq!(report.summary.slowest_fresh_fingerprints.len(), 2);
+        assert!(
+            report.summary.fresh_fingerprint_millis_p50 > 0,
+            "{report_json}"
+        );
         assert_eq!(report.cases[0].query.source, "fresh");
         assert_eq!(report.cases[0].candidates[0].source, "fresh");
         assert_eq!(report_json["generatedAtUnixMillis"], 123);
