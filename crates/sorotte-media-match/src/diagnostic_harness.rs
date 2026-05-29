@@ -12,6 +12,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
+use crate::extraction::media_source_path_info;
 use crate::{
     InstrumentedMediaFingerprint, MEDIA_MATCH_ANCHOR_VERSION, MatchClassV3, MediaAudioIndexMode,
     MediaDenseAudioProfile, MediaExtractionSettings, MediaMatchAutoplayPolicy, MediaMatchDecision,
@@ -101,6 +102,11 @@ pub struct MediaMatchV3DiagnosticRunOptions {
     pub promote_expected_candidates: bool,
     pub retrieval_benchmark_only: bool,
     pub retrieval_strategy: MediaMatchV3RetrievalStrategy,
+    pub sampled_fast_global_workers: Option<usize>,
+    pub sampled_fast_per_local_source_workers: Option<usize>,
+    pub sampled_fast_per_network_source_workers: Option<usize>,
+    pub sampled_fast_per_removable_source_workers: Option<usize>,
+    pub adaptive_io_concurrency_enabled: bool,
     pub tools: MediaMatchToolPaths,
     pub generated_at_unix_millis: Option<u64>,
 }
@@ -567,6 +573,8 @@ pub struct MediaMatchV3DiagnosticSummaryReport {
     #[serde(default)]
     pub slowest_fresh_fingerprints: Vec<MediaMatchV3SlowFingerprintReport>,
     #[serde(default)]
+    pub source_index_reports: Vec<MediaMatchV3SourceIndexReport>,
+    #[serde(default)]
     pub cancelled_file_count: usize,
     #[serde(default)]
     pub resumed_file_count: usize,
@@ -586,15 +594,46 @@ struct CachedFingerprint {
 #[serde(rename_all = "camelCase")]
 pub struct MediaMatchV3SlowFingerprintReport {
     pub path: String,
+    pub source_path_root: Option<String>,
+    pub source_path_kind: Option<String>,
+    pub source_volume_id: Option<String>,
     pub duration_ms: Option<u32>,
     pub size_bytes: u64,
     pub extraction_total_millis: u128,
     pub queue_wait_millis: u128,
     pub ffmpeg_process_wall_millis: Option<u128>,
+    pub ffmpeg_input_read_bytes: Option<u64>,
+    pub ffmpeg_input_read_ops: Option<u64>,
+    pub ffmpeg_output_pcm_bytes: Option<u64>,
+    pub read_amplification_ratio: Option<f64>,
+    pub ffmpeg_invocation_count: Option<usize>,
+    pub sampled_window_seek_millis: Option<u128>,
+    pub sampled_window_decode_millis: Option<u128>,
     pub analyzer_millis: Option<u128>,
     pub sampled_audio_seconds_decoded: Option<u32>,
     pub sampled_audio_windows_decoded: Option<usize>,
     pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaMatchV3SourceIndexReport {
+    pub source_path_root: String,
+    pub source_path_kind: String,
+    pub worker_limit: usize,
+    pub files_indexed: usize,
+    pub files_failed: usize,
+    pub files_per_minute: u64,
+    pub ffmpeg_wall_millis_p50: u128,
+    pub ffmpeg_wall_millis_p95: u128,
+    pub extraction_millis_p50: u128,
+    pub extraction_millis_p95: u128,
+    pub source_read_bytes: u64,
+    pub source_read_ops: u64,
+    pub output_pcm_bytes: u64,
+    pub read_amplification_ratio: Option<f64>,
+    pub queue_depth_max: usize,
+    pub concurrency_changes: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -609,6 +648,9 @@ struct DiagnosticFreshFingerprintJob {
     normalized_path: String,
     settings_hash: [u8; 32],
     queued_at: Instant,
+    source_key: String,
+    source_kind: String,
+    source_worker_limit: usize,
 }
 
 #[derive(Debug)]
@@ -616,6 +658,9 @@ struct DiagnosticFreshFingerprintOutput {
     normalized_path: String,
     path: PathBuf,
     settings_hash: [u8; 32],
+    source_key: String,
+    source_kind: String,
+    source_worker_limit: usize,
     queue_wait_millis: u128,
     worker_wall_millis: u128,
     result: Result<InstrumentedMediaFingerprint, String>,
@@ -624,15 +669,36 @@ struct DiagnosticFreshFingerprintOutput {
 #[derive(Debug, Clone)]
 struct DiagnosticFreshFingerprintTiming {
     path: String,
+    source_path_root: Option<String>,
+    source_path_kind: Option<String>,
+    source_volume_id: Option<String>,
+    source_worker_limit: usize,
     duration_ms: Option<u32>,
     size_bytes: u64,
     extraction_total_millis: u128,
     queue_wait_millis: u128,
     ffmpeg_process_wall_millis: Option<u128>,
+    ffmpeg_input_read_bytes: Option<u64>,
+    ffmpeg_input_read_ops: Option<u64>,
+    ffmpeg_output_pcm_bytes: Option<u64>,
+    read_amplification_ratio: Option<f64>,
+    ffmpeg_invocation_count: Option<usize>,
+    sampled_window_seek_millis: Option<u128>,
+    sampled_window_decode_millis: Option<u128>,
     analyzer_millis: Option<u128>,
     sampled_audio_seconds_decoded: Option<u32>,
     sampled_audio_windows_decoded: Option<usize>,
     status: String,
+}
+
+struct DiagnosticFreshFingerprintTimingContext<'a> {
+    path: &'a Path,
+    source_key: &'a str,
+    source_kind: &'a str,
+    source_worker_limit: usize,
+    queue_wait_millis: u128,
+    worker_wall_millis: u128,
+    status: &'a str,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -747,6 +813,7 @@ pub fn run_media_match_v3_diagnostic_manifest(
         &options.tools,
         &settings,
         options.refresh_cache,
+        &options,
     )?;
     let mut cache = fingerprint_records.cache;
     let occurrence_cache = fingerprint_records.occurrence_cache;
@@ -1279,17 +1346,130 @@ fn apply_fresh_fingerprint_timing_summary(
         .take(20)
         .map(|timing| MediaMatchV3SlowFingerprintReport {
             path: timing.path,
+            source_path_root: timing.source_path_root,
+            source_path_kind: timing.source_path_kind,
+            source_volume_id: timing.source_volume_id,
             duration_ms: timing.duration_ms,
             size_bytes: timing.size_bytes,
             extraction_total_millis: timing.extraction_total_millis,
             queue_wait_millis: timing.queue_wait_millis,
             ffmpeg_process_wall_millis: timing.ffmpeg_process_wall_millis,
+            ffmpeg_input_read_bytes: timing.ffmpeg_input_read_bytes,
+            ffmpeg_input_read_ops: timing.ffmpeg_input_read_ops,
+            ffmpeg_output_pcm_bytes: timing.ffmpeg_output_pcm_bytes,
+            read_amplification_ratio: timing.read_amplification_ratio,
+            ffmpeg_invocation_count: timing.ffmpeg_invocation_count,
+            sampled_window_seek_millis: timing.sampled_window_seek_millis,
+            sampled_window_decode_millis: timing.sampled_window_decode_millis,
             analyzer_millis: timing.analyzer_millis,
             sampled_audio_seconds_decoded: timing.sampled_audio_seconds_decoded,
             sampled_audio_windows_decoded: timing.sampled_audio_windows_decoded,
             status: timing.status,
         })
         .collect();
+    summary.source_index_reports = source_index_reports_from_timings(timings);
+}
+
+#[derive(Debug, Default)]
+struct SourceIndexTimingAggregate {
+    source_path_kind: String,
+    worker_limit: usize,
+    files_indexed: usize,
+    files_failed: usize,
+    extraction_millis: Vec<u128>,
+    ffmpeg_wall_millis: Vec<u128>,
+    extraction_millis_sum: u128,
+    source_read_bytes: u64,
+    source_read_ops: u64,
+    output_pcm_bytes: u64,
+}
+
+fn source_index_reports_from_timings(
+    timings: &[DiagnosticFreshFingerprintTiming],
+) -> Vec<MediaMatchV3SourceIndexReport> {
+    let mut aggregates = BTreeMap::<String, SourceIndexTimingAggregate>::new();
+    for timing in timings {
+        let source_root = timing
+            .source_path_root
+            .clone()
+            .unwrap_or_else(|| "unknown".to_owned());
+        let source_kind = timing
+            .source_path_kind
+            .clone()
+            .unwrap_or_else(|| "unknown".to_owned());
+        let aggregate =
+            aggregates
+                .entry(source_root)
+                .or_insert_with(|| SourceIndexTimingAggregate {
+                    source_path_kind: source_kind.clone(),
+                    worker_limit: timing.source_worker_limit.max(1),
+                    ..SourceIndexTimingAggregate::default()
+                });
+        aggregate.source_path_kind = source_kind;
+        aggregate.worker_limit = aggregate
+            .worker_limit
+            .max(timing.source_worker_limit.max(1));
+        if timing.status == "complete" {
+            aggregate.files_indexed += 1;
+        } else {
+            aggregate.files_failed += 1;
+        }
+        aggregate
+            .extraction_millis
+            .push(timing.extraction_total_millis);
+        aggregate.extraction_millis_sum = aggregate
+            .extraction_millis_sum
+            .saturating_add(timing.extraction_total_millis);
+        if let Some(ffmpeg_millis) = timing.ffmpeg_process_wall_millis {
+            aggregate.ffmpeg_wall_millis.push(ffmpeg_millis);
+        }
+        aggregate.source_read_bytes = aggregate
+            .source_read_bytes
+            .saturating_add(timing.ffmpeg_input_read_bytes.unwrap_or_default());
+        aggregate.source_read_ops = aggregate
+            .source_read_ops
+            .saturating_add(timing.ffmpeg_input_read_ops.unwrap_or_default());
+        aggregate.output_pcm_bytes = aggregate
+            .output_pcm_bytes
+            .saturating_add(timing.ffmpeg_output_pcm_bytes.unwrap_or_default());
+    }
+
+    aggregates
+        .into_iter()
+        .map(|(source_path_root, mut aggregate)| {
+            aggregate.extraction_millis.sort_unstable();
+            aggregate.ffmpeg_wall_millis.sort_unstable();
+            let effective_millis = aggregate
+                .extraction_millis_sum
+                .checked_div(aggregate.worker_limit.max(1) as u128)
+                .unwrap_or_default()
+                .max(1);
+            let read_amplification_ratio =
+                if aggregate.output_pcm_bytes > 0 && aggregate.source_read_bytes > 0 {
+                    Some(aggregate.source_read_bytes as f64 / aggregate.output_pcm_bytes as f64)
+                } else {
+                    None
+                };
+            MediaMatchV3SourceIndexReport {
+                source_path_root,
+                source_path_kind: aggregate.source_path_kind,
+                worker_limit: aggregate.worker_limit,
+                files_indexed: aggregate.files_indexed,
+                files_failed: aggregate.files_failed,
+                files_per_minute: files_per_minute(aggregate.files_indexed, effective_millis),
+                ffmpeg_wall_millis_p50: percentile_u128(&aggregate.ffmpeg_wall_millis, 50),
+                ffmpeg_wall_millis_p95: percentile_u128(&aggregate.ffmpeg_wall_millis, 95),
+                extraction_millis_p50: percentile_u128(&aggregate.extraction_millis, 50),
+                extraction_millis_p95: percentile_u128(&aggregate.extraction_millis, 95),
+                source_read_bytes: aggregate.source_read_bytes,
+                source_read_ops: aggregate.source_read_ops,
+                output_pcm_bytes: aggregate.output_pcm_bytes,
+                read_amplification_ratio,
+                queue_depth_max: 0,
+                concurrency_changes: Vec::new(),
+            }
+        })
+        .collect()
 }
 
 fn percentile_u128(sorted_values: &[u128], percentile: usize) -> u128 {
@@ -1815,6 +1995,7 @@ fn fingerprint_diagnostic_manifest_records(
     tools: &MediaMatchToolPaths,
     settings: &MediaExtractionSettings,
     refresh_cache: bool,
+    options: &MediaMatchV3DiagnosticRunOptions,
 ) -> Result<DiagnosticFingerprintRecords, String> {
     let occurrences = diagnostic_fingerprint_occurrences(resolved);
     let settings_hash = media_extraction_settings_hash(settings);
@@ -1869,11 +2050,16 @@ fn fingerprint_diagnostic_manifest_records(
         }
 
         if !pending_occurrences.contains_key(&cache_key) {
+            let source_info = media_source_path_info(&occurrence.path);
+            let source_worker_limit = source_worker_limit(&source_info.kind, settings, options);
             fresh_jobs.push(DiagnosticFreshFingerprintJob {
                 path: occurrence.path.clone(),
                 normalized_path: normalized_path.clone(),
                 settings_hash,
                 queued_at: Instant::now(),
+                source_key: source_info.root,
+                source_kind: source_info.kind,
+                source_worker_limit,
             });
         }
         pending_occurrences
@@ -1883,7 +2069,8 @@ fn fingerprint_diagnostic_manifest_records(
     }
 
     if !fresh_jobs.is_empty() {
-        let fresh = fingerprint_fresh_diagnostic_jobs(connection, tools, settings, fresh_jobs)?;
+        let fresh =
+            fingerprint_fresh_diagnostic_jobs(connection, tools, settings, fresh_jobs, options)?;
         stats.worker_count = fresh.worker_count;
         stats.extraction_queue_wait_millis = fresh.extraction_queue_wait_millis;
         stats.extraction_worker_wall_millis = fresh.extraction_worker_wall_millis;
@@ -2011,11 +2198,66 @@ struct DiagnosticFreshFingerprintBatch {
     files_failed: usize,
 }
 
+struct DiagnosticJobQueue {
+    jobs: VecDeque<DiagnosticFreshFingerprintJob>,
+    active_by_source: BTreeMap<String, usize>,
+}
+
+enum DiagnosticJobQueuePop {
+    Job(DiagnosticFreshFingerprintJob),
+    Blocked,
+    Empty,
+}
+
+impl DiagnosticJobQueue {
+    fn new(jobs: Vec<DiagnosticFreshFingerprintJob>) -> Self {
+        Self {
+            jobs: VecDeque::from(jobs),
+            active_by_source: BTreeMap::new(),
+        }
+    }
+
+    fn pop_available(&mut self) -> DiagnosticJobQueuePop {
+        if self.jobs.is_empty() {
+            return DiagnosticJobQueuePop::Empty;
+        }
+        for index in 0..self.jobs.len() {
+            let Some(job) = self.jobs.get(index) else {
+                continue;
+            };
+            let active = self
+                .active_by_source
+                .get(&job.source_key)
+                .copied()
+                .unwrap_or_default();
+            if active < job.source_worker_limit.max(1) {
+                let job = self.jobs.remove(index).expect("job index should exist");
+                *self
+                    .active_by_source
+                    .entry(job.source_key.clone())
+                    .or_default() += 1;
+                return DiagnosticJobQueuePop::Job(job);
+            }
+        }
+        DiagnosticJobQueuePop::Blocked
+    }
+
+    fn finish_source(&mut self, source_key: &str) {
+        if let Some(active) = self.active_by_source.get_mut(source_key) {
+            *active = active.saturating_sub(1);
+            if *active == 0 {
+                self.active_by_source.remove(source_key);
+            }
+        }
+    }
+}
+
 fn fingerprint_fresh_diagnostic_jobs(
     connection: &Connection,
     tools: &MediaMatchToolPaths,
     settings: &MediaExtractionSettings,
     jobs: Vec<DiagnosticFreshFingerprintJob>,
+    options: &MediaMatchV3DiagnosticRunOptions,
 ) -> Result<DiagnosticFreshFingerprintBatch, String> {
     let end_to_end_started_at = Instant::now();
     if jobs.is_empty() {
@@ -2044,7 +2286,10 @@ fn fingerprint_fresh_diagnostic_jobs(
             files_failed: 0,
         });
     }
-    let worker_count = diagnostic_extraction_worker_count(settings).min(jobs.len());
+    let worker_count = options
+        .sampled_fast_global_workers
+        .unwrap_or_else(|| diagnostic_extraction_worker_count(settings))
+        .clamp(1, jobs.len());
     let mut cache = BTreeMap::new();
     let mut extraction_queue_wait_millis = 0u128;
     let mut extraction_worker_wall_millis = 0u128;
@@ -2066,7 +2311,7 @@ fn fingerprint_fresh_diagnostic_jobs(
 
     thread::scope(|scope| {
         let queue_capacity = worker_count.saturating_mul(2).max(1);
-        let jobs = Arc::new(Mutex::new(VecDeque::from(jobs)));
+        let jobs = Arc::new(Mutex::new(DiagnosticJobQueue::new(jobs)));
         let (tx, rx) = mpsc::sync_channel(queue_capacity);
         for _ in 0..worker_count {
             let jobs = Arc::clone(&jobs);
@@ -2080,25 +2325,40 @@ fn fingerprint_fresh_diagnostic_jobs(
             scope.spawn(move || {
                 loop {
                     let dequeue_started_at = Instant::now();
-                    let job = jobs.lock().ok().and_then(|mut jobs| jobs.pop_front());
+                    let queue_pop = jobs
+                        .lock()
+                        .map(|mut jobs| jobs.pop_available())
+                        .unwrap_or(DiagnosticJobQueuePop::Empty);
                     extraction_worker_idle_millis.fetch_add(
                         saturating_u128_to_u64(dequeue_started_at.elapsed().as_millis()),
                         Ordering::Relaxed,
                     );
-                    let Some(job) = job else {
-                        break;
+                    let job = match queue_pop {
+                        DiagnosticJobQueuePop::Job(job) => job,
+                        DiagnosticJobQueuePop::Blocked => {
+                            thread::sleep(std::time::Duration::from_millis(10));
+                            continue;
+                        }
+                        DiagnosticJobQueuePop::Empty => break,
                     };
                     let queue_wait_millis = job.queued_at.elapsed().as_millis();
                     let worker_started_at = Instant::now();
+                    let source_key = job.source_key.clone();
                     let result =
                         fingerprint_media_file_with_report(&job.path, &tools, &settings, None)
                             .map_err(|error| {
                                 format!("failed fingerprinting '{}': {error}", job.path.display())
                             });
+                    if let Ok(mut jobs) = jobs.lock() {
+                        jobs.finish_source(&source_key);
+                    }
                     let output = DiagnosticFreshFingerprintOutput {
                         normalized_path: job.normalized_path,
                         path: job.path,
                         settings_hash: job.settings_hash,
+                        source_key: job.source_key,
+                        source_kind: job.source_kind,
+                        source_worker_limit: job.source_worker_limit,
                         queue_wait_millis,
                         worker_wall_millis: worker_started_at.elapsed().as_millis(),
                         result,
@@ -2157,12 +2417,17 @@ fn fingerprint_fresh_diagnostic_jobs(
                             writer_rows_inserted =
                                 writer_rows_inserted.saturating_add(rows_inserted);
                             fresh_timings.push(fresh_timing_for_output(
-                                &output.path,
+                                DiagnosticFreshFingerprintTimingContext {
+                                    path: &output.path,
+                                    source_key: &output.source_key,
+                                    source_kind: &output.source_kind,
+                                    source_worker_limit: output.source_worker_limit,
+                                    queue_wait_millis: output.queue_wait_millis,
+                                    worker_wall_millis: output.worker_wall_millis,
+                                    status: "complete",
+                                },
                                 &fingerprint,
                                 &diagnostics,
-                                output.queue_wait_millis,
-                                output.worker_wall_millis,
-                                "complete",
                             ));
                             cache.insert(
                                 (output.normalized_path, output.settings_hash),
@@ -2179,6 +2444,9 @@ fn fingerprint_fresh_diagnostic_jobs(
                             files_failed += 1;
                             fresh_timings.push(failed_fresh_timing_for_output(
                                 &output.path,
+                                &output.source_key,
+                                &output.source_kind,
+                                output.source_worker_limit,
                                 output.queue_wait_millis,
                                 output.worker_wall_millis,
                                 format!("save-error: {error}"),
@@ -2191,6 +2459,9 @@ fn fingerprint_fresh_diagnostic_jobs(
                     files_failed += 1;
                     fresh_timings.push(failed_fresh_timing_for_output(
                         &output.path,
+                        &output.source_key,
+                        &output.source_kind,
+                        output.source_worker_limit,
                         output.queue_wait_millis,
                         output.worker_wall_millis,
                         "extract-error".to_owned(),
@@ -2234,38 +2505,59 @@ fn fingerprint_fresh_diagnostic_jobs(
 }
 
 fn fresh_timing_for_output(
-    path: &Path,
+    context: DiagnosticFreshFingerprintTimingContext<'_>,
     fingerprint: &InstrumentedMediaFingerprint,
     diagnostics: &MediaMatchV3DiagnosticSummary,
-    queue_wait_millis: u128,
-    worker_wall_millis: u128,
-    status: &str,
 ) -> DiagnosticFreshFingerprintTiming {
     DiagnosticFreshFingerprintTiming {
         path: fingerprint.record.identity.normalized_path.clone(),
+        source_path_root: diagnostics
+            .source_path_root
+            .clone()
+            .or_else(|| Some(context.source_key.to_owned())),
+        source_path_kind: diagnostics
+            .source_path_kind
+            .clone()
+            .or_else(|| Some(context.source_kind.to_owned())),
+        source_volume_id: diagnostics.source_volume_id.clone(),
+        source_worker_limit: context.source_worker_limit,
         duration_ms: diagnostics.duration_ms,
         size_bytes: fingerprint.record.identity.size_bytes,
         extraction_total_millis: diagnostics
             .extraction_total_millis
-            .unwrap_or(worker_wall_millis),
-        queue_wait_millis,
+            .unwrap_or(context.worker_wall_millis),
+        queue_wait_millis: context.queue_wait_millis,
         ffmpeg_process_wall_millis: diagnostics.ffmpeg_process_wall_millis,
+        ffmpeg_input_read_bytes: diagnostics.ffmpeg_input_read_bytes,
+        ffmpeg_input_read_ops: diagnostics.ffmpeg_input_read_ops,
+        ffmpeg_output_pcm_bytes: diagnostics.ffmpeg_output_pcm_bytes,
+        read_amplification_ratio: diagnostics.read_amplification_ratio,
+        ffmpeg_invocation_count: diagnostics.ffmpeg_invocation_count,
+        sampled_window_seek_millis: diagnostics.sampled_window_seek_millis,
+        sampled_window_decode_millis: diagnostics.sampled_window_decode_millis,
         analyzer_millis: diagnostics.analyzer_millis,
         sampled_audio_seconds_decoded: diagnostics.sampled_audio_seconds_decoded,
         sampled_audio_windows_decoded: diagnostics.sampled_audio_windows_decoded,
-        status: status.to_owned(),
+        status: context.status.to_owned(),
     }
-    .with_fallback_path(path)
+    .with_fallback_path(context.path)
 }
 
 fn failed_fresh_timing_for_output(
     path: &Path,
+    source_key: &str,
+    source_kind: &str,
+    source_worker_limit: usize,
     queue_wait_millis: u128,
     worker_wall_millis: u128,
     status: String,
 ) -> DiagnosticFreshFingerprintTiming {
     DiagnosticFreshFingerprintTiming {
         path: normalize_media_path(path),
+        source_path_root: Some(source_key.to_owned()),
+        source_path_kind: Some(source_kind.to_owned()),
+        source_volume_id: Some(source_key.to_owned()),
+        source_worker_limit,
         duration_ms: None,
         size_bytes: fs::metadata(path)
             .map(|metadata| metadata.len())
@@ -2273,6 +2565,13 @@ fn failed_fresh_timing_for_output(
         extraction_total_millis: worker_wall_millis,
         queue_wait_millis,
         ffmpeg_process_wall_millis: None,
+        ffmpeg_input_read_bytes: None,
+        ffmpeg_input_read_ops: None,
+        ffmpeg_output_pcm_bytes: None,
+        read_amplification_ratio: None,
+        ffmpeg_invocation_count: None,
+        sampled_window_seek_millis: None,
+        sampled_window_decode_millis: None,
         analyzer_millis: None,
         sampled_audio_seconds_decoded: None,
         sampled_audio_windows_decoded: None,
@@ -2315,6 +2614,31 @@ fn diagnostic_extraction_worker_count(settings: &MediaExtractionSettings) -> usi
     } else {
         cores.clamp(1, 4)
     }
+}
+
+fn source_worker_limit(
+    source_kind: &str,
+    settings: &MediaExtractionSettings,
+    options: &MediaMatchV3DiagnosticRunOptions,
+) -> usize {
+    if !settings.audio_index_mode.is_sampled() {
+        return diagnostic_extraction_worker_count(settings).max(1);
+    }
+    match source_kind {
+        "local" => options
+            .sampled_fast_per_local_source_workers
+            .or(options.sampled_fast_global_workers)
+            .unwrap_or_else(|| diagnostic_extraction_worker_count(settings)),
+        "network" => options.sampled_fast_per_network_source_workers.unwrap_or(2),
+        "removable" => options
+            .sampled_fast_per_removable_source_workers
+            .unwrap_or(1),
+        _ => options
+            .sampled_fast_per_network_source_workers
+            .or(options.sampled_fast_per_removable_source_workers)
+            .unwrap_or(2),
+    }
+    .max(1)
 }
 
 fn fingerprint_cached(
@@ -3392,6 +3716,11 @@ mod tests {
                 promote_expected_candidates: false,
                 retrieval_benchmark_only: false,
                 retrieval_strategy: MediaMatchV3RetrievalStrategy::Auto,
+                sampled_fast_global_workers: None,
+                sampled_fast_per_local_source_workers: None,
+                sampled_fast_per_network_source_workers: None,
+                sampled_fast_per_removable_source_workers: None,
+                adaptive_io_concurrency_enabled: false,
                 tools: MediaMatchToolPaths {
                     ffmpeg: PathBuf::from("ffmpeg"),
                     ffprobe: PathBuf::from("ffprobe"),
@@ -3433,6 +3762,11 @@ mod tests {
                 promote_expected_candidates: false,
                 retrieval_benchmark_only: false,
                 retrieval_strategy: MediaMatchV3RetrievalStrategy::Auto,
+                sampled_fast_global_workers: None,
+                sampled_fast_per_local_source_workers: None,
+                sampled_fast_per_network_source_workers: None,
+                sampled_fast_per_removable_source_workers: None,
+                adaptive_io_concurrency_enabled: false,
                 tools: MediaMatchToolPaths {
                     ffmpeg: PathBuf::from("ffmpeg"),
                     ffprobe: PathBuf::from("ffprobe"),
@@ -3532,6 +3866,11 @@ mod tests {
                 promote_expected_candidates: false,
                 retrieval_benchmark_only: false,
                 retrieval_strategy: MediaMatchV3RetrievalStrategy::Auto,
+                sampled_fast_global_workers: None,
+                sampled_fast_per_local_source_workers: None,
+                sampled_fast_per_network_source_workers: None,
+                sampled_fast_per_removable_source_workers: None,
+                adaptive_io_concurrency_enabled: false,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(123),
             },
@@ -3598,6 +3937,11 @@ mod tests {
                 promote_expected_candidates: false,
                 retrieval_benchmark_only: false,
                 retrieval_strategy: MediaMatchV3RetrievalStrategy::Auto,
+                sampled_fast_global_workers: None,
+                sampled_fast_per_local_source_workers: None,
+                sampled_fast_per_network_source_workers: None,
+                sampled_fast_per_removable_source_workers: None,
+                adaptive_io_concurrency_enabled: false,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
             },
@@ -3655,6 +3999,11 @@ mod tests {
                 promote_expected_candidates: false,
                 retrieval_benchmark_only: false,
                 retrieval_strategy: MediaMatchV3RetrievalStrategy::Auto,
+                sampled_fast_global_workers: None,
+                sampled_fast_per_local_source_workers: None,
+                sampled_fast_per_network_source_workers: None,
+                sampled_fast_per_removable_source_workers: None,
+                adaptive_io_concurrency_enabled: false,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
             },
@@ -3703,6 +4052,11 @@ mod tests {
                 promote_expected_candidates: false,
                 retrieval_benchmark_only: false,
                 retrieval_strategy: MediaMatchV3RetrievalStrategy::Auto,
+                sampled_fast_global_workers: None,
+                sampled_fast_per_local_source_workers: None,
+                sampled_fast_per_network_source_workers: None,
+                sampled_fast_per_removable_source_workers: None,
+                adaptive_io_concurrency_enabled: false,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
             },
@@ -3740,6 +4094,11 @@ mod tests {
                 promote_expected_candidates: false,
                 retrieval_benchmark_only: false,
                 retrieval_strategy: MediaMatchV3RetrievalStrategy::Auto,
+                sampled_fast_global_workers: None,
+                sampled_fast_per_local_source_workers: None,
+                sampled_fast_per_network_source_workers: None,
+                sampled_fast_per_removable_source_workers: None,
+                adaptive_io_concurrency_enabled: false,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
             },

@@ -990,6 +990,9 @@ fn v3_diagnostics_serializes_stable_stream_metric_names() {
         record,
         report: MediaFingerprintExtractionReport {
             audio_stream: MediaAudioStreamMetrics {
+                source_path_root: Some("E:\\".to_owned()),
+                source_path_kind: Some("local".to_owned()),
+                source_volume_id: Some("E:\\".to_owned()),
                 streamed_bytes: 10_000,
                 streamed_samples: 5_000,
                 peak_frames: 12,
@@ -1023,6 +1026,14 @@ fn v3_diagnostics_serializes_stable_stream_metric_names() {
                 landmarks_accepted_into_reservoir: 300,
                 landmarks_rejected_by_reservoir: 60,
                 ffmpeg_process_wall_millis: 43,
+                ffmpeg_input_read_bytes: Some(1_024_000),
+                ffmpeg_input_read_ops: Some(64),
+                ffmpeg_output_pcm_bytes: 240_000,
+                ffmpeg_invocation_count: 1,
+                sampled_window_seek_millis: 12,
+                sampled_window_decode_millis: 31,
+                ffmpeg_open_probe_millis: 2,
+                ffmpeg_exit_millis: 43,
                 pcm_decode_drain_millis: 41,
                 ffmpeg_decode_stream_millis: 41,
                 sampled_audio_seconds_decoded: 0,
@@ -1050,7 +1061,22 @@ fn v3_diagnostics_serializes_stable_stream_metric_names() {
     assert_eq!(value["maxRawLandmarksSeen"], 1_100);
     assert_eq!(value["maxRawLandmarksAfterCompaction"], 512);
     assert_eq!(value["rawLandmarkCompactions"], 2);
+    assert_eq!(value["sourcePathRoot"], "E:\\");
+    assert_eq!(value["sourcePathKind"], "local");
+    assert_eq!(value["sourceVolumeId"], "E:\\");
     assert_eq!(value["ffmpegProcessWallMillis"], 43);
+    assert_eq!(value["ffmpegInputReadBytes"], 1_024_000);
+    assert_eq!(value["ffmpegInputReadOps"], 64);
+    assert_eq!(value["ffmpegOutputPcmBytes"], 240_000);
+    assert!(
+        (value["readAmplificationRatio"].as_f64().unwrap() - (1_024_000.0 / 240_000.0)).abs()
+            < 0.001
+    );
+    assert_eq!(value["ffmpegInvocationCount"], 1);
+    assert_eq!(value["sampledWindowSeekMillis"], 12);
+    assert_eq!(value["sampledWindowDecodeMillis"], 31);
+    assert_eq!(value["ffmpegOpenProbeMillis"], 2);
+    assert_eq!(value["ffmpegExitMillis"], 43);
     assert_eq!(value["pcmDecodeDrainMillis"], 41);
     assert_eq!(value["analyzerMillis"], 31);
     assert_eq!(value["peakSelectionMillis"], 9);

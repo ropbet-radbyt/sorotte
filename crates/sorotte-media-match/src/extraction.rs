@@ -10,6 +10,9 @@ use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 #[cfg(windows)]
+use std::os::windows::{ffi::OsStrExt, io::AsRawHandle};
+
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
 #[cfg(windows)]
@@ -62,6 +65,90 @@ pub struct MediaToolInvocationCounts {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MediaSourcePathInfo {
+    pub root: String,
+    pub kind: String,
+    pub volume_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MediaToolProcessIoMetrics {
+    pub read_bytes: Option<u64>,
+    pub read_ops: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MediaToolStreamingOutput {
+    pub stdout_bytes: u64,
+    pub process_io: MediaToolProcessIoMetrics,
+    pub exit_millis: u128,
+}
+
+pub fn media_source_path_info(path: impl AsRef<Path>) -> MediaSourcePathInfo {
+    let root = media_source_root(path.as_ref());
+    let kind = media_source_path_kind(&root);
+    MediaSourcePathInfo {
+        volume_id: (!root.is_empty()).then(|| root.clone()),
+        root,
+        kind,
+    }
+}
+
+fn media_source_root(path: &Path) -> String {
+    let text = path.to_string_lossy().replace('/', "\\");
+    if let Some(stripped) = text.strip_prefix("\\\\") {
+        let mut parts = stripped.split('\\').filter(|part| !part.is_empty());
+        if let (Some(server), Some(share)) = (parts.next(), parts.next()) {
+            return format!("\\\\{server}\\{share}\\").to_lowercase();
+        }
+    }
+    let bytes = text.as_bytes();
+    if bytes.len() >= 2 && bytes[1] == b':' {
+        return format!("{}:\\", text[..1].to_ascii_uppercase());
+    }
+    path.components()
+        .next()
+        .map(|component| component.as_os_str().to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
+#[cfg(windows)]
+fn media_source_path_kind(root: &str) -> String {
+    const DRIVE_REMOVABLE: u32 = 2;
+    const DRIVE_FIXED: u32 = 3;
+    const DRIVE_REMOTE: u32 = 4;
+    let mut normalized = root.replace('/', "\\");
+    if normalized.len() == 2 && normalized.ends_with(':') {
+        normalized.push('\\');
+    }
+    if normalized.is_empty() {
+        return "unknown".to_owned();
+    }
+    let wide = std::ffi::OsStr::new(&normalized)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    // SAFETY: `wide` is a null-terminated UTF-16 buffer that lives for this call.
+    let drive_type = unsafe { GetDriveTypeW(wide.as_ptr()) };
+    match drive_type {
+        DRIVE_FIXED => "local",
+        DRIVE_REMOTE => "network",
+        DRIVE_REMOVABLE => "removable",
+        _ => "unknown",
+    }
+    .to_owned()
+}
+
+#[cfg(not(windows))]
+fn media_source_path_kind(root: &str) -> String {
+    if root.is_empty() {
+        "unknown".to_owned()
+    } else {
+        "local".to_owned()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MediaExtractionTimings {
     pub ffprobe_millis: u128,
     pub audio_millis: u128,
@@ -71,6 +158,9 @@ pub struct MediaExtractionTimings {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MediaAudioStreamMetrics {
+    pub source_path_root: Option<String>,
+    pub source_path_kind: Option<String>,
+    pub source_volume_id: Option<String>,
     pub streamed_bytes: usize,
     pub streamed_samples: usize,
     pub peak_frames: usize,
@@ -104,6 +194,14 @@ pub struct MediaAudioStreamMetrics {
     pub landmarks_accepted_into_reservoir: usize,
     pub landmarks_rejected_by_reservoir: usize,
     pub ffmpeg_process_wall_millis: u128,
+    pub ffmpeg_input_read_bytes: Option<u64>,
+    pub ffmpeg_input_read_ops: Option<u64>,
+    pub ffmpeg_output_pcm_bytes: u64,
+    pub ffmpeg_invocation_count: usize,
+    pub sampled_window_seek_millis: u128,
+    pub sampled_window_decode_millis: u128,
+    pub ffmpeg_open_probe_millis: u128,
+    pub ffmpeg_exit_millis: u128,
     pub pcm_decode_drain_millis: u128,
     pub ffmpeg_decode_stream_millis: u128,
     pub sampled_audio_seconds_decoded: u32,
@@ -517,16 +615,28 @@ fn extract_audio_constellation_v3_with_config_and_limit(
                 tool: "ffmpeg",
                 reason: "audio analyzer thread panicked".to_owned(),
             })?;
-    if let Err(error) = streaming_result {
-        let _ = analyzer_result;
-        return Err(error);
-    }
+    let streaming_output = match streaming_result {
+        Ok(output) => output,
+        Err(error) => {
+            let _ = analyzer_result;
+            return Err(error);
+        }
+    };
     let (landmarks, mut metrics) = analyzer_result?;
+    let source_info = media_source_path_info(media_path.as_ref());
+    metrics.source_path_root = Some(source_info.root);
+    metrics.source_path_kind = Some(source_info.kind);
+    metrics.source_volume_id = source_info.volume_id;
     metrics.pcm_drain_thread_millis = decode_stream_millis;
     metrics.channel_backpressure_millis =
         u128::from(channel_backpressure_nanos.load(Ordering::Relaxed)) / 1_000_000;
     metrics.max_queued_pcm_bytes = max_queued_pcm_bytes.load(Ordering::Relaxed);
     metrics.ffmpeg_process_wall_millis = decode_stream_millis;
+    metrics.ffmpeg_input_read_bytes = streaming_output.process_io.read_bytes;
+    metrics.ffmpeg_input_read_ops = streaming_output.process_io.read_ops;
+    metrics.ffmpeg_output_pcm_bytes = streaming_output.stdout_bytes;
+    metrics.ffmpeg_invocation_count = 1;
+    metrics.ffmpeg_exit_millis = streaming_output.exit_millis;
     metrics.pcm_decode_drain_millis = decode_stream_millis;
     metrics.ffmpeg_decode_stream_millis = decode_stream_millis;
     metrics.full_audio_seconds_decoded = duration_seconds
@@ -540,6 +650,14 @@ fn extract_audio_constellation_v3_with_config_and_limit(
         });
     }
     Ok((landmarks, metrics))
+}
+
+fn sum_optional_u64(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.saturating_add(right)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    }
 }
 
 fn update_atomic_max_usize(target: &AtomicUsize, value: usize) {
@@ -573,6 +691,10 @@ pub(crate) fn extract_audio_constellation_v3_sampled_index_with_metrics(
 
     let mut all_landmarks = Vec::new();
     let mut combined_metrics = MediaAudioStreamMetrics::default();
+    let source_info = media_source_path_info(media_path.as_ref());
+    combined_metrics.source_path_root = Some(source_info.root);
+    combined_metrics.source_path_kind = Some(source_info.kind);
+    combined_metrics.source_volume_id = source_info.volume_id;
     let mut process_wall_millis = 0u128;
     let mut body_regions = BTreeSet::new();
     let mut unique_hashes = BTreeSet::new();
@@ -582,7 +704,7 @@ pub(crate) fn extract_audio_constellation_v3_sampled_index_with_metrics(
             config.sample_rate,
         )));
         let stream_reader = Arc::clone(&stream);
-        run_tool_streaming_stdout(
+        let streaming_output = run_tool_streaming_stdout(
             "ffmpeg",
             ffmpeg.as_ref(),
             [
@@ -620,6 +742,27 @@ pub(crate) fn extract_audio_constellation_v3_sampled_index_with_metrics(
         )?;
         let window_wall = started_at.elapsed().as_millis();
         process_wall_millis += window_wall;
+        combined_metrics.ffmpeg_invocation_count += 1;
+        combined_metrics.ffmpeg_output_pcm_bytes = combined_metrics
+            .ffmpeg_output_pcm_bytes
+            .saturating_add(streaming_output.stdout_bytes);
+        combined_metrics.ffmpeg_input_read_bytes = sum_optional_u64(
+            combined_metrics.ffmpeg_input_read_bytes,
+            streaming_output.process_io.read_bytes,
+        );
+        combined_metrics.ffmpeg_input_read_ops = sum_optional_u64(
+            combined_metrics.ffmpeg_input_read_ops,
+            streaming_output.process_io.read_ops,
+        );
+        combined_metrics.sampled_window_seek_millis = combined_metrics
+            .sampled_window_seek_millis
+            .saturating_add(0);
+        combined_metrics.sampled_window_decode_millis = combined_metrics
+            .sampled_window_decode_millis
+            .saturating_add(window_wall);
+        combined_metrics.ffmpeg_exit_millis = combined_metrics
+            .ffmpeg_exit_millis
+            .saturating_add(streaming_output.exit_millis);
         let stream =
             Arc::try_unwrap(stream).map_err(|_| MediaFingerprintError::InvalidToolOutput {
                 tool: "ffmpeg",
@@ -761,6 +904,15 @@ fn merge_audio_stream_metrics(
     target: &mut MediaAudioStreamMetrics,
     source: &MediaAudioStreamMetrics,
 ) {
+    if target.source_path_root.is_none() {
+        target.source_path_root = source.source_path_root.clone();
+    }
+    if target.source_path_kind.is_none() {
+        target.source_path_kind = source.source_path_kind.clone();
+    }
+    if target.source_volume_id.is_none() {
+        target.source_volume_id = source.source_volume_id.clone();
+    }
     target.streamed_bytes = target.streamed_bytes.saturating_add(source.streamed_bytes);
     target.streamed_samples = target
         .streamed_samples
@@ -844,6 +996,30 @@ fn merge_audio_stream_metrics(
     target.landmarks_rejected_by_reservoir = target
         .landmarks_rejected_by_reservoir
         .saturating_add(source.landmarks_rejected_by_reservoir);
+    target.ffmpeg_input_read_bytes = sum_optional_u64(
+        target.ffmpeg_input_read_bytes,
+        source.ffmpeg_input_read_bytes,
+    );
+    target.ffmpeg_input_read_ops =
+        sum_optional_u64(target.ffmpeg_input_read_ops, source.ffmpeg_input_read_ops);
+    target.ffmpeg_output_pcm_bytes = target
+        .ffmpeg_output_pcm_bytes
+        .saturating_add(source.ffmpeg_output_pcm_bytes);
+    target.ffmpeg_invocation_count = target
+        .ffmpeg_invocation_count
+        .saturating_add(source.ffmpeg_invocation_count);
+    target.sampled_window_seek_millis = target
+        .sampled_window_seek_millis
+        .saturating_add(source.sampled_window_seek_millis);
+    target.sampled_window_decode_millis = target
+        .sampled_window_decode_millis
+        .saturating_add(source.sampled_window_decode_millis);
+    target.ffmpeg_open_probe_millis = target
+        .ffmpeg_open_probe_millis
+        .saturating_add(source.ffmpeg_open_probe_millis);
+    target.ffmpeg_exit_millis = target
+        .ffmpeg_exit_millis
+        .saturating_add(source.ffmpeg_exit_millis);
     target.sampled_audio_windows_decoded = target
         .sampled_audio_windows_decoded
         .saturating_add(source.sampled_audio_windows_decoded);
@@ -1102,7 +1278,7 @@ pub(crate) fn run_tool_streaming_stdout<I, F>(
     cancel_flag: Option<&AtomicBool>,
     timeout: Duration,
     mut on_stdout_chunk: F,
-) -> Result<(), MediaFingerprintError>
+) -> Result<MediaToolStreamingOutput, MediaFingerprintError>
 where
     I: IntoIterator<Item = OsString>,
     F: FnMut(&[u8]) -> Result<(), MediaFingerprintError> + Send + 'static,
@@ -1136,6 +1312,8 @@ where
             stderr: "failed capturing stderr".to_owned(),
         })?;
     let (stdout_error_sender, stdout_error_receiver) = mpsc::channel::<MediaFingerprintError>();
+    let stdout_bytes = Arc::new(AtomicU64::new(0));
+    let stdout_byte_counter = Arc::clone(&stdout_bytes);
     let stdout_reader = thread::spawn(move || {
         let mut buffer = [0u8; 64 * 1024];
         loop {
@@ -1154,6 +1332,7 @@ where
             if count == 0 {
                 return Ok(());
             }
+            stdout_byte_counter.fetch_add(count as u64, Ordering::Relaxed);
             if let Err(error) = on_stdout_chunk(&buffer[..count]) {
                 let _ = stdout_error_sender.send(error.clone());
                 return Err(error);
@@ -1193,6 +1372,8 @@ where
         }
         match child.try_wait() {
             Ok(Some(status)) => {
+                let exit_millis = started_at.elapsed().as_millis();
+                let process_io = process_io_counters(&child);
                 let stdout_result = join_streaming_stdout_reader(stdout_reader, tool);
                 let stderr = join_pipe_reader(stderr_reader, tool, "stderr")?;
                 if !status.success() {
@@ -1203,7 +1384,11 @@ where
                     });
                 }
                 stdout_result?;
-                return Ok(());
+                return Ok(MediaToolStreamingOutput {
+                    stdout_bytes: stdout_bytes.load(Ordering::Relaxed),
+                    process_io,
+                    exit_millis,
+                });
             }
             Ok(None) => thread::sleep(MEDIA_TOOL_POLL_INTERVAL),
             Err(error) => {
@@ -1272,6 +1457,52 @@ fn hidden_media_match_command(executable: &Path) -> Command {
 #[cfg(not(windows))]
 fn hidden_media_match_command(executable: &Path) -> Command {
     Command::new(executable)
+}
+
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+struct WindowsIoCounters {
+    read_operation_count: u64,
+    write_operation_count: u64,
+    other_operation_count: u64,
+    read_transfer_count: u64,
+    write_transfer_count: u64,
+    other_transfer_count: u64,
+}
+
+#[cfg(windows)]
+unsafe extern "system" {
+    fn GetDriveTypeW(root_path_name: *const u16) -> u32;
+    fn GetProcessIoCounters(
+        process: *mut std::ffi::c_void,
+        counters: *mut WindowsIoCounters,
+    ) -> i32;
+}
+
+#[cfg(windows)]
+fn process_io_counters(child: &std::process::Child) -> MediaToolProcessIoMetrics {
+    let mut counters = WindowsIoCounters::default();
+    // SAFETY: `child.as_raw_handle()` is a live process handle while `child` is alive, and
+    // `counters` points to writable memory with the Windows `IO_COUNTERS` layout.
+    let ok = unsafe {
+        GetProcessIoCounters(
+            child.as_raw_handle().cast::<std::ffi::c_void>(),
+            &mut counters,
+        )
+    };
+    if ok == 0 {
+        return MediaToolProcessIoMetrics::default();
+    }
+    MediaToolProcessIoMetrics {
+        read_bytes: Some(counters.read_transfer_count),
+        read_ops: Some(counters.read_operation_count),
+    }
+}
+
+#[cfg(not(windows))]
+fn process_io_counters(_child: &std::process::Child) -> MediaToolProcessIoMetrics {
+    MediaToolProcessIoMetrics::default()
 }
 
 fn ensure_tool_success(

@@ -343,6 +343,54 @@ Fresh sampled-fast reports also include per-file distribution fields:
 `slowestFreshFingerprints`. Use these to distinguish real slow files from queue
 or writer pressure before changing sampling parameters.
 
+When `ffmpegProcessWallMillis` dominates sampled-fast extraction, inspect the
+source I/O fields before changing fingerprint settings. Per-fingerprint
+diagnostics now include `sourcePathRoot`, `sourcePathKind`,
+`sourceVolumeId`, `ffmpegInputReadBytes`, `ffmpegInputReadOps`,
+`ffmpegOutputPcmBytes`, `readAmplificationRatio`, `ffmpegInvocationCount`,
+`sampledWindowSeekMillis`, `sampledWindowDecodeMillis`,
+`ffmpegOpenProbeMillis`, and `ffmpegExitMillis`. On Windows,
+`sourcePathKind` is derived from the drive/share type and can distinguish
+local, network, removable, and unknown roots. `ffmpegInputReadBytes` and
+`ffmpegInputReadOps` come from process I/O counters when available; unsupported
+platforms report nulls rather than guessing.
+
+Cold-index summaries also group fresh fingerprints by source root in
+`sourceIndexReports`. Each source report includes the source kind, configured
+worker limit, indexed/failed file counts, source-local extraction and ffmpeg
+p50/p95 timings, input read bytes/ops, output PCM bytes, and read amplification.
+Use this section to see whether a single drive or network share is saturated.
+
+Sampled-fast workers can now be capped globally and per source:
+
+```powershell
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --output reports/audio-cold.json --cache-root .media-match-v3-cache-audio --refresh-cache --sampled-fast-workers 8 --sampled-fast-local-workers 8 --sampled-fast-network-workers 2 --sampled-fast-removable-workers 1
+```
+
+The global worker count controls total extraction concurrency. Per-source
+limits control how many `ffmpeg` jobs may read from the same drive root or UNC
+share at once. For a single slow network share, start with
+`--sampled-fast-network-workers 1` or `2`; for multiple independent local SSDs,
+leave local concurrency higher. `--adaptive-io-concurrency` is accepted as an
+experimental reporting flag, but concurrency changes are still conservative and
+should be validated with before/after cold-index reports.
+
+Local staging remains an experiment, not the default production path. Benchmark
+current no-staging behavior first, then compare a staging prototype only for the
+slow source set. Full-file staging may help when remote random seeks dominate,
+but it can lose badly when copying the whole file is more expensive than the
+three sampled reads. A future sampled-PCM cache should be keyed by normalized
+path, mtime, size, sampled window schedule, and ffmpeg decode settings so tuning
+runs can avoid rereading remote media without changing fingerprint output.
+
+For network libraries, the long-term path is source-local indexing. Preferred
+formats are either sidecar fingerprints next to media files or an exported V3
+index pack built on a machine close to storage. A sidecar/index pack must carry
+file identity, sampled-fast fingerprint data, settings/fingerprint cache hash,
+duration/metadata, and index anchors; imports must validate identity before
+trusting the data. This avoids reading remote media at all during client-side
+index import.
+
 When testing an extraction-code change, either rely on the fingerprint config
 hash changing with the cache version/tuning/settings change, or pass
 `--refresh-cache`. Do not assume an old cache is valid after changing audio or

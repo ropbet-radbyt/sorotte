@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use crate::{
     MediaMatchV3DiagnosticCandidateReport, MediaMatchV3DiagnosticFingerprintReport,
-    MediaMatchV3DiagnosticReport, MediaMatchV3DiagnosticSummary,
+    MediaMatchV3DiagnosticReport, MediaMatchV3DiagnosticSummary, MediaMatchV3SourceIndexReport,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -861,6 +861,8 @@ fn report_metric_deltas(
 ) -> Vec<MediaMatchV3ReportMetricDelta> {
     let baseline_fingerprints = fingerprint_totals(baseline);
     let current_fingerprints = fingerprint_totals(current);
+    let baseline_source_index = source_index_metric_totals(&baseline.summary.source_index_reports);
+    let current_source_index = source_index_metric_totals(&current.summary.source_index_reports);
     vec![
         metric_delta(
             "totalExtractionMillis",
@@ -1228,6 +1230,36 @@ fn report_metric_deltas(
             current.summary.fresh_fingerprint_ffmpeg_wall_millis_p95 as i128,
         ),
         metric_delta(
+            "sourceInputReadBytes",
+            i128::from(baseline_source_index.source_read_bytes),
+            i128::from(current_source_index.source_read_bytes),
+        ),
+        metric_delta(
+            "sourceInputReadOps",
+            i128::from(baseline_source_index.source_read_ops),
+            i128::from(current_source_index.source_read_ops),
+        ),
+        metric_delta(
+            "sourceOutputPcmBytes",
+            i128::from(baseline_source_index.output_pcm_bytes),
+            i128::from(current_source_index.output_pcm_bytes),
+        ),
+        metric_delta(
+            "sourceFfmpegWallMillisP95Max",
+            baseline_source_index.ffmpeg_wall_millis_p95_max as i128,
+            current_source_index.ffmpeg_wall_millis_p95_max as i128,
+        ),
+        metric_delta(
+            "sourceExtractionMillisP95Max",
+            baseline_source_index.extraction_millis_p95_max as i128,
+            current_source_index.extraction_millis_p95_max as i128,
+        ),
+        metric_delta(
+            "sourceWorkerLimitTotal",
+            baseline_source_index.worker_limit_total as i128,
+            current_source_index.worker_limit_total as i128,
+        ),
+        metric_delta(
             "freshFingerprintAnalyzerMillisP95",
             baseline.summary.fresh_fingerprint_analyzer_millis_p95 as i128,
             current.summary.fresh_fingerprint_analyzer_millis_p95 as i128,
@@ -1243,6 +1275,43 @@ fn report_metric_deltas(
             current.summary.resumed_file_count as i128,
         ),
     ]
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct SourceIndexMetricTotals {
+    source_read_bytes: u64,
+    source_read_ops: u64,
+    output_pcm_bytes: u64,
+    ffmpeg_wall_millis_p95_max: u128,
+    extraction_millis_p95_max: u128,
+    worker_limit_total: usize,
+}
+
+fn source_index_metric_totals(
+    reports: &[MediaMatchV3SourceIndexReport],
+) -> SourceIndexMetricTotals {
+    let mut totals = SourceIndexMetricTotals::default();
+    for report in reports {
+        totals.source_read_bytes = totals
+            .source_read_bytes
+            .saturating_add(report.source_read_bytes);
+        totals.source_read_ops = totals
+            .source_read_ops
+            .saturating_add(report.source_read_ops);
+        totals.output_pcm_bytes = totals
+            .output_pcm_bytes
+            .saturating_add(report.output_pcm_bytes);
+        totals.ffmpeg_wall_millis_p95_max = totals
+            .ffmpeg_wall_millis_p95_max
+            .max(report.ffmpeg_wall_millis_p95);
+        totals.extraction_millis_p95_max = totals
+            .extraction_millis_p95_max
+            .max(report.extraction_millis_p95);
+        totals.worker_limit_total = totals
+            .worker_limit_total
+            .saturating_add(report.worker_limit);
+    }
+    totals
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -2534,6 +2603,9 @@ mod tests {
             total_decision_millis: None,
             decision_tier: None,
             decision_class: None,
+            source_path_root: None,
+            source_path_kind: None,
+            source_volume_id: None,
             streamed_bytes: None,
             streamed_samples: None,
             peak_frames: None,
@@ -2546,6 +2618,15 @@ mod tests {
             max_raw_landmarks_after_compaction: None,
             raw_landmark_compactions: None,
             ffmpeg_process_wall_millis: None,
+            ffmpeg_input_read_bytes: None,
+            ffmpeg_input_read_ops: None,
+            ffmpeg_output_pcm_bytes: None,
+            read_amplification_ratio: None,
+            ffmpeg_invocation_count: None,
+            sampled_window_seek_millis: None,
+            sampled_window_decode_millis: None,
+            ffmpeg_open_probe_millis: None,
+            ffmpeg_exit_millis: None,
             pcm_decode_drain_millis: None,
             analyzer_millis: None,
             peak_selection_millis: None,

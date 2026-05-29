@@ -26,9 +26,10 @@ pub use diagnostic_harness::{
     MediaMatchV3DiagnosticRetrievalReport, MediaMatchV3DiagnosticRunOptions,
     MediaMatchV3DiagnosticSummaryReport, MediaMatchV3ResolvedManifest,
     MediaMatchV3ResolvedManifestCandidate, MediaMatchV3ResolvedManifestCase,
-    MediaMatchV3ResolvedManifestHardNegative, media_match_v3_diagnostic_manifest_from_json,
-    media_match_v3_diagnostic_manifest_report_json, resolve_media_match_v3_diagnostic_manifest,
-    run_media_match_v3_diagnostic_manifest, validate_media_match_v3_diagnostic_manifest,
+    MediaMatchV3ResolvedManifestHardNegative, MediaMatchV3SourceIndexReport,
+    media_match_v3_diagnostic_manifest_from_json, media_match_v3_diagnostic_manifest_report_json,
+    resolve_media_match_v3_diagnostic_manifest, run_media_match_v3_diagnostic_manifest,
+    validate_media_match_v3_diagnostic_manifest,
 };
 pub use diagnostics::{
     MediaMatchV3DiagnosticSummary, summarize_decision_v3_diagnostics,

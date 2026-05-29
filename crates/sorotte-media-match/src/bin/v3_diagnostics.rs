@@ -55,6 +55,11 @@ fn run_cli_with_output(
         promote_expected_candidates,
         retrieval_benchmark_only,
         retrieval_strategy,
+        sampled_fast_global_workers,
+        sampled_fast_per_local_source_workers,
+        sampled_fast_per_network_source_workers,
+        sampled_fast_per_removable_source_workers,
+        adaptive_io_concurrency_enabled,
         mode,
         selected_cases,
     } = parse_args(args)?;
@@ -175,6 +180,11 @@ fn run_cli_with_output(
             promote_expected_candidates,
             retrieval_benchmark_only,
             retrieval_strategy,
+            sampled_fast_global_workers,
+            sampled_fast_per_local_source_workers,
+            sampled_fast_per_network_source_workers,
+            sampled_fast_per_removable_source_workers,
+            adaptive_io_concurrency_enabled,
             tools: tool_paths(),
             generated_at_unix_millis: None,
         },
@@ -233,6 +243,11 @@ struct CliArgs {
     promote_expected_candidates: bool,
     retrieval_benchmark_only: bool,
     retrieval_strategy: MediaMatchV3RetrievalStrategy,
+    sampled_fast_global_workers: Option<usize>,
+    sampled_fast_per_local_source_workers: Option<usize>,
+    sampled_fast_per_network_source_workers: Option<usize>,
+    sampled_fast_per_removable_source_workers: Option<usize>,
+    adaptive_io_concurrency_enabled: bool,
     mode: CliMode,
     selected_cases: Vec<String>,
 }
@@ -250,6 +265,11 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
     let mut promote_expected_candidates = false;
     let mut retrieval_benchmark_only = false;
     let mut retrieval_strategy = MediaMatchV3RetrievalStrategy::Auto;
+    let mut sampled_fast_global_workers = None;
+    let mut sampled_fast_per_local_source_workers = None;
+    let mut sampled_fast_per_network_source_workers = None;
+    let mut sampled_fast_per_removable_source_workers = None;
+    let mut adaptive_io_concurrency_enabled = false;
     let mut mode = CliMode::Run;
     let mut selected_cases = Vec::new();
     let mut args = args.into_iter();
@@ -306,6 +326,33 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
                 };
                 retrieval_strategy = parse_retrieval_strategy(&value)?;
             }
+            "--sampled-fast-workers" => {
+                let Some(value) = args.next() else {
+                    return Err(usage());
+                };
+                sampled_fast_global_workers = Some(parse_positive_usize(&value)?);
+            }
+            "--sampled-fast-local-workers" => {
+                let Some(value) = args.next() else {
+                    return Err(usage());
+                };
+                sampled_fast_per_local_source_workers = Some(parse_positive_usize(&value)?);
+            }
+            "--sampled-fast-network-workers" => {
+                let Some(value) = args.next() else {
+                    return Err(usage());
+                };
+                sampled_fast_per_network_source_workers = Some(parse_positive_usize(&value)?);
+            }
+            "--sampled-fast-removable-workers" => {
+                let Some(value) = args.next() else {
+                    return Err(usage());
+                };
+                sampled_fast_per_removable_source_workers = Some(parse_positive_usize(&value)?);
+            }
+            "--adaptive-io-concurrency" => {
+                adaptive_io_concurrency_enabled = true;
+            }
             "--list-cases" => {
                 if mode != CliMode::Run {
                     return Err(usage());
@@ -358,14 +405,26 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
         promote_expected_candidates,
         retrieval_benchmark_only,
         retrieval_strategy,
+        sampled_fast_global_workers,
+        sampled_fast_per_local_source_workers,
+        sampled_fast_per_network_source_workers,
+        sampled_fast_per_removable_source_workers,
+        adaptive_io_concurrency_enabled,
         mode,
         selected_cases,
     })
 }
 
 fn usage() -> String {
-    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--index-mode full|sparse-full|sampled-fast|sampled-normal|sampled|sampled-then-full|production] [--dense-audio-profile dense-current|dense-realfft|dense-8k|dense-hop2048|dense-8k-hop2048|dense-8k-window1024-hop1024|dense-max-peaks-4|dense-pair-retain-16|dense-pair-retain-lower|dense-gated|dense-gated-v2|dense-fast-combined-candidate] [--retrieval-strategy auto|temp-table|bucket-fetch] [--bench-dense-audio-profiles] [--max-full-promotions n] [--promote-expected-candidates] [--retrieval-benchmark-only] [--list-cases|--validate-only|--prepare-index-stats|--cache-size-report] [--case name]"
+    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--index-mode full|sparse-full|sampled-fast|sampled-normal|sampled|sampled-then-full|production] [--dense-audio-profile dense-current|dense-realfft|dense-8k|dense-hop2048|dense-8k-hop2048|dense-8k-window1024-hop1024|dense-max-peaks-4|dense-pair-retain-16|dense-pair-retain-lower|dense-gated|dense-gated-v2|dense-fast-combined-candidate] [--retrieval-strategy auto|temp-table|bucket-fetch] [--sampled-fast-workers n] [--sampled-fast-local-workers n] [--sampled-fast-network-workers n] [--sampled-fast-removable-workers n] [--adaptive-io-concurrency] [--bench-dense-audio-profiles] [--max-full-promotions n] [--promote-expected-candidates] [--retrieval-benchmark-only] [--list-cases|--validate-only|--prepare-index-stats|--cache-size-report] [--case name]"
         .to_owned()
+}
+
+fn parse_positive_usize(value: &str) -> Result<usize, String> {
+    value
+        .parse::<usize>()
+        .map(|value| value.max(1))
+        .map_err(|_| usage())
 }
 
 fn parse_index_mode(value: &str) -> Result<MediaMatchV3DiagnosticIndexMode, String> {
@@ -492,6 +551,11 @@ fn run_dense_audio_profile_benchmark(
                 promote_expected_candidates,
                 retrieval_benchmark_only: false,
                 retrieval_strategy: MediaMatchV3RetrievalStrategy::Auto,
+                sampled_fast_global_workers: None,
+                sampled_fast_per_local_source_workers: None,
+                sampled_fast_per_network_source_workers: None,
+                sampled_fast_per_removable_source_workers: None,
+                adaptive_io_concurrency_enabled: false,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(generated_at_unix_millis),
             },
@@ -713,6 +777,15 @@ mod tests {
             "--retrieval-benchmark-only".to_owned(),
             "--retrieval-strategy".to_owned(),
             "bucket-fetch".to_owned(),
+            "--sampled-fast-workers".to_owned(),
+            "6".to_owned(),
+            "--sampled-fast-local-workers".to_owned(),
+            "4".to_owned(),
+            "--sampled-fast-network-workers".to_owned(),
+            "2".to_owned(),
+            "--sampled-fast-removable-workers".to_owned(),
+            "1".to_owned(),
+            "--adaptive-io-concurrency".to_owned(),
             "--case".to_owned(),
             "copied-synthetic".to_owned(),
         ])
@@ -739,6 +812,11 @@ mod tests {
             args.retrieval_strategy,
             MediaMatchV3RetrievalStrategy::BucketFetch
         );
+        assert_eq!(args.sampled_fast_global_workers, Some(6));
+        assert_eq!(args.sampled_fast_per_local_source_workers, Some(4));
+        assert_eq!(args.sampled_fast_per_network_source_workers, Some(2));
+        assert_eq!(args.sampled_fast_per_removable_source_workers, Some(1));
+        assert!(args.adaptive_io_concurrency_enabled);
         assert_eq!(args.selected_cases, vec!["copied-synthetic"]);
         assert_eq!(args.mode, CliMode::Run);
     }
@@ -992,6 +1070,11 @@ mod tests {
                 promote_expected_candidates: false,
                 retrieval_benchmark_only: false,
                 retrieval_strategy: MediaMatchV3RetrievalStrategy::Auto,
+                sampled_fast_global_workers: None,
+                sampled_fast_per_local_source_workers: None,
+                sampled_fast_per_network_source_workers: None,
+                sampled_fast_per_removable_source_workers: None,
+                adaptive_io_concurrency_enabled: false,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(123),
             },
@@ -1065,6 +1148,11 @@ mod tests {
                 promote_expected_candidates: false,
                 retrieval_benchmark_only: false,
                 retrieval_strategy: MediaMatchV3RetrievalStrategy::Auto,
+                sampled_fast_global_workers: None,
+                sampled_fast_per_local_source_workers: None,
+                sampled_fast_per_network_source_workers: None,
+                sampled_fast_per_removable_source_workers: None,
+                adaptive_io_concurrency_enabled: false,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(124),
             },
@@ -1108,6 +1196,11 @@ mod tests {
                 promote_expected_candidates: false,
                 retrieval_benchmark_only: false,
                 retrieval_strategy: MediaMatchV3RetrievalStrategy::Auto,
+                sampled_fast_global_workers: None,
+                sampled_fast_per_local_source_workers: None,
+                sampled_fast_per_network_source_workers: None,
+                sampled_fast_per_removable_source_workers: None,
+                adaptive_io_concurrency_enabled: false,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(125),
             },
@@ -1164,6 +1257,11 @@ mod tests {
                 promote_expected_candidates: false,
                 retrieval_benchmark_only: false,
                 retrieval_strategy: MediaMatchV3RetrievalStrategy::Auto,
+                sampled_fast_global_workers: None,
+                sampled_fast_per_local_source_workers: None,
+                sampled_fast_per_network_source_workers: None,
+                sampled_fast_per_removable_source_workers: None,
+                adaptive_io_concurrency_enabled: false,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(126),
             },
