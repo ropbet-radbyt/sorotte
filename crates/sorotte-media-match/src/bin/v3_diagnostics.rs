@@ -11,7 +11,7 @@ use serde::Serialize;
 use sorotte_media_match::{
     MediaDenseAudioProfile, MediaMatchToolPaths, MediaMatchV3DiagnosticIndexMode,
     MediaMatchV3DiagnosticManifest, MediaMatchV3DiagnosticReport, MediaMatchV3DiagnosticRunOptions,
-    MediaMatchV3ResolvedManifest, MediaMatchV3ResolvedManifestCase,
+    MediaMatchV3ResolvedManifest, MediaMatchV3ResolvedManifestCase, MediaMatchV3RetrievalStrategy,
     media_match_v3_diagnostic_manifest_from_json, open_media_match_v3_index,
     refresh_all_anchor_stats_v3, resolve_media_match_v3_diagnostic_manifest,
     run_media_match_v3_diagnostic_manifest,
@@ -53,6 +53,7 @@ fn run_cli_with_output(
         max_full_promotions_per_query,
         promote_expected_candidates,
         retrieval_benchmark_only,
+        retrieval_strategy,
         mode,
         selected_cases,
     } = parse_args(args)?;
@@ -145,6 +146,7 @@ fn run_cli_with_output(
             max_full_promotions_per_query,
             promote_expected_candidates,
             retrieval_benchmark_only,
+            retrieval_strategy,
             tools: tool_paths(),
             generated_at_unix_millis: None,
         },
@@ -201,6 +203,7 @@ struct CliArgs {
     max_full_promotions_per_query: usize,
     promote_expected_candidates: bool,
     retrieval_benchmark_only: bool,
+    retrieval_strategy: MediaMatchV3RetrievalStrategy,
     mode: CliMode,
     selected_cases: Vec<String>,
 }
@@ -217,6 +220,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
     let mut max_full_promotions_per_query = 3usize;
     let mut promote_expected_candidates = false;
     let mut retrieval_benchmark_only = false;
+    let mut retrieval_strategy = MediaMatchV3RetrievalStrategy::Auto;
     let mut mode = CliMode::Run;
     let mut selected_cases = Vec::new();
     let mut args = args.into_iter();
@@ -267,6 +271,12 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
             "--retrieval-benchmark-only" => {
                 retrieval_benchmark_only = true;
             }
+            "--retrieval-strategy" => {
+                let Some(value) = args.next() else {
+                    return Err(usage());
+                };
+                retrieval_strategy = parse_retrieval_strategy(&value)?;
+            }
             "--list-cases" => {
                 if mode != CliMode::Run {
                     return Err(usage());
@@ -312,13 +322,14 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
         max_full_promotions_per_query,
         promote_expected_candidates,
         retrieval_benchmark_only,
+        retrieval_strategy,
         mode,
         selected_cases,
     })
 }
 
 fn usage() -> String {
-    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--index-mode full|sparse-full|sampled-fast|sampled-normal|sampled|sampled-then-full|production] [--dense-audio-profile dense-current|dense-realfft|dense-8k|dense-hop2048|dense-8k-hop2048|dense-8k-window1024-hop1024|dense-max-peaks-4|dense-pair-retain-16|dense-pair-retain-lower|dense-gated|dense-gated-v2|dense-fast-combined-candidate] [--bench-dense-audio-profiles] [--max-full-promotions n] [--promote-expected-candidates] [--retrieval-benchmark-only] [--list-cases|--validate-only|--prepare-index-stats] [--case name]"
+    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--index-mode full|sparse-full|sampled-fast|sampled-normal|sampled|sampled-then-full|production] [--dense-audio-profile dense-current|dense-realfft|dense-8k|dense-hop2048|dense-8k-hop2048|dense-8k-window1024-hop1024|dense-max-peaks-4|dense-pair-retain-16|dense-pair-retain-lower|dense-gated|dense-gated-v2|dense-fast-combined-candidate] [--retrieval-strategy auto|temp-table|bucket-fetch] [--bench-dense-audio-profiles] [--max-full-promotions n] [--promote-expected-candidates] [--retrieval-benchmark-only] [--list-cases|--validate-only|--prepare-index-stats] [--case name]"
         .to_owned()
 }
 
@@ -330,6 +341,15 @@ fn parse_index_mode(value: &str) -> Result<MediaMatchV3DiagnosticIndexMode, Stri
         "sampled" | "sampled-normal" => Ok(MediaMatchV3DiagnosticIndexMode::SampledNormal),
         "sampled-then-full" => Ok(MediaMatchV3DiagnosticIndexMode::SampledThenFull),
         "production" => Ok(MediaMatchV3DiagnosticIndexMode::Production),
+        _ => Err(usage()),
+    }
+}
+
+fn parse_retrieval_strategy(value: &str) -> Result<MediaMatchV3RetrievalStrategy, String> {
+    match value {
+        "auto" => Ok(MediaMatchV3RetrievalStrategy::Auto),
+        "temp-table" => Ok(MediaMatchV3RetrievalStrategy::TempTable),
+        "bucket-fetch" => Ok(MediaMatchV3RetrievalStrategy::BucketFetch),
         _ => Err(usage()),
     }
 }
@@ -436,6 +456,7 @@ fn run_dense_audio_profile_benchmark(
                 max_full_promotions_per_query,
                 promote_expected_candidates,
                 retrieval_benchmark_only: false,
+                retrieval_strategy: MediaMatchV3RetrievalStrategy::Auto,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(generated_at_unix_millis),
             },
@@ -655,6 +676,8 @@ mod tests {
             "2".to_owned(),
             "--promote-expected-candidates".to_owned(),
             "--retrieval-benchmark-only".to_owned(),
+            "--retrieval-strategy".to_owned(),
+            "bucket-fetch".to_owned(),
             "--case".to_owned(),
             "copied-synthetic".to_owned(),
         ])
@@ -677,6 +700,10 @@ mod tests {
         assert_eq!(args.max_full_promotions_per_query, 2);
         assert!(args.promote_expected_candidates);
         assert!(args.retrieval_benchmark_only);
+        assert_eq!(
+            args.retrieval_strategy,
+            MediaMatchV3RetrievalStrategy::BucketFetch
+        );
         assert_eq!(args.selected_cases, vec!["copied-synthetic"]);
         assert_eq!(args.mode, CliMode::Run);
     }
@@ -920,6 +947,7 @@ mod tests {
                 max_full_promotions_per_query: 1,
                 promote_expected_candidates: false,
                 retrieval_benchmark_only: false,
+                retrieval_strategy: MediaMatchV3RetrievalStrategy::Auto,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(123),
             },
@@ -980,6 +1008,7 @@ mod tests {
                 max_full_promotions_per_query: 1,
                 promote_expected_candidates: false,
                 retrieval_benchmark_only: false,
+                retrieval_strategy: MediaMatchV3RetrievalStrategy::Auto,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(124),
             },
@@ -1022,6 +1051,7 @@ mod tests {
                 max_full_promotions_per_query: 1,
                 promote_expected_candidates: false,
                 retrieval_benchmark_only: false,
+                retrieval_strategy: MediaMatchV3RetrievalStrategy::Auto,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(125),
             },
@@ -1077,6 +1107,7 @@ mod tests {
                 max_full_promotions_per_query: 1,
                 promote_expected_candidates: false,
                 retrieval_benchmark_only: false,
+                retrieval_strategy: MediaMatchV3RetrievalStrategy::Auto,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(126),
             },

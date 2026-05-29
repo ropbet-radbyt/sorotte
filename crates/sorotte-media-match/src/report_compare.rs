@@ -152,6 +152,11 @@ pub fn validate_media_match_v3_diagnostic_report(
     let mut hard_negative_failed = 0usize;
     let mut total_raw_hit_rows_processed = 0i64;
     let mut total_retrieval_millis = 0u128;
+    let mut retrieval_unaccounted_millis_total = 0u128;
+    let mut sql_hit_fetch_millis_total = 0u128;
+    let mut rust_aggregation_millis_total = 0u128;
+    let mut candidate_metadata_load_millis_total = 0u128;
+    let mut robust_rerank_millis_total = 0u128;
     let mut total_full_promotion_millis = 0u128;
     let mut promoted_candidates = 0usize;
     let mut report_source_counts = FingerprintSourceCounts::default();
@@ -160,6 +165,11 @@ pub fn validate_media_match_v3_diagnostic_report(
         pair_count += case.candidates.len();
         total_raw_hit_rows_processed += case.retrieval.raw_hit_rows_processed;
         total_retrieval_millis += case.retrieval.retrieval_elapsed_ms;
+        retrieval_unaccounted_millis_total += case.retrieval.retrieval_unaccounted_millis;
+        sql_hit_fetch_millis_total += case.retrieval.sql_hit_fetch_millis;
+        rust_aggregation_millis_total += case.retrieval.rust_aggregation_millis;
+        candidate_metadata_load_millis_total += case.retrieval.candidate_metadata_load_millis;
+        robust_rerank_millis_total += case.retrieval.robust_rerank_millis;
         validate_fingerprint_source(&case.name, "query", &case.query.source)?;
         report_source_counts.increment(&case.query.source);
         for candidate in &case.candidates {
@@ -266,6 +276,43 @@ pub fn validate_media_match_v3_diagnostic_report(
             report.summary.total_retrieval_millis
         ));
     }
+    if report.summary.retrieval_total_millis != total_retrieval_millis {
+        return Err(format!(
+            "summary.retrievalTotalMillis={} does not match retrieval total={total_retrieval_millis}",
+            report.summary.retrieval_total_millis
+        ));
+    }
+    if report.summary.retrieval_unaccounted_millis_total != retrieval_unaccounted_millis_total {
+        return Err(format!(
+            "summary.retrievalUnaccountedMillisTotal={} does not match retrieval total={retrieval_unaccounted_millis_total}",
+            report.summary.retrieval_unaccounted_millis_total
+        ));
+    }
+    if report.summary.sql_hit_fetch_millis_total != sql_hit_fetch_millis_total {
+        return Err(format!(
+            "summary.sqlHitFetchMillisTotal={} does not match retrieval total={sql_hit_fetch_millis_total}",
+            report.summary.sql_hit_fetch_millis_total
+        ));
+    }
+    if report.summary.rust_aggregation_millis_total != rust_aggregation_millis_total {
+        return Err(format!(
+            "summary.rustAggregationMillisTotal={} does not match retrieval total={rust_aggregation_millis_total}",
+            report.summary.rust_aggregation_millis_total
+        ));
+    }
+    if report.summary.candidate_metadata_load_millis_total != candidate_metadata_load_millis_total {
+        return Err(format!(
+            "summary.candidateMetadataLoadMillisTotal={} does not match retrieval total={candidate_metadata_load_millis_total}",
+            report.summary.candidate_metadata_load_millis_total
+        ));
+    }
+    if report.summary.robust_rerank_millis_total != robust_rerank_millis_total {
+        return Err(format!(
+            "summary.robustRerankMillisTotal={} does not match retrieval total={robust_rerank_millis_total}",
+            report.summary.robust_rerank_millis_total
+        ));
+    }
+    validate_retrieval_percentile_summary(report)?;
     if report.summary.full_promotion_millis != total_full_promotion_millis {
         return Err(format!(
             "summary.fullPromotionMillis={} does not match candidate total={total_full_promotion_millis}",
@@ -372,6 +419,73 @@ pub fn validate_media_match_v3_diagnostic_report(
     }
 
     Ok(())
+}
+
+fn validate_retrieval_percentile_summary(
+    report: &MediaMatchV3DiagnosticReport,
+) -> Result<(), String> {
+    if report.cases.is_empty() {
+        return Ok(());
+    }
+    let mut retrieval_millis = report
+        .cases
+        .iter()
+        .map(|case| case.retrieval.retrieval_elapsed_ms)
+        .collect::<Vec<_>>();
+    retrieval_millis.sort_unstable();
+    let expected_p50 = percentile_sorted_u128(&retrieval_millis, 50);
+    let expected_p95 = percentile_sorted_u128(&retrieval_millis, 95);
+    let expected_p99 = percentile_sorted_u128(&retrieval_millis, 99);
+    let expected_max = retrieval_millis.last().copied().unwrap_or_default();
+    if report.summary.per_query_retrieval_millis_p50 != expected_p50 {
+        return Err(format!(
+            "summary.perQueryRetrievalMillisP50={} does not match retrieval p50={expected_p50}",
+            report.summary.per_query_retrieval_millis_p50
+        ));
+    }
+    if report.summary.per_query_retrieval_millis_p95 != expected_p95 {
+        return Err(format!(
+            "summary.perQueryRetrievalMillisP95={} does not match retrieval p95={expected_p95}",
+            report.summary.per_query_retrieval_millis_p95
+        ));
+    }
+    if report.summary.per_query_retrieval_millis_p99 != expected_p99 {
+        return Err(format!(
+            "summary.perQueryRetrievalMillisP99={} does not match retrieval p99={expected_p99}",
+            report.summary.per_query_retrieval_millis_p99
+        ));
+    }
+    if report.summary.per_query_retrieval_millis_max != expected_max {
+        return Err(format!(
+            "summary.perQueryRetrievalMillisMax={} does not match retrieval max={expected_max}",
+            report.summary.per_query_retrieval_millis_max
+        ));
+    }
+
+    let mut unaccounted_millis = report
+        .cases
+        .iter()
+        .map(|case| case.retrieval.retrieval_unaccounted_millis)
+        .collect::<Vec<_>>();
+    unaccounted_millis.sort_unstable();
+    let expected_unaccounted_p95 = percentile_sorted_u128(&unaccounted_millis, 95);
+    if report.summary.retrieval_unaccounted_millis_p95 != expected_unaccounted_p95 {
+        return Err(format!(
+            "summary.retrievalUnaccountedMillisP95={} does not match retrieval p95={expected_unaccounted_p95}",
+            report.summary.retrieval_unaccounted_millis_p95
+        ));
+    }
+
+    Ok(())
+}
+
+fn percentile_sorted_u128(values: &[u128], percentile: u32) -> u128 {
+    if values.is_empty() {
+        return 0;
+    }
+    let percentile = percentile.min(100) as usize;
+    let index = (values.len() - 1) * percentile / 100;
+    values[index]
 }
 
 fn validate_fingerprint_source(case_name: &str, path: &str, source: &str) -> Result<(), String> {
@@ -756,6 +870,56 @@ fn report_metric_deltas(
             "totalRetrievalMillis",
             baseline.summary.total_retrieval_millis as i128,
             current.summary.total_retrieval_millis as i128,
+        ),
+        metric_delta(
+            "perQueryRetrievalMillisP50",
+            baseline.summary.per_query_retrieval_millis_p50 as i128,
+            current.summary.per_query_retrieval_millis_p50 as i128,
+        ),
+        metric_delta(
+            "perQueryRetrievalMillisP95",
+            baseline.summary.per_query_retrieval_millis_p95 as i128,
+            current.summary.per_query_retrieval_millis_p95 as i128,
+        ),
+        metric_delta(
+            "perQueryRetrievalMillisP99",
+            baseline.summary.per_query_retrieval_millis_p99 as i128,
+            current.summary.per_query_retrieval_millis_p99 as i128,
+        ),
+        metric_delta(
+            "perQueryRetrievalMillisMax",
+            baseline.summary.per_query_retrieval_millis_max as i128,
+            current.summary.per_query_retrieval_millis_max as i128,
+        ),
+        metric_delta(
+            "retrievalUnaccountedMillisTotal",
+            baseline.summary.retrieval_unaccounted_millis_total as i128,
+            current.summary.retrieval_unaccounted_millis_total as i128,
+        ),
+        metric_delta(
+            "retrievalUnaccountedMillisP95",
+            baseline.summary.retrieval_unaccounted_millis_p95 as i128,
+            current.summary.retrieval_unaccounted_millis_p95 as i128,
+        ),
+        metric_delta(
+            "sqlHitFetchMillisTotal",
+            baseline.summary.sql_hit_fetch_millis_total as i128,
+            current.summary.sql_hit_fetch_millis_total as i128,
+        ),
+        metric_delta(
+            "rustAggregationMillisTotal",
+            baseline.summary.rust_aggregation_millis_total as i128,
+            current.summary.rust_aggregation_millis_total as i128,
+        ),
+        metric_delta(
+            "candidateMetadataLoadMillisTotal",
+            baseline.summary.candidate_metadata_load_millis_total as i128,
+            current.summary.candidate_metadata_load_millis_total as i128,
+        ),
+        metric_delta(
+            "robustRerankMillisTotal",
+            baseline.summary.robust_rerank_millis_total as i128,
+            current.summary.robust_rerank_millis_total as i128,
         ),
         metric_delta(
             "runWallMillis",
@@ -1524,6 +1688,11 @@ mod tests {
             Some(1),
         );
         current.summary.total_retrieval_millis = 9;
+        current.summary.retrieval_total_millis = 9;
+        current.summary.per_query_retrieval_millis_p50 = 9;
+        current.summary.per_query_retrieval_millis_p95 = 9;
+        current.summary.per_query_retrieval_millis_p99 = 9;
+        current.summary.per_query_retrieval_millis_max = 9;
         current.cases[0].retrieval.retrieval_elapsed_ms = 9;
 
         let comparison =
@@ -2036,6 +2205,10 @@ mod tests {
                     retrieval_rank,
                     sampled_retrieval_rank: retrieval_rank,
                     final_verified_rank: None,
+                    within_promotion_budget: retrieval_rank.is_some_and(|rank| rank <= 3),
+                    promotion_budget_exhausted: retrieval_rank.is_some_and(|rank| rank > 3),
+                    promoted_candidate_ranks: Vec::new(),
+                    first_strong_candidate_rank: None,
                     promotion_reason: None,
                     full_promotion_millis: 0,
                     decision: MediaMatchV3DiagnosticDecisionReport {
@@ -2077,6 +2250,8 @@ mod tests {
                         must_be_retrieved: true,
                         expected_retrieved: None,
                         max_retrieval_rank: None,
+                        max_promotion_rank: None,
+                        expect_within_promotion_budget: false,
                         skip_decision_expectation: false,
                     }),
                     passed,
@@ -2100,6 +2275,10 @@ mod tests {
                 total_video_blob_bytes: 0,
                 total_raw_hit_rows_processed: 10,
                 total_retrieval_millis: 2,
+                per_query_retrieval_millis_p50: 2,
+                per_query_retrieval_millis_p95: 2,
+                per_query_retrieval_millis_p99: 2,
+                per_query_retrieval_millis_max: 2,
                 run_wall_millis: 20,
                 fingerprint_total_millis: 20,
                 retrieval_total_millis: 2,

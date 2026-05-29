@@ -4367,6 +4367,7 @@ mod tests {
                 max_full_promotions_per_query: 1,
                 promote_expected_candidates: false,
                 retrieval_benchmark_only: false,
+                retrieval_strategy: sorotte_media_match::MediaMatchV3RetrievalStrategy::Auto,
                 tools,
                 generated_at_unix_millis: Some(123),
             },

@@ -69,12 +69,14 @@ pub use types::{
 // The GUI/runtime owns cache location and rebuild lifecycle; these wrappers keep the SQL/index
 // implementation centralized in this crate while still letting runtime code maintain the cache.
 pub use v3_index::{
-    MediaMatchV3RetrievalStats, MediaMatchV3RetrievedCandidate, MediaMatchV3SaveStats,
-    anchor_stats_v3_dirty, clear_all_anchor_stats_v3_dirty, clear_anchor_stats_v3_dirty,
-    delete_media_match_v3_file_and_fingerprints, delete_media_match_v3_fingerprints_and_anchors,
-    initialize_media_match_v3_index, load_media_match_v3_cache_for_settings,
-    load_media_match_v3_record_for_path, mark_anchor_stats_v3_dirty,
-    mark_anchor_stats_v3_dirty_for_file, media_match_v3_anchor_candidate_details_with_stats,
+    MediaMatchV3RetrievalStats, MediaMatchV3RetrievalStrategy, MediaMatchV3RetrievedCandidate,
+    MediaMatchV3SaveStats, anchor_stats_v3_dirty, clear_all_anchor_stats_v3_dirty,
+    clear_anchor_stats_v3_dirty, delete_media_match_v3_file_and_fingerprints,
+    delete_media_match_v3_fingerprints_and_anchors, initialize_media_match_v3_index,
+    load_media_match_v3_cache_for_settings, load_media_match_v3_record_for_path,
+    mark_anchor_stats_v3_dirty, mark_anchor_stats_v3_dirty_for_file,
+    media_match_v3_anchor_candidate_details_with_stats,
+    media_match_v3_anchor_candidate_details_with_strategy,
     media_match_v3_anchor_candidate_paths_with_stats, media_match_v3_index_path,
     open_media_match_v3_index, refresh_all_anchor_stats_v3, refresh_anchor_stats_v3,
     refresh_dirty_anchor_stats_v3_if_needed, save_media_match_v3_record,

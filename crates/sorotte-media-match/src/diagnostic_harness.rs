@@ -10,11 +10,11 @@ use crate::{
     InstrumentedMediaFingerprint, MEDIA_MATCH_ANCHOR_VERSION, MatchClassV3, MediaAudioIndexMode,
     MediaDenseAudioProfile, MediaExtractionSettings, MediaMatchAutoplayPolicy, MediaMatchDecision,
     MediaMatchSettings, MediaMatchTier, MediaMatchToolPaths, MediaMatchV3DiagnosticSummary,
-    MediaMatchV3RetrievalStats, MediaMatchV3RetrievedCandidate, MediaMatchV3SaveStats, V3Tuning,
-    current_v3_tuning, decide_media_match, fingerprint_media_file_with_report,
-    load_media_match_v3_record_for_path, media_extraction_settings_hash,
-    media_match_v3_anchor_candidate_details_with_stats, normalize_media_path,
-    open_media_match_v3_index, save_media_match_v3_record_with_stats,
+    MediaMatchV3RetrievalStats, MediaMatchV3RetrievalStrategy, MediaMatchV3RetrievedCandidate,
+    MediaMatchV3SaveStats, V3Tuning, current_v3_tuning, decide_media_match,
+    fingerprint_media_file_with_report, load_media_match_v3_record_for_path,
+    media_extraction_settings_hash, media_match_v3_anchor_candidate_details_with_strategy,
+    normalize_media_path, open_media_match_v3_index, save_media_match_v3_record_with_stats,
     summarize_decision_v3_diagnostics, summarize_instrumented_record_v3_diagnostics,
     summarize_record_v3_diagnostics,
 };
@@ -64,6 +64,10 @@ pub struct MediaMatchV3DiagnosticExpectation {
     #[serde(default)]
     pub max_retrieval_rank: Option<usize>,
     #[serde(default)]
+    pub max_promotion_rank: Option<usize>,
+    #[serde(default)]
+    pub expect_within_promotion_budget: bool,
+    #[serde(default)]
     pub skip_decision_expectation: bool,
 }
 
@@ -90,6 +94,7 @@ pub struct MediaMatchV3DiagnosticRunOptions {
     pub max_full_promotions_per_query: usize,
     pub promote_expected_candidates: bool,
     pub retrieval_benchmark_only: bool,
+    pub retrieval_strategy: MediaMatchV3RetrievalStrategy,
     pub tools: MediaMatchToolPaths,
     pub generated_at_unix_millis: Option<u64>,
 }
@@ -200,6 +205,14 @@ pub struct MediaMatchV3DiagnosticCandidateReport {
     pub sampled_retrieval_rank: Option<usize>,
     #[serde(default)]
     pub final_verified_rank: Option<usize>,
+    #[serde(default)]
+    pub within_promotion_budget: bool,
+    #[serde(default)]
+    pub promotion_budget_exhausted: bool,
+    #[serde(default)]
+    pub promoted_candidate_ranks: Vec<usize>,
+    #[serde(default)]
+    pub first_strong_candidate_rank: Option<usize>,
     pub promotion_reason: Option<String>,
     pub full_promotion_millis: u128,
     pub decision: MediaMatchV3DiagnosticDecisionReport,
@@ -260,11 +273,17 @@ pub struct MediaMatchV3DiagnosticDecisionReport {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaMatchV3DiagnosticRetrievalReport {
+    #[serde(default)]
+    pub retrieval_strategy: String,
     pub query_buckets_total: i64,
     pub query_buckets_skipped_common: i64,
     pub raw_hit_rows_processed: i64,
     pub candidates_scored: i64,
     pub retrieval_elapsed_ms: u128,
+    #[serde(default)]
+    pub retrieval_measured_stage_millis: u128,
+    #[serde(default)]
+    pub retrieval_unaccounted_millis: u128,
     #[serde(default)]
     pub stats_dirty_check_millis: u128,
     #[serde(default)]
@@ -276,9 +295,31 @@ pub struct MediaMatchV3DiagnosticRetrievalReport {
     #[serde(default)]
     pub sql_hit_fetch_millis: u128,
     #[serde(default)]
+    pub temp_table_create_millis: u128,
+    #[serde(default)]
+    pub temp_table_insert_millis: u128,
+    #[serde(default)]
+    pub temp_table_index_millis: u128,
+    #[serde(default)]
+    pub temp_table_drop_millis: u128,
+    #[serde(default)]
+    pub sql_prepare_millis: u128,
+    #[serde(default)]
+    pub sql_execute_millis: u128,
+    #[serde(default)]
     pub rust_aggregation_millis: u128,
     #[serde(default)]
+    pub candidate_metadata_load_millis: u128,
+    #[serde(default)]
+    pub robust_rerank_millis: u128,
+    #[serde(default)]
     pub candidate_sort_millis: u128,
+    #[serde(default)]
+    pub retrieved_candidate_detail_build_millis: u128,
+    #[serde(default)]
+    pub retrieved_path_load_millis: u128,
+    #[serde(default)]
+    pub report_candidate_attach_millis: u128,
     #[serde(default)]
     pub path_lookup_millis: u128,
     #[serde(default)]
@@ -388,6 +429,26 @@ pub struct MediaMatchV3DiagnosticSummaryReport {
     pub sqlite_save_millis: u128,
     pub sqlite_index_insert_millis: u128,
     pub retrieval_total_millis: u128,
+    #[serde(default)]
+    pub per_query_retrieval_millis_p50: u128,
+    #[serde(default)]
+    pub per_query_retrieval_millis_p95: u128,
+    #[serde(default)]
+    pub per_query_retrieval_millis_p99: u128,
+    #[serde(default)]
+    pub per_query_retrieval_millis_max: u128,
+    #[serde(default)]
+    pub retrieval_unaccounted_millis_total: u128,
+    #[serde(default)]
+    pub retrieval_unaccounted_millis_p95: u128,
+    #[serde(default)]
+    pub sql_hit_fetch_millis_total: u128,
+    #[serde(default)]
+    pub rust_aggregation_millis_total: u128,
+    #[serde(default)]
+    pub candidate_metadata_load_millis_total: u128,
+    #[serde(default)]
+    pub robust_rerank_millis_total: u128,
     pub decision_total_millis: u128,
     pub report_serialize_millis: u128,
     pub sampled_fingerprint_count: usize,
@@ -542,10 +603,11 @@ pub fn run_media_match_v3_diagnostic_manifest(
             .ok_or_else(|| format!("missing diagnostic query fingerprint for '{}'", case.name))?
             .clone();
         let (retrieved_candidates, retrieval_stats) =
-            media_match_v3_anchor_candidate_details_with_stats(
+            media_match_v3_anchor_candidate_details_with_strategy(
                 &connection,
                 &query.fingerprint.record.identity.normalized_path,
                 &settings,
+                options.retrieval_strategy,
             )?;
         let known_candidate_ids = known_candidate_ids_for_case(case);
         let expected_candidate_paths = expected_candidate_paths_for_case(case);
@@ -560,6 +622,12 @@ pub fn run_media_match_v3_diagnostic_manifest(
         summary.total_raw_hit_rows_processed += retrieval_report.raw_hit_rows_processed;
         summary.total_retrieval_millis += retrieval_report.retrieval_elapsed_ms;
         summary.retrieval_total_millis += retrieval_report.retrieval_elapsed_ms;
+        summary.retrieval_unaccounted_millis_total += retrieval_report.retrieval_unaccounted_millis;
+        summary.sql_hit_fetch_millis_total += retrieval_report.sql_hit_fetch_millis;
+        summary.rust_aggregation_millis_total += retrieval_report.rust_aggregation_millis;
+        summary.candidate_metadata_load_millis_total +=
+            retrieval_report.candidate_metadata_load_millis;
+        summary.robust_rerank_millis_total += retrieval_report.robust_rerank_millis;
 
         let query_report = MediaMatchV3DiagnosticFingerprintReport {
             path: query.fingerprint.record.identity.normalized_path.clone(),
@@ -597,6 +665,13 @@ pub fn run_media_match_v3_diagnostic_manifest(
                 positive_rank_by_id.insert(id.to_owned(), retrieval_rank);
             }
             let retrieved = retrieval_rank.is_some();
+            let max_promotion_rank = candidate
+                .expectation
+                .max_promotion_rank
+                .unwrap_or_else(|| options.max_full_promotions_per_query.max(1));
+            let within_promotion_budget = retrieval_rank
+                .map(|rank| rank <= max_promotion_rank)
+                .unwrap_or(false);
             let sampled_retrieval_rank = matches!(
                 index_mode,
                 MediaMatchV3DiagnosticIndexMode::SampledFast
@@ -686,12 +761,14 @@ pub fn run_media_match_v3_diagnostic_manifest(
                     &autoplay_settings,
                     retrieved,
                     retrieval_rank,
+                    within_promotion_budget,
                 )
             } else {
                 evaluate_retrieval_benchmark_expectation(
                     &candidate.expectation,
                     retrieved,
                     retrieval_rank,
+                    within_promotion_budget,
                 )
             };
             let passed = failures.is_empty();
@@ -703,6 +780,12 @@ pub fn run_media_match_v3_diagnostic_manifest(
             }
             increment_report_source_count(&mut summary, fingerprint.source);
             let final_verified_rank = promotion_reason.as_ref().and(retrieval_rank);
+            let first_strong_candidate_rank = decision.as_ref().and_then(|decision| {
+                (decision.tier == MediaMatchTier::Strong)
+                    .then_some(final_verified_rank)
+                    .flatten()
+            });
+            let promoted_candidate_ranks = final_verified_rank.into_iter().collect::<Vec<_>>();
             reports.push(MediaMatchV3DiagnosticCandidateReport {
                 candidate_id: candidate.expectation.id.clone(),
                 path: normalized_candidate.clone(),
@@ -715,6 +798,10 @@ pub fn run_media_match_v3_diagnostic_manifest(
                 retrieval_rank,
                 sampled_retrieval_rank,
                 final_verified_rank,
+                within_promotion_budget,
+                promotion_budget_exhausted: !within_promotion_budget && retrieval_rank.is_some(),
+                promoted_candidate_ranks,
+                first_strong_candidate_rank,
                 promotion_reason,
                 full_promotion_millis,
                 decision: decision_report,
@@ -809,6 +896,7 @@ pub fn run_media_match_v3_diagnostic_manifest(
         summary.full_promoted_file_count = summary.full_fingerprint_count;
     }
     apply_report_row_fingerprint_totals(&mut summary, &cases);
+    apply_retrieval_percentile_summary(&mut summary, &cases);
 
     summary.run_wall_millis = run_started_at.elapsed().as_millis();
     if matches!(index_mode, MediaMatchV3DiagnosticIndexMode::Production) {
@@ -875,6 +963,40 @@ fn files_per_minute(files: usize, millis: u128) -> u64 {
         .saturating_add(millis / 2)
         / millis;
     rounded.min(u64::MAX as u128) as u64
+}
+
+fn apply_retrieval_percentile_summary(
+    summary: &mut MediaMatchV3DiagnosticSummaryReport,
+    cases: &[MediaMatchV3DiagnosticCaseReport],
+) {
+    let mut retrieval_millis = cases
+        .iter()
+        .map(|case| case.retrieval.retrieval_elapsed_ms)
+        .collect::<Vec<_>>();
+    if retrieval_millis.is_empty() {
+        return;
+    }
+    retrieval_millis.sort_unstable();
+    summary.per_query_retrieval_millis_p50 = percentile_u128(&retrieval_millis, 50);
+    summary.per_query_retrieval_millis_p95 = percentile_u128(&retrieval_millis, 95);
+    summary.per_query_retrieval_millis_p99 = percentile_u128(&retrieval_millis, 99);
+    summary.per_query_retrieval_millis_max = retrieval_millis.last().copied().unwrap_or_default();
+
+    let mut unaccounted_millis = cases
+        .iter()
+        .map(|case| case.retrieval.retrieval_unaccounted_millis)
+        .collect::<Vec<_>>();
+    unaccounted_millis.sort_unstable();
+    summary.retrieval_unaccounted_millis_p95 = percentile_u128(&unaccounted_millis, 95);
+}
+
+fn percentile_u128(sorted_values: &[u128], percentile: usize) -> u128 {
+    if sorted_values.is_empty() {
+        return 0;
+    }
+    let clamped = percentile.min(100);
+    let index = (sorted_values.len() - 1) * clamped / 100;
+    sorted_values[index]
 }
 
 fn apply_report_row_fingerprint_totals(
@@ -1259,18 +1381,32 @@ impl MediaMatchV3DiagnosticRetrievalReport {
             hard_negative_paths,
         );
         Self {
+            retrieval_strategy: stats.retrieval_strategy,
             query_buckets_total: stats.query_buckets_total,
             query_buckets_skipped_common: stats.query_buckets_skipped_common,
             raw_hit_rows_processed: stats.raw_hit_rows_processed,
             candidates_scored: stats.candidates_scored,
             retrieval_elapsed_ms: stats.retrieval_elapsed_ms,
+            retrieval_measured_stage_millis: stats.retrieval_measured_stage_millis,
+            retrieval_unaccounted_millis: stats.retrieval_unaccounted_millis,
             stats_dirty_check_millis: stats.stats_dirty_check_millis,
             stats_refresh_millis: stats.stats_refresh_millis,
             query_anchor_load_millis: stats.query_anchor_load_millis,
             common_bucket_filter_millis: stats.common_bucket_filter_millis,
             sql_hit_fetch_millis: stats.sql_hit_fetch_millis,
+            temp_table_create_millis: stats.temp_table_create_millis,
+            temp_table_insert_millis: stats.temp_table_insert_millis,
+            temp_table_index_millis: stats.temp_table_index_millis,
+            temp_table_drop_millis: stats.temp_table_drop_millis,
+            sql_prepare_millis: stats.sql_prepare_millis,
+            sql_execute_millis: stats.sql_execute_millis,
             rust_aggregation_millis: stats.rust_aggregation_millis,
+            candidate_metadata_load_millis: stats.candidate_metadata_load_millis,
+            robust_rerank_millis: stats.robust_rerank_millis,
             candidate_sort_millis: stats.candidate_sort_millis,
+            retrieved_candidate_detail_build_millis: stats.retrieved_candidate_detail_build_millis,
+            retrieved_path_load_millis: stats.retrieved_path_load_millis,
+            report_candidate_attach_millis: stats.report_candidate_attach_millis,
             path_lookup_millis: stats.path_lookup_millis,
             explain_query_plan_millis: stats.explain_query_plan_millis,
             stats_refresh_ran: stats.stats_refresh_ran,
@@ -1570,6 +1706,7 @@ fn evaluate_retrieval_benchmark_expectation(
     expected: &MediaMatchV3DiagnosticExpectation,
     retrieved: bool,
     retrieval_rank: Option<usize>,
+    within_promotion_budget: bool,
 ) -> Vec<String> {
     let mut failures = Vec::new();
     if let Some(expected_retrieved) = expected.expected_retrieved
@@ -1592,6 +1729,20 @@ fn evaluate_retrieval_benchmark_expectation(
     }
     if expected.must_be_retrieved && !retrieved {
         failures.push("expected candidate to be retrieved, but it was absent".to_owned());
+    }
+    if let Some(max_promotion_rank) = expected.max_promotion_rank {
+        match retrieval_rank {
+            Some(rank) if rank <= max_promotion_rank => {}
+            Some(rank) => failures.push(format!(
+                "expected promotion rank <= {max_promotion_rank}, got {rank}"
+            )),
+            None => failures.push(format!(
+                "expected promotion rank <= {max_promotion_rank}, but candidate was absent"
+            )),
+        }
+    }
+    if expected.expect_within_promotion_budget && !within_promotion_budget {
+        failures.push("expected candidate within promotion budget".to_owned());
     }
     failures
 }
@@ -1602,6 +1753,7 @@ fn evaluate_diagnostic_expectation(
     autoplay_settings: &MediaMatchSettings,
     retrieved: bool,
     retrieval_rank: Option<usize>,
+    within_promotion_budget: bool,
 ) -> Vec<String> {
     let mut failures = Vec::new();
     if let Some(expected_retrieved) = expected.expected_retrieved
@@ -1624,6 +1776,20 @@ fn evaluate_diagnostic_expectation(
     }
     if expected.must_be_retrieved && !retrieved {
         failures.push("expected candidate to be retrieved, but it was absent".to_owned());
+    }
+    if let Some(max_promotion_rank) = expected.max_promotion_rank {
+        match retrieval_rank {
+            Some(rank) if rank <= max_promotion_rank => {}
+            Some(rank) => failures.push(format!(
+                "expected promotion rank <= {max_promotion_rank}, got {rank}"
+            )),
+            None => failures.push(format!(
+                "expected promotion rank <= {max_promotion_rank}, but candidate was absent"
+            )),
+        }
+    }
+    if expected.expect_within_promotion_budget && !within_promotion_budget {
+        failures.push("expected candidate within promotion budget".to_owned());
     }
     if expected.skip_decision_expectation {
         return failures;
@@ -1887,6 +2053,8 @@ mod tests {
                     must_be_retrieved: false,
                     expected_retrieved: None,
                     max_retrieval_rank: None,
+                    max_promotion_rank: None,
+                    expect_within_promotion_budget: false,
                     skip_decision_expectation: false,
                 }],
                 hard_negatives: Vec::new(),
@@ -2209,6 +2377,8 @@ mod tests {
                     must_be_retrieved: false,
                     expected_retrieved: None,
                     max_retrieval_rank: None,
+                    max_promotion_rank: None,
+                    expect_within_promotion_budget: false,
                     skip_decision_expectation: false,
                 }],
                 hard_negatives: Vec::new(),
@@ -2265,6 +2435,8 @@ mod tests {
             must_be_retrieved: true,
             expected_retrieved: None,
             max_retrieval_rank: None,
+            max_promotion_rank: None,
+            expect_within_promotion_budget: false,
             skip_decision_expectation: false,
         };
 
@@ -2274,6 +2446,7 @@ mod tests {
             &settings,
             true,
             Some(1),
+            true,
         );
         let fail = evaluate_diagnostic_expectation(
             &decision_with_offset_ms(8000),
@@ -2281,6 +2454,7 @@ mod tests {
             &settings,
             false,
             None,
+            false,
         );
 
         assert!(pass.is_empty(), "{pass:?}");
@@ -2310,6 +2484,8 @@ mod tests {
             must_be_retrieved: false,
             expected_retrieved: None,
             max_retrieval_rank: None,
+            max_promotion_rank: None,
+            expect_within_promotion_budget: false,
             skip_decision_expectation: false,
         };
 
@@ -2319,6 +2495,7 @@ mod tests {
             &settings,
             false,
             None,
+            false,
         );
 
         assert!(failures.is_empty(), "{failures:?}");
@@ -2341,10 +2518,22 @@ mod tests {
         sampled_decision.tier = MediaMatchTier::Probable;
         sampled_decision.evidence.v3_class = Some(MatchClassV3::SameCutProbable);
 
-        let pass =
-            evaluate_diagnostic_expectation(&sampled_decision, &expected, &settings, true, Some(1));
-        let fail =
-            evaluate_diagnostic_expectation(&sampled_decision, &expected, &settings, true, Some(2));
+        let pass = evaluate_diagnostic_expectation(
+            &sampled_decision,
+            &expected,
+            &settings,
+            true,
+            Some(1),
+            true,
+        );
+        let fail = evaluate_diagnostic_expectation(
+            &sampled_decision,
+            &expected,
+            &settings,
+            true,
+            Some(2),
+            true,
+        );
 
         assert!(pass.is_empty(), "{pass:?}");
         assert!(
@@ -2392,6 +2581,7 @@ mod tests {
                 max_full_promotions_per_query: 1,
                 promote_expected_candidates: false,
                 retrieval_benchmark_only: false,
+                retrieval_strategy: MediaMatchV3RetrievalStrategy::Auto,
                 tools: MediaMatchToolPaths {
                     ffmpeg: PathBuf::from("ffmpeg"),
                     ffprobe: PathBuf::from("ffprobe"),
@@ -2432,6 +2622,7 @@ mod tests {
                 max_full_promotions_per_query: 1,
                 promote_expected_candidates: false,
                 retrieval_benchmark_only: false,
+                retrieval_strategy: MediaMatchV3RetrievalStrategy::Auto,
                 tools: MediaMatchToolPaths {
                     ffmpeg: PathBuf::from("ffmpeg"),
                     ffprobe: PathBuf::from("ffprobe"),
@@ -2490,6 +2681,7 @@ mod tests {
                 max_full_promotions_per_query: 1,
                 promote_expected_candidates: false,
                 retrieval_benchmark_only: false,
+                retrieval_strategy: MediaMatchV3RetrievalStrategy::Auto,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
             },
@@ -2546,6 +2738,7 @@ mod tests {
                 max_full_promotions_per_query: 1,
                 promote_expected_candidates: false,
                 retrieval_benchmark_only: false,
+                retrieval_strategy: MediaMatchV3RetrievalStrategy::Auto,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
             },
@@ -2593,6 +2786,7 @@ mod tests {
                 max_full_promotions_per_query: 1,
                 promote_expected_candidates: false,
                 retrieval_benchmark_only: false,
+                retrieval_strategy: MediaMatchV3RetrievalStrategy::Auto,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
             },
@@ -2629,6 +2823,7 @@ mod tests {
                 max_full_promotions_per_query: 1,
                 promote_expected_candidates: false,
                 retrieval_benchmark_only: false,
+                retrieval_strategy: MediaMatchV3RetrievalStrategy::Auto,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
             },
@@ -2686,6 +2881,8 @@ mod tests {
             must_be_retrieved: false,
             expected_retrieved: None,
             max_retrieval_rank: None,
+            max_promotion_rank: None,
+            expect_within_promotion_budget: false,
             skip_decision_expectation: false,
         }
     }
@@ -2702,6 +2899,8 @@ mod tests {
             must_be_retrieved: false,
             expected_retrieved: None,
             max_retrieval_rank: None,
+            max_promotion_rank: None,
+            expect_within_promotion_budget: false,
             skip_decision_expectation: false,
         }
     }

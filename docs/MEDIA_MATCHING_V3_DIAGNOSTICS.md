@@ -208,10 +208,15 @@ discoverable but should not outrank coherent full-episode evidence unless the
 evidence is overwhelming. Sampled-only hard-negative diagnostics do not make
 any candidate autoplay eligible.
 
-Large warm-cache retrieval reports also break `retrievalElapsedMs` into
-`statsDirtyCheckMillis`, `statsRefreshMillis`, `queryAnchorLoadMillis`,
-`commonBucketFilterMillis`, `sqlHitFetchMillis`, `rustAggregationMillis`,
-`candidateSortMillis`, and `pathLookupMillis`. The `statsRefreshRan`,
+Large warm-cache retrieval reports break `retrievalElapsedMs` into named
+stages. The key fields are `statsDirtyCheckMillis`, `statsRefreshMillis`,
+`queryAnchorLoadMillis`, `commonBucketFilterMillis`, `sqlPrepareMillis`,
+`sqlExecuteMillis`, `sqlHitFetchMillis`, `rustAggregationMillis`,
+`robustRerankMillis`, `candidateSortMillis`, `candidateMetadataLoadMillis`,
+`retrievedCandidateDetailBuildMillis`, `retrievedPathLoadMillis`, and
+`pathLookupMillis`. `retrievalMeasuredStageMillis` and
+`retrievalUnaccountedMillis` make timing coverage explicit; warm benchmark runs
+should keep unaccounted time close to zero. The `statsRefreshRan`,
 `statsBucketsRefreshed`, `statsAnchorRowsScanned`,
 `anchorStatsDirtyBeforeRun`, and `anchorStatsDirtyAfterRun` fields show whether
 the run paid an anchor-stats refresh cost. Use this command after bulk index
@@ -225,10 +230,30 @@ cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.sampled.js
 For a warm-cache retrieval benchmark, use `--retrieval-benchmark-only` with a
 sampled-fast cache. The run still validates retrieval expectations and hard
 negatives, but skips direct pair decisions and dense promotion so
-`retrievalTotalMillis` reflects lookup/ranking cost:
+`retrievalTotalMillis` reflects lookup/ranking cost. The CLI accepts
+`--retrieval-strategy auto`, `temp-table`, or `bucket-fetch`; `auto` currently
+uses the temp-table indexed join because it is faster on the noisy 4k sampled
+index while `bucket-fetch` remains available for comparison:
 
 ```powershell
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.sampled.json --index-mode sampled-fast --retrieval-benchmark-only --output reports/audio-retrieval-benchmark.json --cache-root .media-match-v3-cache-audio-sampled-fast
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.sampled.json --index-mode sampled-fast --retrieval-benchmark-only --retrieval-strategy auto --output reports/audio-retrieval-benchmark.json --cache-root .media-match-v3-cache-audio-sampled-fast
+```
+
+Use production promotion expectations when rank 1 is useful as a quality metric
+but not required for user success. `maxPromotionRank` and
+`expectWithinPromotionBudget` let a sampled-fast candidate pass the retrieval
+stage when it is within the dense full promotion budget; `maxRetrievalRank`
+remains the stricter rank-quality gate.
+
+```json
+{
+  "id": "same-episode-split-or-merged",
+  "path": "expected-episode.mkv",
+  "expectedRetrieved": true,
+  "maxPromotionRank": 3,
+  "expectWithinPromotionBudget": true,
+  "skipDecisionExpectation": true
+}
 ```
 
 ## Corpus Calibration Workflow
