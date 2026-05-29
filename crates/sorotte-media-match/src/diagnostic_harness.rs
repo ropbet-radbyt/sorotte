@@ -13,13 +13,15 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use crate::extraction::media_source_path_info;
+use crate::extraction::probe_audio_packet_positions_for_sampled_windows;
 use crate::{
     InstrumentedMediaFingerprint, MEDIA_MATCH_ANCHOR_VERSION, MatchClassV3, MediaAudioIndexMode,
-    MediaDenseAudioProfile, MediaExtractionSettings, MediaMatchAutoplayPolicy, MediaMatchDecision,
-    MediaMatchSettings, MediaMatchTier, MediaMatchToolPaths, MediaMatchV3DiagnosticSummary,
-    MediaMatchV3RetrievalStats, MediaMatchV3RetrievalStrategy, MediaMatchV3RetrievedCandidate,
-    MediaMatchV3SaveStats, MediaMatchV3SqliteSizeReport, V3Tuning, current_v3_tuning,
-    decide_media_match, fingerprint_media_file_with_report, load_media_match_v3_record_for_path,
+    MediaAudioStreamMetrics, MediaDenseAudioProfile, MediaExtractionSettings,
+    MediaMatchAutoplayPolicy, MediaMatchDecision, MediaMatchSettings, MediaMatchTier,
+    MediaMatchToolPaths, MediaMatchV3DiagnosticSummary, MediaMatchV3RetrievalStats,
+    MediaMatchV3RetrievalStrategy, MediaMatchV3RetrievedCandidate, MediaMatchV3SaveStats,
+    MediaMatchV3SqliteSizeReport, V3Tuning, current_v3_tuning, decide_media_match,
+    fingerprint_media_file_with_report, load_media_match_v3_record_for_path,
     media_extraction_settings_hash, media_match_v3_anchor_candidate_details_with_strategy,
     media_match_v3_sqlite_size_report, normalize_media_path, open_media_match_v3_index,
     save_media_match_v3_record_with_stats, summarize_decision_v3_diagnostics,
@@ -107,6 +109,7 @@ pub struct MediaMatchV3DiagnosticRunOptions {
     pub sampled_fast_per_network_source_workers: Option<usize>,
     pub sampled_fast_per_removable_source_workers: Option<usize>,
     pub adaptive_io_concurrency_enabled: bool,
+    pub probe_audio_packets: bool,
     pub tools: MediaMatchToolPaths,
     pub generated_at_unix_millis: Option<u64>,
 }
@@ -2393,7 +2396,35 @@ fn fingerprint_fresh_diagnostic_jobs(
             extraction_worker_wall_millis =
                 extraction_worker_wall_millis.saturating_add(output.worker_wall_millis);
             match output.result {
-                Ok(fingerprint) => {
+                Ok(mut fingerprint) => {
+                    if options.probe_audio_packets && settings.audio_index_mode.is_sampled() {
+                        match probe_audio_packet_positions_for_sampled_windows(
+                            &tools.ffprobe,
+                            &output.path,
+                            fingerprint.record.duration_seconds,
+                            settings.audio_index_mode,
+                            fingerprint.report.audio_stream.ffmpeg_input_read_bytes,
+                            None,
+                        ) {
+                            Ok(packet_metrics) => merge_packet_probe_metrics(
+                                &mut fingerprint.report.audio_stream,
+                                packet_metrics,
+                            ),
+                            Err(error) => {
+                                fingerprint
+                                    .report
+                                    .audio_stream
+                                    .audio_packet_positions_available = Some(false);
+                                fingerprint
+                                    .report
+                                    .audio_stream
+                                    .ffmpeg_command_kind
+                                    .get_or_insert_with(|| {
+                                        format!("audio-only-pcm packet-probe-error={error}")
+                                    });
+                            }
+                        };
+                    }
                     let diagnostics = summarize_instrumented_record_v3_diagnostics(&fingerprint);
                     let rows_inserted = fingerprint
                         .record
@@ -2502,6 +2533,66 @@ fn fingerprint_fresh_diagnostic_jobs(
         files_indexed,
         files_failed,
     })
+}
+
+fn merge_packet_probe_metrics(
+    target: &mut MediaAudioStreamMetrics,
+    source: MediaAudioStreamMetrics,
+) {
+    if target.container_format.is_none() {
+        target.container_format = source.container_format;
+    }
+    if target.audio_stream_index.is_none() {
+        target.audio_stream_index = source.audio_stream_index;
+    }
+    if target.audio_codec.is_none() {
+        target.audio_codec = source.audio_codec;
+    }
+    if target.audio_bitrate_bps.is_none() {
+        target.audio_bitrate_bps = source.audio_bitrate_bps;
+    }
+    if target.audio_duration_millis.is_none() {
+        target.audio_duration_millis = source.audio_duration_millis;
+    }
+    if target.audio_start_time_millis.is_none() {
+        target.audio_start_time_millis = source.audio_start_time_millis;
+    }
+    if target.audio_packet_positions_available.is_none() {
+        target.audio_packet_positions_available = source.audio_packet_positions_available;
+    }
+    if target
+        .audio_packet_position_completeness_per_mille
+        .is_none()
+    {
+        target.audio_packet_position_completeness_per_mille =
+            source.audio_packet_position_completeness_per_mille;
+    }
+    if target.audio_packet_positions_monotonic.is_none() {
+        target.audio_packet_positions_monotonic = source.audio_packet_positions_monotonic;
+    }
+    if target.average_audio_packet_size_bytes.is_none() {
+        target.average_audio_packet_size_bytes = source.average_audio_packet_size_bytes;
+    }
+    if target.audio_packet_count_in_sampled_windows.is_none() {
+        target.audio_packet_count_in_sampled_windows = source.audio_packet_count_in_sampled_windows;
+    }
+    if target.audio_packet_probe_millis.is_none() {
+        target.audio_packet_probe_millis = source.audio_packet_probe_millis;
+    }
+    if target.audio_packet_probe_read_bytes.is_none() {
+        target.audio_packet_probe_read_bytes = source.audio_packet_probe_read_bytes;
+    }
+    if target.audio_packet_window_compressed_bytes.is_none() {
+        target.audio_packet_window_compressed_bytes = source.audio_packet_window_compressed_bytes;
+    }
+    if target.audio_packet_window_coalesced_range_bytes.is_none() {
+        target.audio_packet_window_coalesced_range_bytes =
+            source.audio_packet_window_coalesced_range_bytes;
+    }
+    if target.audio_packet_read_savings_estimate_bytes.is_none() {
+        target.audio_packet_read_savings_estimate_bytes =
+            source.audio_packet_read_savings_estimate_bytes;
+    }
 }
 
 fn fresh_timing_for_output(
@@ -3721,6 +3812,7 @@ mod tests {
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
+                probe_audio_packets: false,
                 tools: MediaMatchToolPaths {
                     ffmpeg: PathBuf::from("ffmpeg"),
                     ffprobe: PathBuf::from("ffprobe"),
@@ -3767,6 +3859,7 @@ mod tests {
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
+                probe_audio_packets: false,
                 tools: MediaMatchToolPaths {
                     ffmpeg: PathBuf::from("ffmpeg"),
                     ffprobe: PathBuf::from("ffprobe"),
@@ -3871,6 +3964,7 @@ mod tests {
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
+                probe_audio_packets: false,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(123),
             },
@@ -3942,6 +4036,7 @@ mod tests {
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
+                probe_audio_packets: false,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
             },
@@ -4004,6 +4099,7 @@ mod tests {
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
+                probe_audio_packets: false,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
             },
@@ -4057,6 +4153,7 @@ mod tests {
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
+                probe_audio_packets: false,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
             },
@@ -4099,6 +4196,7 @@ mod tests {
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
+                probe_audio_packets: false,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
             },

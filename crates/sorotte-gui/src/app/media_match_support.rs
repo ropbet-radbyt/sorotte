@@ -4404,6 +4404,7 @@ mod tests {
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
+                probe_audio_packets: false,
                 tools,
                 generated_at_unix_millis: Some(123),
             },

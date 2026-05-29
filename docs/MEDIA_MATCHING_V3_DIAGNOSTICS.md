@@ -361,6 +361,53 @@ worker limit, indexed/failed file counts, source-local extraction and ffmpeg
 p50/p95 timings, input read bytes/ops, output PCM bytes, and read amplification.
 Use this section to see whether a single drive or network share is saturated.
 
+Sampled-fast audio extraction is explicitly audio-only. The diagnostic runner
+invokes ffmpeg with `-map 0:a:0 -vn -sn -dn` and records
+`ffmpegCommandKind`, `ffmpegSelectedStream`, `ffmpegDisabledVideo`,
+`ffmpegDisabledSubtitles`, and `ffmpegDisabledData` on each fresh fingerprint
+report. `-vn` prevents video decode and output selection; it does not guarantee
+that the container reader can avoid reading or seeking around video packet
+payloads. If `ffmpegInputReadBytes` is still much larger than
+`ffmpegOutputPcmBytes`, treat it as container/source-read amplification rather
+than accidental video fingerprinting.
+
+Use `--probe-audio-packets` to add an opt-in ffprobe feasibility pass for
+sampled-fast runs:
+
+```powershell
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --probe-audio-packets --output reports/audio-packet-probe.json --cache-root .media-match-v3-cache-audio --refresh-cache
+```
+
+The probe uses `ffprobe -select_streams a:0 -show_packets` and reports
+`containerFormat`, `audioStreamIndex`, `audioCodec`, `audioBitrateBps`,
+`audioDurationMillis`, `audioStartTimeMillis`,
+`audioPacketPositionsAvailable`,
+`audioPacketPositionCompletenessPerMille`,
+`audioPacketPositionsMonotonic`, `averageAudioPacketSizeBytes`,
+`audioPacketCountInSampledWindows`, `audioPacketProbeMillis`,
+`audioPacketWindowCompressedBytes`,
+`audioPacketWindowCoalescedRangeBytes`, and
+`audioPacketReadSavingsEstimateBytes`. Run this only on calibration samples or
+explicit cold-index experiments because packet probing can add another full
+container scan on some formats.
+
+For MKV/Matroska files, usable packet `pos` and `size` values are the first
+gate for direct audio range reads. A promising file set should show complete,
+monotonic packet positions and a coalesced sampled-window byte count far below
+the current ffmpeg input read bytes. If positions are absent, non-monotonic, or
+the probe cost is similar to the current extractor, direct packet reads should
+remain disabled and the safe ffmpeg path should stay in use.
+
+Audio-sidecar and direct packet-range extraction remain experimental strategy
+ideas, not production defaults. A sidecar path would stream-copy `0:a:0` to a
+local audio-only cache and decode sampled windows from that cache; it must be
+keyed by normalized path, mtime, size, selected stream, and fingerprint config
+hash. Direct packet-range extraction must fail closed and fall back to ffmpeg
+unless the container metadata proves the sampled-window audio packets can be
+read and decoded safely. Neither strategy changes sampled-only match policy:
+sampled-fast records remain retrieval/Probable evidence and are never
+autoplay-eligible without dense full verification.
+
 Sampled-fast workers can now be capped globally and per source:
 
 ```powershell

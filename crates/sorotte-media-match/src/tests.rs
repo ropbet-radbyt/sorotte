@@ -993,6 +993,27 @@ fn v3_diagnostics_serializes_stable_stream_metric_names() {
                 source_path_root: Some("E:\\".to_owned()),
                 source_path_kind: Some("local".to_owned()),
                 source_volume_id: Some("E:\\".to_owned()),
+                ffmpeg_command_kind: Some("audio-only-pcm".to_owned()),
+                ffmpeg_selected_stream: Some("0:a:0".to_owned()),
+                ffmpeg_disabled_video: true,
+                ffmpeg_disabled_subtitles: true,
+                ffmpeg_disabled_data: true,
+                container_format: Some("matroska,webm".to_owned()),
+                audio_stream_index: Some(1),
+                audio_codec: Some("flac".to_owned()),
+                audio_bitrate_bps: Some(712_000),
+                audio_duration_millis: Some(120_000),
+                audio_start_time_millis: Some(0),
+                audio_packet_positions_available: Some(true),
+                audio_packet_position_completeness_per_mille: Some(1000),
+                audio_packet_positions_monotonic: Some(true),
+                average_audio_packet_size_bytes: Some(512),
+                audio_packet_count_in_sampled_windows: Some(180),
+                audio_packet_probe_millis: Some(13),
+                audio_packet_probe_read_bytes: Some(88_000),
+                audio_packet_window_compressed_bytes: Some(92_160),
+                audio_packet_window_coalesced_range_bytes: Some(98_304),
+                audio_packet_read_savings_estimate_bytes: Some(925_696),
                 streamed_bytes: 10_000,
                 streamed_samples: 5_000,
                 peak_frames: 12,
@@ -1064,6 +1085,27 @@ fn v3_diagnostics_serializes_stable_stream_metric_names() {
     assert_eq!(value["sourcePathRoot"], "E:\\");
     assert_eq!(value["sourcePathKind"], "local");
     assert_eq!(value["sourceVolumeId"], "E:\\");
+    assert_eq!(value["ffmpegCommandKind"], "audio-only-pcm");
+    assert_eq!(value["ffmpegSelectedStream"], "0:a:0");
+    assert_eq!(value["ffmpegDisabledVideo"], true);
+    assert_eq!(value["ffmpegDisabledSubtitles"], true);
+    assert_eq!(value["ffmpegDisabledData"], true);
+    assert_eq!(value["containerFormat"], "matroska,webm");
+    assert_eq!(value["audioStreamIndex"], 1);
+    assert_eq!(value["audioCodec"], "flac");
+    assert_eq!(value["audioBitrateBps"], 712_000);
+    assert_eq!(value["audioDurationMillis"], 120_000);
+    assert_eq!(value["audioStartTimeMillis"], 0);
+    assert_eq!(value["audioPacketPositionsAvailable"], true);
+    assert_eq!(value["audioPacketPositionCompletenessPerMille"], 1000);
+    assert_eq!(value["audioPacketPositionsMonotonic"], true);
+    assert_eq!(value["averageAudioPacketSizeBytes"], 512);
+    assert_eq!(value["audioPacketCountInSampledWindows"], 180);
+    assert_eq!(value["audioPacketProbeMillis"], 13);
+    assert_eq!(value["audioPacketProbeReadBytes"], 88_000);
+    assert_eq!(value["audioPacketWindowCompressedBytes"], 92_160);
+    assert_eq!(value["audioPacketWindowCoalescedRangeBytes"], 98_304);
+    assert_eq!(value["audioPacketReadSavingsEstimateBytes"], 925_696);
     assert_eq!(value["ffmpegProcessWallMillis"], 43);
     assert_eq!(value["ffmpegInputReadBytes"], 1_024_000);
     assert_eq!(value["ffmpegInputReadOps"], 64);

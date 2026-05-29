@@ -161,6 +161,27 @@ pub struct MediaAudioStreamMetrics {
     pub source_path_root: Option<String>,
     pub source_path_kind: Option<String>,
     pub source_volume_id: Option<String>,
+    pub ffmpeg_command_kind: Option<String>,
+    pub ffmpeg_selected_stream: Option<String>,
+    pub ffmpeg_disabled_video: bool,
+    pub ffmpeg_disabled_subtitles: bool,
+    pub ffmpeg_disabled_data: bool,
+    pub container_format: Option<String>,
+    pub audio_stream_index: Option<usize>,
+    pub audio_codec: Option<String>,
+    pub audio_bitrate_bps: Option<u64>,
+    pub audio_duration_millis: Option<u64>,
+    pub audio_start_time_millis: Option<i64>,
+    pub audio_packet_positions_available: Option<bool>,
+    pub audio_packet_position_completeness_per_mille: Option<u16>,
+    pub audio_packet_positions_monotonic: Option<bool>,
+    pub average_audio_packet_size_bytes: Option<u64>,
+    pub audio_packet_count_in_sampled_windows: Option<usize>,
+    pub audio_packet_probe_millis: Option<u128>,
+    pub audio_packet_probe_read_bytes: Option<u64>,
+    pub audio_packet_window_compressed_bytes: Option<u64>,
+    pub audio_packet_window_coalesced_range_bytes: Option<u64>,
+    pub audio_packet_read_savings_estimate_bytes: Option<i64>,
     pub streamed_bytes: usize,
     pub streamed_samples: usize,
     pub peak_frames: usize,
@@ -574,7 +595,11 @@ fn extract_audio_constellation_v3_with_config_and_limit(
             "1".into(),
             "-i".into(),
             media_path.as_ref().as_os_str().to_os_string(),
+            "-map".into(),
+            "0:a:0".into(),
             "-vn".into(),
+            "-sn".into(),
+            "-dn".into(),
             "-ac".into(),
             "1".into(),
             "-ar".into(),
@@ -627,6 +652,7 @@ fn extract_audio_constellation_v3_with_config_and_limit(
     metrics.source_path_root = Some(source_info.root);
     metrics.source_path_kind = Some(source_info.kind);
     metrics.source_volume_id = source_info.volume_id;
+    mark_audio_only_ffmpeg_command(&mut metrics);
     metrics.pcm_drain_thread_millis = decode_stream_millis;
     metrics.channel_backpressure_millis =
         u128::from(channel_backpressure_nanos.load(Ordering::Relaxed)) / 1_000_000;
@@ -658,6 +684,14 @@ fn sum_optional_u64(left: Option<u64>, right: Option<u64>) -> Option<u64> {
         (Some(value), None) | (None, Some(value)) => Some(value),
         (None, None) => None,
     }
+}
+
+fn mark_audio_only_ffmpeg_command(metrics: &mut MediaAudioStreamMetrics) {
+    metrics.ffmpeg_command_kind = Some("audio-only-pcm".to_owned());
+    metrics.ffmpeg_selected_stream = Some("0:a:0".to_owned());
+    metrics.ffmpeg_disabled_video = true;
+    metrics.ffmpeg_disabled_subtitles = true;
+    metrics.ffmpeg_disabled_data = true;
 }
 
 fn update_atomic_max_usize(target: &AtomicUsize, value: usize) {
@@ -695,6 +729,7 @@ pub(crate) fn extract_audio_constellation_v3_sampled_index_with_metrics(
     combined_metrics.source_path_root = Some(source_info.root);
     combined_metrics.source_path_kind = Some(source_info.kind);
     combined_metrics.source_volume_id = source_info.volume_id;
+    mark_audio_only_ffmpeg_command(&mut combined_metrics);
     let mut process_wall_millis = 0u128;
     let mut body_regions = BTreeSet::new();
     let mut unique_hashes = BTreeSet::new();
@@ -719,7 +754,11 @@ pub(crate) fn extract_audio_constellation_v3_sampled_index_with_metrics(
                 window_seconds.to_string().into(),
                 "-i".into(),
                 media_path.as_ref().as_os_str().to_os_string(),
+                "-map".into(),
+                "0:a:0".into(),
                 "-vn".into(),
+                "-sn".into(),
+                "-dn".into(),
                 "-ac".into(),
                 "1".into(),
                 "-ar".into(),
@@ -900,6 +939,201 @@ fn sampled_audio_windows_v3(
         .collect()
 }
 
+pub(crate) fn probe_audio_packet_positions_for_sampled_windows(
+    ffprobe: impl AsRef<Path>,
+    media_path: impl AsRef<Path>,
+    duration_seconds: Option<f64>,
+    index_mode: MediaAudioIndexMode,
+    ffmpeg_input_read_bytes: Option<u64>,
+    cancel_flag: Option<&AtomicBool>,
+) -> Result<MediaAudioStreamMetrics, MediaFingerprintError> {
+    let config = sampled_audio_index_config(index_mode);
+    let windows = sampled_audio_windows_v3(duration_seconds, config);
+    let started_at = Instant::now();
+    let output = run_tool_output_with_metrics(
+        "ffprobe",
+        ffprobe.as_ref(),
+        [
+            "-v".into(),
+            "error".into(),
+            "-select_streams".into(),
+            "a:0".into(),
+            "-show_entries".into(),
+            "format=format_name:stream=index,codec_name,bit_rate,duration,start_time:packet=pts_time,dts_time,duration_time,pos,size".into(),
+            "-of".into(),
+            "json".into(),
+            media_path.as_ref().as_os_str().to_os_string(),
+        ],
+        cancel_flag,
+        FFPROBE_TIMEOUT,
+    )?;
+    ensure_tool_success("ffprobe", &output.output)?;
+    let probe_millis = started_at.elapsed().as_millis();
+    let mut metrics = audio_packet_probe_metrics_from_ffprobe_json(
+        &output.output.stdout,
+        &windows,
+        probe_millis,
+        ffmpeg_input_read_bytes,
+    )?;
+    metrics.audio_packet_probe_read_bytes = output.io_metrics.read_bytes;
+    Ok(metrics)
+}
+
+fn audio_packet_probe_metrics_from_ffprobe_json(
+    stdout: &[u8],
+    windows: &[(f64, u32)],
+    probe_millis: u128,
+    ffmpeg_input_read_bytes: Option<u64>,
+) -> Result<MediaAudioStreamMetrics, MediaFingerprintError> {
+    let value: serde_json::Value = serde_json::from_slice(stdout).map_err(|error| {
+        MediaFingerprintError::InvalidToolOutput {
+            tool: "ffprobe",
+            reason: format!("failed parsing audio packet JSON: {error}"),
+        }
+    })?;
+    let mut metrics = MediaAudioStreamMetrics {
+        audio_packet_probe_millis: Some(probe_millis),
+        ..MediaAudioStreamMetrics::default()
+    };
+    metrics.container_format = value
+        .get("format")
+        .and_then(|format| format.get("format_name"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    if let Some(stream) = value
+        .get("streams")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|streams| streams.first())
+    {
+        metrics.audio_stream_index = json_u64(stream.get("index")).map(|value| value as usize);
+        metrics.audio_codec = stream
+            .get("codec_name")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        metrics.audio_bitrate_bps = json_u64(stream.get("bit_rate"));
+        metrics.audio_duration_millis =
+            json_seconds_millis(stream.get("duration")).and_then(|value| u64::try_from(value).ok());
+        metrics.audio_start_time_millis = json_seconds_millis(stream.get("start_time"));
+        if let Some(index) = metrics.audio_stream_index {
+            metrics.ffmpeg_selected_stream = Some(format!("0:{index}"));
+        }
+    }
+
+    let mut total_packets = 0usize;
+    let mut packets_with_position = 0usize;
+    let mut monotonic = true;
+    let mut previous_position = None::<u64>;
+    let mut total_packet_bytes = 0u64;
+    let mut sampled_packets = 0usize;
+    let mut sampled_packet_bytes = 0u64;
+    let mut ranges = Vec::<(u64, u64)>::new();
+
+    if let Some(packets) = value.get("packets").and_then(serde_json::Value::as_array) {
+        for packet in packets {
+            total_packets += 1;
+            let position = json_u64(packet.get("pos"));
+            let size = json_u64(packet.get("size"));
+            if let Some(size) = size {
+                total_packet_bytes = total_packet_bytes.saturating_add(size);
+            }
+            if let Some(position) = position {
+                packets_with_position += 1;
+                if let Some(previous_position) = previous_position
+                    && position < previous_position
+                {
+                    monotonic = false;
+                }
+                previous_position = Some(position);
+            }
+            let packet_time = json_seconds(packet.get("pts_time"))
+                .or_else(|| json_seconds(packet.get("dts_time")));
+            let packet_duration = json_seconds(packet.get("duration_time")).unwrap_or(0.0);
+            if let (Some(packet_time), Some(position), Some(size)) = (packet_time, position, size)
+                && packet_overlaps_sampled_windows(packet_time, packet_duration, windows)
+            {
+                sampled_packets += 1;
+                sampled_packet_bytes = sampled_packet_bytes.saturating_add(size);
+                ranges.push((position, position.saturating_add(size)));
+            }
+        }
+    }
+
+    let coalesced_bytes = coalesced_range_bytes(ranges);
+    metrics.audio_packet_positions_available = Some(packets_with_position > 0);
+    metrics.audio_packet_position_completeness_per_mille = Some(
+        packets_with_position
+            .saturating_mul(1000)
+            .checked_div(total_packets)
+            .unwrap_or(0)
+            .min(1000) as u16,
+    );
+    metrics.audio_packet_positions_monotonic = Some(monotonic);
+    metrics.average_audio_packet_size_bytes = if total_packets == 0 {
+        None
+    } else {
+        Some(total_packet_bytes.saturating_div(total_packets as u64))
+    };
+    metrics.audio_packet_count_in_sampled_windows = Some(sampled_packets);
+    metrics.audio_packet_window_compressed_bytes = Some(sampled_packet_bytes);
+    metrics.audio_packet_window_coalesced_range_bytes = Some(coalesced_bytes);
+    metrics.audio_packet_read_savings_estimate_bytes = ffmpeg_input_read_bytes
+        .map(|read_bytes| read_bytes as i128 - coalesced_bytes as i128)
+        .and_then(|value| i64::try_from(value).ok());
+    Ok(metrics)
+}
+
+fn packet_overlaps_sampled_windows(
+    packet_time: f64,
+    packet_duration: f64,
+    windows: &[(f64, u32)],
+) -> bool {
+    let packet_end = packet_time + packet_duration.max(0.0);
+    windows.iter().any(|(start, seconds)| {
+        let end = *start + f64::from(*seconds);
+        packet_time < end && packet_end >= *start
+    })
+}
+
+fn coalesced_range_bytes(mut ranges: Vec<(u64, u64)>) -> u64 {
+    if ranges.is_empty() {
+        return 0;
+    }
+    ranges.sort_unstable();
+    let mut total = 0u64;
+    let (mut current_start, mut current_end) = ranges[0];
+    for (start, end) in ranges.into_iter().skip(1) {
+        if start <= current_end {
+            current_end = current_end.max(end);
+        } else {
+            total = total.saturating_add(current_end.saturating_sub(current_start));
+            current_start = start;
+            current_end = end;
+        }
+    }
+    total.saturating_add(current_end.saturating_sub(current_start))
+}
+
+fn json_u64(value: Option<&serde_json::Value>) -> Option<u64> {
+    match value? {
+        serde_json::Value::Number(number) => number.as_u64(),
+        serde_json::Value::String(text) => text.parse::<u64>().ok(),
+        _ => None,
+    }
+}
+
+fn json_seconds(value: Option<&serde_json::Value>) -> Option<f64> {
+    match value? {
+        serde_json::Value::Number(number) => number.as_f64(),
+        serde_json::Value::String(text) => text.parse::<f64>().ok(),
+        _ => None,
+    }
+    .filter(|value| value.is_finite())
+}
+
+fn json_seconds_millis(value: Option<&serde_json::Value>) -> Option<i64> {
+    json_seconds(value).map(|seconds| (seconds * 1000.0).round() as i64)
+}
+
 fn merge_audio_stream_metrics(
     target: &mut MediaAudioStreamMetrics,
     source: &MediaAudioStreamMetrics,
@@ -912,6 +1146,69 @@ fn merge_audio_stream_metrics(
     }
     if target.source_volume_id.is_none() {
         target.source_volume_id = source.source_volume_id.clone();
+    }
+    if target.ffmpeg_command_kind.is_none() {
+        target.ffmpeg_command_kind = source.ffmpeg_command_kind.clone();
+    }
+    if target.ffmpeg_selected_stream.is_none() {
+        target.ffmpeg_selected_stream = source.ffmpeg_selected_stream.clone();
+    }
+    target.ffmpeg_disabled_video |= source.ffmpeg_disabled_video;
+    target.ffmpeg_disabled_subtitles |= source.ffmpeg_disabled_subtitles;
+    target.ffmpeg_disabled_data |= source.ffmpeg_disabled_data;
+    if target.container_format.is_none() {
+        target.container_format = source.container_format.clone();
+    }
+    if target.audio_stream_index.is_none() {
+        target.audio_stream_index = source.audio_stream_index;
+    }
+    if target.audio_codec.is_none() {
+        target.audio_codec = source.audio_codec.clone();
+    }
+    if target.audio_bitrate_bps.is_none() {
+        target.audio_bitrate_bps = source.audio_bitrate_bps;
+    }
+    if target.audio_duration_millis.is_none() {
+        target.audio_duration_millis = source.audio_duration_millis;
+    }
+    if target.audio_start_time_millis.is_none() {
+        target.audio_start_time_millis = source.audio_start_time_millis;
+    }
+    if target.audio_packet_positions_available.is_none() {
+        target.audio_packet_positions_available = source.audio_packet_positions_available;
+    }
+    if target
+        .audio_packet_position_completeness_per_mille
+        .is_none()
+    {
+        target.audio_packet_position_completeness_per_mille =
+            source.audio_packet_position_completeness_per_mille;
+    }
+    if target.audio_packet_positions_monotonic.is_none() {
+        target.audio_packet_positions_monotonic = source.audio_packet_positions_monotonic;
+    }
+    if target.average_audio_packet_size_bytes.is_none() {
+        target.average_audio_packet_size_bytes = source.average_audio_packet_size_bytes;
+    }
+    if target.audio_packet_count_in_sampled_windows.is_none() {
+        target.audio_packet_count_in_sampled_windows = source.audio_packet_count_in_sampled_windows;
+    }
+    if target.audio_packet_probe_millis.is_none() {
+        target.audio_packet_probe_millis = source.audio_packet_probe_millis;
+    }
+    if target.audio_packet_probe_read_bytes.is_none() {
+        target.audio_packet_probe_read_bytes = source.audio_packet_probe_read_bytes;
+    }
+    if target.audio_packet_window_compressed_bytes.is_none() {
+        target.audio_packet_window_compressed_bytes = source.audio_packet_window_compressed_bytes;
+    }
+    if target.audio_packet_window_coalesced_range_bytes.is_none() {
+        target.audio_packet_window_coalesced_range_bytes =
+            source.audio_packet_window_coalesced_range_bytes;
+    }
+    if target.audio_packet_read_savings_estimate_bytes.is_none() {
+        target.audio_packet_read_savings_estimate_bytes =
+            source.audio_packet_read_savings_estimate_bytes;
     }
     target.streamed_bytes = target.streamed_bytes.saturating_add(source.streamed_bytes);
     target.streamed_samples = target
@@ -1195,6 +1492,26 @@ pub(crate) fn run_tool_output<I>(
 where
     I: IntoIterator<Item = std::ffi::OsString>,
 {
+    run_tool_output_with_metrics(tool, executable, args, cancel_flag, timeout)
+        .map(|output| output.output)
+}
+
+#[derive(Debug)]
+struct MediaToolCapturedOutput {
+    output: Output,
+    io_metrics: MediaToolProcessIoMetrics,
+}
+
+fn run_tool_output_with_metrics<I>(
+    tool: &'static str,
+    executable: &Path,
+    args: I,
+    cancel_flag: Option<&AtomicBool>,
+    timeout: Duration,
+) -> Result<MediaToolCapturedOutput, MediaFingerprintError>
+where
+    I: IntoIterator<Item = std::ffi::OsString>,
+{
     let mut command = hidden_media_match_command(executable);
     let mut child = command
         .args(args)
@@ -1247,12 +1564,16 @@ where
         }
         match child.try_wait() {
             Ok(Some(status)) => {
+                let io_metrics = process_io_counters(&child);
                 let stdout = join_pipe_reader(stdout_reader, tool, "stdout")?;
                 let stderr = join_pipe_reader(stderr_reader, tool, "stderr")?;
-                return Ok(Output {
-                    status,
-                    stdout,
-                    stderr,
+                return Ok(MediaToolCapturedOutput {
+                    output: Output {
+                        status,
+                        stdout,
+                        stderr,
+                    },
+                    io_metrics,
                 });
             }
             Ok(None) => thread::sleep(MEDIA_TOOL_POLL_INTERVAL),
@@ -1517,4 +1838,55 @@ fn ensure_tool_success(
         status: output.status.code(),
         stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audio_packet_probe_metrics_reports_sampled_window_ranges() {
+        let json = br#"{
+          "format": { "format_name": "matroska,webm" },
+          "streams": [
+            {
+              "index": 1,
+              "codec_name": "flac",
+              "bit_rate": "512000",
+              "duration": "120.000",
+              "start_time": "0.000"
+            }
+          ],
+          "packets": [
+            { "pts_time": "0.000", "duration_time": "1.000", "pos": "100", "size": "10" },
+            { "pts_time": "10.000", "duration_time": "1.000", "pos": "200", "size": "20" },
+            { "pts_time": "10.500", "duration_time": "1.000", "pos": "220", "size": "30" },
+            { "pts_time": "60.000", "duration_time": "1.000", "pos": "500", "size": "40" }
+          ]
+        }"#;
+
+        let metrics =
+            audio_packet_probe_metrics_from_ffprobe_json(json, &[(10.0, 2)], 7, Some(1_000))
+                .expect("packet probe JSON should parse");
+
+        assert_eq!(metrics.container_format.as_deref(), Some("matroska,webm"));
+        assert_eq!(metrics.audio_stream_index, Some(1));
+        assert_eq!(metrics.ffmpeg_selected_stream.as_deref(), Some("0:1"));
+        assert_eq!(metrics.audio_codec.as_deref(), Some("flac"));
+        assert_eq!(metrics.audio_bitrate_bps, Some(512_000));
+        assert_eq!(metrics.audio_duration_millis, Some(120_000));
+        assert_eq!(metrics.audio_start_time_millis, Some(0));
+        assert_eq!(metrics.audio_packet_positions_available, Some(true));
+        assert_eq!(
+            metrics.audio_packet_position_completeness_per_mille,
+            Some(1000)
+        );
+        assert_eq!(metrics.audio_packet_positions_monotonic, Some(true));
+        assert_eq!(metrics.average_audio_packet_size_bytes, Some(25));
+        assert_eq!(metrics.audio_packet_count_in_sampled_windows, Some(2));
+        assert_eq!(metrics.audio_packet_probe_millis, Some(7));
+        assert_eq!(metrics.audio_packet_window_compressed_bytes, Some(50));
+        assert_eq!(metrics.audio_packet_window_coalesced_range_bytes, Some(50));
+        assert_eq!(metrics.audio_packet_read_savings_estimate_bytes, Some(950));
+    }
 }

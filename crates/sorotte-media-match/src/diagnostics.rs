@@ -50,6 +50,27 @@ pub struct MediaMatchV3DiagnosticSummary {
     pub source_path_root: Option<String>,
     pub source_path_kind: Option<String>,
     pub source_volume_id: Option<String>,
+    pub ffmpeg_command_kind: Option<String>,
+    pub ffmpeg_selected_stream: Option<String>,
+    pub ffmpeg_disabled_video: bool,
+    pub ffmpeg_disabled_subtitles: bool,
+    pub ffmpeg_disabled_data: bool,
+    pub container_format: Option<String>,
+    pub audio_stream_index: Option<usize>,
+    pub audio_codec: Option<String>,
+    pub audio_bitrate_bps: Option<u64>,
+    pub audio_duration_millis: Option<u64>,
+    pub audio_start_time_millis: Option<i64>,
+    pub audio_packet_positions_available: Option<bool>,
+    pub audio_packet_position_completeness_per_mille: Option<u16>,
+    pub audio_packet_positions_monotonic: Option<bool>,
+    pub average_audio_packet_size_bytes: Option<u64>,
+    pub audio_packet_count_in_sampled_windows: Option<usize>,
+    pub audio_packet_probe_millis: Option<u128>,
+    pub audio_packet_probe_read_bytes: Option<u64>,
+    pub audio_packet_window_compressed_bytes: Option<u64>,
+    pub audio_packet_window_coalesced_range_bytes: Option<u64>,
+    pub audio_packet_read_savings_estimate_bytes: Option<i64>,
     pub streamed_bytes: Option<usize>,
     pub streamed_samples: Option<usize>,
     pub peak_frames: Option<usize>,
@@ -139,9 +160,45 @@ fn summarize_record_v3_diagnostics_with_report(
     let audio_stream = report.map(|report| &report.audio_stream);
     if let Some(report) = report {
         notes.push(format!(
-            "sourcePathRoot={} sourcePathKind={} streamedBytes={} streamedSamples={} peakFrames={} rawLandmarksEmitted={} rawLandmarksBeforeBounding={} rawLandmarksKeptBeforeFinal={} finalLandmarks={} maxBufferSamples={} maxRawLandmarksSeen={} maxRawLandmarksAfterCompaction={} rawLandmarkCompactions={} ffmpegProcessWallMillis={} ffmpegInputReadBytes={} ffmpegInputReadOps={} ffmpegOutputPcmBytes={} readAmplificationRatio={:.4} ffmpegInvocationCount={} sampledWindowSeekMillis={} sampledWindowDecodeMillis={} ffmpegOpenProbeMillis={} ffmpegExitMillis={} pcmDecodeDrainMillis={} pcmDrainThreadMillis={} analyzerThreadMillis={} channelBackpressureMillis={} maxQueuedPcmBytes={} analyzerMillis={} peakSelectionMillis={} pairingMillis={} compactionMillis={} reservoirMillis={} finalSelectionMillis={} anchorPeaksConsidered={} anchorPeaksSelected={} anchorPeaksSkippedByGate={} targetPeaksConsidered={} targetPeaksSelected={} candidatePairsConsidered={} candidatePairsSkippedByAnchorGate={} candidatePairsSkippedByTargetGate={} candidatePairsSkippedBySaturation={} candidatePairsEmitted={} landmarksAcceptedIntoReservoir={} landmarksRejectedByReservoir={} reservoirAcceptanceRatio={:.4} ffmpegDecodeStreamMillis={} sampledAudioSecondsDecoded={} sampledAudioWindowsDecoded={} fullAudioSecondsDecoded={} effectiveDecodedSecondsPerSecond={:.2}",
+            "sourcePathRoot={} sourcePathKind={} ffmpegCommandKind={} ffmpegSelectedStream={} ffmpegDisabledVideo={} ffmpegDisabledSubtitles={} ffmpegDisabledData={} containerFormat={} audioStreamIndex={} audioCodec={} audioBitrateBps={} audioDurationMillis={} audioStartTimeMillis={} audioPacketPositionsAvailable={} audioPacketPositionCompletenessPerMille={} audioPacketPositionsMonotonic={} averageAudioPacketSizeBytes={} audioPacketCountInSampledWindows={} audioPacketProbeMillis={} audioPacketProbeReadBytes={} audioPacketWindowCompressedBytes={} audioPacketWindowCoalescedRangeBytes={} audioPacketReadSavingsEstimateBytes={} streamedBytes={} streamedSamples={} peakFrames={} rawLandmarksEmitted={} rawLandmarksBeforeBounding={} rawLandmarksKeptBeforeFinal={} finalLandmarks={} maxBufferSamples={} maxRawLandmarksSeen={} maxRawLandmarksAfterCompaction={} rawLandmarkCompactions={} ffmpegProcessWallMillis={} ffmpegInputReadBytes={} ffmpegInputReadOps={} ffmpegOutputPcmBytes={} readAmplificationRatio={:.4} ffmpegInvocationCount={} sampledWindowSeekMillis={} sampledWindowDecodeMillis={} ffmpegOpenProbeMillis={} ffmpegExitMillis={} pcmDecodeDrainMillis={} pcmDrainThreadMillis={} analyzerThreadMillis={} channelBackpressureMillis={} maxQueuedPcmBytes={} analyzerMillis={} peakSelectionMillis={} pairingMillis={} compactionMillis={} reservoirMillis={} finalSelectionMillis={} anchorPeaksConsidered={} anchorPeaksSelected={} anchorPeaksSkippedByGate={} targetPeaksConsidered={} targetPeaksSelected={} candidatePairsConsidered={} candidatePairsSkippedByAnchorGate={} candidatePairsSkippedByTargetGate={} candidatePairsSkippedBySaturation={} candidatePairsEmitted={} landmarksAcceptedIntoReservoir={} landmarksRejectedByReservoir={} reservoirAcceptanceRatio={:.4} ffmpegDecodeStreamMillis={} sampledAudioSecondsDecoded={} sampledAudioWindowsDecoded={} fullAudioSecondsDecoded={} effectiveDecodedSecondsPerSecond={:.2}",
             report.audio_stream.source_path_root.as_deref().unwrap_or(""),
             report.audio_stream.source_path_kind.as_deref().unwrap_or("unknown"),
+            report.audio_stream.ffmpeg_command_kind.as_deref().unwrap_or(""),
+            report.audio_stream.ffmpeg_selected_stream.as_deref().unwrap_or(""),
+            report.audio_stream.ffmpeg_disabled_video,
+            report.audio_stream.ffmpeg_disabled_subtitles,
+            report.audio_stream.ffmpeg_disabled_data,
+            report.audio_stream.container_format.as_deref().unwrap_or(""),
+            report.audio_stream.audio_stream_index.unwrap_or(0),
+            report.audio_stream.audio_codec.as_deref().unwrap_or(""),
+            report.audio_stream.audio_bitrate_bps.unwrap_or(0),
+            report.audio_stream.audio_duration_millis.unwrap_or(0),
+            report.audio_stream.audio_start_time_millis.unwrap_or(0),
+            report.audio_stream.audio_packet_positions_available.unwrap_or(false),
+            report
+                .audio_stream
+                .audio_packet_position_completeness_per_mille
+                .unwrap_or(0),
+            report.audio_stream.audio_packet_positions_monotonic.unwrap_or(false),
+            report.audio_stream.average_audio_packet_size_bytes.unwrap_or(0),
+            report
+                .audio_stream
+                .audio_packet_count_in_sampled_windows
+                .unwrap_or(0),
+            report.audio_stream.audio_packet_probe_millis.unwrap_or(0),
+            report.audio_stream.audio_packet_probe_read_bytes.unwrap_or(0),
+            report
+                .audio_stream
+                .audio_packet_window_compressed_bytes
+                .unwrap_or(0),
+            report
+                .audio_stream
+                .audio_packet_window_coalesced_range_bytes
+                .unwrap_or(0),
+            report
+                .audio_stream
+                .audio_packet_read_savings_estimate_bytes
+                .unwrap_or(0),
             report.audio_stream.streamed_bytes,
             report.audio_stream.streamed_samples,
             report.audio_stream.peak_frames,
@@ -245,6 +302,43 @@ fn summarize_record_v3_diagnostics_with_report(
         source_path_root: audio_stream.and_then(|stream| stream.source_path_root.clone()),
         source_path_kind: audio_stream.and_then(|stream| stream.source_path_kind.clone()),
         source_volume_id: audio_stream.and_then(|stream| stream.source_volume_id.clone()),
+        ffmpeg_command_kind: audio_stream.and_then(|stream| stream.ffmpeg_command_kind.clone()),
+        ffmpeg_selected_stream: audio_stream
+            .and_then(|stream| stream.ffmpeg_selected_stream.clone()),
+        ffmpeg_disabled_video: audio_stream
+            .map(|stream| stream.ffmpeg_disabled_video)
+            .unwrap_or(false),
+        ffmpeg_disabled_subtitles: audio_stream
+            .map(|stream| stream.ffmpeg_disabled_subtitles)
+            .unwrap_or(false),
+        ffmpeg_disabled_data: audio_stream
+            .map(|stream| stream.ffmpeg_disabled_data)
+            .unwrap_or(false),
+        container_format: audio_stream.and_then(|stream| stream.container_format.clone()),
+        audio_stream_index: audio_stream.and_then(|stream| stream.audio_stream_index),
+        audio_codec: audio_stream.and_then(|stream| stream.audio_codec.clone()),
+        audio_bitrate_bps: audio_stream.and_then(|stream| stream.audio_bitrate_bps),
+        audio_duration_millis: audio_stream.and_then(|stream| stream.audio_duration_millis),
+        audio_start_time_millis: audio_stream.and_then(|stream| stream.audio_start_time_millis),
+        audio_packet_positions_available: audio_stream
+            .and_then(|stream| stream.audio_packet_positions_available),
+        audio_packet_position_completeness_per_mille: audio_stream
+            .and_then(|stream| stream.audio_packet_position_completeness_per_mille),
+        audio_packet_positions_monotonic: audio_stream
+            .and_then(|stream| stream.audio_packet_positions_monotonic),
+        average_audio_packet_size_bytes: audio_stream
+            .and_then(|stream| stream.average_audio_packet_size_bytes),
+        audio_packet_count_in_sampled_windows: audio_stream
+            .and_then(|stream| stream.audio_packet_count_in_sampled_windows),
+        audio_packet_probe_millis: audio_stream.and_then(|stream| stream.audio_packet_probe_millis),
+        audio_packet_probe_read_bytes: audio_stream
+            .and_then(|stream| stream.audio_packet_probe_read_bytes),
+        audio_packet_window_compressed_bytes: audio_stream
+            .and_then(|stream| stream.audio_packet_window_compressed_bytes),
+        audio_packet_window_coalesced_range_bytes: audio_stream
+            .and_then(|stream| stream.audio_packet_window_coalesced_range_bytes),
+        audio_packet_read_savings_estimate_bytes: audio_stream
+            .and_then(|stream| stream.audio_packet_read_savings_estimate_bytes),
         streamed_bytes: audio_stream.map(|stream| stream.streamed_bytes),
         streamed_samples: audio_stream.map(|stream| stream.streamed_samples),
         peak_frames: audio_stream.map(|stream| stream.peak_frames),
@@ -368,6 +462,27 @@ pub fn summarize_decision_v3_diagnostics(
         source_path_root: None,
         source_path_kind: None,
         source_volume_id: None,
+        ffmpeg_command_kind: None,
+        ffmpeg_selected_stream: None,
+        ffmpeg_disabled_video: false,
+        ffmpeg_disabled_subtitles: false,
+        ffmpeg_disabled_data: false,
+        container_format: None,
+        audio_stream_index: None,
+        audio_codec: None,
+        audio_bitrate_bps: None,
+        audio_duration_millis: None,
+        audio_start_time_millis: None,
+        audio_packet_positions_available: None,
+        audio_packet_position_completeness_per_mille: None,
+        audio_packet_positions_monotonic: None,
+        average_audio_packet_size_bytes: None,
+        audio_packet_count_in_sampled_windows: None,
+        audio_packet_probe_millis: None,
+        audio_packet_probe_read_bytes: None,
+        audio_packet_window_compressed_bytes: None,
+        audio_packet_window_coalesced_range_bytes: None,
+        audio_packet_read_savings_estimate_bytes: None,
         streamed_bytes: None,
         streamed_samples: None,
         peak_frames: None,

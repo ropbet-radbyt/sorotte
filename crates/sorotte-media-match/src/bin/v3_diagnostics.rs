@@ -60,6 +60,7 @@ fn run_cli_with_output(
         sampled_fast_per_network_source_workers,
         sampled_fast_per_removable_source_workers,
         adaptive_io_concurrency_enabled,
+        probe_audio_packets,
         mode,
         selected_cases,
     } = parse_args(args)?;
@@ -185,6 +186,7 @@ fn run_cli_with_output(
             sampled_fast_per_network_source_workers,
             sampled_fast_per_removable_source_workers,
             adaptive_io_concurrency_enabled,
+            probe_audio_packets,
             tools: tool_paths(),
             generated_at_unix_millis: None,
         },
@@ -248,6 +250,7 @@ struct CliArgs {
     sampled_fast_per_network_source_workers: Option<usize>,
     sampled_fast_per_removable_source_workers: Option<usize>,
     adaptive_io_concurrency_enabled: bool,
+    probe_audio_packets: bool,
     mode: CliMode,
     selected_cases: Vec<String>,
 }
@@ -270,6 +273,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
     let mut sampled_fast_per_network_source_workers = None;
     let mut sampled_fast_per_removable_source_workers = None;
     let mut adaptive_io_concurrency_enabled = false;
+    let mut probe_audio_packets = false;
     let mut mode = CliMode::Run;
     let mut selected_cases = Vec::new();
     let mut args = args.into_iter();
@@ -353,6 +357,9 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
             "--adaptive-io-concurrency" => {
                 adaptive_io_concurrency_enabled = true;
             }
+            "--probe-audio-packets" => {
+                probe_audio_packets = true;
+            }
             "--list-cases" => {
                 if mode != CliMode::Run {
                     return Err(usage());
@@ -410,13 +417,14 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
         sampled_fast_per_network_source_workers,
         sampled_fast_per_removable_source_workers,
         adaptive_io_concurrency_enabled,
+        probe_audio_packets,
         mode,
         selected_cases,
     })
 }
 
 fn usage() -> String {
-    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--index-mode full|sparse-full|sampled-fast|sampled-normal|sampled|sampled-then-full|production] [--dense-audio-profile dense-current|dense-realfft|dense-8k|dense-hop2048|dense-8k-hop2048|dense-8k-window1024-hop1024|dense-max-peaks-4|dense-pair-retain-16|dense-pair-retain-lower|dense-gated|dense-gated-v2|dense-fast-combined-candidate] [--retrieval-strategy auto|temp-table|bucket-fetch] [--sampled-fast-workers n] [--sampled-fast-local-workers n] [--sampled-fast-network-workers n] [--sampled-fast-removable-workers n] [--adaptive-io-concurrency] [--bench-dense-audio-profiles] [--max-full-promotions n] [--promote-expected-candidates] [--retrieval-benchmark-only] [--list-cases|--validate-only|--prepare-index-stats|--cache-size-report] [--case name]"
+    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--index-mode full|sparse-full|sampled-fast|sampled-normal|sampled|sampled-then-full|production] [--dense-audio-profile dense-current|dense-realfft|dense-8k|dense-hop2048|dense-8k-hop2048|dense-8k-window1024-hop1024|dense-max-peaks-4|dense-pair-retain-16|dense-pair-retain-lower|dense-gated|dense-gated-v2|dense-fast-combined-candidate] [--retrieval-strategy auto|temp-table|bucket-fetch] [--sampled-fast-workers n] [--sampled-fast-local-workers n] [--sampled-fast-network-workers n] [--sampled-fast-removable-workers n] [--adaptive-io-concurrency] [--probe-audio-packets] [--bench-dense-audio-profiles] [--max-full-promotions n] [--promote-expected-candidates] [--retrieval-benchmark-only] [--list-cases|--validate-only|--prepare-index-stats|--cache-size-report] [--case name]"
         .to_owned()
 }
 
@@ -556,6 +564,7 @@ fn run_dense_audio_profile_benchmark(
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
+                probe_audio_packets: false,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(generated_at_unix_millis),
             },
@@ -786,6 +795,7 @@ mod tests {
             "--sampled-fast-removable-workers".to_owned(),
             "1".to_owned(),
             "--adaptive-io-concurrency".to_owned(),
+            "--probe-audio-packets".to_owned(),
             "--case".to_owned(),
             "copied-synthetic".to_owned(),
         ])
@@ -817,6 +827,7 @@ mod tests {
         assert_eq!(args.sampled_fast_per_network_source_workers, Some(2));
         assert_eq!(args.sampled_fast_per_removable_source_workers, Some(1));
         assert!(args.adaptive_io_concurrency_enabled);
+        assert!(args.probe_audio_packets);
         assert_eq!(args.selected_cases, vec!["copied-synthetic"]);
         assert_eq!(args.mode, CliMode::Run);
     }
@@ -1075,6 +1086,7 @@ mod tests {
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
+                probe_audio_packets: false,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(123),
             },
@@ -1153,6 +1165,7 @@ mod tests {
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
+                probe_audio_packets: false,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(124),
             },
@@ -1201,6 +1214,7 @@ mod tests {
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
+                probe_audio_packets: false,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(125),
             },
@@ -1262,6 +1276,7 @@ mod tests {
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
+                probe_audio_packets: false,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(126),
             },
