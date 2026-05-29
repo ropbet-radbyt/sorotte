@@ -53,7 +53,7 @@ const MEDIA_MATCH_INDEX_FILE: &str = "index-v3.sqlite3";
 const MEDIA_MATCH_INDEX_BACKUP_FILE: &str = "index-v3.previous.sqlite3";
 const MEDIA_MATCH_PREFILTER_THRESHOLD: usize = 64;
 const MEDIA_MATCH_PREFILTER_LIMIT: usize = 24;
-pub(super) const MEDIA_MATCH_MAX_FULL_PROMOTIONS_PER_QUERY: usize = 1;
+pub(super) const MEDIA_MATCH_MAX_FULL_PROMOTIONS_PER_QUERY: usize = 3;
 const MEDIA_MATCH_VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const MEDIA_MATCH_VERSION_PROBE_POLL_INTERVAL: Duration = Duration::from_millis(25);
 #[cfg(windows)]
@@ -4366,6 +4366,7 @@ mod tests {
                 dense_audio_profile: sorotte_media_match::MediaDenseAudioProfile::DenseCurrent,
                 max_full_promotions_per_query: 1,
                 promote_expected_candidates: false,
+                retrieval_benchmark_only: false,
                 tools,
                 generated_at_unix_millis: Some(123),
             },

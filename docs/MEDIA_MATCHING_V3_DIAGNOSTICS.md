@@ -55,8 +55,8 @@ cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --out
 cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-sparse-full.json --cache-root .media-match-v3-cache-audio-sparse-full --index-mode sparse-full
 cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.sampled.json --output reports/audio-sampled-fast.json --cache-root .media-match-v3-cache-audio-sampled-fast --index-mode sampled-fast
 cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.sampled.json --output reports/audio-sampled-normal.json --cache-root .media-match-v3-cache-audio-sampled-normal --index-mode sampled-normal
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-sampled-then-full.json --cache-root .media-match-v3-cache-audio-promote --index-mode sampled-then-full --max-full-promotions 1
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-production.json --cache-root .media-match-v3-cache-audio-production --index-mode production --max-full-promotions 1
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-sampled-then-full.json --cache-root .media-match-v3-cache-audio-promote --index-mode sampled-then-full --max-full-promotions 3
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-production.json --cache-root .media-match-v3-cache-audio-production --index-mode production --max-full-promotions 3
 ```
 
 Modes:
@@ -76,9 +76,10 @@ Modes:
   are not autoplay-eligible as `SameCutStrong`.
 - `sampled-then-full`: build the sampled index first, retrieve against that
   steady-state index, then full-verify promoted query/candidate pairs for
-  direct decisions. By default only the top retrieved candidate per query is
-  promoted; use `--max-full-promotions N` or `--promote-expected-candidates`
-  when a diagnostic run intentionally needs broader full verification.
+  direct decisions. By default the top three retrieved candidates per query are
+  eligible for promotion; use `--max-full-promotions N` or
+  `--promote-expected-candidates` when a diagnostic run intentionally needs a
+  different full-verification budget.
 - `production`: simulate the runtime policy. It builds sampled-fast records for
   every selected manifest file, retrieves from that index, then dense
   full-verifies only the top promoted candidate(s). The report separates
@@ -184,7 +185,7 @@ background shortlist calibration and dense full verification for any `Strong` /
 Runtime/background rebuilds follow the same split: sampled-fast records are
 created in parallel for the library index, while dense full verification is
 reserved for the current/open media and top sampled retrieval candidate(s). The
-default promotion budget is one candidate per query; sampled-only matches stay
+default promotion budget is three candidates per query; sampled-only matches stay
 `Probable` and not autoplay eligible.
 
 For retrieval calibration, add case-level `hardNegatives` for same-series wrong
@@ -199,8 +200,36 @@ that `id`. Reports include `hardNegativeBestRank`,
 scores. Each returned candidate also has `retrievedCandidateDetails` with rank,
 total score, best offset bin, best and second offset scores, body/edge region
 counts, approximate span, audio/video hit counts, and ratio to the next
-candidate. Sampled-only hard-negative diagnostics do not make any candidate
-autoplay eligible.
+candidate. Each returned candidate also reports `queryDurationMs`,
+`candidateDurationMs`, `durationCompatibility`, `shortClipPenaltyApplied`, and
+`robustScore`; the robust score is used only to rerank the permissive sampled
+retrieval shortlist, so short OP/ED clips and one-region collisions remain
+discoverable but should not outrank coherent full-episode evidence unless the
+evidence is overwhelming. Sampled-only hard-negative diagnostics do not make
+any candidate autoplay eligible.
+
+Large warm-cache retrieval reports also break `retrievalElapsedMs` into
+`statsDirtyCheckMillis`, `statsRefreshMillis`, `queryAnchorLoadMillis`,
+`commonBucketFilterMillis`, `sqlHitFetchMillis`, `rustAggregationMillis`,
+`candidateSortMillis`, and `pathLookupMillis`. The `statsRefreshRan`,
+`statsBucketsRefreshed`, `statsAnchorRowsScanned`,
+`anchorStatsDirtyBeforeRun`, and `anchorStatsDirtyAfterRun` fields show whether
+the run paid an anchor-stats refresh cost. Use this command after bulk index
+builds or cache surgery to refresh all V3 anchor statistics once before warm
+retrieval calibration:
+
+```powershell
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.sampled.json --cache-root .media-match-v3-cache-audio-sampled-fast --prepare-index-stats
+```
+
+For a warm-cache retrieval benchmark, use `--retrieval-benchmark-only` with a
+sampled-fast cache. The run still validates retrieval expectations and hard
+negatives, but skips direct pair decisions and dense promotion so
+`retrievalTotalMillis` reflects lookup/ranking cost:
+
+```powershell
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.sampled.json --index-mode sampled-fast --retrieval-benchmark-only --output reports/audio-retrieval-benchmark.json --cache-root .media-match-v3-cache-audio-sampled-fast
+```
 
 ## Corpus Calibration Workflow
 

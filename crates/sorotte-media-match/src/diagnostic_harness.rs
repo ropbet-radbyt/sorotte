@@ -89,6 +89,7 @@ pub struct MediaMatchV3DiagnosticRunOptions {
     pub dense_audio_profile: MediaDenseAudioProfile,
     pub max_full_promotions_per_query: usize,
     pub promote_expected_candidates: bool,
+    pub retrieval_benchmark_only: bool,
     pub tools: MediaMatchToolPaths,
     pub generated_at_unix_millis: Option<u64>,
 }
@@ -264,6 +265,48 @@ pub struct MediaMatchV3DiagnosticRetrievalReport {
     pub raw_hit_rows_processed: i64,
     pub candidates_scored: i64,
     pub retrieval_elapsed_ms: u128,
+    #[serde(default)]
+    pub stats_dirty_check_millis: u128,
+    #[serde(default)]
+    pub stats_refresh_millis: u128,
+    #[serde(default)]
+    pub query_anchor_load_millis: u128,
+    #[serde(default)]
+    pub common_bucket_filter_millis: u128,
+    #[serde(default)]
+    pub sql_hit_fetch_millis: u128,
+    #[serde(default)]
+    pub rust_aggregation_millis: u128,
+    #[serde(default)]
+    pub candidate_sort_millis: u128,
+    #[serde(default)]
+    pub path_lookup_millis: u128,
+    #[serde(default)]
+    pub explain_query_plan_millis: u128,
+    #[serde(default)]
+    pub stats_refresh_ran: bool,
+    #[serde(default)]
+    pub stats_buckets_refreshed: i64,
+    #[serde(default)]
+    pub stats_anchor_rows_scanned: i64,
+    #[serde(default)]
+    pub anchor_stats_dirty_before_run: bool,
+    #[serde(default)]
+    pub anchor_stats_refreshed: bool,
+    #[serde(default)]
+    pub anchor_stats_refresh_millis: u128,
+    #[serde(default)]
+    pub anchor_stats_dirty_after_run: bool,
+    #[serde(default)]
+    pub query_anchor_count: i64,
+    #[serde(default)]
+    pub query_buckets_after_common_skip: i64,
+    #[serde(default)]
+    pub sql_rows_returned: i64,
+    #[serde(default)]
+    pub candidates_aggregated: i64,
+    #[serde(default)]
+    pub candidates_returned: i64,
     pub retrieved_candidates: Vec<String>,
     #[serde(default)]
     pub retrieved_candidate_details: Vec<MediaMatchV3DiagnosticRetrievalCandidateReport>,
@@ -293,6 +336,16 @@ pub struct MediaMatchV3DiagnosticRetrievalCandidateReport {
     pub audio_hits: i64,
     pub video_hits: i64,
     pub score_ratio_to_next: Option<f64>,
+    #[serde(default)]
+    pub query_duration_ms: Option<i64>,
+    #[serde(default)]
+    pub candidate_duration_ms: Option<i64>,
+    #[serde(default)]
+    pub duration_compatibility: String,
+    #[serde(default)]
+    pub short_clip_penalty_applied: bool,
+    #[serde(default)]
+    pub robust_score: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -557,11 +610,12 @@ pub fn run_media_match_v3_diagnostic_manifest(
             let mut fingerprint = index_fingerprint;
             let mut promotion_reason = None;
             let mut full_promotion_millis = 0;
-            let production_promotion = matches!(
-                index_mode,
-                MediaMatchV3DiagnosticIndexMode::SampledThenFull
-                    | MediaMatchV3DiagnosticIndexMode::Production
-            );
+            let production_promotion = !options.retrieval_benchmark_only
+                && matches!(
+                    index_mode,
+                    MediaMatchV3DiagnosticIndexMode::SampledThenFull
+                        | MediaMatchV3DiagnosticIndexMode::Production
+                );
             if production_promotion
                 && let Some(reason) = sampled_then_full_promotion_reason(
                     &candidate.expectation,
@@ -604,25 +658,42 @@ pub fn run_media_match_v3_diagnostic_manifest(
                 summary.full_promoted_file_count += 1;
                 promotion_reason = Some(reason);
             }
-            let decision_started_at = Instant::now();
-            let decision = cap_sampled_record_decision_if_needed(
-                decide_media_match(
+            let (decision, decision_report) = if options.retrieval_benchmark_only {
+                (None, retrieval_benchmark_decision_report())
+            } else {
+                let decision_started_at = Instant::now();
+                let decision = cap_sampled_record_decision_if_needed(
+                    decide_media_match(
+                        &query_for_decision.fingerprint.record,
+                        &fingerprint.fingerprint.record,
+                        &autoplay_settings,
+                    ),
                     &query_for_decision.fingerprint.record,
                     &fingerprint.fingerprint.record,
+                );
+                summary.decision_total_millis += decision_started_at.elapsed().as_millis();
+                let report = MediaMatchV3DiagnosticDecisionReport::from_decision(
+                    &decision,
                     &autoplay_settings,
-                ),
-                &query_for_decision.fingerprint.record,
-                &fingerprint.fingerprint.record,
-            );
-            summary.decision_total_millis += decision_started_at.elapsed().as_millis();
+                );
+                (Some(decision), report)
+            };
             let normalized_candidate = &fingerprint.fingerprint.record.identity.normalized_path;
-            let failures = evaluate_diagnostic_expectation(
-                &decision,
-                &candidate.expectation,
-                &autoplay_settings,
-                retrieved,
-                retrieval_rank,
-            );
+            let failures = if let Some(decision) = decision.as_ref() {
+                evaluate_diagnostic_expectation(
+                    decision,
+                    &candidate.expectation,
+                    &autoplay_settings,
+                    retrieved,
+                    retrieval_rank,
+                )
+            } else {
+                evaluate_retrieval_benchmark_expectation(
+                    &candidate.expectation,
+                    retrieved,
+                    retrieval_rank,
+                )
+            };
             let passed = failures.is_empty();
             summary.pair_count += 1;
             if passed {
@@ -646,10 +717,7 @@ pub fn run_media_match_v3_diagnostic_manifest(
                 final_verified_rank,
                 promotion_reason,
                 full_promotion_millis,
-                decision: MediaMatchV3DiagnosticDecisionReport::from_decision(
-                    &decision,
-                    &autoplay_settings,
-                ),
+                decision: decision_report,
                 expectation: Some(candidate.expectation.clone()),
                 passed,
                 failure_reason: (!failures.is_empty()).then(|| failures.join("; ")),
@@ -1146,6 +1214,11 @@ impl MediaMatchV3DiagnosticRetrievalReport {
                 audio_hits: candidate.audio_hits,
                 video_hits: candidate.video_hits,
                 score_ratio_to_next: candidate.score_ratio_to_next,
+                query_duration_ms: candidate.query_duration_ms,
+                candidate_duration_ms: candidate.candidate_duration_ms,
+                duration_compatibility: candidate.duration_compatibility.clone(),
+                short_clip_penalty_applied: candidate.short_clip_penalty_applied,
+                robust_score: candidate.robust_score,
             })
             .collect::<Vec<_>>();
         let retrieved_paths = retrieved_candidates
@@ -1191,6 +1264,27 @@ impl MediaMatchV3DiagnosticRetrievalReport {
             raw_hit_rows_processed: stats.raw_hit_rows_processed,
             candidates_scored: stats.candidates_scored,
             retrieval_elapsed_ms: stats.retrieval_elapsed_ms,
+            stats_dirty_check_millis: stats.stats_dirty_check_millis,
+            stats_refresh_millis: stats.stats_refresh_millis,
+            query_anchor_load_millis: stats.query_anchor_load_millis,
+            common_bucket_filter_millis: stats.common_bucket_filter_millis,
+            sql_hit_fetch_millis: stats.sql_hit_fetch_millis,
+            rust_aggregation_millis: stats.rust_aggregation_millis,
+            candidate_sort_millis: stats.candidate_sort_millis,
+            path_lookup_millis: stats.path_lookup_millis,
+            explain_query_plan_millis: stats.explain_query_plan_millis,
+            stats_refresh_ran: stats.stats_refresh_ran,
+            stats_buckets_refreshed: stats.stats_buckets_refreshed,
+            stats_anchor_rows_scanned: stats.stats_anchor_rows_scanned,
+            anchor_stats_dirty_before_run: stats.anchor_stats_dirty_before_run,
+            anchor_stats_refreshed: stats.anchor_stats_refreshed,
+            anchor_stats_refresh_millis: stats.anchor_stats_refresh_millis,
+            anchor_stats_dirty_after_run: stats.anchor_stats_dirty_after_run,
+            query_anchor_count: stats.query_anchor_count,
+            query_buckets_after_common_skip: stats.query_buckets_after_common_skip,
+            sql_rows_returned: stats.sql_rows_returned,
+            candidates_aggregated: stats.candidates_aggregated,
+            candidates_returned: stats.candidates_returned,
             retrieved_candidates: retrieved_paths,
             retrieved_candidate_details: details,
             correct_candidate_rank,
@@ -1243,6 +1337,37 @@ impl MediaMatchV3DiagnosticDecisionReport {
             evidence_formatting_millis: summary.evidence_formatting_millis,
             total_decision_millis: summary.total_decision_millis,
         }
+    }
+}
+
+fn retrieval_benchmark_decision_report() -> MediaMatchV3DiagnosticDecisionReport {
+    MediaMatchV3DiagnosticDecisionReport {
+        tier: "Skipped".to_owned(),
+        class: None,
+        explanation: "retrieval benchmark only; direct media-match decision skipped".to_owned(),
+        autoplay_eligible: false,
+        offset_seconds: None,
+        scale_ppm: None,
+        segment_count: 0,
+        total_aligned_span_ms: 0,
+        largest_gap_ms: 0,
+        edge_only: false,
+        audio_video_conflict: false,
+        piecewise_pair_count: None,
+        piecewise_hypothesis_count: None,
+        piecewise_fit_millis: None,
+        decision_pair_collection_millis: None,
+        fast_audio_verifier_millis: None,
+        global_fit_millis: None,
+        offset_histogram_millis: None,
+        fast_global_fit_millis: None,
+        broad_global_fit_millis: None,
+        global_fit_candidate_count: None,
+        global_fit_inlier_count: None,
+        global_fit_fallback_used: None,
+        timeline_map_millis: None,
+        evidence_formatting_millis: None,
+        total_decision_millis: None,
     }
 }
 
@@ -1439,6 +1564,36 @@ fn media_file_identity_parts(path: &Path) -> Result<(u64, u64), String> {
         .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
         .unwrap_or(0);
     Ok((modified_unix_millis, metadata.len()))
+}
+
+fn evaluate_retrieval_benchmark_expectation(
+    expected: &MediaMatchV3DiagnosticExpectation,
+    retrieved: bool,
+    retrieval_rank: Option<usize>,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    if let Some(expected_retrieved) = expected.expected_retrieved
+        && retrieved != expected_retrieved
+    {
+        failures.push(format!(
+            "expected retrieved={expected_retrieved}, got {retrieved}"
+        ));
+    }
+    if let Some(max_retrieval_rank) = expected.max_retrieval_rank {
+        match retrieval_rank {
+            Some(rank) if rank <= max_retrieval_rank => {}
+            Some(rank) => failures.push(format!(
+                "expected retrieval rank <= {max_retrieval_rank}, got {rank}"
+            )),
+            None => failures.push(format!(
+                "expected retrieval rank <= {max_retrieval_rank}, but candidate was absent"
+            )),
+        }
+    }
+    if expected.must_be_retrieved && !retrieved {
+        failures.push("expected candidate to be retrieved, but it was absent".to_owned());
+    }
+    failures
 }
 
 fn evaluate_diagnostic_expectation(
@@ -1877,6 +2032,9 @@ mod tests {
             raw_hit_rows_processed: 20,
             candidates_scored: 2,
             retrieval_elapsed_ms: 7,
+            sql_rows_returned: 20,
+            candidates_returned: 2,
+            ..MediaMatchV3RetrievalStats::default()
         };
         let candidates = vec![
             MediaMatchV3RetrievedCandidate {
@@ -1894,6 +2052,11 @@ mod tests {
                 audio_hits: 12,
                 video_hits: 0,
                 score_ratio_to_next: Some(2.0),
+                query_duration_ms: Some(1_500_000),
+                candidate_duration_ms: Some(1_500_000),
+                duration_compatibility: "compatible".to_owned(),
+                short_clip_penalty_applied: false,
+                robust_score: 120.0,
             },
             MediaMatchV3RetrievedCandidate {
                 normalized_path: "wrong.mkv".to_owned(),
@@ -1910,6 +2073,11 @@ mod tests {
                 audio_hits: 5,
                 video_hits: 0,
                 score_ratio_to_next: None,
+                query_duration_ms: Some(1_500_000),
+                candidate_duration_ms: Some(90_000),
+                duration_compatibility: "query-full-candidate-short".to_owned(),
+                short_clip_penalty_applied: true,
+                robust_score: 8.0,
             },
         ];
         let known_ids = BTreeMap::from([
@@ -2223,6 +2391,7 @@ mod tests {
                 dense_audio_profile: MediaDenseAudioProfile::DenseCurrent,
                 max_full_promotions_per_query: 1,
                 promote_expected_candidates: false,
+                retrieval_benchmark_only: false,
                 tools: MediaMatchToolPaths {
                     ffmpeg: PathBuf::from("ffmpeg"),
                     ffprobe: PathBuf::from("ffprobe"),
@@ -2262,6 +2431,7 @@ mod tests {
                 dense_audio_profile: MediaDenseAudioProfile::DenseCurrent,
                 max_full_promotions_per_query: 1,
                 promote_expected_candidates: false,
+                retrieval_benchmark_only: false,
                 tools: MediaMatchToolPaths {
                     ffmpeg: PathBuf::from("ffmpeg"),
                     ffprobe: PathBuf::from("ffprobe"),
@@ -2319,6 +2489,7 @@ mod tests {
                 dense_audio_profile: MediaDenseAudioProfile::DenseCurrent,
                 max_full_promotions_per_query: 1,
                 promote_expected_candidates: false,
+                retrieval_benchmark_only: false,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
             },
@@ -2374,6 +2545,7 @@ mod tests {
                 dense_audio_profile: MediaDenseAudioProfile::DenseCurrent,
                 max_full_promotions_per_query: 1,
                 promote_expected_candidates: false,
+                retrieval_benchmark_only: false,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
             },
@@ -2420,6 +2592,7 @@ mod tests {
                 dense_audio_profile: MediaDenseAudioProfile::DenseCurrent,
                 max_full_promotions_per_query: 1,
                 promote_expected_candidates: false,
+                retrieval_benchmark_only: false,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
             },
@@ -2455,6 +2628,7 @@ mod tests {
                 dense_audio_profile: MediaDenseAudioProfile::DenseCurrent,
                 max_full_promotions_per_query: 1,
                 promote_expected_candidates: false,
+                retrieval_benchmark_only: false,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
             },
