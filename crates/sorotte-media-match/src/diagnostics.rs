@@ -100,8 +100,6 @@ pub struct MediaMatchV3DiagnosticSummary {
     pub sampled_stop_reason: Option<String>,
     pub provisional_landmark_count: Option<usize>,
     pub provisional_body_region_count: Option<usize>,
-    pub adaptive_saved_seconds: Option<u32>,
-    pub adaptive_saved_estimated_read_bytes: Option<u64>,
     pub mkv_parser_used: Option<bool>,
     pub mkv_cues_present: Option<bool>,
     pub mkv_audio_track_found: Option<bool>,
@@ -427,9 +425,6 @@ fn summarize_record_v3_diagnostics_with_report(
             .and_then(|stream| stream.provisional_landmark_count),
         provisional_body_region_count: audio_stream
             .and_then(|stream| stream.provisional_body_region_count),
-        adaptive_saved_seconds: audio_stream.and_then(|stream| stream.adaptive_saved_seconds),
-        adaptive_saved_estimated_read_bytes: audio_stream
-            .and_then(|stream| stream.adaptive_saved_estimated_read_bytes),
         mkv_parser_used: audio_stream.and_then(|stream| stream.mkv_parser_used),
         mkv_cues_present: audio_stream.and_then(|stream| stream.mkv_cues_present),
         mkv_audio_track_found: audio_stream.and_then(|stream| stream.mkv_audio_track_found),
@@ -614,8 +609,6 @@ pub fn summarize_decision_v3_diagnostics(
         sampled_stop_reason: None,
         provisional_landmark_count: None,
         provisional_body_region_count: None,
-        adaptive_saved_seconds: None,
-        adaptive_saved_estimated_read_bytes: None,
         mkv_parser_used: None,
         mkv_cues_present: None,
         mkv_audio_track_found: None,

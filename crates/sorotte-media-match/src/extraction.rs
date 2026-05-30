@@ -35,8 +35,7 @@ use crate::{
     identity::{container_fingerprint_from_metadata, normalize_media_path},
     settings::{
         MediaAudioIndexMode, MediaDenseAudioProfile, MediaExtractionSettings,
-        MediaFingerprintProfile, MediaSampledAudioPolicy, MediaSampledAudioSourceStrategy,
-        media_extraction_settings_hash,
+        MediaFingerprintProfile, MediaSampledAudioSourceStrategy, media_extraction_settings_hash,
     },
     tuning::{
         FFMPEG_AUDIO_V3_TIMEOUT, FFMPEG_FULL_VIDEO_TIMEOUT, FFPROBE_TIMEOUT,
@@ -132,7 +131,6 @@ pub struct AudioPacketPositionV3 {
 pub struct MediaFingerprintExtractionOptions {
     pub sampled_audio_source: MediaSampledAudioSourceStrategy,
     pub sampled_pcm_cache_root: Option<PathBuf>,
-    pub adaptive_sampled_fast: bool,
 }
 
 pub fn media_source_path_info(path: impl AsRef<Path>) -> MediaSourcePathInfo {
@@ -262,8 +260,6 @@ pub struct MediaAudioStreamMetrics {
     pub sampled_stop_reason: Option<String>,
     pub provisional_landmark_count: Option<usize>,
     pub provisional_body_region_count: Option<usize>,
-    pub adaptive_saved_seconds: Option<u32>,
-    pub adaptive_saved_estimated_read_bytes: Option<u64>,
     pub mkv_parser_used: Option<bool>,
     pub mkv_cues_present: Option<bool>,
     pub mkv_audio_track_found: Option<bool>,
@@ -523,7 +519,6 @@ pub fn fingerprint_media_file_with_report_and_options(
                 SampledAudioExtractionContext {
                     source_identity: &source_identity,
                     settings_hash: media_extraction_settings_hash(extraction_settings),
-                    sampled_audio_policy: &extraction_settings.sampled_audio_policy,
                     options,
                     ffprobe: Some(tools.ffprobe.as_path()),
                 },
@@ -827,7 +822,6 @@ fn update_atomic_max_usize(target: &AtomicUsize, value: usize) {
 struct SampledAudioExtractionContext<'a> {
     source_identity: &'a MediaFileIdentity,
     settings_hash: [u8; 32],
-    sampled_audio_policy: &'a MediaSampledAudioPolicy,
     options: &'a MediaFingerprintExtractionOptions,
     ffprobe: Option<&'a Path>,
 }
@@ -840,13 +834,7 @@ fn extract_audio_constellation_v3_sampled_index_with_metrics_and_options(
     context: SampledAudioExtractionContext<'_>,
     cancel_flag: Option<&AtomicBool>,
 ) -> Result<(Vec<AudioLandmarkV3>, MediaAudioStreamMetrics), MediaFingerprintError> {
-    let mut config = sampled_audio_index_config(index_mode);
-    let adaptive_sampled_fast = context.sampled_audio_policy.adaptive_sampling_enabled
-        && index_mode == MediaAudioIndexMode::SampledFast;
-    if adaptive_sampled_fast {
-        config.min_windows = config.min_windows.clamp(1, 2);
-        config.min_body_regions = config.min_body_regions.min(config.min_windows);
-    }
+    let config = sampled_audio_index_config(index_mode);
     let windows = sampled_audio_windows_v3(duration_seconds, config);
     if windows.is_empty() {
         return extract_audio_constellation_v3_with_metrics(
@@ -1004,23 +992,11 @@ fn extract_audio_constellation_v3_sampled_index_with_metrics_and_options(
             && body_regions.len() >= config.min_body_regions
             && unique_hashes.len() >= config.target_landmarks.saturating_mul(3) / 4
         {
-            stop_reason = if adaptive_sampled_fast && windows_decoded < windows.len() {
-                "adaptive-quality-threshold"
-            } else {
-                "quality-threshold"
-            };
+            stop_reason = "quality-threshold";
             break;
         }
     }
     combined_metrics.sampled_stop_reason = Some(stop_reason.to_owned());
-    combined_metrics.adaptive_saved_seconds = Some(
-        windows
-            .len()
-            .saturating_sub(combined_metrics.sampled_audio_windows_decoded) as u32
-            * config.window_seconds,
-    );
-    combined_metrics.adaptive_saved_estimated_read_bytes =
-        estimated_saved_read_bytes(&combined_metrics);
 
     let selection_started_at = Instant::now();
     let mut bounded = all_landmarks;
@@ -1089,17 +1065,6 @@ fn sampled_ffmpeg_window_strategy_label(strategy: MediaSampledAudioSourceStrateg
     }
 }
 
-fn estimated_saved_read_bytes(metrics: &MediaAudioStreamMetrics) -> Option<u64> {
-    let decoded = u64::from(metrics.sampled_audio_seconds_decoded);
-    let saved = u64::from(metrics.adaptive_saved_seconds?);
-    if decoded == 0 || saved == 0 {
-        return Some(0);
-    }
-    metrics
-        .ffmpeg_input_read_bytes
-        .map(|read_bytes| read_bytes.saturating_mul(saved) / decoded)
-}
-
 fn update_mkv_estimated_savings(metrics: &mut MediaAudioStreamMetrics) {
     if metrics.mkv_estimated_savings_vs_current.is_some() {
         return;
@@ -1119,7 +1084,6 @@ fn sampled_audio_cache_key(
     index_mode: MediaAudioIndexMode,
     config: SampledAudioIndexConfig,
     windows: &[(f64, u32)],
-    adaptive_sampled_fast: bool,
 ) -> String {
     let mut hasher = Sha256::new();
     hasher.update(source_identity.normalized_path.as_bytes());
@@ -1129,7 +1093,6 @@ fn sampled_audio_cache_key(
     hasher.update(index_mode.label().as_bytes());
     hasher.update(config.sample_rate.to_le_bytes());
     hasher.update(config.window_seconds.to_le_bytes());
-    hasher.update([u8::from(adaptive_sampled_fast)]);
     hasher.update((windows.len() as u64).to_le_bytes());
     for (start, seconds) in windows {
         hasher.update(start.to_le_bytes());
@@ -1151,7 +1114,6 @@ fn sampled_pcm_cache_paths(
         index_mode,
         config,
         windows,
-        context.sampled_audio_policy.adaptive_sampling_enabled,
     );
     let dir = root.join("sampled-pcm-v3");
     Some((
@@ -1319,26 +1281,11 @@ fn extract_sampled_index_with_pcm_cache_fill(
             && body_regions.len() >= config.min_body_regions
             && unique_hashes.len() >= config.target_landmarks.saturating_mul(3) / 4
         {
-            stop_reason = if context.sampled_audio_policy.adaptive_sampling_enabled
-                && index_mode == MediaAudioIndexMode::SampledFast
-                && windows_decoded < windows.len()
-            {
-                "adaptive-quality-threshold"
-            } else {
-                "quality-threshold"
-            };
+            stop_reason = "quality-threshold";
             break;
         }
     }
     combined_metrics.sampled_stop_reason = Some(stop_reason.to_owned());
-    combined_metrics.adaptive_saved_seconds = Some(
-        windows
-            .len()
-            .saturating_sub(combined_metrics.sampled_audio_windows_decoded) as u32
-            * config.window_seconds,
-    );
-    combined_metrics.adaptive_saved_estimated_read_bytes =
-        estimated_saved_read_bytes(&combined_metrics);
 
     let selection_started_at = Instant::now();
     let mut bounded = all_landmarks;
@@ -1607,8 +1554,6 @@ fn extract_sampled_index_with_single_process_filter(
     combined_metrics.provisional_landmark_count = Some(raw_before_bounding);
     combined_metrics.provisional_body_region_count = Some(body_regions.len());
     combined_metrics.sampled_stop_reason = Some("single-process-filter-all-windows".to_owned());
-    combined_metrics.adaptive_saved_seconds = Some(0);
-    combined_metrics.adaptive_saved_estimated_read_bytes = Some(0);
     if bounded.is_empty() {
         return Err(MediaFingerprintError::InvalidToolOutput {
             tool: "ffmpeg",
@@ -3115,12 +3060,6 @@ fn merge_audio_stream_metrics(
     if target.provisional_body_region_count.is_none() {
         target.provisional_body_region_count = source.provisional_body_region_count;
     }
-    if target.adaptive_saved_seconds.is_none() {
-        target.adaptive_saved_seconds = source.adaptive_saved_seconds;
-    }
-    if target.adaptive_saved_estimated_read_bytes.is_none() {
-        target.adaptive_saved_estimated_read_bytes = source.adaptive_saved_estimated_read_bytes;
-    }
     if target.mkv_parser_used.is_none() {
         target.mkv_parser_used = source.mkv_parser_used;
     }
@@ -3878,13 +3817,10 @@ mod tests {
         let options = MediaFingerprintExtractionOptions {
             sampled_audio_source: MediaSampledAudioSourceStrategy::PacketMap,
             sampled_pcm_cache_root: Some(PathBuf::from("packet-cache")),
-            adaptive_sampled_fast: false,
         };
-        let sampled_audio_policy = MediaSampledAudioPolicy::default();
         let context = SampledAudioExtractionContext {
             source_identity: &identity,
             settings_hash: [7; 32],
-            sampled_audio_policy: &sampled_audio_policy,
             options: &options,
             ffprobe: None,
         };
@@ -3897,7 +3833,6 @@ mod tests {
         let changed_context = SampledAudioExtractionContext {
             source_identity: &changed_identity,
             settings_hash: [7; 32],
-            sampled_audio_policy: &sampled_audio_policy,
             options: &options,
             ffprobe: None,
         };
@@ -3908,7 +3843,7 @@ mod tests {
     }
 
     #[test]
-    fn sampled_pcm_cache_key_includes_adaptive_mode() {
+    fn sampled_pcm_cache_key_includes_window_schedule() {
         let identity = MediaFileIdentity {
             normalized_path: "c:\\media\\episode.mkv".to_owned(),
             modified_unix_millis: 123,
@@ -3917,24 +3852,23 @@ mod tests {
         let config = sampled_audio_index_config(MediaAudioIndexMode::SampledFast);
         let windows = sampled_audio_windows_v3(Some(1500.0), config);
 
-        let fixed = sampled_audio_cache_key(
+        let base = sampled_audio_cache_key(
             &identity,
             [9; 32],
             MediaAudioIndexMode::SampledFast,
             config,
             &windows,
-            false,
         );
-        let adaptive = sampled_audio_cache_key(
+        let changed_windows = sampled_audio_windows_v3(Some(900.0), config);
+        let changed = sampled_audio_cache_key(
             &identity,
             [9; 32],
             MediaAudioIndexMode::SampledFast,
             config,
-            &windows,
-            true,
+            &changed_windows,
         );
 
-        assert_ne!(fixed, adaptive);
+        assert_ne!(base, changed);
     }
 
     #[test]

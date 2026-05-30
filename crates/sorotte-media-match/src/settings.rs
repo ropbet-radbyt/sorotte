@@ -181,8 +181,6 @@ pub struct MediaSampledAudioPolicy {
     #[serde(default = "default_sampled_policy_version")]
     pub policy_version: u32,
     #[serde(default)]
-    pub adaptive_sampling_enabled: bool,
-    #[serde(default)]
     pub ffmpeg_window_strategy: MediaSampledFfmpegWindowStrategy,
     #[serde(default)]
     pub window_placement_algorithm: MediaSampledWindowPlacementAlgorithm,
@@ -205,7 +203,6 @@ impl MediaSampledAudioPolicy {
     pub fn fixed_sampled_fast_current() -> Self {
         Self {
             policy_version: default_sampled_policy_version(),
-            adaptive_sampling_enabled: false,
             ffmpeg_window_strategy: MediaSampledFfmpegWindowStrategy::CurrentThreeInvocations,
             window_placement_algorithm: MediaSampledWindowPlacementAlgorithm::BodyDistributedV1,
             sampled_fast_window_seconds: V3_AUDIO_SAMPLED_FAST_WINDOW_SECONDS,
@@ -221,10 +218,8 @@ impl MediaSampledAudioPolicy {
 
     pub fn for_sampled_fast_source_strategy(
         source_strategy: MediaSampledAudioSourceStrategy,
-        adaptive_sampling_enabled: bool,
     ) -> Self {
         let mut policy = Self::fixed_sampled_fast_current();
-        policy.adaptive_sampling_enabled = adaptive_sampling_enabled;
         policy.ffmpeg_window_strategy = match source_strategy {
             MediaSampledAudioSourceStrategy::SingleProcessFilter => {
                 MediaSampledFfmpegWindowStrategy::SingleProcessFilter
@@ -242,26 +237,19 @@ impl MediaSampledAudioPolicy {
                 MediaSampledFfmpegWindowStrategy::CurrentThreeInvocations
             }
         };
-        if adaptive_sampling_enabled {
-            policy.sampled_fast_min_windows = policy.sampled_fast_min_windows.clamp(1, 2);
-            policy.sampled_fast_min_body_regions = policy
-                .sampled_fast_min_body_regions
-                .min(policy.sampled_fast_min_windows);
-        }
         policy
     }
 
     pub fn label(&self) -> String {
-        let sampling = if self.adaptive_sampling_enabled {
-            "adaptive"
-        } else {
-            "fixed"
-        };
         format!(
-            "sampled-fast-{sampling}-{}-{}",
+            "sampled-fast-fixed-{}-{}",
             self.sampled_fast_min_windows,
             self.ffmpeg_window_strategy.label()
         )
+    }
+
+    pub fn is_production_compatible(&self) -> bool {
+        self == &Self::fixed_sampled_fast_current()
     }
 
     pub fn is_default_policy(&self) -> bool {
@@ -461,24 +449,14 @@ mod tests {
         let fixed = media_match_v3_fingerprint_config_hash(
             &MediaExtractionSettings::sampled_fast_audio_index_v3(),
         );
-        let adaptive = media_match_v3_fingerprint_config_hash(
-            &MediaExtractionSettings::sampled_fast_audio_index_v3().with_sampled_audio_policy(
-                MediaSampledAudioPolicy::for_sampled_fast_source_strategy(
-                    MediaSampledAudioSourceStrategy::Current,
-                    true,
-                ),
-            ),
-        );
         let output_seek = media_match_v3_fingerprint_config_hash(
             &MediaExtractionSettings::sampled_fast_audio_index_v3().with_sampled_audio_policy(
                 MediaSampledAudioPolicy::for_sampled_fast_source_strategy(
                     MediaSampledAudioSourceStrategy::OutputSeekPerWindow,
-                    false,
                 ),
             ),
         );
 
-        assert_ne!(fixed, adaptive);
         assert_ne!(fixed, output_seek);
     }
 
@@ -486,15 +464,12 @@ mod tests {
     fn sampled_audio_policy_marks_output_equivalent_sources() {
         let current = MediaSampledAudioPolicy::for_sampled_fast_source_strategy(
             MediaSampledAudioSourceStrategy::Current,
-            false,
         );
         let packet_map = MediaSampledAudioPolicy::for_sampled_fast_source_strategy(
             MediaSampledAudioSourceStrategy::PacketMap,
-            false,
         );
         let pcm_cache = MediaSampledAudioPolicy::for_sampled_fast_source_strategy(
             MediaSampledAudioSourceStrategy::SampledPcmCache,
-            false,
         );
 
         assert_eq!(current, packet_map);

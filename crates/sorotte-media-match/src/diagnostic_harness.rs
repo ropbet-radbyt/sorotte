@@ -112,8 +112,6 @@ pub struct MediaMatchV3DiagnosticRunOptions {
     pub sampled_fast_per_local_source_workers: Option<usize>,
     pub sampled_fast_per_network_source_workers: Option<usize>,
     pub sampled_fast_per_removable_source_workers: Option<usize>,
-    pub adaptive_io_concurrency_enabled: bool,
-    pub adaptive_sampled_fast: bool,
     pub probe_audio_packets: bool,
     pub sampled_audio_source: MediaSampledAudioSourceStrategy,
     pub sampled_pcm_cache_root: Option<PathBuf>,
@@ -231,6 +229,10 @@ pub struct MediaMatchV3DiagnosticCandidateReport {
     pub final_verified_rank: Option<usize>,
     #[serde(default)]
     pub within_promotion_budget: bool,
+    #[serde(default)]
+    pub strict_rank1_passed: bool,
+    #[serde(default)]
+    pub production_retrieval_passed: bool,
     #[serde(default)]
     pub promotion_budget_exhausted: bool,
     #[serde(default)]
@@ -442,6 +444,8 @@ pub struct MediaMatchV3DiagnosticSummaryReport {
     pub sqlite_cache_fingerprint_report_count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sampled_audio_policy: Option<MediaSampledAudioPolicy>,
+    #[serde(default)]
+    pub sampled_policy_production_compatible: bool,
     #[serde(default)]
     pub sqlite_cache_compatible_hit_count: usize,
     #[serde(default)]
@@ -804,14 +808,8 @@ pub fn run_media_match_v3_diagnostic_manifest(
         settings.audio_algorithm = index_settings.audio_algorithm;
     }
     if settings.audio_index_mode.is_sampled() {
-        let adaptive_sampling_enabled = settings.audio_index_mode
-            == MediaAudioIndexMode::SampledFast
-            && options.adaptive_sampled_fast;
         settings = settings.with_sampled_audio_policy(
-            MediaSampledAudioPolicy::for_sampled_fast_source_strategy(
-                options.sampled_audio_source,
-                adaptive_sampling_enabled,
-            ),
+            MediaSampledAudioPolicy::for_sampled_fast_source_strategy(options.sampled_audio_source),
         );
     }
     let verify_settings = if matches!(
@@ -839,6 +837,8 @@ pub fn run_media_match_v3_diagnostic_manifest(
             .audio_index_mode
             .is_sampled()
             .then(|| settings.sampled_audio_policy.clone()),
+        sampled_policy_production_compatible: !settings.audio_index_mode.is_sampled()
+            || settings.sampled_audio_policy.is_production_compatible(),
         ..MediaMatchV3DiagnosticSummaryReport::default()
     };
 
@@ -969,6 +969,8 @@ pub fn run_media_match_v3_diagnostic_manifest(
             let within_promotion_budget = retrieval_rank
                 .map(|rank| rank <= max_promotion_rank)
                 .unwrap_or(false);
+            let strict_rank1_passed = retrieval_rank == Some(1);
+            let production_retrieval_passed = within_promotion_budget;
             let sampled_retrieval_rank = matches!(
                 index_mode,
                 MediaMatchV3DiagnosticIndexMode::SampledFast
@@ -1096,6 +1098,8 @@ pub fn run_media_match_v3_diagnostic_manifest(
                 sampled_retrieval_rank,
                 final_verified_rank,
                 within_promotion_budget,
+                strict_rank1_passed,
+                production_retrieval_passed,
                 promotion_budget_exhausted: !within_promotion_budget && retrieval_rank.is_some(),
                 promoted_candidate_ranks,
                 first_strong_candidate_rank,
@@ -2404,9 +2408,6 @@ fn fingerprint_fresh_diagnostic_jobs(
                     let extraction_options = MediaFingerprintExtractionOptions {
                         sampled_audio_source: options.sampled_audio_source,
                         sampled_pcm_cache_root: options.sampled_pcm_cache_root.clone(),
-                        adaptive_sampled_fast: settings
-                            .sampled_audio_policy
-                            .adaptive_sampling_enabled,
                     };
                     let result = fingerprint_media_file_with_report_and_options(
                         &job.path,
@@ -3877,8 +3878,6 @@ mod tests {
                 sampled_fast_per_local_source_workers: None,
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
-                adaptive_io_concurrency_enabled: false,
-                adaptive_sampled_fast: false,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
                 sampled_pcm_cache_root: None,
@@ -3927,8 +3926,6 @@ mod tests {
                 sampled_fast_per_local_source_workers: None,
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
-                adaptive_io_concurrency_enabled: false,
-                adaptive_sampled_fast: false,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
                 sampled_pcm_cache_root: None,
@@ -4035,8 +4032,6 @@ mod tests {
                 sampled_fast_per_local_source_workers: None,
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
-                adaptive_io_concurrency_enabled: false,
-                adaptive_sampled_fast: false,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
                 sampled_pcm_cache_root: None,
@@ -4051,6 +4046,8 @@ mod tests {
         assert_eq!(candidate.retrieval_rank, Some(2));
         assert_eq!(candidate.sampled_retrieval_rank, Some(2));
         assert!(candidate.within_promotion_budget);
+        assert!(!candidate.strict_rank1_passed);
+        assert!(candidate.production_retrieval_passed);
         assert_eq!(candidate.final_verified_rank, Some(2));
         assert_eq!(candidate.promoted_candidate_ranks, vec![2]);
         assert_eq!(
@@ -4110,8 +4107,6 @@ mod tests {
                 sampled_fast_per_local_source_workers: None,
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
-                adaptive_io_concurrency_enabled: false,
-                adaptive_sampled_fast: false,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
                 sampled_pcm_cache_root: None,
@@ -4176,8 +4171,6 @@ mod tests {
                 sampled_fast_per_local_source_workers: None,
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
-                adaptive_io_concurrency_enabled: false,
-                adaptive_sampled_fast: false,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
                 sampled_pcm_cache_root: None,
@@ -4233,8 +4226,6 @@ mod tests {
                 sampled_fast_per_local_source_workers: None,
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
-                adaptive_io_concurrency_enabled: false,
-                adaptive_sampled_fast: false,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
                 sampled_pcm_cache_root: None,
@@ -4279,8 +4270,6 @@ mod tests {
                 sampled_fast_per_local_source_workers: None,
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
-                adaptive_io_concurrency_enabled: false,
-                adaptive_sampled_fast: false,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
                 sampled_pcm_cache_root: None,
@@ -4330,18 +4319,17 @@ mod tests {
     }
 
     #[test]
-    fn sampled_policy_mismatch_does_not_reuse_sqlite_cache_record() {
+    fn experimental_sampled_policy_mismatch_does_not_reuse_production_cache_record() {
         let root = temp_dir("v3-diagnostics-sampled-policy-cache");
         let media = root.join("sampled.mkv");
         fs::write(&media, b"sampled").expect("media should be written");
         let cache_root = root.join("cache");
         let fixed_settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
-        let adaptive_policy = MediaSampledAudioPolicy::for_sampled_fast_source_strategy(
-            MediaSampledAudioSourceStrategy::Current,
-            true,
+        let experimental_policy = MediaSampledAudioPolicy::for_sampled_fast_source_strategy(
+            MediaSampledAudioSourceStrategy::OutputSeekPerWindow,
         );
-        let adaptive_settings = MediaExtractionSettings::sampled_fast_audio_index_v3()
-            .with_sampled_audio_policy(adaptive_policy);
+        let experimental_settings = MediaExtractionSettings::sampled_fast_audio_index_v3()
+            .with_sampled_audio_policy(experimental_policy);
         let connection = open_media_match_v3_index(&cache_root).expect("index should open");
         save_media_match_v3_record(
             &connection,
@@ -4355,7 +4343,7 @@ mod tests {
         let loaded = load_media_match_v3_record_for_path(
             &connection,
             &normalize_media_path(&media),
-            &adaptive_settings,
+            &experimental_settings,
             modified_unix_millis,
             size_bytes,
         )
@@ -4363,7 +4351,7 @@ mod tests {
         let incompatible_count = media_match_v3_incompatible_record_count_for_path(
             &connection,
             &normalize_media_path(&media),
-            &adaptive_settings,
+            &experimental_settings,
             modified_unix_millis,
             size_bytes,
         )
@@ -4371,20 +4359,20 @@ mod tests {
 
         assert!(
             loaded.is_none(),
-            "adaptive sampled-fast must not reuse fixed sampled-fast records"
+            "experimental sampled-fast policy must not reuse production sampled-fast records"
         );
         assert_eq!(incompatible_count, 1);
 
         save_media_match_v3_record(
             &connection,
-            &fixture_record(&media, &adaptive_settings, 1_000),
+            &fixture_record(&media, &experimental_settings, 1_000),
             None,
         )
-        .expect("adaptive sampled record should save");
+        .expect("experimental sampled record should save");
         let loaded = load_media_match_v3_record_for_path(
             &connection,
             &normalize_media_path(&media),
-            &adaptive_settings,
+            &experimental_settings,
             modified_unix_millis,
             size_bytes,
         )
@@ -4392,7 +4380,7 @@ mod tests {
 
         assert!(
             loaded.is_some(),
-            "same adaptive sampled-fast policy should reuse SQLite cache"
+            "same experimental sampled-fast policy should reuse SQLite cache"
         );
         let _ = fs::remove_dir_all(root);
     }
@@ -4405,7 +4393,6 @@ mod tests {
         let cache_root = root.join("cache");
         let policy = MediaSampledAudioPolicy::for_sampled_fast_source_strategy(
             MediaSampledAudioSourceStrategy::Current,
-            true,
         );
         let settings = MediaExtractionSettings::sampled_fast_audio_index_v3()
             .with_sampled_audio_policy(policy.clone());
@@ -4432,8 +4419,6 @@ mod tests {
                 sampled_fast_per_local_source_workers: None,
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
-                adaptive_io_concurrency_enabled: false,
-                adaptive_sampled_fast: true,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
                 sampled_pcm_cache_root: None,
@@ -4444,6 +4429,7 @@ mod tests {
         .expect("matching sampled policy should load from cache");
 
         assert_eq!(report.summary.sampled_audio_policy, Some(policy));
+        assert!(report.summary.sampled_policy_production_compatible);
         assert_eq!(report.summary.sqlite_cache_compatible_hit_count, 1);
         assert_eq!(report.summary.sqlite_cache_incompatible_miss_count, 0);
         let _ = fs::remove_dir_all(root);

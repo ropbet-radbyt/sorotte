@@ -2490,6 +2490,8 @@ mod tests {
                     sampled_retrieval_rank: retrieval_rank,
                     final_verified_rank: None,
                     within_promotion_budget: retrieval_rank.is_some_and(|rank| rank <= 3),
+                    strict_rank1_passed: retrieval_rank == Some(1),
+                    production_retrieval_passed: retrieval_rank.is_some_and(|rank| rank <= 3),
                     promotion_budget_exhausted: retrieval_rank.is_some_and(|rank| rank > 3),
                     promoted_candidate_ranks: Vec::new(),
                     first_strong_candidate_rank: None,

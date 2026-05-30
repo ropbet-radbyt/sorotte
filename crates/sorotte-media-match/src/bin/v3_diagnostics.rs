@@ -60,8 +60,6 @@ fn run_cli_with_output(
         sampled_fast_per_local_source_workers,
         sampled_fast_per_network_source_workers,
         sampled_fast_per_removable_source_workers,
-        adaptive_io_concurrency_enabled,
-        adaptive_sampled_fast,
         probe_audio_packets,
         sampled_audio_source,
         sampled_pcm_cache_root,
@@ -189,8 +187,6 @@ fn run_cli_with_output(
             sampled_fast_per_local_source_workers,
             sampled_fast_per_network_source_workers,
             sampled_fast_per_removable_source_workers,
-            adaptive_io_concurrency_enabled,
-            adaptive_sampled_fast,
             probe_audio_packets,
             sampled_audio_source,
             sampled_pcm_cache_root,
@@ -256,8 +252,6 @@ struct CliArgs {
     sampled_fast_per_local_source_workers: Option<usize>,
     sampled_fast_per_network_source_workers: Option<usize>,
     sampled_fast_per_removable_source_workers: Option<usize>,
-    adaptive_io_concurrency_enabled: bool,
-    adaptive_sampled_fast: bool,
     probe_audio_packets: bool,
     sampled_audio_source: MediaSampledAudioSourceStrategy,
     sampled_pcm_cache_root: Option<PathBuf>,
@@ -282,8 +276,6 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
     let mut sampled_fast_per_local_source_workers = None;
     let mut sampled_fast_per_network_source_workers = None;
     let mut sampled_fast_per_removable_source_workers = None;
-    let mut adaptive_io_concurrency_enabled = false;
-    let mut adaptive_sampled_fast = false;
     let mut probe_audio_packets = false;
     let mut sampled_audio_source = MediaSampledAudioSourceStrategy::Current;
     let mut sampled_pcm_cache_root = None;
@@ -367,12 +359,6 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
                 };
                 sampled_fast_per_removable_source_workers = Some(parse_positive_usize(&value)?);
             }
-            "--adaptive-io-concurrency" => {
-                adaptive_io_concurrency_enabled = true;
-            }
-            "--adaptive-sampled-fast" => {
-                adaptive_sampled_fast = true;
-            }
             "--probe-audio-packets" => {
                 probe_audio_packets = true;
             }
@@ -444,8 +430,6 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
         sampled_fast_per_local_source_workers,
         sampled_fast_per_network_source_workers,
         sampled_fast_per_removable_source_workers,
-        adaptive_io_concurrency_enabled,
-        adaptive_sampled_fast,
         probe_audio_packets,
         sampled_audio_source,
         sampled_pcm_cache_root,
@@ -455,7 +439,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
 }
 
 fn usage() -> String {
-    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--index-mode full|sparse-full|sampled-fast|sampled-normal|sampled|sampled-then-full|production] [--dense-audio-profile dense-current|dense-realfft|dense-8k|dense-hop2048|dense-8k-hop2048|dense-8k-window1024-hop1024|dense-max-peaks-4|dense-pair-retain-16|dense-pair-retain-lower|dense-gated|dense-gated-v2|dense-fast-combined-candidate] [--retrieval-strategy auto|temp-table|bucket-fetch] [--sampled-fast-workers n] [--sampled-fast-local-workers n] [--sampled-fast-network-workers n] [--sampled-fast-removable-workers n] [--adaptive-io-concurrency] [--adaptive-sampled-fast] [--probe-audio-packets] [--sampled-audio-source current|single-process-filter|fast-seek-per-window|output-seek-per-window|ffprobe-probe|packet-map|mkv-audio-ranges|sampled-pcm-cache|auto] [--sampled-pcm-cache-root dir] [--bench-dense-audio-profiles] [--max-full-promotions n] [--promote-expected-candidates] [--retrieval-benchmark-only] [--list-cases|--validate-only|--prepare-index-stats|--cache-size-report] [--case name]"
+    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--index-mode full|sparse-full|sampled-fast|sampled-normal|sampled|sampled-then-full|production] [--dense-audio-profile dense-current|dense-realfft|dense-8k|dense-hop2048|dense-8k-hop2048|dense-8k-window1024-hop1024|dense-max-peaks-4|dense-pair-retain-16|dense-pair-retain-lower|dense-gated|dense-gated-v2|dense-fast-combined-candidate] [--retrieval-strategy auto|temp-table|bucket-fetch] [--sampled-fast-workers n] [--sampled-fast-local-workers n] [--sampled-fast-network-workers n] [--sampled-fast-removable-workers n] [--probe-audio-packets] [--sampled-audio-source current|single-process-filter|fast-seek-per-window|output-seek-per-window|ffprobe-probe|packet-map|mkv-audio-ranges|sampled-pcm-cache|auto] [--sampled-pcm-cache-root dir] [--bench-dense-audio-profiles] [--max-full-promotions n] [--promote-expected-candidates] [--retrieval-benchmark-only] [--list-cases|--validate-only|--prepare-index-stats|--cache-size-report] [--case name]"
         .to_owned()
 }
 
@@ -611,8 +595,6 @@ fn run_dense_audio_profile_benchmark(
                 sampled_fast_per_local_source_workers: None,
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
-                adaptive_io_concurrency_enabled: false,
-                adaptive_sampled_fast: false,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
                 sampled_pcm_cache_root: None,
@@ -808,6 +790,7 @@ fn should_retain_cache_for_report(retain_cache_requested: bool, passed: bool) ->
 #[cfg(test)]
 mod tests {
     use std::{
+        env, fs,
         process::{Command, Stdio},
         time::Duration,
     };
@@ -845,8 +828,6 @@ mod tests {
             "2".to_owned(),
             "--sampled-fast-removable-workers".to_owned(),
             "1".to_owned(),
-            "--adaptive-io-concurrency".to_owned(),
-            "--adaptive-sampled-fast".to_owned(),
             "--probe-audio-packets".to_owned(),
             "--sampled-audio-source".to_owned(),
             "sampled-pcm-cache".to_owned(),
@@ -882,8 +863,6 @@ mod tests {
         assert_eq!(args.sampled_fast_per_local_source_workers, Some(4));
         assert_eq!(args.sampled_fast_per_network_source_workers, Some(2));
         assert_eq!(args.sampled_fast_per_removable_source_workers, Some(1));
-        assert!(args.adaptive_io_concurrency_enabled);
-        assert!(args.adaptive_sampled_fast);
         assert!(args.probe_audio_packets);
         assert_eq!(
             args.sampled_audio_source,
@@ -995,6 +974,90 @@ mod tests {
         assert_eq!(
             args.dense_audio_profile,
             MediaDenseAudioProfile::DensePairRetain16
+        );
+    }
+
+    #[test]
+    #[ignore = "requires SOROTTE_MONOGATARI_FIXED_SAMPLED_FAST_MANIFEST and local media corpus"]
+    fn monogatari_fixed_sampled_fast_regression() {
+        let Some(manifest_path) =
+            env::var_os("SOROTTE_MONOGATARI_FIXED_SAMPLED_FAST_MANIFEST").map(PathBuf::from)
+        else {
+            eprintln!(
+                "skipping Monogatari fixed sampled-fast regression; set SOROTTE_MONOGATARI_FIXED_SAMPLED_FAST_MANIFEST"
+            );
+            return;
+        };
+        let cache_root = env::var_os("SOROTTE_MONOGATARI_FIXED_SAMPLED_FAST_CACHE_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("target").join("monogatari-fixed-sampled-fast-cache"));
+        let manifest_text =
+            fs::read_to_string(&manifest_path).expect("Monogatari manifest should be readable");
+        let manifest = media_match_v3_diagnostic_manifest_from_json(&manifest_text)
+            .expect("Monogatari manifest should parse");
+        let manifest_dir = manifest_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        let report = run_media_match_v3_diagnostic_manifest(
+            &manifest,
+            MediaMatchV3DiagnosticRunOptions {
+                manifest_dir,
+                cache_root,
+                cache_retained: true,
+                refresh_cache: false,
+                index_mode: MediaMatchV3DiagnosticIndexMode::SampledFast,
+                dense_audio_profile: MediaDenseAudioProfile::DenseCurrent,
+                max_full_promotions_per_query: 3,
+                promote_expected_candidates: false,
+                retrieval_benchmark_only: true,
+                retrieval_strategy: MediaMatchV3RetrievalStrategy::Auto,
+                sampled_fast_global_workers: None,
+                sampled_fast_per_local_source_workers: None,
+                sampled_fast_per_network_source_workers: None,
+                sampled_fast_per_removable_source_workers: None,
+                probe_audio_packets: false,
+                sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
+                sampled_pcm_cache_root: None,
+                tools: tool_paths(),
+                generated_at_unix_millis: Some(1),
+            },
+        )
+        .expect("Monogatari fixed sampled-fast diagnostic should run");
+        validate_media_match_v3_diagnostic_report(&report).expect("report should validate");
+
+        let candidates = report
+            .cases
+            .iter()
+            .flat_map(|case| case.candidates.iter())
+            .collect::<Vec<_>>();
+        assert_eq!(candidates.len(), 206);
+        assert_eq!(report.summary.pair_count, 206);
+        assert_eq!(report.summary.hard_negative_count, 3904);
+        assert_eq!(report.summary.hard_negative_passed, 3904);
+        assert_eq!(report.summary.hard_negative_failed, 0);
+        assert!(report.summary.sampled_policy_production_compatible);
+        assert_eq!(
+            candidates
+                .iter()
+                .filter(|candidate| candidate.retrieved)
+                .count(),
+            206
+        );
+        assert!(
+            candidates
+                .iter()
+                .filter(|candidate| candidate.strict_rank1_passed)
+                .count()
+                >= 205
+        );
+        assert_eq!(
+            candidates
+                .iter()
+                .filter(|candidate| candidate.production_retrieval_passed)
+                .count(),
+            206
         );
     }
 
@@ -1181,8 +1244,6 @@ mod tests {
                 sampled_fast_per_local_source_workers: None,
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
-                adaptive_io_concurrency_enabled: false,
-                adaptive_sampled_fast: false,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
                 sampled_pcm_cache_root: None,
@@ -1263,8 +1324,6 @@ mod tests {
                 sampled_fast_per_local_source_workers: None,
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
-                adaptive_io_concurrency_enabled: false,
-                adaptive_sampled_fast: false,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
                 sampled_pcm_cache_root: None,
@@ -1315,8 +1374,6 @@ mod tests {
                 sampled_fast_per_local_source_workers: None,
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
-                adaptive_io_concurrency_enabled: false,
-                adaptive_sampled_fast: false,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
                 sampled_pcm_cache_root: None,
@@ -1380,8 +1437,6 @@ mod tests {
                 sampled_fast_per_local_source_workers: None,
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
-                adaptive_io_concurrency_enabled: false,
-                adaptive_sampled_fast: false,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
                 sampled_pcm_cache_root: None,
@@ -1474,8 +1529,6 @@ mod tests {
                 sampled_fast_per_local_source_workers: None,
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
-                adaptive_io_concurrency_enabled: false,
-                adaptive_sampled_fast: false,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::SampledPcmCache,
                 sampled_pcm_cache_root: Some(pcm_cache_root.clone()),
@@ -1524,8 +1577,6 @@ mod tests {
                 sampled_fast_per_local_source_workers: None,
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
-                adaptive_io_concurrency_enabled: false,
-                adaptive_sampled_fast: false,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::SampledPcmCache,
                 sampled_pcm_cache_root: Some(pcm_cache_root),

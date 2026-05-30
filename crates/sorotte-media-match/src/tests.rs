@@ -1043,8 +1043,6 @@ fn v3_diagnostics_serializes_stable_stream_metric_names() {
                 sampled_stop_reason: Some("quality-threshold".to_owned()),
                 provisional_landmark_count: Some(320),
                 provisional_body_region_count: Some(3),
-                adaptive_saved_seconds: Some(20),
-                adaptive_saved_estimated_read_bytes: Some(341_333),
                 mkv_parser_used: Some(true),
                 mkv_cues_present: Some(true),
                 mkv_audio_track_found: Some(true),
@@ -1182,8 +1180,6 @@ fn v3_diagnostics_serializes_stable_stream_metric_names() {
     assert_eq!(value["sampledStopReason"], "quality-threshold");
     assert_eq!(value["provisionalLandmarkCount"], 320);
     assert_eq!(value["provisionalBodyRegionCount"], 3);
-    assert_eq!(value["adaptiveSavedSeconds"], 20);
-    assert_eq!(value["adaptiveSavedEstimatedReadBytes"], 341_333);
     assert_eq!(value["mkvParserUsed"], true);
     assert_eq!(value["mkvCuesPresent"], true);
     assert_eq!(value["mkvAudioTrackFound"], true);

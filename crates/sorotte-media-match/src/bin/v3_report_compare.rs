@@ -476,6 +476,8 @@ mod tests {
                     sampled_retrieval_rank: Some(1),
                     final_verified_rank: None,
                     within_promotion_budget: true,
+                    strict_rank1_passed: true,
+                    production_retrieval_passed: true,
                     promotion_budget_exhausted: false,
                     promoted_candidate_ranks: Vec::new(),
                     first_strong_candidate_rank: None,

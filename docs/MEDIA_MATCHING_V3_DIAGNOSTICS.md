@@ -418,8 +418,8 @@ amplification so the strategies can be compared on the same subset.
 solution for first cold indexing. On a miss it still uses the current ffmpeg
 path, stores the exact sampled PCM windows in a local cache, and reads that PCM
 directly on later runs. Its cache key includes normalized path, mtime, size,
-sampled window schedule, decode settings, adaptive sampled-fast mode, index
-mode, and fingerprint config hash. This is useful for analyzer/ranking
+sampled window schedule, decode settings, index mode, and fingerprint config
+hash. This is useful for analyzer/ranking
 experiments where the same files are indexed repeatedly. It should not be used
 to predict first-run cold throughput over a large media source because the first
 run still pays the source read cost.
@@ -472,9 +472,8 @@ The global worker count controls total extraction concurrency. Per-source
 limits control how many `ffmpeg` jobs may read from the same drive root or UNC
 share at once. For a single slow network share, start with
 `--sampled-fast-network-workers 1` or `2`; for multiple independent local SSDs,
-leave local concurrency higher. `--adaptive-io-concurrency` is accepted as an
-experimental reporting flag, but concurrency changes are still conservative and
-should be validated with before/after cold-index reports.
+leave local concurrency higher. Concurrency changes are conservative and should
+be validated with before/after cold-index reports.
 
 Local staging remains an experiment, not the default production path. Benchmark
 current no-staging behavior first, then compare a staging prototype only for the
@@ -493,28 +492,27 @@ numbers are source-local files/minute, `ffmpegInputReadBytes`,
 `ffmpegInputReadOps`, read amplification, and p95 file time. A strategy that
 only improves a warm PCM-cache rerun is not a cold-index win.
 
-`--adaptive-sampled-fast` is available for cold-index experiments. In
-sampled-fast mode it starts with two body windows and stops early when the
-provisional landmark count, body region count, and unique-hash threshold are
-already good enough; otherwise it decodes the remaining planned window. Reports
-include `sampledWindowsPlanned`, `sampledAudioWindowsDecoded`,
-`sampledStopReason`, `provisionalLandmarkCount`,
-`provisionalBodyRegionCount`, `adaptiveSavedSeconds`, and
-`adaptiveSavedEstimatedReadBytes`. Treat this as a retrieval-quality benchmark
-knob until recall and hard-negative reports prove it safe for the larger corpus.
-The report summary also includes `sampledAudioPolicy`, including the adaptive
-flag, ffmpeg window strategy, window placement algorithm, sampled-fast window
-counts, target landmarks, body-region target, index limit, and sample rate.
+Adaptive sampled-fast is rejected for production. It was faster on the noisy
+Monogatari/Anime corpus, but it missed expected candidates, so fixed
+three-window sampled-fast is the production baseline: 3 windows, 60 sampled
+seconds, and 384 sampled audio index/verify landmarks. Normal diagnostics and
+runtime/background indexing create only that fixed policy. The report summary
+includes `sampledAudioPolicy` and `sampledPolicyProductionCompatible`; normal
+production-compatible sampled-fast reports should show this compatibility field
+as `true`.
 
-Sampled-fast cache identity includes the sampled policy. Fixed three-window
-sampled-fast and adaptive two/three-window sampled-fast do not share V3
-fingerprint records unless they are intentionally represented by the same
-output-equivalent policy. Diagnostic-only source helpers such as
+There is one normal SQLite cache policy for sampled-fast. A normal run cannot
+create or reuse records from rejected sampled policies; incompatible sampled
+records are reported through `sqliteCacheIncompatibleMissCount` and
+`sampledPolicyMismatchCount`. Diagnostic-only source helpers such as
 `sampled-pcm-cache`, `packet-map`, and `mkv-audio-ranges` are marked
 output-equivalent to the current per-window ffmpeg path when they ultimately
 produce the same sampled PCM/landmarks, so they do not create unnecessary cache
 namespaces. `single-process-filter` and `output-seek-per-window` are separate
-policies because they can change window alignment or decoded PCM.
+experimental policies because they can change window alignment or decoded PCM.
+Direct container-read work must preserve the fixed three-window output before it
+can be considered for production. Repeated-run PCM cache remains optional
+developer tooling, not a first-index solution.
 
 Warm-cache reports include `sqliteCacheCompatibleHitCount`,
 `sqliteCacheIncompatibleMissCount`, and `sampledPolicyMismatchCount`. If a run
