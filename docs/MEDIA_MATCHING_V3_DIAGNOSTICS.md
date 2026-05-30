@@ -502,12 +502,32 @@ include `sampledWindowsPlanned`, `sampledAudioWindowsDecoded`,
 `provisionalBodyRegionCount`, `adaptiveSavedSeconds`, and
 `adaptiveSavedEstimatedReadBytes`. Treat this as a retrieval-quality benchmark
 knob until recall and hard-negative reports prove it safe for the larger corpus.
+The report summary also includes `sampledAudioPolicy`, including the adaptive
+flag, ffmpeg window strategy, window placement algorithm, sampled-fast window
+counts, target landmarks, body-region target, index limit, and sample rate.
+
+Sampled-fast cache identity includes the sampled policy. Fixed three-window
+sampled-fast and adaptive two/three-window sampled-fast do not share V3
+fingerprint records unless they are intentionally represented by the same
+output-equivalent policy. Diagnostic-only source helpers such as
+`sampled-pcm-cache`, `packet-map`, and `mkv-audio-ranges` are marked
+output-equivalent to the current per-window ffmpeg path when they ultimately
+produce the same sampled PCM/landmarks, so they do not create unnecessary cache
+namespaces. `single-process-filter` and `output-seek-per-window` are separate
+policies because they can change window alignment or decoded PCM.
+
+Warm-cache reports include `sqliteCacheCompatibleHitCount`,
+`sqliteCacheIncompatibleMissCount`, and `sampledPolicyMismatchCount`. If a run
+shows incompatible sampled-policy misses, rebuild that policy with
+`--refresh-cache` or compare against a cache root built with the same sampled
+policy before judging retrieval quality.
 
 For network libraries, the long-term path is source-local indexing. Preferred
 formats are either sidecar fingerprints next to media files or an exported V3
 index pack built on a machine close to storage. A sidecar/index pack must carry
-file identity, sampled-fast fingerprint data, settings/fingerprint cache hash,
-duration/metadata, and index anchors; imports must validate identity before
+file identity, sampled-fast fingerprint data, sampled policy,
+settings/fingerprint cache hash, duration/metadata, and index anchors; imports
+must validate identity and the policy/hash before
 trusting the data. This avoids reading remote media at all during client-side
 index import.
 

@@ -22,10 +22,11 @@ use crate::{
     MediaFingerprintExtractionOptions, MediaMatchAutoplayPolicy, MediaMatchDecision,
     MediaMatchSettings, MediaMatchTier, MediaMatchToolPaths, MediaMatchV3DiagnosticSummary,
     MediaMatchV3RetrievalStats, MediaMatchV3RetrievalStrategy, MediaMatchV3RetrievedCandidate,
-    MediaMatchV3SaveStats, MediaMatchV3SqliteSizeReport, MediaSampledAudioSourceStrategy, V3Tuning,
-    current_v3_tuning, decide_media_match, fingerprint_media_file_with_report,
-    load_media_match_v3_record_for_path, media_extraction_settings_hash,
-    media_match_v3_anchor_candidate_details_with_strategy, media_match_v3_sqlite_size_report,
+    MediaMatchV3SaveStats, MediaMatchV3SqliteSizeReport, MediaSampledAudioPolicy,
+    MediaSampledAudioSourceStrategy, V3Tuning, current_v3_tuning, decide_media_match,
+    fingerprint_media_file_with_report, load_media_match_v3_record_for_path,
+    media_extraction_settings_hash, media_match_v3_anchor_candidate_details_with_strategy,
+    media_match_v3_incompatible_record_count_for_path, media_match_v3_sqlite_size_report,
     normalize_media_path, open_media_match_v3_index, save_media_match_v3_record_with_stats,
     summarize_decision_v3_diagnostics, summarize_instrumented_record_v3_diagnostics,
     summarize_record_v3_diagnostics,
@@ -439,6 +440,14 @@ pub struct MediaMatchV3DiagnosticSummaryReport {
     pub fresh_fingerprint_report_count: usize,
     pub memory_cache_fingerprint_report_count: usize,
     pub sqlite_cache_fingerprint_report_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampled_audio_policy: Option<MediaSampledAudioPolicy>,
+    #[serde(default)]
+    pub sqlite_cache_compatible_hit_count: usize,
+    #[serde(default)]
+    pub sqlite_cache_incompatible_miss_count: usize,
+    #[serde(default)]
+    pub sampled_policy_mismatch_count: usize,
     pub total_extraction_millis: u128,
     pub total_audio_blob_bytes: usize,
     pub total_video_blob_bytes: usize,
@@ -735,6 +744,9 @@ struct DiagnosticFingerprintBatchStats {
     files_skipped_from_cache: usize,
     files_failed: usize,
     resumed_file_count: usize,
+    sqlite_cache_compatible_hit_count: usize,
+    sqlite_cache_incompatible_miss_count: usize,
+    sampled_policy_mismatch_count: usize,
 }
 
 struct DiagnosticFingerprintRecords {
@@ -791,6 +803,17 @@ pub fn run_media_match_v3_diagnostic_manifest(
         settings.audio_index_mode = index_settings.audio_index_mode;
         settings.audio_algorithm = index_settings.audio_algorithm;
     }
+    if settings.audio_index_mode.is_sampled() {
+        let adaptive_sampling_enabled = settings.audio_index_mode
+            == MediaAudioIndexMode::SampledFast
+            && options.adaptive_sampled_fast;
+        settings = settings.with_sampled_audio_policy(
+            MediaSampledAudioPolicy::for_sampled_fast_source_strategy(
+                options.sampled_audio_source,
+                adaptive_sampling_enabled,
+            ),
+        );
+    }
     let verify_settings = if matches!(
         index_mode,
         MediaMatchV3DiagnosticIndexMode::SampledThenFull
@@ -812,6 +835,10 @@ pub fn run_media_match_v3_diagnostic_manifest(
         case_count: resolved.cases.len(),
         cache_open_millis,
         max_full_promotions_per_query: options.max_full_promotions_per_query.max(1),
+        sampled_audio_policy: settings
+            .audio_index_mode
+            .is_sampled()
+            .then(|| settings.sampled_audio_policy.clone()),
         ..MediaMatchV3DiagnosticSummaryReport::default()
     };
 
@@ -829,6 +856,11 @@ pub fn run_media_match_v3_diagnostic_manifest(
     let fingerprint_batch_stats = fingerprint_records.stats;
     summary.fingerprint_total_millis = fingerprint_started_at.elapsed().as_millis();
     summary.sampled_fast_worker_count = fingerprint_batch_stats.worker_count;
+    summary.sqlite_cache_compatible_hit_count =
+        fingerprint_batch_stats.sqlite_cache_compatible_hit_count;
+    summary.sqlite_cache_incompatible_miss_count =
+        fingerprint_batch_stats.sqlite_cache_incompatible_miss_count;
+    summary.sampled_policy_mismatch_count = fingerprint_batch_stats.sampled_policy_mismatch_count;
     summary.extraction_queue_wait_millis = fingerprint_batch_stats.extraction_queue_wait_millis;
     summary.extraction_worker_wall_millis = fingerprint_batch_stats.extraction_worker_wall_millis;
     summary.sqlite_writer_millis = fingerprint_batch_stats.sqlite_writer_millis;
@@ -2055,10 +2087,26 @@ fn fingerprint_diagnostic_manifest_records(
             cache.insert(cache_key, cached.clone());
             occurrence_cache.insert(occurrence.occurrence_key, cached);
             stats.files_skipped_from_cache += 1;
+            stats.sqlite_cache_compatible_hit_count += 1;
             continue;
         }
 
         if !pending_occurrences.contains_key(&cache_key) {
+            if !refresh_cache {
+                let incompatible_count = media_match_v3_incompatible_record_count_for_path(
+                    connection,
+                    &normalized_path,
+                    settings,
+                    modified_unix_millis,
+                    size_bytes,
+                )?;
+                if incompatible_count > 0 {
+                    stats.sqlite_cache_incompatible_miss_count += 1;
+                    if settings.audio_index_mode.is_sampled() {
+                        stats.sampled_policy_mismatch_count += 1;
+                    }
+                }
+            }
             let source_info = media_source_path_info(&occurrence.path);
             let source_worker_limit = source_worker_limit(&source_info.kind, settings, options);
             fresh_jobs.push(DiagnosticFreshFingerprintJob {
@@ -2356,7 +2404,9 @@ fn fingerprint_fresh_diagnostic_jobs(
                     let extraction_options = MediaFingerprintExtractionOptions {
                         sampled_audio_source: options.sampled_audio_source,
                         sampled_pcm_cache_root: options.sampled_pcm_cache_root.clone(),
-                        adaptive_sampled_fast: options.adaptive_sampled_fast,
+                        adaptive_sampled_fast: settings
+                            .sampled_audio_policy
+                            .adaptive_sampling_enabled,
                     };
                     let result = fingerprint_media_file_with_report_and_options(
                         &job.path,
@@ -4276,6 +4326,126 @@ mod tests {
             loaded.is_none(),
             "changed fingerprint config hash should miss the SQLite record"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sampled_policy_mismatch_does_not_reuse_sqlite_cache_record() {
+        let root = temp_dir("v3-diagnostics-sampled-policy-cache");
+        let media = root.join("sampled.mkv");
+        fs::write(&media, b"sampled").expect("media should be written");
+        let cache_root = root.join("cache");
+        let fixed_settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
+        let adaptive_policy = MediaSampledAudioPolicy::for_sampled_fast_source_strategy(
+            MediaSampledAudioSourceStrategy::Current,
+            true,
+        );
+        let adaptive_settings = MediaExtractionSettings::sampled_fast_audio_index_v3()
+            .with_sampled_audio_policy(adaptive_policy);
+        let connection = open_media_match_v3_index(&cache_root).expect("index should open");
+        save_media_match_v3_record(
+            &connection,
+            &fixture_record(&media, &fixed_settings, 0),
+            None,
+        )
+        .expect("fixed sampled record should save");
+        let (modified_unix_millis, size_bytes) =
+            media_file_identity_parts(&media).expect("identity should load");
+
+        let loaded = load_media_match_v3_record_for_path(
+            &connection,
+            &normalize_media_path(&media),
+            &adaptive_settings,
+            modified_unix_millis,
+            size_bytes,
+        )
+        .expect("cache lookup should not fail");
+        let incompatible_count = media_match_v3_incompatible_record_count_for_path(
+            &connection,
+            &normalize_media_path(&media),
+            &adaptive_settings,
+            modified_unix_millis,
+            size_bytes,
+        )
+        .expect("incompatible cache check should not fail");
+
+        assert!(
+            loaded.is_none(),
+            "adaptive sampled-fast must not reuse fixed sampled-fast records"
+        );
+        assert_eq!(incompatible_count, 1);
+
+        save_media_match_v3_record(
+            &connection,
+            &fixture_record(&media, &adaptive_settings, 1_000),
+            None,
+        )
+        .expect("adaptive sampled record should save");
+        let loaded = load_media_match_v3_record_for_path(
+            &connection,
+            &normalize_media_path(&media),
+            &adaptive_settings,
+            modified_unix_millis,
+            size_bytes,
+        )
+        .expect("cache lookup should not fail");
+
+        assert!(
+            loaded.is_some(),
+            "same adaptive sampled-fast policy should reuse SQLite cache"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sampled_policy_is_reported_for_sampled_fast_runs() {
+        let root = temp_dir("v3-diagnostics-sampled-policy-report");
+        let media = root.join("sampled-report.mkv");
+        fs::write(&media, b"sampled report").expect("media should be written");
+        let cache_root = root.join("cache");
+        let policy = MediaSampledAudioPolicy::for_sampled_fast_source_strategy(
+            MediaSampledAudioSourceStrategy::Current,
+            true,
+        );
+        let settings = MediaExtractionSettings::sampled_fast_audio_index_v3()
+            .with_sampled_audio_policy(policy.clone());
+        let connection = open_media_match_v3_index(&cache_root).expect("index should open");
+        save_media_match_v3_record(&connection, &fixture_record(&media, &settings, 0), None)
+            .expect("sampled record should save");
+        drop(connection);
+        let manifest = manifest_for_paths("sampled-policy", &media, &[]);
+
+        let report = run_media_match_v3_diagnostic_manifest(
+            &manifest,
+            MediaMatchV3DiagnosticRunOptions {
+                manifest_dir: root.clone(),
+                cache_root,
+                cache_retained: true,
+                refresh_cache: false,
+                index_mode: MediaMatchV3DiagnosticIndexMode::SampledFast,
+                dense_audio_profile: MediaDenseAudioProfile::DenseCurrent,
+                max_full_promotions_per_query: 1,
+                promote_expected_candidates: false,
+                retrieval_benchmark_only: true,
+                retrieval_strategy: MediaMatchV3RetrievalStrategy::Auto,
+                sampled_fast_global_workers: None,
+                sampled_fast_per_local_source_workers: None,
+                sampled_fast_per_network_source_workers: None,
+                sampled_fast_per_removable_source_workers: None,
+                adaptive_io_concurrency_enabled: false,
+                adaptive_sampled_fast: true,
+                probe_audio_packets: false,
+                sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
+                sampled_pcm_cache_root: None,
+                tools: unavailable_tools(),
+                generated_at_unix_millis: Some(1),
+            },
+        )
+        .expect("matching sampled policy should load from cache");
+
+        assert_eq!(report.summary.sampled_audio_policy, Some(policy));
+        assert_eq!(report.summary.sqlite_cache_compatible_hit_count, 1);
+        assert_eq!(report.summary.sqlite_cache_incompatible_miss_count, 0);
         let _ = fs::remove_dir_all(root);
     }
 

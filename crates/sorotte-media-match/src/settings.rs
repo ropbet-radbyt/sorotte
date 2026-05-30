@@ -3,7 +3,12 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     MEDIA_MATCH_ALGORITHM_VERSION, MEDIA_MATCH_ANCHOR_VERSION, MEDIA_MATCH_WIRE_SCHEMA_V3,
-    tuning::current_v3_tuning,
+    tuning::{
+        V3_AUDIO_SAMPLED_FAST_INDEX_LANDMARK_LIMIT, V3_AUDIO_SAMPLED_FAST_MAX_WINDOWS,
+        V3_AUDIO_SAMPLED_FAST_MIN_WINDOWS, V3_AUDIO_SAMPLED_FAST_SAMPLE_RATE,
+        V3_AUDIO_SAMPLED_FAST_TARGET_LANDMARKS, V3_AUDIO_SAMPLED_FAST_WINDOW_SECONDS,
+        V3_AUDIO_SAMPLED_MIN_BODY_REGIONS, current_v3_tuning,
+    },
 };
 
 pub const MEDIA_MATCH_V3_FINGERPRINT_CACHE_VERSION: u32 = 1;
@@ -132,6 +137,138 @@ impl MediaSampledAudioSourceStrategy {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MediaSampledFfmpegWindowStrategy {
+    #[default]
+    CurrentThreeInvocations,
+    SingleProcessFilter,
+    OutputSeekPerWindow,
+}
+
+impl MediaSampledFfmpegWindowStrategy {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::CurrentThreeInvocations => "current-three-invocations",
+            Self::SingleProcessFilter => "single-process-filter",
+            Self::OutputSeekPerWindow => "output-seek-per-window",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MediaSampledWindowPlacementAlgorithm {
+    #[default]
+    BodyDistributedV1,
+}
+
+impl MediaSampledWindowPlacementAlgorithm {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::BodyDistributedV1 => "body-distributed-v1",
+        }
+    }
+}
+
+fn default_sampled_policy_version() -> u32 {
+    1
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaSampledAudioPolicy {
+    #[serde(default = "default_sampled_policy_version")]
+    pub policy_version: u32,
+    #[serde(default)]
+    pub adaptive_sampling_enabled: bool,
+    #[serde(default)]
+    pub ffmpeg_window_strategy: MediaSampledFfmpegWindowStrategy,
+    #[serde(default)]
+    pub window_placement_algorithm: MediaSampledWindowPlacementAlgorithm,
+    pub sampled_fast_window_seconds: u32,
+    pub sampled_fast_min_windows: usize,
+    pub sampled_fast_max_windows: usize,
+    pub sampled_fast_target_landmarks: usize,
+    pub sampled_fast_index_landmark_limit: usize,
+    pub sampled_fast_min_body_regions: usize,
+    pub sampled_fast_sample_rate: u32,
+}
+
+impl Default for MediaSampledAudioPolicy {
+    fn default() -> Self {
+        Self::fixed_sampled_fast_current()
+    }
+}
+
+impl MediaSampledAudioPolicy {
+    pub fn fixed_sampled_fast_current() -> Self {
+        Self {
+            policy_version: default_sampled_policy_version(),
+            adaptive_sampling_enabled: false,
+            ffmpeg_window_strategy: MediaSampledFfmpegWindowStrategy::CurrentThreeInvocations,
+            window_placement_algorithm: MediaSampledWindowPlacementAlgorithm::BodyDistributedV1,
+            sampled_fast_window_seconds: V3_AUDIO_SAMPLED_FAST_WINDOW_SECONDS,
+            sampled_fast_min_windows: V3_AUDIO_SAMPLED_FAST_MIN_WINDOWS,
+            sampled_fast_max_windows: V3_AUDIO_SAMPLED_FAST_MAX_WINDOWS,
+            sampled_fast_target_landmarks: V3_AUDIO_SAMPLED_FAST_TARGET_LANDMARKS,
+            sampled_fast_index_landmark_limit: V3_AUDIO_SAMPLED_FAST_INDEX_LANDMARK_LIMIT,
+            sampled_fast_min_body_regions: V3_AUDIO_SAMPLED_MIN_BODY_REGIONS
+                .min(V3_AUDIO_SAMPLED_FAST_MAX_WINDOWS),
+            sampled_fast_sample_rate: V3_AUDIO_SAMPLED_FAST_SAMPLE_RATE,
+        }
+    }
+
+    pub fn for_sampled_fast_source_strategy(
+        source_strategy: MediaSampledAudioSourceStrategy,
+        adaptive_sampling_enabled: bool,
+    ) -> Self {
+        let mut policy = Self::fixed_sampled_fast_current();
+        policy.adaptive_sampling_enabled = adaptive_sampling_enabled;
+        policy.ffmpeg_window_strategy = match source_strategy {
+            MediaSampledAudioSourceStrategy::SingleProcessFilter => {
+                MediaSampledFfmpegWindowStrategy::SingleProcessFilter
+            }
+            MediaSampledAudioSourceStrategy::OutputSeekPerWindow => {
+                MediaSampledFfmpegWindowStrategy::OutputSeekPerWindow
+            }
+            MediaSampledAudioSourceStrategy::Current
+            | MediaSampledAudioSourceStrategy::FastSeekPerWindow
+            | MediaSampledAudioSourceStrategy::FfprobeProbe
+            | MediaSampledAudioSourceStrategy::PacketMap
+            | MediaSampledAudioSourceStrategy::MkvAudioRanges
+            | MediaSampledAudioSourceStrategy::SampledPcmCache
+            | MediaSampledAudioSourceStrategy::Auto => {
+                MediaSampledFfmpegWindowStrategy::CurrentThreeInvocations
+            }
+        };
+        if adaptive_sampling_enabled {
+            policy.sampled_fast_min_windows = policy.sampled_fast_min_windows.clamp(1, 2);
+            policy.sampled_fast_min_body_regions = policy
+                .sampled_fast_min_body_regions
+                .min(policy.sampled_fast_min_windows);
+        }
+        policy
+    }
+
+    pub fn label(&self) -> String {
+        let sampling = if self.adaptive_sampling_enabled {
+            "adaptive"
+        } else {
+            "fixed"
+        };
+        format!(
+            "sampled-fast-{sampling}-{}-{}",
+            self.sampled_fast_min_windows,
+            self.ffmpeg_window_strategy.label()
+        )
+    }
+
+    pub fn is_default_policy(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MediaExtractionSettings {
     #[serde(default = "default_media_fingerprint_profile")]
@@ -140,6 +277,11 @@ pub struct MediaExtractionSettings {
     pub audio_index_mode: MediaAudioIndexMode,
     #[serde(default)]
     pub dense_audio_profile: MediaDenseAudioProfile,
+    #[serde(
+        default,
+        skip_serializing_if = "MediaSampledAudioPolicy::is_default_policy"
+    )]
+    pub sampled_audio_policy: MediaSampledAudioPolicy,
     pub frame_sample_interval_seconds: u32,
     pub max_frames: usize,
     pub audio_algorithm: String,
@@ -158,6 +300,7 @@ impl MediaExtractionSettings {
             profile: MediaFingerprintProfile::AudioConstellationV3,
             audio_index_mode: MediaAudioIndexMode::FullVerify,
             dense_audio_profile: MediaDenseAudioProfile::DenseCurrent,
+            sampled_audio_policy: MediaSampledAudioPolicy::default(),
             frame_sample_interval_seconds: 0,
             max_frames: 0,
             audio_algorithm: "sorotte-audio-constellation-v3".to_owned(),
@@ -170,6 +313,7 @@ impl MediaExtractionSettings {
             profile: MediaFingerprintProfile::CombinedV3,
             audio_index_mode: MediaAudioIndexMode::FullVerify,
             dense_audio_profile: MediaDenseAudioProfile::DenseCurrent,
+            sampled_audio_policy: MediaSampledAudioPolicy::default(),
             frame_sample_interval_seconds: 10,
             max_frames: 64,
             audio_algorithm: "sorotte-audio-constellation-v3".to_owned(),
@@ -210,6 +354,11 @@ impl MediaExtractionSettings {
                 format!("sorotte-audio-constellation-v3-{}", profile.label())
             };
         }
+        self
+    }
+
+    pub fn with_sampled_audio_policy(mut self, policy: MediaSampledAudioPolicy) -> Self {
+        self.sampled_audio_policy = policy;
         self
     }
 }
@@ -305,6 +454,51 @@ mod tests {
         );
 
         assert_ne!(current, dense_8k);
+    }
+
+    #[test]
+    fn fingerprint_config_hash_changes_with_sampled_audio_policy() {
+        let fixed = media_match_v3_fingerprint_config_hash(
+            &MediaExtractionSettings::sampled_fast_audio_index_v3(),
+        );
+        let adaptive = media_match_v3_fingerprint_config_hash(
+            &MediaExtractionSettings::sampled_fast_audio_index_v3().with_sampled_audio_policy(
+                MediaSampledAudioPolicy::for_sampled_fast_source_strategy(
+                    MediaSampledAudioSourceStrategy::Current,
+                    true,
+                ),
+            ),
+        );
+        let output_seek = media_match_v3_fingerprint_config_hash(
+            &MediaExtractionSettings::sampled_fast_audio_index_v3().with_sampled_audio_policy(
+                MediaSampledAudioPolicy::for_sampled_fast_source_strategy(
+                    MediaSampledAudioSourceStrategy::OutputSeekPerWindow,
+                    false,
+                ),
+            ),
+        );
+
+        assert_ne!(fixed, adaptive);
+        assert_ne!(fixed, output_seek);
+    }
+
+    #[test]
+    fn sampled_audio_policy_marks_output_equivalent_sources() {
+        let current = MediaSampledAudioPolicy::for_sampled_fast_source_strategy(
+            MediaSampledAudioSourceStrategy::Current,
+            false,
+        );
+        let packet_map = MediaSampledAudioPolicy::for_sampled_fast_source_strategy(
+            MediaSampledAudioSourceStrategy::PacketMap,
+            false,
+        );
+        let pcm_cache = MediaSampledAudioPolicy::for_sampled_fast_source_strategy(
+            MediaSampledAudioSourceStrategy::SampledPcmCache,
+            false,
+        );
+
+        assert_eq!(current, packet_map);
+        assert_eq!(current, pcm_cache);
     }
 
     #[test]

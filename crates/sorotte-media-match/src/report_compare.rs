@@ -1030,6 +1030,21 @@ fn report_metric_deltas(
             current.summary.sqlite_cache_fingerprint_report_count as i128,
         ),
         metric_delta(
+            "sqliteCacheCompatibleHitCount",
+            baseline.summary.sqlite_cache_compatible_hit_count as i128,
+            current.summary.sqlite_cache_compatible_hit_count as i128,
+        ),
+        metric_delta(
+            "sqliteCacheIncompatibleMissCount",
+            baseline.summary.sqlite_cache_incompatible_miss_count as i128,
+            current.summary.sqlite_cache_incompatible_miss_count as i128,
+        ),
+        metric_delta(
+            "sampledPolicyMismatchCount",
+            baseline.summary.sampled_policy_mismatch_count as i128,
+            current.summary.sampled_policy_mismatch_count as i128,
+        ),
+        metric_delta(
             "hardNegativeCount",
             baseline.summary.hard_negative_count as i128,
             current.summary.hard_negative_count as i128,

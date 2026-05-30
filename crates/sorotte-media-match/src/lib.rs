@@ -54,8 +54,10 @@ pub use report_compare::{
 };
 pub use settings::{
     MEDIA_MATCH_V3_FINGERPRINT_CACHE_VERSION, MediaAudioIndexMode, MediaDenseAudioProfile,
-    MediaExtractionSettings, MediaFingerprintProfile, MediaSampledAudioSourceStrategy,
-    media_extraction_settings_hash, media_match_v3_fingerprint_config_hash,
+    MediaExtractionSettings, MediaFingerprintProfile, MediaSampledAudioPolicy,
+    MediaSampledAudioSourceStrategy, MediaSampledFfmpegWindowStrategy,
+    MediaSampledWindowPlacementAlgorithm, media_extraction_settings_hash,
+    media_match_v3_fingerprint_config_hash,
 };
 pub use timeline_v3::{
     classify_timeline_at_query_ms, map_candidate_position_to_query_ms,
@@ -80,7 +82,8 @@ pub use v3_index::{
     load_media_match_v3_record_for_path, mark_anchor_stats_v3_dirty,
     mark_anchor_stats_v3_dirty_for_file, media_match_v3_anchor_candidate_details_with_stats,
     media_match_v3_anchor_candidate_details_with_strategy,
-    media_match_v3_anchor_candidate_paths_with_stats, media_match_v3_index_path,
+    media_match_v3_anchor_candidate_paths_with_stats,
+    media_match_v3_incompatible_record_count_for_path, media_match_v3_index_path,
     media_match_v3_sqlite_size_report, open_media_match_v3_index, refresh_all_anchor_stats_v3,
     refresh_anchor_stats_v3, refresh_dirty_anchor_stats_v3_if_needed, save_media_match_v3_record,
     save_media_match_v3_record_with_stats,

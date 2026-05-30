@@ -1281,6 +1281,38 @@ pub fn load_media_match_v3_record_for_path(
         .then_some(record))
 }
 
+pub fn media_match_v3_incompatible_record_count_for_path(
+    connection: &Connection,
+    normalized_path: &str,
+    extraction_settings: &MediaExtractionSettings,
+    modified_unix_millis: u64,
+    size_bytes: u64,
+) -> Result<usize, String> {
+    let settings_hash = media_extraction_settings_hash(extraction_settings).to_vec();
+    let count = connection
+        .query_row(
+            "SELECT COUNT(*)
+             FROM fingerprints_v3
+             JOIN media_files_v3 ON media_files_v3.file_id = fingerprints_v3.file_id
+             JOIN settings_v3 ON settings_v3.settings_id = fingerprints_v3.settings_id
+             WHERE media_files_v3.normalized_path = ?1
+                AND media_files_v3.modified_unix_millis = ?2
+                AND media_files_v3.size_bytes = ?3
+                AND settings_v3.settings_hash <> ?4",
+            params![
+                normalized_path,
+                modified_unix_millis.min(i64::MAX as u64) as i64,
+                size_bytes.min(i64::MAX as u64) as i64,
+                settings_hash,
+            ],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| {
+            format!("failed checking media-match v3 incompatible cache rows: {error}")
+        })?;
+    Ok(count.max(0) as usize)
+}
+
 pub fn media_match_v3_anchor_candidate_paths_with_stats(
     connection: &Connection,
     normalized_current_path: &str,

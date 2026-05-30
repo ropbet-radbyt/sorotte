@@ -35,7 +35,8 @@ use crate::{
     identity::{container_fingerprint_from_metadata, normalize_media_path},
     settings::{
         MediaAudioIndexMode, MediaDenseAudioProfile, MediaExtractionSettings,
-        MediaFingerprintProfile, MediaSampledAudioSourceStrategy, media_extraction_settings_hash,
+        MediaFingerprintProfile, MediaSampledAudioPolicy, MediaSampledAudioSourceStrategy,
+        media_extraction_settings_hash,
     },
     tuning::{
         FFMPEG_AUDIO_V3_TIMEOUT, FFMPEG_FULL_VIDEO_TIMEOUT, FFPROBE_TIMEOUT,
@@ -522,6 +523,7 @@ pub fn fingerprint_media_file_with_report_and_options(
                 SampledAudioExtractionContext {
                     source_identity: &source_identity,
                     settings_hash: media_extraction_settings_hash(extraction_settings),
+                    sampled_audio_policy: &extraction_settings.sampled_audio_policy,
                     options,
                     ffprobe: Some(tools.ffprobe.as_path()),
                 },
@@ -825,6 +827,7 @@ fn update_atomic_max_usize(target: &AtomicUsize, value: usize) {
 struct SampledAudioExtractionContext<'a> {
     source_identity: &'a MediaFileIdentity,
     settings_hash: [u8; 32],
+    sampled_audio_policy: &'a MediaSampledAudioPolicy,
     options: &'a MediaFingerprintExtractionOptions,
     ffprobe: Option<&'a Path>,
 }
@@ -838,7 +841,9 @@ fn extract_audio_constellation_v3_sampled_index_with_metrics_and_options(
     cancel_flag: Option<&AtomicBool>,
 ) -> Result<(Vec<AudioLandmarkV3>, MediaAudioStreamMetrics), MediaFingerprintError> {
     let mut config = sampled_audio_index_config(index_mode);
-    if context.options.adaptive_sampled_fast && index_mode == MediaAudioIndexMode::SampledFast {
+    let adaptive_sampled_fast = context.sampled_audio_policy.adaptive_sampling_enabled
+        && index_mode == MediaAudioIndexMode::SampledFast;
+    if adaptive_sampled_fast {
         config.min_windows = config.min_windows.clamp(1, 2);
         config.min_body_regions = config.min_body_regions.min(config.min_windows);
     }
@@ -999,10 +1004,7 @@ fn extract_audio_constellation_v3_sampled_index_with_metrics_and_options(
             && body_regions.len() >= config.min_body_regions
             && unique_hashes.len() >= config.target_landmarks.saturating_mul(3) / 4
         {
-            stop_reason = if context.options.adaptive_sampled_fast
-                && index_mode == MediaAudioIndexMode::SampledFast
-                && windows_decoded < windows.len()
-            {
+            stop_reason = if adaptive_sampled_fast && windows_decoded < windows.len() {
                 "adaptive-quality-threshold"
             } else {
                 "quality-threshold"
@@ -1149,7 +1151,7 @@ fn sampled_pcm_cache_paths(
         index_mode,
         config,
         windows,
-        context.options.adaptive_sampled_fast,
+        context.sampled_audio_policy.adaptive_sampling_enabled,
     );
     let dir = root.join("sampled-pcm-v3");
     Some((
@@ -1317,7 +1319,7 @@ fn extract_sampled_index_with_pcm_cache_fill(
             && body_regions.len() >= config.min_body_regions
             && unique_hashes.len() >= config.target_landmarks.saturating_mul(3) / 4
         {
-            stop_reason = if context.options.adaptive_sampled_fast
+            stop_reason = if context.sampled_audio_policy.adaptive_sampling_enabled
                 && index_mode == MediaAudioIndexMode::SampledFast
                 && windows_decoded < windows.len()
             {
@@ -3878,9 +3880,11 @@ mod tests {
             sampled_pcm_cache_root: Some(PathBuf::from("packet-cache")),
             adaptive_sampled_fast: false,
         };
+        let sampled_audio_policy = MediaSampledAudioPolicy::default();
         let context = SampledAudioExtractionContext {
             source_identity: &identity,
             settings_hash: [7; 32],
+            sampled_audio_policy: &sampled_audio_policy,
             options: &options,
             ffprobe: None,
         };
@@ -3893,6 +3897,7 @@ mod tests {
         let changed_context = SampledAudioExtractionContext {
             source_identity: &changed_identity,
             settings_hash: [7; 32],
+            sampled_audio_policy: &sampled_audio_policy,
             options: &options,
             ffprobe: None,
         };
