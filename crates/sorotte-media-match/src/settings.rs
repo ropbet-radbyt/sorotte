@@ -106,8 +106,12 @@ impl MediaDenseAudioProfile {
 pub enum MediaSampledAudioSourceStrategy {
     #[default]
     Current,
+    SingleProcessFilter,
+    FastSeekPerWindow,
+    OutputSeekPerWindow,
     FfprobeProbe,
     PacketMap,
+    MkvAudioRanges,
     SampledPcmCache,
     Auto,
 }
@@ -116,8 +120,12 @@ impl MediaSampledAudioSourceStrategy {
     pub fn label(self) -> &'static str {
         match self {
             Self::Current => "current",
+            Self::SingleProcessFilter => "single-process-filter",
+            Self::FastSeekPerWindow => "fast-seek-per-window",
+            Self::OutputSeekPerWindow => "output-seek-per-window",
             Self::FfprobeProbe => "ffprobe-probe",
             Self::PacketMap => "packet-map",
+            Self::MkvAudioRanges => "mkv-audio-ranges",
             Self::SampledPcmCache => "sampled-pcm-cache",
             Self::Auto => "auto",
         }

@@ -4404,6 +4404,7 @@ mod tests {
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
+                adaptive_sampled_fast: false,
                 probe_audio_packets: false,
                 sampled_audio_source: sorotte_media_match::MediaSampledAudioSourceStrategy::Current,
                 sampled_pcm_cache_root: None,

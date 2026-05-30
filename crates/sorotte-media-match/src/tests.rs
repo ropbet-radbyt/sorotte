@@ -1038,6 +1038,22 @@ fn v3_diagnostics_serializes_stable_stream_metric_names() {
                 sampled_pcm_cache_saved_millis: Some(39),
                 audio_sidecar_mode: Some("sampled-pcm-cache".to_owned()),
                 audio_sidecar_fallback_reason: None,
+                sampled_ffmpeg_window_strategy: Some("current-three-invocations".to_owned()),
+                sampled_windows_planned: Some(3),
+                sampled_stop_reason: Some("quality-threshold".to_owned()),
+                provisional_landmark_count: Some(320),
+                provisional_body_region_count: Some(3),
+                adaptive_saved_seconds: Some(20),
+                adaptive_saved_estimated_read_bytes: Some(341_333),
+                mkv_parser_used: Some(true),
+                mkv_cues_present: Some(true),
+                mkv_audio_track_found: Some(true),
+                mkv_clusters_scanned: Some(3),
+                mkv_cluster_bytes_read: Some(3_000_000),
+                mkv_audio_block_bytes_read: Some(180_000),
+                mkv_coalesced_range_bytes: Some(220_000),
+                mkv_estimated_savings_vs_current: Some(804_000),
+                mkv_fallback_reason: Some("feasibility-only".to_owned()),
                 streamed_bytes: 10_000,
                 streamed_samples: 5_000,
                 peak_frames: 12,
@@ -1158,6 +1174,25 @@ fn v3_diagnostics_serializes_stable_stream_metric_names() {
     assert_eq!(value["sampledPcmCacheWriteMillis"], 5);
     assert_eq!(value["sampledPcmCacheSavedMillis"], 39);
     assert_eq!(value["audioSidecarMode"], "sampled-pcm-cache");
+    assert_eq!(
+        value["sampledFfmpegWindowStrategy"],
+        "current-three-invocations"
+    );
+    assert_eq!(value["sampledWindowsPlanned"], 3);
+    assert_eq!(value["sampledStopReason"], "quality-threshold");
+    assert_eq!(value["provisionalLandmarkCount"], 320);
+    assert_eq!(value["provisionalBodyRegionCount"], 3);
+    assert_eq!(value["adaptiveSavedSeconds"], 20);
+    assert_eq!(value["adaptiveSavedEstimatedReadBytes"], 341_333);
+    assert_eq!(value["mkvParserUsed"], true);
+    assert_eq!(value["mkvCuesPresent"], true);
+    assert_eq!(value["mkvAudioTrackFound"], true);
+    assert_eq!(value["mkvClustersScanned"], 3);
+    assert_eq!(value["mkvClusterBytesRead"], 3_000_000);
+    assert_eq!(value["mkvAudioBlockBytesRead"], 180_000);
+    assert_eq!(value["mkvCoalescedRangeBytes"], 220_000);
+    assert_eq!(value["mkvEstimatedSavingsVsCurrent"], 804_000);
+    assert_eq!(value["mkvFallbackReason"], "feasibility-only");
     assert_eq!(value["ffmpegProcessWallMillis"], 43);
     assert_eq!(value["ffmpegInputReadBytes"], 1_024_000);
     assert_eq!(value["ffmpegInputReadOps"], 64);

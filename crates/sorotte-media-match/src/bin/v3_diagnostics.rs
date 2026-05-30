@@ -61,6 +61,7 @@ fn run_cli_with_output(
         sampled_fast_per_network_source_workers,
         sampled_fast_per_removable_source_workers,
         adaptive_io_concurrency_enabled,
+        adaptive_sampled_fast,
         probe_audio_packets,
         sampled_audio_source,
         sampled_pcm_cache_root,
@@ -189,6 +190,7 @@ fn run_cli_with_output(
             sampled_fast_per_network_source_workers,
             sampled_fast_per_removable_source_workers,
             adaptive_io_concurrency_enabled,
+            adaptive_sampled_fast,
             probe_audio_packets,
             sampled_audio_source,
             sampled_pcm_cache_root,
@@ -255,6 +257,7 @@ struct CliArgs {
     sampled_fast_per_network_source_workers: Option<usize>,
     sampled_fast_per_removable_source_workers: Option<usize>,
     adaptive_io_concurrency_enabled: bool,
+    adaptive_sampled_fast: bool,
     probe_audio_packets: bool,
     sampled_audio_source: MediaSampledAudioSourceStrategy,
     sampled_pcm_cache_root: Option<PathBuf>,
@@ -280,6 +283,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
     let mut sampled_fast_per_network_source_workers = None;
     let mut sampled_fast_per_removable_source_workers = None;
     let mut adaptive_io_concurrency_enabled = false;
+    let mut adaptive_sampled_fast = false;
     let mut probe_audio_packets = false;
     let mut sampled_audio_source = MediaSampledAudioSourceStrategy::Current;
     let mut sampled_pcm_cache_root = None;
@@ -366,6 +370,9 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
             "--adaptive-io-concurrency" => {
                 adaptive_io_concurrency_enabled = true;
             }
+            "--adaptive-sampled-fast" => {
+                adaptive_sampled_fast = true;
+            }
             "--probe-audio-packets" => {
                 probe_audio_packets = true;
             }
@@ -438,6 +445,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
         sampled_fast_per_network_source_workers,
         sampled_fast_per_removable_source_workers,
         adaptive_io_concurrency_enabled,
+        adaptive_sampled_fast,
         probe_audio_packets,
         sampled_audio_source,
         sampled_pcm_cache_root,
@@ -447,7 +455,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
 }
 
 fn usage() -> String {
-    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--index-mode full|sparse-full|sampled-fast|sampled-normal|sampled|sampled-then-full|production] [--dense-audio-profile dense-current|dense-realfft|dense-8k|dense-hop2048|dense-8k-hop2048|dense-8k-window1024-hop1024|dense-max-peaks-4|dense-pair-retain-16|dense-pair-retain-lower|dense-gated|dense-gated-v2|dense-fast-combined-candidate] [--retrieval-strategy auto|temp-table|bucket-fetch] [--sampled-fast-workers n] [--sampled-fast-local-workers n] [--sampled-fast-network-workers n] [--sampled-fast-removable-workers n] [--adaptive-io-concurrency] [--probe-audio-packets] [--sampled-audio-source current|ffprobe-probe|packet-map|sampled-pcm-cache|auto] [--sampled-pcm-cache-root dir] [--bench-dense-audio-profiles] [--max-full-promotions n] [--promote-expected-candidates] [--retrieval-benchmark-only] [--list-cases|--validate-only|--prepare-index-stats|--cache-size-report] [--case name]"
+    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--index-mode full|sparse-full|sampled-fast|sampled-normal|sampled|sampled-then-full|production] [--dense-audio-profile dense-current|dense-realfft|dense-8k|dense-hop2048|dense-8k-hop2048|dense-8k-window1024-hop1024|dense-max-peaks-4|dense-pair-retain-16|dense-pair-retain-lower|dense-gated|dense-gated-v2|dense-fast-combined-candidate] [--retrieval-strategy auto|temp-table|bucket-fetch] [--sampled-fast-workers n] [--sampled-fast-local-workers n] [--sampled-fast-network-workers n] [--sampled-fast-removable-workers n] [--adaptive-io-concurrency] [--adaptive-sampled-fast] [--probe-audio-packets] [--sampled-audio-source current|single-process-filter|fast-seek-per-window|output-seek-per-window|ffprobe-probe|packet-map|mkv-audio-ranges|sampled-pcm-cache|auto] [--sampled-pcm-cache-root dir] [--bench-dense-audio-profiles] [--max-full-promotions n] [--promote-expected-candidates] [--retrieval-benchmark-only] [--list-cases|--validate-only|--prepare-index-stats|--cache-size-report] [--case name]"
         .to_owned()
 }
 
@@ -484,8 +492,12 @@ fn parse_sampled_audio_source_strategy(
 ) -> Result<MediaSampledAudioSourceStrategy, String> {
     match value {
         "current" => Ok(MediaSampledAudioSourceStrategy::Current),
+        "single-process-filter" => Ok(MediaSampledAudioSourceStrategy::SingleProcessFilter),
+        "fast-seek-per-window" => Ok(MediaSampledAudioSourceStrategy::FastSeekPerWindow),
+        "output-seek-per-window" => Ok(MediaSampledAudioSourceStrategy::OutputSeekPerWindow),
         "ffprobe-probe" => Ok(MediaSampledAudioSourceStrategy::FfprobeProbe),
         "packet-map" => Ok(MediaSampledAudioSourceStrategy::PacketMap),
+        "mkv-audio-ranges" => Ok(MediaSampledAudioSourceStrategy::MkvAudioRanges),
         "sampled-pcm-cache" => Ok(MediaSampledAudioSourceStrategy::SampledPcmCache),
         "auto" => Ok(MediaSampledAudioSourceStrategy::Auto),
         _ => Err(usage()),
@@ -600,6 +612,7 @@ fn run_dense_audio_profile_benchmark(
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
+                adaptive_sampled_fast: false,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
                 sampled_pcm_cache_root: None,
@@ -833,6 +846,7 @@ mod tests {
             "--sampled-fast-removable-workers".to_owned(),
             "1".to_owned(),
             "--adaptive-io-concurrency".to_owned(),
+            "--adaptive-sampled-fast".to_owned(),
             "--probe-audio-packets".to_owned(),
             "--sampled-audio-source".to_owned(),
             "sampled-pcm-cache".to_owned(),
@@ -869,6 +883,7 @@ mod tests {
         assert_eq!(args.sampled_fast_per_network_source_workers, Some(2));
         assert_eq!(args.sampled_fast_per_removable_source_workers, Some(1));
         assert!(args.adaptive_io_concurrency_enabled);
+        assert!(args.adaptive_sampled_fast);
         assert!(args.probe_audio_packets);
         assert_eq!(
             args.sampled_audio_source,
@@ -880,6 +895,37 @@ mod tests {
         );
         assert_eq!(args.selected_cases, vec!["copied-synthetic"]);
         assert_eq!(args.mode, CliMode::Run);
+    }
+
+    #[test]
+    fn parse_args_accepts_cold_io_sampled_audio_sources() {
+        for (label, expected) in [
+            (
+                "single-process-filter",
+                MediaSampledAudioSourceStrategy::SingleProcessFilter,
+            ),
+            (
+                "fast-seek-per-window",
+                MediaSampledAudioSourceStrategy::FastSeekPerWindow,
+            ),
+            (
+                "output-seek-per-window",
+                MediaSampledAudioSourceStrategy::OutputSeekPerWindow,
+            ),
+            (
+                "mkv-audio-ranges",
+                MediaSampledAudioSourceStrategy::MkvAudioRanges,
+            ),
+        ] {
+            let args = parse_args([
+                "manifest.json".to_owned(),
+                "--sampled-audio-source".to_owned(),
+                label.to_owned(),
+            ])
+            .expect("sampled source args should parse");
+
+            assert_eq!(args.sampled_audio_source, expected);
+        }
     }
 
     #[test]
@@ -1136,6 +1182,7 @@ mod tests {
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
+                adaptive_sampled_fast: false,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
                 sampled_pcm_cache_root: None,
@@ -1217,6 +1264,7 @@ mod tests {
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
+                adaptive_sampled_fast: false,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
                 sampled_pcm_cache_root: None,
@@ -1268,6 +1316,7 @@ mod tests {
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
+                adaptive_sampled_fast: false,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
                 sampled_pcm_cache_root: None,
@@ -1332,6 +1381,7 @@ mod tests {
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
+                adaptive_sampled_fast: false,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
                 sampled_pcm_cache_root: None,
@@ -1425,6 +1475,7 @@ mod tests {
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
+                adaptive_sampled_fast: false,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::SampledPcmCache,
                 sampled_pcm_cache_root: Some(pcm_cache_root.clone()),
@@ -1474,6 +1525,7 @@ mod tests {
                 sampled_fast_per_network_source_workers: None,
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
+                adaptive_sampled_fast: false,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::SampledPcmCache,
                 sampled_pcm_cache_root: Some(pcm_cache_root),

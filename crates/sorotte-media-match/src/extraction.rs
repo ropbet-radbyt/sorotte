@@ -131,6 +131,7 @@ pub struct AudioPacketPositionV3 {
 pub struct MediaFingerprintExtractionOptions {
     pub sampled_audio_source: MediaSampledAudioSourceStrategy,
     pub sampled_pcm_cache_root: Option<PathBuf>,
+    pub adaptive_sampled_fast: bool,
 }
 
 pub fn media_source_path_info(path: impl AsRef<Path>) -> MediaSourcePathInfo {
@@ -255,6 +256,22 @@ pub struct MediaAudioStreamMetrics {
     pub sampled_pcm_cache_saved_millis: Option<i64>,
     pub audio_sidecar_mode: Option<String>,
     pub audio_sidecar_fallback_reason: Option<String>,
+    pub sampled_ffmpeg_window_strategy: Option<String>,
+    pub sampled_windows_planned: Option<usize>,
+    pub sampled_stop_reason: Option<String>,
+    pub provisional_landmark_count: Option<usize>,
+    pub provisional_body_region_count: Option<usize>,
+    pub adaptive_saved_seconds: Option<u32>,
+    pub adaptive_saved_estimated_read_bytes: Option<u64>,
+    pub mkv_parser_used: Option<bool>,
+    pub mkv_cues_present: Option<bool>,
+    pub mkv_audio_track_found: Option<bool>,
+    pub mkv_clusters_scanned: Option<usize>,
+    pub mkv_cluster_bytes_read: Option<u64>,
+    pub mkv_audio_block_bytes_read: Option<u64>,
+    pub mkv_coalesced_range_bytes: Option<u64>,
+    pub mkv_estimated_savings_vs_current: Option<i64>,
+    pub mkv_fallback_reason: Option<String>,
     pub streamed_bytes: usize,
     pub streamed_samples: usize,
     pub peak_frames: usize,
@@ -820,7 +837,11 @@ fn extract_audio_constellation_v3_sampled_index_with_metrics_and_options(
     context: SampledAudioExtractionContext<'_>,
     cancel_flag: Option<&AtomicBool>,
 ) -> Result<(Vec<AudioLandmarkV3>, MediaAudioStreamMetrics), MediaFingerprintError> {
-    let config = sampled_audio_index_config(index_mode);
+    let mut config = sampled_audio_index_config(index_mode);
+    if context.options.adaptive_sampled_fast && index_mode == MediaAudioIndexMode::SampledFast {
+        config.min_windows = config.min_windows.clamp(1, 2);
+        config.min_body_regions = config.min_body_regions.min(config.min_windows);
+    }
     let windows = sampled_audio_windows_v3(duration_seconds, config);
     if windows.is_empty() {
         return extract_audio_constellation_v3_with_metrics(
@@ -841,11 +862,22 @@ fn extract_audio_constellation_v3_sampled_index_with_metrics_and_options(
     mark_audio_only_ffmpeg_command(&mut combined_metrics);
     combined_metrics.selected_sampled_audio_source_strategy =
         Some(context.options.sampled_audio_source.label().to_owned());
+    combined_metrics.sampled_ffmpeg_window_strategy =
+        Some(sampled_ffmpeg_window_strategy_label(context.options.sampled_audio_source).to_owned());
+    combined_metrics.sampled_windows_planned = Some(windows.len());
     combined_metrics.source_strategy_decision_reason = Some(
         match context.options.sampled_audio_source {
             MediaSampledAudioSourceStrategy::Current => "explicit-current",
+            MediaSampledAudioSourceStrategy::SingleProcessFilter => {
+                "explicit-single-process-filter"
+            }
+            MediaSampledAudioSourceStrategy::FastSeekPerWindow => "explicit-fast-seek-per-window",
+            MediaSampledAudioSourceStrategy::OutputSeekPerWindow => {
+                "explicit-output-seek-per-window"
+            }
             MediaSampledAudioSourceStrategy::FfprobeProbe => "explicit-ffprobe-probe",
             MediaSampledAudioSourceStrategy::PacketMap => "explicit-packet-map-feasibility",
+            MediaSampledAudioSourceStrategy::MkvAudioRanges => "explicit-mkv-audio-ranges",
             MediaSampledAudioSourceStrategy::SampledPcmCache => "explicit-sampled-pcm-cache",
             MediaSampledAudioSourceStrategy::Auto => "auto-safe-current-with-cache-probe",
         }
@@ -858,6 +890,7 @@ fn extract_audio_constellation_v3_sampled_index_with_metrics_and_options(
         &windows,
         context,
     );
+    maybe_attach_mkv_audio_range_feasibility(media_path.as_ref(), &mut combined_metrics, &windows);
 
     if let Some((landmarks, metrics)) = try_sampled_pcm_cache_read(
         media_path.as_ref(),
@@ -884,56 +917,40 @@ fn extract_audio_constellation_v3_sampled_index_with_metrics_and_options(
         );
     }
 
+    if context.options.sampled_audio_source == MediaSampledAudioSourceStrategy::SingleProcessFilter
+    {
+        return extract_sampled_index_with_single_process_filter(
+            ffmpeg,
+            media_path,
+            duration_seconds,
+            config,
+            windows,
+            combined_metrics,
+            cancel_flag,
+        );
+    }
+
     let mut process_wall_millis = 0u128;
     let mut body_regions = BTreeSet::new();
     let mut unique_hashes = BTreeSet::new();
-    for (window_index, (start_seconds, window_seconds)) in windows.into_iter().enumerate() {
-        let started_at = Instant::now();
-        let stream = Arc::new(Mutex::new(AudioConstellationV3PcmStream::new(
-            config.sample_rate,
-        )));
-        let stream_reader = Arc::clone(&stream);
-        let streaming_output = run_tool_streaming_stdout(
-            "ffmpeg",
-            ffmpeg.as_ref(),
-            [
-                "-v".into(),
-                "error".into(),
-                "-nostdin".into(),
-                "-threads".into(),
-                "1".into(),
-                "-ss".into(),
-                format!("{start_seconds:.3}").into(),
-                "-t".into(),
-                window_seconds.to_string().into(),
-                "-i".into(),
-                media_path.as_ref().as_os_str().to_os_string(),
-                "-map".into(),
-                "0:a:0".into(),
-                "-vn".into(),
-                "-sn".into(),
-                "-dn".into(),
-                "-ac".into(),
-                "1".into(),
-                "-ar".into(),
-                config.sample_rate.to_string().into(),
-                "-f".into(),
-                "s16le".into(),
-                "-".into(),
-            ],
-            cancel_flag,
-            FFMPEG_AUDIO_V3_TIMEOUT,
-            move |chunk| {
-                stream_reader
-                    .lock()
-                    .map_err(|_| MediaFingerprintError::InvalidToolOutput {
-                        tool: "ffmpeg",
-                        reason: "audio stream state was poisoned".to_owned(),
-                    })?
-                    .push_bytes(chunk)
-            },
-        )?;
-        let window_wall = started_at.elapsed().as_millis();
+    let mut stop_reason = "max-windows";
+    for (window_index, (start_seconds, window_seconds)) in windows.iter().copied().enumerate() {
+        let seek_mode = match context.options.sampled_audio_source {
+            MediaSampledAudioSourceStrategy::OutputSeekPerWindow => {
+                FfmpegSampledWindowSeekMode::Output
+            }
+            _ => FfmpegSampledWindowSeekMode::Input,
+        };
+        let (window_pcm, streaming_output, window_wall) =
+            decode_sampled_window_pcm_bytes_with_seek_mode(
+                ffmpeg.as_ref(),
+                media_path.as_ref(),
+                start_seconds,
+                window_seconds,
+                config.sample_rate,
+                seek_mode,
+                cancel_flag,
+            )?;
         process_wall_millis += window_wall;
         combined_metrics.ffmpeg_invocation_count += 1;
         combined_metrics.ffmpeg_output_pcm_bytes = combined_metrics
@@ -956,18 +973,8 @@ fn extract_audio_constellation_v3_sampled_index_with_metrics_and_options(
         combined_metrics.ffmpeg_exit_millis = combined_metrics
             .ffmpeg_exit_millis
             .saturating_add(streaming_output.exit_millis);
-        let stream =
-            Arc::try_unwrap(stream).map_err(|_| MediaFingerprintError::InvalidToolOutput {
-                tool: "ffmpeg",
-                reason: "audio stream state was still shared after ffmpeg exit".to_owned(),
-            })?;
-        let stream = stream
-            .into_inner()
-            .map_err(|_| MediaFingerprintError::InvalidToolOutput {
-                tool: "ffmpeg",
-                reason: "audio stream state was poisoned".to_owned(),
-            })?;
-        let (mut landmarks, metrics) = stream.finish(Some(f64::from(window_seconds)))?;
+        let (mut landmarks, metrics) =
+            analyze_sampled_window_pcm_bytes(&window_pcm, window_seconds, config.sample_rate)?;
         let start_ms = (start_seconds * 1000.0)
             .round()
             .clamp(0.0, f64::from(u32::MAX)) as u32;
@@ -985,14 +992,33 @@ fn extract_audio_constellation_v3_sampled_index_with_metrics_and_options(
             .saturating_add(window_seconds);
         combined_metrics.sampled_audio_windows_decoded += 1;
         let windows_decoded = window_index + 1;
+        combined_metrics.provisional_landmark_count = Some(all_landmarks.len());
+        combined_metrics.provisional_body_region_count = Some(body_regions.len());
         if windows_decoded >= config.min_windows
             && all_landmarks.len() >= config.target_landmarks
             && body_regions.len() >= config.min_body_regions
             && unique_hashes.len() >= config.target_landmarks.saturating_mul(3) / 4
         {
+            stop_reason = if context.options.adaptive_sampled_fast
+                && index_mode == MediaAudioIndexMode::SampledFast
+                && windows_decoded < windows.len()
+            {
+                "adaptive-quality-threshold"
+            } else {
+                "quality-threshold"
+            };
             break;
         }
     }
+    combined_metrics.sampled_stop_reason = Some(stop_reason.to_owned());
+    combined_metrics.adaptive_saved_seconds = Some(
+        windows
+            .len()
+            .saturating_sub(combined_metrics.sampled_audio_windows_decoded) as u32
+            * config.window_seconds,
+    );
+    combined_metrics.adaptive_saved_estimated_read_bytes =
+        estimated_saved_read_bytes(&combined_metrics);
 
     let selection_started_at = Instant::now();
     let mut bounded = all_landmarks;
@@ -1010,6 +1036,7 @@ fn extract_audio_constellation_v3_sampled_index_with_metrics_and_options(
     combined_metrics.ffmpeg_process_wall_millis = process_wall_millis;
     combined_metrics.pcm_decode_drain_millis = process_wall_millis;
     combined_metrics.ffmpeg_decode_stream_millis = process_wall_millis;
+    update_mkv_estimated_savings(&mut combined_metrics);
     if bounded.is_empty() {
         return Err(MediaFingerprintError::InvalidToolOutput {
             tool: "ffmpeg",
@@ -1046,12 +1073,51 @@ fn sampled_pcm_cache_enabled(context: SampledAudioExtractionContext<'_>) -> bool
         )
 }
 
+fn sampled_ffmpeg_window_strategy_label(strategy: MediaSampledAudioSourceStrategy) -> &'static str {
+    match strategy {
+        MediaSampledAudioSourceStrategy::Current
+        | MediaSampledAudioSourceStrategy::FfprobeProbe
+        | MediaSampledAudioSourceStrategy::PacketMap
+        | MediaSampledAudioSourceStrategy::MkvAudioRanges
+        | MediaSampledAudioSourceStrategy::SampledPcmCache
+        | MediaSampledAudioSourceStrategy::Auto => "current-three-invocations",
+        MediaSampledAudioSourceStrategy::SingleProcessFilter => "single-process-filter",
+        MediaSampledAudioSourceStrategy::FastSeekPerWindow => "fast-seek-per-window",
+        MediaSampledAudioSourceStrategy::OutputSeekPerWindow => "output-seek-per-window",
+    }
+}
+
+fn estimated_saved_read_bytes(metrics: &MediaAudioStreamMetrics) -> Option<u64> {
+    let decoded = u64::from(metrics.sampled_audio_seconds_decoded);
+    let saved = u64::from(metrics.adaptive_saved_seconds?);
+    if decoded == 0 || saved == 0 {
+        return Some(0);
+    }
+    metrics
+        .ffmpeg_input_read_bytes
+        .map(|read_bytes| read_bytes.saturating_mul(saved) / decoded)
+}
+
+fn update_mkv_estimated_savings(metrics: &mut MediaAudioStreamMetrics) {
+    if metrics.mkv_estimated_savings_vs_current.is_some() {
+        return;
+    }
+    if let (Some(read_bytes), Some(range_bytes)) = (
+        metrics.ffmpeg_input_read_bytes,
+        metrics.mkv_coalesced_range_bytes,
+    ) {
+        metrics.mkv_estimated_savings_vs_current =
+            i64::try_from(read_bytes as i128 - range_bytes as i128).ok();
+    }
+}
+
 fn sampled_audio_cache_key(
     source_identity: &MediaFileIdentity,
     settings_hash: [u8; 32],
     index_mode: MediaAudioIndexMode,
     config: SampledAudioIndexConfig,
     windows: &[(f64, u32)],
+    adaptive_sampled_fast: bool,
 ) -> String {
     let mut hasher = Sha256::new();
     hasher.update(source_identity.normalized_path.as_bytes());
@@ -1061,6 +1127,7 @@ fn sampled_audio_cache_key(
     hasher.update(index_mode.label().as_bytes());
     hasher.update(config.sample_rate.to_le_bytes());
     hasher.update(config.window_seconds.to_le_bytes());
+    hasher.update([u8::from(adaptive_sampled_fast)]);
     hasher.update((windows.len() as u64).to_le_bytes());
     for (start, seconds) in windows {
         hasher.update(start.to_le_bytes());
@@ -1082,6 +1149,7 @@ fn sampled_pcm_cache_paths(
         index_mode,
         config,
         windows,
+        context.options.adaptive_sampled_fast,
     );
     let dir = root.join("sampled-pcm-v3");
     Some((
@@ -1161,6 +1229,9 @@ fn try_sampled_pcm_cache_read(
     metrics.sampled_pcm_cache_read_millis = Some(read_millis);
     metrics.sampled_pcm_cache_saved_millis = Some(0);
     metrics.audio_sidecar_mode = Some("sampled-pcm-cache".to_owned());
+    metrics.sampled_windows_planned = Some(windows.len());
+    metrics.sampled_stop_reason = Some("sampled-pcm-cache-hit".to_owned());
+    metrics.provisional_landmark_count = Some(landmarks.len());
     let _ = media_path;
     Ok(Some((landmarks, metrics)))
 }
@@ -1183,6 +1254,8 @@ fn extract_sampled_index_with_pcm_cache_fill(
     let mut process_wall_millis = 0u128;
     let mut pcm_bytes = Vec::<u8>::new();
     let mut manifest_windows = Vec::<SampledPcmCacheWindow>::new();
+    combined_metrics.sampled_windows_planned = Some(windows.len());
+    let mut stop_reason = "max-windows";
     for (window_index, (start_seconds, window_seconds)) in windows.iter().copied().enumerate() {
         let (window_pcm, streaming_output, window_wall) = decode_sampled_window_pcm_bytes(
             ffmpeg.as_ref(),
@@ -1237,14 +1310,33 @@ fn extract_sampled_index_with_pcm_cache_fill(
             .saturating_add(window_seconds);
         combined_metrics.sampled_audio_windows_decoded += 1;
         let windows_decoded = window_index + 1;
+        combined_metrics.provisional_landmark_count = Some(all_landmarks.len());
+        combined_metrics.provisional_body_region_count = Some(body_regions.len());
         if windows_decoded >= config.min_windows
             && all_landmarks.len() >= config.target_landmarks
             && body_regions.len() >= config.min_body_regions
             && unique_hashes.len() >= config.target_landmarks.saturating_mul(3) / 4
         {
+            stop_reason = if context.options.adaptive_sampled_fast
+                && index_mode == MediaAudioIndexMode::SampledFast
+                && windows_decoded < windows.len()
+            {
+                "adaptive-quality-threshold"
+            } else {
+                "quality-threshold"
+            };
             break;
         }
     }
+    combined_metrics.sampled_stop_reason = Some(stop_reason.to_owned());
+    combined_metrics.adaptive_saved_seconds = Some(
+        windows
+            .len()
+            .saturating_sub(combined_metrics.sampled_audio_windows_decoded) as u32
+            * config.window_seconds,
+    );
+    combined_metrics.adaptive_saved_estimated_read_bytes =
+        estimated_saved_read_bytes(&combined_metrics);
 
     let selection_started_at = Instant::now();
     let mut bounded = all_landmarks;
@@ -1274,6 +1366,7 @@ fn extract_sampled_index_with_pcm_cache_fill(
         &pcm_bytes,
         &mut combined_metrics,
     )?;
+    update_mkv_estimated_savings(&mut combined_metrics);
     if bounded.is_empty() {
         return Err(MediaFingerprintError::InvalidToolOutput {
             tool: "ffmpeg",
@@ -1291,37 +1384,77 @@ fn decode_sampled_window_pcm_bytes(
     sample_rate: u32,
     cancel_flag: Option<&AtomicBool>,
 ) -> Result<(Vec<u8>, MediaToolStreamingOutput, u128), MediaFingerprintError> {
+    decode_sampled_window_pcm_bytes_with_seek_mode(
+        ffmpeg,
+        media_path,
+        start_seconds,
+        window_seconds,
+        sample_rate,
+        FfmpegSampledWindowSeekMode::Input,
+        cancel_flag,
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FfmpegSampledWindowSeekMode {
+    Input,
+    Output,
+}
+
+fn decode_sampled_window_pcm_bytes_with_seek_mode(
+    ffmpeg: &Path,
+    media_path: &Path,
+    start_seconds: f64,
+    window_seconds: u32,
+    sample_rate: u32,
+    seek_mode: FfmpegSampledWindowSeekMode,
+    cancel_flag: Option<&AtomicBool>,
+) -> Result<(Vec<u8>, MediaToolStreamingOutput, u128), MediaFingerprintError> {
     let started_at = Instant::now();
     let pcm = Arc::new(Mutex::new(Vec::<u8>::new()));
     let pcm_writer = Arc::clone(&pcm);
-    let streaming_output = run_tool_streaming_stdout(
-        "ffmpeg",
-        ffmpeg,
-        [
-            "-v".into(),
-            "error".into(),
-            "-nostdin".into(),
-            "-threads".into(),
-            "1".into(),
+    let mut args = vec![
+        "-v".into(),
+        "error".into(),
+        "-nostdin".into(),
+        "-threads".into(),
+        "1".into(),
+    ];
+    if seek_mode == FfmpegSampledWindowSeekMode::Input {
+        args.extend([
             "-ss".into(),
             format!("{start_seconds:.3}").into(),
             "-t".into(),
             window_seconds.to_string().into(),
-            "-i".into(),
-            media_path.as_os_str().to_os_string(),
-            "-map".into(),
-            "0:a:0".into(),
-            "-vn".into(),
-            "-sn".into(),
-            "-dn".into(),
-            "-ac".into(),
-            "1".into(),
-            "-ar".into(),
-            sample_rate.to_string().into(),
-            "-f".into(),
-            "s16le".into(),
-            "-".into(),
-        ],
+        ]);
+    }
+    args.extend(["-i".into(), media_path.as_os_str().to_os_string()]);
+    if seek_mode == FfmpegSampledWindowSeekMode::Output {
+        args.extend([
+            "-ss".into(),
+            format!("{start_seconds:.3}").into(),
+            "-t".into(),
+            window_seconds.to_string().into(),
+        ]);
+    }
+    args.extend([
+        "-map".into(),
+        "0:a:0".into(),
+        "-vn".into(),
+        "-sn".into(),
+        "-dn".into(),
+        "-ac".into(),
+        "1".into(),
+        "-ar".into(),
+        sample_rate.to_string().into(),
+        "-f".into(),
+        "s16le".into(),
+        "-".into(),
+    ]);
+    let streaming_output = run_tool_streaming_stdout(
+        "ffmpeg",
+        ffmpeg,
+        args,
         cancel_flag,
         FFMPEG_AUDIO_V3_TIMEOUT,
         move |chunk| {
@@ -1346,6 +1479,159 @@ fn decode_sampled_window_pcm_bytes(
             reason: "sampled PCM cache buffer was poisoned".to_owned(),
         })?;
     Ok((pcm, streaming_output, started_at.elapsed().as_millis()))
+}
+
+fn extract_sampled_index_with_single_process_filter(
+    ffmpeg: impl AsRef<Path>,
+    media_path: impl AsRef<Path>,
+    duration_seconds: Option<f64>,
+    config: SampledAudioIndexConfig,
+    windows: Vec<(f64, u32)>,
+    mut combined_metrics: MediaAudioStreamMetrics,
+    cancel_flag: Option<&AtomicBool>,
+) -> Result<(Vec<AudioLandmarkV3>, MediaAudioStreamMetrics), MediaFingerprintError> {
+    let started_at = Instant::now();
+    let pcm = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let pcm_writer = Arc::clone(&pcm);
+    let filter = sampled_windows_filter_complex(&windows);
+    let streaming_output = run_tool_streaming_stdout(
+        "ffmpeg",
+        ffmpeg.as_ref(),
+        [
+            "-v".into(),
+            "error".into(),
+            "-nostdin".into(),
+            "-threads".into(),
+            "1".into(),
+            "-i".into(),
+            media_path.as_ref().as_os_str().to_os_string(),
+            "-filter_complex".into(),
+            filter.into(),
+            "-map".into(),
+            "[out]".into(),
+            "-vn".into(),
+            "-sn".into(),
+            "-dn".into(),
+            "-ac".into(),
+            "1".into(),
+            "-ar".into(),
+            config.sample_rate.to_string().into(),
+            "-f".into(),
+            "s16le".into(),
+            "-".into(),
+        ],
+        cancel_flag,
+        FFMPEG_AUDIO_V3_TIMEOUT,
+        move |chunk| {
+            pcm_writer
+                .lock()
+                .map_err(|_| MediaFingerprintError::InvalidToolOutput {
+                    tool: "ffmpeg",
+                    reason: "single-process sampled PCM buffer was poisoned".to_owned(),
+                })?
+                .extend_from_slice(chunk);
+            Ok(())
+        },
+    )?;
+    let wall = started_at.elapsed().as_millis();
+    let pcm = Arc::try_unwrap(pcm)
+        .map_err(|_| MediaFingerprintError::InvalidToolOutput {
+            tool: "ffmpeg",
+            reason: "single-process sampled PCM buffer was still shared".to_owned(),
+        })?
+        .into_inner()
+        .map_err(|_| MediaFingerprintError::InvalidToolOutput {
+            tool: "ffmpeg",
+            reason: "single-process sampled PCM buffer was poisoned".to_owned(),
+        })?;
+    combined_metrics.ffmpeg_invocation_count += 1;
+    combined_metrics.ffmpeg_output_pcm_bytes = streaming_output.stdout_bytes;
+    combined_metrics.ffmpeg_input_read_bytes = streaming_output.process_io.read_bytes;
+    combined_metrics.ffmpeg_input_read_ops = streaming_output.process_io.read_ops;
+    combined_metrics.sampled_window_decode_millis = combined_metrics
+        .sampled_window_decode_millis
+        .saturating_add(wall);
+    combined_metrics.ffmpeg_exit_millis = combined_metrics
+        .ffmpeg_exit_millis
+        .saturating_add(streaming_output.exit_millis);
+
+    let mut all_landmarks = Vec::new();
+    let mut body_regions = BTreeSet::new();
+    let bytes_per_second = config.sample_rate as usize * 2;
+    let mut byte_offset = 0usize;
+    for (start_seconds, window_seconds) in &windows {
+        let byte_len = *window_seconds as usize * bytes_per_second;
+        let byte_end = byte_offset.saturating_add(byte_len).min(pcm.len());
+        if byte_offset >= byte_end {
+            break;
+        }
+        let (mut landmarks, metrics) = analyze_sampled_window_pcm_bytes(
+            &pcm[byte_offset..byte_end],
+            *window_seconds,
+            config.sample_rate,
+        )?;
+        let start_ms = seconds_to_u32_millis(*start_seconds);
+        for landmark in &mut landmarks {
+            landmark.t_ms = landmark.t_ms.saturating_add(start_ms);
+        }
+        for landmark in &landmarks {
+            body_regions.insert(landmark.t_ms / 60_000);
+        }
+        all_landmarks.extend(landmarks);
+        merge_audio_stream_metrics(&mut combined_metrics, &metrics);
+        combined_metrics.sampled_audio_seconds_decoded = combined_metrics
+            .sampled_audio_seconds_decoded
+            .saturating_add(*window_seconds);
+        combined_metrics.sampled_audio_windows_decoded += 1;
+        byte_offset = byte_offset.saturating_add(byte_len);
+    }
+
+    let selection_started_at = Instant::now();
+    let raw_before_bounding = all_landmarks.len();
+    let bounded = bounded_time_distributed_audio_landmarks_v3_for_duration(
+        &mut all_landmarks,
+        config.max_landmarks,
+        duration_seconds,
+    );
+    combined_metrics.final_selection_millis = combined_metrics
+        .final_selection_millis
+        .saturating_add(selection_started_at.elapsed().as_millis());
+    combined_metrics.final_landmarks = bounded.len();
+    combined_metrics.raw_landmarks_before_bounding = raw_before_bounding;
+    combined_metrics.ffmpeg_process_wall_millis = wall;
+    combined_metrics.pcm_decode_drain_millis = wall;
+    combined_metrics.ffmpeg_decode_stream_millis = wall;
+    update_mkv_estimated_savings(&mut combined_metrics);
+    combined_metrics.provisional_landmark_count = Some(raw_before_bounding);
+    combined_metrics.provisional_body_region_count = Some(body_regions.len());
+    combined_metrics.sampled_stop_reason = Some("single-process-filter-all-windows".to_owned());
+    combined_metrics.adaptive_saved_seconds = Some(0);
+    combined_metrics.adaptive_saved_estimated_read_bytes = Some(0);
+    if bounded.is_empty() {
+        return Err(MediaFingerprintError::InvalidToolOutput {
+            tool: "ffmpeg",
+            reason: "single-process sampled decoded audio did not produce landmarks".to_owned(),
+        });
+    }
+    Ok((bounded, combined_metrics))
+}
+
+fn sampled_windows_filter_complex(windows: &[(f64, u32)]) -> String {
+    let mut parts = Vec::new();
+    let mut labels = Vec::new();
+    for (index, (start, seconds)) in windows.iter().enumerate() {
+        let label = format!("a{index}");
+        labels.push(format!("[{label}]"));
+        parts.push(format!(
+            "[0:a:0]atrim=start={start:.3}:duration={seconds},asetpts=PTS-STARTPTS[{label}]"
+        ));
+    }
+    parts.push(format!(
+        "{}concat=n={}:v=0:a=1[out]",
+        labels.join(""),
+        labels.len()
+    ));
+    parts.join(";")
 }
 
 fn analyze_sampled_window_pcm_bytes(
@@ -1560,6 +1846,53 @@ fn maybe_attach_packet_map_feasibility(
                 metrics.source_strategy_fallback_count.saturating_add(1);
         }
     }
+}
+
+fn maybe_attach_mkv_audio_range_feasibility(
+    media_path: &Path,
+    metrics: &mut MediaAudioStreamMetrics,
+    windows: &[(f64, u32)],
+) {
+    if metrics.selected_sampled_audio_source_strategy.as_deref() != Some("mkv-audio-ranges") {
+        return;
+    }
+    match mkv_audio_range_feasibility(media_path, windows, 128 * 1024) {
+        Ok(feasibility) => {
+            metrics.mkv_parser_used = Some(true);
+            metrics.mkv_cues_present = Some(feasibility.cues_present);
+            metrics.mkv_audio_track_found = Some(feasibility.audio_track_found);
+            metrics.mkv_clusters_scanned = Some(feasibility.clusters_scanned);
+            metrics.mkv_cluster_bytes_read = Some(feasibility.cluster_bytes_read);
+            metrics.mkv_audio_block_bytes_read = Some(feasibility.audio_block_bytes);
+            metrics.mkv_coalesced_range_bytes = Some(feasibility.coalesced_range_bytes);
+            metrics.audio_packet_window_count = Some(windows.len());
+            metrics.audio_packet_ranges = Some(feasibility.coalesced_range_count);
+            metrics.audio_packet_range_bytes = Some(feasibility.audio_block_bytes);
+            metrics.audio_packet_coalesced_range_bytes = Some(feasibility.coalesced_range_bytes);
+            metrics.audio_sidecar_fallback_reason =
+                Some("mkv-audio-ranges-feasibility-only".to_owned());
+            metrics.source_strategy_fallback_count =
+                metrics.source_strategy_fallback_count.saturating_add(1);
+        }
+        Err(reason) => {
+            metrics.mkv_parser_used = Some(false);
+            metrics.mkv_fallback_reason = Some(reason.clone());
+            metrics.audio_packet_map_fallback_reason = Some(reason);
+            metrics.source_strategy_fallback_count =
+                metrics.source_strategy_fallback_count.saturating_add(1);
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct MkvAudioRangeFeasibility {
+    cues_present: bool,
+    audio_track_found: bool,
+    clusters_scanned: usize,
+    cluster_bytes_read: u64,
+    audio_block_bytes: u64,
+    coalesced_range_bytes: u64,
+    coalesced_range_count: usize,
 }
 
 fn load_or_build_audio_packet_map_v3(
@@ -1785,6 +2118,554 @@ fn read_packet_ranges(path: &Path, ranges: &[(u64, u64)]) -> Result<(Vec<u8>, u6
         ops = ops.saturating_add(1);
     }
     Ok((output, ops))
+}
+
+const MKV_ID_SEGMENT: u64 = 0x1853_8067;
+const MKV_ID_SEEK_HEAD: u64 = 0x114D_9B74;
+const MKV_ID_SEEK: u64 = 0x4DBB;
+const MKV_ID_SEEK_ID: u64 = 0x53AB;
+const MKV_ID_SEEK_POSITION: u64 = 0x53AC;
+const MKV_ID_INFO: u64 = 0x1549_A966;
+const MKV_ID_TIMESTAMP_SCALE: u64 = 0x002A_D7B1;
+const MKV_ID_TRACKS: u64 = 0x1654_AE6B;
+const MKV_ID_TRACK_ENTRY: u64 = 0xAE;
+const MKV_ID_TRACK_NUMBER: u64 = 0xD7;
+const MKV_ID_TRACK_TYPE: u64 = 0x83;
+const MKV_ID_CUES: u64 = 0x1C53_BB6B;
+const MKV_ID_CUE_POINT: u64 = 0xBB;
+const MKV_ID_CUE_TIME: u64 = 0xB3;
+const MKV_ID_CUE_TRACK_POSITIONS: u64 = 0xB7;
+const MKV_ID_CUE_TRACK: u64 = 0xF7;
+const MKV_ID_CUE_CLUSTER_POSITION: u64 = 0xF1;
+const MKV_ID_CLUSTER: u64 = 0x1F43_B675;
+const MKV_ID_CLUSTER_TIMECODE: u64 = 0xE7;
+const MKV_ID_SIMPLE_BLOCK: u64 = 0xA3;
+const MKV_ID_BLOCK_GROUP: u64 = 0xA0;
+const MKV_ID_BLOCK: u64 = 0xA1;
+
+#[derive(Debug, Clone, Copy)]
+struct EbmlElement<'a> {
+    id: u64,
+    data_offset: usize,
+    data: &'a [u8],
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EbmlElementHeader {
+    id: u64,
+    header_len: usize,
+    data_offset: usize,
+    size: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct MkvSegmentLocation {
+    data_start: u64,
+    size: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MkvCuePoint {
+    time_ms: i64,
+    cluster_position: u64,
+}
+
+fn mkv_audio_range_feasibility(
+    media_path: &Path,
+    windows: &[(f64, u32)],
+    coalesce_gap_bytes: u64,
+) -> Result<MkvAudioRangeFeasibility, String> {
+    if media_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| !extension.eq_ignore_ascii_case("mkv"))
+    {
+        return Err("not-mkv-extension".to_owned());
+    }
+    let mut file = fs::File::open(media_path).map_err(|error| error.to_string())?;
+    let file_len = file.metadata().map_err(|error| error.to_string())?.len();
+    let prefix_len = file_len.min(4 * 1024 * 1024);
+    let prefix = read_file_range(&mut file, 0, prefix_len)?;
+    let segment = find_mkv_segment(&prefix).ok_or_else(|| "mkv-segment-not-found".to_owned())?;
+    let seek_positions = parse_mkv_seek_positions(&prefix, segment.data_start as usize);
+    let timestamp_scale = read_seek_element(&mut file, segment, &seek_positions, MKV_ID_INFO)
+        .and_then(|bytes| parse_mkv_timestamp_scale(&bytes))
+        .unwrap_or(1_000_000);
+    let audio_track = read_seek_element(&mut file, segment, &seek_positions, MKV_ID_TRACKS)
+        .and_then(|bytes| parse_mkv_audio_track_number(&bytes));
+    let Some(audio_track) = audio_track else {
+        return Ok(MkvAudioRangeFeasibility {
+            cues_present: seek_positions.iter().any(|(id, _)| *id == MKV_ID_CUES),
+            audio_track_found: false,
+            ..MkvAudioRangeFeasibility::default()
+        });
+    };
+    let Some(cues_bytes) = read_seek_element(&mut file, segment, &seek_positions, MKV_ID_CUES)
+    else {
+        return Ok(MkvAudioRangeFeasibility {
+            cues_present: false,
+            audio_track_found: true,
+            ..MkvAudioRangeFeasibility::default()
+        });
+    };
+    let mut cues = parse_mkv_cues(&cues_bytes, timestamp_scale, Some(audio_track));
+    if cues.is_empty() {
+        cues = parse_mkv_cues(&cues_bytes, timestamp_scale, None);
+    }
+    if cues.is_empty() {
+        return Ok(MkvAudioRangeFeasibility {
+            cues_present: true,
+            audio_track_found: true,
+            ..MkvAudioRangeFeasibility::default()
+        });
+    }
+    cues.sort_by_key(|cue| (cue.time_ms, cue.cluster_position));
+    cues.dedup_by_key(|cue| (cue.time_ms, cue.cluster_position));
+    let selected_cluster_ranges =
+        selected_mkv_cluster_ranges(segment, segment.size, file_len, &cues, windows);
+    let mut audio_block_ranges = Vec::new();
+    let mut cluster_bytes_read = 0u64;
+    let mut clusters_scanned = 0usize;
+    for (start, end) in selected_cluster_ranges {
+        let len = end.saturating_sub(start).min(32 * 1024 * 1024);
+        if len == 0 {
+            continue;
+        }
+        let bytes = read_file_range(&mut file, start, len)?;
+        cluster_bytes_read = cluster_bytes_read.saturating_add(bytes.len() as u64);
+        clusters_scanned += 1;
+        audio_block_ranges.extend(parse_mkv_cluster_audio_block_ranges(
+            &bytes,
+            start,
+            timestamp_scale,
+            audio_track,
+            windows,
+        ));
+    }
+    let audio_block_bytes = audio_block_ranges
+        .iter()
+        .map(|(start, end)| end.saturating_sub(*start))
+        .sum::<u64>();
+    let coalesced = coalesced_ranges_with_gap(audio_block_ranges, coalesce_gap_bytes);
+    let coalesced_range_bytes = coalesced
+        .iter()
+        .map(|(start, end)| end.saturating_sub(*start))
+        .sum::<u64>();
+    Ok(MkvAudioRangeFeasibility {
+        cues_present: true,
+        audio_track_found: true,
+        clusters_scanned,
+        cluster_bytes_read,
+        audio_block_bytes,
+        coalesced_range_bytes,
+        coalesced_range_count: coalesced.len(),
+    })
+}
+
+fn read_file_range(file: &mut fs::File, start: u64, len: u64) -> Result<Vec<u8>, String> {
+    let len = usize::try_from(len).map_err(|_| "range-too-large".to_owned())?;
+    file.seek(SeekFrom::Start(start))
+        .map_err(|error| error.to_string())?;
+    let mut bytes = vec![0u8; len];
+    file.read_exact(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    Ok(bytes)
+}
+
+fn find_mkv_segment(prefix: &[u8]) -> Option<MkvSegmentLocation> {
+    let mut offset = 0usize;
+    while let Some(header) = ebml_read_header(prefix, offset) {
+        if header.id == MKV_ID_SEGMENT {
+            let data_start = header.data_offset as u64;
+            let size = (header.size != usize::MAX).then_some(header.size as u64);
+            return Some(MkvSegmentLocation { data_start, size });
+        }
+        offset = header.data_offset.saturating_add(header.size);
+        if offset <= header.data_offset {
+            break;
+        }
+    }
+    None
+}
+
+fn parse_mkv_seek_positions(prefix: &[u8], segment_data_start: usize) -> Vec<(u64, u64)> {
+    let mut output = Vec::new();
+    let mut offset = segment_data_start;
+    while let Some(header) = ebml_read_header(prefix, offset) {
+        let element_end = header.data_offset.saturating_add(header.size);
+        if element_end > prefix.len() {
+            break;
+        }
+        if header.id == MKV_ID_SEEK_HEAD {
+            for seek in ebml_child_elements(&prefix[header.data_offset..element_end]) {
+                if seek.id != MKV_ID_SEEK {
+                    continue;
+                }
+                let mut target_id = None;
+                let mut position = None;
+                for child in ebml_child_elements(seek.data) {
+                    match child.id {
+                        MKV_ID_SEEK_ID => target_id = Some(ebml_uint_raw_id(child.data)),
+                        MKV_ID_SEEK_POSITION => position = ebml_uint(child.data),
+                        _ => {}
+                    }
+                }
+                if let (Some(target_id), Some(position)) = (target_id, position) {
+                    output.push((target_id, position));
+                }
+            }
+        }
+        if header.id == MKV_ID_TRACKS || header.id == MKV_ID_CUES {
+            output.push((header.id, offset.saturating_sub(segment_data_start) as u64));
+        }
+        offset = element_end;
+        if offset > segment_data_start.saturating_add(4 * 1024 * 1024) {
+            break;
+        }
+    }
+    output.sort_unstable();
+    output.dedup();
+    output
+}
+
+fn read_seek_element(
+    file: &mut fs::File,
+    segment: MkvSegmentLocation,
+    seek_positions: &[(u64, u64)],
+    target_id: u64,
+) -> Option<Vec<u8>> {
+    for (_, relative) in seek_positions.iter().filter(|(id, _)| *id == target_id) {
+        let absolute = segment.data_start.saturating_add(*relative);
+        let Ok(header_bytes) = read_file_range(file, absolute, 16) else {
+            continue;
+        };
+        let Some(header) = ebml_read_header(&header_bytes, 0) else {
+            continue;
+        };
+        if header.id != target_id || header.size == usize::MAX {
+            continue;
+        }
+        let total = header.header_len.saturating_add(header.size);
+        let total = u64::try_from(total).ok()?.min(32 * 1024 * 1024);
+        let Ok(bytes) = read_file_range(file, absolute, total) else {
+            continue;
+        };
+        let header = ebml_read_header(&bytes, 0)?;
+        return Some(
+            bytes[header.data_offset..header.data_offset.saturating_add(header.size)].to_vec(),
+        );
+    }
+    None
+}
+
+fn parse_mkv_timestamp_scale(info: &[u8]) -> Option<u64> {
+    for child in ebml_child_elements(info) {
+        if child.id == MKV_ID_TIMESTAMP_SCALE {
+            return ebml_uint(child.data);
+        }
+    }
+    None
+}
+
+fn parse_mkv_audio_track_number(tracks: &[u8]) -> Option<u64> {
+    for entry in ebml_child_elements(tracks) {
+        if entry.id != MKV_ID_TRACK_ENTRY {
+            continue;
+        }
+        let mut track_number = None;
+        let mut track_type = None;
+        for child in ebml_child_elements(entry.data) {
+            match child.id {
+                MKV_ID_TRACK_NUMBER => track_number = ebml_uint(child.data),
+                MKV_ID_TRACK_TYPE => track_type = ebml_uint(child.data),
+                _ => {}
+            }
+        }
+        if track_type == Some(2) {
+            return track_number;
+        }
+    }
+    None
+}
+
+fn parse_mkv_cues(
+    cues: &[u8],
+    timestamp_scale: u64,
+    required_track: Option<u64>,
+) -> Vec<MkvCuePoint> {
+    let mut output = Vec::new();
+    for point in ebml_child_elements(cues) {
+        if point.id != MKV_ID_CUE_POINT {
+            continue;
+        }
+        let mut time = None;
+        let mut positions = Vec::new();
+        for child in ebml_child_elements(point.data) {
+            match child.id {
+                MKV_ID_CUE_TIME => time = ebml_uint(child.data),
+                MKV_ID_CUE_TRACK_POSITIONS => {
+                    let mut track = None;
+                    let mut cluster_position = None;
+                    for pos_child in ebml_child_elements(child.data) {
+                        match pos_child.id {
+                            MKV_ID_CUE_TRACK => track = ebml_uint(pos_child.data),
+                            MKV_ID_CUE_CLUSTER_POSITION => {
+                                cluster_position = ebml_uint(pos_child.data)
+                            }
+                            _ => {}
+                        }
+                    }
+                    if required_track.is_none_or(|required| track == Some(required))
+                        && let Some(cluster_position) = cluster_position
+                    {
+                        positions.push(cluster_position);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(time) = time {
+            let time_ms = ebml_timestamp_to_millis(time, timestamp_scale);
+            for cluster_position in positions {
+                output.push(MkvCuePoint {
+                    time_ms,
+                    cluster_position,
+                });
+            }
+        }
+    }
+    output
+}
+
+fn selected_mkv_cluster_ranges(
+    segment: MkvSegmentLocation,
+    segment_size: Option<u64>,
+    file_len: u64,
+    cues: &[MkvCuePoint],
+    windows: &[(f64, u32)],
+) -> Vec<(u64, u64)> {
+    let segment_end = segment_size
+        .map(|size| segment.data_start.saturating_add(size).min(file_len))
+        .unwrap_or(file_len);
+    let mut ranges = Vec::new();
+    for (index, cue) in cues.iter().enumerate() {
+        let next_position = cues
+            .iter()
+            .skip(index + 1)
+            .map(|next| next.cluster_position)
+            .find(|position| *position > cue.cluster_position)
+            .unwrap_or_else(|| segment_end.saturating_sub(segment.data_start));
+        let cue_time = cue.time_ms as f64 / 1000.0;
+        let next_time = cues
+            .iter()
+            .skip(index + 1)
+            .find(|next| next.cluster_position > cue.cluster_position)
+            .map(|next| next.time_ms as f64 / 1000.0)
+            .unwrap_or(cue_time + 30.0);
+        if windows.iter().any(|(start, seconds)| {
+            let end = *start + f64::from(*seconds);
+            cue_time <= end && next_time >= *start
+        }) {
+            let start = segment.data_start.saturating_add(cue.cluster_position);
+            let end = segment
+                .data_start
+                .saturating_add(next_position)
+                .min(segment_end);
+            if end > start {
+                ranges.push((start, end));
+            }
+        }
+    }
+    coalesced_ranges_with_gap(ranges, 0)
+}
+
+fn parse_mkv_cluster_audio_block_ranges(
+    bytes: &[u8],
+    absolute_start: u64,
+    timestamp_scale: u64,
+    audio_track: u64,
+    windows: &[(f64, u32)],
+) -> Vec<(u64, u64)> {
+    let mut ranges = Vec::new();
+    let Some(cluster_header) = ebml_read_header(bytes, 0) else {
+        return ranges;
+    };
+    if cluster_header.id != MKV_ID_CLUSTER {
+        return ranges;
+    }
+    let mut cluster_time_ms = 0i64;
+    let cluster_data = &bytes[cluster_header.data_offset
+        ..cluster_header
+            .data_offset
+            .saturating_add(cluster_header.size)
+            .min(bytes.len())];
+    for child in ebml_child_elements(cluster_data) {
+        if child.id == MKV_ID_CLUSTER_TIMECODE {
+            cluster_time_ms = ebml_uint(child.data)
+                .map(|value| ebml_timestamp_to_millis(value, timestamp_scale))
+                .unwrap_or(0);
+        }
+    }
+    for child in ebml_child_elements(cluster_data) {
+        match child.id {
+            MKV_ID_SIMPLE_BLOCK => {
+                if let Some((track, relative_ms)) = parse_mkv_block_track_and_time(child.data)
+                    && track == audio_track
+                {
+                    let pts_seconds = (cluster_time_ms + relative_ms) as f64 / 1000.0;
+                    if packet_overlaps_sampled_windows(pts_seconds, 0.1, windows) {
+                        ranges.push((
+                            absolute_start
+                                .saturating_add(cluster_header.data_offset as u64)
+                                .saturating_add(child.data_offset as u64),
+                            absolute_start
+                                .saturating_add(cluster_header.data_offset as u64)
+                                .saturating_add(child.data_offset as u64)
+                                .saturating_add(child.data.len() as u64),
+                        ));
+                    }
+                }
+            }
+            MKV_ID_BLOCK_GROUP => {
+                for block_child in ebml_child_elements(child.data) {
+                    if block_child.id != MKV_ID_BLOCK {
+                        continue;
+                    }
+                    if let Some((track, relative_ms)) =
+                        parse_mkv_block_track_and_time(block_child.data)
+                        && track == audio_track
+                    {
+                        let pts_seconds = (cluster_time_ms + relative_ms) as f64 / 1000.0;
+                        if packet_overlaps_sampled_windows(pts_seconds, 0.1, windows) {
+                            ranges.push((
+                                absolute_start
+                                    .saturating_add(cluster_header.data_offset as u64)
+                                    .saturating_add(child.data_offset as u64)
+                                    .saturating_add(block_child.data_offset as u64),
+                                absolute_start
+                                    .saturating_add(cluster_header.data_offset as u64)
+                                    .saturating_add(child.data_offset as u64)
+                                    .saturating_add(block_child.data_offset as u64)
+                                    .saturating_add(block_child.data.len() as u64),
+                            ));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    ranges
+}
+
+fn parse_mkv_block_track_and_time(data: &[u8]) -> Option<(u64, i64)> {
+    let (track, track_len) = ebml_read_vint_value(data, 0)?;
+    if data.len() < track_len + 3 {
+        return None;
+    }
+    let relative = i16::from_be_bytes([data[track_len], data[track_len + 1]]) as i64;
+    Some((track, relative))
+}
+
+fn ebml_child_elements(data: &[u8]) -> Vec<EbmlElement<'_>> {
+    let mut elements = Vec::new();
+    let mut offset = 0usize;
+    while let Some(header) = ebml_read_header(data, offset) {
+        let end = header.data_offset.saturating_add(header.size);
+        if header.size == usize::MAX || end > data.len() || end <= offset {
+            break;
+        }
+        elements.push(EbmlElement {
+            id: header.id,
+            data_offset: header.data_offset,
+            data: &data[header.data_offset..end],
+        });
+        offset = end;
+    }
+    elements
+}
+
+fn ebml_read_header(data: &[u8], offset: usize) -> Option<EbmlElementHeader> {
+    let (id, id_len) = ebml_read_id(data, offset)?;
+    let (size, size_len) = ebml_read_size(data, offset + id_len)?;
+    let data_offset = offset.checked_add(id_len)?.checked_add(size_len)?;
+    Some(EbmlElementHeader {
+        id,
+        header_len: id_len + size_len,
+        data_offset,
+        size,
+    })
+}
+
+fn ebml_read_id(data: &[u8], offset: usize) -> Option<(u64, usize)> {
+    let first = *data.get(offset)?;
+    let len = ebml_vint_len(first)?;
+    if len > 4 || offset.checked_add(len)? > data.len() {
+        return None;
+    }
+    let mut value = 0u64;
+    for byte in &data[offset..offset + len] {
+        value = (value << 8) | u64::from(*byte);
+    }
+    Some((value, len))
+}
+
+fn ebml_read_size(data: &[u8], offset: usize) -> Option<(usize, usize)> {
+    let (value, len) = ebml_read_vint_value(data, offset)?;
+    let unknown = value == ((1u64 << (7 * len)) - 1);
+    let size = if unknown {
+        usize::MAX
+    } else {
+        usize::try_from(value).ok()?
+    };
+    Some((size, len))
+}
+
+fn ebml_read_vint_value(data: &[u8], offset: usize) -> Option<(u64, usize)> {
+    let first = *data.get(offset)?;
+    let len = ebml_vint_len(first)?;
+    if offset.checked_add(len)? > data.len() {
+        return None;
+    }
+    let marker = 1u8 << (8 - len);
+    let mut value = u64::from(first & !marker);
+    for byte in &data[offset + 1..offset + len] {
+        value = (value << 8) | u64::from(*byte);
+    }
+    Some((value, len))
+}
+
+fn ebml_vint_len(first: u8) -> Option<usize> {
+    if first == 0 {
+        return None;
+    }
+    Some(first.leading_zeros() as usize + 1)
+}
+
+fn ebml_uint(data: &[u8]) -> Option<u64> {
+    if data.len() > 8 {
+        return None;
+    }
+    let mut value = 0u64;
+    for byte in data {
+        value = (value << 8) | u64::from(*byte);
+    }
+    Some(value)
+}
+
+fn ebml_uint_raw_id(data: &[u8]) -> u64 {
+    let mut value = 0u64;
+    for byte in data {
+        value = (value << 8) | u64::from(*byte);
+    }
+    value
+}
+
+fn ebml_timestamp_to_millis(value: u64, timestamp_scale: u64) -> i64 {
+    let millis = u128::from(value)
+        .saturating_mul(u128::from(timestamp_scale))
+        .saturating_div(1_000_000);
+    i64::try_from(millis).unwrap_or(i64::MAX)
 }
 
 fn lower_hex(bytes: &[u8]) -> String {
@@ -2216,6 +3097,54 @@ fn merge_audio_stream_metrics(
     }
     if target.audio_sidecar_fallback_reason.is_none() {
         target.audio_sidecar_fallback_reason = source.audio_sidecar_fallback_reason.clone();
+    }
+    if target.sampled_ffmpeg_window_strategy.is_none() {
+        target.sampled_ffmpeg_window_strategy = source.sampled_ffmpeg_window_strategy.clone();
+    }
+    if target.sampled_windows_planned.is_none() {
+        target.sampled_windows_planned = source.sampled_windows_planned;
+    }
+    if target.sampled_stop_reason.is_none() {
+        target.sampled_stop_reason = source.sampled_stop_reason.clone();
+    }
+    if target.provisional_landmark_count.is_none() {
+        target.provisional_landmark_count = source.provisional_landmark_count;
+    }
+    if target.provisional_body_region_count.is_none() {
+        target.provisional_body_region_count = source.provisional_body_region_count;
+    }
+    if target.adaptive_saved_seconds.is_none() {
+        target.adaptive_saved_seconds = source.adaptive_saved_seconds;
+    }
+    if target.adaptive_saved_estimated_read_bytes.is_none() {
+        target.adaptive_saved_estimated_read_bytes = source.adaptive_saved_estimated_read_bytes;
+    }
+    if target.mkv_parser_used.is_none() {
+        target.mkv_parser_used = source.mkv_parser_used;
+    }
+    if target.mkv_cues_present.is_none() {
+        target.mkv_cues_present = source.mkv_cues_present;
+    }
+    if target.mkv_audio_track_found.is_none() {
+        target.mkv_audio_track_found = source.mkv_audio_track_found;
+    }
+    if target.mkv_clusters_scanned.is_none() {
+        target.mkv_clusters_scanned = source.mkv_clusters_scanned;
+    }
+    if target.mkv_cluster_bytes_read.is_none() {
+        target.mkv_cluster_bytes_read = source.mkv_cluster_bytes_read;
+    }
+    if target.mkv_audio_block_bytes_read.is_none() {
+        target.mkv_audio_block_bytes_read = source.mkv_audio_block_bytes_read;
+    }
+    if target.mkv_coalesced_range_bytes.is_none() {
+        target.mkv_coalesced_range_bytes = source.mkv_coalesced_range_bytes;
+    }
+    if target.mkv_estimated_savings_vs_current.is_none() {
+        target.mkv_estimated_savings_vs_current = source.mkv_estimated_savings_vs_current;
+    }
+    if target.mkv_fallback_reason.is_none() {
+        target.mkv_fallback_reason = source.mkv_fallback_reason.clone();
     }
     target.streamed_bytes = target.streamed_bytes.saturating_add(source.streamed_bytes);
     target.streamed_samples = target
@@ -2947,6 +3876,7 @@ mod tests {
         let options = MediaFingerprintExtractionOptions {
             sampled_audio_source: MediaSampledAudioSourceStrategy::PacketMap,
             sampled_pcm_cache_root: Some(PathBuf::from("packet-cache")),
+            adaptive_sampled_fast: false,
         };
         let context = SampledAudioExtractionContext {
             source_identity: &identity,
@@ -2970,5 +3900,122 @@ mod tests {
             .expect("changed packet map cache path should be available");
 
         assert_ne!(key, changed_key);
+    }
+
+    #[test]
+    fn sampled_pcm_cache_key_includes_adaptive_mode() {
+        let identity = MediaFileIdentity {
+            normalized_path: "c:\\media\\episode.mkv".to_owned(),
+            modified_unix_millis: 123,
+            size_bytes: 456,
+        };
+        let config = sampled_audio_index_config(MediaAudioIndexMode::SampledFast);
+        let windows = sampled_audio_windows_v3(Some(1500.0), config);
+
+        let fixed = sampled_audio_cache_key(
+            &identity,
+            [9; 32],
+            MediaAudioIndexMode::SampledFast,
+            config,
+            &windows,
+            false,
+        );
+        let adaptive = sampled_audio_cache_key(
+            &identity,
+            [9; 32],
+            MediaAudioIndexMode::SampledFast,
+            config,
+            &windows,
+            true,
+        );
+
+        assert_ne!(fixed, adaptive);
+    }
+
+    #[test]
+    fn sampled_windows_filter_complex_concatenates_expected_windows() {
+        let filter = sampled_windows_filter_complex(&[(180.0, 20), (750.5, 20), (1320.0, 20)]);
+
+        assert!(filter.contains("atrim=start=180.000:duration=20"));
+        assert!(filter.contains("atrim=start=750.500:duration=20"));
+        assert!(filter.contains("[a0][a1][a2]concat=n=3:v=0:a=1[out]"));
+    }
+
+    #[test]
+    fn mkv_audio_range_feasibility_parses_cues_and_audio_blocks() {
+        let root =
+            std::env::temp_dir().join(format!("sorotte-mkv-feasibility-{}", std::process::id()));
+        let _ = fs::create_dir_all(&root);
+        let path = root.join("fixture.mkv");
+
+        let tracks = ebml_elem(
+            &[0x16, 0x54, 0xae, 0x6b],
+            &ebml_elem(
+                &[0xae],
+                &[ebml_elem(&[0xd7], &[0x01]), ebml_elem(&[0x83], &[0x02])].concat(),
+            ),
+        );
+        let simple_block = {
+            let mut data = vec![0x81, 0x00, 0x00, 0x00];
+            data.extend_from_slice(&[1, 2, 3, 4, 5, 6]);
+            ebml_elem(&[0xa3], &data)
+        };
+        let cluster = ebml_elem(
+            &[0x1f, 0x43, 0xb6, 0x75],
+            &[ebml_elem(&[0xe7], &[0x27, 0x10]), simple_block].concat(),
+        );
+        let cues_with_placeholder = ebml_elem(
+            &[0x1c, 0x53, 0xbb, 0x6b],
+            &ebml_elem(
+                &[0xbb],
+                &[
+                    ebml_elem(&[0xb3], &[0x27, 0x10]),
+                    ebml_elem(
+                        &[0xb7],
+                        &[ebml_elem(&[0xf7], &[0x01]), ebml_elem(&[0xf1], &[0x00])].concat(),
+                    ),
+                ]
+                .concat(),
+            ),
+        );
+        let cluster_pos = tracks.len() + cues_with_placeholder.len();
+        let cues = ebml_elem(
+            &[0x1c, 0x53, 0xbb, 0x6b],
+            &ebml_elem(
+                &[0xbb],
+                &[
+                    ebml_elem(&[0xb3], &[0x27, 0x10]),
+                    ebml_elem(
+                        &[0xb7],
+                        &[
+                            ebml_elem(&[0xf7], &[0x01]),
+                            ebml_elem(&[0xf1], &[cluster_pos as u8]),
+                        ]
+                        .concat(),
+                    ),
+                ]
+                .concat(),
+            ),
+        );
+        let segment = ebml_elem(&[0x18, 0x53, 0x80, 0x67], &[tracks, cues, cluster].concat());
+        fs::write(&path, segment).expect("mkv fixture should be written");
+
+        let feasibility =
+            mkv_audio_range_feasibility(&path, &[(10.0, 1)], 128).expect("mkv should parse");
+
+        assert!(feasibility.cues_present);
+        assert!(feasibility.audio_track_found);
+        assert_eq!(feasibility.clusters_scanned, 1);
+        assert!(feasibility.audio_block_bytes > 0);
+        assert!(feasibility.coalesced_range_bytes >= feasibility.audio_block_bytes);
+    }
+
+    fn ebml_elem(id: &[u8], data: &[u8]) -> Vec<u8> {
+        assert!(data.len() < 127);
+        let mut output = Vec::new();
+        output.extend_from_slice(id);
+        output.push(0x80 | data.len() as u8);
+        output.extend_from_slice(data);
+        output
     }
 }

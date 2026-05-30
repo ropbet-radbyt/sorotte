@@ -395,28 +395,60 @@ The sampled extraction source can also be selected explicitly:
 
 ```powershell
 cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --sampled-audio-source current --output reports/audio-current.json --cache-root .media-match-v3-cache-audio --refresh-cache
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --sampled-audio-source single-process-filter --output reports/audio-single-process-filter.json --cache-root .media-match-v3-cache-audio --refresh-cache
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --sampled-audio-source fast-seek-per-window --output reports/audio-fast-seek.json --cache-root .media-match-v3-cache-audio --refresh-cache
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --sampled-audio-source output-seek-per-window --output reports/audio-output-seek.json --cache-root .media-match-v3-cache-audio --refresh-cache
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --sampled-audio-source mkv-audio-ranges --output reports/audio-mkv-ranges.json --cache-root .media-match-v3-cache-audio --refresh-cache
 cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --sampled-audio-source sampled-pcm-cache --sampled-pcm-cache-root .media-match-v3-pcm-cache --output reports/audio-pcm-cache.json --cache-root .media-match-v3-cache-audio --refresh-cache
 cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --sampled-audio-source packet-map --sampled-pcm-cache-root .media-match-v3-pcm-cache --output reports/audio-packet-map.json --cache-root .media-match-v3-cache-audio --refresh-cache
 ```
 
-`current` is the safe ffmpeg path and remains the default. `sampled-pcm-cache`
-uses the current ffmpeg path on a miss, stores the exact sampled PCM windows in
-a local cache, and reads that PCM directly on later runs. Its cache key includes
-normalized path, mtime, size, sampled window schedule, decode settings, index
-mode, and fingerprint config hash. `auto` is conservative: with a PCM cache root
-it can use a valid sampled PCM cache, otherwise it falls back to current ffmpeg.
-`ffprobe-probe` and `packet-map` are feasibility modes. They build a structured
-`AudioPacketMapV3` from ffprobe packet JSON and cache it when
-`--sampled-pcm-cache-root` is supplied. This is intentionally not the production
-packet-map builder yet; ffprobe can read too much source data and should be used
-to measure whether a libavformat or Matroska parser path is worth enabling.
+`current` is the safe ffmpeg path and remains the default. It runs one fast seek
+per sampled window, which is the cold-index baseline. `fast-seek-per-window`
+keeps that input-seek shape but labels the benchmark explicitly.
+`output-seek-per-window` moves `-ss` after `-i`; it can be useful for measuring
+container demux behavior but may decode more data. `single-process-filter`
+decodes the selected windows through one ffmpeg filtergraph and reports whether
+avoiding process startup wins or loses on the source. Reports include
+`sampledFfmpegWindowStrategy`, `sampledWindowsPlanned`,
+`sampledAudioWindowsDecoded`, input read bytes/ops, output PCM bytes, and read
+amplification so the strategies can be compared on the same subset.
 
-For MKV/Matroska files, usable packet `pos` and `size` values are the first
-gate for direct audio range reads. A promising file set should show complete,
-monotonic packet positions and a coalesced sampled-window byte count far below
-the current ffmpeg input read bytes. If positions are absent, non-monotonic, or
-the probe cost is similar to the current extractor, direct packet reads should
-remain disabled and the safe ffmpeg path should stay in use.
+`sampled-pcm-cache` is a repeated-run diagnostics helper, not the expected
+solution for first cold indexing. On a miss it still uses the current ffmpeg
+path, stores the exact sampled PCM windows in a local cache, and reads that PCM
+directly on later runs. Its cache key includes normalized path, mtime, size,
+sampled window schedule, decode settings, adaptive sampled-fast mode, index
+mode, and fingerprint config hash. This is useful for analyzer/ranking
+experiments where the same files are indexed repeatedly. It should not be used
+to predict first-run cold throughput over a large media source because the first
+run still pays the source read cost.
+
+`auto` is conservative: with a PCM cache root it can use a valid sampled PCM
+cache, otherwise it falls back to current ffmpeg. `ffprobe-probe` and
+`packet-map` are feasibility modes. They build a structured `AudioPacketMapV3`
+from ffprobe packet JSON and cache it when `--sampled-pcm-cache-root` is
+supplied. This is intentionally not the production packet-map builder yet;
+ffprobe can read too much source data and should be used to measure whether a
+libavformat or Matroska parser path is worth enabling.
+
+For MKV/Matroska files, `--sampled-audio-source mkv-audio-ranges` runs a
+lightweight EBML feasibility parser before falling back to ffmpeg for actual
+decode. It reports `mkvParserUsed`, `mkvCuesPresent`, `mkvAudioTrackFound`,
+`mkvClustersScanned`, `mkvClusterBytesRead`, `mkvAudioBlockBytesRead`,
+`mkvCoalescedRangeBytes`, `mkvEstimatedSavingsVsCurrent`, and
+`mkvFallbackReason`. The current parser is deliberately a feasibility probe: it
+does not replace ffmpeg decode, does not use ffprobe as a production map
+builder, and must fail closed. A future direct range decoder should only be
+enabled when cue and audio block ranges are reliable and the estimated byte
+savings are large on real cold-index samples.
+
+Usable packet `pos` and `size` values are the first gate for direct audio range
+reads. A promising file set should show complete, monotonic packet positions and
+a coalesced sampled-window byte count far below the current ffmpeg input read
+bytes. If positions are absent, non-monotonic, or the probe cost is similar to
+the current extractor, direct packet reads should remain disabled and the safe
+ffmpeg path should stay in use.
 
 `packet-map` range reads are currently feasibility-only: the runner computes
 sampled-window packet ranges, coalesces nearby ranges, reads those byte ranges
@@ -451,6 +483,25 @@ but it can lose badly when copying the whole file is more expensive than the
 three sampled reads. The sampled-PCM cache is now the safe repeated-run path for
 diagnostics and development because it avoids rereading remote media without
 changing fingerprint output.
+
+For one-time cold-index tuning, prefer source-aware strategy benchmarks over a
+PCM cache. Run the same representative subset with `--sampled-audio-source`
+`current`, `single-process-filter`, `fast-seek-per-window`, and
+`output-seek-per-window`, then repeat with conservative source worker limits
+such as `--sampled-fast-network-workers 1`, `2`, `3`, and `4`. The relevant
+numbers are source-local files/minute, `ffmpegInputReadBytes`,
+`ffmpegInputReadOps`, read amplification, and p95 file time. A strategy that
+only improves a warm PCM-cache rerun is not a cold-index win.
+
+`--adaptive-sampled-fast` is available for cold-index experiments. In
+sampled-fast mode it starts with two body windows and stops early when the
+provisional landmark count, body region count, and unique-hash threshold are
+already good enough; otherwise it decodes the remaining planned window. Reports
+include `sampledWindowsPlanned`, `sampledAudioWindowsDecoded`,
+`sampledStopReason`, `provisionalLandmarkCount`,
+`provisionalBodyRegionCount`, `adaptiveSavedSeconds`, and
+`adaptiveSavedEstimatedReadBytes`. Treat this as a retrieval-quality benchmark
+knob until recall and hard-negative reports prove it safe for the larger corpus.
 
 For network libraries, the long-term path is source-local indexing. Preferred
 formats are either sidecar fingerprints next to media files or an exported V3
