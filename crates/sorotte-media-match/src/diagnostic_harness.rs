@@ -114,6 +114,7 @@ pub struct MediaMatchV3DiagnosticRunOptions {
     pub sampled_fast_per_removable_source_workers: Option<usize>,
     pub probe_audio_packets: bool,
     pub sampled_audio_source: MediaSampledAudioSourceStrategy,
+    pub experimental_sampled_audio_source: bool,
     pub sampled_pcm_cache_root: Option<PathBuf>,
     pub tools: MediaMatchToolPaths,
     pub generated_at_unix_millis: Option<u64>,
@@ -141,6 +142,30 @@ impl MediaMatchV3DiagnosticIndexMode {
             Self::SampledThenFull => "sampled-then-full",
             Self::Production => "production",
         }
+    }
+}
+
+fn sampled_audio_source_is_production_compatible(source: MediaSampledAudioSourceStrategy) -> bool {
+    matches!(source, MediaSampledAudioSourceStrategy::Current)
+}
+
+fn sampled_audio_source_equivalence_report(
+    source: MediaSampledAudioSourceStrategy,
+) -> MediaSampledAudioSourceEquivalenceReport {
+    if sampled_audio_source_is_production_compatible(source) {
+        MediaSampledAudioSourceEquivalenceReport {
+            pcm_byte_exact_match: Some(true),
+            pcm_rms_delta: Some(0.0),
+            pcm_max_abs_delta: Some(0),
+            landmark_overlap_ratio: Some(1.0),
+            exact_landmark_overlap_count: None,
+            retrieval_rank_delta: Some(0),
+            retrieval_score_delta: Some(0),
+            expected_candidate_still_retrieved: None,
+            hard_negatives_still_pass: None,
+        }
+    } else {
+        MediaSampledAudioSourceEquivalenceReport::default()
     }
 }
 
@@ -426,6 +451,29 @@ pub struct MediaMatchV3DiagnosticRetrievalMarginReport {
     pub best_negative_offset_score: Option<i64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaSampledAudioSourceEquivalenceReport {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pcm_byte_exact_match: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pcm_rms_delta: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pcm_max_abs_delta: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub landmark_overlap_ratio: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exact_landmark_overlap_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retrieval_rank_delta: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retrieval_score_delta: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_candidate_still_retrieved: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hard_negatives_still_pass: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaMatchV3DiagnosticSummaryReport {
@@ -446,6 +494,14 @@ pub struct MediaMatchV3DiagnosticSummaryReport {
     pub sampled_audio_policy: Option<MediaSampledAudioPolicy>,
     #[serde(default)]
     pub sampled_policy_production_compatible: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampled_audio_source_strategy: Option<String>,
+    #[serde(default)]
+    pub experimental_sampled_audio_source: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampled_policy_cache_recommendation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampled_audio_source_equivalence: Option<MediaSampledAudioSourceEquivalenceReport>,
     #[serde(default)]
     pub sqlite_cache_compatible_hit_count: usize,
     #[serde(default)]
@@ -808,6 +864,21 @@ pub fn run_media_match_v3_diagnostic_manifest(
         settings.audio_algorithm = index_settings.audio_algorithm;
     }
     if settings.audio_index_mode.is_sampled() {
+        if !sampled_audio_source_is_production_compatible(options.sampled_audio_source)
+            && !options.experimental_sampled_audio_source
+        {
+            return Err(format!(
+                "sampled audio source '{}' is experimental; set experimental_sampled_audio_source for diagnostics and use a separate cache root",
+                options.sampled_audio_source.label()
+            ));
+        }
+        if matches!(index_mode, MediaMatchV3DiagnosticIndexMode::Production)
+            && !sampled_audio_source_is_production_compatible(options.sampled_audio_source)
+        {
+            return Err(
+                "production diagnostics require the fixed current sampled-fast source".to_owned(),
+            );
+        }
         settings = settings.with_sampled_audio_policy(
             MediaSampledAudioPolicy::for_sampled_fast_source_strategy(options.sampled_audio_source),
         );
@@ -838,7 +909,21 @@ pub fn run_media_match_v3_diagnostic_manifest(
             .is_sampled()
             .then(|| settings.sampled_audio_policy.clone()),
         sampled_policy_production_compatible: !settings.audio_index_mode.is_sampled()
-            || settings.sampled_audio_policy.is_production_compatible(),
+            || (settings.sampled_audio_policy.is_production_compatible()
+                && sampled_audio_source_is_production_compatible(options.sampled_audio_source)),
+        sampled_audio_source_strategy: settings
+            .audio_index_mode
+            .is_sampled()
+            .then(|| options.sampled_audio_source.label().to_owned()),
+        experimental_sampled_audio_source: settings.audio_index_mode.is_sampled()
+            && options.experimental_sampled_audio_source,
+        sampled_policy_cache_recommendation: (settings.audio_index_mode.is_sampled()
+            && !sampled_audio_source_is_production_compatible(options.sampled_audio_source))
+        .then(|| "experimental sampled audio sources should use a dedicated cache root and must not be mixed with the production sampled-fast cache".to_owned()),
+        sampled_audio_source_equivalence: settings
+            .audio_index_mode
+            .is_sampled()
+            .then(|| sampled_audio_source_equivalence_report(options.sampled_audio_source)),
         ..MediaMatchV3DiagnosticSummaryReport::default()
     };
 
@@ -3880,6 +3965,7 @@ mod tests {
                 sampled_fast_per_removable_source_workers: None,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
+                experimental_sampled_audio_source: false,
                 sampled_pcm_cache_root: None,
                 tools: MediaMatchToolPaths {
                     ffmpeg: PathBuf::from("ffmpeg"),
@@ -3928,6 +4014,7 @@ mod tests {
                 sampled_fast_per_removable_source_workers: None,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
+                experimental_sampled_audio_source: false,
                 sampled_pcm_cache_root: None,
                 tools: MediaMatchToolPaths {
                     ffmpeg: PathBuf::from("ffmpeg"),
@@ -4034,6 +4121,7 @@ mod tests {
                 sampled_fast_per_removable_source_workers: None,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
+                experimental_sampled_audio_source: false,
                 sampled_pcm_cache_root: None,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(123),
@@ -4109,6 +4197,7 @@ mod tests {
                 sampled_fast_per_removable_source_workers: None,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
+                experimental_sampled_audio_source: false,
                 sampled_pcm_cache_root: None,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
@@ -4173,6 +4262,7 @@ mod tests {
                 sampled_fast_per_removable_source_workers: None,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
+                experimental_sampled_audio_source: false,
                 sampled_pcm_cache_root: None,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
@@ -4228,6 +4318,7 @@ mod tests {
                 sampled_fast_per_removable_source_workers: None,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
+                experimental_sampled_audio_source: false,
                 sampled_pcm_cache_root: None,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
@@ -4272,6 +4363,7 @@ mod tests {
                 sampled_fast_per_removable_source_workers: None,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
+                experimental_sampled_audio_source: false,
                 sampled_pcm_cache_root: None,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
@@ -4421,6 +4513,7 @@ mod tests {
                 sampled_fast_per_removable_source_workers: None,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
+                experimental_sampled_audio_source: false,
                 sampled_pcm_cache_root: None,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
@@ -4430,8 +4523,59 @@ mod tests {
 
         assert_eq!(report.summary.sampled_audio_policy, Some(policy));
         assert!(report.summary.sampled_policy_production_compatible);
+        assert_eq!(
+            report.summary.sampled_audio_source_strategy.as_deref(),
+            Some("current")
+        );
+        assert!(!report.summary.experimental_sampled_audio_source);
+        assert_eq!(
+            report
+                .summary
+                .sampled_audio_source_equivalence
+                .as_ref()
+                .and_then(|equivalence| equivalence.pcm_byte_exact_match),
+            Some(true)
+        );
         assert_eq!(report.summary.sqlite_cache_compatible_hit_count, 1);
         assert_eq!(report.summary.sqlite_cache_incompatible_miss_count, 0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn non_current_sampled_source_requires_experimental_run_option() {
+        let root = temp_dir("v3-diagnostics-experimental-source-guard");
+        let media = root.join("source-guard.mkv");
+        fs::write(&media, b"sampled source guard").expect("media should be written");
+        let manifest = manifest_for_paths("source-guard", &media, &[]);
+
+        let error = run_media_match_v3_diagnostic_manifest(
+            &manifest,
+            MediaMatchV3DiagnosticRunOptions {
+                manifest_dir: root.clone(),
+                cache_root: root.join("cache"),
+                cache_retained: true,
+                refresh_cache: false,
+                index_mode: MediaMatchV3DiagnosticIndexMode::SampledFast,
+                dense_audio_profile: MediaDenseAudioProfile::DenseCurrent,
+                max_full_promotions_per_query: 1,
+                promote_expected_candidates: false,
+                retrieval_benchmark_only: true,
+                retrieval_strategy: MediaMatchV3RetrievalStrategy::Auto,
+                sampled_fast_global_workers: None,
+                sampled_fast_per_local_source_workers: None,
+                sampled_fast_per_network_source_workers: None,
+                sampled_fast_per_removable_source_workers: None,
+                probe_audio_packets: false,
+                sampled_audio_source: MediaSampledAudioSourceStrategy::MkvAudioRanges,
+                experimental_sampled_audio_source: false,
+                sampled_pcm_cache_root: None,
+                tools: unavailable_tools(),
+                generated_at_unix_millis: Some(1),
+            },
+        )
+        .expect_err("normal sampled-fast diagnostics should reject experimental source strategies");
+
+        assert!(error.contains("experimental"), "{error}");
         let _ = fs::remove_dir_all(root);
     }
 

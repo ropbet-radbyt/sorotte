@@ -395,17 +395,21 @@ The sampled extraction source can also be selected explicitly:
 
 ```powershell
 cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --sampled-audio-source current --output reports/audio-current.json --cache-root .media-match-v3-cache-audio --refresh-cache
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --sampled-audio-source single-process-filter --output reports/audio-single-process-filter.json --cache-root .media-match-v3-cache-audio --refresh-cache
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --sampled-audio-source fast-seek-per-window --output reports/audio-fast-seek.json --cache-root .media-match-v3-cache-audio --refresh-cache
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --sampled-audio-source output-seek-per-window --output reports/audio-output-seek.json --cache-root .media-match-v3-cache-audio --refresh-cache
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --sampled-audio-source mkv-audio-ranges --output reports/audio-mkv-ranges.json --cache-root .media-match-v3-cache-audio --refresh-cache
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --sampled-audio-source sampled-pcm-cache --sampled-pcm-cache-root .media-match-v3-pcm-cache --output reports/audio-pcm-cache.json --cache-root .media-match-v3-cache-audio --refresh-cache
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --sampled-audio-source packet-map --sampled-pcm-cache-root .media-match-v3-pcm-cache --output reports/audio-packet-map.json --cache-root .media-match-v3-cache-audio --refresh-cache
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --sampled-audio-source single-process-filter --experimental-sampled-audio-source --output reports/audio-single-process-filter.json --cache-root .media-match-v3-cache-single-process-filter --refresh-cache
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --sampled-audio-source fast-seek-per-window --experimental-sampled-audio-source --output reports/audio-fast-seek.json --cache-root .media-match-v3-cache-fast-seek --refresh-cache
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --sampled-audio-source output-seek-per-window --experimental-sampled-audio-source --output reports/audio-output-seek.json --cache-root .media-match-v3-cache-output-seek --refresh-cache
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --sampled-audio-source mkv-audio-ranges --experimental-sampled-audio-source --output reports/audio-mkv-ranges.json --cache-root .media-match-v3-cache-mkv-ranges --refresh-cache
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --sampled-audio-source sampled-pcm-cache --experimental-sampled-audio-source --sampled-pcm-cache-root .media-match-v3-pcm-cache --output reports/audio-pcm-cache.json --cache-root .media-match-v3-cache-pcm-cache --refresh-cache
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --sampled-audio-source packet-map --experimental-sampled-audio-source --sampled-pcm-cache-root .media-match-v3-pcm-cache --output reports/audio-packet-map.json --cache-root .media-match-v3-cache-packet-map --refresh-cache
 ```
 
-`current` is the safe ffmpeg path and remains the default. It runs one fast seek
-per sampled window, which is the cold-index baseline. `fast-seek-per-window`
-keeps that input-seek shape but labels the benchmark explicitly.
+`current` is the safe ffmpeg path, the default, and the only normal production
+sampled-fast source. It runs one fast seek per sampled window, which is the
+cold-index baseline. Every other sampled source is experimental and requires
+`--experimental-sampled-audio-source`; use a separate cache root so an
+experimental run cannot pollute the normal production sampled-fast cache.
+`fast-seek-per-window` keeps that input-seek shape but labels the benchmark
+explicitly.
 `output-seek-per-window` moves `-ss` after `-i`; it can be useful for measuring
 container demux behavior but may decode more data. `single-process-filter`
 decodes the selected windows through one ffmpeg filtergraph and reports whether
@@ -486,33 +490,38 @@ changing fingerprint output.
 For one-time cold-index tuning, prefer source-aware strategy benchmarks over a
 PCM cache. Run the same representative subset with `--sampled-audio-source`
 `current`, `single-process-filter`, `fast-seek-per-window`, and
-`output-seek-per-window`, then repeat with conservative source worker limits
-such as `--sampled-fast-network-workers 1`, `2`, `3`, and `4`. The relevant
-numbers are source-local files/minute, `ffmpegInputReadBytes`,
+`output-seek-per-window`; add `--experimental-sampled-audio-source` and a
+dedicated cache root for every non-current strategy. Then repeat with
+conservative source worker limits such as `--sampled-fast-network-workers 1`,
+`2`, `3`, and `4`. The relevant numbers are source-local files/minute,
+`ffmpegInputReadBytes`,
 `ffmpegInputReadOps`, read amplification, and p95 file time. A strategy that
 only improves a warm PCM-cache rerun is not a cold-index win.
 
-Adaptive sampled-fast is rejected for production. It was faster on the noisy
-Monogatari/Anime corpus, but it missed expected candidates, so fixed
+Adaptive sampled-fast is rejected for production and removed from the normal
+runtime/diagnostic path. It was faster on the noisy Monogatari/Anime corpus, but
+it missed expected candidates, so fixed
 three-window sampled-fast is the production baseline: 3 windows, 60 sampled
 seconds, and 384 sampled audio index/verify landmarks. Normal diagnostics and
-runtime/background indexing create only that fixed policy. The report summary
-includes `sampledAudioPolicy` and `sampledPolicyProductionCompatible`; normal
-production-compatible sampled-fast reports should show this compatibility field
-as `true`.
+runtime/background indexing create only that fixed policy with
+`--sampled-audio-source current`. The report summary includes
+`sampledAudioPolicy`, `sampledAudioSourceStrategy`,
+`sampledPolicyProductionCompatible`, `experimentalSampledAudioSource`, and
+`sampledAudioSourceEquivalence`; normal production-compatible sampled-fast
+reports should show compatibility as `true` and source strategy as `current`.
 
 There is one normal SQLite cache policy for sampled-fast. A normal run cannot
 create or reuse records from rejected sampled policies; incompatible sampled
 records are reported through `sqliteCacheIncompatibleMissCount` and
 `sampledPolicyMismatchCount`. Diagnostic-only source helpers such as
-`sampled-pcm-cache`, `packet-map`, and `mkv-audio-ranges` are marked
-output-equivalent to the current per-window ffmpeg path when they ultimately
-produce the same sampled PCM/landmarks, so they do not create unnecessary cache
-namespaces. `single-process-filter` and `output-seek-per-window` are separate
-experimental policies because they can change window alignment or decoded PCM.
-Direct container-read work must preserve the fixed three-window output before it
-can be considered for production. Repeated-run PCM cache remains optional
-developer tooling, not a first-index solution.
+`single-process-filter`, `fast-seek-per-window`, `output-seek-per-window`,
+`ffprobe-probe`, `packet-map`, `mkv-audio-ranges`, `sampled-pcm-cache`, and
+`auto` are separate experimental cache policies. They must be benchmarked
+against the fixed current path with PCM/landmark equivalence, retrieval-rank
+delta, expected-candidate retrieval, and hard-negative checks before any
+promotion. Direct container-read work must preserve the fixed three-window
+output before it can be considered for production. Repeated-run PCM cache
+remains optional developer tooling, not a first-index solution.
 
 Warm-cache reports include `sqliteCacheCompatibleHitCount`,
 `sqliteCacheIncompatibleMissCount`, and `sampledPolicyMismatchCount`. If a run

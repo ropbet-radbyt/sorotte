@@ -4405,6 +4405,7 @@ mod tests {
                 sampled_fast_per_removable_source_workers: None,
                 probe_audio_packets: false,
                 sampled_audio_source: sorotte_media_match::MediaSampledAudioSourceStrategy::Current,
+                experimental_sampled_audio_source: false,
                 sampled_pcm_cache_root: None,
                 tools,
                 generated_at_unix_millis: Some(123),

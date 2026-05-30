@@ -143,7 +143,13 @@ pub enum MediaSampledFfmpegWindowStrategy {
     #[default]
     CurrentThreeInvocations,
     SingleProcessFilter,
+    FastSeekPerWindow,
     OutputSeekPerWindow,
+    FfprobeProbe,
+    PacketMap,
+    MkvAudioRanges,
+    SampledPcmCache,
+    Auto,
 }
 
 impl MediaSampledFfmpegWindowStrategy {
@@ -151,7 +157,13 @@ impl MediaSampledFfmpegWindowStrategy {
         match self {
             Self::CurrentThreeInvocations => "current-three-invocations",
             Self::SingleProcessFilter => "single-process-filter",
+            Self::FastSeekPerWindow => "fast-seek-per-window",
             Self::OutputSeekPerWindow => "output-seek-per-window",
+            Self::FfprobeProbe => "ffprobe-probe",
+            Self::PacketMap => "packet-map",
+            Self::MkvAudioRanges => "mkv-audio-ranges",
+            Self::SampledPcmCache => "sampled-pcm-cache",
+            Self::Auto => "auto",
         }
     }
 }
@@ -224,16 +236,26 @@ impl MediaSampledAudioPolicy {
             MediaSampledAudioSourceStrategy::SingleProcessFilter => {
                 MediaSampledFfmpegWindowStrategy::SingleProcessFilter
             }
+            MediaSampledAudioSourceStrategy::FastSeekPerWindow => {
+                MediaSampledFfmpegWindowStrategy::FastSeekPerWindow
+            }
             MediaSampledAudioSourceStrategy::OutputSeekPerWindow => {
                 MediaSampledFfmpegWindowStrategy::OutputSeekPerWindow
             }
-            MediaSampledAudioSourceStrategy::Current
-            | MediaSampledAudioSourceStrategy::FastSeekPerWindow
-            | MediaSampledAudioSourceStrategy::FfprobeProbe
-            | MediaSampledAudioSourceStrategy::PacketMap
-            | MediaSampledAudioSourceStrategy::MkvAudioRanges
-            | MediaSampledAudioSourceStrategy::SampledPcmCache
-            | MediaSampledAudioSourceStrategy::Auto => {
+            MediaSampledAudioSourceStrategy::FfprobeProbe => {
+                MediaSampledFfmpegWindowStrategy::FfprobeProbe
+            }
+            MediaSampledAudioSourceStrategy::PacketMap => {
+                MediaSampledFfmpegWindowStrategy::PacketMap
+            }
+            MediaSampledAudioSourceStrategy::MkvAudioRanges => {
+                MediaSampledFfmpegWindowStrategy::MkvAudioRanges
+            }
+            MediaSampledAudioSourceStrategy::SampledPcmCache => {
+                MediaSampledFfmpegWindowStrategy::SampledPcmCache
+            }
+            MediaSampledAudioSourceStrategy::Auto => MediaSampledFfmpegWindowStrategy::Auto,
+            MediaSampledAudioSourceStrategy::Current => {
                 MediaSampledFfmpegWindowStrategy::CurrentThreeInvocations
             }
         };
@@ -461,7 +483,7 @@ mod tests {
     }
 
     #[test]
-    fn sampled_audio_policy_marks_output_equivalent_sources() {
+    fn sampled_audio_policy_separates_experimental_source_strategies() {
         let current = MediaSampledAudioPolicy::for_sampled_fast_source_strategy(
             MediaSampledAudioSourceStrategy::Current,
         );
@@ -472,8 +494,11 @@ mod tests {
             MediaSampledAudioSourceStrategy::SampledPcmCache,
         );
 
-        assert_eq!(current, packet_map);
-        assert_eq!(current, pcm_cache);
+        assert_ne!(current, packet_map);
+        assert_ne!(current, pcm_cache);
+        assert!(current.is_production_compatible());
+        assert!(!packet_map.is_production_compatible());
+        assert!(!pcm_cache.is_production_compatible());
     }
 
     #[test]

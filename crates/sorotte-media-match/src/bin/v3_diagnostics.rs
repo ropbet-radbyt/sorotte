@@ -62,6 +62,7 @@ fn run_cli_with_output(
         sampled_fast_per_removable_source_workers,
         probe_audio_packets,
         sampled_audio_source,
+        experimental_sampled_audio_source,
         sampled_pcm_cache_root,
         mode,
         selected_cases,
@@ -189,6 +190,7 @@ fn run_cli_with_output(
             sampled_fast_per_removable_source_workers,
             probe_audio_packets,
             sampled_audio_source,
+            experimental_sampled_audio_source,
             sampled_pcm_cache_root,
             tools: tool_paths(),
             generated_at_unix_millis: None,
@@ -235,6 +237,7 @@ enum CliMode {
     CacheSizeReport,
 }
 
+#[derive(Debug)]
 struct CliArgs {
     manifest_path: Option<PathBuf>,
     output_path: Option<PathBuf>,
@@ -254,6 +257,7 @@ struct CliArgs {
     sampled_fast_per_removable_source_workers: Option<usize>,
     probe_audio_packets: bool,
     sampled_audio_source: MediaSampledAudioSourceStrategy,
+    experimental_sampled_audio_source: bool,
     sampled_pcm_cache_root: Option<PathBuf>,
     mode: CliMode,
     selected_cases: Vec<String>,
@@ -278,6 +282,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
     let mut sampled_fast_per_removable_source_workers = None;
     let mut probe_audio_packets = false;
     let mut sampled_audio_source = MediaSampledAudioSourceStrategy::Current;
+    let mut experimental_sampled_audio_source = false;
     let mut sampled_pcm_cache_root = None;
     let mut mode = CliMode::Run;
     let mut selected_cases = Vec::new();
@@ -368,6 +373,9 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
                 };
                 sampled_audio_source = parse_sampled_audio_source_strategy(&value)?;
             }
+            "--experimental-sampled-audio-source" => {
+                experimental_sampled_audio_source = true;
+            }
             "--sampled-pcm-cache-root" => {
                 let Some(value) = args.next() else {
                     return Err(usage());
@@ -413,6 +421,19 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
     if manifest_path.is_none() && mode != CliMode::CacheSizeReport {
         return Err(usage());
     }
+    if sampled_audio_source != MediaSampledAudioSourceStrategy::Current
+        && !experimental_sampled_audio_source
+    {
+        return Err(format!(
+            "--sampled-audio-source {} is experimental; pass --experimental-sampled-audio-source and use a non-production diagnostic cache",
+            sampled_audio_source.label()
+        ));
+    }
+    if index_mode == MediaMatchV3DiagnosticIndexMode::Production
+        && sampled_audio_source != MediaSampledAudioSourceStrategy::Current
+    {
+        return Err("--index-mode production requires --sampled-audio-source current".to_owned());
+    }
     Ok(CliArgs {
         manifest_path,
         output_path,
@@ -432,6 +453,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
         sampled_fast_per_removable_source_workers,
         probe_audio_packets,
         sampled_audio_source,
+        experimental_sampled_audio_source,
         sampled_pcm_cache_root,
         mode,
         selected_cases,
@@ -439,7 +461,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
 }
 
 fn usage() -> String {
-    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--index-mode full|sparse-full|sampled-fast|sampled-normal|sampled|sampled-then-full|production] [--dense-audio-profile dense-current|dense-realfft|dense-8k|dense-hop2048|dense-8k-hop2048|dense-8k-window1024-hop1024|dense-max-peaks-4|dense-pair-retain-16|dense-pair-retain-lower|dense-gated|dense-gated-v2|dense-fast-combined-candidate] [--retrieval-strategy auto|temp-table|bucket-fetch] [--sampled-fast-workers n] [--sampled-fast-local-workers n] [--sampled-fast-network-workers n] [--sampled-fast-removable-workers n] [--probe-audio-packets] [--sampled-audio-source current|single-process-filter|fast-seek-per-window|output-seek-per-window|ffprobe-probe|packet-map|mkv-audio-ranges|sampled-pcm-cache|auto] [--sampled-pcm-cache-root dir] [--bench-dense-audio-profiles] [--max-full-promotions n] [--promote-expected-candidates] [--retrieval-benchmark-only] [--list-cases|--validate-only|--prepare-index-stats|--cache-size-report] [--case name]"
+    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--index-mode full|sparse-full|sampled-fast|sampled-normal|sampled|sampled-then-full|production] [--dense-audio-profile dense-current|dense-realfft|dense-8k|dense-hop2048|dense-8k-hop2048|dense-8k-window1024-hop1024|dense-max-peaks-4|dense-pair-retain-16|dense-pair-retain-lower|dense-gated|dense-gated-v2|dense-fast-combined-candidate] [--retrieval-strategy auto|temp-table|bucket-fetch] [--sampled-fast-workers n] [--sampled-fast-local-workers n] [--sampled-fast-network-workers n] [--sampled-fast-removable-workers n] [--probe-audio-packets] [--sampled-audio-source current|single-process-filter|fast-seek-per-window|output-seek-per-window|ffprobe-probe|packet-map|mkv-audio-ranges|sampled-pcm-cache|auto] [--experimental-sampled-audio-source] [--sampled-pcm-cache-root dir] [--bench-dense-audio-profiles] [--max-full-promotions n] [--promote-expected-candidates] [--retrieval-benchmark-only] [--list-cases|--validate-only|--prepare-index-stats|--cache-size-report] [--case name]"
         .to_owned()
 }
 
@@ -597,6 +619,7 @@ fn run_dense_audio_profile_benchmark(
                 sampled_fast_per_removable_source_workers: None,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
+                experimental_sampled_audio_source: false,
                 sampled_pcm_cache_root: None,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(generated_at_unix_millis),
@@ -831,6 +854,7 @@ mod tests {
             "--probe-audio-packets".to_owned(),
             "--sampled-audio-source".to_owned(),
             "sampled-pcm-cache".to_owned(),
+            "--experimental-sampled-audio-source".to_owned(),
             "--sampled-pcm-cache-root".to_owned(),
             "pcm-cache".to_owned(),
             "--case".to_owned(),
@@ -868,6 +892,7 @@ mod tests {
             args.sampled_audio_source,
             MediaSampledAudioSourceStrategy::SampledPcmCache
         );
+        assert!(args.experimental_sampled_audio_source);
         assert_eq!(
             args.sampled_pcm_cache_root,
             Some(PathBuf::from("pcm-cache"))
@@ -877,7 +902,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_args_accepts_cold_io_sampled_audio_sources() {
+    fn parse_args_requires_experimental_flag_for_cold_io_sampled_audio_sources() {
         for (label, expected) in [
             (
                 "single-process-filter",
@@ -896,15 +921,43 @@ mod tests {
                 MediaSampledAudioSourceStrategy::MkvAudioRanges,
             ),
         ] {
-            let args = parse_args([
+            let error = parse_args([
                 "manifest.json".to_owned(),
                 "--sampled-audio-source".to_owned(),
                 label.to_owned(),
             ])
+            .expect_err("experimental sampled source should require explicit flag");
+            assert!(
+                error.contains("--experimental-sampled-audio-source"),
+                "{error}"
+            );
+
+            let args = parse_args([
+                "manifest.json".to_owned(),
+                "--sampled-audio-source".to_owned(),
+                label.to_owned(),
+                "--experimental-sampled-audio-source".to_owned(),
+            ])
             .expect("sampled source args should parse");
 
             assert_eq!(args.sampled_audio_source, expected);
+            assert!(args.experimental_sampled_audio_source);
         }
+    }
+
+    #[test]
+    fn parse_args_rejects_experimental_sampled_source_for_production_mode() {
+        let error = parse_args([
+            "manifest.json".to_owned(),
+            "--index-mode".to_owned(),
+            "production".to_owned(),
+            "--sampled-audio-source".to_owned(),
+            "mkv-audio-ranges".to_owned(),
+            "--experimental-sampled-audio-source".to_owned(),
+        ])
+        .expect_err("production mode must use current sampled source");
+
+        assert!(error.contains("production requires"), "{error}");
     }
 
     #[test]
@@ -1019,6 +1072,7 @@ mod tests {
                 sampled_fast_per_removable_source_workers: None,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
+                experimental_sampled_audio_source: false,
                 sampled_pcm_cache_root: None,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(1),
@@ -1246,6 +1300,7 @@ mod tests {
                 sampled_fast_per_removable_source_workers: None,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
+                experimental_sampled_audio_source: false,
                 sampled_pcm_cache_root: None,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(123),
@@ -1326,6 +1381,7 @@ mod tests {
                 sampled_fast_per_removable_source_workers: None,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
+                experimental_sampled_audio_source: false,
                 sampled_pcm_cache_root: None,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(124),
@@ -1376,6 +1432,7 @@ mod tests {
                 sampled_fast_per_removable_source_workers: None,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
+                experimental_sampled_audio_source: false,
                 sampled_pcm_cache_root: None,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(125),
@@ -1439,6 +1496,7 @@ mod tests {
                 sampled_fast_per_removable_source_workers: None,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
+                experimental_sampled_audio_source: false,
                 sampled_pcm_cache_root: None,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(126),
@@ -1531,6 +1589,7 @@ mod tests {
                 sampled_fast_per_removable_source_workers: None,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::SampledPcmCache,
+                experimental_sampled_audio_source: true,
                 sampled_pcm_cache_root: Some(pcm_cache_root.clone()),
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(223),
@@ -1579,6 +1638,7 @@ mod tests {
                 sampled_fast_per_removable_source_workers: None,
                 probe_audio_packets: false,
                 sampled_audio_source: MediaSampledAudioSourceStrategy::SampledPcmCache,
+                experimental_sampled_audio_source: true,
                 sampled_pcm_cache_root: Some(pcm_cache_root),
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(224),
