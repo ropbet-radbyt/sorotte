@@ -36,9 +36,10 @@ pub use diagnostics::{
     summarize_instrumented_record_v3_diagnostics, summarize_record_v3_diagnostics,
 };
 pub use extraction::{
-    InstrumentedMediaFingerprint, MediaAudioStreamMetrics, MediaExtractionTimings,
-    MediaFingerprintError, MediaFingerprintExtractionReport, MediaMatchToolPaths,
-    MediaToolInvocationCounts, fingerprint_media_file, fingerprint_media_file_cancellable,
+    AudioPacketMapV3, AudioPacketPositionV3, InstrumentedMediaFingerprint, MediaAudioStreamMetrics,
+    MediaExtractionTimings, MediaFingerprintError, MediaFingerprintExtractionOptions,
+    MediaFingerprintExtractionReport, MediaMatchToolPaths, MediaToolInvocationCounts,
+    fingerprint_media_file, fingerprint_media_file_cancellable,
     fingerprint_media_file_cancellable_with_report, fingerprint_media_file_with_report,
 };
 pub use identity::normalize_media_path;
@@ -53,8 +54,8 @@ pub use report_compare::{
 };
 pub use settings::{
     MEDIA_MATCH_V3_FINGERPRINT_CACHE_VERSION, MediaAudioIndexMode, MediaDenseAudioProfile,
-    MediaExtractionSettings, MediaFingerprintProfile, media_extraction_settings_hash,
-    media_match_v3_fingerprint_config_hash,
+    MediaExtractionSettings, MediaFingerprintProfile, MediaSampledAudioSourceStrategy,
+    media_extraction_settings_hash, media_match_v3_fingerprint_config_hash,
 };
 pub use timeline_v3::{
     classify_timeline_at_query_ms, map_candidate_position_to_query_ms,

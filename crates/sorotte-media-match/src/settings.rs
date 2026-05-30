@@ -101,6 +101,29 @@ impl MediaDenseAudioProfile {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MediaSampledAudioSourceStrategy {
+    #[default]
+    Current,
+    FfprobeProbe,
+    PacketMap,
+    SampledPcmCache,
+    Auto,
+}
+
+impl MediaSampledAudioSourceStrategy {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Current => "current",
+            Self::FfprobeProbe => "ffprobe-probe",
+            Self::PacketMap => "packet-map",
+            Self::SampledPcmCache => "sampled-pcm-cache",
+            Self::Auto => "auto",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MediaExtractionSettings {
     #[serde(default = "default_media_fingerprint_profile")]

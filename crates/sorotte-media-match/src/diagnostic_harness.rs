@@ -12,20 +12,23 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
-use crate::extraction::media_source_path_info;
-use crate::extraction::probe_audio_packet_positions_for_sampled_windows;
+use crate::extraction::{
+    fingerprint_media_file_with_report_and_options, media_source_path_info,
+    probe_audio_packet_positions_for_sampled_windows,
+};
 use crate::{
     InstrumentedMediaFingerprint, MEDIA_MATCH_ANCHOR_VERSION, MatchClassV3, MediaAudioIndexMode,
     MediaAudioStreamMetrics, MediaDenseAudioProfile, MediaExtractionSettings,
-    MediaMatchAutoplayPolicy, MediaMatchDecision, MediaMatchSettings, MediaMatchTier,
-    MediaMatchToolPaths, MediaMatchV3DiagnosticSummary, MediaMatchV3RetrievalStats,
-    MediaMatchV3RetrievalStrategy, MediaMatchV3RetrievedCandidate, MediaMatchV3SaveStats,
-    MediaMatchV3SqliteSizeReport, V3Tuning, current_v3_tuning, decide_media_match,
-    fingerprint_media_file_with_report, load_media_match_v3_record_for_path,
-    media_extraction_settings_hash, media_match_v3_anchor_candidate_details_with_strategy,
-    media_match_v3_sqlite_size_report, normalize_media_path, open_media_match_v3_index,
-    save_media_match_v3_record_with_stats, summarize_decision_v3_diagnostics,
-    summarize_instrumented_record_v3_diagnostics, summarize_record_v3_diagnostics,
+    MediaFingerprintExtractionOptions, MediaMatchAutoplayPolicy, MediaMatchDecision,
+    MediaMatchSettings, MediaMatchTier, MediaMatchToolPaths, MediaMatchV3DiagnosticSummary,
+    MediaMatchV3RetrievalStats, MediaMatchV3RetrievalStrategy, MediaMatchV3RetrievedCandidate,
+    MediaMatchV3SaveStats, MediaMatchV3SqliteSizeReport, MediaSampledAudioSourceStrategy, V3Tuning,
+    current_v3_tuning, decide_media_match, fingerprint_media_file_with_report,
+    load_media_match_v3_record_for_path, media_extraction_settings_hash,
+    media_match_v3_anchor_candidate_details_with_strategy, media_match_v3_sqlite_size_report,
+    normalize_media_path, open_media_match_v3_index, save_media_match_v3_record_with_stats,
+    summarize_decision_v3_diagnostics, summarize_instrumented_record_v3_diagnostics,
+    summarize_record_v3_diagnostics,
 };
 
 #[cfg(test)]
@@ -110,6 +113,8 @@ pub struct MediaMatchV3DiagnosticRunOptions {
     pub sampled_fast_per_removable_source_workers: Option<usize>,
     pub adaptive_io_concurrency_enabled: bool,
     pub probe_audio_packets: bool,
+    pub sampled_audio_source: MediaSampledAudioSourceStrategy,
+    pub sampled_pcm_cache_root: Option<PathBuf>,
     pub tools: MediaMatchToolPaths,
     pub generated_at_unix_millis: Option<u64>,
 }
@@ -2347,11 +2352,20 @@ fn fingerprint_fresh_diagnostic_jobs(
                     let queue_wait_millis = job.queued_at.elapsed().as_millis();
                     let worker_started_at = Instant::now();
                     let source_key = job.source_key.clone();
-                    let result =
-                        fingerprint_media_file_with_report(&job.path, &tools, &settings, None)
-                            .map_err(|error| {
-                                format!("failed fingerprinting '{}': {error}", job.path.display())
-                            });
+                    let extraction_options = MediaFingerprintExtractionOptions {
+                        sampled_audio_source: options.sampled_audio_source,
+                        sampled_pcm_cache_root: options.sampled_pcm_cache_root.clone(),
+                    };
+                    let result = fingerprint_media_file_with_report_and_options(
+                        &job.path,
+                        &tools,
+                        &settings,
+                        None,
+                        &extraction_options,
+                    )
+                    .map_err(|error| {
+                        format!("failed fingerprinting '{}': {error}", job.path.display())
+                    });
                     if let Ok(mut jobs) = jobs.lock() {
                         jobs.finish_source(&source_key);
                     }
@@ -3813,6 +3827,8 @@ mod tests {
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
                 probe_audio_packets: false,
+                sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
+                sampled_pcm_cache_root: None,
                 tools: MediaMatchToolPaths {
                     ffmpeg: PathBuf::from("ffmpeg"),
                     ffprobe: PathBuf::from("ffprobe"),
@@ -3860,6 +3876,8 @@ mod tests {
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
                 probe_audio_packets: false,
+                sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
+                sampled_pcm_cache_root: None,
                 tools: MediaMatchToolPaths {
                     ffmpeg: PathBuf::from("ffmpeg"),
                     ffprobe: PathBuf::from("ffprobe"),
@@ -3965,6 +3983,8 @@ mod tests {
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
                 probe_audio_packets: false,
+                sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
+                sampled_pcm_cache_root: None,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(123),
             },
@@ -4037,6 +4057,8 @@ mod tests {
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
                 probe_audio_packets: false,
+                sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
+                sampled_pcm_cache_root: None,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
             },
@@ -4100,6 +4122,8 @@ mod tests {
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
                 probe_audio_packets: false,
+                sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
+                sampled_pcm_cache_root: None,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
             },
@@ -4154,6 +4178,8 @@ mod tests {
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
                 probe_audio_packets: false,
+                sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
+                sampled_pcm_cache_root: None,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
             },
@@ -4197,6 +4223,8 @@ mod tests {
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
                 probe_audio_packets: false,
+                sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
+                sampled_pcm_cache_root: None,
                 tools: unavailable_tools(),
                 generated_at_unix_millis: Some(1),
             },

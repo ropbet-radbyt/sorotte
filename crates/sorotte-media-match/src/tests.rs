@@ -1014,6 +1014,30 @@ fn v3_diagnostics_serializes_stable_stream_metric_names() {
                 audio_packet_window_compressed_bytes: Some(92_160),
                 audio_packet_window_coalesced_range_bytes: Some(98_304),
                 audio_packet_read_savings_estimate_bytes: Some(925_696),
+                selected_sampled_audio_source_strategy: Some("sampled-pcm-cache".to_owned()),
+                source_strategy_decision_reason: Some("explicit-sampled-pcm-cache".to_owned()),
+                source_strategy_fallback_count: 1,
+                audio_packet_map_cache_hit: Some(true),
+                audio_packet_map_build_millis: Some(14),
+                audio_packet_map_packet_count: Some(1_234),
+                audio_packet_map_bytes: Some(45_678),
+                audio_packet_map_complete: Some(true),
+                audio_packet_map_fallback_reason: None,
+                audio_packet_window_count: Some(5),
+                audio_packet_ranges: Some(8),
+                audio_packet_range_bytes: Some(76_800),
+                audio_packet_coalesced_range_bytes: Some(80_000),
+                audio_packet_range_read_millis: Some(6),
+                audio_packet_range_read_ops: Some(8),
+                audio_packet_read_amplification_vs_pcm: Some(0.333),
+                audio_packet_estimated_savings_vs_current: Some(944_000),
+                sampled_pcm_cache_hit: Some(true),
+                sampled_pcm_cache_bytes: Some(240_000),
+                sampled_pcm_cache_read_millis: Some(4),
+                sampled_pcm_cache_write_millis: Some(5),
+                sampled_pcm_cache_saved_millis: Some(39),
+                audio_sidecar_mode: Some("sampled-pcm-cache".to_owned()),
+                audio_sidecar_fallback_reason: None,
                 streamed_bytes: 10_000,
                 streamed_samples: 5_000,
                 peak_frames: 12,
@@ -1106,6 +1130,34 @@ fn v3_diagnostics_serializes_stable_stream_metric_names() {
     assert_eq!(value["audioPacketWindowCompressedBytes"], 92_160);
     assert_eq!(value["audioPacketWindowCoalescedRangeBytes"], 98_304);
     assert_eq!(value["audioPacketReadSavingsEstimateBytes"], 925_696);
+    assert_eq!(
+        value["selectedSampledAudioSourceStrategy"],
+        "sampled-pcm-cache"
+    );
+    assert_eq!(
+        value["sourceStrategyDecisionReason"],
+        "explicit-sampled-pcm-cache"
+    );
+    assert_eq!(value["sourceStrategyFallbackCount"], 1);
+    assert_eq!(value["audioPacketMapCacheHit"], true);
+    assert_eq!(value["audioPacketMapBuildMillis"], 14);
+    assert_eq!(value["audioPacketMapPacketCount"], 1_234);
+    assert_eq!(value["audioPacketMapBytes"], 45_678);
+    assert_eq!(value["audioPacketMapComplete"], true);
+    assert_eq!(value["audioPacketWindowCount"], 5);
+    assert_eq!(value["audioPacketRanges"], 8);
+    assert_eq!(value["audioPacketRangeBytes"], 76_800);
+    assert_eq!(value["audioPacketCoalescedRangeBytes"], 80_000);
+    assert_eq!(value["audioPacketRangeReadMillis"], 6);
+    assert_eq!(value["audioPacketRangeReadOps"], 8);
+    assert!((value["audioPacketReadAmplificationVsPcm"].as_f64().unwrap() - 0.333).abs() < 0.001);
+    assert_eq!(value["audioPacketEstimatedSavingsVsCurrent"], 944_000);
+    assert_eq!(value["sampledPcmCacheHit"], true);
+    assert_eq!(value["sampledPcmCacheBytes"], 240_000);
+    assert_eq!(value["sampledPcmCacheReadMillis"], 4);
+    assert_eq!(value["sampledPcmCacheWriteMillis"], 5);
+    assert_eq!(value["sampledPcmCacheSavedMillis"], 39);
+    assert_eq!(value["audioSidecarMode"], "sampled-pcm-cache");
     assert_eq!(value["ffmpegProcessWallMillis"], 43);
     assert_eq!(value["ffmpegInputReadBytes"], 1_024_000);
     assert_eq!(value["ffmpegInputReadOps"], 64);

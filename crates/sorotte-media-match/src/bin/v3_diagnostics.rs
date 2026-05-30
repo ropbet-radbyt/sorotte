@@ -13,9 +13,10 @@ use sorotte_media_match::{
     MediaDenseAudioProfile, MediaMatchToolPaths, MediaMatchV3DiagnosticIndexMode,
     MediaMatchV3DiagnosticManifest, MediaMatchV3DiagnosticReport, MediaMatchV3DiagnosticRunOptions,
     MediaMatchV3ResolvedManifest, MediaMatchV3ResolvedManifestCase, MediaMatchV3RetrievalStrategy,
-    media_match_v3_diagnostic_manifest_from_json, media_match_v3_index_path,
-    media_match_v3_sqlite_size_report, open_media_match_v3_index, refresh_all_anchor_stats_v3,
-    resolve_media_match_v3_diagnostic_manifest, run_media_match_v3_diagnostic_manifest,
+    MediaSampledAudioSourceStrategy, media_match_v3_diagnostic_manifest_from_json,
+    media_match_v3_index_path, media_match_v3_sqlite_size_report, open_media_match_v3_index,
+    refresh_all_anchor_stats_v3, resolve_media_match_v3_diagnostic_manifest,
+    run_media_match_v3_diagnostic_manifest,
 };
 
 fn main() -> ExitCode {
@@ -61,6 +62,8 @@ fn run_cli_with_output(
         sampled_fast_per_removable_source_workers,
         adaptive_io_concurrency_enabled,
         probe_audio_packets,
+        sampled_audio_source,
+        sampled_pcm_cache_root,
         mode,
         selected_cases,
     } = parse_args(args)?;
@@ -187,6 +190,8 @@ fn run_cli_with_output(
             sampled_fast_per_removable_source_workers,
             adaptive_io_concurrency_enabled,
             probe_audio_packets,
+            sampled_audio_source,
+            sampled_pcm_cache_root,
             tools: tool_paths(),
             generated_at_unix_millis: None,
         },
@@ -251,6 +256,8 @@ struct CliArgs {
     sampled_fast_per_removable_source_workers: Option<usize>,
     adaptive_io_concurrency_enabled: bool,
     probe_audio_packets: bool,
+    sampled_audio_source: MediaSampledAudioSourceStrategy,
+    sampled_pcm_cache_root: Option<PathBuf>,
     mode: CliMode,
     selected_cases: Vec<String>,
 }
@@ -274,6 +281,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
     let mut sampled_fast_per_removable_source_workers = None;
     let mut adaptive_io_concurrency_enabled = false;
     let mut probe_audio_packets = false;
+    let mut sampled_audio_source = MediaSampledAudioSourceStrategy::Current;
+    let mut sampled_pcm_cache_root = None;
     let mut mode = CliMode::Run;
     let mut selected_cases = Vec::new();
     let mut args = args.into_iter();
@@ -360,6 +369,18 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
             "--probe-audio-packets" => {
                 probe_audio_packets = true;
             }
+            "--sampled-audio-source" => {
+                let Some(value) = args.next() else {
+                    return Err(usage());
+                };
+                sampled_audio_source = parse_sampled_audio_source_strategy(&value)?;
+            }
+            "--sampled-pcm-cache-root" => {
+                let Some(value) = args.next() else {
+                    return Err(usage());
+                };
+                sampled_pcm_cache_root = Some(PathBuf::from(value));
+            }
             "--list-cases" => {
                 if mode != CliMode::Run {
                     return Err(usage());
@@ -418,13 +439,15 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
         sampled_fast_per_removable_source_workers,
         adaptive_io_concurrency_enabled,
         probe_audio_packets,
+        sampled_audio_source,
+        sampled_pcm_cache_root,
         mode,
         selected_cases,
     })
 }
 
 fn usage() -> String {
-    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--index-mode full|sparse-full|sampled-fast|sampled-normal|sampled|sampled-then-full|production] [--dense-audio-profile dense-current|dense-realfft|dense-8k|dense-hop2048|dense-8k-hop2048|dense-8k-window1024-hop1024|dense-max-peaks-4|dense-pair-retain-16|dense-pair-retain-lower|dense-gated|dense-gated-v2|dense-fast-combined-candidate] [--retrieval-strategy auto|temp-table|bucket-fetch] [--sampled-fast-workers n] [--sampled-fast-local-workers n] [--sampled-fast-network-workers n] [--sampled-fast-removable-workers n] [--adaptive-io-concurrency] [--probe-audio-packets] [--bench-dense-audio-profiles] [--max-full-promotions n] [--promote-expected-candidates] [--retrieval-benchmark-only] [--list-cases|--validate-only|--prepare-index-stats|--cache-size-report] [--case name]"
+    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--index-mode full|sparse-full|sampled-fast|sampled-normal|sampled|sampled-then-full|production] [--dense-audio-profile dense-current|dense-realfft|dense-8k|dense-hop2048|dense-8k-hop2048|dense-8k-window1024-hop1024|dense-max-peaks-4|dense-pair-retain-16|dense-pair-retain-lower|dense-gated|dense-gated-v2|dense-fast-combined-candidate] [--retrieval-strategy auto|temp-table|bucket-fetch] [--sampled-fast-workers n] [--sampled-fast-local-workers n] [--sampled-fast-network-workers n] [--sampled-fast-removable-workers n] [--adaptive-io-concurrency] [--probe-audio-packets] [--sampled-audio-source current|ffprobe-probe|packet-map|sampled-pcm-cache|auto] [--sampled-pcm-cache-root dir] [--bench-dense-audio-profiles] [--max-full-promotions n] [--promote-expected-candidates] [--retrieval-benchmark-only] [--list-cases|--validate-only|--prepare-index-stats|--cache-size-report] [--case name]"
         .to_owned()
 }
 
@@ -452,6 +475,19 @@ fn parse_retrieval_strategy(value: &str) -> Result<MediaMatchV3RetrievalStrategy
         "auto" => Ok(MediaMatchV3RetrievalStrategy::Auto),
         "temp-table" => Ok(MediaMatchV3RetrievalStrategy::TempTable),
         "bucket-fetch" => Ok(MediaMatchV3RetrievalStrategy::BucketFetch),
+        _ => Err(usage()),
+    }
+}
+
+fn parse_sampled_audio_source_strategy(
+    value: &str,
+) -> Result<MediaSampledAudioSourceStrategy, String> {
+    match value {
+        "current" => Ok(MediaSampledAudioSourceStrategy::Current),
+        "ffprobe-probe" => Ok(MediaSampledAudioSourceStrategy::FfprobeProbe),
+        "packet-map" => Ok(MediaSampledAudioSourceStrategy::PacketMap),
+        "sampled-pcm-cache" => Ok(MediaSampledAudioSourceStrategy::SampledPcmCache),
+        "auto" => Ok(MediaSampledAudioSourceStrategy::Auto),
         _ => Err(usage()),
     }
 }
@@ -565,6 +601,8 @@ fn run_dense_audio_profile_benchmark(
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
                 probe_audio_packets: false,
+                sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
+                sampled_pcm_cache_root: None,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(generated_at_unix_millis),
             },
@@ -796,6 +834,10 @@ mod tests {
             "1".to_owned(),
             "--adaptive-io-concurrency".to_owned(),
             "--probe-audio-packets".to_owned(),
+            "--sampled-audio-source".to_owned(),
+            "sampled-pcm-cache".to_owned(),
+            "--sampled-pcm-cache-root".to_owned(),
+            "pcm-cache".to_owned(),
             "--case".to_owned(),
             "copied-synthetic".to_owned(),
         ])
@@ -828,6 +870,14 @@ mod tests {
         assert_eq!(args.sampled_fast_per_removable_source_workers, Some(1));
         assert!(args.adaptive_io_concurrency_enabled);
         assert!(args.probe_audio_packets);
+        assert_eq!(
+            args.sampled_audio_source,
+            MediaSampledAudioSourceStrategy::SampledPcmCache
+        );
+        assert_eq!(
+            args.sampled_pcm_cache_root,
+            Some(PathBuf::from("pcm-cache"))
+        );
         assert_eq!(args.selected_cases, vec!["copied-synthetic"]);
         assert_eq!(args.mode, CliMode::Run);
     }
@@ -1087,6 +1137,8 @@ mod tests {
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
                 probe_audio_packets: false,
+                sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
+                sampled_pcm_cache_root: None,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(123),
             },
@@ -1166,6 +1218,8 @@ mod tests {
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
                 probe_audio_packets: false,
+                sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
+                sampled_pcm_cache_root: None,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(124),
             },
@@ -1215,6 +1269,8 @@ mod tests {
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
                 probe_audio_packets: false,
+                sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
+                sampled_pcm_cache_root: None,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(125),
             },
@@ -1277,6 +1333,8 @@ mod tests {
                 sampled_fast_per_removable_source_workers: None,
                 adaptive_io_concurrency_enabled: false,
                 probe_audio_packets: false,
+                sampled_audio_source: MediaSampledAudioSourceStrategy::Current,
+                sampled_pcm_cache_root: None,
                 tools: tool_paths(),
                 generated_at_unix_millis: Some(126),
             },
@@ -1310,6 +1368,151 @@ mod tests {
         validate_media_match_v3_diagnostic_report(&duplicate_refresh_report)
             .expect("duplicate refresh report should validate");
         assert_report_self_compares(&duplicate_refresh_report);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[ignore = "requires ffmpeg/ffprobe in SOROTTE_MEDIA_MATCH_FFMPEG/SOROTTE_MEDIA_MATCH_FFPROBE or PATH"]
+    fn sampled_pcm_cache_warm_run_avoids_media_decode() {
+        let Some(ffmpeg) = test_tool_path("SOROTTE_MEDIA_MATCH_FFMPEG", "ffmpeg") else {
+            eprintln!("skipping ignored ffmpeg test: ffmpeg is not available");
+            return;
+        };
+        if test_tool_path("SOROTTE_MEDIA_MATCH_FFPROBE", "ffprobe").is_none() {
+            eprintln!("skipping ignored ffmpeg test: ffprobe is not available");
+            return;
+        }
+        let root = temp_dir("v3-diagnostics-sampled-pcm-cache");
+        let media_dir = root.join("media");
+        fs::create_dir_all(&media_dir).expect("media dir should be created");
+        let query = media_dir.join("query.wav");
+        let candidate = media_dir.join("candidate.wav");
+        generate_synthetic_audio(&ffmpeg, &query);
+        fs::copy(&query, &candidate).expect("candidate copy should succeed");
+        let manifest = serde_json::json!({
+            "profile": "audio-constellation-v3",
+            "baseDir": "media",
+            "cases": [{
+                "name": "sampled-pcm-cache",
+                "query": "query.wav",
+                "candidates": [{
+                    "path": "candidate.wav",
+                    "expectedRetrieved": true,
+                    "maxRetrievalRank": 1,
+                    "skipDecisionExpectation": true
+                }]
+            }]
+        });
+        let manifest = media_match_v3_diagnostic_manifest_from_json(&manifest.to_string())
+            .expect("manifest should parse");
+        let pcm_cache_root = root.join("sampled-pcm-cache");
+
+        let cold_report = run_media_match_v3_diagnostic_manifest(
+            &manifest,
+            MediaMatchV3DiagnosticRunOptions {
+                manifest_dir: root.clone(),
+                cache_root: root.join("cold-v3-cache"),
+                cache_retained: true,
+                refresh_cache: true,
+                index_mode: MediaMatchV3DiagnosticIndexMode::SampledFast,
+                dense_audio_profile: MediaDenseAudioProfile::DenseCurrent,
+                max_full_promotions_per_query: 1,
+                promote_expected_candidates: false,
+                retrieval_benchmark_only: false,
+                retrieval_strategy: MediaMatchV3RetrievalStrategy::Auto,
+                sampled_fast_global_workers: None,
+                sampled_fast_per_local_source_workers: None,
+                sampled_fast_per_network_source_workers: None,
+                sampled_fast_per_removable_source_workers: None,
+                adaptive_io_concurrency_enabled: false,
+                probe_audio_packets: false,
+                sampled_audio_source: MediaSampledAudioSourceStrategy::SampledPcmCache,
+                sampled_pcm_cache_root: Some(pcm_cache_root.clone()),
+                tools: tool_paths(),
+                generated_at_unix_millis: Some(223),
+            },
+        )
+        .expect("cold sampled PCM cache run should fill cache");
+        validate_media_match_v3_diagnostic_report(&cold_report)
+            .expect("cold sampled PCM report should validate");
+        assert_report_self_compares(&cold_report);
+        assert_eq!(cold_report.summary.failed, 0);
+        assert_eq!(
+            cold_report.cases[0].query.diagnostics.sampled_pcm_cache_hit,
+            Some(false)
+        );
+        assert_eq!(
+            cold_report.cases[0].candidates[0]
+                .diagnostics
+                .sampled_pcm_cache_hit,
+            Some(false)
+        );
+        assert!(
+            cold_report.cases[0]
+                .query
+                .diagnostics
+                .sampled_pcm_cache_bytes
+                .unwrap_or_default()
+                > 0
+        );
+
+        let warm_report = run_media_match_v3_diagnostic_manifest(
+            &manifest,
+            MediaMatchV3DiagnosticRunOptions {
+                manifest_dir: root.clone(),
+                cache_root: root.join("warm-v3-cache"),
+                cache_retained: true,
+                refresh_cache: true,
+                index_mode: MediaMatchV3DiagnosticIndexMode::SampledFast,
+                dense_audio_profile: MediaDenseAudioProfile::DenseCurrent,
+                max_full_promotions_per_query: 1,
+                promote_expected_candidates: false,
+                retrieval_benchmark_only: false,
+                retrieval_strategy: MediaMatchV3RetrievalStrategy::Auto,
+                sampled_fast_global_workers: None,
+                sampled_fast_per_local_source_workers: None,
+                sampled_fast_per_network_source_workers: None,
+                sampled_fast_per_removable_source_workers: None,
+                adaptive_io_concurrency_enabled: false,
+                probe_audio_packets: false,
+                sampled_audio_source: MediaSampledAudioSourceStrategy::SampledPcmCache,
+                sampled_pcm_cache_root: Some(pcm_cache_root),
+                tools: tool_paths(),
+                generated_at_unix_millis: Some(224),
+            },
+        )
+        .expect("warm sampled PCM cache run should reuse cache");
+        validate_media_match_v3_diagnostic_report(&warm_report)
+            .expect("warm sampled PCM report should validate");
+        assert_report_self_compares(&warm_report);
+        assert_eq!(warm_report.summary.failed, 0);
+        assert_eq!(
+            warm_report.cases[0].query.diagnostics.sampled_pcm_cache_hit,
+            Some(true)
+        );
+        assert_eq!(
+            warm_report.cases[0].candidates[0]
+                .diagnostics
+                .sampled_pcm_cache_hit,
+            Some(true)
+        );
+        assert_eq!(
+            warm_report.cases[0]
+                .query
+                .diagnostics
+                .ffmpeg_invocation_count,
+            Some(0)
+        );
+        assert_eq!(
+            warm_report.cases[0].candidates[0]
+                .diagnostics
+                .ffmpeg_invocation_count,
+            Some(0)
+        );
+        assert_eq!(
+            warm_report.cases[0].candidates[0].retrieval_rank,
+            cold_report.cases[0].candidates[0].retrieval_rank
+        );
         let _ = fs::remove_dir_all(root);
     }
 

@@ -12,7 +12,7 @@ use crate::{
     identity::duration_seconds_to_millis,
 };
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaMatchV3DiagnosticSummary {
     pub file_path: Option<String>,
@@ -71,6 +71,30 @@ pub struct MediaMatchV3DiagnosticSummary {
     pub audio_packet_window_compressed_bytes: Option<u64>,
     pub audio_packet_window_coalesced_range_bytes: Option<u64>,
     pub audio_packet_read_savings_estimate_bytes: Option<i64>,
+    pub selected_sampled_audio_source_strategy: Option<String>,
+    pub source_strategy_decision_reason: Option<String>,
+    pub source_strategy_fallback_count: Option<u32>,
+    pub audio_packet_map_cache_hit: Option<bool>,
+    pub audio_packet_map_build_millis: Option<u128>,
+    pub audio_packet_map_packet_count: Option<usize>,
+    pub audio_packet_map_bytes: Option<u64>,
+    pub audio_packet_map_complete: Option<bool>,
+    pub audio_packet_map_fallback_reason: Option<String>,
+    pub audio_packet_window_count: Option<usize>,
+    pub audio_packet_ranges: Option<usize>,
+    pub audio_packet_range_bytes: Option<u64>,
+    pub audio_packet_coalesced_range_bytes: Option<u64>,
+    pub audio_packet_range_read_millis: Option<u128>,
+    pub audio_packet_range_read_ops: Option<u64>,
+    pub audio_packet_read_amplification_vs_pcm: Option<f64>,
+    pub audio_packet_estimated_savings_vs_current: Option<i64>,
+    pub sampled_pcm_cache_hit: Option<bool>,
+    pub sampled_pcm_cache_bytes: Option<u64>,
+    pub sampled_pcm_cache_read_millis: Option<u128>,
+    pub sampled_pcm_cache_write_millis: Option<u128>,
+    pub sampled_pcm_cache_saved_millis: Option<i64>,
+    pub audio_sidecar_mode: Option<String>,
+    pub audio_sidecar_fallback_reason: Option<String>,
     pub streamed_bytes: Option<usize>,
     pub streamed_samples: Option<usize>,
     pub peak_frames: Option<usize>,
@@ -339,6 +363,46 @@ fn summarize_record_v3_diagnostics_with_report(
             .and_then(|stream| stream.audio_packet_window_coalesced_range_bytes),
         audio_packet_read_savings_estimate_bytes: audio_stream
             .and_then(|stream| stream.audio_packet_read_savings_estimate_bytes),
+        selected_sampled_audio_source_strategy: audio_stream
+            .and_then(|stream| stream.selected_sampled_audio_source_strategy.clone()),
+        source_strategy_decision_reason: audio_stream
+            .and_then(|stream| stream.source_strategy_decision_reason.clone()),
+        source_strategy_fallback_count: audio_stream
+            .map(|stream| stream.source_strategy_fallback_count),
+        audio_packet_map_cache_hit: audio_stream
+            .and_then(|stream| stream.audio_packet_map_cache_hit),
+        audio_packet_map_build_millis: audio_stream
+            .and_then(|stream| stream.audio_packet_map_build_millis),
+        audio_packet_map_packet_count: audio_stream
+            .and_then(|stream| stream.audio_packet_map_packet_count),
+        audio_packet_map_bytes: audio_stream.and_then(|stream| stream.audio_packet_map_bytes),
+        audio_packet_map_complete: audio_stream.and_then(|stream| stream.audio_packet_map_complete),
+        audio_packet_map_fallback_reason: audio_stream
+            .and_then(|stream| stream.audio_packet_map_fallback_reason.clone()),
+        audio_packet_window_count: audio_stream.and_then(|stream| stream.audio_packet_window_count),
+        audio_packet_ranges: audio_stream.and_then(|stream| stream.audio_packet_ranges),
+        audio_packet_range_bytes: audio_stream.and_then(|stream| stream.audio_packet_range_bytes),
+        audio_packet_coalesced_range_bytes: audio_stream
+            .and_then(|stream| stream.audio_packet_coalesced_range_bytes),
+        audio_packet_range_read_millis: audio_stream
+            .and_then(|stream| stream.audio_packet_range_read_millis),
+        audio_packet_range_read_ops: audio_stream
+            .and_then(|stream| stream.audio_packet_range_read_ops),
+        audio_packet_read_amplification_vs_pcm: audio_stream
+            .and_then(|stream| stream.audio_packet_read_amplification_vs_pcm),
+        audio_packet_estimated_savings_vs_current: audio_stream
+            .and_then(|stream| stream.audio_packet_estimated_savings_vs_current),
+        sampled_pcm_cache_hit: audio_stream.and_then(|stream| stream.sampled_pcm_cache_hit),
+        sampled_pcm_cache_bytes: audio_stream.and_then(|stream| stream.sampled_pcm_cache_bytes),
+        sampled_pcm_cache_read_millis: audio_stream
+            .and_then(|stream| stream.sampled_pcm_cache_read_millis),
+        sampled_pcm_cache_write_millis: audio_stream
+            .and_then(|stream| stream.sampled_pcm_cache_write_millis),
+        sampled_pcm_cache_saved_millis: audio_stream
+            .and_then(|stream| stream.sampled_pcm_cache_saved_millis),
+        audio_sidecar_mode: audio_stream.and_then(|stream| stream.audio_sidecar_mode.clone()),
+        audio_sidecar_fallback_reason: audio_stream
+            .and_then(|stream| stream.audio_sidecar_fallback_reason.clone()),
         streamed_bytes: audio_stream.map(|stream| stream.streamed_bytes),
         streamed_samples: audio_stream.map(|stream| stream.streamed_samples),
         peak_frames: audio_stream.map(|stream| stream.peak_frames),
@@ -483,6 +547,30 @@ pub fn summarize_decision_v3_diagnostics(
         audio_packet_window_compressed_bytes: None,
         audio_packet_window_coalesced_range_bytes: None,
         audio_packet_read_savings_estimate_bytes: None,
+        selected_sampled_audio_source_strategy: None,
+        source_strategy_decision_reason: None,
+        source_strategy_fallback_count: None,
+        audio_packet_map_cache_hit: None,
+        audio_packet_map_build_millis: None,
+        audio_packet_map_packet_count: None,
+        audio_packet_map_bytes: None,
+        audio_packet_map_complete: None,
+        audio_packet_map_fallback_reason: None,
+        audio_packet_window_count: None,
+        audio_packet_ranges: None,
+        audio_packet_range_bytes: None,
+        audio_packet_coalesced_range_bytes: None,
+        audio_packet_range_read_millis: None,
+        audio_packet_range_read_ops: None,
+        audio_packet_read_amplification_vs_pcm: None,
+        audio_packet_estimated_savings_vs_current: None,
+        sampled_pcm_cache_hit: None,
+        sampled_pcm_cache_bytes: None,
+        sampled_pcm_cache_read_millis: None,
+        sampled_pcm_cache_write_millis: None,
+        sampled_pcm_cache_saved_millis: None,
+        audio_sidecar_mode: None,
+        audio_sidecar_fallback_reason: None,
         streamed_bytes: None,
         streamed_samples: None,
         peak_frames: None,

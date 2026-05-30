@@ -2677,6 +2677,7 @@ mod tests {
             full_audio_seconds_decoded: None,
             effective_decoded_seconds_per_second: None,
             notes: Vec::new(),
+            ..MediaMatchV3DiagnosticSummary::default()
         }
     }
 

@@ -391,6 +391,26 @@ The probe uses `ffprobe -select_streams a:0 -show_packets` and reports
 explicit cold-index experiments because packet probing can add another full
 container scan on some formats.
 
+The sampled extraction source can also be selected explicitly:
+
+```powershell
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --sampled-audio-source current --output reports/audio-current.json --cache-root .media-match-v3-cache-audio --refresh-cache
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --sampled-audio-source sampled-pcm-cache --sampled-pcm-cache-root .media-match-v3-pcm-cache --output reports/audio-pcm-cache.json --cache-root .media-match-v3-cache-audio --refresh-cache
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --sampled-audio-source packet-map --sampled-pcm-cache-root .media-match-v3-pcm-cache --output reports/audio-packet-map.json --cache-root .media-match-v3-cache-audio --refresh-cache
+```
+
+`current` is the safe ffmpeg path and remains the default. `sampled-pcm-cache`
+uses the current ffmpeg path on a miss, stores the exact sampled PCM windows in
+a local cache, and reads that PCM directly on later runs. Its cache key includes
+normalized path, mtime, size, sampled window schedule, decode settings, index
+mode, and fingerprint config hash. `auto` is conservative: with a PCM cache root
+it can use a valid sampled PCM cache, otherwise it falls back to current ffmpeg.
+`ffprobe-probe` and `packet-map` are feasibility modes. They build a structured
+`AudioPacketMapV3` from ffprobe packet JSON and cache it when
+`--sampled-pcm-cache-root` is supplied. This is intentionally not the production
+packet-map builder yet; ffprobe can read too much source data and should be used
+to measure whether a libavformat or Matroska parser path is worth enabling.
+
 For MKV/Matroska files, usable packet `pos` and `size` values are the first
 gate for direct audio range reads. A promising file set should show complete,
 monotonic packet positions and a coalesced sampled-window byte count far below
@@ -398,15 +418,17 @@ the current ffmpeg input read bytes. If positions are absent, non-monotonic, or
 the probe cost is similar to the current extractor, direct packet reads should
 remain disabled and the safe ffmpeg path should stay in use.
 
-Audio-sidecar and direct packet-range extraction remain experimental strategy
-ideas, not production defaults. A sidecar path would stream-copy `0:a:0` to a
-local audio-only cache and decode sampled windows from that cache; it must be
-keyed by normalized path, mtime, size, selected stream, and fingerprint config
-hash. Direct packet-range extraction must fail closed and fall back to ffmpeg
-unless the container metadata proves the sampled-window audio packets can be
-read and decoded safely. Neither strategy changes sampled-only match policy:
-sampled-fast records remain retrieval/Probable evidence and are never
-autoplay-eligible without dense full verification.
+`packet-map` range reads are currently feasibility-only: the runner computes
+sampled-window packet ranges, coalesces nearby ranges, reads those byte ranges
+from the source file, and reports `audioPacketRanges`,
+`audioPacketRangeBytes`, `audioPacketCoalescedRangeBytes`,
+`audioPacketRangeReadMillis`, `audioPacketRangeReadOps`, and fallback reason.
+It still falls back to current ffmpeg for actual sampled PCM decode. Direct
+packet-range decode or compressed audio sidecars must fail closed and fall back
+to ffmpeg unless the container metadata proves the sampled-window audio packets
+can be read and decoded safely. None of these strategies changes sampled-only
+match policy: sampled-fast records remain retrieval/Probable evidence and are
+never autoplay-eligible without dense full verification.
 
 Sampled-fast workers can now be capped globally and per source:
 
@@ -426,9 +448,9 @@ Local staging remains an experiment, not the default production path. Benchmark
 current no-staging behavior first, then compare a staging prototype only for the
 slow source set. Full-file staging may help when remote random seeks dominate,
 but it can lose badly when copying the whole file is more expensive than the
-three sampled reads. A future sampled-PCM cache should be keyed by normalized
-path, mtime, size, sampled window schedule, and ffmpeg decode settings so tuning
-runs can avoid rereading remote media without changing fingerprint output.
+three sampled reads. The sampled-PCM cache is now the safe repeated-run path for
+diagnostics and development because it avoids rereading remote media without
+changing fingerprint output.
 
 For network libraries, the long-term path is source-local indexing. Preferred
 formats are either sidecar fingerprints next to media files or an exported V3

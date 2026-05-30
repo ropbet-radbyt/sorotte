@@ -1,7 +1,8 @@
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fmt;
-use std::io::Read;
+use std::fs;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -18,6 +19,9 @@ use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
 use crate::{
     AudioAnchor, MEDIA_MATCH_ALGORITHM_VERSION,
     anchors::{
@@ -31,7 +35,7 @@ use crate::{
     identity::{container_fingerprint_from_metadata, normalize_media_path},
     settings::{
         MediaAudioIndexMode, MediaDenseAudioProfile, MediaExtractionSettings,
-        MediaFingerprintProfile,
+        MediaFingerprintProfile, MediaSampledAudioSourceStrategy, media_extraction_settings_hash,
     },
     tuning::{
         FFMPEG_AUDIO_V3_TIMEOUT, FFMPEG_FULL_VIDEO_TIMEOUT, FFPROBE_TIMEOUT,
@@ -82,6 +86,51 @@ pub struct MediaToolStreamingOutput {
     pub stdout_bytes: u64,
     pub process_io: MediaToolProcessIoMetrics,
     pub exit_millis: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioPacketMapV3 {
+    pub source_identity: MediaFileIdentity,
+    pub container_format: String,
+    pub audio_stream_index: u32,
+    pub audio_codec: String,
+    pub time_base_num: i32,
+    pub time_base_den: i32,
+    pub packets: Vec<AudioPacketPositionV3>,
+    pub complete: bool,
+}
+
+impl AudioPacketMapV3 {
+    pub fn valid_for(
+        &self,
+        normalized_path: &str,
+        modified_unix_millis: u64,
+        size_bytes: u64,
+        audio_stream_index: u32,
+        container_format: &str,
+        audio_codec: &str,
+    ) -> bool {
+        self.source_identity
+            .valid_for(normalized_path, modified_unix_millis, size_bytes)
+            && self.audio_stream_index == audio_stream_index
+            && self.container_format == container_format
+            && self.audio_codec == audio_codec
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioPacketPositionV3 {
+    pub pts_ms: i64,
+    pub duration_ms: i64,
+    pub file_pos: u64,
+    pub size_bytes: u32,
+    pub key: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct MediaFingerprintExtractionOptions {
+    pub sampled_audio_source: MediaSampledAudioSourceStrategy,
+    pub sampled_pcm_cache_root: Option<PathBuf>,
 }
 
 pub fn media_source_path_info(path: impl AsRef<Path>) -> MediaSourcePathInfo {
@@ -156,7 +205,7 @@ pub struct MediaExtractionTimings {
     pub total_millis: u128,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct MediaAudioStreamMetrics {
     pub source_path_root: Option<String>,
     pub source_path_kind: Option<String>,
@@ -182,6 +231,30 @@ pub struct MediaAudioStreamMetrics {
     pub audio_packet_window_compressed_bytes: Option<u64>,
     pub audio_packet_window_coalesced_range_bytes: Option<u64>,
     pub audio_packet_read_savings_estimate_bytes: Option<i64>,
+    pub selected_sampled_audio_source_strategy: Option<String>,
+    pub source_strategy_decision_reason: Option<String>,
+    pub source_strategy_fallback_count: u32,
+    pub audio_packet_map_cache_hit: Option<bool>,
+    pub audio_packet_map_build_millis: Option<u128>,
+    pub audio_packet_map_packet_count: Option<usize>,
+    pub audio_packet_map_bytes: Option<u64>,
+    pub audio_packet_map_complete: Option<bool>,
+    pub audio_packet_map_fallback_reason: Option<String>,
+    pub audio_packet_window_count: Option<usize>,
+    pub audio_packet_ranges: Option<usize>,
+    pub audio_packet_range_bytes: Option<u64>,
+    pub audio_packet_coalesced_range_bytes: Option<u64>,
+    pub audio_packet_range_read_millis: Option<u128>,
+    pub audio_packet_range_read_ops: Option<u64>,
+    pub audio_packet_read_amplification_vs_pcm: Option<f64>,
+    pub audio_packet_estimated_savings_vs_current: Option<i64>,
+    pub sampled_pcm_cache_hit: Option<bool>,
+    pub sampled_pcm_cache_bytes: Option<u64>,
+    pub sampled_pcm_cache_read_millis: Option<u128>,
+    pub sampled_pcm_cache_write_millis: Option<u128>,
+    pub sampled_pcm_cache_saved_millis: Option<i64>,
+    pub audio_sidecar_mode: Option<String>,
+    pub audio_sidecar_fallback_reason: Option<String>,
     pub streamed_bytes: usize,
     pub streamed_samples: usize,
     pub peak_frames: usize,
@@ -230,7 +303,7 @@ pub struct MediaAudioStreamMetrics {
     pub full_audio_seconds_decoded: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct MediaFingerprintExtractionReport {
     pub invocations: MediaToolInvocationCounts,
     pub timings: MediaExtractionTimings,
@@ -360,6 +433,22 @@ pub fn fingerprint_media_file_with_report(
     extraction_settings: &MediaExtractionSettings,
     cancel_flag: Option<&AtomicBool>,
 ) -> Result<InstrumentedMediaFingerprint, MediaFingerprintError> {
+    fingerprint_media_file_with_report_and_options(
+        path,
+        tools,
+        extraction_settings,
+        cancel_flag,
+        &MediaFingerprintExtractionOptions::default(),
+    )
+}
+
+pub fn fingerprint_media_file_with_report_and_options(
+    path: impl AsRef<Path>,
+    tools: &MediaMatchToolPaths,
+    extraction_settings: &MediaExtractionSettings,
+    cancel_flag: Option<&AtomicBool>,
+    options: &MediaFingerprintExtractionOptions,
+) -> Result<InstrumentedMediaFingerprint, MediaFingerprintError> {
     let total_started_at = Instant::now();
     let path = path.as_ref();
     let metadata =
@@ -375,6 +464,11 @@ pub fn fingerprint_media_file_with_report(
         .unwrap_or(0);
     let size_bytes = metadata.len();
     let normalized_path = normalize_media_path(path);
+    let source_identity = MediaFileIdentity {
+        normalized_path: normalized_path.clone(),
+        modified_unix_millis,
+        size_bytes,
+    };
     let mut report = MediaFingerprintExtractionReport::default();
     let started_at = Instant::now();
     let duration_seconds = probe_media_duration_seconds(&tools.ffprobe, path)?;
@@ -403,11 +497,17 @@ pub fn fingerprint_media_file_with_report(
             cancel_flag,
         ),
         MediaAudioIndexMode::SampledFast | MediaAudioIndexMode::SampledNormal => {
-            extract_audio_constellation_v3_sampled_index_with_metrics(
+            extract_audio_constellation_v3_sampled_index_with_metrics_and_options(
                 &tools.ffmpeg,
                 path,
                 duration_seconds,
                 extraction_settings.audio_index_mode,
+                SampledAudioExtractionContext {
+                    source_identity: &source_identity,
+                    settings_hash: media_extraction_settings_hash(extraction_settings),
+                    options,
+                    ffprobe: Some(tools.ffprobe.as_path()),
+                },
                 cancel_flag,
             )
         }
@@ -704,11 +804,20 @@ fn update_atomic_max_usize(target: &AtomicUsize, value: usize) {
     }
 }
 
-pub(crate) fn extract_audio_constellation_v3_sampled_index_with_metrics(
+#[derive(Clone, Copy)]
+struct SampledAudioExtractionContext<'a> {
+    source_identity: &'a MediaFileIdentity,
+    settings_hash: [u8; 32],
+    options: &'a MediaFingerprintExtractionOptions,
+    ffprobe: Option<&'a Path>,
+}
+
+fn extract_audio_constellation_v3_sampled_index_with_metrics_and_options(
     ffmpeg: impl AsRef<Path>,
     media_path: impl AsRef<Path>,
     duration_seconds: Option<f64>,
     index_mode: MediaAudioIndexMode,
+    context: SampledAudioExtractionContext<'_>,
     cancel_flag: Option<&AtomicBool>,
 ) -> Result<(Vec<AudioLandmarkV3>, MediaAudioStreamMetrics), MediaFingerprintError> {
     let config = sampled_audio_index_config(index_mode);
@@ -730,6 +839,51 @@ pub(crate) fn extract_audio_constellation_v3_sampled_index_with_metrics(
     combined_metrics.source_path_kind = Some(source_info.kind);
     combined_metrics.source_volume_id = source_info.volume_id;
     mark_audio_only_ffmpeg_command(&mut combined_metrics);
+    combined_metrics.selected_sampled_audio_source_strategy =
+        Some(context.options.sampled_audio_source.label().to_owned());
+    combined_metrics.source_strategy_decision_reason = Some(
+        match context.options.sampled_audio_source {
+            MediaSampledAudioSourceStrategy::Current => "explicit-current",
+            MediaSampledAudioSourceStrategy::FfprobeProbe => "explicit-ffprobe-probe",
+            MediaSampledAudioSourceStrategy::PacketMap => "explicit-packet-map-feasibility",
+            MediaSampledAudioSourceStrategy::SampledPcmCache => "explicit-sampled-pcm-cache",
+            MediaSampledAudioSourceStrategy::Auto => "auto-safe-current-with-cache-probe",
+        }
+        .to_owned(),
+    );
+
+    maybe_attach_packet_map_feasibility(
+        media_path.as_ref(),
+        &mut combined_metrics,
+        &windows,
+        context,
+    );
+
+    if let Some((landmarks, metrics)) = try_sampled_pcm_cache_read(
+        media_path.as_ref(),
+        duration_seconds,
+        index_mode,
+        config,
+        &windows,
+        context,
+        &combined_metrics,
+    )? {
+        return Ok((landmarks, metrics));
+    }
+
+    if sampled_pcm_cache_enabled(context) {
+        return extract_sampled_index_with_pcm_cache_fill(
+            ffmpeg,
+            media_path,
+            duration_seconds,
+            index_mode,
+            config,
+            context,
+            combined_metrics,
+            cancel_flag,
+        );
+    }
+
     let mut process_wall_millis = 0u128;
     let mut body_regions = BTreeSet::new();
     let mut unique_hashes = BTreeSet::new();
@@ -863,6 +1017,784 @@ pub(crate) fn extract_audio_constellation_v3_sampled_index_with_metrics(
         });
     }
     Ok((bounded, combined_metrics))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SampledPcmCacheManifest {
+    source_identity: MediaFileIdentity,
+    settings_hash: String,
+    audio_index_mode: MediaAudioIndexMode,
+    sample_rate: u32,
+    windows: Vec<SampledPcmCacheWindow>,
+    pcm_file: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SampledPcmCacheWindow {
+    start_ms: u32,
+    seconds: u32,
+    byte_offset: u64,
+    byte_len: u64,
+}
+
+fn sampled_pcm_cache_enabled(context: SampledAudioExtractionContext<'_>) -> bool {
+    context.options.sampled_pcm_cache_root.is_some()
+        && matches!(
+            context.options.sampled_audio_source,
+            MediaSampledAudioSourceStrategy::SampledPcmCache
+                | MediaSampledAudioSourceStrategy::Auto
+        )
+}
+
+fn sampled_audio_cache_key(
+    source_identity: &MediaFileIdentity,
+    settings_hash: [u8; 32],
+    index_mode: MediaAudioIndexMode,
+    config: SampledAudioIndexConfig,
+    windows: &[(f64, u32)],
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(source_identity.normalized_path.as_bytes());
+    hasher.update(source_identity.modified_unix_millis.to_le_bytes());
+    hasher.update(source_identity.size_bytes.to_le_bytes());
+    hasher.update(settings_hash);
+    hasher.update(index_mode.label().as_bytes());
+    hasher.update(config.sample_rate.to_le_bytes());
+    hasher.update(config.window_seconds.to_le_bytes());
+    hasher.update((windows.len() as u64).to_le_bytes());
+    for (start, seconds) in windows {
+        hasher.update(start.to_le_bytes());
+        hasher.update(seconds.to_le_bytes());
+    }
+    lower_hex(&hasher.finalize())
+}
+
+fn sampled_pcm_cache_paths(
+    context: SampledAudioExtractionContext<'_>,
+    index_mode: MediaAudioIndexMode,
+    config: SampledAudioIndexConfig,
+    windows: &[(f64, u32)],
+) -> Option<(PathBuf, PathBuf, String)> {
+    let root = context.options.sampled_pcm_cache_root.as_ref()?;
+    let key = sampled_audio_cache_key(
+        context.source_identity,
+        context.settings_hash,
+        index_mode,
+        config,
+        windows,
+    );
+    let dir = root.join("sampled-pcm-v3");
+    Some((
+        dir.join(format!("{key}.json")),
+        dir.join(format!("{key}.s16le")),
+        key,
+    ))
+}
+
+fn try_sampled_pcm_cache_read(
+    media_path: &Path,
+    duration_seconds: Option<f64>,
+    index_mode: MediaAudioIndexMode,
+    config: SampledAudioIndexConfig,
+    windows: &[(f64, u32)],
+    context: SampledAudioExtractionContext<'_>,
+    base_metrics: &MediaAudioStreamMetrics,
+) -> Result<Option<(Vec<AudioLandmarkV3>, MediaAudioStreamMetrics)>, MediaFingerprintError> {
+    if !sampled_pcm_cache_enabled(context) {
+        return Ok(None);
+    }
+    let Some((manifest_path, pcm_path, _key)) =
+        sampled_pcm_cache_paths(context, index_mode, config, windows)
+    else {
+        return Ok(None);
+    };
+    if !manifest_path.is_file() || !pcm_path.is_file() {
+        return Ok(None);
+    }
+    let read_started_at = Instant::now();
+    let manifest_bytes =
+        fs::read(&manifest_path).map_err(|error| MediaFingerprintError::FileMetadata {
+            path: manifest_path.display().to_string(),
+            error: error.to_string(),
+        })?;
+    let manifest: SampledPcmCacheManifest =
+        serde_json::from_slice(&manifest_bytes).map_err(|error| {
+            MediaFingerprintError::InvalidToolOutput {
+                tool: "sampled-pcm-cache",
+                reason: format!("failed parsing sampled PCM cache manifest: {error}"),
+            }
+        })?;
+    let settings_hash = lower_hex(&context.settings_hash);
+    if !manifest.source_identity.valid_for(
+        &context.source_identity.normalized_path,
+        context.source_identity.modified_unix_millis,
+        context.source_identity.size_bytes,
+    ) || manifest.settings_hash != settings_hash
+        || manifest.audio_index_mode != index_mode
+        || manifest.sample_rate != config.sample_rate
+    {
+        return Ok(None);
+    }
+    let pcm = fs::read(&pcm_path).map_err(|error| MediaFingerprintError::FileMetadata {
+        path: pcm_path.display().to_string(),
+        error: error.to_string(),
+    })?;
+    let read_millis = read_started_at.elapsed().as_millis();
+    let (landmarks, mut metrics) = analyze_sampled_pcm_cache_windows(
+        &pcm,
+        &manifest.windows,
+        config,
+        duration_seconds,
+        base_metrics.clone(),
+    )?;
+    metrics.selected_sampled_audio_source_strategy = Some("sampled-pcm-cache".to_owned());
+    metrics.source_strategy_decision_reason = Some(
+        if context.options.sampled_audio_source == MediaSampledAudioSourceStrategy::Auto {
+            "auto-cache-hit"
+        } else {
+            "explicit-cache-hit"
+        }
+        .to_owned(),
+    );
+    metrics.sampled_pcm_cache_hit = Some(true);
+    metrics.sampled_pcm_cache_bytes = Some(pcm.len() as u64);
+    metrics.sampled_pcm_cache_read_millis = Some(read_millis);
+    metrics.sampled_pcm_cache_saved_millis = Some(0);
+    metrics.audio_sidecar_mode = Some("sampled-pcm-cache".to_owned());
+    let _ = media_path;
+    Ok(Some((landmarks, metrics)))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn extract_sampled_index_with_pcm_cache_fill(
+    ffmpeg: impl AsRef<Path>,
+    media_path: impl AsRef<Path>,
+    duration_seconds: Option<f64>,
+    index_mode: MediaAudioIndexMode,
+    config: SampledAudioIndexConfig,
+    context: SampledAudioExtractionContext<'_>,
+    mut combined_metrics: MediaAudioStreamMetrics,
+    cancel_flag: Option<&AtomicBool>,
+) -> Result<(Vec<AudioLandmarkV3>, MediaAudioStreamMetrics), MediaFingerprintError> {
+    let windows = sampled_audio_windows_v3(duration_seconds, config);
+    let mut all_landmarks = Vec::new();
+    let mut body_regions = BTreeSet::new();
+    let mut unique_hashes = BTreeSet::new();
+    let mut process_wall_millis = 0u128;
+    let mut pcm_bytes = Vec::<u8>::new();
+    let mut manifest_windows = Vec::<SampledPcmCacheWindow>::new();
+    for (window_index, (start_seconds, window_seconds)) in windows.iter().copied().enumerate() {
+        let (window_pcm, streaming_output, window_wall) = decode_sampled_window_pcm_bytes(
+            ffmpeg.as_ref(),
+            media_path.as_ref(),
+            start_seconds,
+            window_seconds,
+            config.sample_rate,
+            cancel_flag,
+        )?;
+        let byte_offset = pcm_bytes.len() as u64;
+        let byte_len = window_pcm.len() as u64;
+        pcm_bytes.extend_from_slice(&window_pcm);
+        manifest_windows.push(SampledPcmCacheWindow {
+            start_ms: seconds_to_u32_millis(start_seconds),
+            seconds: window_seconds,
+            byte_offset,
+            byte_len,
+        });
+        process_wall_millis = process_wall_millis.saturating_add(window_wall);
+        combined_metrics.ffmpeg_invocation_count += 1;
+        combined_metrics.ffmpeg_output_pcm_bytes = combined_metrics
+            .ffmpeg_output_pcm_bytes
+            .saturating_add(streaming_output.stdout_bytes);
+        combined_metrics.ffmpeg_input_read_bytes = sum_optional_u64(
+            combined_metrics.ffmpeg_input_read_bytes,
+            streaming_output.process_io.read_bytes,
+        );
+        combined_metrics.ffmpeg_input_read_ops = sum_optional_u64(
+            combined_metrics.ffmpeg_input_read_ops,
+            streaming_output.process_io.read_ops,
+        );
+        combined_metrics.sampled_window_decode_millis = combined_metrics
+            .sampled_window_decode_millis
+            .saturating_add(window_wall);
+        combined_metrics.ffmpeg_exit_millis = combined_metrics
+            .ffmpeg_exit_millis
+            .saturating_add(streaming_output.exit_millis);
+        let (mut landmarks, metrics) =
+            analyze_sampled_window_pcm_bytes(&window_pcm, window_seconds, config.sample_rate)?;
+        let start_ms = seconds_to_u32_millis(start_seconds);
+        for landmark in &mut landmarks {
+            landmark.t_ms = landmark.t_ms.saturating_add(start_ms);
+        }
+        for landmark in &landmarks {
+            body_regions.insert(landmark.t_ms / 60_000);
+            unique_hashes.insert(landmark.hash);
+        }
+        all_landmarks.extend(landmarks);
+        merge_audio_stream_metrics(&mut combined_metrics, &metrics);
+        combined_metrics.sampled_audio_seconds_decoded = combined_metrics
+            .sampled_audio_seconds_decoded
+            .saturating_add(window_seconds);
+        combined_metrics.sampled_audio_windows_decoded += 1;
+        let windows_decoded = window_index + 1;
+        if windows_decoded >= config.min_windows
+            && all_landmarks.len() >= config.target_landmarks
+            && body_regions.len() >= config.min_body_regions
+            && unique_hashes.len() >= config.target_landmarks.saturating_mul(3) / 4
+        {
+            break;
+        }
+    }
+
+    let selection_started_at = Instant::now();
+    let mut bounded = all_landmarks;
+    let raw_before_bounding = bounded.len();
+    bounded = bounded_time_distributed_audio_landmarks_v3_for_duration(
+        &mut bounded,
+        config.max_landmarks,
+        duration_seconds,
+    );
+    combined_metrics.final_selection_millis = combined_metrics
+        .final_selection_millis
+        .saturating_add(selection_started_at.elapsed().as_millis());
+    combined_metrics.final_landmarks = bounded.len();
+    combined_metrics.raw_landmarks_before_bounding = raw_before_bounding;
+    combined_metrics.ffmpeg_process_wall_millis = process_wall_millis;
+    combined_metrics.pcm_decode_drain_millis = process_wall_millis;
+    combined_metrics.ffmpeg_decode_stream_millis = process_wall_millis;
+    combined_metrics.sampled_pcm_cache_hit = Some(false);
+    combined_metrics.sampled_pcm_cache_bytes = Some(pcm_bytes.len() as u64);
+    combined_metrics.audio_sidecar_mode = Some("sampled-pcm-cache".to_owned());
+    write_sampled_pcm_cache(
+        context,
+        index_mode,
+        config,
+        &windows,
+        &manifest_windows,
+        &pcm_bytes,
+        &mut combined_metrics,
+    )?;
+    if bounded.is_empty() {
+        return Err(MediaFingerprintError::InvalidToolOutput {
+            tool: "ffmpeg",
+            reason: "sampled decoded audio did not produce constellation landmarks".to_owned(),
+        });
+    }
+    Ok((bounded, combined_metrics))
+}
+
+fn decode_sampled_window_pcm_bytes(
+    ffmpeg: &Path,
+    media_path: &Path,
+    start_seconds: f64,
+    window_seconds: u32,
+    sample_rate: u32,
+    cancel_flag: Option<&AtomicBool>,
+) -> Result<(Vec<u8>, MediaToolStreamingOutput, u128), MediaFingerprintError> {
+    let started_at = Instant::now();
+    let pcm = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let pcm_writer = Arc::clone(&pcm);
+    let streaming_output = run_tool_streaming_stdout(
+        "ffmpeg",
+        ffmpeg,
+        [
+            "-v".into(),
+            "error".into(),
+            "-nostdin".into(),
+            "-threads".into(),
+            "1".into(),
+            "-ss".into(),
+            format!("{start_seconds:.3}").into(),
+            "-t".into(),
+            window_seconds.to_string().into(),
+            "-i".into(),
+            media_path.as_os_str().to_os_string(),
+            "-map".into(),
+            "0:a:0".into(),
+            "-vn".into(),
+            "-sn".into(),
+            "-dn".into(),
+            "-ac".into(),
+            "1".into(),
+            "-ar".into(),
+            sample_rate.to_string().into(),
+            "-f".into(),
+            "s16le".into(),
+            "-".into(),
+        ],
+        cancel_flag,
+        FFMPEG_AUDIO_V3_TIMEOUT,
+        move |chunk| {
+            pcm_writer
+                .lock()
+                .map_err(|_| MediaFingerprintError::InvalidToolOutput {
+                    tool: "ffmpeg",
+                    reason: "sampled PCM cache buffer was poisoned".to_owned(),
+                })?
+                .extend_from_slice(chunk);
+            Ok(())
+        },
+    )?;
+    let pcm = Arc::try_unwrap(pcm)
+        .map_err(|_| MediaFingerprintError::InvalidToolOutput {
+            tool: "ffmpeg",
+            reason: "sampled PCM cache buffer was still shared".to_owned(),
+        })?
+        .into_inner()
+        .map_err(|_| MediaFingerprintError::InvalidToolOutput {
+            tool: "ffmpeg",
+            reason: "sampled PCM cache buffer was poisoned".to_owned(),
+        })?;
+    Ok((pcm, streaming_output, started_at.elapsed().as_millis()))
+}
+
+fn analyze_sampled_window_pcm_bytes(
+    pcm: &[u8],
+    window_seconds: u32,
+    sample_rate: u32,
+) -> Result<(Vec<AudioLandmarkV3>, MediaAudioStreamMetrics), MediaFingerprintError> {
+    let mut stream = AudioConstellationV3PcmStream::new(sample_rate);
+    stream.push_bytes(pcm)?;
+    stream.finish(Some(f64::from(window_seconds)))
+}
+
+fn analyze_sampled_pcm_cache_windows(
+    pcm: &[u8],
+    windows: &[SampledPcmCacheWindow],
+    config: SampledAudioIndexConfig,
+    duration_seconds: Option<f64>,
+    mut combined_metrics: MediaAudioStreamMetrics,
+) -> Result<(Vec<AudioLandmarkV3>, MediaAudioStreamMetrics), MediaFingerprintError> {
+    let mut all_landmarks = Vec::new();
+    for window in windows {
+        let start = usize::try_from(window.byte_offset).unwrap_or(usize::MAX);
+        let len = usize::try_from(window.byte_len).unwrap_or(usize::MAX);
+        let end = start.saturating_add(len);
+        if start > pcm.len() || end > pcm.len() {
+            return Err(MediaFingerprintError::InvalidToolOutput {
+                tool: "sampled-pcm-cache",
+                reason: "sampled PCM cache window exceeds PCM blob".to_owned(),
+            });
+        }
+        let (mut landmarks, metrics) =
+            analyze_sampled_window_pcm_bytes(&pcm[start..end], window.seconds, config.sample_rate)?;
+        for landmark in &mut landmarks {
+            landmark.t_ms = landmark.t_ms.saturating_add(window.start_ms);
+        }
+        all_landmarks.extend(landmarks);
+        merge_audio_stream_metrics(&mut combined_metrics, &metrics);
+        combined_metrics.sampled_audio_seconds_decoded = combined_metrics
+            .sampled_audio_seconds_decoded
+            .saturating_add(window.seconds);
+        combined_metrics.sampled_audio_windows_decoded += 1;
+    }
+    let selection_started_at = Instant::now();
+    let mut bounded = all_landmarks;
+    let raw_before_bounding = bounded.len();
+    bounded = bounded_time_distributed_audio_landmarks_v3_for_duration(
+        &mut bounded,
+        config.max_landmarks,
+        duration_seconds,
+    );
+    combined_metrics.final_selection_millis = combined_metrics
+        .final_selection_millis
+        .saturating_add(selection_started_at.elapsed().as_millis());
+    combined_metrics.final_landmarks = bounded.len();
+    combined_metrics.raw_landmarks_before_bounding = raw_before_bounding;
+    if bounded.is_empty() {
+        return Err(MediaFingerprintError::InvalidToolOutput {
+            tool: "sampled-pcm-cache",
+            reason: "cached sampled PCM did not produce constellation landmarks".to_owned(),
+        });
+    }
+    Ok((bounded, combined_metrics))
+}
+
+fn write_sampled_pcm_cache(
+    context: SampledAudioExtractionContext<'_>,
+    index_mode: MediaAudioIndexMode,
+    config: SampledAudioIndexConfig,
+    windows: &[(f64, u32)],
+    manifest_windows: &[SampledPcmCacheWindow],
+    pcm: &[u8],
+    metrics: &mut MediaAudioStreamMetrics,
+) -> Result<(), MediaFingerprintError> {
+    let Some((manifest_path, pcm_path, _key)) =
+        sampled_pcm_cache_paths(context, index_mode, config, windows)
+    else {
+        return Ok(());
+    };
+    let started_at = Instant::now();
+    let parent = manifest_path
+        .parent()
+        .ok_or_else(|| MediaFingerprintError::FileMetadata {
+            path: manifest_path.display().to_string(),
+            error: "sampled PCM cache manifest has no parent".to_owned(),
+        })?;
+    fs::create_dir_all(parent).map_err(|error| MediaFingerprintError::FileMetadata {
+        path: parent.display().to_string(),
+        error: error.to_string(),
+    })?;
+    let manifest = SampledPcmCacheManifest {
+        source_identity: context.source_identity.clone(),
+        settings_hash: lower_hex(&context.settings_hash),
+        audio_index_mode: index_mode,
+        sample_rate: config.sample_rate,
+        windows: manifest_windows.to_vec(),
+        pcm_file: pcm_path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| "sampled.s16le".to_owned()),
+    };
+    fs::write(&pcm_path, pcm).map_err(|error| MediaFingerprintError::FileMetadata {
+        path: pcm_path.display().to_string(),
+        error: error.to_string(),
+    })?;
+    let manifest_json = serde_json::to_vec_pretty(&manifest).map_err(|error| {
+        MediaFingerprintError::InvalidToolOutput {
+            tool: "sampled-pcm-cache",
+            reason: format!("failed serializing sampled PCM cache manifest: {error}"),
+        }
+    })?;
+    fs::write(&manifest_path, manifest_json).map_err(|error| {
+        MediaFingerprintError::FileMetadata {
+            path: manifest_path.display().to_string(),
+            error: error.to_string(),
+        }
+    })?;
+    metrics.sampled_pcm_cache_write_millis = Some(started_at.elapsed().as_millis());
+    Ok(())
+}
+
+fn seconds_to_u32_millis(seconds: f64) -> u32 {
+    (seconds * 1000.0).round().clamp(0.0, f64::from(u32::MAX)) as u32
+}
+
+fn maybe_attach_packet_map_feasibility(
+    media_path: &Path,
+    metrics: &mut MediaAudioStreamMetrics,
+    windows: &[(f64, u32)],
+    context: SampledAudioExtractionContext<'_>,
+) {
+    if !matches!(
+        context.options.sampled_audio_source,
+        MediaSampledAudioSourceStrategy::FfprobeProbe | MediaSampledAudioSourceStrategy::PacketMap
+    ) {
+        return;
+    }
+    let Some(ffprobe) = context.ffprobe else {
+        metrics.audio_packet_map_fallback_reason = Some("ffprobe-not-configured".to_owned());
+        metrics.source_strategy_fallback_count =
+            metrics.source_strategy_fallback_count.saturating_add(1);
+        return;
+    };
+    let started_at = Instant::now();
+    match load_or_build_audio_packet_map_v3(ffprobe, media_path, windows, context) {
+        Ok((map, cache_hit, map_bytes, probe_read_bytes)) => {
+            metrics.audio_packet_map_cache_hit = Some(cache_hit);
+            metrics.audio_packet_map_build_millis = Some(started_at.elapsed().as_millis());
+            metrics.audio_packet_map_packet_count = Some(map.packets.len());
+            metrics.audio_packet_map_bytes = Some(map_bytes);
+            metrics.audio_packet_map_complete = Some(map.complete);
+            metrics.audio_packet_probe_read_bytes = probe_read_bytes;
+            metrics.container_format = Some(map.container_format.clone());
+            metrics.audio_stream_index = Some(map.audio_stream_index as usize);
+            metrics.audio_codec = Some(map.audio_codec.clone());
+            metrics.ffmpeg_selected_stream = Some(format!("0:{}", map.audio_stream_index));
+            let ranges = packet_ranges_for_windows(&map, windows, 128 * 1024);
+            let range_bytes = ranges
+                .iter()
+                .map(|range| range.1.saturating_sub(range.0))
+                .sum::<u64>();
+            metrics.audio_packet_window_count = Some(windows.len());
+            metrics.audio_packet_ranges = Some(ranges.len());
+            metrics.audio_packet_range_bytes = Some(
+                map.packets
+                    .iter()
+                    .filter(|packet| {
+                        packet_overlaps_sampled_windows(
+                            packet.pts_ms as f64 / 1000.0,
+                            packet.duration_ms as f64 / 1000.0,
+                            windows,
+                        )
+                    })
+                    .map(|packet| u64::from(packet.size_bytes))
+                    .sum(),
+            );
+            metrics.audio_packet_coalesced_range_bytes = Some(range_bytes);
+            if let Some(pcm_bytes) =
+                (metrics.ffmpeg_output_pcm_bytes > 0).then_some(metrics.ffmpeg_output_pcm_bytes)
+            {
+                metrics.audio_packet_read_amplification_vs_pcm =
+                    Some(range_bytes as f64 / pcm_bytes as f64);
+            }
+            metrics.audio_packet_estimated_savings_vs_current = metrics
+                .ffmpeg_input_read_bytes
+                .map(|read_bytes| read_bytes as i128 - range_bytes as i128)
+                .and_then(|value| i64::try_from(value).ok());
+            if context.options.sampled_audio_source == MediaSampledAudioSourceStrategy::PacketMap {
+                let read_started_at = Instant::now();
+                match read_packet_ranges(media_path, &ranges) {
+                    Ok((bytes, ops)) => {
+                        metrics.audio_packet_range_read_millis =
+                            Some(read_started_at.elapsed().as_millis());
+                        metrics.audio_packet_range_read_ops = Some(ops);
+                        metrics.audio_packet_coalesced_range_bytes = Some(bytes.len() as u64);
+                        metrics.audio_sidecar_fallback_reason =
+                            Some("packet-map-range-read-feasibility-only".to_owned());
+                        metrics.source_strategy_fallback_count =
+                            metrics.source_strategy_fallback_count.saturating_add(1);
+                    }
+                    Err(error) => {
+                        metrics.audio_packet_map_fallback_reason =
+                            Some(format!("packet-range-read-error: {error}"));
+                        metrics.source_strategy_fallback_count =
+                            metrics.source_strategy_fallback_count.saturating_add(1);
+                    }
+                }
+            }
+        }
+        Err(error) => {
+            metrics.audio_packet_map_fallback_reason = Some(error);
+            metrics.source_strategy_fallback_count =
+                metrics.source_strategy_fallback_count.saturating_add(1);
+        }
+    }
+}
+
+fn load_or_build_audio_packet_map_v3(
+    ffprobe: &Path,
+    media_path: &Path,
+    windows: &[(f64, u32)],
+    context: SampledAudioExtractionContext<'_>,
+) -> Result<(AudioPacketMapV3, bool, u64, Option<u64>), String> {
+    let Some((map_path, _key)) = audio_packet_map_cache_path(context, windows) else {
+        return build_audio_packet_map_v3_from_ffprobe(ffprobe, media_path, context)
+            .map(|(map, bytes, read_bytes)| (map, false, bytes, read_bytes));
+    };
+    if map_path.is_file() {
+        let bytes = fs::read(&map_path).map_err(|error| error.to_string())?;
+        let map: AudioPacketMapV3 = serde_json::from_slice(&bytes).map_err(|error| {
+            format!(
+                "failed parsing audio packet map cache '{}': {error}",
+                map_path.display()
+            )
+        })?;
+        if map.source_identity.valid_for(
+            &context.source_identity.normalized_path,
+            context.source_identity.modified_unix_millis,
+            context.source_identity.size_bytes,
+        ) {
+            return Ok((map, true, bytes.len() as u64, None));
+        }
+    }
+    let (map, _bytes, read_bytes) =
+        build_audio_packet_map_v3_from_ffprobe(ffprobe, media_path, context)?;
+    let parent = map_path
+        .parent()
+        .ok_or_else(|| "packet map cache path has no parent".to_owned())?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let bytes = serde_json::to_vec(&map).map_err(|error| error.to_string())?;
+    fs::write(&map_path, &bytes).map_err(|error| error.to_string())?;
+    Ok((map, false, bytes.len() as u64, read_bytes))
+}
+
+fn audio_packet_map_cache_path(
+    context: SampledAudioExtractionContext<'_>,
+    windows: &[(f64, u32)],
+) -> Option<(PathBuf, String)> {
+    let root = context.options.sampled_pcm_cache_root.as_ref()?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"audio-packet-map-v3");
+    hasher.update(context.source_identity.normalized_path.as_bytes());
+    hasher.update(context.source_identity.modified_unix_millis.to_le_bytes());
+    hasher.update(context.source_identity.size_bytes.to_le_bytes());
+    hasher.update(context.settings_hash);
+    for (start, seconds) in windows {
+        hasher.update(start.to_le_bytes());
+        hasher.update(seconds.to_le_bytes());
+    }
+    let key = lower_hex(&hasher.finalize());
+    Some((
+        root.join("audio-packet-map-v3").join(format!("{key}.json")),
+        key,
+    ))
+}
+
+fn build_audio_packet_map_v3_from_ffprobe(
+    ffprobe: &Path,
+    media_path: &Path,
+    context: SampledAudioExtractionContext<'_>,
+) -> Result<(AudioPacketMapV3, u64, Option<u64>), String> {
+    let output = run_tool_output_with_metrics(
+        "ffprobe",
+        ffprobe,
+        [
+            "-v".into(),
+            "error".into(),
+            "-select_streams".into(),
+            "a:0".into(),
+            "-show_entries".into(),
+            "format=format_name:stream=index,codec_name,time_base:packet=pts_time,dts_time,duration_time,pos,size,flags".into(),
+            "-of".into(),
+            "json".into(),
+            media_path.as_os_str().to_os_string(),
+        ],
+        None,
+        FFPROBE_TIMEOUT,
+    )
+    .map_err(|error| error.to_string())?;
+    ensure_tool_success("ffprobe", &output.output).map_err(|error| error.to_string())?;
+    let map =
+        audio_packet_map_from_ffprobe_json(&output.output.stdout, context.source_identity.clone())?;
+    Ok((
+        map,
+        output.output.stdout.len() as u64,
+        output.io_metrics.read_bytes,
+    ))
+}
+
+fn audio_packet_map_from_ffprobe_json(
+    stdout: &[u8],
+    source_identity: MediaFileIdentity,
+) -> Result<AudioPacketMapV3, String> {
+    let value: serde_json::Value =
+        serde_json::from_slice(stdout).map_err(|error| format!("invalid ffprobe JSON: {error}"))?;
+    let container_format = value
+        .get("format")
+        .and_then(|format| format.get("format_name"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown")
+        .to_owned();
+    let stream = value
+        .get("streams")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|streams| streams.first())
+        .ok_or_else(|| "ffprobe packet map did not include an audio stream".to_owned())?;
+    let audio_stream_index = json_u64(stream.get("index")).unwrap_or(0) as u32;
+    let audio_codec = stream
+        .get("codec_name")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown")
+        .to_owned();
+    let (time_base_num, time_base_den) = stream
+        .get("time_base")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|text| text.split_once('/'))
+        .and_then(|(num, den)| Some((num.parse::<i32>().ok()?, den.parse::<i32>().ok()?)))
+        .unwrap_or((1, 1000));
+    let mut packets = Vec::new();
+    if let Some(values) = value.get("packets").and_then(serde_json::Value::as_array) {
+        for packet in values {
+            let Some(file_pos) = json_u64(packet.get("pos")) else {
+                continue;
+            };
+            let Some(size_bytes) =
+                json_u64(packet.get("size")).and_then(|value| u32::try_from(value).ok())
+            else {
+                continue;
+            };
+            let pts_ms =
+                json_seconds_millis(packet.get("pts_time").or_else(|| packet.get("dts_time")))
+                    .unwrap_or(0);
+            let duration_ms = json_seconds_millis(packet.get("duration_time")).unwrap_or(0);
+            let key = packet
+                .get("flags")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|flags| flags.contains('K'));
+            packets.push(AudioPacketPositionV3 {
+                pts_ms,
+                duration_ms,
+                file_pos,
+                size_bytes,
+                key,
+            });
+        }
+    }
+    packets.sort_by_key(|packet| (packet.pts_ms, packet.file_pos));
+    Ok(AudioPacketMapV3 {
+        source_identity,
+        container_format,
+        audio_stream_index,
+        audio_codec,
+        time_base_num,
+        time_base_den,
+        complete: !packets.is_empty(),
+        packets,
+    })
+}
+
+fn packet_ranges_for_windows(
+    map: &AudioPacketMapV3,
+    windows: &[(f64, u32)],
+    coalesce_gap_bytes: u64,
+) -> Vec<(u64, u64)> {
+    let ranges = map
+        .packets
+        .iter()
+        .filter(|packet| {
+            packet_overlaps_sampled_windows(
+                packet.pts_ms as f64 / 1000.0,
+                packet.duration_ms as f64 / 1000.0,
+                windows,
+            )
+        })
+        .map(|packet| {
+            (
+                packet.file_pos,
+                packet.file_pos.saturating_add(u64::from(packet.size_bytes)),
+            )
+        })
+        .collect::<Vec<_>>();
+    coalesced_ranges_with_gap(ranges, coalesce_gap_bytes)
+}
+
+fn coalesced_ranges_with_gap(mut ranges: Vec<(u64, u64)>, gap_bytes: u64) -> Vec<(u64, u64)> {
+    if ranges.is_empty() {
+        return Vec::new();
+    }
+    ranges.sort_unstable();
+    let mut output = Vec::new();
+    let (mut current_start, mut current_end) = ranges[0];
+    for (start, end) in ranges.into_iter().skip(1) {
+        if start <= current_end.saturating_add(gap_bytes) {
+            current_end = current_end.max(end);
+        } else {
+            output.push((current_start, current_end));
+            current_start = start;
+            current_end = end;
+        }
+    }
+    output.push((current_start, current_end));
+    output
+}
+
+fn read_packet_ranges(path: &Path, ranges: &[(u64, u64)]) -> Result<(Vec<u8>, u64), String> {
+    let mut file = fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut output = Vec::new();
+    let mut ops = 0u64;
+    for (start, end) in ranges {
+        let len = end.saturating_sub(*start);
+        let len_usize = usize::try_from(len).map_err(|_| "packet range too large".to_owned())?;
+        file.seek(SeekFrom::Start(*start))
+            .map_err(|error| error.to_string())?;
+        let mut buffer = vec![0u8; len_usize];
+        file.read_exact(&mut buffer)
+            .map_err(|error| error.to_string())?;
+        output.extend_from_slice(&buffer);
+        ops = ops.saturating_add(1);
+    }
+    Ok((output, ops))
+}
+
+fn lower_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1209,6 +2141,81 @@ fn merge_audio_stream_metrics(
     if target.audio_packet_read_savings_estimate_bytes.is_none() {
         target.audio_packet_read_savings_estimate_bytes =
             source.audio_packet_read_savings_estimate_bytes;
+    }
+    if target.selected_sampled_audio_source_strategy.is_none() {
+        target.selected_sampled_audio_source_strategy =
+            source.selected_sampled_audio_source_strategy.clone();
+    }
+    if target.source_strategy_decision_reason.is_none() {
+        target.source_strategy_decision_reason = source.source_strategy_decision_reason.clone();
+    }
+    target.source_strategy_fallback_count = target
+        .source_strategy_fallback_count
+        .saturating_add(source.source_strategy_fallback_count);
+    if target.audio_packet_map_cache_hit.is_none() {
+        target.audio_packet_map_cache_hit = source.audio_packet_map_cache_hit;
+    }
+    if target.audio_packet_map_build_millis.is_none() {
+        target.audio_packet_map_build_millis = source.audio_packet_map_build_millis;
+    }
+    if target.audio_packet_map_packet_count.is_none() {
+        target.audio_packet_map_packet_count = source.audio_packet_map_packet_count;
+    }
+    if target.audio_packet_map_bytes.is_none() {
+        target.audio_packet_map_bytes = source.audio_packet_map_bytes;
+    }
+    if target.audio_packet_map_complete.is_none() {
+        target.audio_packet_map_complete = source.audio_packet_map_complete;
+    }
+    if target.audio_packet_map_fallback_reason.is_none() {
+        target.audio_packet_map_fallback_reason = source.audio_packet_map_fallback_reason.clone();
+    }
+    if target.audio_packet_window_count.is_none() {
+        target.audio_packet_window_count = source.audio_packet_window_count;
+    }
+    if target.audio_packet_ranges.is_none() {
+        target.audio_packet_ranges = source.audio_packet_ranges;
+    }
+    if target.audio_packet_range_bytes.is_none() {
+        target.audio_packet_range_bytes = source.audio_packet_range_bytes;
+    }
+    if target.audio_packet_coalesced_range_bytes.is_none() {
+        target.audio_packet_coalesced_range_bytes = source.audio_packet_coalesced_range_bytes;
+    }
+    if target.audio_packet_range_read_millis.is_none() {
+        target.audio_packet_range_read_millis = source.audio_packet_range_read_millis;
+    }
+    if target.audio_packet_range_read_ops.is_none() {
+        target.audio_packet_range_read_ops = source.audio_packet_range_read_ops;
+    }
+    if target.audio_packet_read_amplification_vs_pcm.is_none() {
+        target.audio_packet_read_amplification_vs_pcm =
+            source.audio_packet_read_amplification_vs_pcm;
+    }
+    if target.audio_packet_estimated_savings_vs_current.is_none() {
+        target.audio_packet_estimated_savings_vs_current =
+            source.audio_packet_estimated_savings_vs_current;
+    }
+    if target.sampled_pcm_cache_hit.is_none() {
+        target.sampled_pcm_cache_hit = source.sampled_pcm_cache_hit;
+    }
+    if target.sampled_pcm_cache_bytes.is_none() {
+        target.sampled_pcm_cache_bytes = source.sampled_pcm_cache_bytes;
+    }
+    if target.sampled_pcm_cache_read_millis.is_none() {
+        target.sampled_pcm_cache_read_millis = source.sampled_pcm_cache_read_millis;
+    }
+    if target.sampled_pcm_cache_write_millis.is_none() {
+        target.sampled_pcm_cache_write_millis = source.sampled_pcm_cache_write_millis;
+    }
+    if target.sampled_pcm_cache_saved_millis.is_none() {
+        target.sampled_pcm_cache_saved_millis = source.sampled_pcm_cache_saved_millis;
+    }
+    if target.audio_sidecar_mode.is_none() {
+        target.audio_sidecar_mode = source.audio_sidecar_mode.clone();
+    }
+    if target.audio_sidecar_fallback_reason.is_none() {
+        target.audio_sidecar_fallback_reason = source.audio_sidecar_fallback_reason.clone();
     }
     target.streamed_bytes = target.streamed_bytes.saturating_add(source.streamed_bytes);
     target.streamed_samples = target
@@ -1888,5 +2895,80 @@ mod tests {
         assert_eq!(metrics.audio_packet_window_compressed_bytes, Some(50));
         assert_eq!(metrics.audio_packet_window_coalesced_range_bytes, Some(50));
         assert_eq!(metrics.audio_packet_read_savings_estimate_bytes, Some(950));
+    }
+
+    #[test]
+    fn audio_packet_map_parses_ranges_and_uses_identity_sensitive_cache_key() {
+        let json = br#"{
+          "format": { "format_name": "matroska,webm" },
+          "streams": [
+            { "index": 1, "codec_name": "flac", "time_base": "1/1000" }
+          ],
+          "packets": [
+            { "pts_time": "0.000", "duration_time": "1.000", "pos": "100", "size": "10" },
+            { "pts_time": "10.000", "duration_time": "1.000", "pos": "200", "size": "20" },
+            { "pts_time": "10.500", "duration_time": "1.000", "pos": "220", "size": "30" },
+            { "pts_time": "60.000", "duration_time": "1.000", "pos": "500", "size": "40" }
+          ]
+        }"#;
+        let identity = MediaFileIdentity {
+            normalized_path: "c:\\media\\episode.mkv".to_owned(),
+            modified_unix_millis: 123,
+            size_bytes: 456,
+        };
+
+        let map = audio_packet_map_from_ffprobe_json(json, identity.clone())
+            .expect("packet map should parse");
+
+        assert!(map.complete);
+        assert!(map.valid_for(
+            &identity.normalized_path,
+            identity.modified_unix_millis,
+            identity.size_bytes,
+            1,
+            "matroska,webm",
+            "flac",
+        ));
+        assert!(!map.valid_for(
+            &identity.normalized_path,
+            identity.modified_unix_millis + 1,
+            identity.size_bytes,
+            1,
+            "matroska,webm",
+            "flac",
+        ));
+        assert_eq!(map.packets.len(), 4);
+        assert_eq!(map.packets[1].pts_ms, 10_000);
+
+        let ranges = packet_ranges_for_windows(&map, &[(10.0, 2)], 128);
+
+        assert_eq!(ranges, vec![(200, 250)]);
+
+        let options = MediaFingerprintExtractionOptions {
+            sampled_audio_source: MediaSampledAudioSourceStrategy::PacketMap,
+            sampled_pcm_cache_root: Some(PathBuf::from("packet-cache")),
+        };
+        let context = SampledAudioExtractionContext {
+            source_identity: &identity,
+            settings_hash: [7; 32],
+            options: &options,
+            ffprobe: None,
+        };
+        let (_, key) = audio_packet_map_cache_path(context, &[(10.0, 2)])
+            .expect("packet map cache path should be available");
+        let changed_identity = MediaFileIdentity {
+            modified_unix_millis: identity.modified_unix_millis + 1,
+            ..identity
+        };
+        let changed_context = SampledAudioExtractionContext {
+            source_identity: &changed_identity,
+            settings_hash: [7; 32],
+            options: &options,
+            ffprobe: None,
+        };
+        let (_, changed_key) = audio_packet_map_cache_path(changed_context, &[(10.0, 2)])
+            .expect("changed packet map cache path should be available");
+
+        assert_ne!(key, changed_key);
     }
 }
