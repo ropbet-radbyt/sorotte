@@ -22,6 +22,8 @@ Use the sibling Python checkout in `../syncplay/` as the behavioral reference fo
 
 Run these before finishing general code changes:
 
+For documentation-only edits, record the skipped code checks in the PR notes.
+
 ```powershell
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
