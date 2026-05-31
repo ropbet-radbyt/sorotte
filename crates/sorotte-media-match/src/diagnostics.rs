@@ -105,11 +105,7 @@ fn summarize_record_v3_diagnostics_with_report(
     MediaMatchV3DiagnosticSummary {
         file_path: Some(record.identity.normalized_path.clone()),
         profile: record.extraction_settings.profile.label().to_owned(),
-        index_quality: record
-            .extraction_settings
-            .audio_index_mode
-            .label()
-            .to_owned(),
+        index_quality: "sampled-fast".to_owned(),
         duration_ms,
         extraction_total_millis: report.map(|report| report.timings.total_millis),
         extraction_audio_millis: report.map(|report| report.timings.audio_millis),

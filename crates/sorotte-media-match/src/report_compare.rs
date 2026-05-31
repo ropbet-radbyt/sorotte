@@ -559,8 +559,8 @@ mod tests {
             retrieved,
             retrieval_rank: retrieved.then_some(1),
             strict_rank1_passed: retrieved,
-            within_promotion_budget: retrieved,
-            production_retrieval_passed: retrieved,
+            within_top_k: retrieved,
+            top_k_retrieval_passed: retrieved,
             decision: Some(MediaMatchV3DiagnosticDecisionReport {
                 tier: crate::MediaMatchTier::Probable,
                 class: Some(crate::MatchClassV3::SameCutProbable),

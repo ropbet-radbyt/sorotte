@@ -52,8 +52,8 @@ Candidate IDs are optional stable pair identities. They are recommended when com
           "expectedRetrieved": true,
           "maxRetrievalRank": 1,
           "skipDecisionExpectation": true,
-          "expectWithinPromotionBudget": true,
-          "maxPromotionRank": 3
+          "expectWithinTopK": true,
+          "maxTopRank": 3
         }
       ],
       "hardNegatives": [
@@ -69,7 +69,7 @@ Candidate IDs are optional stable pair identities. They are recommended when com
 }
 ```
 
-For production retrieval validation, rank 1 is a strict ranking metric. User-facing success is top-K promotion eligibility: the expected candidate should be within `maxPromotionRank`, default 3. Sampled-only matches are not autoplay-eligible.
+For production retrieval validation, rank 1 is a strict ranking metric. User-facing success is top-K retrieval eligibility: the expected candidate should be within `maxTopRank`, default 3. Sampled-only matches are not autoplay-eligible.
 
 ## Report Comparison
 
@@ -117,6 +117,6 @@ Cache size reports expose total bytes, anchor/index bytes, fingerprint blob byte
 3. Run a cold fixed sampled-fast report with `--refresh-cache`.
 4. Run a warm fixed sampled-fast report with the same cache root.
 5. Run `v3_report_compare` against cold and warm reports.
-6. Check strict rank-1 results separately from promotion-budget results.
+6. Check strict rank-1 results separately from top-K retrieval results.
 7. Review hard negatives.
 8. Do not tune thresholds until misses and rank collisions are categorized.

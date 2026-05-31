@@ -94,9 +94,9 @@ pub struct MediaMatchV3DiagnosticManifestCandidate {
     #[serde(default)]
     pub skip_decision_expectation: bool,
     #[serde(default)]
-    pub max_promotion_rank: Option<usize>,
+    pub max_top_rank: Option<usize>,
     #[serde(default)]
-    pub expect_within_promotion_budget: bool,
+    pub expect_within_top_k: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,9 +129,9 @@ pub struct MediaMatchV3DiagnosticExpectation {
     #[serde(default)]
     pub skip_decision_expectation: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_promotion_rank: Option<usize>,
+    pub max_top_rank: Option<usize>,
     #[serde(default)]
-    pub expect_within_promotion_budget: bool,
+    pub expect_within_top_k: bool,
 }
 
 impl Default for MediaMatchV3DiagnosticExpectation {
@@ -144,8 +144,8 @@ impl Default for MediaMatchV3DiagnosticExpectation {
             expected_retrieved: None,
             max_retrieval_rank: Some(1),
             skip_decision_expectation: false,
-            max_promotion_rank: Some(3),
-            expect_within_promotion_budget: true,
+            max_top_rank: Some(3),
+            expect_within_top_k: true,
         }
     }
 }
@@ -321,8 +321,8 @@ pub struct MediaMatchV3DiagnosticCandidateReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retrieval_rank: Option<usize>,
     pub strict_rank1_passed: bool,
-    pub within_promotion_budget: bool,
-    pub production_retrieval_passed: bool,
+    pub within_top_k: bool,
+    pub top_k_retrieval_passed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision: Option<MediaMatchV3DiagnosticDecisionReport>,
     pub expectation: MediaMatchV3DiagnosticExpectation,
@@ -369,8 +369,8 @@ pub struct MediaMatchV3DiagnosticSummaryReport {
     pub passed: usize,
     pub failed: usize,
     pub strict_rank1_passed: usize,
-    pub within_promotion_budget: usize,
-    pub production_retrieval_passed: usize,
+    pub within_top_k: usize,
+    pub top_k_retrieval_passed: usize,
     pub retrieval_misses: usize,
     pub unique_fresh_fingerprint_count: usize,
     pub unique_memory_cache_fingerprint_count: usize,
@@ -674,11 +674,11 @@ pub fn run_media_match_v3_diagnostic_manifest(
             if rank == Some(1) {
                 summary.strict_rank1_passed += 1;
             }
-            if evaluation.within_promotion_budget {
-                summary.within_promotion_budget += 1;
+            if evaluation.within_top_k {
+                summary.within_top_k += 1;
             }
-            if evaluation.production_retrieval_passed {
-                summary.production_retrieval_passed += 1;
+            if evaluation.top_k_retrieval_passed {
+                summary.top_k_retrieval_passed += 1;
             }
             summary.total_sqlite_save_millis += fingerprint.report.sqlite_save_millis;
             summary.total_sqlite_index_insert_millis += fingerprint.report.index_insert_millis;
@@ -697,8 +697,8 @@ pub fn run_media_match_v3_diagnostic_manifest(
                 retrieved: rank.is_some(),
                 retrieval_rank: rank,
                 strict_rank1_passed: rank == Some(1),
-                within_promotion_budget: evaluation.within_promotion_budget,
-                production_retrieval_passed: evaluation.production_retrieval_passed,
+                within_top_k: evaluation.within_top_k,
+                top_k_retrieval_passed: evaluation.top_k_retrieval_passed,
                 decision,
                 expectation: candidate.expectation.clone(),
                 expectation_passed: evaluation.passed,
@@ -894,8 +894,8 @@ struct SourceCounts {
 #[derive(Debug, Clone)]
 struct ExpectationEvaluation {
     passed: bool,
-    within_promotion_budget: bool,
-    production_retrieval_passed: bool,
+    within_top_k: bool,
+    top_k_retrieval_passed: bool,
     failure_reason: Option<String>,
 }
 
@@ -921,17 +921,15 @@ fn evaluate_expectation(
             "candidate rank {rank} exceeded max rank {max_rank}"
         ));
     }
-    let promotion_rank = expectation.max_promotion_rank.unwrap_or(3);
-    let within_promotion_budget = rank.is_some_and(|rank| rank <= promotion_rank);
-    let production_retrieval_passed = if expectation.expect_within_promotion_budget {
-        within_promotion_budget
+    let top_rank = expectation.max_top_rank.unwrap_or(3);
+    let within_top_k = rank.is_some_and(|rank| rank <= top_rank);
+    let top_k_retrieval_passed = if expectation.expect_within_top_k {
+        within_top_k
     } else {
         rank.is_some()
     };
-    if expectation.expect_within_promotion_budget && !within_promotion_budget {
-        failure_reason = Some(format!(
-            "candidate was not within promotion budget {promotion_rank}"
-        ));
+    if expectation.expect_within_top_k && !within_top_k {
+        failure_reason = Some(format!("candidate was not within top-{top_rank} retrieval"));
     }
     if !expectation.skip_decision_expectation {
         if let Some(expected_class) = expectation.expected_class {
@@ -969,8 +967,8 @@ fn evaluate_expectation(
     }
     ExpectationEvaluation {
         passed: failure_reason.is_none(),
-        within_promotion_budget,
-        production_retrieval_passed,
+        within_top_k,
+        top_k_retrieval_passed,
         failure_reason,
     }
 }
@@ -995,8 +993,8 @@ fn expectation_from_candidate(
         expected_retrieved: candidate.expected_retrieved,
         max_retrieval_rank: candidate.max_retrieval_rank.or(Some(1)),
         skip_decision_expectation: candidate.skip_decision_expectation,
-        max_promotion_rank: candidate.max_promotion_rank.or(Some(3)),
-        expect_within_promotion_budget: candidate.expect_within_promotion_budget,
+        max_top_rank: candidate.max_top_rank.or(Some(3)),
+        expect_within_top_k: candidate.expect_within_top_k,
     })
 }
 
@@ -1095,8 +1093,8 @@ mod tests {
                     expected_retrieved: None,
                     max_retrieval_rank: None,
                     skip_decision_expectation: true,
-                    max_promotion_rank: None,
-                    expect_within_promotion_budget: false,
+                    max_top_rank: None,
+                    expect_within_top_k: false,
                 }],
                 hard_negatives: Vec::new(),
             }],
@@ -1110,7 +1108,6 @@ mod tests {
         let settings = MediaMatchV3DiagnosticIndexMode::SampledFast.settings();
 
         assert_eq!(settings.profile.label(), "audio-constellation-v3");
-        assert_eq!(settings.audio_index_mode.label(), "sampled-fast");
         assert!(settings.sampled_audio_policy.is_production_compatible());
     }
 }

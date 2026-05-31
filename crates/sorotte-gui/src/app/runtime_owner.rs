@@ -195,7 +195,6 @@ pub(super) enum GuiMediaMatchToolWorkerEvent {
 
 pub(super) enum GuiMediaMatchBackgroundWorkerEvent {
     Progress(MediaMatchToolProgress),
-    FastResult(Result<MediaMatchIndexRebuildResult, String>),
     Finished(Result<MediaMatchIndexRebuildResult, String>),
 }
 

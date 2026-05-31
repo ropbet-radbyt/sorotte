@@ -31,8 +31,8 @@ struct GuiMediaMatchRemoteTarget {
     media_match_signature: serde_json::Value,
 }
 
-fn media_match_full_verify_extraction_settings() -> MediaExtractionSettings {
-    MediaExtractionSettings::audio_constellation_v3()
+fn media_match_sampled_fast_extraction_settings() -> MediaExtractionSettings {
+    MediaExtractionSettings::sampled_fast_audio_index_v3()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,7 +194,7 @@ impl GuiPersistedConfigRuntimeOwner {
             let Some(local_record) = media_match_record_for_path(
                 &root,
                 &current_path,
-                &media_match_full_verify_extraction_settings(),
+                &media_match_sampled_fast_extraction_settings(),
             ) else {
                 let status = "pending local fingerprint".to_owned();
                 let gate_tiers = BTreeMap::new();
@@ -519,7 +519,7 @@ impl GuiPersistedConfigRuntimeOwner {
             && media_match_record_for_path(
                 root,
                 &path,
-                &media_match_full_verify_extraction_settings(),
+                &media_match_sampled_fast_extraction_settings(),
             )
             .is_none()
         {
@@ -596,7 +596,7 @@ impl GuiPersistedConfigRuntimeOwner {
             .name("sorotte-gui-media-match-exact-signature".to_owned())
             .spawn(move || {
                 let progress_tx = tx.clone();
-                let extraction_settings = media_match_full_verify_extraction_settings();
+                let extraction_settings = media_match_sampled_fast_extraction_settings();
                 let result = media_match_tool_paths_for_settings(&root, &extraction_settings)
                     .and_then(|tools| {
                         rebuild_persisted_media_match_candidates_with_progress_and_cancel(
@@ -736,7 +736,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 &remote.target_file_name,
                 &remote.media_match_signature,
                 &projected_state.media_match.settings,
-                &media_match_full_verify_extraction_settings(),
+                &media_match_sampled_fast_extraction_settings(),
             ) {
                 return Some(candidate.path);
             }
@@ -1057,108 +1057,7 @@ impl GuiPersistedConfigRuntimeOwner {
                         },
                     )
                 };
-                let strong_fast_match = fast_result
-                    .as_ref()
-                    .ok()
-                    .and_then(|result| result.current_decision.as_deref())
-                    .is_some_and(|decision| {
-                        decision.starts_with("strong:") || decision.starts_with("probable:")
-                    });
-                let remote_promotion_candidates = (current_player_path.is_none())
-                    .then(|| {
-                        fast_result
-                            .as_ref()
-                            .ok()
-                            .map(|result| result.full_promotion_candidates.clone())
-                            .filter(|candidates| !candidates.is_empty())
-                    })
-                    .flatten();
-                if !strong_fast_match && remote_promotion_candidates.is_none() {
-                    let _ = tx.send(GuiMediaMatchBackgroundWorkerEvent::Finished(fast_result));
-                    return;
-                }
-                let Some(mut hardening_candidates) = current_player_path
-                    .is_some()
-                    .then(|| candidates.clone())
-                    .flatten()
-                    .or(remote_promotion_candidates)
-                else {
-                    let _ = tx.send(GuiMediaMatchBackgroundWorkerEvent::Finished(fast_result));
-                    return;
-                };
-                let _ = tx.send(GuiMediaMatchBackgroundWorkerEvent::FastResult(
-                    fast_result.clone(),
-                ));
-                if worker_cancel_flag.load(Ordering::Relaxed) {
-                    let _ = tx.send(GuiMediaMatchBackgroundWorkerEvent::Finished(Err(
-                        "Media Matching index rebuild was canceled.".to_owned(),
-                    )));
-                    return;
-                }
-                let sampled_extraction_settings =
-                    sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3();
-                if current_player_path.is_some() {
-                    hardening_candidates = media_match_full_promotion_candidates_for_current(
-                        &root,
-                        &hardening_candidates,
-                        current_player_path.as_deref(),
-                        &settings,
-                        &sampled_extraction_settings,
-                        MEDIA_MATCH_MAX_FULL_PROMOTIONS_PER_QUERY,
-                    );
-                } else {
-                    hardening_candidates.truncate(MEDIA_MATCH_MAX_FULL_PROMOTIONS_PER_QUERY.max(1));
-                }
-                let extraction_settings =
-                    media_match_full_verify_extraction_settings();
-                let full_result =
-                    media_match_tool_paths_for_settings(&root, &extraction_settings).and_then(
-                        |tools| {
-                            if let Some(remote_candidate) = remote_candidate {
-                                rebuild_persisted_media_match_remote_candidates_with_progress_and_cancel(
-                                    MediaMatchRemoteCandidateRebuildRequest {
-                                        root: &root,
-                                        search_roots: &search_roots,
-                                        candidates: Some(hardening_candidates),
-                                        target_file_name: &remote_candidate.target_file_name,
-                                        media_match_signature: &remote_candidate.media_match_signature,
-                                        settings: &settings,
-                                        tools: &tools,
-                                        extraction_settings: &extraction_settings,
-                                        cancel_flag: Some(worker_cancel_flag.as_ref()),
-                                    },
-                                    |progress| {
-                                        let _ = progress_tx.send(
-                                            GuiMediaMatchBackgroundWorkerEvent::Progress(progress),
-                                        );
-                                    },
-                                )
-                            } else {
-                                rebuild_persisted_media_match_candidates_with_progress_and_cancel(
-                                    MediaMatchCandidateRebuildRequest {
-                                        root: &root,
-                                        candidates: hardening_candidates,
-                                        current_player_path: current_player_path.as_deref(),
-                                        settings: &settings,
-                                        tools: &tools,
-                                        extraction_settings: &extraction_settings,
-                                        cancel_flag: Some(worker_cancel_flag.as_ref()),
-                                    },
-                                    |progress| {
-                                        let _ = progress_tx.send(
-                                            GuiMediaMatchBackgroundWorkerEvent::Progress(progress),
-                                        );
-                                    },
-                                )
-                            }
-                        },
-                    );
-                let full_result = full_result.map(|mut result| {
-                    result.message =
-                        format!("Media Matching full hardening complete. {}", result.message);
-                    result
-                });
-                let _ = tx.send(GuiMediaMatchBackgroundWorkerEvent::Finished(full_result));
+                let _ = tx.send(GuiMediaMatchBackgroundWorkerEvent::Finished(fast_result));
             }) {
             Ok(_thread) => {
                 self.media_match_background_worker_rx = Some(rx);
@@ -1250,32 +1149,6 @@ impl GuiPersistedConfigRuntimeOwner {
                         Self::media_match_background_progress_status(&progress),
                     );
                 }
-                Ok(GuiMediaMatchBackgroundWorkerEvent::FastResult(result)) => match result {
-                    Ok(result) => {
-                        if !self.apply_media_match_background_result(
-                            handle,
-                            projected_state,
-                            result,
-                            false,
-                            "full hardening queued",
-                        ) {
-                            break;
-                        }
-                    }
-                    Err(error) => {
-                        let mut snapshot = self.refresh_media_match_runtime_snapshot(
-                            &projected_state.media_match.settings,
-                        );
-                        snapshot.message = Some(error.clone());
-                        snapshot.background_status = Some("failed".to_owned());
-                        self.media_match_runtime_snapshot = snapshot.clone();
-                        Self::push_actions_and_project(
-                            handle,
-                            projected_state,
-                            vec![GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(snapshot)],
-                        );
-                    }
-                },
                 Ok(GuiMediaMatchBackgroundWorkerEvent::Finished(result)) => {
                     keep_rx = false;
                     self.media_match_background_worker_cancel = None;
@@ -1949,7 +1822,6 @@ mod tests {
                 .expect("worker should finish")
             {
                 GuiMediaMatchBackgroundWorkerEvent::Progress(_) => {}
-                GuiMediaMatchBackgroundWorkerEvent::FastResult(_) => {}
                 GuiMediaMatchBackgroundWorkerEvent::Finished(result) => break result,
             }
         }

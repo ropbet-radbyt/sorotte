@@ -12,8 +12,8 @@
           "expectedRetrieved": true,
           "maxRetrievalRank": 1,
           "skipDecisionExpectation": true,
-          "expectWithinPromotionBudget": true,
-          "maxPromotionRank": 3
+          "expectWithinTopK": true,
+          "maxTopRank": 3
         }
       ],
       "hardNegatives": [

@@ -95,8 +95,6 @@ pub struct MediaMatchV3SqliteSizeReport {
     pub db_index_bytes: u64,
     pub db_bytes_per_fingerprint: f64,
     pub db_bytes_per_anchor: f64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compressed_postings_estimate: Option<MediaMatchV3CompressedPostingsEstimate>,
 }
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize, Default, PartialEq)]
@@ -113,18 +111,6 @@ pub struct MediaMatchV3SqliteRowCount {
     pub table: String,
     pub row_count: u64,
     pub avg_bytes_per_row: Option<f64>,
-}
-
-#[derive(Debug, Clone, Serialize, serde::Deserialize, Default, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct MediaMatchV3CompressedPostingsEstimate {
-    pub estimated_postings_bytes: u64,
-    pub current_occurrence_bytes: u64,
-    pub estimated_savings_percent: f64,
-    pub bucket_count: u64,
-    pub occurrence_count: u64,
-    pub best_bucket_bytes: u64,
-    pub worst_bucket_bytes: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1389,7 +1375,6 @@ pub fn media_match_v3_sqlite_size_report(
         db_index_bytes,
         db_bytes_per_fingerprint: ratio_u64(total_bytes, fingerprint_rows),
         db_bytes_per_anchor: ratio_u64(total_bytes, anchor_rows),
-        compressed_postings_estimate: None,
     })
 }
 

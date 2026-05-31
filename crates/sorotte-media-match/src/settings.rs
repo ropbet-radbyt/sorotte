@@ -29,22 +29,6 @@ fn default_media_fingerprint_profile() -> MediaFingerprintProfile {
     MediaFingerprintProfile::AudioConstellationV3
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum MediaAudioIndexMode {
-    SampledFast,
-}
-
-impl MediaAudioIndexMode {
-    pub fn label(self) -> &'static str {
-        "sampled-fast"
-    }
-}
-
-fn default_media_audio_index_mode() -> MediaAudioIndexMode {
-    MediaAudioIndexMode::SampledFast
-}
-
 fn default_sampled_policy_version() -> u32 {
     1
 }
@@ -104,8 +88,6 @@ impl MediaSampledAudioPolicy {
 pub struct MediaExtractionSettings {
     #[serde(default = "default_media_fingerprint_profile")]
     pub profile: MediaFingerprintProfile,
-    #[serde(default = "default_media_audio_index_mode")]
-    pub audio_index_mode: MediaAudioIndexMode,
     #[serde(
         default,
         skip_serializing_if = "MediaSampledAudioPolicy::is_default_policy"
@@ -128,7 +110,6 @@ impl MediaExtractionSettings {
     pub fn sampled_fast_audio_index_v3() -> Self {
         Self {
             profile: MediaFingerprintProfile::AudioConstellationV3,
-            audio_index_mode: MediaAudioIndexMode::SampledFast,
             sampled_audio_policy: MediaSampledAudioPolicy::fixed_sampled_fast_current(),
             audio_algorithm: "sorotte-audio-constellation-v3-sampled-fast".to_owned(),
         }
@@ -186,7 +167,6 @@ mod tests {
         let settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
 
         assert_eq!(settings.profile.label(), "audio-constellation-v3");
-        assert_eq!(settings.audio_index_mode.label(), "sampled-fast");
         assert!(settings.sampled_audio_policy.is_production_compatible());
         assert_eq!(
             settings.sampled_audio_policy.sampled_fast_max_windows,
