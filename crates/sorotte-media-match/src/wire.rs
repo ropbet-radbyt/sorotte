@@ -5,8 +5,8 @@ use serde_json::Value;
 use crate::{
     MEDIA_MATCH_ANCHOR_VERSION, MEDIA_MATCH_WIRE_MAX_BYTES, MEDIA_MATCH_WIRE_SCHEMA_V3,
     anchors::{
-        MediaAnchorProfile, encode_wire_audio_anchor_summary, encode_wire_video_anchor_summary,
-        media_anchor_profile_from_record, media_anchor_profile_from_wire_summaries,
+        MediaAnchorProfile, encode_wire_audio_anchor_summary, media_anchor_profile_from_record,
+        media_anchor_profile_from_wire_summaries,
     },
     matching::{decide_media_match_anchors, media_match_tier_rank},
     settings::MediaExtractionSettings,
@@ -36,7 +36,6 @@ pub struct MediaMatchWireProfile {
     pub algorithm_version: u32,
     pub duration_ms: Option<u32>,
     pub audio: Option<MediaMatchWireAnchorBlock>,
-    pub video: Option<MediaMatchWireAnchorBlock>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -123,33 +122,24 @@ fn media_match_wire_anchor_profile_from_record(
     media_match_wire_anchor_profile_from_anchor_profile(
         &anchor_profile,
         &record.extraction_settings.audio_algorithm,
-        &record.extraction_settings.video_algorithm,
     )
 }
 
 pub fn media_match_wire_anchor_profile_from_anchor_profile(
     profile: &MediaAnchorProfile,
     audio_algorithm: &str,
-    video_algorithm: &str,
 ) -> Option<MediaMatchWireProfile> {
     if profile.is_empty() {
         return None;
     }
     let audio_summary = (!profile.audio_anchors.is_empty())
         .then(|| encode_wire_audio_anchor_summary(&profile.audio_anchors));
-    let video_summary = (!profile.video_anchors.is_empty())
-        .then(|| encode_wire_video_anchor_summary(&profile.video_anchors));
     Some(MediaMatchWireProfile {
         profile: profile.profile.clone(),
         algorithm_version: profile.version,
         duration_ms: profile.duration_ms,
         audio: audio_summary.map(|summary| MediaMatchWireAnchorBlock {
             algorithm: audio_algorithm.to_owned(),
-            time_base_ms: 1,
-            anchors: base64::engine::general_purpose::STANDARD.encode(summary),
-        }),
-        video: video_summary.map(|summary| MediaMatchWireAnchorBlock {
-            algorithm: video_algorithm.to_owned(),
             time_base_ms: 1,
             anchors: base64::engine::general_purpose::STANDARD.encode(summary),
         }),
@@ -175,14 +165,6 @@ pub fn media_anchor_profile_from_wire_profile(
             profile.profile.as_str(),
         )?;
     }
-    if let Some(block) = profile.video.as_ref() {
-        validate_wire_anchor_block(
-            "video",
-            block,
-            &expected_settings.video_algorithm,
-            profile.profile.as_str(),
-        )?;
-    }
     let audio_summary = profile
         .audio
         .as_ref()
@@ -192,20 +174,10 @@ pub fn media_anchor_profile_from_wire_profile(
                 .map_err(|error| format!("media match v3 audio anchors are not base64: {error}"))
         })
         .transpose()?;
-    let video_summary = profile
-        .video
-        .as_ref()
-        .map(|block| {
-            base64::engine::general_purpose::STANDARD
-                .decode(block.anchors.as_bytes())
-                .map_err(|error| format!("media match v3 video anchors are not base64: {error}"))
-        })
-        .transpose()?;
     media_anchor_profile_from_wire_summaries(
         profile.profile.clone(),
         profile.duration_ms,
         audio_summary.as_deref(),
-        video_summary.as_deref(),
     )
     .map_err(|error| format!("media match v3 anchors could not decode: {error}"))
 }
@@ -213,7 +185,6 @@ pub fn media_anchor_profile_from_wire_profile(
 fn media_extraction_settings_for_profile_label(label: &str) -> Option<MediaExtractionSettings> {
     match label {
         "audio-constellation-v3" => Some(MediaExtractionSettings::audio_constellation_v3()),
-        "combined-v3" => Some(MediaExtractionSettings::combined_v3()),
         _ => None,
     }
 }

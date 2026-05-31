@@ -7,19 +7,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     MediaAudioStreamMetrics, MediaFingerprintError,
-    settings::MediaDenseAudioProfile,
     tuning::{
         V3_AUDIO_HOP_SAMPLES, V3_AUDIO_MAX_FREQ_HZ, V3_AUDIO_MAX_PEAKS_PER_FRAME,
         V3_AUDIO_MIN_FREQ_HZ, V3_AUDIO_PAIR_CANDIDATE_RETAIN, V3_AUDIO_PAIR_DELTA_STRIDE_FRAMES,
         V3_AUDIO_PAIR_FANOUT, V3_AUDIO_PAIR_MAX_DELTA_FRAMES, V3_AUDIO_PAIR_MIN_DELTA_FRAMES,
-        V3_AUDIO_PEAK_NEIGHBORHOOD, V3_AUDIO_RAW_REGION_RETAIN_LIMIT,
-        V3_AUDIO_VERIFY_LANDMARK_LIMIT, V3_AUDIO_WINDOW_SAMPLES,
+        V3_AUDIO_PEAK_NEIGHBORHOOD, V3_AUDIO_RAW_REGION_RETAIN_LIMIT, V3_AUDIO_WINDOW_SAMPLES,
     },
-    video_v3::stable_hash_u64,
 };
-
-#[cfg(test)]
-use crate::tuning::V3_AUDIO_SAMPLE_RATE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AudioLandmarkV3 {
@@ -45,67 +39,7 @@ pub(crate) struct AudioConstellationV3Config {
 }
 
 impl AudioConstellationV3Config {
-    pub(crate) fn dense(profile: MediaDenseAudioProfile) -> Self {
-        match profile {
-            MediaDenseAudioProfile::DenseCurrent | MediaDenseAudioProfile::DenseRealfft => {
-                Self::default_dense()
-            }
-            MediaDenseAudioProfile::Dense8k => Self {
-                sample_rate: 8_000,
-                ..Self::default_dense()
-            },
-            MediaDenseAudioProfile::DenseHop2048 => {
-                Self::with_hop_preserving_target_zone(Self::default_dense(), 2048)
-            }
-            MediaDenseAudioProfile::Dense8kHop2048 => {
-                let config = Self {
-                    sample_rate: 8_000,
-                    ..Self::default_dense()
-                };
-                Self::with_hop_preserving_target_zone(config, 2048)
-            }
-            MediaDenseAudioProfile::Dense8kWindow1024Hop1024 => {
-                let config = Self {
-                    sample_rate: 8_000,
-                    window_samples: 1024,
-                    ..Self::default_dense()
-                };
-                Self::with_hop_preserving_target_zone(config, 1024)
-            }
-            MediaDenseAudioProfile::DenseMaxPeaks4 => Self {
-                max_peaks_per_frame: 4,
-                anchor_peaks_per_frame: 4,
-                target_peaks_per_frame: 4,
-                ..Self::default_dense()
-            },
-            MediaDenseAudioProfile::DensePairRetain16 => Self {
-                pair_candidate_retain: 16,
-                ..Self::default_dense()
-            },
-            MediaDenseAudioProfile::DenseGated => Self {
-                pair_candidate_retain: 12,
-                pair_fanout: 4,
-                anchor_peaks_per_frame: 3,
-                target_peaks_per_frame: 3,
-                ..Self::default_dense()
-            },
-            MediaDenseAudioProfile::DenseFastCombinedCandidate => {
-                let config = Self {
-                    sample_rate: 8_000,
-                    window_samples: 1024,
-                    max_peaks_per_frame: 4,
-                    pair_candidate_retain: 16,
-                    pair_fanout: 6,
-                    anchor_peaks_per_frame: 4,
-                    target_peaks_per_frame: 4,
-                    ..Self::default_dense()
-                };
-                Self::with_hop_preserving_target_zone(config, 2048)
-            }
-        }
-    }
-
-    pub(crate) fn default_dense() -> Self {
+    pub(crate) fn default_config() -> Self {
         Self {
             sample_rate: crate::tuning::V3_AUDIO_SAMPLE_RATE,
             window_samples: V3_AUDIO_WINDOW_SAMPLES,
@@ -125,27 +59,9 @@ impl AudioConstellationV3Config {
     pub(crate) fn with_sample_rate(sample_rate: u32) -> Self {
         Self {
             sample_rate,
-            ..Self::default_dense()
+            ..Self::default_config()
         }
     }
-
-    fn with_hop_preserving_target_zone(mut config: Self, hop_samples: usize) -> Self {
-        let old_hop = config.hop_samples.max(1);
-        config.hop_samples = hop_samples.max(1);
-        config.pair_min_delta_frames =
-            rescale_frame_delta(config.pair_min_delta_frames, old_hop, config.hop_samples).max(1);
-        config.pair_max_delta_frames =
-            rescale_frame_delta(config.pair_max_delta_frames, old_hop, config.hop_samples)
-                .max(config.pair_min_delta_frames + 1);
-        config.pair_delta_stride_frames =
-            rescale_frame_delta(config.pair_delta_stride_frames, old_hop, config.hop_samples)
-                .max(1);
-        config
-    }
-}
-
-fn rescale_frame_delta(delta: usize, old_hop: usize, new_hop: usize) -> usize {
-    ((delta.saturating_mul(old_hop) + (new_hop / 2)) / new_hop).max(1)
 }
 
 pub(crate) struct AudioConstellationV3PcmStream {
@@ -156,13 +72,6 @@ pub(crate) struct AudioConstellationV3PcmStream {
 }
 
 impl AudioConstellationV3PcmStream {
-    pub(crate) fn new(sample_rate: u32) -> Self {
-        Self::with_config(
-            AudioConstellationV3Config::with_sample_rate(sample_rate),
-            V3_AUDIO_VERIFY_LANDMARK_LIMIT,
-        )
-    }
-
     pub(crate) fn with_config(config: AudioConstellationV3Config, landmark_limit: usize) -> Self {
         Self {
             pending_byte: None,
@@ -730,44 +639,6 @@ impl AudioSpectralAnalyzerV3 {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn audio_constellation_landmarks_v3_from_pcm_streaming(
-    samples: &[i16],
-    sample_rate: u32,
-    duration_seconds: Option<f64>,
-) -> (Vec<AudioLandmarkV3>, MediaAudioStreamMetrics) {
-    let mut builder = AudioConstellationV3Builder::new(
-        AudioConstellationV3Config::with_sample_rate(sample_rate),
-        V3_AUDIO_VERIFY_LANDMARK_LIMIT,
-    );
-    builder.push_pcm_i16(samples);
-    let (landmarks, mut metrics) = builder.finish_with_metrics(duration_seconds);
-    metrics.streamed_samples = samples.len();
-    metrics.streamed_bytes = samples.len().saturating_mul(2);
-    (landmarks, metrics)
-}
-
-#[cfg(test)]
-pub(crate) fn audio_constellation_landmarks_v3_from_pcm_chunks(
-    chunks: &[&[i16]],
-    sample_rate: u32,
-    duration_seconds: Option<f64>,
-) -> (Vec<AudioLandmarkV3>, MediaAudioStreamMetrics) {
-    let mut builder = AudioConstellationV3Builder::new(
-        AudioConstellationV3Config::with_sample_rate(sample_rate),
-        V3_AUDIO_VERIFY_LANDMARK_LIMIT,
-    );
-    let mut samples = 0usize;
-    for chunk in chunks {
-        samples += chunk.len();
-        builder.push_pcm_i16(chunk);
-    }
-    let (landmarks, mut metrics) = builder.finish_with_metrics(duration_seconds);
-    metrics.streamed_samples = samples;
-    metrics.streamed_bytes = samples.saturating_mul(2);
-    (landmarks, metrics)
-}
-
 fn finish_bounded_audio_landmarks_v3(
     mut raw: Vec<AudioLandmarkV3>,
     duration_seconds: Option<f64>,
@@ -782,36 +653,6 @@ fn finish_bounded_audio_landmarks_v3(
         landmark_limit,
         duration_seconds,
     )
-}
-
-#[cfg(test)]
-fn finish_pcm_stream_for_test(
-    chunks: &[&[u8]],
-) -> Result<(Vec<AudioLandmarkV3>, MediaAudioStreamMetrics), MediaFingerprintError> {
-    let mut stream = AudioConstellationV3PcmStream::new(V3_AUDIO_SAMPLE_RATE);
-    for chunk in chunks {
-        stream.push_bytes(chunk)?;
-    }
-    stream.finish(None)
-}
-
-#[cfg(test)]
-pub(crate) fn audio_streaming_reference_overlap(
-    left: &[AudioLandmarkV3],
-    right: &[AudioLandmarkV3],
-) -> f64 {
-    if left.is_empty() || right.is_empty() {
-        return 0.0;
-    }
-    let left = left
-        .iter()
-        .map(|landmark| (landmark.hash, landmark.t_ms))
-        .collect::<HashSet<_>>();
-    let right = right
-        .iter()
-        .map(|landmark| (landmark.hash, landmark.t_ms))
-        .collect::<HashSet<_>>();
-    left.intersection(&right).count() as f64 / left.len().max(right.len()) as f64
 }
 
 fn v3_audio_bin_range(sample_rate: u32, window_samples: usize) -> (usize, usize) {
@@ -882,37 +723,6 @@ fn audio_spectral_peaks_from_fft_bins(
     peaks.truncate(max_peaks_per_frame);
     peaks.sort_by_key(|peak| peak.bin);
     peaks
-}
-
-#[cfg(test)]
-pub fn audio_constellation_stream_rejects_odd_trailing_byte_for_test(
-    bytes: &[u8],
-) -> Result<(), MediaFingerprintError> {
-    finish_pcm_stream_for_test(&[bytes]).map(|_| ())
-}
-
-#[cfg(test)]
-pub(crate) fn audio_constellation_streaming_decode_pcm_bytes_for_test(
-    bytes: &[u8],
-) -> Result<(Vec<AudioLandmarkV3>, MediaAudioStreamMetrics), MediaFingerprintError> {
-    finish_pcm_stream_for_test(&[bytes])
-}
-
-#[cfg(test)]
-pub(crate) fn audio_constellation_streaming_decode_split_bytes_for_test(
-    bytes: &[u8],
-) -> Result<MediaAudioStreamMetrics, MediaFingerprintError> {
-    let chunks = bytes.chunks(3).collect::<Vec<_>>();
-    finish_pcm_stream_for_test(&chunks).map(|(_, metrics)| metrics)
-}
-
-#[cfg(test)]
-pub fn audio_constellation_landmarks_v3_from_pcm(
-    samples: &[i16],
-    sample_rate: u32,
-    duration_seconds: Option<f64>,
-) -> Vec<AudioLandmarkV3> {
-    audio_constellation_landmarks_v3_from_pcm_streaming(samples, sample_rate, duration_seconds).0
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1014,6 +824,15 @@ fn audio_landmark_hash_v3(anchor_bin: usize, target_bin: usize, delta_frames: us
     let delta = audio_delta_bucket_v3(delta_frames).min(0x3ff);
     let packed = anchor_bin | (target_bin << 10) | (delta << 20);
     stable_hash_u64(packed.to_le_bytes()) as u32
+}
+
+fn stable_hash_u64(bytes: impl AsRef<[u8]>) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in bytes.as_ref() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 fn audio_frequency_band_v3(bin: usize) -> u32 {
@@ -1245,7 +1064,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         let selected =
-            select_audio_pair_targets_v3(candidates, AudioConstellationV3Config::default_dense());
+            select_audio_pair_targets_v3(candidates, AudioConstellationV3Config::default_config());
 
         assert!(
             selected
@@ -1338,32 +1157,5 @@ mod tests {
 
         assert!(body > edge, "body={body} edge={edge}");
         assert!(selected.len() <= 200);
-    }
-
-    #[test]
-    fn dense_fast_profile_lowers_pairing_cost_inputs() {
-        let current = AudioConstellationV3Config::dense(MediaDenseAudioProfile::DenseCurrent);
-        let fast =
-            AudioConstellationV3Config::dense(MediaDenseAudioProfile::DenseFastCombinedCandidate);
-
-        assert!(fast.sample_rate < current.sample_rate);
-        assert!(fast.hop_samples > current.hop_samples);
-        assert!(fast.max_peaks_per_frame < current.max_peaks_per_frame);
-        assert!(fast.pair_candidate_retain < current.pair_candidate_retain);
-    }
-
-    #[test]
-    fn dense_gated_profile_preserves_spectral_defaults_but_limits_pairing() {
-        let current = AudioConstellationV3Config::dense(MediaDenseAudioProfile::DenseCurrent);
-        let gated = AudioConstellationV3Config::dense(MediaDenseAudioProfile::DenseGated);
-
-        assert_eq!(gated.sample_rate, current.sample_rate);
-        assert_eq!(gated.window_samples, current.window_samples);
-        assert_eq!(gated.hop_samples, current.hop_samples);
-        assert_eq!(gated.max_peaks_per_frame, current.max_peaks_per_frame);
-        assert!(gated.anchor_peaks_per_frame < current.anchor_peaks_per_frame);
-        assert!(gated.target_peaks_per_frame < current.target_peaks_per_frame);
-        assert!(gated.pair_candidate_retain < current.pair_candidate_retain);
-        assert!(gated.pair_fanout < current.pair_fanout);
     }
 }

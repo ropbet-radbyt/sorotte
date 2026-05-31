@@ -3,10 +3,7 @@ use std::{collections::BTreeMap, path::Path};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    anchors::{AudioAnchor, VideoAnchor},
-    identity::normalize_media_path,
-    settings::MediaExtractionSettings,
-    video_v3::VideoFingerprint,
+    anchors::AudioAnchor, identity::normalize_media_path, settings::MediaExtractionSettings,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -26,8 +23,6 @@ pub enum MatchClassV3 {
     SameCutStrong,
     SameCutProbable,
     SameMediaDifferentCut,
-    SameVideoDifferentAudio,
-    SameAudioDifferentVideo,
     PartialOverlap,
     SharedIntroOutroOnly,
     Reject,
@@ -44,13 +39,10 @@ pub struct AlignedSegmentV3 {
     #[serde(default)]
     pub audio_pairs: usize,
     #[serde(default)]
-    pub video_pairs: usize,
-    #[serde(default)]
     pub weighted_score: u32,
     #[serde(default)]
     pub residual_ms: f64,
     pub audio_score: f32,
-    pub video_score: f32,
     pub confidence: f32,
 }
 
@@ -65,8 +57,6 @@ pub struct MediaTimelineMapV3 {
     pub largest_gap_ms: u32,
     #[serde(default)]
     pub edge_only: bool,
-    #[serde(default)]
-    pub audio_video_conflict: bool,
     #[serde(default)]
     pub best_segment_score: u32,
     #[serde(default)]
@@ -141,9 +131,6 @@ pub struct MediaMatchSettings {
     pub autoplay_policy: MediaMatchAutoplayPolicy,
     pub audio_strong_similarity: f64,
     pub audio_probable_similarity: f64,
-    pub video_strong_coverage: f64,
-    pub video_probable_coverage: f64,
-    pub video_weak_coverage: f64,
     pub max_alignment_drift_ratio: f64,
 }
 
@@ -158,9 +145,6 @@ impl Default for MediaMatchSettings {
             autoplay_policy: MediaMatchAutoplayPolicy::DiagnosticsOnly,
             audio_strong_similarity: 0.90,
             audio_probable_similarity: 0.68,
-            video_strong_coverage: 0.66,
-            video_probable_coverage: 0.55,
-            video_weak_coverage: 0.18,
             max_alignment_drift_ratio: 0.015,
         }
     }
@@ -201,7 +185,6 @@ impl MediaMatchDecision {
             evidence: MediaMatchEvidence {
                 metadata: MetadataMatchEvidence::default(),
                 audio: None,
-                video: None,
                 alignment: None,
                 v3_class: None,
                 timeline_map_v3: None,
@@ -216,7 +199,6 @@ impl MediaMatchDecision {
 pub struct MediaMatchEvidence {
     pub metadata: MetadataMatchEvidence,
     pub audio: Option<AudioMatchEvidence>,
-    pub video: Option<VideoMatchEvidence>,
     pub alignment: Option<MediaTimelineAlignment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub v3_class: Option<MatchClassV3>,
@@ -242,31 +224,16 @@ pub struct AudioMatchEvidence {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VideoMatchEvidence {
-    pub aligned_pairs: usize,
-    pub query_coverage: f64,
-    pub candidate_coverage: f64,
-    pub best_offset_seconds: f64,
-    pub drift_ratio: f64,
-    pub mean_hamming_distance: f64,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MediaFingerprintRecord {
     pub identity: MediaFileIdentity,
     pub algorithm_version: u32,
     pub extraction_settings: MediaExtractionSettings,
     pub duration_seconds: Option<f64>,
     pub container_fingerprint: String,
-    pub video: Option<VideoFingerprint>,
     #[serde(default)]
     pub audio_anchors: Vec<AudioAnchor>,
     #[serde(default)]
-    pub video_anchors: Vec<VideoAnchor>,
-    #[serde(default)]
     pub audio_error: Option<String>,
-    #[serde(default)]
-    pub video_error: Option<String>,
 }
 
 impl MediaFingerprintRecord {
@@ -354,7 +321,6 @@ pub struct MediaTimelineAlignment {
     pub drift_ratio: f64,
     pub aligned_pairs: usize,
     pub aligned_audio_anchors: usize,
-    pub aligned_video_anchors: usize,
     pub aligned_span_seconds: f64,
     pub second_best_offset_margin: f64,
     pub first_query_second: f64,

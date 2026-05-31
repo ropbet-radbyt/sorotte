@@ -9,12 +9,11 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
 use crate::{
-    MEDIA_MATCH_ALGORITHM_VERSION, MEDIA_MATCH_ANCHOR_VERSION,
+    MEDIA_MATCH_ALGORITHM_VERSION,
     anchors::{
         MediaFingerprintBlobV3, audio_index_landmarks_v3_from_record,
         decode_media_fingerprint_blob_v3, encode_media_fingerprint_blob_v3,
         media_fingerprint_blob_v3_from_record, media_fingerprint_record_apply_blob_v3,
-        video_index_landmarks_v3_from_record,
     },
     identity::container_fingerprint_from_metadata,
     settings::{
@@ -27,31 +26,13 @@ use crate::{
         current_v3_tuning,
     },
     types::{MediaFileIdentity, MediaFingerprintRecord, MediaMatchCache},
-    video_v3::validate_video_landmarks_v3,
 };
 
-const MEDIA_MATCH_V3_SQLITE_SCHEMA_VERSION: i64 = 4;
+const MEDIA_MATCH_V3_SQLITE_SCHEMA_VERSION: i64 = 5;
 const MEDIA_MATCH_V3_INDEX_FILE: &str = "index-v3.sqlite3";
-const MEDIA_MATCH_V3_MODALITY_AUDIO: i64 = 1;
-const MEDIA_MATCH_V3_MODALITY_VIDEO: i64 = 2;
 const MEDIA_MATCH_V3_ANCHOR_STATS_DIRTY_PREFIX: &str = "anchor_stats_v3_dirty:";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MediaMatchV3IndexPaths {
-    pub root: PathBuf,
-    pub index_path: PathBuf,
-}
-
-impl MediaMatchV3IndexPaths {
-    pub fn new(root: &Path) -> Self {
-        Self {
-            root: root.to_path_buf(),
-            index_path: media_match_v3_index_path(root),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaMatchV3RetrievalStats {
     pub retrieval_strategy: String,
@@ -67,33 +48,30 @@ pub struct MediaMatchV3RetrievalStats {
     pub query_anchor_load_millis: u128,
     pub common_bucket_filter_millis: u128,
     pub sql_hit_fetch_millis: u128,
-    pub temp_table_create_millis: u128,
-    pub temp_table_insert_millis: u128,
-    pub temp_table_index_millis: u128,
-    pub temp_table_drop_millis: u128,
-    pub sql_prepare_millis: u128,
-    pub sql_execute_millis: u128,
     pub rust_aggregation_millis: u128,
     pub candidate_metadata_load_millis: u128,
     pub robust_rerank_millis: u128,
     pub candidate_sort_millis: u128,
-    pub retrieved_candidate_detail_build_millis: u128,
-    pub retrieved_path_load_millis: u128,
-    pub report_candidate_attach_millis: u128,
-    pub path_lookup_millis: u128,
-    pub explain_query_plan_millis: u128,
-    pub stats_refresh_ran: bool,
-    pub stats_buckets_refreshed: i64,
-    pub stats_anchor_rows_scanned: i64,
-    pub anchor_stats_dirty_before_run: bool,
-    pub anchor_stats_refreshed: bool,
-    pub anchor_stats_refresh_millis: u128,
-    pub anchor_stats_dirty_after_run: bool,
-    pub query_anchor_count: i64,
-    pub query_buckets_after_common_skip: i64,
-    pub sql_rows_returned: i64,
-    pub candidates_aggregated: i64,
     pub candidates_returned: i64,
+}
+
+impl MediaMatchV3RetrievalStats {
+    fn finish_timing(&mut self, started_at: Instant) {
+        self.retrieval_elapsed_ms = started_at.elapsed().as_millis();
+        self.retrieval_measured_stage_millis = self
+            .stats_dirty_check_millis
+            .saturating_add(self.stats_refresh_millis)
+            .saturating_add(self.query_anchor_load_millis)
+            .saturating_add(self.common_bucket_filter_millis)
+            .saturating_add(self.sql_hit_fetch_millis)
+            .saturating_add(self.rust_aggregation_millis)
+            .saturating_add(self.candidate_metadata_load_millis)
+            .saturating_add(self.robust_rerank_millis)
+            .saturating_add(self.candidate_sort_millis);
+        self.retrieval_unaccounted_millis = self
+            .retrieval_elapsed_ms
+            .saturating_sub(self.retrieval_measured_stage_millis);
+    }
 }
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize, Default, PartialEq)]
@@ -149,42 +127,10 @@ pub struct MediaMatchV3CompressedPostingsEstimate {
     pub worst_bucket_bytes: u64,
 }
 
-impl MediaMatchV3RetrievalStats {
-    fn measured_stage_millis(&self) -> u128 {
-        self.stats_dirty_check_millis
-            .saturating_add(self.stats_refresh_millis)
-            .saturating_add(self.query_anchor_load_millis)
-            .saturating_add(self.common_bucket_filter_millis)
-            .saturating_add(self.temp_table_create_millis)
-            .saturating_add(self.temp_table_insert_millis)
-            .saturating_add(self.temp_table_index_millis)
-            .saturating_add(self.temp_table_drop_millis)
-            .saturating_add(self.sql_prepare_millis)
-            .saturating_add(self.sql_execute_millis)
-            .saturating_add(self.rust_aggregation_millis)
-            .saturating_add(self.candidate_metadata_load_millis)
-            .saturating_add(self.robust_rerank_millis)
-            .saturating_add(self.candidate_sort_millis)
-            .saturating_add(self.retrieved_candidate_detail_build_millis)
-            .saturating_add(self.retrieved_path_load_millis)
-            .saturating_add(self.report_candidate_attach_millis)
-            .saturating_add(self.explain_query_plan_millis)
-    }
-
-    fn finish_timing(&mut self, started_at: Instant) {
-        self.retrieval_elapsed_ms = started_at.elapsed().as_millis();
-        self.retrieval_measured_stage_millis = self.measured_stage_millis();
-        self.retrieval_unaccounted_millis = self
-            .retrieval_elapsed_ms
-            .saturating_sub(self.retrieval_measured_stage_millis);
-    }
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum MediaMatchV3RetrievalStrategy {
     #[default]
     Auto,
-    TempTable,
     BucketFetch,
 }
 
@@ -192,7 +138,6 @@ impl MediaMatchV3RetrievalStrategy {
     pub fn label(self) -> &'static str {
         match self {
             Self::Auto => "auto",
-            Self::TempTable => "temp-table",
             Self::BucketFetch => "bucket-fetch",
         }
     }
@@ -213,7 +158,6 @@ pub struct MediaMatchV3RetrievedCandidate {
     pub edge_region_count: i64,
     pub approximate_span_ms: i64,
     pub audio_hits: i64,
-    pub video_hits: i64,
     pub score_ratio_to_next: Option<f64>,
     pub query_duration_ms: Option<i64>,
     pub candidate_duration_ms: Option<i64>,
@@ -232,7 +176,8 @@ pub struct MediaMatchV3SaveStats {
 
 #[derive(Debug, Clone, Default)]
 struct V3CandidateRetrievalScore {
-    file_id: i64,
+    normalized_path: String,
+    query_duration_ms: Option<i64>,
     candidate_duration_ms: Option<i64>,
     total_score: i64,
     best_offset_bin: i64,
@@ -243,7 +188,6 @@ struct V3CandidateRetrievalScore {
     body_region_count: i64,
     edge_region_count: i64,
     audio_hits: i64,
-    video_hits: i64,
     approximate_span_ms: i64,
     robust_score: i128,
     duration_compatibility: V3DurationCompatibility,
@@ -261,19 +205,7 @@ struct V3CandidateOffsetScore {
     query_times: BTreeSet<i64>,
     candidate_times: BTreeSet<i64>,
     audio_hits: i64,
-    video_hits: i64,
 }
-
-#[derive(Debug, Clone, Copy)]
-struct V3QueryAnchor {
-    modality: i64,
-    bucket: i64,
-    t_ms: i64,
-    weight: i64,
-    document_frequency: i64,
-}
-
-type V3HitRow = (i64, i64, i64, i64, i64, i64, Option<i64>);
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum V3DurationCompatibility {
@@ -281,7 +213,7 @@ enum V3DurationCompatibility {
     Unknown,
     Compatible,
     QueryFullCandidateShort,
-    CandidateFullQueryShort,
+    Incompatible,
 }
 
 impl V3DurationCompatibility {
@@ -290,336 +222,27 @@ impl V3DurationCompatibility {
             Self::Unknown => "unknown",
             Self::Compatible => "compatible",
             Self::QueryFullCandidateShort => "query-full-candidate-short",
-            Self::CandidateFullQueryShort => "candidate-full-query-short",
+            Self::Incompatible => "incompatible",
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-struct MediaMatchV3AnchorStatsRefreshStats {
-    dirty_check_millis: u128,
-    refresh_millis: u128,
-    refresh_ran: bool,
-    buckets_refreshed: i64,
-    anchor_rows_scanned: i64,
-    dirty_before: bool,
-    dirty_after: bool,
 }
 
 pub fn media_match_v3_index_path(root: &Path) -> PathBuf {
-    root.join("cache")
-        .join("media-match")
-        .join(MEDIA_MATCH_V3_INDEX_FILE)
-}
-
-pub fn media_match_v3_sqlite_size_report(
-    root: &Path,
-    connection: &Connection,
-) -> Result<MediaMatchV3SqliteSizeReport, String> {
-    let database_path = media_match_v3_index_path(root);
-    let page_size = sqlite_pragma_u64(connection, "page_size")?;
-    let page_count = sqlite_pragma_u64(connection, "page_count")?;
-    let freelist_count = sqlite_pragma_u64(connection, "freelist_count")?;
-    let total_bytes = page_size.saturating_mul(page_count);
-    let free_bytes = page_size.saturating_mul(freelist_count);
-    let live_bytes = total_bytes.saturating_sub(free_bytes);
-    let (dbstat_available, object_bytes) = sqlite_object_bytes(connection)?;
-    let object_byte = |name: &str| {
-        object_bytes
-            .iter()
-            .find(|object| object.name == name)
-            .map(|object| object.bytes)
-            .unwrap_or(0)
-    };
-    let row_counts = sqlite_row_counts(connection, &object_bytes)?;
-    let row_count = |table: &str| {
-        row_counts
-            .iter()
-            .find(|row| row.table == table)
-            .map(|row| row.row_count)
-            .unwrap_or(0)
-    };
-    let anchor_rows = row_count("anchor_occurrences_v3").max(row_count("anchor_index_v3"));
-    let fingerprint_rows = row_count("fingerprints_v3");
-    let anchor_index_bytes = object_bytes
-        .iter()
-        .filter(|object| {
-            object.name.contains("anchor_occurrences_v3")
-                || object.name.contains("anchor_buckets_v3")
-                || object.name.contains("anchor_index_v3")
-                || object.name.contains("anchor_stats_v3")
-        })
-        .map(|object| object.bytes)
-        .sum::<u64>();
-    let db_index_bytes = object_bytes
-        .iter()
-        .filter(|object| object.object_type == "index")
-        .map(|object| object.bytes)
-        .sum::<u64>();
-    let fingerprint_blob_bytes = connection
-        .query_row(
-            "SELECT COALESCE(SUM(
-                COALESCE(length(audio_blob), 0) + COALESCE(length(video_blob), 0)
-             ), 0)
-             FROM fingerprints_v3",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .unwrap_or(0)
-        .max(0) as u64;
-    let media_file_bytes =
-        object_byte("media_files_v3") + object_byte("sqlite_autoindex_media_files_v3_1");
-    let metadata_bytes = object_byte("metadata")
-        + object_byte("settings_v3")
-        + object_byte("sqlite_autoindex_settings_v3_1");
-    let compressed_postings_estimate =
-        estimate_compressed_postings_size_v3(connection, anchor_index_bytes).ok();
-    Ok(MediaMatchV3SqliteSizeReport {
-        database_path: database_path.display().to_string(),
-        page_size,
-        page_count,
-        freelist_count,
-        total_bytes,
-        live_bytes,
-        free_bytes,
-        dbstat_available,
-        object_bytes,
-        row_counts,
-        anchor_index_bytes,
-        anchor_index_bytes_per_anchor: ratio_u64(anchor_index_bytes, anchor_rows),
-        fingerprint_blob_bytes,
-        media_file_bytes,
-        metadata_bytes,
-        db_index_bytes,
-        db_bytes_per_fingerprint: ratio_u64(total_bytes, fingerprint_rows),
-        db_bytes_per_anchor: ratio_u64(total_bytes, anchor_rows),
-        compressed_postings_estimate,
-    })
-}
-
-fn sqlite_pragma_u64(connection: &Connection, pragma_name: &str) -> Result<u64, String> {
-    let sql = format!("PRAGMA {pragma_name}");
-    connection
-        .query_row(&sql, [], |row| row.get::<_, i64>(0))
-        .map(|value| value.max(0) as u64)
-        .map_err(|error| format!("failed reading SQLite PRAGMA {pragma_name}: {error}"))
-}
-
-fn sqlite_object_bytes(
-    connection: &Connection,
-) -> Result<(bool, Vec<MediaMatchV3SqliteObjectBytes>), String> {
-    let mut statement = match connection.prepare(
-        "SELECT stat.name,
-                COALESCE(master.type, CASE WHEN stat.name LIKE 'sqlite_autoindex%' THEN 'index' ELSE 'unknown' END),
-                SUM(stat.pgsize)
-         FROM dbstat stat
-         LEFT JOIN sqlite_master master ON master.name = stat.name
-         GROUP BY stat.name, master.type
-         ORDER BY stat.name",
-    ) {
-        Ok(statement) => statement,
-        Err(_) => return Ok((false, Vec::new())),
-    };
-    let rows = statement
-        .query_map([], |row| {
-            Ok(MediaMatchV3SqliteObjectBytes {
-                name: row.get::<_, String>(0)?,
-                object_type: row.get::<_, String>(1)?,
-                bytes: row.get::<_, i64>(2)?.max(0) as u64,
-            })
-        })
-        .map_err(|error| format!("failed reading SQLite dbstat rows: {error}"))?;
-    Ok((true, rows.flatten().collect()))
-}
-
-fn sqlite_row_counts(
-    connection: &Connection,
-    object_bytes: &[MediaMatchV3SqliteObjectBytes],
-) -> Result<Vec<MediaMatchV3SqliteRowCount>, String> {
-    let known_tables = [
-        "settings_v3",
-        "media_files_v3",
-        "fingerprints_v3",
-        "anchor_buckets_v3",
-        "anchor_occurrences_v3",
-        "anchor_index_v3",
-        "anchor_stats_v3",
-        "metadata",
-    ];
-    let mut rows = Vec::new();
-    for table in known_tables {
-        if !sqlite_table_exists(connection, table)? {
-            continue;
-        }
-        let sql = format!("SELECT COUNT(*) FROM {table}");
-        let row_count = connection
-            .query_row(&sql, [], |row| row.get::<_, i64>(0))
-            .unwrap_or(0)
-            .max(0) as u64;
-        let bytes = object_bytes
-            .iter()
-            .filter(|object| object.name == table || object.name.contains(table))
-            .map(|object| object.bytes)
-            .sum::<u64>();
-        rows.push(MediaMatchV3SqliteRowCount {
-            table: table.to_owned(),
-            row_count,
-            avg_bytes_per_row: (row_count > 0).then(|| bytes as f64 / row_count as f64),
-        });
-    }
-    Ok(rows)
-}
-
-fn sqlite_table_exists(connection: &Connection, table: &str) -> Result<bool, String> {
-    connection
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
-            [table],
-            |_| Ok(()),
-        )
-        .optional()
-        .map(|value| value.is_some())
-        .map_err(|error| format!("failed checking SQLite table '{table}': {error}"))
-}
-
-fn sqlite_table_has_column(
-    connection: &Connection,
-    table: &str,
-    column: &str,
-) -> Result<bool, String> {
-    let sql = format!("PRAGMA table_info({table})");
-    let mut statement = connection
-        .prepare(&sql)
-        .map_err(|error| format!("failed preparing SQLite table info for '{table}': {error}"))?;
-    let rows = statement
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(|error| format!("failed reading SQLite table info for '{table}': {error}"))?;
-    Ok(rows.flatten().any(|name| name == column))
-}
-
-fn ratio_u64(numerator: u64, denominator: u64) -> f64 {
-    if denominator == 0 {
-        0.0
-    } else {
-        numerator as f64 / denominator as f64
-    }
-}
-
-fn estimate_compressed_postings_size_v3(
-    connection: &Connection,
-    current_occurrence_bytes: u64,
-) -> Result<MediaMatchV3CompressedPostingsEstimate, String> {
-    if !sqlite_table_exists(connection, "anchor_occurrences_v3")? {
-        return Err("compact anchor occurrence table is unavailable".to_owned());
-    }
-    let mut statement = connection
-        .prepare(
-            "SELECT bucket_id, file_id, t_ms, weight
-             FROM anchor_occurrences_v3
-             ORDER BY bucket_id, file_id, t_ms",
-        )
-        .map_err(|error| format!("failed preparing compressed postings estimate: {error}"))?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, u64>(0)?,
-                row.get::<_, u64>(1)?,
-                row.get::<_, u64>(2)?,
-                row.get::<_, u64>(3)?,
-            ))
-        })
-        .map_err(|error| format!("failed querying compressed postings estimate: {error}"))?;
-
-    let mut estimated_postings_bytes = 0u64;
-    let mut bucket_count = 0u64;
-    let mut occurrence_count = 0u64;
-    let mut best_bucket_bytes = u64::MAX;
-    let mut worst_bucket_bytes = 0u64;
-    let mut current_bucket = None;
-    let mut current_bucket_bytes = 0u64;
-    let mut previous_file_id = 0u64;
-    let mut previous_t_ms = 0u64;
-
-    for row in rows {
-        let (bucket_id, file_id, t_ms, weight) =
-            row.map_err(|error| format!("failed reading compressed postings row: {error}"))?;
-        if current_bucket != Some(bucket_id) {
-            if current_bucket.is_some() {
-                best_bucket_bytes = best_bucket_bytes.min(current_bucket_bytes);
-                worst_bucket_bytes = worst_bucket_bytes.max(current_bucket_bytes);
-            }
-            current_bucket = Some(bucket_id);
-            bucket_count += 1;
-            previous_file_id = 0;
-            previous_t_ms = 0;
-            let bucket_header_bytes = varint_len_u64(bucket_id);
-            current_bucket_bytes = bucket_header_bytes;
-            estimated_postings_bytes = estimated_postings_bytes.saturating_add(bucket_header_bytes);
-        }
-        let file_delta = file_id.saturating_sub(previous_file_id);
-        let t_delta = if file_id == previous_file_id {
-            t_ms.saturating_sub(previous_t_ms)
-        } else {
-            t_ms
-        };
-        let row_bytes = varint_len_u64(file_delta)
-            .saturating_add(varint_len_u64(t_delta))
-            .saturating_add(varint_len_u64(weight));
-        current_bucket_bytes = current_bucket_bytes.saturating_add(row_bytes);
-        estimated_postings_bytes = estimated_postings_bytes.saturating_add(row_bytes);
-        previous_file_id = file_id;
-        previous_t_ms = t_ms;
-        occurrence_count += 1;
-    }
-    if current_bucket.is_some() {
-        best_bucket_bytes = best_bucket_bytes.min(current_bucket_bytes);
-        worst_bucket_bytes = worst_bucket_bytes.max(current_bucket_bytes);
-    }
-    if best_bucket_bytes == u64::MAX {
-        best_bucket_bytes = 0;
-    }
-    estimated_postings_bytes =
-        estimated_postings_bytes.saturating_add(bucket_count.saturating_mul(2));
-    let estimated_savings_percent = if current_occurrence_bytes == 0 {
-        0.0
-    } else {
-        let savings = current_occurrence_bytes.saturating_sub(estimated_postings_bytes);
-        (savings as f64 * 100.0) / current_occurrence_bytes as f64
-    };
-    Ok(MediaMatchV3CompressedPostingsEstimate {
-        estimated_postings_bytes,
-        current_occurrence_bytes,
-        estimated_savings_percent,
-        bucket_count,
-        occurrence_count,
-        best_bucket_bytes,
-        worst_bucket_bytes,
-    })
-}
-
-fn varint_len_u64(mut value: u64) -> u64 {
-    let mut bytes = 1;
-    while value >= 0x80 {
-        value >>= 7;
-        bytes += 1;
-    }
-    bytes
+    root.join(MEDIA_MATCH_V3_INDEX_FILE)
 }
 
 pub fn open_media_match_v3_index(root: &Path) -> Result<Connection, String> {
-    let paths = MediaMatchV3IndexPaths::new(root);
-    if let Some(parent) = paths.index_path.parent() {
-        fs::create_dir_all(parent).map_err(|error| {
-            format!(
-                "failed creating media-match cache directory '{}': {error}",
-                parent.display()
-            )
-        })?;
-    }
-    let connection = Connection::open(&paths.index_path).map_err(|error| {
+    fs::create_dir_all(root).map_err(|error| {
         format!(
-            "failed opening media-match SQLite index '{}': {error}",
-            paths.index_path.display()
+            "failed creating media-match V3 index directory '{}': {error}",
+            root.display()
+        )
+    })?;
+    let path = media_match_v3_index_path(root);
+    let connection = Connection::open(&path).map_err(|error| {
+        format!(
+            "failed opening media-match V3 index '{}': {error}",
+            path.display()
         )
     })?;
     initialize_media_match_v3_index(&connection)?;
@@ -630,213 +253,63 @@ pub fn initialize_media_match_v3_index(connection: &Connection) -> Result<(), St
     connection
         .execute_batch(
             "
-            PRAGMA foreign_keys = ON;
+            PRAGMA journal_mode = WAL;
             PRAGMA synchronous = NORMAL;
+            PRAGMA foreign_keys = ON;
             PRAGMA temp_store = MEMORY;
-            PRAGMA cache_size = -65536;
             ",
         )
-        .map_err(|error| format!("failed configuring media-match V3 SQLite index: {error}"))?;
-    let current_version = connection
-        .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
-        .unwrap_or(0);
-    if current_version != 0 && current_version != MEDIA_MATCH_V3_SQLITE_SCHEMA_VERSION {
-        if can_migrate_media_match_v3_compact_schema(connection)? {
-            migrate_media_match_v3_compact_schema(connection)?;
-        } else {
-            reset_media_match_v3_schema(connection)?;
-        }
+        .map_err(|error| format!("failed configuring media-match V3 SQLite pragmas: {error}"))?;
+    let version = sqlite_schema_version(connection)?;
+    if version != MEDIA_MATCH_V3_SQLITE_SCHEMA_VERSION {
+        reset_media_match_v3_schema(connection)?;
     }
-    create_media_match_v3_schema(connection)?;
-    connection
-        .pragma_update(None, "user_version", MEDIA_MATCH_V3_SQLITE_SCHEMA_VERSION)
-        .map_err(|error| format!("failed setting media-match V3 schema version: {error}"))?;
     Ok(())
 }
 
-fn can_migrate_media_match_v3_compact_schema(connection: &Connection) -> Result<bool, String> {
-    Ok(sqlite_table_exists(connection, "fingerprints_v3")?
-        && sqlite_table_exists(connection, "anchor_index_v3")?
-        && sqlite_table_has_column(connection, "fingerprints_v3", "settings_hash")?
-        && sqlite_table_has_column(connection, "anchor_index_v3", "settings_hash")?)
-}
-
-fn migrate_media_match_v3_compact_schema(connection: &Connection) -> Result<(), String> {
-    let now = current_unix_millis() as i64;
+fn sqlite_schema_version(connection: &Connection) -> Result<i64, String> {
+    if !sqlite_table_exists(connection, "metadata")? {
+        return Ok(0);
+    }
     connection
-        .execute_batch(
-            "
-            DROP TABLE IF EXISTS fingerprints_v3_old_compact_migration;
-            DROP TABLE IF EXISTS anchor_index_v3_old_compact_migration;
-            ALTER TABLE fingerprints_v3 RENAME TO fingerprints_v3_old_compact_migration;
-            ALTER TABLE anchor_index_v3 RENAME TO anchor_index_v3_old_compact_migration;
-            DROP TABLE IF EXISTS anchor_stats_v3;
-            ",
-        )
-        .map_err(|error| format!("failed preparing media-match V3 compact migration: {error}"))?;
-    create_media_match_v3_schema(connection)?;
-    connection
-        .execute(
-            "INSERT OR IGNORE INTO settings_v3 (
-                settings_hash,
-                algorithm_version,
-                fingerprint_cache_version,
-                profile,
-                tuning_json,
-                created_unix_millis
-            )
-            SELECT settings_hash,
-                   algorithm_version,
-                   ?1,
-                   'migrated',
-                   NULL,
-                   ?2
-            FROM (
-                SELECT DISTINCT settings_hash, algorithm_version
-                FROM fingerprints_v3_old_compact_migration
-                UNION
-                SELECT DISTINCT settings_hash, algorithm_version
-                FROM anchor_index_v3_old_compact_migration
-            )",
-            params![i64::from(MEDIA_MATCH_V3_FINGERPRINT_CACHE_VERSION), now],
-        )
-        .map_err(|error| format!("failed migrating media-match V3 settings rows: {error}"))?;
-    connection
-        .execute(
-            "INSERT OR REPLACE INTO fingerprints_v3 (
-                file_id,
-                settings_id,
-                status,
-                duration_ms,
-                audio_blob,
-                video_blob,
-                audio_verify_count,
-                video_verify_count,
-                audio_index_count,
-                video_index_count,
-                error,
-                updated_unix_millis
-            )
-            SELECT old.file_id,
-                   settings.settings_id,
-                   old.status,
-                   old.duration_ms,
-                   old.audio_blob,
-                   old.video_blob,
-                   old.audio_verify_count,
-                   old.video_verify_count,
-                   old.audio_index_count,
-                   old.video_index_count,
-                   old.error,
-                   old.updated_unix_millis
-            FROM fingerprints_v3_old_compact_migration old
-            JOIN settings_v3 settings ON settings.settings_hash = old.settings_hash",
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'schema_version'",
             [],
+            |row| row.get::<_, String>(0),
         )
-        .map_err(|error| format!("failed migrating media-match V3 fingerprint rows: {error}"))?;
-    connection
-        .execute(
-            "INSERT OR IGNORE INTO anchor_buckets_v3 (
-                settings_id,
-                modality,
-                bucket,
-                document_frequency,
-                updated_unix_millis
-            )
-            SELECT settings.settings_id,
-                   old.modality,
-                   old.bucket,
-                   0,
-                   ?1
-            FROM anchor_index_v3_old_compact_migration old
-            JOIN settings_v3 settings ON settings.settings_hash = old.settings_hash
-            GROUP BY settings.settings_id, old.modality, old.bucket",
-            [now],
-        )
-        .map_err(|error| format!("failed migrating media-match V3 anchor bucket rows: {error}"))?;
-    connection
-        .execute(
-            "INSERT OR REPLACE INTO anchor_occurrences_v3 (
-                bucket_id,
-                file_id,
-                t_ms,
-                weight
-            )
-            SELECT bucket.bucket_id,
-                   old.file_id,
-                   old.t_ms,
-                   old.weight
-            FROM anchor_index_v3_old_compact_migration old
-            JOIN settings_v3 settings ON settings.settings_hash = old.settings_hash
-            JOIN anchor_buckets_v3 bucket
-              ON bucket.settings_id = settings.settings_id
-             AND bucket.modality = old.modality
-             AND bucket.bucket = old.bucket",
-            [],
-        )
-        .map_err(|error| {
-            format!("failed migrating media-match V3 anchor occurrence rows: {error}")
-        })?;
-    refresh_all_anchor_stats_v3(connection, now)?;
-    connection
-        .execute_batch(
-            "
-            DROP TABLE IF EXISTS fingerprints_v3_old_compact_migration;
-            DROP TABLE IF EXISTS anchor_index_v3_old_compact_migration;
-            DELETE FROM metadata WHERE key LIKE 'anchor_stats_v3_dirty:%';
-            ANALYZE;
-            VACUUM;
-            ",
-        )
-        .map_err(|error| format!("failed finalizing media-match V3 compact migration: {error}"))?;
-    Ok(())
+        .optional()
+        .map_err(|error| format!("failed reading media-match V3 schema version: {error}"))?
+        .and_then(|value| value.parse::<i64>().ok())
+        .map_or(Ok(0), Ok)
 }
 
 fn reset_media_match_v3_schema(connection: &Connection) -> Result<(), String> {
     connection
         .execute_batch(
             "
-            DROP TABLE IF EXISTS anchor_occurrences_v3;
-            DROP TABLE IF EXISTS anchor_buckets_v3;
-            DROP TABLE IF EXISTS anchor_stats_v3;
-            DROP TABLE IF EXISTS anchor_index_v3;
+            DROP TABLE IF EXISTS audio_anchor_occurrences_v3;
+            DROP TABLE IF EXISTS audio_anchor_buckets_v3;
             DROP TABLE IF EXISTS fingerprints_v3;
             DROP TABLE IF EXISTS settings_v3;
             DROP TABLE IF EXISTS media_files_v3;
             DROP TABLE IF EXISTS metadata;
-            VACUUM;
-            ",
-        )
-        .map_err(|error| format!("failed resetting media-match V3 SQLite schema: {error}"))
-}
 
-fn create_media_match_v3_schema(connection: &Connection) -> Result<(), String> {
-    connection
-        .execute_batch(
-            "
-            DROP TABLE IF EXISTS fingerprints_v1;
-            DROP TABLE IF EXISTS audio_anchors;
-            DROP TABLE IF EXISTS video_anchors;
-            DROP TABLE IF EXISTS fingerprints;
-            DROP TABLE IF EXISTS media_files;
-            CREATE TABLE IF NOT EXISTS metadata (
+            CREATE TABLE metadata (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
-            CREATE TABLE IF NOT EXISTS media_files_v3 (
+
+            CREATE TABLE media_files_v3 (
                 file_id INTEGER PRIMARY KEY,
                 normalized_path TEXT NOT NULL UNIQUE,
                 modified_unix_millis INTEGER NOT NULL,
                 size_bytes INTEGER NOT NULL,
                 duration_ms INTEGER,
-                container_format TEXT,
-                video_codec TEXT,
-                audio_codec TEXT,
-                width INTEGER,
-                height INTEGER,
+                container_fingerprint TEXT NOT NULL,
                 updated_unix_millis INTEGER NOT NULL
             );
-            CREATE TABLE IF NOT EXISTS settings_v3 (
+
+            CREATE TABLE settings_v3 (
                 settings_id INTEGER PRIMARY KEY,
                 settings_hash BLOB NOT NULL UNIQUE,
                 algorithm_version INTEGER NOT NULL,
@@ -845,366 +318,284 @@ fn create_media_match_v3_schema(connection: &Connection) -> Result<(), String> {
                 tuning_json TEXT,
                 created_unix_millis INTEGER NOT NULL
             );
-            CREATE TABLE IF NOT EXISTS fingerprints_v3 (
+
+            CREATE TABLE fingerprints_v3 (
                 file_id INTEGER NOT NULL,
                 settings_id INTEGER NOT NULL,
-                status TEXT NOT NULL,
                 duration_ms INTEGER,
                 audio_blob BLOB,
-                video_blob BLOB,
                 audio_verify_count INTEGER NOT NULL DEFAULT 0,
-                video_verify_count INTEGER NOT NULL DEFAULT 0,
                 audio_index_count INTEGER NOT NULL DEFAULT 0,
-                video_index_count INTEGER NOT NULL DEFAULT 0,
                 error TEXT,
                 updated_unix_millis INTEGER NOT NULL,
                 PRIMARY KEY (file_id, settings_id),
                 FOREIGN KEY (file_id) REFERENCES media_files_v3(file_id) ON DELETE CASCADE,
                 FOREIGN KEY (settings_id) REFERENCES settings_v3(settings_id) ON DELETE CASCADE
-            );
-            CREATE TABLE IF NOT EXISTS anchor_buckets_v3 (
+            ) WITHOUT ROWID;
+
+            CREATE TABLE audio_anchor_buckets_v3 (
                 bucket_id INTEGER PRIMARY KEY,
                 settings_id INTEGER NOT NULL,
-                modality INTEGER NOT NULL,
                 bucket INTEGER NOT NULL,
                 document_frequency INTEGER NOT NULL DEFAULT 0,
                 updated_unix_millis INTEGER NOT NULL,
-                UNIQUE(settings_id, modality, bucket),
+                UNIQUE(settings_id, bucket),
                 FOREIGN KEY (settings_id) REFERENCES settings_v3(settings_id) ON DELETE CASCADE
             );
-            CREATE TABLE IF NOT EXISTS anchor_occurrences_v3 (
+
+            CREATE TABLE audio_anchor_occurrences_v3 (
                 bucket_id INTEGER NOT NULL,
                 file_id INTEGER NOT NULL,
                 t_ms INTEGER NOT NULL,
                 weight INTEGER NOT NULL,
                 PRIMARY KEY (bucket_id, file_id, t_ms),
-                FOREIGN KEY (bucket_id) REFERENCES anchor_buckets_v3(bucket_id) ON DELETE CASCADE,
+                FOREIGN KEY (bucket_id) REFERENCES audio_anchor_buckets_v3(bucket_id) ON DELETE CASCADE,
                 FOREIGN KEY (file_id) REFERENCES media_files_v3(file_id) ON DELETE CASCADE
             ) WITHOUT ROWID;
-            CREATE INDEX IF NOT EXISTS idx_anchor_occurrences_v3_file
-                ON anchor_occurrences_v3(file_id, bucket_id, t_ms, weight);
+
+            CREATE INDEX idx_audio_anchor_occurrences_v3_file
+                ON audio_anchor_occurrences_v3(file_id, bucket_id, t_ms, weight);
+
+            INSERT INTO metadata (key, value)
+            VALUES ('schema_version', '5');
             ",
         )
-        .map_err(|error| format!("failed initializing media-match V3 SQLite index: {error}"))?;
+        .map_err(|error| format!("failed resetting media-match V3 schema: {error}"))?;
     Ok(())
 }
 
 pub fn save_media_match_v3_record(
     connection: &Connection,
     record: &MediaFingerprintRecord,
-    error: Option<&str>,
+    _error: Option<&str>,
 ) -> Result<(), String> {
-    save_media_match_v3_record_with_stats(connection, record, error).map(|_| ())
-}
-
-fn ensure_media_match_v3_settings_id(
-    connection: &Connection,
-    extraction_settings: &MediaExtractionSettings,
-    now: i64,
-) -> Result<i64, String> {
-    let settings_hash = media_extraction_settings_hash(extraction_settings).to_vec();
-    let tuning_json = serde_json::to_string(&current_v3_tuning()).ok();
-    connection
-        .execute(
-            "INSERT OR IGNORE INTO settings_v3 (
-                settings_hash,
-                algorithm_version,
-                fingerprint_cache_version,
-                profile,
-                tuning_json,
-                created_unix_millis
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                settings_hash,
-                i64::from(MEDIA_MATCH_ANCHOR_VERSION),
-                i64::from(MEDIA_MATCH_V3_FINGERPRINT_CACHE_VERSION),
-                extraction_settings.profile.label(),
-                tuning_json,
-                now,
-            ],
-        )
-        .map_err(|error| format!("failed writing media-match v3 settings row: {error}"))?;
-    media_match_v3_settings_id_for_hash(
-        connection,
-        &media_extraction_settings_hash(extraction_settings),
-    )
-    .and_then(|settings_id| {
-        settings_id.ok_or_else(|| "failed reading media-match v3 settings id".to_owned())
-    })
-}
-
-fn media_match_v3_settings_id_for_hash(
-    connection: &Connection,
-    settings_hash: &[u8],
-) -> Result<Option<i64>, String> {
-    connection
-        .query_row(
-            "SELECT settings_id FROM settings_v3 WHERE settings_hash = ?1",
-            [settings_hash],
-            |row| row.get::<_, i64>(0),
-        )
-        .optional()
-        .map_err(|error| format!("failed reading media-match v3 settings id: {error}"))
+    save_media_match_v3_record_with_stats(connection, record, current_unix_millis() as i64)
+        .map(|_| ())
 }
 
 pub fn save_media_match_v3_record_with_stats(
     connection: &Connection,
     record: &MediaFingerprintRecord,
-    error: Option<&str>,
+    now: i64,
 ) -> Result<MediaMatchV3SaveStats, String> {
-    let save_started_at = Instant::now();
-    let mut stats = MediaMatchV3SaveStats::default();
-    let transaction = connection
-        .unchecked_transaction()
-        .map_err(|error| format!("failed starting media-match v3 save transaction: {error}"))?;
-    let now = current_unix_millis() as i64;
+    let started_at = Instant::now();
+    let settings_hash = media_extraction_settings_hash(&record.extraction_settings);
+    let settings_id = ensure_media_match_v3_settings_id(
+        connection,
+        settings_hash,
+        &record.extraction_settings,
+        now,
+    )?;
     let duration_ms = duration_ms_from_seconds(record.duration_seconds);
-    if let Some((file_id, old_mtime, old_size)) = transaction
-        .query_row(
-            "SELECT file_id, modified_unix_millis, size_bytes
-             FROM media_files_v3
-             WHERE normalized_path = ?1",
-            [record.identity.normalized_path.as_str()],
-            |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, i64>(2)?,
-                ))
-            },
-        )
-        .optional()
-        .map_err(|error| format!("failed reading media-match v3 media file row: {error}"))?
-        && (old_mtime != record.identity.modified_unix_millis as i64
-            || old_size != record.identity.size_bytes as i64)
-    {
-        delete_media_match_v3_fingerprints_and_anchors(&transaction, file_id)?;
-    }
-    transaction
-        .execute(
-            "INSERT INTO media_files_v3 (
-                normalized_path,
-                modified_unix_millis,
-                size_bytes,
-                duration_ms,
-                container_format,
-                video_codec,
-                audio_codec,
-                width,
-                height,
-                updated_unix_millis
-            ) VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, NULL, NULL, ?6)
-            ON CONFLICT(normalized_path) DO UPDATE SET
-                modified_unix_millis = excluded.modified_unix_millis,
-                size_bytes = excluded.size_bytes,
-                duration_ms = excluded.duration_ms,
-                container_format = excluded.container_format,
-                updated_unix_millis = excluded.updated_unix_millis",
-            params![
-                record.identity.normalized_path.as_str(),
-                record.identity.modified_unix_millis as i64,
-                record.identity.size_bytes as i64,
-                duration_ms,
-                record.container_fingerprint.as_str(),
-                now,
-            ],
-        )
-        .map_err(|error| format!("failed writing media-match v3 media file row: {error}"))?;
-    let file_id = transaction
-        .query_row(
-            "SELECT file_id FROM media_files_v3 WHERE normalized_path = ?1",
-            [record.identity.normalized_path.as_str()],
-            |row| row.get::<_, i64>(0),
-        )
-        .map_err(|error| format!("failed reading media-match v3 file id: {error}"))?;
-    let combined_error = error.map(str::to_owned).or_else(|| {
-        let mut errors = Vec::new();
-        if let Some(audio_error) = &record.audio_error {
-            errors.push(format!("audio: {audio_error}"));
-        }
-        if let Some(video_error) = &record.video_error {
-            errors.push(format!("video: {video_error}"));
-        }
-        (!errors.is_empty()).then(|| errors.join("; "))
-    });
-    if let Some(video) = &record.video
-        && !video.v3_landmarks.is_empty()
-    {
-        validate_video_landmarks_v3(&video.v3_landmarks)
-            .map_err(|error| format!("invalid media-match V3 video fingerprint: {error}"))?;
-    }
+    let file_id = upsert_media_file_v3(connection, record, duration_ms, now)?;
     let blob_started_at = Instant::now();
     let blob = media_fingerprint_blob_v3_from_record(record);
-    validate_video_landmarks_v3(&blob.video_landmarks)
-        .map_err(|error| format!("invalid media-match V3 video fingerprint: {error}"))?;
     let audio_blob = (!blob.audio_landmarks.is_empty()).then(|| {
         encode_media_fingerprint_blob_v3(&MediaFingerprintBlobV3 {
             duration_ms: blob.duration_ms,
             audio_landmarks: blob.audio_landmarks.clone(),
-            video_landmarks: Vec::new(),
         })
     });
-    let video_blob = (!blob.video_landmarks.is_empty()).then(|| {
-        encode_media_fingerprint_blob_v3(&MediaFingerprintBlobV3 {
-            duration_ms: blob.duration_ms,
-            audio_landmarks: Vec::new(),
-            video_landmarks: blob.video_landmarks.clone(),
-        })
-    });
+    let blob_encode_millis = blob_started_at.elapsed().as_millis();
     let audio_index = audio_index_landmarks_v3_from_record(record);
-    let video_index = video_index_landmarks_v3_from_record(record);
-    stats.blob_encode_millis = blob_started_at.elapsed().as_millis();
-    validate_video_landmarks_v3(&video_index)
-        .map_err(|error| format!("invalid media-match V3 video index: {error}"))?;
-    let settings_hash = media_extraction_settings_hash(&record.extraction_settings).to_vec();
-    let settings_id =
-        ensure_media_match_v3_settings_id(&transaction, &record.extraction_settings, now)?;
-    let index_started_at = Instant::now();
-    transaction
-        .execute(
-            "DELETE FROM anchor_occurrences_v3
-             WHERE file_id = ?1
-               AND bucket_id IN (
-                   SELECT bucket_id FROM anchor_buckets_v3 WHERE settings_id = ?2
-               )",
-            params![file_id, settings_id],
-        )
-        .map_err(|error| format!("failed clearing media-match v3 anchor index: {error}"))?;
-    let mut bucket_ids = BTreeMap::<(i64, u32), i64>::new();
-    for landmark in &audio_index {
-        insert_anchor_index_v3(
-            &transaction,
-            &mut bucket_ids,
-            AnchorIndexInsert {
-                file_id,
-                settings_id,
-                modality: MEDIA_MATCH_V3_MODALITY_AUDIO,
-                bucket: landmark.hash,
-                t_ms: landmark.t_ms,
-                weight: i64::from(landmark.weight.max(1)),
-            },
-        )?;
-    }
-    for landmark in &video_index {
-        insert_anchor_index_v3(
-            &transaction,
-            &mut bucket_ids,
-            AnchorIndexInsert {
-                file_id,
-                settings_id,
-                modality: MEDIA_MATCH_V3_MODALITY_VIDEO,
-                bucket: landmark.bucket,
-                t_ms: landmark.t_ms,
-                weight: i64::from(landmark.weight.max(1)),
-            },
-        )?;
-    }
-    mark_anchor_stats_v3_dirty(&transaction, &settings_hash)?;
-    stats.index_insert_millis = index_started_at.elapsed().as_millis();
-    let status = if error.is_some() {
-        "error"
-    } else if combined_error.is_some() {
-        "partial"
-    } else if blob.audio_landmarks.is_empty() && blob.video_landmarks.is_empty() {
-        "empty"
-    } else {
-        "complete"
-    };
-    transaction
+    let error = record.audio_error.clone();
+    connection
         .execute(
             "INSERT OR REPLACE INTO fingerprints_v3 (
-                file_id,
-                settings_id,
-                status,
-                duration_ms,
-                audio_blob,
-                video_blob,
-                audio_verify_count,
-                video_verify_count,
-                audio_index_count,
-                video_index_count,
-                error,
-                updated_unix_millis
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                file_id, settings_id, duration_ms, audio_blob,
+                audio_verify_count, audio_index_count, error, updated_unix_millis
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 file_id,
                 settings_id,
-                status,
                 duration_ms,
                 audio_blob,
-                video_blob,
                 blob.audio_landmarks.len() as i64,
-                blob.video_landmarks.len() as i64,
                 audio_index.len() as i64,
-                video_index.len() as i64,
-                combined_error,
+                error,
                 now,
             ],
         )
-        .map_err(|error| format!("failed checkpointing media-match v3 fingerprint row: {error}"))?;
-    transaction
-        .commit()
-        .map_err(|error| format!("failed committing media-match v3 save transaction: {error}"))?;
-    stats.sqlite_save_millis = save_started_at.elapsed().as_millis();
-    Ok(stats)
+        .map_err(|error| format!("failed saving media-match V3 fingerprint: {error}"))?;
+
+    let index_started_at = Instant::now();
+    connection
+        .execute(
+            "DELETE FROM audio_anchor_occurrences_v3
+             WHERE file_id = ?1
+               AND bucket_id IN (
+                   SELECT bucket_id FROM audio_anchor_buckets_v3 WHERE settings_id = ?2
+               )",
+            params![file_id, settings_id],
+        )
+        .map_err(|error| format!("failed deleting stale V3 anchors: {error}"))?;
+    let mut bucket_ids = BTreeMap::<u32, i64>::new();
+    for landmark in &audio_index {
+        let bucket_id = audio_anchor_bucket_id_v3(
+            connection,
+            settings_id,
+            landmark.hash,
+            now,
+            &mut bucket_ids,
+        )?;
+        connection
+            .execute(
+                "INSERT OR REPLACE INTO audio_anchor_occurrences_v3 (
+                    bucket_id, file_id, t_ms, weight
+                 ) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    bucket_id,
+                    file_id,
+                    i64::from(landmark.t_ms),
+                    i64::from(landmark.weight.max(1)),
+                ],
+            )
+            .map_err(|error| format!("failed inserting V3 audio anchor: {error}"))?;
+    }
+    mark_anchor_stats_v3_dirty(connection, &settings_hash)?;
+    Ok(MediaMatchV3SaveStats {
+        sqlite_save_millis: started_at.elapsed().as_millis(),
+        blob_encode_millis,
+        index_insert_millis: index_started_at.elapsed().as_millis(),
+    })
+}
+
+fn upsert_media_file_v3(
+    connection: &Connection,
+    record: &MediaFingerprintRecord,
+    duration_ms: Option<i64>,
+    now: i64,
+) -> Result<i64, String> {
+    connection
+        .execute(
+            "INSERT INTO media_files_v3 (
+                normalized_path, modified_unix_millis, size_bytes,
+                duration_ms, container_fingerprint, updated_unix_millis
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(normalized_path) DO UPDATE SET
+                modified_unix_millis = excluded.modified_unix_millis,
+                size_bytes = excluded.size_bytes,
+                duration_ms = excluded.duration_ms,
+                container_fingerprint = excluded.container_fingerprint,
+                updated_unix_millis = excluded.updated_unix_millis",
+            params![
+                record.identity.normalized_path,
+                record.identity.modified_unix_millis as i64,
+                record.identity.size_bytes as i64,
+                duration_ms,
+                record.container_fingerprint,
+                now,
+            ],
+        )
+        .map_err(|error| format!("failed saving media-match V3 media file: {error}"))?;
+    media_file_id_for_path(connection, &record.identity.normalized_path)
+}
+
+fn ensure_media_match_v3_settings_id(
+    connection: &Connection,
+    settings_hash: [u8; 32],
+    settings: &MediaExtractionSettings,
+    now: i64,
+) -> Result<i64, String> {
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO settings_v3 (
+                settings_hash, algorithm_version, fingerprint_cache_version,
+                profile, tuning_json, created_unix_millis
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                settings_hash.as_slice(),
+                MEDIA_MATCH_ALGORITHM_VERSION as i64,
+                MEDIA_MATCH_V3_FINGERPRINT_CACHE_VERSION as i64,
+                settings.profile.label(),
+                serde_json::to_string(&current_v3_tuning()).unwrap_or_default(),
+                now,
+            ],
+        )
+        .map_err(|error| format!("failed saving media-match V3 settings: {error}"))?;
+    media_match_v3_settings_id_for_hash(connection, &settings_hash)
+}
+
+fn media_match_v3_settings_id_for_hash(
+    connection: &Connection,
+    settings_hash: &[u8; 32],
+) -> Result<i64, String> {
+    connection
+        .query_row(
+            "SELECT settings_id FROM settings_v3 WHERE settings_hash = ?1",
+            params![settings_hash.as_slice()],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("failed loading media-match V3 settings id: {error}"))
+}
+
+fn media_file_id_for_path(connection: &Connection, normalized_path: &str) -> Result<i64, String> {
+    connection
+        .query_row(
+            "SELECT file_id FROM media_files_v3 WHERE normalized_path = ?1",
+            [normalized_path],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("failed loading media-match V3 file id: {error}"))
+}
+
+fn audio_anchor_bucket_id_v3(
+    connection: &Connection,
+    settings_id: i64,
+    bucket: u32,
+    now: i64,
+    bucket_ids: &mut BTreeMap<u32, i64>,
+) -> Result<i64, String> {
+    if let Some(bucket_id) = bucket_ids.get(&bucket).copied() {
+        return Ok(bucket_id);
+    }
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO audio_anchor_buckets_v3 (
+                settings_id, bucket, updated_unix_millis
+             ) VALUES (?1, ?2, ?3)",
+            params![settings_id, i64::from(bucket), now],
+        )
+        .map_err(|error| format!("failed saving V3 audio anchor bucket: {error}"))?;
+    let bucket_id = connection
+        .query_row(
+            "SELECT bucket_id FROM audio_anchor_buckets_v3
+             WHERE settings_id = ?1 AND bucket = ?2",
+            params![settings_id, i64::from(bucket)],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("failed loading V3 audio anchor bucket: {error}"))?;
+    bucket_ids.insert(bucket, bucket_id);
+    Ok(bucket_id)
 }
 
 pub fn load_media_match_v3_cache_for_settings(
     connection: &Connection,
     extraction_settings: &MediaExtractionSettings,
 ) -> Result<MediaMatchCache, String> {
-    let settings_hash = media_extraction_settings_hash(extraction_settings).to_vec();
-    let Some(settings_id) = media_match_v3_settings_id_for_hash(connection, &settings_hash)? else {
-        return Ok(MediaMatchCache::default());
+    let settings_hash = media_extraction_settings_hash(extraction_settings);
+    let settings_id = match media_match_v3_settings_id_for_hash(connection, &settings_hash) {
+        Ok(settings_id) => settings_id,
+        Err(_) => return Ok(MediaMatchCache::default()),
     };
     let mut statement = connection
         .prepare(
-            "SELECT
-                media_files_v3.normalized_path,
-                media_files_v3.modified_unix_millis,
-                media_files_v3.size_bytes,
-                media_files_v3.duration_ms,
-                media_files_v3.container_format,
-                fingerprints_v3.duration_ms,
-                fingerprints_v3.audio_blob,
-                fingerprints_v3.video_blob,
-                fingerprints_v3.error
+            "SELECT media_files_v3.normalized_path, media_files_v3.modified_unix_millis,
+                    media_files_v3.size_bytes, media_files_v3.container_fingerprint,
+                    fingerprints_v3.duration_ms, fingerprints_v3.audio_blob, fingerprints_v3.error
              FROM fingerprints_v3
              JOIN media_files_v3 ON media_files_v3.file_id = fingerprints_v3.file_id
              WHERE fingerprints_v3.settings_id = ?1",
         )
-        .map_err(|error| format!("failed preparing media-match v3 cache query: {error}"))?;
-    let rows = statement
+        .map_err(|error| format!("failed preparing V3 cache load: {error}"))?;
+    let records = statement
         .query_map([settings_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, Option<i64>>(3)?,
-                row.get::<_, Option<String>>(4)?,
-                row.get::<_, Option<i64>>(5)?,
-                row.get::<_, Option<Vec<u8>>>(6)?,
-                row.get::<_, Option<Vec<u8>>>(7)?,
-                row.get::<_, Option<String>>(8)?,
-            ))
+            media_match_v3_record_from_cached_blobs(row, extraction_settings.clone())
         })
-        .map_err(|error| format!("failed reading media-match v3 cache rows: {error}"))?;
+        .map_err(|error| format!("failed querying V3 cache: {error}"))?;
     let mut cache = MediaMatchCache::default();
-    for row in rows.flatten() {
-        if let Some(record) = media_match_v3_record_from_cached_blobs(
-            row.0,
-            row.1,
-            row.2,
-            row.3,
-            row.4,
-            row.5,
-            row.6,
-            row.7,
-            row.8,
-            extraction_settings,
-        ) {
-            cache.insert(record);
-        }
+    for record in records {
+        cache.insert(record.map_err(|error| format!("failed reading cached V3 record: {error}"))?);
     }
     Ok(cache)
 }
@@ -1216,100 +607,56 @@ pub fn load_media_match_v3_record_for_path(
     modified_unix_millis: u64,
     size_bytes: u64,
 ) -> Result<Option<MediaFingerprintRecord>, String> {
-    let settings_hash = media_extraction_settings_hash(extraction_settings).to_vec();
-    let Some(settings_id) = media_match_v3_settings_id_for_hash(connection, &settings_hash)? else {
-        return Ok(None);
+    let settings_hash = media_extraction_settings_hash(extraction_settings);
+    let settings_id = match media_match_v3_settings_id_for_hash(connection, &settings_hash) {
+        Ok(settings_id) => settings_id,
+        Err(_) => return Ok(None),
     };
-    let row = connection
-        .query_row(
-            "SELECT
-                media_files_v3.normalized_path,
-                media_files_v3.modified_unix_millis,
-                media_files_v3.size_bytes,
-                media_files_v3.duration_ms,
-                media_files_v3.container_format,
-                fingerprints_v3.duration_ms,
-                fingerprints_v3.audio_blob,
-                fingerprints_v3.video_blob,
-                fingerprints_v3.error
+    let mut statement = connection
+        .prepare(
+            "SELECT media_files_v3.normalized_path, media_files_v3.modified_unix_millis,
+                    media_files_v3.size_bytes, media_files_v3.container_fingerprint,
+                    fingerprints_v3.duration_ms, fingerprints_v3.audio_blob, fingerprints_v3.error
              FROM fingerprints_v3
              JOIN media_files_v3 ON media_files_v3.file_id = fingerprints_v3.file_id
              WHERE fingerprints_v3.settings_id = ?1
-                AND media_files_v3.normalized_path = ?2",
-            params![settings_id, normalized_path],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, Option<i64>>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                    row.get::<_, Option<i64>>(5)?,
-                    row.get::<_, Option<Vec<u8>>>(6)?,
-                    row.get::<_, Option<Vec<u8>>>(7)?,
-                    row.get::<_, Option<String>>(8)?,
-                ))
-            },
+               AND media_files_v3.normalized_path = ?2
+               AND media_files_v3.modified_unix_millis = ?3
+               AND media_files_v3.size_bytes = ?4",
+        )
+        .map_err(|error| format!("failed preparing V3 record load: {error}"))?;
+    statement
+        .query_row(
+            params![
+                settings_id,
+                normalized_path,
+                modified_unix_millis as i64,
+                size_bytes as i64,
+            ],
+            |row| media_match_v3_record_from_cached_blobs(row, extraction_settings.clone()),
         )
         .optional()
-        .map_err(|error| format!("failed reading media-match v3 direct record: {error}"))?;
-    let Some(row) = row else {
-        return Ok(None);
-    };
-    let Some(record) = media_match_v3_record_from_cached_blobs(
-        row.0,
-        row.1,
-        row.2,
-        row.3,
-        row.4,
-        row.5,
-        row.6,
-        row.7,
-        row.8,
-        extraction_settings,
-    ) else {
-        return Ok(None);
-    };
-    Ok(record
-        .valid_for(
-            normalized_path,
-            modified_unix_millis,
-            size_bytes,
-            MEDIA_MATCH_ALGORITHM_VERSION,
-            extraction_settings,
-        )
-        .then_some(record))
+        .map_err(|error| format!("failed loading cached V3 record: {error}"))
 }
 
 pub fn media_match_v3_incompatible_record_count_for_path(
     connection: &Connection,
     normalized_path: &str,
     extraction_settings: &MediaExtractionSettings,
-    modified_unix_millis: u64,
-    size_bytes: u64,
 ) -> Result<usize, String> {
-    let settings_hash = media_extraction_settings_hash(extraction_settings).to_vec();
-    let count = connection
+    let settings_hash = media_extraction_settings_hash(extraction_settings);
+    let count: i64 = connection
         .query_row(
             "SELECT COUNT(*)
              FROM fingerprints_v3
              JOIN media_files_v3 ON media_files_v3.file_id = fingerprints_v3.file_id
              JOIN settings_v3 ON settings_v3.settings_id = fingerprints_v3.settings_id
              WHERE media_files_v3.normalized_path = ?1
-                AND media_files_v3.modified_unix_millis = ?2
-                AND media_files_v3.size_bytes = ?3
-                AND settings_v3.settings_hash <> ?4",
-            params![
-                normalized_path,
-                modified_unix_millis.min(i64::MAX as u64) as i64,
-                size_bytes.min(i64::MAX as u64) as i64,
-                settings_hash,
-            ],
-            |row| row.get::<_, i64>(0),
+               AND settings_v3.settings_hash != ?2",
+            params![normalized_path, settings_hash.as_slice()],
+            |row| row.get(0),
         )
-        .map_err(|error| {
-            format!("failed checking media-match v3 incompatible cache rows: {error}")
-        })?;
+        .unwrap_or(0);
     Ok(count.max(0) as usize)
 }
 
@@ -1318,10 +665,15 @@ pub fn media_match_v3_anchor_candidate_paths_with_stats(
     normalized_current_path: &str,
     extraction_settings: &MediaExtractionSettings,
 ) -> Result<(Vec<String>, MediaMatchV3RetrievalStats), String> {
-    let (candidates, stats) = media_match_v3_anchor_candidate_details_with_stats(
+    let current = media_match_v3_record_stub_for_path(
         connection,
         normalized_current_path,
         extraction_settings,
+    )?;
+    let (candidates, stats) = media_match_v3_anchor_candidate_details_with_stats(
+        connection,
+        &current,
+        current_unix_millis() as i64,
     )?;
     Ok((
         candidates
@@ -1332,10 +684,44 @@ pub fn media_match_v3_anchor_candidate_paths_with_stats(
     ))
 }
 
+fn media_match_v3_record_stub_for_path(
+    connection: &Connection,
+    normalized_path: &str,
+    extraction_settings: &MediaExtractionSettings,
+) -> Result<MediaFingerprintRecord, String> {
+    connection
+        .query_row(
+            "SELECT modified_unix_millis, size_bytes, duration_ms, container_fingerprint
+             FROM media_files_v3
+             WHERE normalized_path = ?1",
+            [normalized_path],
+            |row| {
+                let modified_unix_millis: i64 = row.get(0)?;
+                let size_bytes: i64 = row.get(1)?;
+                let duration_ms: Option<i64> = row.get(2)?;
+                let container_fingerprint: String = row.get(3)?;
+                Ok(MediaFingerprintRecord {
+                    identity: MediaFileIdentity {
+                        normalized_path: normalized_path.to_owned(),
+                        modified_unix_millis: modified_unix_millis.max(0) as u64,
+                        size_bytes: size_bytes.max(0) as u64,
+                    },
+                    algorithm_version: MEDIA_MATCH_ALGORITHM_VERSION,
+                    extraction_settings: extraction_settings.clone(),
+                    duration_seconds: duration_ms.map(|duration_ms| duration_ms as f64 / 1000.0),
+                    container_fingerprint,
+                    audio_anchors: Vec::new(),
+                    audio_error: None,
+                })
+            },
+        )
+        .map_err(|error| format!("failed loading V3 query record for retrieval: {error}"))
+}
+
 pub fn media_match_v3_anchor_candidate_details_with_stats(
     connection: &Connection,
-    normalized_current_path: &str,
-    extraction_settings: &MediaExtractionSettings,
+    current: &MediaFingerprintRecord,
+    now: i64,
 ) -> Result<
     (
         Vec<MediaMatchV3RetrievedCandidate>,
@@ -1345,17 +731,17 @@ pub fn media_match_v3_anchor_candidate_details_with_stats(
 > {
     media_match_v3_anchor_candidate_details_with_strategy(
         connection,
-        normalized_current_path,
-        extraction_settings,
+        current,
+        now,
         MediaMatchV3RetrievalStrategy::Auto,
     )
 }
 
 pub fn media_match_v3_anchor_candidate_details_with_strategy(
     connection: &Connection,
-    normalized_current_path: &str,
-    extraction_settings: &MediaExtractionSettings,
-    retrieval_strategy: MediaMatchV3RetrievalStrategy,
+    current: &MediaFingerprintRecord,
+    now: i64,
+    strategy: MediaMatchV3RetrievalStrategy,
 ) -> Result<
     (
         Vec<MediaMatchV3RetrievedCandidate>,
@@ -1364,631 +750,466 @@ pub fn media_match_v3_anchor_candidate_details_with_strategy(
     String,
 > {
     let started_at = Instant::now();
-    let effective_strategy = match retrieval_strategy {
-        MediaMatchV3RetrievalStrategy::Auto => MediaMatchV3RetrievalStrategy::TempTable,
-        strategy => strategy,
-    };
+    let settings_hash = media_extraction_settings_hash(&current.extraction_settings);
+    let settings_id = media_match_v3_settings_id_for_hash(connection, &settings_hash)?;
     let mut stats = MediaMatchV3RetrievalStats {
-        retrieval_strategy: effective_strategy.label().to_owned(),
+        retrieval_strategy: strategy.label().to_owned(),
         ..MediaMatchV3RetrievalStats::default()
     };
-    let settings_hash = media_extraction_settings_hash(extraction_settings).to_vec();
-    let Some(settings_id) = media_match_v3_settings_id_for_hash(connection, &settings_hash)? else {
-        stats.finish_timing(started_at);
-        return Ok((Vec::new(), stats));
-    };
-    let refresh_stats =
-        refresh_dirty_anchor_stats_v3_if_needed_with_stats(connection, &settings_hash)?;
-    stats.stats_dirty_check_millis = refresh_stats.dirty_check_millis;
-    stats.stats_refresh_millis = refresh_stats.refresh_millis;
-    stats.stats_refresh_ran = refresh_stats.refresh_ran;
-    stats.stats_buckets_refreshed = refresh_stats.buckets_refreshed;
-    stats.stats_anchor_rows_scanned = refresh_stats.anchor_rows_scanned;
-    stats.anchor_stats_dirty_before_run = refresh_stats.dirty_before;
-    stats.anchor_stats_refreshed = refresh_stats.refresh_ran;
-    stats.anchor_stats_refresh_millis = refresh_stats.refresh_millis;
-    stats.anchor_stats_dirty_after_run = refresh_stats.dirty_after;
-    let query_anchor_started_at = Instant::now();
-    let Some(current_file_id) = connection
-        .query_row(
-            "SELECT file_id FROM media_files_v3 WHERE normalized_path = ?1",
-            [normalized_current_path],
-            |row| row.get::<_, i64>(0),
-        )
-        .optional()
-        .map_err(|error| format!("failed reading current media-match v3 file id: {error}"))?
-    else {
-        stats.finish_timing(started_at);
-        return Ok((Vec::new(), stats));
-    };
-    let query_duration_ms = connection
-        .query_row(
-            "SELECT duration_ms FROM media_files_v3 WHERE file_id = ?1",
-            [current_file_id],
-            |row| row.get::<_, Option<i64>>(0),
-        )
-        .ok()
-        .flatten();
-    stats.query_anchor_load_millis = query_anchor_started_at.elapsed().as_millis();
-    let common_filter_started_at = Instant::now();
-    let indexed_file_count = connection
-        .query_row(
-            "SELECT COUNT(*)
-             FROM fingerprints_v3
-             WHERE settings_id = ?1",
-            [settings_id],
-            |row| row.get::<_, i64>(0),
-        )
-        .unwrap_or(0)
-        .max(1);
-    let common_bucket_threshold =
-        V3_COMMON_BUCKET_MIN_SKIP_DF.max(indexed_file_count / V3_COMMON_BUCKET_FILE_DIVISOR);
-    let (query_buckets_total, query_buckets_skipped_common) = connection
-        .query_row(
-            "SELECT COUNT(*),
-                    COALESCE(SUM(CASE WHEN COALESCE(bucket.document_frequency, 1) > ?3 THEN 1 ELSE 0 END), 0)
-             FROM anchor_occurrences_v3 query
-             JOIN anchor_buckets_v3 bucket ON bucket.bucket_id = query.bucket_id
-             WHERE bucket.settings_id = ?1
-               AND query.file_id = ?2",
-            params![settings_id, current_file_id, common_bucket_threshold],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
-        )
-        .unwrap_or((0, 0));
-    stats.query_buckets_total = query_buckets_total;
-    stats.query_buckets_skipped_common = query_buckets_skipped_common;
-    stats.query_anchor_count = query_buckets_total;
-    stats.query_buckets_after_common_skip =
-        query_buckets_total.saturating_sub(query_buckets_skipped_common);
-    stats.common_bucket_filter_millis = common_filter_started_at.elapsed().as_millis();
-    let hit_rows = match effective_strategy {
-        MediaMatchV3RetrievalStrategy::BucketFetch => fetch_v3_hit_rows_bucket_fetch(
-            connection,
-            settings_id,
-            current_file_id,
-            common_bucket_threshold,
-            &mut stats,
-        )?,
-        MediaMatchV3RetrievalStrategy::Auto | MediaMatchV3RetrievalStrategy::TempTable => {
-            fetch_v3_hit_rows_temp_table(
-                connection,
-                settings_id,
-                current_file_id,
-                common_bucket_threshold,
-                &mut stats,
-            )?
-        }
-    };
-    stats.sql_rows_returned = hit_rows.len() as i64;
-    let aggregation_started_at = Instant::now();
-    let mut scores = BTreeMap::<i64, V3CandidateRetrievalScore>::new();
+    let dirty_started_at = Instant::now();
+    let dirty = anchor_stats_v3_dirty(connection, &settings_hash)?;
+    stats.stats_dirty_check_millis = dirty_started_at.elapsed().as_millis();
+    if dirty {
+        let refresh_started_at = Instant::now();
+        refresh_anchor_stats_v3(connection, &settings_hash, now)?;
+        stats.stats_refresh_millis = refresh_started_at.elapsed().as_millis();
+    }
+
+    let current_file_id = media_file_id_for_path(connection, &current.identity.normalized_path)?;
+    let query_started_at = Instant::now();
+    let query_anchors = load_query_audio_anchors(connection, settings_id, current_file_id)?;
+    stats.query_anchor_load_millis = query_started_at.elapsed().as_millis();
+    stats.query_buckets_total = query_anchors.len() as i64;
+
+    let common_started_at = Instant::now();
+    let file_count = media_file_count_for_settings(connection, settings_id)?.max(1);
+    let common_threshold =
+        (file_count / V3_COMMON_BUCKET_FILE_DIVISOR).max(V3_COMMON_BUCKET_MIN_SKIP_DF);
+    let query_anchors = query_anchors
+        .into_iter()
+        .filter(|anchor| {
+            if anchor.document_frequency >= common_threshold {
+                stats.query_buckets_skipped_common += 1;
+                false
+            } else {
+                true
+            }
+        })
+        .collect::<Vec<_>>();
+    stats.common_bucket_filter_millis = common_started_at.elapsed().as_millis();
+
+    let fetch_started_at = Instant::now();
+    let hit_rows = fetch_audio_hit_rows(connection, settings_id, current_file_id, &query_anchors)?;
+    stats.sql_hit_fetch_millis = fetch_started_at.elapsed().as_millis();
+    stats.raw_hit_rows_processed = hit_rows.len() as i64;
+
+    let aggregate_started_at = Instant::now();
+    let mut by_file = BTreeMap::<i64, V3CandidateRetrievalScore>::new();
+    let query_duration_ms = duration_ms_from_seconds(current.duration_seconds);
     for row in hit_rows {
-        stats.raw_hit_rows_processed += 1;
-        let (
-            file_id,
-            query_t_ms,
-            candidate_t_ms,
-            modality,
-            hit_weight,
-            document_frequency,
-            candidate_duration_ms,
-        ) = row;
-        let weighted_score =
-            hit_weight.max(1) * media_match_v3_document_frequency_weight(document_frequency);
-        let offset_bin = media_match_v3_rounded_offset_bin(candidate_t_ms - query_t_ms);
-        let score = scores
-            .entry(file_id)
+        let score = by_file
+            .entry(row.file_id)
             .or_insert_with(|| V3CandidateRetrievalScore {
-                file_id,
-                candidate_duration_ms,
+                normalized_path: row.normalized_path.clone(),
+                query_duration_ms,
+                candidate_duration_ms: row.duration_ms,
+                duration_compatibility: media_match_v3_duration_compatibility(
+                    query_duration_ms,
+                    row.duration_ms,
+                ),
                 ..V3CandidateRetrievalScore::default()
             });
-        score.candidate_duration_ms = score.candidate_duration_ms.or(candidate_duration_ms);
-        score.total_score += weighted_score;
-        match modality {
-            MEDIA_MATCH_V3_MODALITY_AUDIO => score.audio_hits += 1,
-            MEDIA_MATCH_V3_MODALITY_VIDEO => score.video_hits += 1,
-            _ => {}
-        }
-        let offset_score = score.offset_bins.entry(offset_bin).or_default();
-        offset_score.weighted_score += weighted_score;
-        let query_region = query_t_ms / V3_RETRIEVAL_REGION_MS;
-        offset_score.query_regions.insert(query_region);
-        offset_score
+        let weight = row.query_weight.min(row.weight).max(1);
+        score.total_score += weight;
+        score.audio_hits += 1;
+        let offset_bin = media_match_v3_rounded_offset_bin(row.t_ms - row.query_t_ms);
+        let offset = score.offset_bins.entry(offset_bin).or_default();
+        offset.weighted_score += weight;
+        offset.audio_hits += 1;
+        offset
+            .query_regions
+            .insert(row.query_t_ms / V3_RETRIEVAL_REGION_MS);
+        offset
             .candidate_regions
-            .insert(candidate_t_ms / V3_RETRIEVAL_REGION_MS);
-        offset_score.query_times.insert(query_t_ms);
-        offset_score.candidate_times.insert(candidate_t_ms);
-        if media_match_v3_time_is_edge(query_t_ms, query_duration_ms)
-            || media_match_v3_time_is_edge(candidate_t_ms, candidate_duration_ms)
-        {
-            offset_score.edge_regions.insert(query_region);
+            .insert(row.t_ms / V3_RETRIEVAL_REGION_MS);
+        if media_match_v3_time_is_edge(row.query_t_ms, query_duration_ms) {
+            offset
+                .edge_regions
+                .insert(row.query_t_ms / V3_RETRIEVAL_REGION_MS);
         } else {
-            offset_score.body_regions.insert(query_region);
+            offset
+                .body_regions
+                .insert(row.query_t_ms / V3_RETRIEVAL_REGION_MS);
         }
-        match modality {
-            MEDIA_MATCH_V3_MODALITY_AUDIO => offset_score.audio_hits += 1,
-            MEDIA_MATCH_V3_MODALITY_VIDEO => offset_score.video_hits += 1,
-            _ => {}
-        }
+        offset.query_times.insert(row.query_t_ms);
+        offset.candidate_times.insert(row.t_ms);
     }
-    stats.rust_aggregation_millis = aggregation_started_at.elapsed().as_millis();
-    stats.candidates_aggregated = scores.len() as i64;
-    let robust_rerank_started_at = Instant::now();
-    let mut ranked = scores
+    stats.rust_aggregation_millis = aggregate_started_at.elapsed().as_millis();
+
+    let metadata_started_at = Instant::now();
+    let mut candidates = by_file
         .into_values()
-        .map(|score| finalize_v3_candidate_retrieval_score(score, query_duration_ms))
+        .map(finalize_v3_candidate_retrieval_score)
         .collect::<Vec<_>>();
-    stats.robust_rerank_millis = robust_rerank_started_at.elapsed().as_millis();
-    stats.candidates_scored = ranked.len() as i64;
+    stats.candidate_metadata_load_millis = metadata_started_at.elapsed().as_millis();
+    stats.candidates_scored = candidates.len() as i64;
+
+    let rerank_started_at = Instant::now();
+    for candidate in &mut candidates {
+        candidate.robust_score = candidate.robust_score.max(0.0);
+    }
+    stats.robust_rerank_millis = rerank_started_at.elapsed().as_millis();
+
     let sort_started_at = Instant::now();
-    ranked.sort_by(|left, right| {
+    candidates.sort_by(|left, right| {
         right
             .robust_score
-            .cmp(&left.robust_score)
+            .total_cmp(&left.robust_score)
             .then_with(|| right.best_offset_score.cmp(&left.best_offset_score))
-            .then_with(|| {
-                (right.best_offset_score * left.total_score.max(1))
-                    .cmp(&(left.best_offset_score * right.total_score.max(1)))
-            })
-            .then_with(|| right.approximate_span_ms.cmp(&left.approximate_span_ms))
-            .then_with(|| {
-                right
-                    .distinct_query_regions
-                    .cmp(&left.distinct_query_regions)
-            })
-            .then_with(|| {
-                right
-                    .distinct_candidate_regions
-                    .cmp(&left.distinct_candidate_regions)
-            })
-            .then_with(|| {
-                right
-                    .best_offset_modality_count()
-                    .cmp(&left.best_offset_modality_count())
-            })
             .then_with(|| right.total_score.cmp(&left.total_score))
-            .then_with(|| left.file_id.cmp(&right.file_id))
+            .then_with(|| left.normalized_path.cmp(&right.normalized_path))
     });
-    stats.candidate_sort_millis = sort_started_at.elapsed().as_millis();
-    let ranked_limit = ranked.len().min(V3_RETRIEVAL_PREFILTER_LIMIT);
-    let mut candidates = Vec::new();
-    for index in 0..ranked_limit {
-        let score = &ranked[index];
-        let metadata_started_at = Instant::now();
-        let metadata = connection.query_row(
-            "SELECT normalized_path, duration_ms FROM media_files_v3 WHERE file_id = ?1",
-            [score.file_id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?)),
-        );
-        stats.candidate_metadata_load_millis = stats
-            .candidate_metadata_load_millis
-            .saturating_add(metadata_started_at.elapsed().as_millis());
-        if let Ok((path, candidate_duration_ms)) = metadata {
-            let detail_started_at = Instant::now();
-            let (body_region_count, edge_region_count) =
-                score.best_offset_body_edge_region_counts();
-            candidates.push(MediaMatchV3RetrievedCandidate {
-                normalized_path: path,
-                rank: index + 1,
-                total_score: score.total_score,
-                best_offset_bin_ms: score
-                    .best_offset_bin
-                    .saturating_mul(V3_RETRIEVAL_OFFSET_BIN_MS),
-                best_offset_score: score.best_offset_score,
-                second_offset_score: score.second_offset_score,
-                distinct_query_regions: score.distinct_query_regions,
-                distinct_candidate_regions: score.distinct_candidate_regions,
-                body_region_count,
-                edge_region_count,
-                approximate_span_ms: score.approximate_span_ms,
-                audio_hits: score.audio_hits,
-                video_hits: score.video_hits,
-                score_ratio_to_next: ranked.get(index + 1).and_then(|next| {
-                    (next.best_offset_score > 0)
-                        .then(|| score.best_offset_score as f64 / next.best_offset_score as f64)
-                }),
-                query_duration_ms,
-                candidate_duration_ms,
-                duration_compatibility: score.duration_compatibility.label().to_owned(),
-                short_clip_penalty_applied: score.short_clip_penalty_applied,
-                robust_score: score.robust_score as f64,
-            });
-            stats.retrieved_candidate_detail_build_millis = stats
-                .retrieved_candidate_detail_build_millis
-                .saturating_add(detail_started_at.elapsed().as_millis());
-        }
+    for (index, candidate) in candidates.iter_mut().enumerate() {
+        candidate.rank = index + 1;
     }
-    stats.retrieved_path_load_millis = stats.candidate_metadata_load_millis;
-    stats.path_lookup_millis = stats
-        .candidate_metadata_load_millis
-        .saturating_add(stats.retrieved_candidate_detail_build_millis);
+    let next_scores = candidates
+        .iter()
+        .skip(1)
+        .map(|candidate| candidate.robust_score.max(1.0))
+        .chain(std::iter::once(1.0))
+        .collect::<Vec<_>>();
+    for (candidate, next_score) in candidates.iter_mut().zip(next_scores) {
+        candidate.score_ratio_to_next = Some(candidate.robust_score.max(1.0) / next_score);
+    }
+    candidates.truncate(V3_RETRIEVAL_PREFILTER_LIMIT);
+    stats.candidate_sort_millis = sort_started_at.elapsed().as_millis();
     stats.candidates_returned = candidates.len() as i64;
     stats.finish_timing(started_at);
     Ok((candidates, stats))
 }
 
-fn fetch_v3_hit_rows_temp_table(
-    connection: &Connection,
-    settings_id: i64,
-    current_file_id: i64,
-    common_bucket_threshold: i64,
-    stats: &mut MediaMatchV3RetrievalStats,
-) -> Result<Vec<V3HitRow>, String> {
-    let temp_table_create_started_at = Instant::now();
-    connection
-        .execute_batch(
-            "CREATE TEMP TABLE IF NOT EXISTS media_match_v3_query_anchors (
-                modality INTEGER NOT NULL,
-                bucket INTEGER NOT NULL,
-                query_t_ms INTEGER NOT NULL,
-                query_weight INTEGER NOT NULL,
-                document_frequency INTEGER NOT NULL
-            );",
-        )
-        .map_err(|error| format!("failed preparing media-match v3 query anchors: {error}"))?;
-    stats.temp_table_create_millis = temp_table_create_started_at.elapsed().as_millis();
-    let temp_table_drop_started_at = Instant::now();
-    connection
-        .execute("DELETE FROM media_match_v3_query_anchors", [])
-        .map_err(|error| format!("failed clearing media-match v3 query anchors: {error}"))?;
-    stats.temp_table_drop_millis = temp_table_drop_started_at.elapsed().as_millis();
-    let temp_table_insert_started_at = Instant::now();
-    let query_buckets_after_common_skip = connection
-        .execute(
-            "INSERT INTO media_match_v3_query_anchors (
-                modality,
-                bucket,
-                query_t_ms,
-                query_weight,
-                document_frequency
-            )
-            SELECT bucket.modality,
-                   bucket.bucket,
-                   query.t_ms,
-                   query.weight,
-                   COALESCE(bucket.document_frequency, 1)
-            FROM anchor_occurrences_v3 query INDEXED BY idx_anchor_occurrences_v3_file
-            JOIN anchor_buckets_v3 bucket ON bucket.bucket_id = query.bucket_id
-            WHERE bucket.settings_id = ?1
-              AND query.file_id = ?2
-              AND COALESCE(bucket.document_frequency, 1) <= ?3",
-            params![settings_id, current_file_id, common_bucket_threshold],
-        )
-        .map_err(|error| format!("failed loading media-match v3 query anchors: {error}"))?;
-    stats.temp_table_insert_millis = temp_table_insert_started_at.elapsed().as_millis();
-    stats.query_buckets_after_common_skip = query_buckets_after_common_skip as i64;
-    let sql_prepare_started_at = Instant::now();
-    let mut statement = connection
-        .prepare(
-            "SELECT candidate.file_id,
-                    query.query_t_ms,
-                    candidate.t_ms,
-                    query.modality,
-                    MIN(query.query_weight, candidate.weight) AS hit_weight,
-                    query.document_frequency,
-                    candidate_file.duration_ms
-             FROM media_match_v3_query_anchors query
-             JOIN anchor_buckets_v3 bucket
-               ON bucket.settings_id = ?1
-              AND bucket.modality = query.modality
-              AND bucket.bucket = query.bucket
-             JOIN anchor_occurrences_v3 candidate
-               ON candidate.bucket_id = bucket.bucket_id
-              AND candidate.file_id != ?2
-             JOIN media_files_v3 candidate_file
-               ON candidate_file.file_id = candidate.file_id",
-        )
-        .map_err(|error| {
-            format!("failed preparing media-match v3 anchor candidate query: {error}")
-        })?;
-    stats.sql_prepare_millis = sql_prepare_started_at.elapsed().as_millis();
-    let sql_execute_started_at = Instant::now();
-    let rows = statement
-        .query_map(params![settings_id, current_file_id], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, i64>(4)?,
-                row.get::<_, i64>(5)?,
-                row.get::<_, Option<i64>>(6)?,
-            ))
-        })
-        .map_err(|error| format!("failed querying media-match v3 anchor candidates: {error}"))?;
-    let hit_rows = rows.flatten().collect::<Vec<_>>();
-    stats.sql_execute_millis = sql_execute_started_at.elapsed().as_millis();
-    stats.sql_hit_fetch_millis = stats
-        .sql_prepare_millis
-        .saturating_add(stats.sql_execute_millis);
-    Ok(hit_rows)
+#[derive(Debug, Clone)]
+struct QueryAudioAnchor {
+    bucket_id: i64,
+    query_t_ms: i64,
+    query_weight: i64,
+    document_frequency: i64,
 }
 
-fn fetch_v3_hit_rows_bucket_fetch(
+#[derive(Debug, Clone)]
+struct AudioHitRow {
+    file_id: i64,
+    normalized_path: String,
+    duration_ms: Option<i64>,
+    query_t_ms: i64,
+    query_weight: i64,
+    t_ms: i64,
+    weight: i64,
+}
+
+fn load_query_audio_anchors(
     connection: &Connection,
     settings_id: i64,
     current_file_id: i64,
-    common_bucket_threshold: i64,
-    stats: &mut MediaMatchV3RetrievalStats,
-) -> Result<Vec<V3HitRow>, String> {
-    let query_anchor_started_at = Instant::now();
-    let mut query_statement = connection
+) -> Result<Vec<QueryAudioAnchor>, String> {
+    let mut statement = connection
         .prepare(
-            "SELECT bucket.modality,
-                   bucket.bucket,
-                   query.t_ms,
-                   query.weight,
-                   COALESCE(bucket.document_frequency, 1)
-            FROM anchor_occurrences_v3 query INDEXED BY idx_anchor_occurrences_v3_file
-            JOIN anchor_buckets_v3 bucket ON bucket.bucket_id = query.bucket_id
-            WHERE bucket.settings_id = ?1
-              AND query.file_id = ?2
-              AND COALESCE(bucket.document_frequency, 1) <= ?3",
+            "SELECT occurrence.bucket_id, occurrence.t_ms, occurrence.weight,
+                    bucket.document_frequency
+             FROM audio_anchor_occurrences_v3 occurrence
+             JOIN audio_anchor_buckets_v3 bucket ON bucket.bucket_id = occurrence.bucket_id
+             WHERE occurrence.file_id = ?1
+               AND bucket.settings_id = ?2",
         )
-        .map_err(|error| format!("failed preparing media-match v3 query-anchor fetch: {error}"))?;
-    let query_rows = query_statement
-        .query_map(
-            params![settings_id, current_file_id, common_bucket_threshold],
-            |row| {
-                Ok(V3QueryAnchor {
-                    modality: row.get::<_, i64>(0)?,
-                    bucket: row.get::<_, i64>(1)?,
-                    t_ms: row.get::<_, i64>(2)?,
-                    weight: row.get::<_, i64>(3)?,
-                    document_frequency: row.get::<_, i64>(4)?,
-                })
-            },
-        )
-        .map_err(|error| format!("failed fetching media-match v3 query anchors: {error}"))?;
-    let mut anchors_by_bucket = BTreeMap::<(i64, i64), Vec<V3QueryAnchor>>::new();
-    for query_anchor in query_rows.flatten() {
-        anchors_by_bucket
-            .entry((query_anchor.modality, query_anchor.bucket))
-            .or_default()
-            .push(query_anchor);
-    }
-    stats.query_buckets_after_common_skip = anchors_by_bucket
-        .values()
-        .map(|anchors| anchors.len() as i64)
-        .sum();
-    stats.query_anchor_load_millis = stats
-        .query_anchor_load_millis
-        .saturating_add(query_anchor_started_at.elapsed().as_millis());
+        .map_err(|error| format!("failed preparing V3 query anchor load: {error}"))?;
+    let rows = statement
+        .query_map(params![current_file_id, settings_id], |row| {
+            Ok(QueryAudioAnchor {
+                bucket_id: row.get(0)?,
+                query_t_ms: row.get(1)?,
+                query_weight: row.get(2)?,
+                document_frequency: row.get(3)?,
+            })
+        })
+        .map_err(|error| format!("failed loading V3 query anchors: {error}"))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed reading V3 query anchors: {error}"))
+}
 
-    let sql_prepare_started_at = Instant::now();
-    let mut candidate_statement = connection
+fn fetch_audio_hit_rows(
+    connection: &Connection,
+    settings_id: i64,
+    current_file_id: i64,
+    query_anchors: &[QueryAudioAnchor],
+) -> Result<Vec<AudioHitRow>, String> {
+    let mut statement = connection
         .prepare(
-            "SELECT anchor.file_id,
-                    anchor.t_ms,
-                    anchor.weight,
-                    media.duration_ms
-             FROM anchor_buckets_v3 bucket
-             JOIN anchor_occurrences_v3 anchor ON anchor.bucket_id = bucket.bucket_id
-             JOIN media_files_v3 media ON media.file_id = anchor.file_id
+            "SELECT occurrence.file_id, media.normalized_path, media.duration_ms,
+                    occurrence.t_ms, occurrence.weight
+             FROM audio_anchor_occurrences_v3 occurrence
+             JOIN media_files_v3 media ON media.file_id = occurrence.file_id
+             JOIN audio_anchor_buckets_v3 bucket ON bucket.bucket_id = occurrence.bucket_id
              WHERE bucket.settings_id = ?1
-               AND bucket.modality = ?2
-               AND bucket.bucket = ?3
-               AND anchor.file_id != ?4",
+               AND occurrence.bucket_id = ?2
+               AND occurrence.file_id != ?3",
         )
-        .map_err(|error| {
-            format!("failed preparing media-match v3 bucket candidate query: {error}")
-        })?;
-    stats.sql_prepare_millis = sql_prepare_started_at.elapsed().as_millis();
-
-    let mut hit_rows = Vec::new();
-    let sql_execute_started_at = Instant::now();
-    for ((modality, bucket), query_anchors) in anchors_by_bucket {
-        let candidate_rows = candidate_statement
+        .map_err(|error| format!("failed preparing V3 hit lookup: {error}"))?;
+    let mut rows = Vec::new();
+    for query in query_anchors {
+        let hit_rows = statement
             .query_map(
-                params![settings_id, modality, bucket, current_file_id],
+                params![settings_id, query.bucket_id, current_file_id],
                 |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, i64>(2)?,
-                        row.get::<_, Option<i64>>(3)?,
-                    ))
+                    Ok(AudioHitRow {
+                        file_id: row.get(0)?,
+                        normalized_path: row.get(1)?,
+                        duration_ms: row.get(2)?,
+                        query_t_ms: query.query_t_ms,
+                        query_weight: query.query_weight,
+                        t_ms: row.get(3)?,
+                        weight: row.get(4)?,
+                    })
                 },
             )
-            .map_err(|error| {
-                format!("failed querying media-match v3 bucket candidates: {error}")
-            })?;
-        for row in candidate_rows.flatten() {
-            let (file_id, candidate_t_ms, candidate_weight, candidate_duration_ms) = row;
-            for query_anchor in &query_anchors {
-                hit_rows.push((
-                    file_id,
-                    query_anchor.t_ms,
-                    candidate_t_ms,
-                    modality,
-                    query_anchor.weight.min(candidate_weight),
-                    query_anchor.document_frequency,
-                    candidate_duration_ms,
-                ));
-            }
+            .map_err(|error| format!("failed querying V3 hit rows: {error}"))?;
+        for row in hit_rows {
+            rows.push(row.map_err(|error| format!("failed reading V3 hit row: {error}"))?);
         }
     }
-    stats.sql_execute_millis = sql_execute_started_at.elapsed().as_millis();
-    stats.sql_hit_fetch_millis = stats
-        .sql_prepare_millis
-        .saturating_add(stats.sql_execute_millis);
-    Ok(hit_rows)
+    Ok(rows)
+}
+
+fn finalize_v3_candidate_retrieval_score(
+    mut score: V3CandidateRetrievalScore,
+) -> MediaMatchV3RetrievedCandidate {
+    let mut offsets = score.offset_bins.iter().collect::<Vec<_>>();
+    offsets.sort_by(|(left_bin, left), (right_bin, right)| {
+        right
+            .weighted_score
+            .cmp(&left.weighted_score)
+            .then_with(|| right.audio_hits.cmp(&left.audio_hits))
+            .then_with(|| left_bin.cmp(right_bin))
+    });
+    if let Some((best_bin, best)) = offsets.first() {
+        score.best_offset_bin = **best_bin;
+        score.best_offset_score = best.weighted_score;
+        score.distinct_query_regions = best.query_regions.len() as i64;
+        score.distinct_candidate_regions = best.candidate_regions.len() as i64;
+        score.body_region_count = best.body_regions.len() as i64;
+        score.edge_region_count = best.edge_regions.len() as i64;
+        score.approximate_span_ms = media_match_v3_longest_contiguous_span_ms(&best.query_times)
+            .max(media_match_v3_longest_contiguous_span_ms(
+                &best.candidate_times,
+            ));
+    }
+    score.second_offset_score = offsets
+        .get(1)
+        .map(|(_, offset)| offset.weighted_score)
+        .unwrap_or(0);
+    score.short_clip_penalty_applied =
+        score.duration_compatibility == V3DurationCompatibility::QueryFullCandidateShort;
+    score.robust_score = media_match_v3_robust_retrieval_score(&score);
+    MediaMatchV3RetrievedCandidate {
+        normalized_path: score.normalized_path,
+        rank: 0,
+        total_score: score.total_score,
+        best_offset_bin_ms: score.best_offset_bin,
+        best_offset_score: score.best_offset_score,
+        second_offset_score: score.second_offset_score,
+        distinct_query_regions: score.distinct_query_regions,
+        distinct_candidate_regions: score.distinct_candidate_regions,
+        body_region_count: score.body_region_count,
+        edge_region_count: score.edge_region_count,
+        approximate_span_ms: score.approximate_span_ms,
+        audio_hits: score.audio_hits,
+        score_ratio_to_next: None,
+        query_duration_ms: score.query_duration_ms,
+        candidate_duration_ms: score.candidate_duration_ms,
+        duration_compatibility: score.duration_compatibility.label().to_owned(),
+        short_clip_penalty_applied: score.short_clip_penalty_applied,
+        robust_score: score.robust_score as f64,
+    }
+}
+
+fn media_match_v3_robust_retrieval_score(score: &V3CandidateRetrievalScore) -> i128 {
+    let mut value = i128::from(score.best_offset_score.max(score.total_score / 3).max(1));
+    value *= span_factor(score);
+    value *= region_factor(score);
+    value *= offset_dominance_factor(score);
+    value *= duration_factor(score);
+    value / 10_000
+}
+
+fn span_factor(score: &V3CandidateRetrievalScore) -> i128 {
+    let seconds = (score.approximate_span_ms / 1000).max(1) as f64;
+    (100.0 + seconds.log2().max(0.0) * 35.0).round() as i128
+}
+
+fn region_factor(score: &V3CandidateRetrievalScore) -> i128 {
+    let query = score.distinct_query_regions.max(1) as i128;
+    let candidate = score.distinct_candidate_regions.max(1) as i128;
+    75 + query.min(candidate).min(8) * 12 + score.body_region_count.clamp(0, 8) as i128 * 10
+}
+
+fn offset_dominance_factor(score: &V3CandidateRetrievalScore) -> i128 {
+    if score.second_offset_score <= 0 {
+        return 160;
+    }
+    let ratio = score.best_offset_score as f64 / score.second_offset_score.max(1) as f64;
+    (90.0 + ratio.min(4.0) * 25.0).round() as i128
+}
+
+fn duration_factor(score: &V3CandidateRetrievalScore) -> i128 {
+    match score.duration_compatibility {
+        V3DurationCompatibility::Compatible | V3DurationCompatibility::Unknown => 100,
+        V3DurationCompatibility::Incompatible => 75,
+        V3DurationCompatibility::QueryFullCandidateShort => 30,
+    }
+}
+
+fn media_match_v3_duration_compatibility(
+    query_duration_ms: Option<i64>,
+    candidate_duration_ms: Option<i64>,
+) -> V3DurationCompatibility {
+    let Some(query) = query_duration_ms else {
+        return V3DurationCompatibility::Unknown;
+    };
+    let Some(candidate) = candidate_duration_ms else {
+        return V3DurationCompatibility::Unknown;
+    };
+    let full = 10 * 60 * 1000;
+    let short = 5 * 60 * 1000;
+    if query >= full && candidate < short {
+        return V3DurationCompatibility::QueryFullCandidateShort;
+    }
+    if (query - candidate).abs() <= 90_000 {
+        V3DurationCompatibility::Compatible
+    } else {
+        V3DurationCompatibility::Incompatible
+    }
+}
+
+fn media_match_v3_rounded_offset_bin(offset_ms: i64) -> i64 {
+    let bin = V3_RETRIEVAL_OFFSET_BIN_MS.max(1);
+    ((offset_ms + bin / 2).div_euclid(bin)) * bin
+}
+
+fn media_match_v3_time_is_edge(time_ms: i64, duration_ms: Option<i64>) -> bool {
+    let edge_ms = 120_000;
+    time_ms < edge_ms || duration_ms.is_some_and(|duration| time_ms > duration - edge_ms)
+}
+
+fn media_match_v3_longest_contiguous_span_ms(times: &BTreeSet<i64>) -> i64 {
+    let Some(mut start) = times.first().copied() else {
+        return 0;
+    };
+    let mut previous = start;
+    let mut best = 0;
+    for time in times.iter().copied().skip(1) {
+        if time - previous > V3_RETRIEVAL_GAP_MS {
+            best = best.max(previous - start);
+            start = time;
+        }
+        previous = time;
+    }
+    best.max(previous - start)
+}
+
+fn media_file_count_for_settings(connection: &Connection, settings_id: i64) -> Result<i64, String> {
+    connection
+        .query_row(
+            "SELECT COUNT(DISTINCT file_id) FROM fingerprints_v3 WHERE settings_id = ?1",
+            [settings_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("failed counting media-match V3 files: {error}"))
 }
 
 pub fn refresh_dirty_anchor_stats_v3_if_needed(
     connection: &Connection,
-    settings_hash: &[u8],
+    settings_hash: &[u8; 32],
+    now: i64,
 ) -> Result<(), String> {
-    refresh_dirty_anchor_stats_v3_if_needed_with_stats(connection, settings_hash).map(|_| ())
-}
-
-fn refresh_dirty_anchor_stats_v3_if_needed_with_stats(
-    connection: &Connection,
-    settings_hash: &[u8],
-) -> Result<MediaMatchV3AnchorStatsRefreshStats, String> {
-    let dirty_started_at = Instant::now();
-    let dirty_before = anchor_stats_v3_dirty(connection, settings_hash)?;
-    let dirty_check_millis = dirty_started_at.elapsed().as_millis();
-    if !dirty_before {
-        return Ok(MediaMatchV3AnchorStatsRefreshStats {
-            dirty_check_millis,
-            dirty_before,
-            dirty_after: false,
-            ..MediaMatchV3AnchorStatsRefreshStats::default()
-        });
+    if anchor_stats_v3_dirty(connection, settings_hash)? {
+        refresh_anchor_stats_v3(connection, settings_hash, now)?;
     }
-
-    let refresh_started_at = Instant::now();
-    let Some(settings_id) = media_match_v3_settings_id_for_hash(connection, settings_hash)? else {
-        clear_anchor_stats_v3_dirty(connection, settings_hash)?;
-        return Ok(MediaMatchV3AnchorStatsRefreshStats {
-            dirty_check_millis,
-            dirty_before,
-            dirty_after: false,
-            ..MediaMatchV3AnchorStatsRefreshStats::default()
-        });
-    };
-    let anchor_rows_scanned = count_anchor_rows_for_settings(connection, settings_hash)?;
-    let buckets_refreshed =
-        refresh_anchor_stats_v3_with_count(connection, settings_id, current_unix_millis() as i64)?;
-    let refresh_millis = refresh_started_at.elapsed().as_millis();
-    clear_anchor_stats_v3_dirty(connection, settings_hash)?;
-    let dirty_after = anchor_stats_v3_dirty(connection, settings_hash)?;
-    Ok(MediaMatchV3AnchorStatsRefreshStats {
-        dirty_check_millis,
-        refresh_millis,
-        refresh_ran: true,
-        buckets_refreshed,
-        anchor_rows_scanned,
-        dirty_before,
-        dirty_after,
-    })
+    Ok(())
 }
 
 pub fn refresh_anchor_stats_v3(
     connection: &Connection,
-    settings_hash: &[u8],
-    now: i64,
+    settings_hash: &[u8; 32],
+    _now: i64,
 ) -> Result<(), String> {
-    let Some(settings_id) = media_match_v3_settings_id_for_hash(connection, settings_hash)? else {
-        clear_anchor_stats_v3_dirty(connection, settings_hash)?;
-        return Ok(());
-    };
-    refresh_anchor_stats_v3_with_count(connection, settings_id, now)?;
+    let settings_id = media_match_v3_settings_id_for_hash(connection, settings_hash)?;
+    connection
+        .execute(
+            "UPDATE audio_anchor_buckets_v3
+             SET document_frequency = (
+                SELECT COUNT(DISTINCT file_id)
+                FROM audio_anchor_occurrences_v3 occurrence
+                WHERE occurrence.bucket_id = audio_anchor_buckets_v3.bucket_id
+             )
+             WHERE settings_id = ?1",
+            [settings_id],
+        )
+        .map_err(|error| format!("failed refreshing V3 anchor stats: {error}"))?;
     clear_anchor_stats_v3_dirty(connection, settings_hash)
 }
 
-fn refresh_anchor_stats_v3_with_count(
-    connection: &Connection,
-    settings_id: i64,
-    now: i64,
-) -> Result<i64, String> {
-    let buckets_refreshed = connection
-        .execute(
-            "UPDATE anchor_buckets_v3
-             SET document_frequency = (
-                    SELECT COUNT(DISTINCT file_id)
-                    FROM anchor_occurrences_v3 occurrence
-                    WHERE occurrence.bucket_id = anchor_buckets_v3.bucket_id
-                 ),
-                 updated_unix_millis = ?2
-             WHERE settings_id = ?1",
-            params![settings_id, now],
-        )
-        .map_err(|error| format!("failed refreshing media-match v3 anchor stats: {error}"))?;
-    connection
-        .execute(
-            "DELETE FROM anchor_buckets_v3
-             WHERE settings_id = ?1
-               AND NOT EXISTS (
-                   SELECT 1
-                   FROM anchor_occurrences_v3 occurrence
-                   WHERE occurrence.bucket_id = anchor_buckets_v3.bucket_id
-               )",
-            [settings_id],
-        )
-        .map_err(|error| format!("failed pruning empty media-match v3 anchor buckets: {error}"))?;
-    let _ = connection.execute_batch("ANALYZE anchor_buckets_v3; ANALYZE anchor_occurrences_v3;");
-    Ok(buckets_refreshed as i64)
-}
-
 pub fn refresh_all_anchor_stats_v3(connection: &Connection, now: i64) -> Result<(), String> {
-    connection
-        .execute(
-            "UPDATE anchor_buckets_v3
-             SET document_frequency = (
-                    SELECT COUNT(DISTINCT file_id)
-                    FROM anchor_occurrences_v3 occurrence
-                    WHERE occurrence.bucket_id = anchor_buckets_v3.bucket_id
-                 ),
-                 updated_unix_millis = ?1",
-            [now],
-        )
-        .map(|_| ())
-        .map_err(|error| format!("failed refreshing all media-match v3 anchor stats: {error}"))?;
-    connection
-        .execute(
-            "DELETE FROM anchor_buckets_v3
-             WHERE NOT EXISTS (
-                 SELECT 1
-                 FROM anchor_occurrences_v3 occurrence
-                 WHERE occurrence.bucket_id = anchor_buckets_v3.bucket_id
-             )",
-            [],
-        )
-        .map_err(|error| format!("failed pruning empty media-match v3 anchor buckets: {error}"))?;
-    clear_all_anchor_stats_v3_dirty(connection)?;
-    let _ = connection.execute_batch("ANALYZE anchor_buckets_v3; ANALYZE anchor_occurrences_v3;");
+    let mut statement = connection
+        .prepare("SELECT settings_hash FROM settings_v3")
+        .map_err(|error| format!("failed preparing V3 stats refresh: {error}"))?;
+    let hashes = statement
+        .query_map([], |row| row.get::<_, Vec<u8>>(0))
+        .map_err(|error| format!("failed querying V3 settings hashes: {error}"))?;
+    for hash in hashes {
+        let hash = hash.map_err(|error| format!("failed reading V3 settings hash: {error}"))?;
+        if hash.len() == 32 {
+            let mut settings_hash = [0u8; 32];
+            settings_hash.copy_from_slice(&hash);
+            refresh_anchor_stats_v3(connection, &settings_hash, now)?;
+        }
+    }
     Ok(())
-}
-
-fn count_anchor_rows_for_settings(
-    connection: &Connection,
-    settings_hash: &[u8],
-) -> Result<i64, String> {
-    let Some(settings_id) = media_match_v3_settings_id_for_hash(connection, settings_hash)? else {
-        return Ok(0);
-    };
-    connection
-        .query_row(
-            "SELECT COUNT(*)
-             FROM anchor_occurrences_v3 occurrence
-             JOIN anchor_buckets_v3 bucket ON bucket.bucket_id = occurrence.bucket_id
-             WHERE bucket.settings_id = ?1",
-            [settings_id],
-            |row| row.get::<_, i64>(0),
-        )
-        .map_err(|error| format!("failed counting media-match v3 anchor rows: {error}"))
 }
 
 pub fn mark_anchor_stats_v3_dirty(
     connection: &Connection,
-    settings_hash: &[u8],
+    settings_hash: &[u8; 32],
 ) -> Result<(), String> {
-    let key = anchor_stats_v3_dirty_key(settings_hash);
     connection
         .execute(
-            "INSERT INTO metadata (key, value)
-             VALUES (?1, '1')
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            [key],
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, '1')",
+            [anchor_stats_v3_dirty_key(settings_hash)],
         )
-        .map(|_| ())
-        .map_err(|error| format!("failed marking media-match v3 anchor stats dirty: {error}"))
+        .map_err(|error| format!("failed marking V3 anchor stats dirty: {error}"))?;
+    Ok(())
+}
+
+pub fn mark_anchor_stats_v3_dirty_for_file(
+    connection: &Connection,
+    _file_id: i64,
+) -> Result<(), String> {
+    let mut statement = connection
+        .prepare("SELECT settings_hash FROM settings_v3")
+        .map_err(|error| format!("failed preparing dirty mark: {error}"))?;
+    let hashes = statement
+        .query_map([], |row| row.get::<_, Vec<u8>>(0))
+        .map_err(|error| format!("failed querying dirty settings: {error}"))?;
+    for hash in hashes {
+        let hash = hash.map_err(|error| format!("failed reading dirty hash: {error}"))?;
+        if hash.len() == 32 {
+            let mut settings_hash = [0u8; 32];
+            settings_hash.copy_from_slice(&hash);
+            mark_anchor_stats_v3_dirty(connection, &settings_hash)?;
+        }
+    }
+    Ok(())
 }
 
 pub fn clear_anchor_stats_v3_dirty(
     connection: &Connection,
-    settings_hash: &[u8],
+    settings_hash: &[u8; 32],
 ) -> Result<(), String> {
-    let key = anchor_stats_v3_dirty_key(settings_hash);
     connection
-        .execute("DELETE FROM metadata WHERE key = ?1", [key])
-        .map(|_| ())
-        .map_err(|error| {
-            format!("failed clearing media-match v3 anchor stats dirty marker: {error}")
-        })
+        .execute(
+            "DELETE FROM metadata WHERE key = ?1",
+            [anchor_stats_v3_dirty_key(settings_hash)],
+        )
+        .map_err(|error| format!("failed clearing V3 anchor stats dirty flag: {error}"))?;
+    Ok(())
 }
 
 pub fn clear_all_anchor_stats_v3_dirty(connection: &Connection) -> Result<(), String> {
@@ -1997,180 +1218,87 @@ pub fn clear_all_anchor_stats_v3_dirty(connection: &Connection) -> Result<(), St
             "DELETE FROM metadata WHERE key LIKE ?1",
             [format!("{MEDIA_MATCH_V3_ANCHOR_STATS_DIRTY_PREFIX}%")],
         )
-        .map(|_| ())
-        .map_err(|error| {
-            format!("failed clearing media-match v3 anchor stats dirty markers: {error}")
-        })
+        .map_err(|error| format!("failed clearing V3 anchor stats dirty flags: {error}"))?;
+    Ok(())
 }
 
 pub fn anchor_stats_v3_dirty(
     connection: &Connection,
-    settings_hash: &[u8],
+    settings_hash: &[u8; 32],
 ) -> Result<bool, String> {
-    let key = anchor_stats_v3_dirty_key(settings_hash);
-    let value = connection
-        .query_row("SELECT value FROM metadata WHERE key = ?1", [key], |row| {
-            row.get::<_, String>(0)
-        })
-        .optional()
-        .map_err(|error| {
-            format!("failed reading media-match v3 anchor stats dirty marker: {error}")
-        })?;
-    Ok(value.is_some_and(|value| value != "0"))
-}
-
-pub fn mark_anchor_stats_v3_dirty_for_file(
-    connection: &Connection,
-    file_id: i64,
-) -> Result<(), String> {
-    let mut statement = connection
-        .prepare(
-            "SELECT DISTINCT settings.settings_hash
-             FROM fingerprints_v3 fingerprint
-             JOIN settings_v3 settings ON settings.settings_id = fingerprint.settings_id
-             WHERE fingerprint.file_id = ?1
-             UNION
-             SELECT DISTINCT settings.settings_hash
-             FROM anchor_occurrences_v3 occurrence
-             JOIN anchor_buckets_v3 bucket ON bucket.bucket_id = occurrence.bucket_id
-             JOIN settings_v3 settings ON settings.settings_id = bucket.settings_id
-             WHERE occurrence.file_id = ?1",
+    let value: Option<String> = connection
+        .query_row(
+            "SELECT value FROM metadata WHERE key = ?1",
+            [anchor_stats_v3_dirty_key(settings_hash)],
+            |row| row.get(0),
         )
-        .map_err(|error| {
-            format!("failed preparing media-match v3 dirty-settings query: {error}")
-        })?;
-    let hashes = statement
-        .query_map([file_id], |row| row.get::<_, Vec<u8>>(0))
-        .map_err(|error| format!("failed querying media-match v3 dirty settings: {error}"))?
-        .flatten()
-        .collect::<Vec<_>>();
-    drop(statement);
-    for settings_hash in hashes {
-        mark_anchor_stats_v3_dirty(connection, &settings_hash)?;
-    }
-    Ok(())
+        .optional()
+        .map_err(|error| format!("failed reading V3 anchor stats dirty flag: {error}"))?;
+    Ok(value.is_some())
 }
 
 pub fn delete_media_match_v3_fingerprints_and_anchors(
     connection: &Connection,
-    file_id: i64,
+    normalized_path: &str,
 ) -> Result<(), String> {
-    mark_anchor_stats_v3_dirty_for_file(connection, file_id)?;
+    let Ok(file_id) = media_file_id_for_path(connection, normalized_path) else {
+        return Ok(());
+    };
+    let mut statement = connection
+        .prepare(
+            "SELECT settings_v3.settings_hash
+             FROM fingerprints_v3
+             JOIN settings_v3 ON settings_v3.settings_id = fingerprints_v3.settings_id
+             WHERE fingerprints_v3.file_id = ?1",
+        )
+        .map_err(|error| format!("failed preparing V3 settings dirty query: {error}"))?;
+    let settings_hashes = statement
+        .query_map([file_id], |row| row.get::<_, Vec<u8>>(0))
+        .map_err(|error| format!("failed querying V3 settings dirty rows: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed reading V3 settings dirty row: {error}"))?;
     connection
         .execute(
-            "DELETE FROM anchor_occurrences_v3 WHERE file_id = ?1",
+            "DELETE FROM audio_anchor_occurrences_v3 WHERE file_id = ?1",
             [file_id],
         )
-        .map_err(|error| format!("failed deleting stale media-match v3 anchors: {error}"))?;
+        .map_err(|error| format!("failed deleting V3 anchors: {error}"))?;
     connection
         .execute("DELETE FROM fingerprints_v3 WHERE file_id = ?1", [file_id])
-        .map_err(|error| format!("failed deleting stale media-match v3 fingerprints: {error}"))?;
+        .map_err(|error| format!("failed deleting V3 fingerprints: {error}"))?;
+    for settings_hash in settings_hashes {
+        if let Ok(settings_hash) = <[u8; 32]>::try_from(settings_hash.as_slice()) {
+            mark_anchor_stats_v3_dirty(connection, &settings_hash)?;
+        }
+    }
     Ok(())
 }
 
 pub fn delete_media_match_v3_file_and_fingerprints(
     connection: &Connection,
-    file_id: i64,
+    normalized_path: &str,
 ) -> Result<(), String> {
-    delete_media_match_v3_fingerprints_and_anchors(connection, file_id)?;
+    delete_media_match_v3_fingerprints_and_anchors(connection, normalized_path)?;
     connection
-        .execute("DELETE FROM media_files_v3 WHERE file_id = ?1", [file_id])
-        .map_err(|error| format!("failed deleting stale media-match v3 file row: {error}"))?;
+        .execute(
+            "DELETE FROM media_files_v3 WHERE normalized_path = ?1",
+            [normalized_path],
+        )
+        .map_err(|error| format!("failed deleting V3 media file: {error}"))?;
     Ok(())
 }
 
-struct AnchorIndexInsert {
-    file_id: i64,
-    settings_id: i64,
-    modality: i64,
-    bucket: u32,
-    t_ms: u32,
-    weight: i64,
-}
-
-fn insert_anchor_index_v3(
-    connection: &Connection,
-    bucket_ids: &mut BTreeMap<(i64, u32), i64>,
-    row: AnchorIndexInsert,
-) -> Result<(), String> {
-    let bucket_id = anchor_bucket_id_v3(
-        connection,
-        row.settings_id,
-        bucket_ids,
-        row.modality,
-        row.bucket,
-    )?;
-    connection
-        .prepare_cached(
-            "INSERT OR REPLACE INTO anchor_occurrences_v3 (
-                bucket_id, file_id, t_ms, weight
-            ) VALUES (?1, ?2, ?3, ?4)",
-        )
-        .map_err(|error| format!("failed preparing media-match v3 anchor index insert: {error}"))?
-        .execute(params![
-            bucket_id,
-            row.file_id,
-            i64::from(row.t_ms),
-            row.weight
-        ])
-        .map(|_| ())
-        .map_err(|error| format!("failed writing media-match v3 anchor index row: {error}"))
-}
-
-fn anchor_bucket_id_v3(
-    connection: &Connection,
-    settings_id: i64,
-    bucket_ids: &mut BTreeMap<(i64, u32), i64>,
-    modality: i64,
-    bucket: u32,
-) -> Result<i64, String> {
-    if let Some(bucket_id) = bucket_ids.get(&(modality, bucket)).copied() {
-        return Ok(bucket_id);
-    }
-    let now = current_unix_millis() as i64;
-    connection
-        .prepare_cached(
-            "INSERT OR IGNORE INTO anchor_buckets_v3 (
-                settings_id,
-                modality,
-                bucket,
-                document_frequency,
-                updated_unix_millis
-            ) VALUES (?1, ?2, ?3, 0, ?4)",
-        )
-        .map_err(|error| format!("failed preparing media-match v3 anchor bucket insert: {error}"))?
-        .execute(params![settings_id, modality, i64::from(bucket), now])
-        .map_err(|error| format!("failed writing media-match v3 anchor bucket: {error}"))?;
-    let bucket_id = connection
-        .prepare_cached(
-            "SELECT bucket_id
-             FROM anchor_buckets_v3
-             WHERE settings_id = ?1 AND modality = ?2 AND bucket = ?3",
-        )
-        .map_err(|error| format!("failed preparing media-match v3 anchor bucket lookup: {error}"))?
-        .query_row(params![settings_id, modality, i64::from(bucket)], |row| {
-            row.get::<_, i64>(0)
-        })
-        .map_err(|error| format!("failed reading media-match v3 anchor bucket id: {error}"))?;
-    bucket_ids.insert((modality, bucket), bucket_id);
-    Ok(bucket_id)
-}
-
-#[allow(clippy::too_many_arguments)]
 fn media_match_v3_record_from_cached_blobs(
-    normalized_path: String,
-    modified_unix_millis: i64,
-    size_bytes: i64,
-    media_duration_ms: Option<i64>,
-    container_format: Option<String>,
-    fingerprint_duration_ms: Option<i64>,
-    audio_blob: Option<Vec<u8>>,
-    video_blob: Option<Vec<u8>>,
-    error: Option<String>,
-    extraction_settings: &MediaExtractionSettings,
-) -> Option<MediaFingerprintRecord> {
-    let duration_ms = fingerprint_duration_ms.or(media_duration_ms);
-    let duration_seconds = duration_ms.map(|value| value as f64 / 1000.0);
+    row: &rusqlite::Row<'_>,
+    extraction_settings: MediaExtractionSettings,
+) -> rusqlite::Result<MediaFingerprintRecord> {
+    let normalized_path: String = row.get(0)?;
+    let modified_unix_millis: i64 = row.get(1)?;
+    let size_bytes: i64 = row.get(2)?;
+    let container_fingerprint: String = row.get(3)?;
+    let duration_ms: Option<i64> = row.get(4)?;
+    let audio_blob: Option<Vec<u8>> = row.get(5)?;
+    let error: Option<String> = row.get(6)?;
     let mut record = MediaFingerprintRecord {
         identity: MediaFileIdentity {
             normalized_path: normalized_path.clone(),
@@ -2178,233 +1306,177 @@ fn media_match_v3_record_from_cached_blobs(
             size_bytes: size_bytes.max(0) as u64,
         },
         algorithm_version: MEDIA_MATCH_ALGORITHM_VERSION,
-        extraction_settings: extraction_settings.clone(),
-        duration_seconds,
-        container_fingerprint: container_format.unwrap_or_else(|| {
-            container_fingerprint_from_metadata(
-                &normalized_path,
-                modified_unix_millis.max(0) as u64,
-                size_bytes.max(0) as u64,
-                duration_seconds,
-            )
-        }),
-        video: None,
+        extraction_settings,
+        duration_seconds: duration_ms.map(|duration_ms| duration_ms as f64 / 1000.0),
+        container_fingerprint,
         audio_anchors: Vec::new(),
-        video_anchors: Vec::new(),
-        audio_error: error.clone(),
-        video_error: error,
+        audio_error: error,
     };
-    if let Some(blob_bytes) = audio_blob {
-        let blob = decode_media_fingerprint_blob_v3(&blob_bytes).ok()?;
+    if let Some(blob_bytes) = audio_blob
+        && let Ok(blob) = decode_media_fingerprint_blob_v3(&blob_bytes)
+    {
         media_fingerprint_record_apply_blob_v3(&mut record, blob);
     }
-    if let Some(blob_bytes) = video_blob {
-        let blob = decode_media_fingerprint_blob_v3(&blob_bytes).ok()?;
-        validate_video_landmarks_v3(&blob.video_landmarks).ok()?;
-        let duration = record.duration_seconds;
-        let audio_anchors = std::mem::take(&mut record.audio_anchors);
-        media_fingerprint_record_apply_blob_v3(&mut record, blob);
-        record.audio_anchors = audio_anchors;
-        record.duration_seconds = record.duration_seconds.or(duration);
+    if record.container_fingerprint.is_empty() {
+        record.container_fingerprint = container_fingerprint_from_metadata(
+            &normalized_path,
+            record.identity.modified_unix_millis,
+            record.identity.size_bytes,
+            record.duration_seconds,
+        );
     }
-    Some(record)
+    Ok(record)
 }
 
-fn finalize_v3_candidate_retrieval_score(
-    mut score: V3CandidateRetrievalScore,
-    query_duration_ms: Option<i64>,
-) -> V3CandidateRetrievalScore {
-    let mut offset_bins = score
-        .offset_bins
+pub fn media_match_v3_sqlite_size_report(
+    root: &Path,
+    connection: &Connection,
+) -> Result<MediaMatchV3SqliteSizeReport, String> {
+    let index_path = media_match_v3_index_path(root);
+    let page_size = sqlite_pragma_u64(connection, "page_size")?;
+    let page_count = sqlite_pragma_u64(connection, "page_count")?;
+    let freelist_count = sqlite_pragma_u64(connection, "freelist_count")?;
+    let total_bytes = page_size.saturating_mul(page_count);
+    let free_bytes = page_size.saturating_mul(freelist_count);
+    let live_bytes = total_bytes.saturating_sub(free_bytes);
+    let object_bytes = sqlite_object_bytes(connection).unwrap_or_default();
+    let row_counts = sqlite_row_counts(connection, &object_bytes).unwrap_or_default();
+    let anchor_rows = row_count(connection, "audio_anchor_occurrences_v3");
+    let fingerprint_rows = row_count(connection, "fingerprints_v3");
+    let anchor_index_bytes = object_bytes
         .iter()
-        .map(|(offset_bin, offset_score)| {
-            let span = media_match_v3_longest_contiguous_span_ms(&offset_score.query_times).max(
-                media_match_v3_longest_contiguous_span_ms(&offset_score.candidate_times),
-            );
-            (*offset_bin, offset_score.weighted_score, span)
-        })
-        .collect::<Vec<_>>();
-    offset_bins.sort_by(|left, right| {
-        right
-            .1
-            .cmp(&left.1)
-            .then_with(|| right.2.cmp(&left.2))
-            .then_with(|| left.0.cmp(&right.0))
-    });
-    if let Some((best_offset_bin, best_score, best_span)) = offset_bins.first().copied() {
-        score.best_offset_bin = best_offset_bin;
-        score.best_offset_score = best_score;
-        score.approximate_span_ms = best_span;
-        score.second_offset_score = offset_bins.get(1).map(|(_, value, _)| *value).unwrap_or(0);
-        if let Some(best_offset_score) = score.offset_bins.get(&best_offset_bin) {
-            score.distinct_query_regions = best_offset_score.query_regions.len() as i64;
-            score.distinct_candidate_regions = best_offset_score.candidate_regions.len() as i64;
-        }
-    }
-    let (body_region_count, edge_region_count) = score.best_offset_body_edge_region_counts();
-    score.body_region_count = body_region_count;
-    score.edge_region_count = edge_region_count;
-    score.duration_compatibility =
-        media_match_v3_duration_compatibility(query_duration_ms, score.candidate_duration_ms);
-    score.short_clip_penalty_applied =
-        score.duration_compatibility == V3DurationCompatibility::QueryFullCandidateShort;
-    score.robust_score = media_match_v3_robust_retrieval_score(&score);
-    score
-}
-
-impl V3CandidateRetrievalScore {
-    fn best_offset_modality_count(&self) -> i64 {
-        self.offset_bins
-            .get(&self.best_offset_bin)
-            .map(|score| {
-                (if score.audio_hits > 0 { 1 } else { 0 })
-                    + (if score.video_hits > 0 { 1 } else { 0 })
-            })
-            .unwrap_or(0)
-    }
-
-    fn best_offset_body_edge_region_counts(&self) -> (i64, i64) {
-        let Some(offset_score) = self.offset_bins.get(&self.best_offset_bin) else {
-            return (0, 0);
-        };
-        (
-            offset_score.body_regions.len() as i64,
-            offset_score.edge_regions.len() as i64,
+        .filter(|object| object.name.contains("audio_anchor"))
+        .map(|object| object.bytes)
+        .sum();
+    let fingerprint_blob_bytes: u64 = connection
+        .query_row(
+            "SELECT COALESCE(SUM(COALESCE(length(audio_blob), 0)), 0) FROM fingerprints_v3",
+            [],
+            |row| row.get(0),
         )
+        .unwrap_or(0);
+    let media_file_bytes = object_bytes
+        .iter()
+        .filter(|object| object.name.contains("media_files_v3"))
+        .map(|object| object.bytes)
+        .sum();
+    let metadata_bytes = object_bytes
+        .iter()
+        .filter(|object| object.name == "metadata" || object.name == "settings_v3")
+        .map(|object| object.bytes)
+        .sum();
+    let db_index_bytes = object_bytes
+        .iter()
+        .filter(|object| object.object_type == "index")
+        .map(|object| object.bytes)
+        .sum();
+    Ok(MediaMatchV3SqliteSizeReport {
+        database_path: index_path.display().to_string(),
+        page_size,
+        page_count,
+        freelist_count,
+        total_bytes,
+        live_bytes,
+        free_bytes,
+        dbstat_available: !object_bytes.is_empty(),
+        object_bytes,
+        row_counts,
+        anchor_index_bytes,
+        anchor_index_bytes_per_anchor: ratio_u64(anchor_index_bytes, anchor_rows),
+        fingerprint_blob_bytes,
+        media_file_bytes,
+        metadata_bytes,
+        db_index_bytes,
+        db_bytes_per_fingerprint: ratio_u64(total_bytes, fingerprint_rows),
+        db_bytes_per_anchor: ratio_u64(total_bytes, anchor_rows),
+        compressed_postings_estimate: None,
+    })
+}
+
+fn sqlite_pragma_u64(connection: &Connection, pragma_name: &str) -> Result<u64, String> {
+    connection
+        .query_row(&format!("PRAGMA {pragma_name}"), [], |row| {
+            row.get::<_, u64>(0)
+        })
+        .map_err(|error| format!("failed reading SQLite pragma {pragma_name}: {error}"))
+}
+
+fn sqlite_object_bytes(
+    connection: &Connection,
+) -> Result<Vec<MediaMatchV3SqliteObjectBytes>, String> {
+    let mut statement = connection
+        .prepare("SELECT name, aggregate, SUM(pgsize) FROM dbstat GROUP BY name, aggregate")
+        .map_err(|error| format!("SQLite dbstat unavailable: {error}"))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(MediaMatchV3SqliteObjectBytes {
+                name: row.get(0)?,
+                object_type: row.get(1)?,
+                bytes: row.get::<_, i64>(2)?.max(0) as u64,
+            })
+        })
+        .map_err(|error| format!("failed querying SQLite dbstat: {error}"))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed reading SQLite dbstat: {error}"))
+}
+
+fn sqlite_row_counts(
+    connection: &Connection,
+    object_bytes: &[MediaMatchV3SqliteObjectBytes],
+) -> Result<Vec<MediaMatchV3SqliteRowCount>, String> {
+    let mut rows = Vec::new();
+    for table in [
+        "settings_v3",
+        "media_files_v3",
+        "fingerprints_v3",
+        "audio_anchor_buckets_v3",
+        "audio_anchor_occurrences_v3",
+    ] {
+        let row_count = row_count(connection, table);
+        let bytes = object_bytes
+            .iter()
+            .filter(|object| object.name == table)
+            .map(|object| object.bytes)
+            .sum::<u64>();
+        rows.push(MediaMatchV3SqliteRowCount {
+            table: table.to_owned(),
+            row_count,
+            avg_bytes_per_row: (row_count > 0).then(|| bytes as f64 / row_count as f64),
+        });
     }
+    Ok(rows)
 }
 
-fn media_match_v3_duration_compatibility(
-    query_duration_ms: Option<i64>,
-    candidate_duration_ms: Option<i64>,
-) -> V3DurationCompatibility {
-    const SHORT_CLIP_MS: i64 = 5 * 60 * 1000;
-    const FULL_LENGTH_MS: i64 = 10 * 60 * 1000;
-    match (query_duration_ms, candidate_duration_ms) {
-        (Some(query), Some(candidate)) if query >= FULL_LENGTH_MS && candidate < SHORT_CLIP_MS => {
-            V3DurationCompatibility::QueryFullCandidateShort
-        }
-        (Some(query), Some(candidate)) if query < SHORT_CLIP_MS && candidate >= FULL_LENGTH_MS => {
-            V3DurationCompatibility::CandidateFullQueryShort
-        }
-        (Some(_), Some(_)) => V3DurationCompatibility::Compatible,
-        _ => V3DurationCompatibility::Unknown,
-    }
+fn row_count(connection: &Connection, table: &str) -> u64 {
+    connection
+        .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap_or(0)
+        .max(0) as u64
 }
 
-fn media_match_v3_robust_retrieval_score(score: &V3CandidateRetrievalScore) -> i128 {
-    let mut robust = i128::from(score.best_offset_score.max(0)) * span_factor(score) / 1_000;
-    robust = robust * region_factor(score) / 1_000;
-    robust = robust * offset_dominance_factor(score) / 1_000;
-    robust = robust * duration_factor(score) / 1_000;
-    robust.max(0)
+fn sqlite_table_exists(connection: &Connection, table: &str) -> Result<bool, String> {
+    let exists: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [table],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("failed checking SQLite table '{table}': {error}"))?;
+    Ok(exists > 0)
 }
 
-fn span_factor(score: &V3CandidateRetrievalScore) -> i128 {
-    match score.approximate_span_ms {
-        span if span < 1_000 => 200,
-        span if span < 2_000 => 500,
-        span if span < 5_000 => 1_000 + i128::from(span / 20),
-        span => 2_000 + i128::from(span.min(60_000) / 20),
-    }
-}
-
-fn region_factor(score: &V3CandidateRetrievalScore) -> i128 {
-    let query_regions = score.distinct_query_regions.saturating_sub(1).clamp(0, 8);
-    let candidate_regions = score
-        .distinct_candidate_regions
-        .saturating_sub(1)
-        .clamp(0, 8);
-    let body_regions = score.body_region_count.clamp(0, 8);
-    let edge_only_penalty = if score.body_region_count == 0 && score.edge_region_count > 0 {
-        650
+fn ratio_u64(numerator: u64, denominator: u64) -> f64 {
+    if denominator == 0 {
+        0.0
     } else {
-        1_000
-    };
-    (1_000
-        + 100 * i128::from(query_regions)
-        + 100 * i128::from(candidate_regions)
-        + 150 * i128::from(body_regions))
-        * edge_only_penalty
-        / 1_000
-}
-
-fn offset_dominance_factor(score: &V3CandidateRetrievalScore) -> i128 {
-    if score.second_offset_score <= 0 {
-        return 1_300;
+        numerator as f64 / denominator as f64
     }
-    let ratio_milli = (score.best_offset_score.max(0) * 1_000 / score.second_offset_score.max(1))
-        .clamp(1_000, 4_000);
-    900 + i128::from(ratio_milli / 5)
-}
-
-fn duration_factor(score: &V3CandidateRetrievalScore) -> i128 {
-    match score.duration_compatibility {
-        V3DurationCompatibility::QueryFullCandidateShort => {
-            if score.approximate_span_ms >= 30_000
-                && score.body_region_count >= 2
-                && score.best_offset_score >= 10_000
-            {
-                1_000
-            } else {
-                250
-            }
-        }
-        V3DurationCompatibility::CandidateFullQueryShort => 850,
-        V3DurationCompatibility::Compatible | V3DurationCompatibility::Unknown => 1_000,
-    }
-}
-
-fn media_match_v3_document_frequency_weight(document_frequency: i64) -> i64 {
-    match document_frequency {
-        frequency if frequency <= 1 => 4,
-        2..=4 => 3,
-        5..=16 => 2,
-        _ => 1,
-    }
-}
-
-fn media_match_v3_rounded_offset_bin(offset_ms: i64) -> i64 {
-    if offset_ms >= 0 {
-        (offset_ms + (V3_RETRIEVAL_OFFSET_BIN_MS / 2)) / V3_RETRIEVAL_OFFSET_BIN_MS
-    } else {
-        (offset_ms - (V3_RETRIEVAL_OFFSET_BIN_MS / 2)) / V3_RETRIEVAL_OFFSET_BIN_MS
-    }
-}
-
-fn media_match_v3_time_is_edge(time_ms: i64, duration_ms: Option<i64>) -> bool {
-    const EDGE_REGION_MS: i64 = 180_000;
-    time_ms < EDGE_REGION_MS
-        || duration_ms
-            .map(|duration_ms| duration_ms.saturating_sub(time_ms) < EDGE_REGION_MS)
-            .unwrap_or(false)
-}
-
-fn media_match_v3_longest_contiguous_span_ms(times: &BTreeSet<i64>) -> i64 {
-    if times.len() < 2 {
-        return 0;
-    }
-    let mut iter = times.iter().copied();
-    let Some(first) = iter.next() else {
-        return 0;
-    };
-    let mut segment_start = first;
-    let mut previous = first;
-    let mut best = 0;
-    for time in iter {
-        if time - previous > V3_RETRIEVAL_GAP_MS {
-            best = best.max(previous - segment_start);
-            segment_start = time;
-        }
-        previous = time;
-    }
-    best.max(previous - segment_start)
 }
 
 fn duration_ms_from_seconds(duration_seconds: Option<f64>) -> Option<i64> {
-    duration_seconds
-        .filter(|value| value.is_finite() && *value >= 0.0)
-        .map(|value| (value * 1000.0).round().min(f64::from(u32::MAX)) as i64)
+    duration_seconds.map(|duration| (duration * 1000.0).round().max(0.0) as i64)
 }
 
 fn anchor_stats_v3_dirty_key(settings_hash: &[u8]) -> String {
@@ -2416,446 +1488,91 @@ fn anchor_stats_v3_dirty_key(settings_hash: &[u8]) -> String {
 
 fn bytes_to_lower_hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len() * 2);
+    let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
-        output.push(HEX[(byte >> 4) as usize] as char);
-        output.push(HEX[(byte & 0x0f) as usize] as char);
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
     }
-    output
+    out
 }
 
 fn current_unix_millis() -> u64 {
-    let millis = SystemTime::now()
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    millis.min(u128::from(u64::MAX)) as u64
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::anchors::AudioAnchor;
 
-    #[test]
-    fn compact_schema_keeps_settings_hash_out_of_anchor_occurrences() {
-        let connection = Connection::open_in_memory().expect("in-memory SQLite should open");
-        initialize_media_match_v3_index(&connection).expect("schema should initialize");
-
-        assert!(sqlite_table_exists(&connection, "settings_v3").expect("settings table check"));
-        assert!(
-            !sqlite_table_has_column(&connection, "anchor_occurrences_v3", "settings_hash")
-                .expect("occurrence column check")
-        );
-        assert!(
-            !sqlite_table_has_column(&connection, "anchor_occurrences_v3", "algorithm_version")
-                .expect("occurrence column check")
-        );
-        assert!(
-            !sqlite_table_has_column(&connection, "fingerprints_v3", "settings_hash")
-                .expect("fingerprint column check")
-        );
-    }
-
-    #[test]
-    fn compact_schema_size_report_guards_anchor_storage_shape() {
-        let root = std::env::temp_dir().join(format!(
-            "sorotte-v3-size-report-{}-{}",
-            std::process::id(),
-            current_unix_millis()
-        ));
-        let connection = open_media_match_v3_index(&root).expect("index should open");
-        for record in [
-            test_audio_record("query.mkv", &[(100, 1_000), (200, 2_000)]),
-            test_audio_record("candidate.mkv", &[(100, 1_080), (300, 3_000)]),
-        ] {
-            save_media_match_v3_record(&connection, &record, None).expect("record should save");
-        }
-
-        let report =
-            media_match_v3_sqlite_size_report(&root, &connection).expect("size report should run");
-        let row_count = |name: &str| {
-            report
-                .row_counts
-                .iter()
-                .find(|row| row.table == name)
-                .map(|row| row.row_count)
-        };
-
-        assert_eq!(row_count("settings_v3"), Some(1));
-        assert_eq!(row_count("fingerprints_v3"), Some(2));
-        assert_eq!(row_count("anchor_buckets_v3"), Some(3));
-        assert_eq!(row_count("anchor_occurrences_v3"), Some(4));
-        assert!(!sqlite_table_exists(&connection, "anchor_index_v3").expect("old table check"));
-        assert!(!sqlite_table_exists(&connection, "anchor_stats_v3").expect("old stats check"));
-        let estimate = report
-            .compressed_postings_estimate
-            .expect("compact occurrence table should support postings estimate");
-        assert_eq!(estimate.occurrence_count, 4);
-        assert_eq!(estimate.bucket_count, 3);
-        assert!(estimate.estimated_postings_bytes > 0);
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn robust_retrieval_score_demotes_short_clip_for_full_query() {
-        let full_candidate = V3CandidateRetrievalScore {
-            best_offset_score: 2_426,
-            second_offset_score: 48,
-            approximate_span_ms: 12_160,
-            distinct_query_regions: 2,
-            distinct_candidate_regions: 1,
-            body_region_count: 2,
-            edge_region_count: 0,
-            duration_compatibility: V3DurationCompatibility::Compatible,
-            ..V3CandidateRetrievalScore::default()
-        };
-        let op_clip = V3CandidateRetrievalScore {
-            best_offset_score: 3_982,
-            second_offset_score: 56,
-            approximate_span_ms: 2_101,
-            distinct_query_regions: 1,
-            distinct_candidate_regions: 1,
-            body_region_count: 0,
-            edge_region_count: 1,
-            duration_compatibility: V3DurationCompatibility::QueryFullCandidateShort,
-            short_clip_penalty_applied: true,
-            ..V3CandidateRetrievalScore::default()
-        };
-
-        assert!(
-            media_match_v3_robust_retrieval_score(&full_candidate)
-                > media_match_v3_robust_retrieval_score(&op_clip)
-        );
-    }
-
-    #[test]
-    fn robust_retrieval_score_rewards_coherent_span_over_one_region_collision() {
-        let true_candidate = V3CandidateRetrievalScore {
-            best_offset_score: 818,
-            second_offset_score: 228,
-            approximate_span_ms: 7_680,
-            distinct_query_regions: 1,
-            distinct_candidate_regions: 1,
-            body_region_count: 1,
-            edge_region_count: 0,
-            duration_compatibility: V3DurationCompatibility::Compatible,
-            ..V3CandidateRetrievalScore::default()
-        };
-        let one_region_collision = V3CandidateRetrievalScore {
-            best_offset_score: 1_040,
-            second_offset_score: 0,
-            approximate_span_ms: 512,
-            distinct_query_regions: 1,
-            distinct_candidate_regions: 1,
-            body_region_count: 1,
-            edge_region_count: 0,
-            duration_compatibility: V3DurationCompatibility::Compatible,
-            ..V3CandidateRetrievalScore::default()
-        };
-
-        assert!(
-            media_match_v3_robust_retrieval_score(&true_candidate)
-                > media_match_v3_robust_retrieval_score(&one_region_collision)
-        );
-    }
-
-    #[test]
-    fn dirty_anchor_stats_refresh_runs_once_and_clears_marker() {
-        let connection = Connection::open_in_memory().expect("in-memory SQLite should open");
-        initialize_media_match_v3_index(&connection).expect("schema should initialize");
-        let settings_hash = [7_u8; 32];
-        connection
-            .execute(
-                "INSERT INTO settings_v3 (
-                    settings_id,
-                    settings_hash,
-                    algorithm_version,
-                    fingerprint_cache_version,
-                    profile,
-                    tuning_json,
-                    created_unix_millis
-                ) VALUES (1, ?1, ?2, ?3, 'test', NULL, 1)",
-                params![
-                    &settings_hash,
-                    i64::from(MEDIA_MATCH_ANCHOR_VERSION),
-                    i64::from(MEDIA_MATCH_V3_FINGERPRINT_CACHE_VERSION),
-                ],
-            )
-            .expect("settings row should insert");
-        let mut bucket_ids = BTreeMap::new();
-        for file_id in 1..=2 {
-            connection
-                .execute(
-                    "INSERT INTO media_files_v3 (
-                        file_id,
-                        normalized_path,
-                        modified_unix_millis,
-                        size_bytes,
-                        duration_ms,
-                        container_format,
-                        updated_unix_millis
-                    ) VALUES (?1, ?2, 1, 1, 1000, 'test', 1)",
-                    params![file_id, format!("file-{file_id}.mkv")],
-                )
-                .expect("media row should insert");
-            insert_anchor_index_v3(
-                &connection,
-                &mut bucket_ids,
-                AnchorIndexInsert {
-                    file_id,
-                    settings_id: 1,
-                    modality: 1,
-                    bucket: 42,
-                    t_ms: 1000,
-                    weight: 1,
-                },
-            )
-            .expect("anchor row should insert");
-        }
-        mark_anchor_stats_v3_dirty(&connection, &settings_hash).expect("dirty marker should set");
-
-        let first = refresh_dirty_anchor_stats_v3_if_needed_with_stats(&connection, &settings_hash)
-            .expect("first refresh should run");
-        let second =
-            refresh_dirty_anchor_stats_v3_if_needed_with_stats(&connection, &settings_hash)
-                .expect("second refresh should not run");
-
-        assert!(first.dirty_before);
-        assert!(first.refresh_ran);
-        assert_eq!(first.anchor_rows_scanned, 2);
-        assert_eq!(first.buckets_refreshed, 1);
-        assert!(!first.dirty_after);
-        assert!(!second.dirty_before);
-        assert!(!second.refresh_ran);
-        assert!(!anchor_stats_v3_dirty(&connection, &settings_hash).expect("dirty should read"));
-    }
-
-    #[test]
-    fn old_anchor_schema_migrates_to_compact_bucket_occurrences() {
-        let connection = Connection::open_in_memory().expect("in-memory SQLite should open");
-        let settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
-        let settings_hash = media_extraction_settings_hash(&settings).to_vec();
-        connection
-            .execute_batch(
-                "
-                PRAGMA user_version = 3;
-                CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-                CREATE TABLE media_files_v3 (
-                    file_id INTEGER PRIMARY KEY,
-                    normalized_path TEXT NOT NULL UNIQUE,
-                    modified_unix_millis INTEGER NOT NULL,
-                    size_bytes INTEGER NOT NULL,
-                    duration_ms INTEGER,
-                    container_format TEXT,
-                    video_codec TEXT,
-                    audio_codec TEXT,
-                    width INTEGER,
-                    height INTEGER,
-                    updated_unix_millis INTEGER NOT NULL
-                );
-                CREATE TABLE fingerprints_v3 (
-                    file_id INTEGER NOT NULL,
-                    algorithm_version INTEGER NOT NULL,
-                    settings_hash BLOB NOT NULL,
-                    status TEXT NOT NULL,
-                    duration_ms INTEGER,
-                    audio_blob BLOB,
-                    video_blob BLOB,
-                    audio_verify_count INTEGER NOT NULL DEFAULT 0,
-                    video_verify_count INTEGER NOT NULL DEFAULT 0,
-                    audio_index_count INTEGER NOT NULL DEFAULT 0,
-                    video_index_count INTEGER NOT NULL DEFAULT 0,
-                    error TEXT,
-                    updated_unix_millis INTEGER NOT NULL,
-                    PRIMARY KEY (file_id, algorithm_version, settings_hash)
-                );
-                CREATE TABLE anchor_index_v3 (
-                    algorithm_version INTEGER NOT NULL,
-                    settings_hash BLOB NOT NULL,
-                    modality INTEGER NOT NULL,
-                    bucket INTEGER NOT NULL,
-                    file_id INTEGER NOT NULL,
-                    t_ms INTEGER NOT NULL,
-                    weight INTEGER NOT NULL,
-                    PRIMARY KEY (
-                        algorithm_version, settings_hash, modality, bucket, file_id, t_ms
-                    )
-                );
-                ",
-            )
-            .expect("old schema should initialize");
-        for (file_id, path) in [(1, "query.mkv"), (2, "candidate.mkv")] {
-            connection
-                .execute(
-                    "INSERT INTO media_files_v3 (
-                        file_id,
-                        normalized_path,
-                        modified_unix_millis,
-                        size_bytes,
-                        duration_ms,
-                        container_format,
-                        updated_unix_millis
-                    ) VALUES (?1, ?2, 1, 1, 60000, 'test', 1)",
-                    params![file_id, path],
-                )
-                .expect("media row should insert");
-            connection
-                .execute(
-                    "INSERT INTO fingerprints_v3 (
-                        file_id,
-                        algorithm_version,
-                        settings_hash,
-                        status,
-                        duration_ms,
-                        audio_verify_count,
-                        video_verify_count,
-                        audio_index_count,
-                        video_index_count,
-                        updated_unix_millis
-                    ) VALUES (?1, ?2, ?3, 'complete', 60000, 2, 0, 2, 0, 1)",
-                    params![
-                        file_id,
-                        i64::from(MEDIA_MATCH_ANCHOR_VERSION),
-                        &settings_hash
-                    ],
-                )
-                .expect("fingerprint row should insert");
-        }
-        for (file_id, t_ms) in [(1, 1_000), (2, 1_080)] {
-            connection
-                .execute(
-                    "INSERT INTO anchor_index_v3 (
-                        algorithm_version,
-                        settings_hash,
-                        modality,
-                        bucket,
-                        file_id,
-                        t_ms,
-                        weight
-                    ) VALUES (?1, ?2, 1, 42, ?3, ?4, 100)",
-                    params![
-                        i64::from(MEDIA_MATCH_ANCHOR_VERSION),
-                        &settings_hash,
-                        file_id,
-                        t_ms,
-                    ],
-                )
-                .expect("old anchor row should insert");
-        }
-
-        initialize_media_match_v3_index(&connection).expect("schema should migrate");
-
-        assert!(!sqlite_table_exists(&connection, "anchor_index_v3").expect("old table check"));
-        assert!(
-            sqlite_table_exists(&connection, "anchor_occurrences_v3").expect("new table check")
-        );
-        assert!(
-            !sqlite_table_has_column(&connection, "fingerprints_v3", "settings_hash")
-                .expect("fingerprint column check")
-        );
-        let (candidates, _stats) = media_match_v3_anchor_candidate_details_with_strategy(
-            &connection,
-            "query.mkv",
-            &settings,
-            MediaMatchV3RetrievalStrategy::TempTable,
-        )
-        .expect("retrieval should work after migration");
-        assert_eq!(
-            candidates
-                .first()
-                .map(|candidate| candidate.normalized_path.as_str()),
-            Some("candidate.mkv")
-        );
-    }
-
-    #[test]
-    fn retrieval_strategies_return_same_candidate_order_for_duplicate_query_buckets() {
-        let connection = Connection::open_in_memory().expect("in-memory SQLite should open");
-        initialize_media_match_v3_index(&connection).expect("schema should initialize");
-        let settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
-        for record in [
-            test_audio_record(
-                "query.mkv",
-                &[(100, 1_000), (100, 2_000), (200, 3_000), (300, 4_000)],
-            ),
-            test_audio_record(
-                "candidate-strong.mkv",
-                &[(100, 1_080), (100, 2_080), (200, 3_080), (300, 4_080)],
-            ),
-            test_audio_record(
-                "candidate-weak.mkv",
-                &[(100, 7_000), (400, 8_000), (500, 9_000)],
-            ),
-        ] {
-            save_media_match_v3_record(&connection, &record, None).expect("record should save");
-        }
-
-        let (temp_candidates, temp_stats) = media_match_v3_anchor_candidate_details_with_strategy(
-            &connection,
-            "query.mkv",
-            &settings,
-            MediaMatchV3RetrievalStrategy::TempTable,
-        )
-        .expect("temp-table retrieval should run");
-        let (bucket_candidates, bucket_stats) =
-            media_match_v3_anchor_candidate_details_with_strategy(
-                &connection,
-                "query.mkv",
-                &settings,
-                MediaMatchV3RetrievalStrategy::BucketFetch,
-            )
-            .expect("bucket-fetch retrieval should run");
-
-        assert_eq!(temp_stats.retrieval_strategy, "temp-table");
-        assert_eq!(bucket_stats.retrieval_strategy, "bucket-fetch");
-        assert_eq!(
-            temp_candidates
-                .iter()
-                .map(|candidate| candidate.normalized_path.as_str())
-                .collect::<Vec<_>>(),
-            bucket_candidates
-                .iter()
-                .map(|candidate| candidate.normalized_path.as_str())
-                .collect::<Vec<_>>()
-        );
-        assert_eq!(
-            temp_candidates
-                .first()
-                .map(|candidate| candidate.normalized_path.as_str()),
-            Some("candidate-strong.mkv")
-        );
-        assert_eq!(
-            temp_stats.raw_hit_rows_processed,
-            bucket_stats.raw_hit_rows_processed
-        );
-    }
-
-    fn test_audio_record(path: &str, anchors: &[(u32, u32)]) -> MediaFingerprintRecord {
-        let settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
+    fn test_record(path: &str, buckets: &[u32]) -> MediaFingerprintRecord {
         MediaFingerprintRecord {
-            identity: MediaFileIdentity {
-                normalized_path: path.to_owned(),
-                modified_unix_millis: 1,
-                size_bytes: 1,
-            },
+            identity: MediaFileIdentity::new(path, 10, 20),
             algorithm_version: MEDIA_MATCH_ALGORITHM_VERSION,
-            extraction_settings: settings,
-            duration_seconds: Some(60.0),
-            container_fingerprint: format!("test:{path}"),
-            video: None,
-            audio_anchors: anchors
+            extraction_settings: MediaExtractionSettings::sampled_fast_audio_index_v3(),
+            duration_seconds: Some(120.0),
+            container_fingerprint: "container".to_owned(),
+            audio_anchors: buckets
                 .iter()
-                .map(|(bucket, t_ms)| AudioAnchor {
+                .enumerate()
+                .map(|(index, bucket)| crate::AudioAnchor {
                     bucket: *bucket,
-                    t_ms: *t_ms,
-                    weight: 100,
+                    t_ms: index as u32 * 1000,
+                    weight: 10,
                 })
                 .collect(),
-            video_anchors: Vec::new(),
             audio_error: None,
-            video_error: None,
         }
+    }
+
+    #[test]
+    fn schema_is_audio_only() {
+        let connection = Connection::open_in_memory().unwrap();
+        initialize_media_match_v3_index(&connection).unwrap();
+
+        assert!(sqlite_table_exists(&connection, "audio_anchor_occurrences_v3").unwrap());
+    }
+
+    #[test]
+    fn save_and_load_audio_record() {
+        let connection = Connection::open_in_memory().unwrap();
+        initialize_media_match_v3_index(&connection).unwrap();
+        let record = test_record("a.mkv", &[1, 2, 3, 4]);
+
+        save_media_match_v3_record(&connection, &record, None).unwrap();
+        let loaded = load_media_match_v3_record_for_path(
+            &connection,
+            &record.identity.normalized_path,
+            &record.extraction_settings,
+            record.identity.modified_unix_millis,
+            record.identity.size_bytes,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(loaded.audio_anchors.len(), 4);
+        assert_eq!(loaded.identity, record.identity);
+    }
+
+    #[test]
+    fn retrieval_uses_audio_anchors() {
+        let connection = Connection::open_in_memory().unwrap();
+        initialize_media_match_v3_index(&connection).unwrap();
+        let query = test_record("query.mkv", &[1, 2, 3, 4, 5, 6, 7, 8]);
+        let candidate = test_record("candidate.mkv", &[1, 2, 3, 4, 5, 6, 7, 8]);
+
+        save_media_match_v3_record(&connection, &query, None).unwrap();
+        save_media_match_v3_record(&connection, &candidate, None).unwrap();
+        refresh_all_anchor_stats_v3(&connection, current_unix_millis() as i64).unwrap();
+        let (candidates, _stats) =
+            media_match_v3_anchor_candidate_details_with_stats(&connection, &query, 0).unwrap();
+
+        assert_eq!(
+            candidates.first().unwrap().normalized_path,
+            candidate.identity.normalized_path
+        );
+        assert!(!candidates.is_empty());
     }
 }

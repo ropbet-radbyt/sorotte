@@ -9,7 +9,7 @@ use std::{
 };
 
 use sorotte_media_match::{
-    MediaDenseAudioProfile, MediaExtractionSettings, MediaMatchDecision, MediaMatchTier,
+    MediaExtractionSettings, MediaMatchDecision, MediaMatchTier,
     decide_media_match_against_wire_signature, media_match_wire_signature_from_value,
 };
 
@@ -33,7 +33,6 @@ struct GuiMediaMatchRemoteTarget {
 
 fn media_match_full_verify_extraction_settings() -> MediaExtractionSettings {
     MediaExtractionSettings::audio_constellation_v3()
-        .with_dense_audio_profile(MediaDenseAudioProfile::DenseGated)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1,736 +1,67 @@
 # Media Matching V3 Diagnostics
 
-Sorotte's V3 diagnostic runner evaluates real media pairs with the same V3
-fingerprinting, SQLite anchor index, retrieval stats, and decision diagnostics
-used by the runtime media matcher.
+V3 has one production implementation: audio-only constellation matching with the fixed sampled-fast policy. The normal cache, GUI background indexing, diagnostic CLI, and report comparison all use that policy.
 
-## Run
+The fixed sampled-fast policy is:
 
-```powershell
-cargo run -p sorotte-media-match --bin v3_diagnostics -- manifest.json --output report.json
-```
+- 3 sampled windows.
+- 20 seconds per window.
+- 60 total sampled seconds.
+- 8000 Hz mono PCM through ffmpeg.
+- 384 audio index/verify landmarks.
+- ffmpeg audio extraction uses the first audio stream and disables non-audio streams.
 
-By default the runner creates a temporary cache root and deletes it after a
-successful run. If expectations fail, the temporary cache is retained for
-inspection.
+The supported surface is intentionally narrow: fixed sampled-fast audio matching.
 
-Use a persistent cache root when comparing multiple runs:
-
-```powershell
-cargo run -p sorotte-media-match --bin v3_diagnostics -- manifest.json --output report.json --cache-root .media-match-v3-cache
-```
-
-Use `--keep-cache` to retain an automatically generated temporary cache:
+## Diagnostic CLI
 
 ```powershell
-cargo run -p sorotte-media-match --bin v3_diagnostics -- manifest.json --keep-cache
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.json --output reports/audio.json --cache-root .media-match-v3-cache --refresh-cache
 ```
 
-Use `--list-cases` to inspect a manifest without touching media files, and
-`--validate-only` to parse, resolve, and verify referenced files without
-fingerprinting:
+Useful modes:
 
 ```powershell
-cargo run -p sorotte-media-match --bin v3_diagnostics -- manifest.json --list-cases
-cargo run -p sorotte-media-match --bin v3_diagnostics -- manifest.json --validate-only
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.json --list-cases
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.json --validate-only
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.json --retrieval-benchmark-only --cache-root .media-match-v3-cache
+cargo run -p sorotte-media-match --bin v3_diagnostics -- --cache-size-report --cache-root .media-match-v3-cache
+cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.json --prepare-index-stats --cache-root .media-match-v3-cache
 ```
 
-Use `--case` one or more times to run or inspect only selected cases:
+`--index-mode sampled-fast` is accepted for explicitness. Other index modes are invalid.
 
-```powershell
-cargo run -p sorotte-media-match --bin v3_diagnostics -- manifest.json --case same-episode-x264-x265 --output reports/one-case.json --cache-root .media-match-v3-cache
-```
+`--refresh-cache` ignores existing SQLite fingerprint rows for the selected files and writes new fixed sampled-fast records. Memory-cache reuse within a run is still allowed for duplicate paths.
 
-Use `--refresh-cache` to ignore matching SQLite fingerprint records for the
-selected manifest/cases, re-extract them, and overwrite those V3 cache rows:
+## Manifest Shape
 
-```powershell
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-refresh.json --cache-root .media-match-v3-cache-audio --refresh-cache
-```
-
-Use `--index-mode` to separate retrieval calibration from full verification:
-
-```powershell
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-full.json --cache-root .media-match-v3-cache-audio --index-mode full
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-sparse-full.json --cache-root .media-match-v3-cache-audio-sparse-full --index-mode sparse-full
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.sampled.json --output reports/audio-sampled-fast.json --cache-root .media-match-v3-cache-audio-sampled-fast --index-mode sampled-fast
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.sampled.json --output reports/audio-sampled-normal.json --cache-root .media-match-v3-cache-audio-sampled-normal --index-mode sampled-normal
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-sampled-then-full.json --cache-root .media-match-v3-cache-audio-promote --index-mode sampled-then-full --max-full-promotions 3
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-production.json --cache-root .media-match-v3-cache-audio-production --index-mode production --max-full-promotions 3
-```
-
-Modes:
-
-- `full`: full-file verification fingerprints are used for both retrieval and
-  direct decisions.
-- `sparse-full`: full-duration audio is decoded with lower-cost extraction
-  settings and a smaller final landmark set. It is useful for likely/current
-  candidates, but direct decisions are still capped below `Strong`; dense
-  `full` verification is still required for `SameCutStrong` autoplay.
-- `sampled-fast`: body-distributed audio windows are decoded for a fast
-  retrieval index, using fewer/shorter windows and a smaller target landmark
-  set. This is the intended first-pass background indexing mode.
-- `sampled-normal` (also accepted as `sampled`): uses the larger sampled
-  window set for fallback retrieval calibration.
-- Sampled-only direct decisions are capped below `Strong`; sampled-only records
-  are not autoplay-eligible as `SameCutStrong`.
-- `sampled-then-full`: build the sampled index first, retrieve against that
-  steady-state index, then full-verify promoted query/candidate pairs for
-  direct decisions. By default the top three retrieved candidates per query are
-  eligible for promotion; use `--max-full-promotions N` or
-  `--promote-expected-candidates` when a diagnostic run intentionally needs a
-  different full-verification budget.
-- `production`: simulate the runtime policy. It builds sampled-fast records for
-  every selected manifest file, retrieves from that index, then dense
-  full-verifies only the top promoted candidate(s). The report separates
-  `productionSampledIndexMillis`, `productionRetrievalMillis`,
-  `productionFullPromotionMillis`, and `productionTotalMillis`, plus
-  sampled-indexed, sampled-cache-hit, full-promoted, skipped, and failed file
-  counts. Worker diagnostics include `sampledFastWorkerCount`,
-  `fullVerifyWorkerCount`, `extractionQueueWaitMillis`,
-  `extractionWorkerWallMillis`, `sqliteWriterMillis`, and
-  `sqliteWriteQueueDepthMax`. Candidate rows also include
-  `sampledRetrievalRank`, `withinPromotionBudget`, promoted ranks, and
-  `finalVerifiedRank` when production promotion verifies a sampled hit.
-
-Dense full audio profiles are experimental verification benchmarks, not
-background indexing modes. `dense-current` is the correctness baseline. Use
-`--dense-audio-profile` to run one candidate profile, or
-`--bench-dense-audio-profiles` to produce a machine-readable JSON matrix for
-all current candidates:
-
-```powershell
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode full --dense-audio-profile dense-current --output reports/dense-current.json --cache-root .cache-dense-current --refresh-cache
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode full --dense-audio-profile dense-gated-v2 --output reports/dense-gated-v2.json --cache-root .cache-dense-gated-v2 --refresh-cache
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode full --dense-audio-profile dense-fast-combined-candidate --output reports/dense-fast-candidate.json --cache-root .cache-dense-fast --refresh-cache
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode full --bench-dense-audio-profiles --output reports/dense-profile-matrix.json --cache-root .cache-dense-matrix --refresh-cache
-cargo run -p sorotte-media-match --bin v3_report_compare -- --allow-different-settings --allow-different-tuning reports/dense-current.json reports/dense-gated-v2.json
-```
-
-Benchmark profiles include `dense-current`, `dense-realfft`, `dense-8k`,
-`dense-hop2048`, `dense-8k-hop2048`,
-`dense-8k-window1024-hop1024`, `dense-max-peaks-4`,
-`dense-pair-retain-16` (also accepted as `dense-pair-retain-lower`),
-`dense-gated` (also accepted as `dense-gated-v2`), and
-`dense-fast-combined-candidate`. The non-current
-profiles change the fingerprint config hash and should be compared with
-explicit compatibility allow flags. `dense-realfft` currently occupies the
-real-FFT benchmark slot without changing the default frontend; the lower-cost
-sample-rate, hop, peak, and pair-retain profiles are the active candidates until
-a dedicated real FFT backend is added without a new heavyweight dependency.
-`dense-gated` keeps the dense-current spectral settings but adds anchor/target
-pair gates to reduce candidate-pair enumeration. A successful gated run should
-preserve the same class/tier/offset behavior while lowering
-`candidatePairsConsidered`, raising `candidatePairsSkippedByAnchorGate` or
-`candidatePairsSkippedByTargetGate`, and reducing direct-decision broad global
-fit time. Dense-current currently has two separate pair explosions to watch:
-extraction candidate pairs and direct global-fit pair rescans.
-Dense profile reports include decode/drain, analyzer, pairing, reservoir,
-candidate-pair, and direct-decision timing fields. Do not promote a dense
-candidate profile to default unless it preserves same-episode strength, wrong
-OP/ED rejection, retrieval rank, offset accuracy, and improves extraction by a
-material margin on a mixed corpus.
-
-V3 requires only `ffmpeg` and `ffprobe`. The runner uses
-`SOROTTE_MEDIA_MATCH_FFMPEG` and `SOROTTE_MEDIA_MATCH_FFPROBE` when set;
-otherwise it resolves `ffmpeg` and `ffprobe` from `PATH`.
-
-With `--cache-root`, the runner reuses valid records from the shared
-`index-v3.sqlite3` cache before invoking `ffmpeg`. Cache reuse requires the
-normalized path, modified time, size, profile, and fingerprint config hash to
-match. The report's `settingsHash` is this V3 fingerprint config hash; it
-includes the extraction settings, media-match algorithm version, fingerprint
-cache version, V3 schema/version markers, and the reported V3 tuning values.
-Within one run, duplicate paths are served by an in-memory cache before SQLite.
-
-Fingerprint source labels:
-
-- `fresh`: extracted during this diagnostic run.
-- `memory-cache`: reused from the current process after the same path/settings
-  were already loaded or extracted in this run.
-- `sqlite-cache`: loaded from the persistent V3 SQLite cache.
-
-`summary.totalExtractionMillis` is current-run fresh extraction time only.
-Fingerprints loaded from `sqlite-cache` still report blob/index counts, but they
-do not add extraction time.
-Diagnostic runs use two-pass indexing: first every selected query/candidate
-fingerprint is loaded or extracted and saved into the V3 SQLite index, then
-retrieval and direct decisions are evaluated. This makes cold and warm retrieval
-quality comparable because every case queries against the same selected indexed
-population.
-The summary has two source-count families:
-
-- `uniqueFreshFingerprintCount`, `uniqueMemoryCacheFingerprintCount`, and
-  `uniqueSqliteCacheFingerprintCount` count each normalized path/settings
-  fingerprint once per report.
-- `freshFingerprintReportCount`, `memoryCacheFingerprintReportCount`, and
-  `sqliteCacheFingerprintReportCount` count every query, candidate, and
-  hard-negative report row source occurrence.
-
-A duplicate candidate path can have row source `memory-cache` while the unique
-counts still count only the first source for that path/settings key.
-
-Current real-corpus measurements on the Bakemonogatari audio-only manifest put
-dense full verification extraction around 13 seconds per 25-minute file on the
-tested Windows machine after online reservoirs removed repeated compactions.
-Dense full now reports separate PCM drain, analyzer-thread, channel
-backpressure, reservoir acceptance, and raw-emission counters so decode
-backpressure can be separated from Rust analysis cost. Direct decisions also
-report pair collection, fast audio verifier, global fit, timeline-map, evidence
-formatting, and total decision timing so verifier regressions are separate from
-extraction regressions. Sparse-full is still
-experimental: it is lower density and non-autoplay by policy, but it is not the
-default speed path unless future corpus reports show a substantial win.
-Sampled-fast is the target background-index path. Retrieval and same-cut
-verification are fast once fingerprints exist. Use sampled index mode for fast
-background shortlist calibration and dense full verification for any `Strong` /
-`SameCutStrong` autoplay-eligible result.
-
-Runtime/background rebuilds follow the same split: sampled-fast records are
-created in parallel for the library index, while dense full verification is
-reserved for the current/open media and top sampled retrieval candidate(s). The
-default promotion budget is three candidates per query; sampled-only matches stay
-`Probable` and not autoplay eligible.
-
-For retrieval calibration, add case-level `hardNegatives` for same-series wrong
-episodes, shared OP/ED cases, adjacent episodes, music-heavy episodes, and
-recap/preview-heavy episodes. Hard negatives are fingerprinted into the same
-sampled index but are reported separately from positive candidate expectations.
-Use `mustNotBeTopRank` when a negative must never win rank 1, and
-`mustNotBeatCandidateId` when it must not outrank the expected candidate with
-that `id`. Reports include `hardNegativeBestRank`,
-`hardNegativeCountAboveCorrect`, `top1IsExpected`, `topKExpectedPresent`, and a
-`retrievalMargin` block with top, expected, and best-negative score/offset
-scores. Each returned candidate also has `retrievedCandidateDetails` with rank,
-total score, best offset bin, best and second offset scores, body/edge region
-counts, approximate span, audio/video hit counts, and ratio to the next
-candidate. Each returned candidate also reports `queryDurationMs`,
-`candidateDurationMs`, `durationCompatibility`, `shortClipPenaltyApplied`, and
-`robustScore`; the robust score is used only to rerank the permissive sampled
-retrieval shortlist, so short OP/ED clips and one-region collisions remain
-discoverable but should not outrank coherent full-episode evidence unless the
-evidence is overwhelming. Sampled-only hard-negative diagnostics do not make
-any candidate autoplay eligible.
-
-Large warm-cache retrieval reports break `retrievalElapsedMs` into named
-stages. The key fields are `statsDirtyCheckMillis`, `statsRefreshMillis`,
-`queryAnchorLoadMillis`, `commonBucketFilterMillis`, `sqlPrepareMillis`,
-`sqlExecuteMillis`, `sqlHitFetchMillis`, `rustAggregationMillis`,
-`robustRerankMillis`, `candidateSortMillis`, `candidateMetadataLoadMillis`,
-`retrievedCandidateDetailBuildMillis`, `retrievedPathLoadMillis`, and
-`pathLookupMillis`. `retrievalMeasuredStageMillis` and
-`retrievalUnaccountedMillis` make timing coverage explicit; warm benchmark runs
-should keep unaccounted time close to zero. The `statsRefreshRan`,
-`statsBucketsRefreshed`, `statsAnchorRowsScanned`,
-`anchorStatsDirtyBeforeRun`, and `anchorStatsDirtyAfterRun` fields show whether
-the run paid an anchor-stats refresh cost. Use this command after bulk index
-builds or cache surgery to refresh all V3 anchor statistics once before warm
-retrieval calibration:
-
-```powershell
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.sampled.json --cache-root .media-match-v3-cache-audio-sampled-fast --prepare-index-stats
-```
-
-For a warm-cache retrieval benchmark, use `--retrieval-benchmark-only` with a
-sampled-fast cache. The run still validates retrieval expectations and hard
-negatives, but skips direct pair decisions and dense promotion so
-`retrievalTotalMillis` reflects lookup/ranking cost. The CLI accepts
-`--retrieval-strategy auto`, `temp-table`, or `bucket-fetch`; `auto` currently
-uses the temp-table indexed join because it is faster on the noisy 4k sampled
-index while `bucket-fetch` remains available for comparison:
-
-```powershell
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.sampled.json --index-mode sampled-fast --retrieval-benchmark-only --retrieval-strategy auto --output reports/audio-retrieval-benchmark.json --cache-root .media-match-v3-cache-audio-sampled-fast
-```
-
-Use production promotion expectations when rank 1 is useful as a quality metric
-but not required for user success. `maxPromotionRank` and
-`expectWithinPromotionBudget` let a sampled-fast candidate pass the retrieval
-stage when it is within the dense full promotion budget; `maxRetrievalRank`
-remains the stricter rank-quality gate.
+Candidate IDs are optional stable pair identities. They are recommended when comparing reports across machines or different roots. IDs must be non-empty and unique within a case.
 
 ```json
 {
-  "id": "same-episode-split-or-merged",
-  "path": "expected-episode.mkv",
-  "expectedRetrieved": true,
-  "maxPromotionRank": 3,
-  "expectWithinPromotionBudget": true,
-  "skipDecisionExpectation": true
-}
-```
-
-## Cache Size Reports
-
-Use `--cache-size-report` to inspect a V3 SQLite cache without running
-fingerprinting or retrieval:
-
-```powershell
-cargo run -p sorotte-media-match --bin v3_diagnostics -- --cache-size-report --cache-root .media-match-v3-cache-audio-sampled-fast --output reports/cache-size.json
-```
-
-The report includes page counts, free pages, table/index row counts, dbstat
-object sizes when SQLite exposes the `dbstat` virtual table, fingerprint blob
-bytes, anchor-index bytes, bytes per fingerprint, bytes per anchor, and a
-read-only `compressedPostingsEstimate` when the compact occurrence table is
-available. The postings estimate simulates varint-delta packed postings and is
-only a feasibility signal for a later read-optimized cache format; it does not
-change the production schema.
-Diagnostic run reports also copy the high-level size fields into `summary`:
-`dbTotalBytes`, `dbAnchorIndexBytes`, `dbFingerprintBytes`, `dbStatsBytes`,
-`dbIndexBytes`, `dbBytesPerFingerprint`, and `dbBytesPerAnchor`.
-
-Current V3 cache schema stores the 32-byte settings hash once in `settings_v3`
-and stores sampled-fast anchors as normalized bucket/occurrence rows:
-`anchor_buckets_v3(settingsId, modality, bucket, documentFrequency)` plus
-`anchor_occurrences_v3(bucketId, fileId, tMs, weight)`. This replaces the older
-per-anchor settings-hash layout and removes the separate `anchor_stats_v3`
-table for current caches. V3 cache schema resets are expected during active
-development; use `--cache-size-report` before and after rebuilding when
-measuring storage changes.
-
-On the 4,007-file sampled-fast noisy Monogatari/Anime cache, the compact schema
-reduced the SQLite file from roughly 510 MiB to about 86.77 MiB while preserving
-the same 1,536,000 anchor occurrences. Anchor/index storage dropped from about
-493.04 MiB to about 69.78 MiB, or roughly 47.6 bytes per anchor occurrence.
-Treat those numbers as machine/cache specific, but sampled-fast caches should
-now be closer to the tens-of-MiB range than the hundreds-of-MiB range for a few
-thousand files.
-
-## Corpus Calibration Workflow
-
-Run the audio-first profile before the combined profile. This separates
-retrieval/audio alignment failures from video-hardening behavior:
-
-```powershell
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-before.json --cache-root .media-match-v3-cache
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.combined.json --output reports/combined-before.json --cache-root .media-match-v3-cache
-```
-
-Warm-cache workflow:
-
-```powershell
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-cold.json --cache-root .media-match-v3-cache-audio
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-warm.json --cache-root .media-match-v3-cache-audio
-cargo run -p sorotte-media-match --bin v3_report_compare -- reports/audio-cold.json reports/audio-warm.json
-```
-
-Cold and warm reports may differ in `uniqueFreshFingerprintCount`,
-`uniqueSqliteCacheFingerprintCount`, `freshFingerprintReportCount`,
-`sqliteCacheFingerprintReportCount`, and `totalExtractionMillis`. That is
-expected when file identity and settings match and the warm run avoids
-re-extraction.
-
-Cold sampled-fast indexing now uses a streaming producer/writer pipeline in the
-diagnostic harness. Sampled-fast extraction workers produce completed
-fingerprints into a bounded result queue, and the coordinator writes each record
-to SQLite as soon as it is available. This overlaps extraction with cache
-checkpointing and keeps completed records valid for resume if a long run is
-cancelled. Inspect `producerWorkerCount`, `resultQueueDepthMax`,
-`resultQueueWaitMillis`, `writerIdleMillis`, `writerBusyMillis`,
-`writerRecordsInserted`, `writerRowsInserted`, `writerCommitMillis`,
-`extractionWorkerActiveMillis`, `extractionWorkerIdleMillis`, and
-`endToEndIndexWallMillis` when comparing cold-index runs. The first streaming
-writer pass still reports one writer batch per saved record; larger SQLite
-batch transactions are a separate optimization target.
-
-Fresh sampled-fast reports also include per-file distribution fields:
-`freshFingerprintMillisP50/P75/P95/P99/Max`,
-`freshFingerprintFfmpegWallMillisP50/P95`,
-`freshFingerprintAnalyzerMillisP50/P95`,
-`freshSampledAudioSecondsDecodedP50/P95`,
-`freshSampledAudioWindowsDecodedP50/P95`, and
-`slowestFreshFingerprints`. Use these to distinguish real slow files from queue
-or writer pressure before changing sampling parameters.
-
-When `ffmpegProcessWallMillis` dominates sampled-fast extraction, inspect the
-source I/O fields before changing fingerprint settings. Per-fingerprint
-diagnostics now include `sourcePathRoot`, `sourcePathKind`,
-`sourceVolumeId`, `ffmpegInputReadBytes`, `ffmpegInputReadOps`,
-`ffmpegOutputPcmBytes`, `readAmplificationRatio`, `ffmpegInvocationCount`,
-`sampledWindowSeekMillis`, `sampledWindowDecodeMillis`,
-`ffmpegOpenProbeMillis`, and `ffmpegExitMillis`. On Windows,
-`sourcePathKind` is derived from the drive/share type and can distinguish
-local, network, removable, and unknown roots. `ffmpegInputReadBytes` and
-`ffmpegInputReadOps` come from process I/O counters when available; unsupported
-platforms report nulls rather than guessing.
-
-Cold-index summaries also group fresh fingerprints by source root in
-`sourceIndexReports`. Each source report includes the source kind, configured
-worker limit, indexed/failed file counts, source-local extraction and ffmpeg
-p50/p95 timings, input read bytes/ops, output PCM bytes, and read amplification.
-Use this section to see whether a single drive or network share is saturated.
-
-Sampled-fast audio extraction is explicitly audio-only. The diagnostic runner
-invokes ffmpeg with `-map 0:a:0 -vn -sn -dn` and records
-`ffmpegCommandKind`, `ffmpegSelectedStream`, `ffmpegDisabledVideo`,
-`ffmpegDisabledSubtitles`, and `ffmpegDisabledData` on each fresh fingerprint
-report. `-vn` prevents video decode and output selection; it does not guarantee
-that the container reader can avoid reading or seeking around video packet
-payloads. If `ffmpegInputReadBytes` is still much larger than
-`ffmpegOutputPcmBytes`, treat it as container/source-read amplification rather
-than accidental video fingerprinting.
-
-Use `--probe-audio-packets` to add an opt-in ffprobe feasibility pass for
-sampled-fast runs:
-
-```powershell
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --probe-audio-packets --output reports/audio-packet-probe.json --cache-root .media-match-v3-cache-audio --refresh-cache
-```
-
-The probe uses `ffprobe -select_streams a:0 -show_packets` and reports
-`containerFormat`, `audioStreamIndex`, `audioCodec`, `audioBitrateBps`,
-`audioDurationMillis`, `audioStartTimeMillis`,
-`audioPacketPositionsAvailable`,
-`audioPacketPositionCompletenessPerMille`,
-`audioPacketPositionsMonotonic`, `averageAudioPacketSizeBytes`,
-`audioPacketCountInSampledWindows`, `audioPacketProbeMillis`,
-`audioPacketWindowCompressedBytes`,
-`audioPacketWindowCoalescedRangeBytes`, and
-`audioPacketReadSavingsEstimateBytes`. Run this only on calibration samples or
-explicit cold-index experiments because packet probing can add another full
-container scan on some formats.
-
-The sampled extraction source can also be selected explicitly:
-
-```powershell
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --sampled-audio-source current --output reports/audio-current.json --cache-root .media-match-v3-cache-audio --refresh-cache
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --sampled-audio-source single-process-filter --experimental-sampled-audio-source --output reports/audio-single-process-filter.json --cache-root .media-match-v3-cache-single-process-filter --refresh-cache
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --sampled-audio-source fast-seek-per-window --experimental-sampled-audio-source --output reports/audio-fast-seek.json --cache-root .media-match-v3-cache-fast-seek --refresh-cache
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --sampled-audio-source output-seek-per-window --experimental-sampled-audio-source --output reports/audio-output-seek.json --cache-root .media-match-v3-cache-output-seek --refresh-cache
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --sampled-audio-source mkv-audio-ranges --experimental-sampled-audio-source --output reports/audio-mkv-ranges.json --cache-root .media-match-v3-cache-mkv-ranges --refresh-cache
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --sampled-audio-source sampled-pcm-cache --experimental-sampled-audio-source --sampled-pcm-cache-root .media-match-v3-pcm-cache --output reports/audio-pcm-cache.json --cache-root .media-match-v3-cache-pcm-cache --refresh-cache
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --sampled-audio-source packet-map --experimental-sampled-audio-source --sampled-pcm-cache-root .media-match-v3-pcm-cache --output reports/audio-packet-map.json --cache-root .media-match-v3-cache-packet-map --refresh-cache
-```
-
-For a small first-run I/O benchmark over the fixed sampled-fast policy, use:
-
-```powershell
-cargo run -p sorotte-media-match --bin v3_diagnostics -- bench-subset.json --bench-sampled-ffmpeg-strategies --output reports/source-strategy-bench.json --cache-root .cache-source-bench --refresh-cache
-```
-
-The benchmark always includes `current` as the baseline and then runs the
-experimental ffmpeg source strategies with separate cache identities. Its JSON
-contains per-strategy read bytes/ops, PCM output bytes, ffmpeg invocation count,
-wall/decode time, expected-candidate retrieval status, rank/score deltas, hard
-negative status, and an `equivalenceVerdict`. A faster strategy is still
-rejected unless it proves PCM byte identity or high landmark overlap, preserves
-expected retrieval, and keeps hard negatives passing.
-
-`current` is the safe ffmpeg path, the default, and the only normal production
-sampled-fast source. It runs one fast seek per sampled window, which is the
-cold-index baseline. Every other sampled source is experimental and requires
-`--experimental-sampled-audio-source`; use a separate cache root so an
-experimental run cannot pollute the normal production sampled-fast cache.
-`fast-seek-per-window` keeps that input-seek shape but labels the benchmark
-explicitly.
-`output-seek-per-window` moves `-ss` after `-i`; it can be useful for measuring
-container demux behavior but may decode more data. `single-process-filter`
-decodes the selected windows through one ffmpeg filtergraph and reports whether
-avoiding process startup wins or loses on the source. Reports include
-`sampledFfmpegWindowStrategy`, `sampledWindowsPlanned`,
-`sampledAudioWindowsDecoded`, input read bytes/ops, output PCM bytes, and read
-amplification so the strategies can be compared on the same subset.
-
-`sampled-pcm-cache` is a repeated-run diagnostics helper, not the expected
-solution for first cold indexing. On a miss it still uses the current ffmpeg
-path, stores the exact sampled PCM windows in a local cache, and reads that PCM
-directly on later runs. Its cache key includes normalized path, mtime, size,
-sampled window schedule, decode settings, index mode, and fingerprint config
-hash. This is useful for analyzer/ranking
-experiments where the same files are indexed repeatedly. It should not be used
-to predict first-run cold throughput over a large media source because the first
-run still pays the source read cost.
-
-`auto` is conservative: with a PCM cache root it can use a valid sampled PCM
-cache, otherwise it falls back to current ffmpeg. `ffprobe-probe` and
-`packet-map` are feasibility modes. They build a structured `AudioPacketMapV3`
-from ffprobe packet JSON and cache it when `--sampled-pcm-cache-root` is
-supplied. This is intentionally not the production packet-map builder yet;
-ffprobe can read too much source data and should be used to measure whether a
-libavformat or Matroska parser path is worth enabling.
-
-For MKV/Matroska files, `--sampled-audio-source mkv-audio-ranges` runs a
-lightweight EBML feasibility parser before falling back to ffmpeg for actual
-decode. It reports `mkvParserUsed`, `mkvCuesPresent`, `mkvAudioTrackFound`,
-`mkvClustersScanned`, `mkvClusterBytesRead`, `mkvAudioBlockBytesRead`,
-`mkvCoalescedRangeBytes`, `mkvEstimatedSavingsVsCurrent`, and
-`mkvFallbackReason`. The current parser is deliberately a feasibility probe: it
-does not replace ffmpeg decode, does not use ffprobe as a production map
-builder, and must fail closed. A future direct range decoder should only be
-enabled when cue and audio block ranges are reliable and the estimated byte
-savings are large on real cold-index samples.
-
-Usable packet `pos` and `size` values are the first gate for direct audio range
-reads. A promising file set should show complete, monotonic packet positions and
-a coalesced sampled-window byte count far below the current ffmpeg input read
-bytes. If positions are absent, non-monotonic, or the probe cost is similar to
-the current extractor, direct packet reads should remain disabled and the safe
-ffmpeg path should stay in use.
-
-`packet-map` range reads are currently feasibility-only: the runner computes
-sampled-window packet ranges, coalesces nearby ranges, reads those byte ranges
-from the source file, and reports `audioPacketRanges`,
-`audioPacketRangeBytes`, `audioPacketCoalescedRangeBytes`,
-`audioPacketRangeReadMillis`, `audioPacketRangeReadOps`, and fallback reason.
-It still falls back to current ffmpeg for actual sampled PCM decode. Direct
-packet-range decode or compressed audio sidecars must fail closed and fall back
-to ffmpeg unless the container metadata proves the sampled-window audio packets
-can be read and decoded safely. None of these strategies changes sampled-only
-match policy: sampled-fast records remain retrieval/Probable evidence and are
-never autoplay-eligible without dense full verification.
-
-Sampled-fast workers can now be capped globally and per source:
-
-```powershell
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --output reports/audio-cold.json --cache-root .media-match-v3-cache-audio --refresh-cache --sampled-fast-workers 8 --sampled-fast-local-workers 8 --sampled-fast-network-workers 2 --sampled-fast-removable-workers 1
-```
-
-The global worker count controls total extraction concurrency. Per-source
-limits control how many `ffmpeg` jobs may read from the same drive root or UNC
-share at once. For a single slow network share, start with
-`--sampled-fast-network-workers 1` or `2`; for multiple independent local SSDs,
-leave local concurrency higher. Concurrency changes are conservative and should
-be validated with before/after cold-index reports.
-
-Local staging remains an experiment, not the default production path. Benchmark
-current no-staging behavior first, then compare a staging prototype only for the
-slow source set. Full-file staging may help when remote random seeks dominate,
-but it can lose badly when copying the whole file is more expensive than the
-three sampled reads. The sampled-PCM cache is now the safe repeated-run path for
-diagnostics and development because it avoids rereading remote media without
-changing fingerprint output.
-
-For one-time cold-index tuning, prefer source-aware strategy benchmarks over a
-PCM cache. Run the same representative subset with `--sampled-audio-source`
-`current`, `single-process-filter`, `fast-seek-per-window`, and
-`output-seek-per-window`; add `--experimental-sampled-audio-source` and a
-dedicated cache root for every non-current strategy. Then repeat with
-conservative source worker limits such as `--sampled-fast-network-workers 1`,
-`2`, `3`, and `4`. The relevant numbers are source-local files/minute,
-`ffmpegInputReadBytes`,
-`ffmpegInputReadOps`, read amplification, and p95 file time. A strategy that
-only improves a warm PCM-cache rerun is not a cold-index win.
-
-Adaptive sampled-fast is rejected for production and removed from the normal
-runtime/diagnostic path. It was faster on the noisy Monogatari/Anime corpus, but
-it missed expected candidates, so fixed
-three-window sampled-fast is the production baseline: 3 windows, 60 sampled
-seconds, and 384 sampled audio index/verify landmarks. Normal diagnostics and
-runtime/background indexing create only that fixed policy with
-`--sampled-audio-source current`. The report summary includes
-`sampledAudioPolicy`, `sampledAudioSourceStrategy`,
-`sampledPolicyProductionCompatible`, `experimentalSampledAudioSource`, and
-`sampledAudioSourceEquivalence`; normal production-compatible sampled-fast
-reports should show compatibility as `true` and source strategy as `current`.
-
-There is one normal SQLite cache policy for sampled-fast. A normal run cannot
-create or reuse records from rejected sampled policies; incompatible sampled
-records are reported through `sqliteCacheIncompatibleMissCount` and
-`sampledPolicyMismatchCount`. Diagnostic-only source helpers such as
-`single-process-filter`, `fast-seek-per-window`, `output-seek-per-window`,
-`ffprobe-probe`, `packet-map`, `mkv-audio-ranges`, `sampled-pcm-cache`, and
-`auto` are separate experimental cache policies. They must be benchmarked
-against the fixed current path with PCM/landmark equivalence, retrieval-rank
-delta, expected-candidate retrieval, and hard-negative checks before any
-promotion. Direct container-read work must preserve the fixed three-window
-output before it can be considered for production. Repeated-run PCM cache
-remains optional developer tooling, not a first-index solution.
-
-Warm-cache reports include `sqliteCacheCompatibleHitCount`,
-`sqliteCacheIncompatibleMissCount`, and `sampledPolicyMismatchCount`. If a run
-shows incompatible sampled-policy misses, rebuild that policy with
-`--refresh-cache` or compare against a cache root built with the same sampled
-policy before judging retrieval quality.
-
-For network libraries, the long-term path is source-local indexing. Preferred
-formats are either sidecar fingerprints next to media files or an exported V3
-index pack built on a machine close to storage. A sidecar/index pack must carry
-file identity, sampled-fast fingerprint data, sampled policy,
-settings/fingerprint cache hash, duration/metadata, and index anchors; imports
-must validate identity and the policy/hash before
-trusting the data. This avoids reading remote media at all during client-side
-index import.
-
-When testing an extraction-code change, either rely on the fingerprint config
-hash changing with the cache version/tuning/settings change, or pass
-`--refresh-cache`. Do not assume an old cache is valid after changing audio or
-video landmark generation. The current hash intentionally includes the reported
-V3 tuning values, so tuning changes may create a new cache namespace even when a
-specific threshold is retrieval-only. Retrieval or classification code changes
-that do not change the reported tuning/hash can reuse the same cache root. For a
-cold extraction performance run, use a new cache root or `--refresh-cache` and
-inspect fresh extraction timings, blob bytes, and index rows.
-
-After an algorithm or threshold change, rerun with the same manifests and cache
-root into new report names, then compare the JSON reports:
-
-```powershell
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output reports/audio-after.json --cache-root .media-match-v3-cache
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.combined.json --output reports/combined-after.json --cache-root .media-match-v3-cache
-cargo run -p sorotte-media-match --bin v3_report_compare -- reports/audio-before.json reports/audio-after.json
-cargo run -p sorotte-media-match --bin v3_report_compare -- reports/combined-before.json reports/combined-after.json
-```
-
-The comparison tool reports new failures, resolved failures, class/tier changes,
-retrieval-rank changes, offset-error changes, and aggregate metric deltas. It
-uses regression behavior by default and exits nonzero when the current report has
-any new expectation failure, any baseline pair missing from the current report,
-any new failed pair added in the current report, or any new `mustBeRetrieved`
-retrieval miss that was not already a miss in the baseline. A resolved failure
-does not cancel out a new failure.
-
-Reports must be compatible by default. `v3_report_compare` rejects comparisons
-unless `algorithmVersion`, `fingerprintCacheVersion`, `profile`, `settingsHash`,
-and `tuning` all match. Use explicit allow flags only for exploratory
-comparisons:
-
-```powershell
-v3_report_compare [--strict|--net-failures-only] [--allow-different-profile] [--allow-different-settings] [--allow-different-tuning] baseline.json current.json
-```
-
-Do not compare an `audio-constellation-v3` report with a `combined-v3` report
-unless you intentionally pass allow flags. Cross-profile comparisons usually
-need both `--allow-different-profile` and `--allow-different-settings` because
-the profile changes the settings hash. Same-profile comparisons are the normal
-calibration path.
-
-Exploratory cross-profile example:
-
-```powershell
-cargo run -p sorotte-media-match --bin v3_report_compare -- --allow-different-profile --allow-different-settings reports/audio.json reports/combined.json
-```
-
-Do not compare reports from different tuning unless that mismatch is the thing
-being inspected.
-
-Comparison modes:
-
-- Default regression mode:
-  `v3_report_compare baseline.json current.json`
-- Strict current-quality mode:
-  `v3_report_compare --strict baseline.json current.json`
-- Net failure-count mode:
-  `v3_report_compare --net-failures-only baseline.json current.json`
-
-Strict mode exits nonzero for any current failed expectation, any current
-`mustBeRetrieved` retrieval miss, or any missing baseline pair. Net mode keeps
-the old behavior and exits nonzero only when the current report has more failed
-expectations than the baseline.
-
-Exit codes:
-
-- `0`: comparison completed and the selected mode did not fail.
-- `1`: comparison completed and the selected mode failed.
-- `2`: usage error, invalid JSON, invalid diagnostic report input, or
-  incompatible reports.
-
-Reports are validated before comparison. Summary counts must match the candidate
-rows, retrieval and aggregate fingerprint totals must match their detailed
-metrics, candidate IDs must be non-empty, and duplicate comparison keys are
-invalid input rather than regressions.
-Report validation assumes reports were generated by the current
-`v3_diagnostics` runner and schema. Older or hand-edited reports may fail
-validation.
-
-The comparison output includes a top-level `summary` with regression status and
-unresolved-failure status plus counts for baseline/current failures, new
-failures, resolved failures, missing pairs, new pairs, new failed pairs,
-retrieval misses, and new retrieval misses. It also reports aggregate deltas,
-including extraction time, retrieval time, source-count metrics, blob bytes,
-index rows, and raw hit rows. A top-level `compatibility` block records whether
-algorithm version, fingerprint cache version, profile, settings hash, and tuning
-matched. A `compatibilityOptions` block records which mismatches were
-intentionally allowed for that comparison.
-
-Generated reports should never contain duplicate comparison keys. Validation
-rejects duplicate keys before comparison because they make pair-level comparison
-ambiguous, and normal comparison output does not include duplicate-key arrays.
-
-Review failures in this order:
-
-1. `mustBeRetrieved`
-2. direct decision class/tier
-3. offset error
-4. autoplay eligibility
-5. raw hit rows / common bucket pressure
-6. extraction time / blob bytes
-
-## First Calibration Run
-
-Before changing thresholds, build a small but mixed manifest and capture both
-profiles with a stable cache root:
-
-1. Start with 5-10 known-good same-cut pairs.
-2. Add 3-5 wrong-episode/shared-intro pairs.
-3. Add 2-3 different-cut pairs.
-4. Add 1-2 dub or same-video-different-audio cases.
-5. Add 1-2 crop/letterbox cases.
-6. Run `audio-constellation-v3` first, then `combined-v3`.
-7. Record retrieval misses, wrong class, false `SameCutStrong`, offset error,
-   raw hit row spikes, extraction time, and blob/index size.
-
-Use report filenames that include the profile and either a timestamp or commit
-label, for example `reports/audio-2026-05-26.json` and
-`reports/combined-2026-05-26.json`. For commit-to-commit comparisons, keep the
-same manifests and `--cache-root`, then compare JSON reports with
-`v3_report_compare`. If you also need a raw field-level view, follow up with
-`git diff --no-index`.
-
-Do not tune thresholds until at least one small mixed corpus report exists for
-both `audio-constellation-v3` and `combined-v3`. Tune from report patterns, not
-from a single isolated fixture.
-
-Capture first-run notes in a small table before tuning. A reusable template is
-checked in at
-[`docs/examples/media_matching_v3_calibration_notes.template.md`](examples/media_matching_v3_calibration_notes.template.md).
-
-| Case ID | Expected Class | Actual Class | Retrieval Rank | Offset Error | Issue Category | Likely Cause | Action |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `same-episode-x264-x265` | `SameCutStrong` |  |  |  |  |  |  |
-
-Use these issue categories consistently:
-
-- retrieval miss
-- false `SameCutStrong`
-- class too weak
-- class too strong
-- wrong `SameMediaDifferentCut`
-- wrong `SharedIntroOutroOnly`
-- offset error
-- audio/video conflict
-- crop/letterbox miss
-- extraction time
-- raw hit rows
-- blob/index size
-
-## Manifest
-
-Start from
-[`docs/examples/media_matching_v3_manifest.example.json`](examples/media_matching_v3_manifest.example.json)
-for full verification runs, or
-[`docs/examples/media_matching_v3_manifest.sampled.example.json`](examples/media_matching_v3_manifest.sampled.example.json)
-for sampled-index retrieval-only runs, and replace the placeholder paths with
-local media paths.
-
-```json
-{
-  "profile": "combined-v3",
-  "baseDir": "media",
+  "profile": "audio-constellation-v3",
+  "baseDir": ".",
   "cases": [
     {
       "name": "same-episode-x264-x265",
       "query": "episode-x264.mkv",
       "candidates": [
         {
-          "path": "episode-x265.mkv",
           "id": "same-episode-x264-x265",
-          "expectedClass": "SameCutStrong",
-          "minimumTier": "Strong",
-          "expectedOffsetMs": 0,
-          "maxOffsetErrorMs": 1000,
-          "autoplayEligible": true,
-          "mustBeRetrieved": true
+          "path": "episode-x265.mkv",
+          "expectedRetrieved": true,
+          "maxRetrievalRank": 1,
+          "skipDecisionExpectation": true,
+          "expectWithinPromotionBudget": true,
+          "maxPromotionRank": 3
+        }
+      ],
+      "hardNegatives": [
+        {
+          "id": "wrong-episode-shared-op",
+          "path": "wrong-episode.mkv",
+          "mustNotBeTopRank": true,
+          "mustNotBeatCandidateId": "same-episode-x264-x265"
         }
       ]
     }
@@ -738,180 +69,54 @@ local media paths.
 }
 ```
 
-Relative paths resolve against `baseDir` when present, otherwise against the
-manifest directory. Absolute paths are preserved.
+For production retrieval validation, rank 1 is a strict ranking metric. User-facing success is top-K promotion eligibility: the expected candidate should be within `maxPromotionRank`, default 3. Sampled-only matches are not autoplay-eligible.
 
-Candidate `id` is optional but recommended for real corpus runs. Report
-comparison matches pairs by `case.name` plus `candidateId` when `id` is present;
-otherwise it falls back to `case.name` plus the candidate path. Use `id` when
-reports may be generated from different media roots or machines. Path fallback is
-fine for one-machine runs where report paths are stable. Candidate IDs must be
-non-empty and unique within a case. When IDs are absent, duplicate candidate
-paths within the same case are rejected to avoid ambiguous comparison keys.
-
-Profiles:
-
-- `audio-constellation-v3`
-- `combined-v3`
-
-## Report Fields
-
-The JSON report includes:
-
-- `cacheRoot` and `cacheRetained`
-- algorithm version, fingerprint cache version, profile, fingerprint config
-  hash, and tuning values
-- fingerprint source counts: unique counts
-  (`uniqueFreshFingerprintCount`, `uniqueMemoryCacheFingerprintCount`,
-  `uniqueSqliteCacheFingerprintCount`) and report-row occurrence counts
-  (`freshFingerprintReportCount`, `memoryCacheFingerprintReportCount`,
-  `sqliteCacheFingerprintReportCount`)
-- extraction diagnostics: timings, audio/video landmark counts, blob bytes, and
-  streaming audio metrics, including ffmpeg process wall time, PCM drain thread
-  time, analyzer thread time, channel backpressure time, queued PCM bytes,
-  analyzer time, peak selection time, pairing time, reservoir time, reservoir
-  acceptance/rejection counts, final selection time, and sampled/full decoded
-  audio seconds/windows
-- retrieval diagnostics: bucket counts, skipped common buckets, raw hit rows,
-  scored candidates, elapsed time, and retrieved candidate paths
-- decision diagnostics: tier, V3 class, explanation, offset, scale, segment
-  count, total aligned span, largest gap, edge-only flag, audio/video conflict,
-  autoplay eligibility, and piecewise fitting counts
-- expectation pass/fail status and failure reason per candidate
-
-`mustBeRetrieved` fails a candidate when direct pairwise matching would pass but
-the shared V3 SQLite retrieval path did not shortlist that candidate.
-For sampled-index manifests, prefer retrieval-only expectations:
-`expectedRetrieved: true`, `maxRetrievalRank: 1`, and
-`skipDecisionExpectation: true`. That lets sampled-only runs pass when the
-retrieval index is healthy without requiring `Strong`, `SameCutStrong`, or
-autoplay eligibility. Use full verification manifests for those stronger
-expectations.
-
-Treat retrieval misses differently from direct decision failures:
-
-- A retrieval miss means the indexed landmark query did not shortlist the
-  expected file. Inspect bucket counts, skipped-common counts, raw hit rows, and
-  retrieval rank first.
-- A direct decision failure means the candidate was compared but the evidence
-  did not satisfy the expected class/tier. Inspect aligned span, segment count,
-  edge-only status, audio/video conflict, offset, and piecewise fit metrics.
-
-Autoplay remains conservative: exact identity can be eligible, and the only
-non-exact V3 class eligible for strong same-media autoplay is `SameCutStrong`
-with tier `Strong` and user policy allowing it.
-
-## Failure Checklist
-
-Use report data to decide what to tune or fix. Do not tune thresholds from one
-isolated fixture without checking the broader corpus.
-
-- Candidate not retrieved: check `retrieved`, `retrievalRank`,
-  `queryBucketsSkippedCommon`, `rawHitRowsProcessed`, and whether the expected
-  file has enough indexed landmarks.
-- Retrieved but direct decision failed: check decision tier/class, segment count,
-  total aligned span, largest gap, edge-only status, and audio/video conflict.
-- Wrong class: compare expected edit structure with `segmentCount`,
-  `totalAlignedSpanMs`, `largestGapMs`, and `edgeOnly`.
-- Offset error: compare `offsetSeconds` against `expectedOffsetMs`; then inspect
-  piecewise segment starts and `scalePpm`.
-- Unexpected autoplay eligibility: confirm only exact identity or `Strong` +
-  `SameCutStrong` can pass, and verify the manifest `autoplayEligible`
-  expectation.
-- Large raw hit row count or common-bucket pressure: inspect skipped-common
-  buckets, raw hit rows, and whether static/common audio or video landmarks need
-  better rarity filtering.
-- Cold extraction cost: inspect `ffmpegProcessWallMillis`,
-  `pcmDrainThreadMillis`, `analyzerThreadMillis`, `channelBackpressureMillis`,
-  `maxQueuedPcmBytes`, `analyzerMillis`, `peakSelectionMillis`,
-  `pairingMillis`, `reservoirMillis`, `landmarksAcceptedIntoReservoir`,
-  `landmarksRejectedByReservoir`, `finalSelectionMillis`, `sqliteSaveMillis`,
-  and `indexInsertMillis`. For cold sampled-fast corpus indexing, also inspect
-  `writerBusyMillis`, `writerIdleMillis`, `resultQueueDepthMax`,
-  `writerRecordsInserted`, `writerRowsInserted`, `writerCommitMillis`,
-  `endToEndIndexWallMillis`, and `slowestFreshFingerprints`. If full extraction
-  is the bottleneck, compare with `--index-mode sampled-fast`,
-  `--index-mode sampled-normal`, and `--index-mode production` before changing
-  thresholds. Runtime rebuild logs also include
-  `background/sampledFast/fullVerify` worker counts, `queueWait`, `workerWall`,
-  `sqliteWriter`, maximum SQLite write queue depth, and
-  indexed/skipped/failed/cancelled/resumed file counts. Sampled-fast background
-  rebuilds should use several workers, while dense full verification should use
-  fewer workers and controlled `ffmpeg -threads 1` processes to avoid
-  oversubscription.
-
-## Dry-Run Command Sequence
-
-For a first corpus dry run, this docs-only command sequence is the recommended
-runner convenience. Keep one stable cache per profile and write reports with a
-commit or date label:
+## Report Comparison
 
 ```powershell
-$cacheAudio = ".media-match-v3-cache-audio"
-$cacheCombined = ".media-match-v3-cache-combined"
-$label = "before"
-
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output "reports/audio-$label.json" --cache-root $cacheAudio
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.combined.json --output "reports/combined-$label.json" --cache-root $cacheCombined
+cargo run -p sorotte-media-match --bin v3_report_compare -- reports/baseline.json reports/current.json
+cargo run -p sorotte-media-match --bin v3_report_compare -- --strict reports/baseline.json reports/current.json
+cargo run -p sorotte-media-match --bin v3_report_compare -- --net-failures-only reports/baseline.json reports/current.json
 ```
 
-After a later patch, rerun with a new label and compare:
+Exit codes:
 
-```powershell
-$label = "after"
+- `0`: comparison input is valid and the selected gate passes.
+- `1`: comparison input is valid and the selected gate fails.
+- `2`: invalid report, incompatible report, bad arguments, parse error, or unsupported mode.
 
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --output "reports/audio-$label.json" --cache-root $cacheAudio
-cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.combined.json --output "reports/combined-$label.json" --cache-root $cacheCombined
-cargo run -p sorotte-media-match --bin v3_report_compare -- reports/audio-before.json reports/audio-after.json
-cargo run -p sorotte-media-match --bin v3_report_compare -- reports/combined-before.json reports/combined-after.json
-```
+Reports are validated before comparison. Duplicate comparison keys, blank candidate IDs, mismatched summary counts, unsupported index modes, or non-production sampled policies are invalid input.
 
-After validation work, run a self-comparison smoke check before changing
-thresholds:
+Compatibility requires matching algorithm version, fingerprint cache version, profile, settings hash, and tuning. `--allow-different-profile`, `--allow-different-settings`, and `--allow-different-tuning` exist for explicit exploratory comparisons only. There is no normal cross-profile workflow.
 
-```powershell
-cargo run -p sorotte-media-match --bin v3_report_compare -- reports/audio-before.json reports/audio-before.json
-```
+## GUI And Runtime Policy
 
-Self-comparison should produce no regressions, no missing pairs, and no changes.
+Background indexing writes only fixed sampled-fast audio records.
 
-Run `audio-constellation-v3` first to isolate audio retrieval/alignment issues,
-then run `combined-v3` to evaluate video hardening. Keep separate stable cache
-roots and report sequences per profile. Compare reports before tuning thresholds.
-When first failures appear, classify them as retrieval miss, direct decision
-mismatch, class too weak, class too strong, offset error, or cost/storage issue.
+Exact local playlist matches are special-cased:
 
-Manual real-corpus validation checklist:
+- If the current local file is exactly the shared playlist target and wire sharing is off, fingerprinting is skipped.
+- If wire sharing is on, the local file may still be fingerprinted so the client can publish its sampled-fast signature to the room.
 
-1. Run `v3_diagnostics --validate-only` for the manifest.
-2. Run `v3_diagnostics --list-cases` and confirm the case IDs are expected.
-3. Run sampled-fast audio retrieval with retrieval-only expectations.
-4. Run sampled-normal audio retrieval for any cases sampled-fast misses.
-5. Run production mode to measure sampled-fast indexing plus top-candidate full
-   promotion.
-6. Run sparse-full audio with full-duration but non-autoplay expectations when
-   probing lower-cost verification.
-7. Run dense full audio verification with `--refresh-cache` for truth labels.
-8. Self-compare the warm full audio report with `v3_report_compare`.
-9. Run cold and warm `combined-v3` reports only after audio retrieval/alignment is understood.
-10. Self-compare the warm combined report with `v3_report_compare`.
-11. Fill in the calibration notes template for every failure or suspicious cost.
-12. Do not tune thresholds until failures are categorized.
+Autoplay remains conservative:
 
-## Recommended Corpus
+- Same normalized path can be treated as exact.
+- Sampled-only evidence can be `Probable`.
+- Sampled-only evidence is never `Strong`/autoplay eligible.
 
-Use a corpus with cases that stress retrieval, alignment, and false-positive
-resistance:
+## Cache
 
-- remux of the same source
-- x264 vs x265 or AV1
-- AAC vs Opus
-- TV vs BD offset
-- inserted studio/logo segment
-- trimmed intro or removed recap
-- wrong episode with shared OP/ED
-- dub or same-video-different-audio
-- same-audio-different-video
-- hard subtitles
-- crop or letterbox changes
-- long movie
+The normal SQLite cache stores one fixed sampled-fast policy. Records generated with any other sampled policy are incompatible with production diagnostics and must be regenerated.
+
+Cache size reports expose total bytes, anchor/index bytes, fingerprint blob bytes, row counts, and bytes per anchor/fingerprint. Schema resets are acceptable for V3 work.
+
+## First Real-Corpus Checklist
+
+1. Run `--validate-only`.
+2. Run `--list-cases`.
+3. Run a cold fixed sampled-fast report with `--refresh-cache`.
+4. Run a warm fixed sampled-fast report with the same cache root.
+5. Run `v3_report_compare` against cold and warm reports.
+6. Check strict rank-1 results separately from promotion-budget results.
+7. Review hard negatives.
+8. Do not tune thresholds until misses and rank collisions are categorized.

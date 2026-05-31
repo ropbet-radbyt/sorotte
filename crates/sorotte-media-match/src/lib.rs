@@ -11,11 +11,10 @@ mod timeline_v3;
 mod tuning;
 mod types;
 mod v3_index;
-mod video_v3;
 mod wire;
 
 // Anchor row types are public because they are part of `MediaFingerprintRecord`.
-pub use anchors::{AudioAnchor, VideoAnchor};
+pub use anchors::AudioAnchor;
 pub use diagnostic_harness::{
     MediaMatchV3DiagnosticCandidateReport, MediaMatchV3DiagnosticCaseReport,
     MediaMatchV3DiagnosticDecisionReport, MediaMatchV3DiagnosticExpectation,
@@ -36,11 +35,11 @@ pub use diagnostics::{
     summarize_instrumented_record_v3_diagnostics, summarize_record_v3_diagnostics,
 };
 pub use extraction::{
-    AudioPacketMapV3, AudioPacketPositionV3, InstrumentedMediaFingerprint, MediaAudioStreamMetrics,
-    MediaExtractionTimings, MediaFingerprintError, MediaFingerprintExtractionOptions,
-    MediaFingerprintExtractionReport, MediaMatchToolPaths, MediaToolInvocationCounts,
-    fingerprint_media_file, fingerprint_media_file_cancellable,
-    fingerprint_media_file_cancellable_with_report, fingerprint_media_file_with_report,
+    InstrumentedMediaFingerprint, MediaAudioStreamMetrics, MediaExtractionTimings,
+    MediaFingerprintError, MediaFingerprintExtractionOptions, MediaFingerprintExtractionReport,
+    MediaMatchToolPaths, MediaToolInvocationCounts, fingerprint_media_file,
+    fingerprint_media_file_cancellable, fingerprint_media_file_cancellable_with_report,
+    fingerprint_media_file_with_report,
 };
 pub use identity::normalize_media_path;
 pub use matching::{MediaMatchCandidateDecision, decide_media_match, rank_media_match_candidates};
@@ -53,10 +52,8 @@ pub use report_compare::{
     validate_media_match_v3_report_pair_compatible,
 };
 pub use settings::{
-    MEDIA_MATCH_V3_FINGERPRINT_CACHE_VERSION, MediaAudioIndexMode, MediaDenseAudioProfile,
-    MediaExtractionSettings, MediaFingerprintProfile, MediaSampledAudioPolicy,
-    MediaSampledAudioSourceStrategy, MediaSampledFfmpegWindowStrategy,
-    MediaSampledWindowPlacementAlgorithm, media_extraction_settings_hash,
+    MEDIA_MATCH_V3_FINGERPRINT_CACHE_VERSION, MediaAudioIndexMode, MediaExtractionSettings,
+    MediaFingerprintProfile, MediaSampledAudioPolicy, media_extraction_settings_hash,
     media_match_v3_fingerprint_config_hash,
 };
 pub use timeline_v3::{
@@ -68,7 +65,7 @@ pub use types::{
     AlignedSegmentV3, AudioMatchEvidence, MatchClassV3, MediaFileIdentity, MediaFingerprintRecord,
     MediaMatchAutoplayPolicy, MediaMatchCache, MediaMatchDecision, MediaMatchEvidence,
     MediaMatchSettings, MediaMatchTier, MediaTimelineAlignment, MediaTimelineMapV3,
-    MetadataMatchEvidence, TimelinePositionMapResult, VideoMatchEvidence,
+    MetadataMatchEvidence, TimelinePositionMapResult,
 };
 // The GUI/runtime owns cache location and rebuild lifecycle; these wrappers keep the SQL/index
 // implementation centralized in this crate while still letting runtime code maintain the cache.
@@ -87,13 +84,6 @@ pub use v3_index::{
     media_match_v3_sqlite_size_report, open_media_match_v3_index, refresh_all_anchor_stats_v3,
     refresh_anchor_stats_v3, refresh_dirty_anchor_stats_v3_if_needed, save_media_match_v3_record,
     save_media_match_v3_record_with_stats,
-};
-// These descriptor types and kind helpers are intentionally public: GUI/runtime tests build
-// V3 fixture records directly, and valid test fixtures need kind-encoded video buckets.
-pub use video_v3::{
-    FrameFingerprint, V3_VIDEO_KIND_CENTER_DCT, V3_VIDEO_KIND_EDGE, V3_VIDEO_KIND_GLOBAL_DCT,
-    V3_VIDEO_KIND_LUMA_FRAME, V3_VIDEO_KIND_TEMPORAL_SHINGLE, VideoFingerprint, VideoLandmarkV3,
-    v3_video_bucket_for_kind,
 };
 pub use wire::{
     MediaMatchWireAnchorBlock, MediaMatchWireProfile, MediaMatchWireSignature,

@@ -98,7 +98,6 @@ fn timeline_position_confidence(map: &MediaTimelineMapV3, segment: &AlignedSegme
     let multiplier = match map.global_class {
         MatchClassV3::SameCutStrong | MatchClassV3::SameCutProbable => 1.0,
         MatchClassV3::SameMediaDifferentCut | MatchClassV3::PartialOverlap => 0.85,
-        MatchClassV3::SameAudioDifferentVideo | MatchClassV3::SameVideoDifferentAudio => 0.65,
         MatchClassV3::SharedIntroOutroOnly => 0.25,
         MatchClassV3::Reject | MatchClassV3::Unknown => 0.0,
     };

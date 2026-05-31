@@ -36,8 +36,8 @@ use sorotte_media_match::{
 
 #[cfg(test)]
 use sorotte_media_match::{
-    AudioAnchor, anchor_stats_v3_dirty, initialize_media_match_v3_index,
-    map_query_position_to_candidate_ms, refresh_all_anchor_stats_v3,
+    AudioAnchor, anchor_stats_v3_dirty, map_query_position_to_candidate_ms,
+    refresh_all_anchor_stats_v3,
 };
 
 use super::shell_state::{
@@ -130,7 +130,6 @@ struct MediaMatchRebuildInstrumentation {
     extraction_millis: u128,
     ffprobe_millis: u128,
     audio_millis: u128,
-    video_millis: u128,
     audio_streamed_bytes: usize,
     audio_streamed_samples: usize,
     audio_stream_peak_frames: usize,
@@ -142,7 +141,7 @@ struct MediaMatchRebuildInstrumentation {
     max_audio_stream_raw_landmarks_after_compaction: usize,
     audio_stream_raw_compactions: usize,
     audio_stream_pcm_drain_millis: u128,
-    audio_stream_analyzer_thread_millis: u128,
+    audio_stream_analyzer_millis: u128,
     audio_stream_backpressure_millis: u128,
     max_audio_stream_queued_pcm_bytes: usize,
     audio_stream_candidate_pairs_considered: usize,
@@ -150,9 +149,7 @@ struct MediaMatchRebuildInstrumentation {
     audio_stream_landmarks_rejected: usize,
     debug_record_bytes: usize,
     audio_blob_bytes: usize,
-    video_blob_bytes: usize,
     audio_index_rows: usize,
-    video_index_rows: usize,
     stats_refreshes: u32,
     stats_refresh_millis: u128,
     background_index_worker_count: usize,
@@ -173,7 +170,6 @@ impl MediaMatchRebuildInstrumentation {
         self.extraction_millis += report.timings.total_millis;
         self.ffprobe_millis += report.timings.ffprobe_millis;
         self.audio_millis += report.timings.audio_millis;
-        self.video_millis += report.timings.video_millis;
         self.audio_streamed_bytes += report.audio_stream.streamed_bytes;
         self.audio_streamed_samples += report.audio_stream.streamed_samples;
         self.audio_stream_peak_frames += report.audio_stream.peak_frames;
@@ -190,12 +186,8 @@ impl MediaMatchRebuildInstrumentation {
             .max_audio_stream_raw_landmarks_after_compaction
             .max(report.audio_stream.max_raw_landmarks_after_compaction);
         self.audio_stream_raw_compactions += report.audio_stream.raw_landmark_compactions;
-        self.audio_stream_pcm_drain_millis += report.audio_stream.pcm_drain_thread_millis;
-        self.audio_stream_analyzer_thread_millis += report.audio_stream.analyzer_thread_millis;
-        self.audio_stream_backpressure_millis += report.audio_stream.channel_backpressure_millis;
-        self.max_audio_stream_queued_pcm_bytes = self
-            .max_audio_stream_queued_pcm_bytes
-            .max(report.audio_stream.max_queued_pcm_bytes);
+        self.audio_stream_pcm_drain_millis += report.audio_stream.pcm_decode_drain_millis;
+        self.audio_stream_analyzer_millis += report.audio_stream.analyzer_millis;
         self.audio_stream_candidate_pairs_considered +=
             report.audio_stream.candidate_pairs_considered;
         self.audio_stream_landmarks_accepted +=
@@ -207,9 +199,7 @@ impl MediaMatchRebuildInstrumentation {
     fn add_saved_record(&mut self, record: &MediaFingerprintRecord) {
         let diagnostics = summarize_record_v3_diagnostics(record);
         self.audio_blob_bytes += diagnostics.audio_blob_bytes;
-        self.video_blob_bytes += diagnostics.video_blob_bytes;
         self.audio_index_rows += diagnostics.audio_index_count;
-        self.video_index_rows += diagnostics.video_index_count;
     }
 
     fn add_stats_refresh(&mut self, elapsed_millis: u128) {
@@ -259,13 +249,12 @@ impl MediaMatchRebuildInstrumentation {
 
     fn summary(&self) -> String {
         format!(
-            "tools ffmpeg/ffprobe={}/{}, extract={}ms (probe {}ms, audio {}ms, video {}ms), workers background/sampledFast/fullVerify={}/{}/{}, queueWait={}ms workerWall={}ms sqliteWriter={}ms filesIndexed={} filesPerMinute={} cancelled={} resumed={}, v3 audio stream streamedBytes/streamedSamples/peakFrames/rawLandmarksEmitted/rawLandmarksBeforeBounding/finalLandmarks/maxBufferSamples/maxRawLandmarksSeen/maxRawLandmarksAfterCompaction/rawLandmarkCompactions/pcmDrainThreadMillis/analyzerThreadMillis/channelBackpressureMillis/maxQueuedPcmBytes/candidatePairsConsidered/landmarksAccepted/landmarksRejected={}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}, v3 blob bytes audio/video={}/{}, v3 index rows audio/video={}/{}, stats refreshes={} in {}ms (debug record bytes={})",
+            "tools ffmpeg/ffprobe={}/{}, extract={}ms (probe {}ms, audio {}ms), workers background/sampledFast/fullVerify={}/{}/{}, queueWait={}ms workerWall={}ms sqliteWriter={}ms filesIndexed={} filesPerMinute={} cancelled={} resumed={}, v3 audio stream streamedBytes/streamedSamples/peakFrames/rawLandmarksEmitted/rawLandmarksBeforeBounding/finalLandmarks/maxBufferSamples/maxRawLandmarksSeen/maxRawLandmarksAfterCompaction/rawLandmarkCompactions/pcmDrainMillis/analyzerMillis/backpressureMillis/maxQueuedPcmBytes/candidatePairsConsidered/landmarksAccepted/landmarksRejected={}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}, v3 blob bytes audio={}, v3 index rows audio={}, stats refreshes={} in {}ms (debug record bytes={})",
             self.ffmpeg_invocations,
             self.ffprobe_invocations,
             self.extraction_millis,
             self.ffprobe_millis,
             self.audio_millis,
-            self.video_millis,
             self.background_index_worker_count,
             self.sampled_fast_worker_count,
             self.full_verify_worker_count,
@@ -287,16 +276,14 @@ impl MediaMatchRebuildInstrumentation {
             self.max_audio_stream_raw_landmarks_after_compaction,
             self.audio_stream_raw_compactions,
             self.audio_stream_pcm_drain_millis,
-            self.audio_stream_analyzer_thread_millis,
+            self.audio_stream_analyzer_millis,
             self.audio_stream_backpressure_millis,
             self.max_audio_stream_queued_pcm_bytes,
             self.audio_stream_candidate_pairs_considered,
             self.audio_stream_landmarks_accepted,
             self.audio_stream_landmarks_rejected,
             self.audio_blob_bytes,
-            self.video_blob_bytes,
             self.audio_index_rows,
-            self.video_index_rows,
             self.stats_refreshes,
             self.stats_refresh_millis,
             self.debug_record_bytes
@@ -845,7 +832,7 @@ where
     let mut next_cache = initial_media_match_rebuild_cache(&existing_cache, selected.prefiltered);
     let mut instrumentation = MediaMatchRebuildInstrumentation::default();
     let mut parallel_fresh_results = BTreeMap::new();
-    if request.extraction_settings.audio_index_mode.is_sampled() && fresh_work_total > 1 {
+    if fresh_work_total > 1 {
         let fresh_paths = selected
             .paths
             .iter()
@@ -1362,12 +1349,10 @@ fn media_match_health_message(
 
 fn media_match_cache_status(root: &Path) -> String {
     match media_match_sqlite_all_settings_counts(root) {
-        Ok((inventory, audio, combined)) if inventory > 0 || audio > 0 || combined > 0 => {
+        Ok((inventory, audio)) if inventory > 0 || audio > 0 => {
             let storage = media_match_sqlite_storage_status(root).unwrap_or_default();
             let active = media_match_sqlite_active_settings_counts(root)
-                .map(|(active_audio, active_combined)| {
-                    format!("active settings audio/combined={active_audio}/{active_combined}")
-                })
+                .map(|active_audio| format!("active settings audio={active_audio}"))
                 .unwrap_or_default();
             let details = [active, storage]
                 .into_iter()
@@ -1378,9 +1363,7 @@ fn media_match_cache_status(root: &Path) -> String {
             } else {
                 format!("; {}", details.join("; "))
             };
-            format!(
-                "inventory: {inventory}, audio-v3(all settings): {audio}, combined-v3(all settings): {combined}{details}"
-            )
+            format!("inventory: {inventory}, audio-v3(all settings): {audio}{details}")
         }
         Ok(_) => "empty".to_owned(),
         Err(error) => format!("unreadable cache: {error}"),
@@ -1392,38 +1375,33 @@ fn media_match_sqlite_storage_status(root: &Path) -> Result<String, String> {
     let db_bytes = fs::metadata(managed_media_match_index_path(root))
         .map(|metadata| metadata.len())
         .unwrap_or(0);
-    let (blob_bytes, fingerprint_rows, audio_verify, video_verify, audio_index, video_index) =
-        connection
-            .query_row(
-                "SELECT
-                COALESCE(SUM(COALESCE(LENGTH(audio_blob), 0) + COALESCE(LENGTH(video_blob), 0)), 0),
+    let (blob_bytes, fingerprint_rows, audio_verify, audio_index) = connection
+        .query_row(
+            "SELECT
+                COALESCE(SUM(COALESCE(LENGTH(audio_blob), 0)), 0),
                 COUNT(*),
                 COALESCE(SUM(audio_verify_count), 0),
-                COALESCE(SUM(video_verify_count), 0),
-                COALESCE(SUM(audio_index_count), 0),
-                COALESCE(SUM(video_index_count), 0)
+                COALESCE(SUM(audio_index_count), 0)
              FROM fingerprints_v3
              JOIN settings_v3 ON settings_v3.settings_id = fingerprints_v3.settings_id
              WHERE settings_v3.algorithm_version = ?1",
-                [i64::from(MEDIA_MATCH_ANCHOR_VERSION)],
-                |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, i64>(2)?,
-                        row.get::<_, i64>(3)?,
-                        row.get::<_, i64>(4)?,
-                        row.get::<_, i64>(5)?,
-                    ))
-                },
-            )
-            .map_err(|error| format!("failed reading media-match storage summary: {error}"))?;
+            [i64::from(MEDIA_MATCH_ANCHOR_VERSION)],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .map_err(|error| format!("failed reading media-match storage summary: {error}"))?;
     if fingerprint_rows <= 0 {
         return Ok(String::new());
     }
     let average = blob_bytes as f64 / fingerprint_rows as f64;
     Ok(format!(
-        "db={db_bytes} bytes, v3 blobs: {blob_bytes} bytes ({average:.0}/fingerprint), verify audio/video={audio_verify}/{video_verify}, index audio/video={audio_index}/{video_index}"
+        "db={db_bytes} bytes, v3 audio blobs: {blob_bytes} bytes ({average:.0}/fingerprint), verify audio={audio_verify}, index audio={audio_index}"
     ))
 }
 
@@ -1504,7 +1482,7 @@ fn inventory_media_match_candidates(
             .unwrap_or(0);
         let normalized_path = normalize_media_path(path);
         let size_bytes = metadata.len();
-        if let Some((file_id, old_mtime, old_size)) = transaction
+        if let Some((_file_id, old_mtime, old_size)) = transaction
             .query_row(
                 "SELECT file_id, modified_unix_millis, size_bytes
                  FROM media_files_v3
@@ -1522,7 +1500,7 @@ fn inventory_media_match_candidates(
             .map_err(|error| format!("failed reading media-match inventory row: {error}"))?
             && (old_mtime != modified_unix_millis as i64 || old_size != size_bytes as i64)
         {
-            delete_media_match_v3_fingerprints_and_anchors(&transaction, file_id)?;
+            delete_media_match_v3_fingerprints_and_anchors(&transaction, &normalized_path)?;
         }
         transaction
             .execute(
@@ -1531,13 +1509,9 @@ fn inventory_media_match_candidates(
                     modified_unix_millis,
                     size_bytes,
                     duration_ms,
-                    container_format,
-                    video_codec,
-                    audio_codec,
-                    width,
-                    height,
+                    container_fingerprint,
                     updated_unix_millis
-                ) VALUES (?1, ?2, ?3, NULL, NULL, NULL, NULL, NULL, NULL, ?4)
+                ) VALUES (?1, ?2, ?3, NULL, '', ?4)
                 ON CONFLICT(normalized_path) DO UPDATE SET
                     modified_unix_millis = excluded.modified_unix_millis,
                     size_bytes = excluded.size_bytes,
@@ -1582,19 +1556,20 @@ fn prune_missing_media_match_inventory_rows(
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
         })
         .map_err(|error| format!("failed querying media-match stale inventory rows: {error}"))?;
-    let mut stale_file_ids = Vec::new();
+    let mut stale_paths = Vec::new();
     for row in rows.flatten() {
         let (file_id, normalized_path) = row;
+        let _ = file_id;
         let under_scanned_root = normalized_roots
             .iter()
             .any(|root| media_match_path_is_under_root(&normalized_path, root));
         if under_scanned_root && !seen_paths.contains(&normalized_path) {
-            stale_file_ids.push(file_id);
+            stale_paths.push(normalized_path);
         }
     }
-    let pruned_any = !stale_file_ids.is_empty();
-    for file_id in stale_file_ids {
-        delete_media_match_v3_file_and_fingerprints(connection, file_id)?;
+    let pruned_any = !stale_paths.is_empty();
+    for normalized_path in stale_paths {
+        delete_media_match_v3_file_and_fingerprints(connection, &normalized_path)?;
     }
     Ok(pruned_any)
 }
@@ -2034,16 +2009,8 @@ fn parallel_fresh_media_fingerprints(
     let cancel_requested = cancel_flag.load(Ordering::Relaxed);
     let mut stats = MediaMatchParallelExtractionStats {
         background_index_worker_count: worker_count,
-        sampled_fast_worker_count: if extraction_settings.audio_index_mode.is_sampled() {
-            worker_count
-        } else {
-            0
-        },
-        full_verify_worker_count: if extraction_settings.audio_index_mode.is_dense_full_verify() {
-            worker_count
-        } else {
-            0
-        },
+        sampled_fast_worker_count: worker_count,
+        full_verify_worker_count: 0,
         ..MediaMatchParallelExtractionStats::default()
     };
     let mut results = BTreeMap::new();
@@ -2075,13 +2042,8 @@ fn media_match_extraction_worker_count(extraction_settings: &MediaExtractionSett
         .map(usize::from)
         .unwrap_or(1)
         .max(1);
-    if extraction_settings.audio_index_mode.is_sampled() {
-        cores.clamp(1, 8)
-    } else if extraction_settings.audio_index_mode.is_dense_full_verify() {
-        (cores / 2).clamp(1, 4)
-    } else {
-        cores.clamp(1, 4)
-    }
+    let _ = extraction_settings;
+    cores.clamp(1, 8)
 }
 
 fn media_match_cache_has_valid_record(
@@ -2437,14 +2399,13 @@ fn format_media_match_evidence_summary(decision: &MediaMatchDecision) -> String 
     )];
     if let Some(alignment) = decision.evidence.alignment.as_ref() {
         parts.push(format!(
-            "alignment offset={:.1}s scale={}ppm drift={:.4} span={:.1}s pairs={} audio={} video={} margin={:.2}",
+            "alignment offset={:.1}s scale={}ppm drift={:.4} span={:.1}s pairs={} audio={} margin={:.2}",
             alignment.offset_seconds,
             alignment.scale_ppm,
             alignment.drift_ratio,
             alignment.aligned_span_seconds,
             alignment.aligned_pairs,
             alignment.aligned_audio_anchors,
-            alignment.aligned_video_anchors,
             alignment.second_best_offset_margin
         ));
     }
@@ -2456,26 +2417,14 @@ fn format_media_match_evidence_summary(decision: &MediaMatchDecision) -> String 
             format_optional_seconds(audio.duration_delta_seconds)
         ));
     }
-    if let Some(video) = decision.evidence.video.as_ref() {
-        parts.push(format!(
-            "video pairs={} coverage={:.2}/{:.2} offset={:.1}s drift={:.4} mean_hamming={:.1}",
-            video.aligned_pairs,
-            video.query_coverage,
-            video.candidate_coverage,
-            video.best_offset_seconds,
-            video.drift_ratio,
-            video.mean_hamming_distance
-        ));
-    }
     if let Some(map) = decision.evidence.timeline_map_v3.as_ref() {
         parts.push(format!(
-            "v3 class={:?} segments={} span={:.1}s largest_gap={:.1}s edge_only={} av_conflict={} best_segment={} second_segment={} pairs={} hypotheses={} segment_candidates={} chained_segments={} piecewise_fit_ms={}",
+            "v3 class={:?} segments={} span={:.1}s largest_gap={:.1}s edge_only={} best_segment={} second_segment={} pairs={} hypotheses={} segment_candidates={} chained_segments={} piecewise_fit_ms={}",
             map.global_class,
             map.segments.len(),
             f64::from(map.total_aligned_span_ms) / 1000.0,
             f64::from(map.largest_gap_ms) / 1000.0,
             map.edge_only,
-            map.audio_video_conflict,
             map.best_segment_score,
             map.second_best_segment_score,
             map.piecewise_pair_count,
@@ -2650,7 +2599,7 @@ fn load_managed_media_match_metadata(root: &Path) -> Option<ManagedMediaMatchMet
 }
 
 fn open_media_match_sqlite_index(root: &Path) -> Result<Connection, String> {
-    open_media_match_v3_index(root)
+    open_media_match_v3_index(&managed_media_match_index_dir(root))
 }
 
 pub(super) fn load_media_match_cache_for_settings(
@@ -2776,9 +2725,9 @@ fn refresh_media_match_v3_anchor_stats_for_settings(
     Ok(())
 }
 
-fn media_match_sqlite_all_settings_counts(root: &Path) -> Result<(usize, usize, usize), String> {
+fn media_match_sqlite_all_settings_counts(root: &Path) -> Result<(usize, usize), String> {
     if !managed_media_match_index_path(root).exists() {
-        return Ok((0, 0, 0));
+        return Ok((0, 0));
     }
     let connection = open_media_match_sqlite_index(root)?;
     let inventory = connection
@@ -2790,7 +2739,6 @@ fn media_match_sqlite_all_settings_counts(root: &Path) -> Result<(usize, usize, 
     let count_for_profile = |profile: &str| -> Result<usize, String> {
         let settings = match profile {
             "audio-constellation-v3" => MediaExtractionSettings::audio_constellation_v3(),
-            "combined-v3" => MediaExtractionSettings::combined_v3(),
             _ => return Ok(0),
         };
         Ok(connection
@@ -2811,13 +2759,12 @@ fn media_match_sqlite_all_settings_counts(root: &Path) -> Result<(usize, usize, 
     Ok((
         inventory,
         count_for_profile(MediaFingerprintProfile::AudioConstellationV3.label())?,
-        count_for_profile(MediaFingerprintProfile::CombinedV3.label())?,
     ))
 }
 
-fn media_match_sqlite_active_settings_counts(root: &Path) -> Result<(usize, usize), String> {
+fn media_match_sqlite_active_settings_counts(root: &Path) -> Result<usize, String> {
     if !managed_media_match_index_path(root).exists() {
-        return Ok((0, 0));
+        return Ok(0);
     }
     let connection = open_media_match_sqlite_index(root)?;
     let count_for_settings = |settings: &MediaExtractionSettings| -> Result<usize, String> {
@@ -2837,10 +2784,7 @@ fn media_match_sqlite_active_settings_counts(root: &Path) -> Result<(usize, usiz
             .map_err(|error| format!("failed reading media-match active-settings count: {error}"))?
             .max(0) as usize)
     };
-    Ok((
-        count_for_settings(&MediaExtractionSettings::audio_constellation_v3())?,
-        count_for_settings(&MediaExtractionSettings::combined_v3())?,
-    ))
+    count_for_settings(&MediaExtractionSettings::audio_constellation_v3())
 }
 
 fn save_managed_media_match_metadata(
@@ -3050,11 +2994,8 @@ mod tests {
             extraction_settings: MediaExtractionSettings::default(),
             duration_seconds: Some(1200.0),
             container_fingerprint: format!("container:{path}"),
-            video: None,
             audio_anchors: Vec::new(),
-            video_anchors: Vec::new(),
             audio_error: None,
-            video_error: None,
         }
     }
 
@@ -3079,11 +3020,8 @@ mod tests {
             extraction_settings,
             duration_seconds: Some(1200.0),
             container_fingerprint: format!("container:{}", path.display()),
-            video: None,
             audio_anchors: Vec::new(),
-            video_anchors: Vec::new(),
             audio_error: None,
-            video_error: None,
         }
     }
 
@@ -3112,7 +3050,6 @@ mod tests {
                 weight: 4,
             })
             .collect();
-        record.video_anchors.clear();
     }
 
     fn media_match_record_updated_unix_millis(root: &Path, record: &MediaFingerprintRecord) -> i64 {
@@ -3144,16 +3081,14 @@ mod tests {
         connection
             .query_row(
                 "SELECT document_frequency
-                 FROM anchor_buckets_v3
-                 JOIN settings_v3 ON settings_v3.settings_id = anchor_buckets_v3.settings_id
+                 FROM audio_anchor_buckets_v3
+                 JOIN settings_v3 ON settings_v3.settings_id = audio_anchor_buckets_v3.settings_id
                  WHERE settings_v3.algorithm_version = ?1
                    AND settings_v3.settings_hash = ?2
-                   AND anchor_buckets_v3.modality = ?3
-                   AND anchor_buckets_v3.bucket = ?4",
+                   AND audio_anchor_buckets_v3.bucket = ?3",
                 params![
                     i64::from(MEDIA_MATCH_ANCHOR_VERSION),
                     settings_hash,
-                    1_i64,
                     i64::from(bucket),
                 ],
                 |row| row.get::<_, i64>(0),
@@ -3197,7 +3132,7 @@ mod tests {
             media_match_health_for_settings(
                 &ffmpeg,
                 &ffprobe,
-                &MediaExtractionSettings::combined_v3()
+                &MediaExtractionSettings::audio_constellation_v3()
             ),
             GuiMediaMatchToolHealth::Healthy
         );
@@ -3216,25 +3151,6 @@ mod tests {
 
         assert_eq!(snapshot.health, GuiMediaMatchToolHealth::Healthy);
         assert_eq!(snapshot.message, None);
-    }
-
-    #[test]
-    fn legacy_v1_v2_tables_are_discarded_not_migrated() {
-        let root = unique_media_match_test_root("legacy-v2-removed");
-        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
-        connection
-            .execute("CREATE TABLE fingerprints (record_json TEXT)", [])
-            .expect("legacy fingerprints table can be created");
-        initialize_media_match_v3_index(&connection).expect("V3 initialization should rerun");
-        let legacy_count = connection
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='fingerprints'",
-                [],
-                |row| row.get::<_, i64>(0),
-            )
-            .expect("sqlite_master query should run");
-        assert_eq!(legacy_count, 0);
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -3261,7 +3177,7 @@ mod tests {
         seed_strong_anchor_fixture(&mut record);
         save_media_match_record_to_sqlite(&connection, &record)
             .expect("V3 record should save without refreshing stats");
-        let settings_hash = media_extraction_settings_hash(&record.extraction_settings).to_vec();
+        let settings_hash = media_extraction_settings_hash(&record.extraction_settings);
         assert!(
             anchor_stats_v3_dirty(&connection, &settings_hash).expect("dirty marker should load"),
             "checkpointed V3 saves must mark active settings stats dirty"
@@ -3269,7 +3185,7 @@ mod tests {
 
         let stats_before = connection
             .query_row(
-                "SELECT COUNT(*) FROM anchor_buckets_v3 WHERE document_frequency > 0",
+                "SELECT COUNT(*) FROM audio_anchor_buckets_v3 WHERE document_frequency > 0",
                 [],
                 |row| row.get::<_, i64>(0),
             )
@@ -3288,7 +3204,7 @@ mod tests {
         .expect("batch stats refresh should succeed");
         let stats_after = connection
             .query_row(
-                "SELECT COUNT(*) FROM anchor_buckets_v3 WHERE document_frequency > 0",
+                "SELECT COUNT(*) FROM audio_anchor_buckets_v3 WHERE document_frequency > 0",
                 [],
                 |row| row.get::<_, i64>(0),
             )
@@ -3317,7 +3233,7 @@ mod tests {
         );
         save_media_match_record_to_sqlite(&connection, &query).expect("query should save");
         save_media_match_record_to_sqlite(&connection, &candidate).expect("candidate should save");
-        let settings_hash = media_extraction_settings_hash(&query.extraction_settings).to_vec();
+        let settings_hash = media_extraction_settings_hash(&query.extraction_settings);
         assert!(
             anchor_stats_v3_dirty(&connection, &settings_hash).expect("dirty marker should load"),
             "a checkpoint before batch refresh should leave stats dirty"
@@ -3418,7 +3334,7 @@ mod tests {
             .expect("common candidate should save");
         save_media_match_record_to_sqlite(&connection, &rare_candidate)
             .expect("rare candidate should save");
-        for dummy_index in 0..17 {
+        for dummy_index in 0..260 {
             let dummy = v3_record_with_audio_anchors(
                 &format!("dummy-{dummy_index}.mkv"),
                 &common
@@ -3604,17 +3520,14 @@ mod tests {
                         candidate_end_ms: 45_000,
                         scale_ppm: 1_000_000,
                         audio_pairs: 8,
-                        video_pairs: 0,
                         weighted_score: 32,
                         residual_ms: 0.0,
                         audio_score: 1.0,
-                        video_score: 0.0,
                         confidence: 0.9,
                     }],
                     total_aligned_span_ms: 30_000,
                     largest_gap_ms: 0,
                     edge_only: false,
-                    audio_video_conflict: false,
                     best_segment_score: 32,
                     second_best_segment_score: 0,
                     piecewise_pair_count: 8,
@@ -3837,77 +3750,26 @@ mod tests {
     }
 
     #[test]
-    fn media_match_sqlite_index_tracks_fast_and_full_profiles_separately() {
-        let root = unique_media_match_test_root("sqlite-profiles");
-        let mut full_cache = MediaMatchCache::default();
-        full_cache.insert(fake_media_match_record("episode.mkv"));
-        save_media_match_cache(&root, &full_cache).expect("full cache should be written");
-
-        let mut fast_record = fake_media_match_record("episode.mkv");
-        fast_record.extraction_settings = MediaExtractionSettings::combined_v3();
-        let mut fast_cache = MediaMatchCache::default();
-        fast_cache.insert(fast_record);
-        save_media_match_cache(&root, &fast_cache).expect("fast cache should be written");
+    fn media_match_sqlite_index_tracks_fixed_sampled_fast_profile() {
+        let root = unique_media_match_test_root("sqlite-fixed-profile");
+        let mut cache = MediaMatchCache::default();
+        cache.insert(fake_media_match_record("episode.mkv"));
+        save_media_match_cache(&root, &cache).expect("cache should be written");
 
         assert_eq!(
             media_match_sqlite_all_settings_counts(&root).expect("counts should load"),
-            (1, 1, 1)
+            (1, 1)
         );
         assert_eq!(
             load_media_match_cache_for_settings(
                 &root,
                 &MediaExtractionSettings::audio_constellation_v3()
             )
-            .expect("fast cache should load")
+            .expect("fixed sampled-fast cache should load")
             .records
             .len(),
             1
         );
-        assert_eq!(
-            load_media_match_cache_for_settings(&root, &MediaExtractionSettings::combined_v3())
-                .expect("full cache should load")
-                .records
-                .len(),
-            1
-        );
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn media_match_cached_remote_signature_finds_local_candidate_with_different_name() {
-        let root = unique_media_match_test_root("remote-signature-candidate");
-        let media_dir = root.join("media");
-        std::fs::create_dir_all(&media_dir).expect("media dir should be created");
-        let local_path = media_dir.join("[ANE] Bakemonogatari - Ep04 [BDRip].mkv");
-        std::fs::write(&local_path, b"local-encode").expect("local media should be written");
-
-        let mut local_record = fake_media_match_record_for_file(
-            &local_path,
-            MediaExtractionSettings::audio_constellation_v3(),
-        );
-        seed_strong_anchor_fixture(&mut local_record);
-        let mut cache = MediaMatchCache::default();
-        cache.insert(local_record.clone());
-        save_media_match_cache(&root, &cache).expect("cache should be written");
-
-        let mut remote_record =
-            fake_media_match_record("[MTBB-Minis] Bakemonogatari - 04 [19103080].mkv");
-        seed_strong_anchor_fixture(&mut remote_record);
-        let signature = media_match_wire_value_from_records(std::slice::from_ref(&remote_record))
-            .expect("wire signature should serialize");
-
-        let matched = media_match_cached_strong_candidate_for_remote_signature(
-            &root,
-            std::slice::from_ref(&media_dir),
-            "[MTBB-Minis] Bakemonogatari - 04 [19103080].mkv",
-            &signature,
-            &enabled_media_match_settings(),
-            &MediaExtractionSettings::audio_constellation_v3(),
-        )
-        .expect("remote signature should resolve the local alternate encode");
-
-        assert_eq!(matched.path, normalize_media_path(&local_path));
-        assert_eq!(matched.decision.tier, MediaMatchTier::Strong);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -3981,7 +3843,9 @@ mod tests {
         let media_path = media_dir.join("episode.mkv");
         std::fs::write(&media_path, b"episode").expect("media file should be written");
         let mut altered_settings = MediaExtractionSettings::audio_constellation_v3();
-        altered_settings.max_frames += 1;
+        altered_settings
+            .audio_algorithm
+            .push_str("-test-settings-hash");
         let mut record = fake_media_match_record_for_file(&media_path, altered_settings.clone());
         record.audio_anchors = vec![AudioAnchor {
             bucket: 1,
@@ -4099,256 +3963,32 @@ mod tests {
     }
 
     #[test]
-    fn media_match_save_invalidates_other_profiles_when_file_identity_changes() {
-        let root = unique_media_match_test_root("save-cross-profile-invalidation");
-        let media_dir = root.join("media");
-        std::fs::create_dir_all(&media_dir).expect("media dir should be created");
-        let query_path = media_dir.join("query.mkv");
-        let candidate_path = media_dir.join("candidate.mkv");
-        std::fs::write(&query_path, b"query-v1").expect("query media should be written");
-        std::fs::write(&candidate_path, b"candidate-v1")
-            .expect("candidate media should be written");
-        let fast_settings = MediaExtractionSettings::audio_constellation_v3();
-        let full_settings = MediaExtractionSettings::combined_v3();
-        let mut full_query = fake_media_match_record_for_file(&query_path, full_settings.clone());
-        full_query.audio_anchors = vec![AudioAnchor {
-            bucket: 77,
-            t_ms: 10_000,
-            weight: 1,
-        }];
-        let mut stale_full_candidate =
-            fake_media_match_record_for_file(&candidate_path, full_settings.clone());
-        stale_full_candidate.audio_anchors = vec![AudioAnchor {
-            bucket: 77,
-            t_ms: 12_000,
-            weight: 1,
-        }];
-        let mut stale_fast_candidate =
-            fake_media_match_record_for_file(&candidate_path, fast_settings.clone());
-        stale_fast_candidate.audio_anchors = vec![AudioAnchor {
+    fn media_match_save_and_loads_valid_audio_v3_landmarks() {
+        let root = unique_media_match_test_root("valid-audio-v3");
+        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
+        let mut record = fake_media_match_record("valid-audio-v3.mkv");
+        record.extraction_settings = MediaExtractionSettings::audio_constellation_v3();
+        record.audio_anchors = vec![AudioAnchor {
             bucket: 42,
-            t_ms: 12_000,
-            weight: 1,
+            t_ms: 1_000,
+            weight: 3,
         }];
-        let candidate_normalized_path = stale_full_candidate.identity.normalized_path.clone();
-        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
-        save_media_match_record_to_sqlite(&connection, &full_query)
-            .expect("full query should be saved");
-        save_media_match_record_to_sqlite(&connection, &stale_fast_candidate)
-            .expect("stale fast candidate should be saved");
-        save_media_match_record_to_sqlite(&connection, &stale_full_candidate)
-            .expect("stale full candidate should be saved");
-        assert!(
-            media_match_anchor_candidate_paths(
-                &root,
-                &full_query.identity.normalized_path,
-                &full_settings,
-            )
-            .expect("full anchor candidates should load")
-            .contains(&candidate_normalized_path),
-            "fixture should start with a full-profile candidate hit"
-        );
-
-        std::fs::write(&candidate_path, b"candidate-v3-with-new-size")
-            .expect("candidate media should be changed");
-        let mut fresh_fast_candidate =
-            fake_media_match_record_for_file(&candidate_path, fast_settings.clone());
-        fresh_fast_candidate.audio_anchors = vec![AudioAnchor {
-            bucket: 43,
-            t_ms: 12_000,
-            weight: 1,
-        }];
-        save_media_match_record_to_sqlite(&connection, &fresh_fast_candidate)
-            .expect("fresh fast candidate should replace stale profiles atomically");
-
-        assert!(
-            media_match_record_for_path(
-                &root,
-                candidate_path.to_str().expect("test path should be UTF-8"),
-                &full_settings,
-            )
-            .is_none(),
-            "saving a fresh fast profile for a changed file must invalidate stale full profile rows"
-        );
-        assert!(
-            !media_match_anchor_candidate_paths(
-                &root,
-                &full_query.identity.normalized_path,
-                &full_settings,
-            )
-            .expect("full anchor candidates should load")
-            .contains(&candidate_normalized_path),
-            "stale full-profile anchors must not remain candidate lookup evidence"
-        );
-        let fresh_fast = media_match_record_for_path(
-            &root,
-            candidate_path.to_str().expect("test path should be UTF-8"),
-            &fast_settings,
-        )
-        .expect("fresh fast profile should load");
-        assert_eq!(
-            fresh_fast.identity.size_bytes,
-            fresh_fast_candidate.identity.size_bytes
-        );
-        assert!(
-            fresh_fast
-                .audio_anchors
-                .iter()
-                .any(|anchor| anchor.bucket == 43)
-        );
-        let full_rows = connection
-            .query_row(
-                "SELECT COUNT(*)
-                 FROM fingerprints_v3
-                 JOIN media_files_v3 ON media_files_v3.file_id = fingerprints_v3.file_id
-                 JOIN settings_v3 ON settings_v3.settings_id = fingerprints_v3.settings_id
-                 WHERE media_files_v3.normalized_path = ?1
-                   AND settings_v3.algorithm_version = ?2
-                   AND settings_v3.settings_hash = ?3",
-                params![
-                    candidate_normalized_path,
-                    i64::from(MEDIA_MATCH_ANCHOR_VERSION),
-                    media_extraction_settings_hash(&full_settings).to_vec(),
-                ],
-                |row| row.get::<_, i64>(0),
-            )
-            .expect("full row count should load");
-        assert_eq!(full_rows, 0);
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn media_match_save_rejects_invalid_v3_video_kind() {
-        let root = unique_media_match_test_root("invalid-v3-kind");
-        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
-        let mut record = fake_media_match_record("invalid-kind.mkv");
-        record.extraction_settings = MediaExtractionSettings::combined_v3();
-        record.video = Some(sorotte_media_match::VideoFingerprint {
-            duration_seconds: Some(60),
-            frames: Vec::new(),
-            v3_landmarks: vec![sorotte_media_match::VideoLandmarkV3 {
-                bucket: sorotte_media_match::v3_video_bucket_for_kind(9, 12),
-                hash64: 0x1234,
-                t_ms: 1_000,
-                kind: 9,
-                weight: 1,
-            }],
-        });
-
-        let error = save_media_match_record_to_sqlite(&connection, &record)
-            .expect_err("invalid V3 video kind must not save silently");
-
-        assert!(
-            error.contains("unsupported V3 video landmark kind 9"),
-            "{error}"
-        );
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn media_match_save_rejects_mismatched_v3_video_bucket_kind() {
-        let root = unique_media_match_test_root("invalid-v3-bucket-kind");
-        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
-        let mut record = fake_media_match_record("invalid-bucket-kind.mkv");
-        record.extraction_settings = MediaExtractionSettings::combined_v3();
-        record.video = Some(sorotte_media_match::VideoFingerprint {
-            duration_seconds: Some(60),
-            frames: Vec::new(),
-            v3_landmarks: vec![sorotte_media_match::VideoLandmarkV3 {
-                bucket: sorotte_media_match::v3_video_bucket_for_kind(
-                    sorotte_media_match::V3_VIDEO_KIND_EDGE,
-                    12,
-                ),
-                hash64: 0x1234,
-                t_ms: 1_000,
-                kind: sorotte_media_match::V3_VIDEO_KIND_GLOBAL_DCT,
-                weight: 1,
-            }],
-        });
-
-        let error = save_media_match_record_to_sqlite(&connection, &record)
-            .expect_err("mismatched V3 video bucket kind must not save silently");
-
-        assert!(error.contains("does not match bucket kind"), "{error}");
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn media_match_save_rejects_invalid_v3_temporal_shingle_bucket() {
-        let root = unique_media_match_test_root("invalid-v3-temporal-bucket");
-        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
-        let mut record = fake_media_match_record("invalid-temporal-bucket.mkv");
-        record.extraction_settings = MediaExtractionSettings::combined_v3();
-        let hash64 = 0x1234_5678_9abc_def0;
-        record.video = Some(sorotte_media_match::VideoFingerprint {
-            duration_seconds: Some(60),
-            frames: Vec::new(),
-            v3_landmarks: vec![sorotte_media_match::VideoLandmarkV3 {
-                bucket: sorotte_media_match::v3_video_bucket_for_kind(
-                    sorotte_media_match::V3_VIDEO_KIND_TEMPORAL_SHINGLE,
-                    0xfeed_beef,
-                ),
-                hash64,
-                t_ms: 1_000,
-                kind: sorotte_media_match::V3_VIDEO_KIND_TEMPORAL_SHINGLE,
-                weight: 1,
-            }],
-        });
-
-        let error = save_media_match_record_to_sqlite(&connection, &record)
-            .expect_err("invalid temporal V3 video bucket must not save silently");
-
-        assert!(
-            error.contains("temporal shingle bucket"),
-            "unexpected error: {error}"
-        );
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn media_match_save_and_loads_valid_combined_v3_video_landmark() {
-        let root = unique_media_match_test_root("valid-combined-v3-video");
-        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
-        let mut record = fake_media_match_record("valid-combined-v3.mkv");
-        record.extraction_settings = MediaExtractionSettings::combined_v3();
-        let hash64 = 0x1234_5678_9abc_def0;
-        record.video = Some(sorotte_media_match::VideoFingerprint {
-            duration_seconds: Some(60),
-            frames: Vec::new(),
-            v3_landmarks: vec![sorotte_media_match::VideoLandmarkV3 {
-                bucket: sorotte_media_match::v3_video_bucket_for_kind(
-                    sorotte_media_match::V3_VIDEO_KIND_TEMPORAL_SHINGLE,
-                    (hash64 >> 32) as u32,
-                ),
-                hash64,
-                t_ms: 1_000,
-                kind: sorotte_media_match::V3_VIDEO_KIND_TEMPORAL_SHINGLE,
-                weight: 3,
-            }],
-        });
 
         save_media_match_record_to_sqlite(&connection, &record)
-            .expect("valid combined V3 video landmark should save");
-        let cache =
-            load_media_match_cache_for_settings(&root, &MediaExtractionSettings::combined_v3())
-                .expect("valid combined V3 cache should load");
+            .expect("valid audio V3 landmark should save");
+        let cache = load_media_match_cache_for_settings(
+            &root,
+            &MediaExtractionSettings::audio_constellation_v3(),
+        )
+        .expect("valid audio V3 cache should load");
         let loaded = cache
             .records
             .get(&record.identity.normalized_path)
             .expect("saved record should be loaded");
 
         assert_eq!(
-            loaded
-                .video_anchors
-                .first()
-                .map(|landmark| (landmark.kind, landmark.bucket)),
-            Some((
-                sorotte_media_match::V3_VIDEO_KIND_TEMPORAL_SHINGLE,
-                sorotte_media_match::v3_video_bucket_for_kind(
-                    sorotte_media_match::V3_VIDEO_KIND_TEMPORAL_SHINGLE,
-                    (hash64 >> 32) as u32,
-                )
-            ))
+            loaded.audio_anchors.first().map(|anchor| anchor.bucket),
+            Some(42)
         );
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -4373,7 +4013,7 @@ mod tests {
         std::fs::copy(&query, &candidate).expect("candidate media should be copied");
         let tools = MediaMatchToolPaths { ffmpeg, ffprobe };
         let manifest = serde_json::json!({
-            "profile": "combined-v3",
+            "profile": "audio-constellation-v3",
             "baseDir": "media",
             "cases": [{
                 "name": "copied-synthetic-media",
@@ -4386,38 +4026,34 @@ mod tests {
             }]
         });
 
-        let report_json = sorotte_media_match::media_match_v3_diagnostic_manifest_report_json(
+        let manifest = sorotte_media_match::media_match_v3_diagnostic_manifest_from_json(
             &manifest.to_string(),
-            sorotte_media_match::MediaMatchV3DiagnosticRunOptions {
+        )
+        .expect("manifest should parse");
+        let report = sorotte_media_match::run_media_match_v3_diagnostic_manifest(
+            &manifest,
+            &sorotte_media_match::MediaMatchV3DiagnosticRunOptions {
                 manifest_dir: root.clone(),
                 cache_root: root.join("diagnostic-cache"),
                 cache_retained: true,
                 refresh_cache: false,
-                index_mode: sorotte_media_match::MediaMatchV3DiagnosticIndexMode::Full,
-                dense_audio_profile: sorotte_media_match::MediaDenseAudioProfile::DenseCurrent,
-                max_full_promotions_per_query: 1,
-                promote_expected_candidates: false,
+                index_mode: sorotte_media_match::MediaMatchV3DiagnosticIndexMode::SampledFast,
                 retrieval_benchmark_only: false,
                 retrieval_strategy: sorotte_media_match::MediaMatchV3RetrievalStrategy::Auto,
-                sampled_fast_global_workers: None,
-                sampled_fast_per_local_source_workers: None,
-                sampled_fast_per_network_source_workers: None,
-                sampled_fast_per_removable_source_workers: None,
-                probe_audio_packets: false,
-                sampled_audio_source: sorotte_media_match::MediaSampledAudioSourceStrategy::Current,
-                experimental_sampled_audio_source: false,
-                sampled_pcm_cache_root: None,
                 tools,
                 generated_at_unix_millis: Some(123),
             },
         )
         .expect("diagnostic manifest should run");
+        let report_json =
+            sorotte_media_match::media_match_v3_diagnostic_manifest_report_json(&report)
+                .expect("report should serialize");
         let report: serde_json::Value =
             serde_json::from_str(&report_json).expect("report JSON should parse");
         let candidate = &report["cases"][0]["candidates"][0];
 
-        assert_eq!(report["algorithmVersion"], MEDIA_MATCH_ANCHOR_VERSION);
-        assert_eq!(candidate["passed"], true);
+        assert_eq!(report["algorithmVersion"], MEDIA_MATCH_ALGORITHM_VERSION);
+        assert_eq!(candidate["expectationPassed"], true);
         assert_eq!(candidate["retrieved"], true);
         assert!(
             report["cases"][0]["query"]["diagnostics"]["audioBlobBytes"]
@@ -4426,7 +4062,7 @@ mod tests {
                 > 0
         );
         assert!(
-            report["cases"][0]["retrieval"]["queryBucketsTotal"]
+            report["cases"][0]["retrieval"]["stats"]["queryBucketsTotal"]
                 .as_i64()
                 .unwrap_or_default()
                 >= 0
@@ -4561,7 +4197,7 @@ mod tests {
         let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
         refresh_all_anchor_stats_v3(&connection, current_unix_millis() as i64)
             .expect("initial stats refresh should succeed");
-        let settings_hash = media_extraction_settings_hash(&extraction_settings).to_vec();
+        let settings_hash = media_extraction_settings_hash(&extraction_settings);
         let shared_before = v3_audio_bucket_document_frequency(&connection, &settings_hash, 500);
         let removed_only_before =
             v3_audio_bucket_document_frequency(&connection, &settings_hash, 501);
@@ -4595,181 +4231,15 @@ mod tests {
             v3_audio_bucket_document_frequency(&refreshed_connection, &settings_hash, 501);
         assert_eq!(shared_after, Some(1));
         assert_eq!(
-            removed_only_after, None,
-            "anchor stats for pruned-only buckets should be removed"
+            removed_only_after,
+            Some(0),
+            "anchor stats for pruned-only buckets should be refreshed to zero"
         );
         assert!(
             !anchor_stats_v3_dirty(&refreshed_connection, &settings_hash)
                 .expect("dirty marker should load"),
             "candidate lookup should clear the dirty marker after refreshing stats"
         );
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn media_match_anchor_candidates_use_video_lsh_and_hamming_verification() {
-        let root = unique_media_match_test_root("video-lsh-candidates");
-        let query_hash = 0x0123_4567_89ab_cdef;
-        let candidate_hash = query_hash ^ (1 << 60);
-        let mut query = fake_media_match_record("query.mkv");
-        query.extraction_settings = MediaExtractionSettings::combined_v3();
-        query.video = Some(sorotte_media_match::VideoFingerprint {
-            duration_seconds: Some(120),
-            frames: vec![sorotte_media_match::FrameFingerprint {
-                timestamp_millis: 30_000,
-                hash: query_hash,
-            }],
-            v3_landmarks: Vec::new(),
-        });
-        let mut candidate = fake_media_match_record("candidate.mkv");
-        candidate.extraction_settings = MediaExtractionSettings::combined_v3();
-        candidate.video = Some(sorotte_media_match::VideoFingerprint {
-            duration_seconds: Some(120),
-            frames: vec![sorotte_media_match::FrameFingerprint {
-                timestamp_millis: 31_000,
-                hash: candidate_hash,
-            }],
-            v3_landmarks: Vec::new(),
-        });
-        let candidate_path = candidate.identity.normalized_path.clone();
-        let mut cache = MediaMatchCache::default();
-        cache.insert(query.clone());
-        cache.insert(candidate);
-        save_media_match_cache(&root, &cache).expect("cache should be written");
-
-        let candidates = media_match_anchor_candidate_paths(
-            &root,
-            &query.identity.normalized_path,
-            &MediaExtractionSettings::combined_v3(),
-        )
-        .expect("anchor candidates should load");
-
-        assert!(
-            candidates.contains(&candidate_path),
-            "candidate should be shortlisted when any video LSH band matches and full hash distance is within threshold"
-        );
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn media_match_anchor_candidates_bound_v3_video_lookup_to_lsh_hits() {
-        let root = unique_media_match_test_root("video-lsh-fallback-candidates");
-        let query_hash = 0x0123_4567_89ab_cdef;
-        let candidate_hash = query_hash ^ 0x0001_0001_0001_0001;
-        let mut query = fake_media_match_record("query.mkv");
-        query.extraction_settings = MediaExtractionSettings::combined_v3();
-        query.video = Some(sorotte_media_match::VideoFingerprint {
-            duration_seconds: Some(120),
-            frames: vec![sorotte_media_match::FrameFingerprint {
-                timestamp_millis: 30_000,
-                hash: query_hash,
-            }],
-            v3_landmarks: Vec::new(),
-        });
-        let mut candidate = fake_media_match_record("candidate.mkv");
-        candidate.extraction_settings = MediaExtractionSettings::combined_v3();
-        candidate.video = Some(sorotte_media_match::VideoFingerprint {
-            duration_seconds: Some(120),
-            frames: vec![sorotte_media_match::FrameFingerprint {
-                timestamp_millis: 31_000,
-                hash: candidate_hash,
-            }],
-            v3_landmarks: Vec::new(),
-        });
-        let candidate_path = candidate.identity.normalized_path.clone();
-        let mut cache = MediaMatchCache::default();
-        cache.insert(query.clone());
-        cache.insert(candidate);
-        save_media_match_cache(&root, &cache).expect("cache should be written");
-
-        let candidates = media_match_anchor_candidate_paths(
-            &root,
-            &query.identity.normalized_path,
-            &MediaExtractionSettings::combined_v3(),
-        )
-        .expect("anchor candidates should load");
-
-        assert!(
-            !candidates.contains(&candidate_path),
-            "v3 video lookup is intentionally bounded to indexed LSH buckets; verification blobs are loaded only after retrieval"
-        );
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn media_match_legacy_sqlite_tables_are_discarded_not_migrated() {
-        let root = unique_media_match_test_root("legacy-drop");
-        let index_dir = managed_media_match_index_dir(&root);
-        std::fs::create_dir_all(&index_dir).expect("index dir should be created");
-        let connection = Connection::open(managed_media_match_index_path(&root))
-            .expect("legacy SQLite index should open");
-        connection
-            .execute_batch(
-                "
-                CREATE TABLE fingerprints (
-                    normalized_path TEXT NOT NULL,
-                    profile TEXT NOT NULL,
-                    modified_unix_millis INTEGER NOT NULL,
-                    size_bytes INTEGER NOT NULL,
-                    algorithm_version INTEGER NOT NULL,
-                    extraction_settings_json TEXT NOT NULL,
-                    duration_seconds REAL,
-                    record_json TEXT NOT NULL,
-                    updated_unix_millis INTEGER NOT NULL,
-                    PRIMARY KEY (normalized_path, profile)
-                );
-                INSERT INTO fingerprints (
-                    normalized_path,
-                    profile,
-                    modified_unix_millis,
-                    size_bytes,
-                    algorithm_version,
-                    extraction_settings_json,
-                    duration_seconds,
-                    record_json,
-                    updated_unix_millis
-                ) VALUES (
-                    'episode.mkv',
-                    'legacy',
-                    1,
-                    2,
-                    1,
-                    '{}',
-                    120.0,
-                    '{}',
-                    3
-                );
-                CREATE TABLE fingerprints_v1 (record_json TEXT NOT NULL);
-                INSERT INTO fingerprints_v1 VALUES ('{}');
-                ",
-            )
-            .expect("legacy tables should be created");
-        drop(connection);
-
-        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should reopen");
-        let v3_rows = connection
-            .query_row("SELECT COUNT(*) FROM fingerprints_v3", [], |row| {
-                row.get::<_, i64>(0)
-            })
-            .expect("V3 fingerprint table should be readable");
-        let legacy_fingerprints_exists = connection
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'fingerprints'",
-                [],
-                |row| row.get::<_, i64>(0),
-            )
-            .expect("legacy fingerprint table existence should be readable");
-        let legacy_exists = connection
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'fingerprints_v1'",
-                [],
-                |row| row.get::<_, i64>(0),
-            )
-            .expect("legacy table existence should be readable");
-
-        assert_eq!(v3_rows, 0);
-        assert_eq!(legacy_fingerprints_exists, 0);
-        assert_eq!(legacy_exists, 0);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -4785,14 +4255,13 @@ mod tests {
                 weight: 1,
             })
             .collect();
-        record.video_anchors.clear();
         let mut cache = MediaMatchCache::default();
         cache.insert(record);
         save_media_match_cache(&root, &cache).expect("cache should be written");
         let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
         let blob_bytes = connection
             .query_row(
-                "SELECT COALESCE(SUM(COALESCE(LENGTH(audio_blob), 0) + COALESCE(LENGTH(video_blob), 0)), 0)
+                "SELECT COALESCE(SUM(COALESCE(LENGTH(audio_blob), 0)), 0)
                  FROM fingerprints_v3
                  JOIN settings_v3 ON settings_v3.settings_id = fingerprints_v3.settings_id
                  WHERE settings_v3.algorithm_version = ?1",
@@ -4851,15 +4320,12 @@ mod tests {
     }
 
     #[test]
-    fn sampled_background_worker_count_is_capped_and_full_verify_is_lower() {
+    fn sampled_background_worker_count_is_capped() {
         let sampled = media_match_extraction_worker_count(
             &MediaExtractionSettings::sampled_fast_audio_index_v3(),
         );
-        let full =
-            media_match_extraction_worker_count(&MediaExtractionSettings::audio_constellation_v3());
 
         assert!((1..=8).contains(&sampled), "sampled workers={sampled}");
-        assert!((1..=4).contains(&full), "full workers={full}");
     }
 
     #[test]
@@ -5000,7 +4466,7 @@ mod tests {
         let nearest_match = nearest_match.expect("nearest candidate should be reported");
         assert!(
             nearest_match.contains(
-                "No alternate indexed match; nearest other: episode-nearest.mkv (reject: anchor timeline evidence is insufficient)"
+                "No alternate indexed match; nearest other: episode-nearest.mkv (reject: sampled-fast audio did not align)"
             ),
             "{nearest_match}"
         );
@@ -5011,11 +4477,9 @@ mod tests {
         );
         assert!(last_evidence.contains("tier=reject"), "{last_evidence}");
         assert!(
-            last_evidence.contains("alignment offset=2.0s"),
+            last_evidence.contains("no coherent sampled-fast audio offset"),
             "{last_evidence}"
         );
-        assert!(last_evidence.contains("pairs=1"), "{last_evidence}");
-        assert!(last_evidence.contains("audio=1"), "{last_evidence}");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -5061,9 +4525,9 @@ mod tests {
         assert_eq!(before, after);
         assert!(result.message.contains("already current"));
         assert!(
-            result.cache_status.starts_with(
-                "inventory: 1, audio-v3(all settings): 1, combined-v3(all settings): 0"
-            )
+            result
+                .cache_status
+                .starts_with("inventory: 1, audio-v3(all settings): 1")
         );
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn gui_persisted_config_runtime_owner_opens_media_match_candidate_when_playlist_name_is_missing() {
+fn gui_persisted_config_runtime_owner_does_not_open_sampled_only_media_match_candidate() {
     #[derive(Debug, Default)]
     struct RecordingPlayerState {
         opened_paths: Vec<String>,
@@ -83,17 +83,11 @@ fn gui_persisted_config_runtime_owner_opens_media_match_candidate_when_playlist_
             ),
             algorithm_version: sorotte_media_match::MEDIA_MATCH_ALGORITHM_VERSION,
             extraction_settings:
-                sorotte_media_match::MediaExtractionSettings::audio_constellation_v3()
-                    .with_dense_audio_profile(
-                        sorotte_media_match::MediaDenseAudioProfile::DenseGated,
-                    ),
+                sorotte_media_match::MediaExtractionSettings::audio_constellation_v3(),
             duration_seconds: Some(900.0),
             container_fingerprint: format!("container:{}", path.display()),
-            video: None,
             audio_anchors: Vec::new(),
-            video_anchors: Vec::new(),
             audio_error: None,
-            video_error: None,
         };
         seed_media_match_strong_anchor_fixture(&mut record);
         record
@@ -107,11 +101,8 @@ fn gui_persisted_config_runtime_owner_opens_media_match_candidate_when_playlist_
                 sorotte_media_match::MediaExtractionSettings::audio_constellation_v3(),
             duration_seconds: Some(900.0),
             container_fingerprint: format!("container:{path}"),
-            video: None,
             audio_anchors: Vec::new(),
-            video_anchors: Vec::new(),
             audio_error: None,
-            video_error: None,
         };
         seed_media_match_strong_anchor_fixture(&mut record);
         record
@@ -127,7 +118,6 @@ fn gui_persisted_config_runtime_owner_opens_media_match_candidate_when_playlist_
                 weight: 4,
             })
             .collect();
-        record.video_anchors.clear();
     }
 
     let root = test_temp_root("playlist-media-match-alternate-encode");
@@ -202,15 +192,15 @@ fn gui_persisted_config_runtime_owner_opens_media_match_candidate_when_playlist_
 
     assert_eq!(
         owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
-        SelectedPlaylistMediaSyncOutcome::OpenedNewMedia
+        SelectedPlaylistMediaSyncOutcome::NoChange
     );
     assert_eq!(
         player_state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .opened_paths,
-        vec![sorotte_media_match::normalize_media_path(&local_media_path)],
-        "automatic shared-playlist sync should open the local alternate encode from the peer media-match signature, not require a filename match"
+        Vec::<String>::new(),
+        "sampled-only media-match signatures are not strong enough to open alternate media automatically"
     );
 
     let _ = std::fs::remove_dir_all(&root);
