@@ -403,6 +403,20 @@ cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --ind
 cargo run -p sorotte-media-match --bin v3_diagnostics -- corpus.audio.json --index-mode sampled-fast --sampled-audio-source packet-map --experimental-sampled-audio-source --sampled-pcm-cache-root .media-match-v3-pcm-cache --output reports/audio-packet-map.json --cache-root .media-match-v3-cache-packet-map --refresh-cache
 ```
 
+For a small first-run I/O benchmark over the fixed sampled-fast policy, use:
+
+```powershell
+cargo run -p sorotte-media-match --bin v3_diagnostics -- bench-subset.json --bench-sampled-ffmpeg-strategies --output reports/source-strategy-bench.json --cache-root .cache-source-bench --refresh-cache
+```
+
+The benchmark always includes `current` as the baseline and then runs the
+experimental ffmpeg source strategies with separate cache identities. Its JSON
+contains per-strategy read bytes/ops, PCM output bytes, ffmpeg invocation count,
+wall/decode time, expected-candidate retrieval status, rank/score deltas, hard
+negative status, and an `equivalenceVerdict`. A faster strategy is still
+rejected unless it proves PCM byte identity or high landmark overlap, preserves
+expected retrieval, and keeps hard negatives passing.
+
 `current` is the safe ffmpeg path, the default, and the only normal production
 sampled-fast source. It runs one fast seek per sampled window, which is the
 cold-index baseline. Every other sampled source is experimental and requires

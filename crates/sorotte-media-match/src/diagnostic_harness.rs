@@ -4415,6 +4415,9 @@ mod tests {
         let root = temp_dir("v3-diagnostics-sampled-policy-cache");
         let media = root.join("sampled.mkv");
         fs::write(&media, b"sampled").expect("media should be written");
+        let experimental_only_media = root.join("sampled-experimental-only.mkv");
+        fs::write(&experimental_only_media, b"sampled experimental")
+            .expect("experimental-only media should be written");
         let cache_root = root.join("cache");
         let fixed_settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
         let experimental_policy = MediaSampledAudioPolicy::for_sampled_fast_source_strategy(
@@ -4474,6 +4477,37 @@ mod tests {
             loaded.is_some(),
             "same experimental sampled-fast policy should reuse SQLite cache"
         );
+
+        save_media_match_v3_record(
+            &connection,
+            &fixture_record(&experimental_only_media, &experimental_settings, 2_000),
+            None,
+        )
+        .expect("experimental sampled-only record should save");
+        let (experimental_modified_unix_millis, experimental_size_bytes) =
+            media_file_identity_parts(&experimental_only_media).expect("identity should load");
+        let loaded = load_media_match_v3_record_for_path(
+            &connection,
+            &normalize_media_path(&experimental_only_media),
+            &fixed_settings,
+            experimental_modified_unix_millis,
+            experimental_size_bytes,
+        )
+        .expect("cache lookup should not fail");
+        let incompatible_count = media_match_v3_incompatible_record_count_for_path(
+            &connection,
+            &normalize_media_path(&experimental_only_media),
+            &fixed_settings,
+            experimental_modified_unix_millis,
+            experimental_size_bytes,
+        )
+        .expect("incompatible cache check should not fail");
+
+        assert!(
+            loaded.is_none(),
+            "production sampled-fast lookup must not reuse experimental sampled-source records"
+        );
+        assert_eq!(incompatible_count, 1);
         let _ = fs::remove_dir_all(root);
     }
 

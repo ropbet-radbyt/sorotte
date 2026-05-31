@@ -471,34 +471,58 @@ mod tests {
         let fixed = media_match_v3_fingerprint_config_hash(
             &MediaExtractionSettings::sampled_fast_audio_index_v3(),
         );
-        let output_seek = media_match_v3_fingerprint_config_hash(
-            &MediaExtractionSettings::sampled_fast_audio_index_v3().with_sampled_audio_policy(
-                MediaSampledAudioPolicy::for_sampled_fast_source_strategy(
-                    MediaSampledAudioSourceStrategy::OutputSeekPerWindow,
+        for strategy in non_current_sampled_audio_source_strategies() {
+            let experimental = media_match_v3_fingerprint_config_hash(
+                &MediaExtractionSettings::sampled_fast_audio_index_v3().with_sampled_audio_policy(
+                    MediaSampledAudioPolicy::for_sampled_fast_source_strategy(strategy),
                 ),
-            ),
-        );
-
-        assert_ne!(fixed, output_seek);
+            );
+            assert_ne!(
+                fixed,
+                experimental,
+                "sampled source strategy {} must not share the production fingerprint config hash",
+                strategy.label()
+            );
+        }
     }
 
     #[test]
-    fn sampled_audio_policy_separates_experimental_source_strategies() {
-        let current = MediaSampledAudioPolicy::for_sampled_fast_source_strategy(
-            MediaSampledAudioSourceStrategy::Current,
-        );
-        let packet_map = MediaSampledAudioPolicy::for_sampled_fast_source_strategy(
-            MediaSampledAudioSourceStrategy::PacketMap,
-        );
-        let pcm_cache = MediaSampledAudioPolicy::for_sampled_fast_source_strategy(
-            MediaSampledAudioSourceStrategy::SampledPcmCache,
-        );
-
-        assert_ne!(current, packet_map);
-        assert_ne!(current, pcm_cache);
+    fn sampled_audio_policy_separates_all_experimental_source_strategies() {
+        let current = MediaSampledAudioPolicy::fixed_sampled_fast_current();
         assert!(current.is_production_compatible());
-        assert!(!packet_map.is_production_compatible());
-        assert!(!pcm_cache.is_production_compatible());
+        assert_eq!(
+            current,
+            MediaSampledAudioPolicy::for_sampled_fast_source_strategy(
+                MediaSampledAudioSourceStrategy::Current,
+            )
+        );
+        for strategy in non_current_sampled_audio_source_strategies() {
+            let policy = MediaSampledAudioPolicy::for_sampled_fast_source_strategy(strategy);
+            assert_ne!(
+                current,
+                policy,
+                "sampled source strategy {} must not share the production policy",
+                strategy.label()
+            );
+            assert!(
+                !policy.is_production_compatible(),
+                "sampled source strategy {} must not be production-compatible",
+                strategy.label()
+            );
+        }
+    }
+
+    fn non_current_sampled_audio_source_strategies() -> [MediaSampledAudioSourceStrategy; 8] {
+        [
+            MediaSampledAudioSourceStrategy::SingleProcessFilter,
+            MediaSampledAudioSourceStrategy::FastSeekPerWindow,
+            MediaSampledAudioSourceStrategy::OutputSeekPerWindow,
+            MediaSampledAudioSourceStrategy::FfprobeProbe,
+            MediaSampledAudioSourceStrategy::PacketMap,
+            MediaSampledAudioSourceStrategy::MkvAudioRanges,
+            MediaSampledAudioSourceStrategy::SampledPcmCache,
+            MediaSampledAudioSourceStrategy::Auto,
+        ]
     }
 
     #[test]

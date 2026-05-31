@@ -52,6 +52,7 @@ fn run_cli_with_output(
         index_mode,
         dense_audio_profile,
         bench_dense_audio_profiles,
+        bench_sampled_ffmpeg_strategies,
         max_full_promotions_per_query,
         promote_expected_candidates,
         retrieval_benchmark_only,
@@ -171,6 +172,57 @@ fn run_cli_with_output(
         }
         return Ok(passed);
     }
+    if bench_sampled_ffmpeg_strategies {
+        let mut report =
+            match run_sampled_ffmpeg_strategy_benchmark(SampledFfmpegStrategyBenchmarkRun {
+                manifest: &manifest,
+                manifest_dir: &manifest_dir,
+                cache_root: &cache_root,
+                cache_retained: retain_cache,
+                refresh_cache,
+                max_full_promotions_per_query,
+                promote_expected_candidates,
+                retrieval_strategy,
+                sampled_fast_global_workers,
+                sampled_fast_per_local_source_workers,
+                sampled_fast_per_network_source_workers,
+                sampled_fast_per_removable_source_workers,
+            }) {
+                Ok(report) => report,
+                Err(error) => {
+                    if !retain_cache {
+                        cleanup_temporary_cache(&cache_root);
+                    }
+                    return Err(error);
+                }
+            };
+        let passed = report
+            .strategies
+            .iter()
+            .all(|strategy| strategy.expected_candidate_still_retrieved.unwrap_or(true));
+        let retain_cache_for_report = should_retain_cache_for_report(retain_cache, passed);
+        if retain_cache_for_report {
+            report.cache_retained = true;
+            eprintln!(
+                "media-match V3 diagnostic cache retained at {}",
+                cache_root.display()
+            );
+        } else {
+            report.cache_retained = !cleanup_temporary_cache(&cache_root);
+        }
+        let report_json = serde_json::to_string_pretty(&report).map_err(|error| {
+            format!("failed serializing sampled ffmpeg strategy benchmark JSON: {error}")
+        })?;
+        if let Some(output_path) = output_path {
+            fs::write(&output_path, report_json).map_err(|error| {
+                format!("failed writing report '{}': {error}", output_path.display())
+            })?;
+        } else {
+            stdout.push_str(&report_json);
+            stdout.push('\n');
+        }
+        return Ok(passed);
+    }
     let mut report = match run_media_match_v3_diagnostic_manifest(
         &manifest,
         MediaMatchV3DiagnosticRunOptions {
@@ -247,6 +299,7 @@ struct CliArgs {
     index_mode: MediaMatchV3DiagnosticIndexMode,
     dense_audio_profile: MediaDenseAudioProfile,
     bench_dense_audio_profiles: bool,
+    bench_sampled_ffmpeg_strategies: bool,
     max_full_promotions_per_query: usize,
     promote_expected_candidates: bool,
     retrieval_benchmark_only: bool,
@@ -272,6 +325,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
     let mut index_mode = MediaMatchV3DiagnosticIndexMode::Full;
     let mut dense_audio_profile = MediaDenseAudioProfile::DenseCurrent;
     let mut bench_dense_audio_profiles = false;
+    let mut bench_sampled_ffmpeg_strategies = false;
     let mut max_full_promotions_per_query = 3usize;
     let mut promote_expected_candidates = false;
     let mut retrieval_benchmark_only = false;
@@ -321,6 +375,9 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
             }
             "--bench-dense-audio-profiles" => {
                 bench_dense_audio_profiles = true;
+            }
+            "--bench-sampled-ffmpeg-strategies" => {
+                bench_sampled_ffmpeg_strategies = true;
             }
             "--max-full-promotions" => {
                 let Some(value) = args.next() else {
@@ -443,6 +500,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
         index_mode,
         dense_audio_profile,
         bench_dense_audio_profiles,
+        bench_sampled_ffmpeg_strategies,
         max_full_promotions_per_query,
         promote_expected_candidates,
         retrieval_benchmark_only,
@@ -461,7 +519,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
 }
 
 fn usage() -> String {
-    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--index-mode full|sparse-full|sampled-fast|sampled-normal|sampled|sampled-then-full|production] [--dense-audio-profile dense-current|dense-realfft|dense-8k|dense-hop2048|dense-8k-hop2048|dense-8k-window1024-hop1024|dense-max-peaks-4|dense-pair-retain-16|dense-pair-retain-lower|dense-gated|dense-gated-v2|dense-fast-combined-candidate] [--retrieval-strategy auto|temp-table|bucket-fetch] [--sampled-fast-workers n] [--sampled-fast-local-workers n] [--sampled-fast-network-workers n] [--sampled-fast-removable-workers n] [--probe-audio-packets] [--sampled-audio-source current|single-process-filter|fast-seek-per-window|output-seek-per-window|ffprobe-probe|packet-map|mkv-audio-ranges|sampled-pcm-cache|auto] [--experimental-sampled-audio-source] [--sampled-pcm-cache-root dir] [--bench-dense-audio-profiles] [--max-full-promotions n] [--promote-expected-candidates] [--retrieval-benchmark-only] [--list-cases|--validate-only|--prepare-index-stats|--cache-size-report] [--case name]"
+    "usage: v3_diagnostics <manifest.json> [--output report.json] [--cache-root dir] [--keep-cache] [--refresh-cache] [--index-mode full|sparse-full|sampled-fast|sampled-normal|sampled|sampled-then-full|production] [--dense-audio-profile dense-current|dense-realfft|dense-8k|dense-hop2048|dense-8k-hop2048|dense-8k-window1024-hop1024|dense-max-peaks-4|dense-pair-retain-16|dense-pair-retain-lower|dense-gated|dense-gated-v2|dense-fast-combined-candidate] [--retrieval-strategy auto|temp-table|bucket-fetch] [--sampled-fast-workers n] [--sampled-fast-local-workers n] [--sampled-fast-network-workers n] [--sampled-fast-removable-workers n] [--probe-audio-packets] [--sampled-audio-source current|single-process-filter|fast-seek-per-window|output-seek-per-window|ffprobe-probe|packet-map|mkv-audio-ranges|sampled-pcm-cache|auto] [--experimental-sampled-audio-source] [--sampled-pcm-cache-root dir] [--bench-dense-audio-profiles|--bench-sampled-ffmpeg-strategies] [--max-full-promotions n] [--promote-expected-candidates] [--retrieval-benchmark-only] [--list-cases|--validate-only|--prepare-index-stats|--cache-size-report] [--case name]"
         .to_owned()
 }
 
@@ -646,6 +704,351 @@ fn run_dense_audio_profile_benchmark(
         generated_at_unix_millis,
         profiles: reports,
     })
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SampledFfmpegStrategyBenchmarkReport {
+    index_mode: String,
+    cache_root: String,
+    cache_retained: bool,
+    generated_at_unix_millis: u64,
+    baseline_strategy: String,
+    strategies: Vec<SampledFfmpegStrategyBenchmarkStrategyReport>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SampledFfmpegStrategyBenchmarkStrategyReport {
+    strategy_name: String,
+    experimental: bool,
+    production_compatible: bool,
+    extraction_total_millis: u128,
+    run_wall_millis: u128,
+    ffmpeg_invocation_count: usize,
+    ffmpeg_input_read_bytes: u64,
+    ffmpeg_input_read_ops: u64,
+    ffmpeg_output_pcm_bytes: u64,
+    read_amplification_ratio: Option<f64>,
+    ffmpeg_process_wall_millis: u128,
+    sampled_window_decode_millis: u128,
+    pcm_byte_exact_match_against_current: Option<bool>,
+    pcm_rms_delta_against_current: Option<f64>,
+    pcm_max_abs_delta_against_current: Option<i64>,
+    landmark_overlap_ratio_against_current: Option<f64>,
+    exact_landmark_overlap_count_against_current: Option<usize>,
+    expected_candidate_still_retrieved: Option<bool>,
+    retrieval_rank_delta_against_current: Option<i64>,
+    retrieval_score_delta_against_current: Option<i64>,
+    hard_negatives_still_pass: Option<bool>,
+    equivalence_verdict: SampledAudioSourceEquivalenceVerdict,
+    report: MediaMatchV3DiagnosticReport,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SampledAudioSourceEquivalenceVerdict {
+    production_candidate: bool,
+    failure_reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SampledFfmpegStrategyBenchmarkAggregate {
+    ffmpeg_invocation_count: usize,
+    ffmpeg_input_read_bytes: u64,
+    ffmpeg_input_read_ops: u64,
+    ffmpeg_output_pcm_bytes: u64,
+    ffmpeg_process_wall_millis: u128,
+    sampled_window_decode_millis: u128,
+}
+
+struct SampledFfmpegStrategyBenchmarkRun<'a> {
+    manifest: &'a MediaMatchV3DiagnosticManifest,
+    manifest_dir: &'a Path,
+    cache_root: &'a Path,
+    cache_retained: bool,
+    refresh_cache: bool,
+    max_full_promotions_per_query: usize,
+    promote_expected_candidates: bool,
+    retrieval_strategy: MediaMatchV3RetrievalStrategy,
+    sampled_fast_global_workers: Option<usize>,
+    sampled_fast_per_local_source_workers: Option<usize>,
+    sampled_fast_per_network_source_workers: Option<usize>,
+    sampled_fast_per_removable_source_workers: Option<usize>,
+}
+
+fn run_sampled_ffmpeg_strategy_benchmark(
+    options: SampledFfmpegStrategyBenchmarkRun<'_>,
+) -> Result<SampledFfmpegStrategyBenchmarkReport, String> {
+    let SampledFfmpegStrategyBenchmarkRun {
+        manifest,
+        manifest_dir,
+        cache_root,
+        cache_retained,
+        refresh_cache,
+        max_full_promotions_per_query,
+        promote_expected_candidates,
+        retrieval_strategy,
+        sampled_fast_global_workers,
+        sampled_fast_per_local_source_workers,
+        sampled_fast_per_network_source_workers,
+        sampled_fast_per_removable_source_workers,
+    } = options;
+    let generated_at_unix_millis = current_unix_millis();
+    let strategies = [
+        MediaSampledAudioSourceStrategy::Current,
+        MediaSampledAudioSourceStrategy::SingleProcessFilter,
+        MediaSampledAudioSourceStrategy::FastSeekPerWindow,
+        MediaSampledAudioSourceStrategy::OutputSeekPerWindow,
+    ];
+    let mut reports = Vec::with_capacity(strategies.len());
+    let mut baseline_rank = None;
+    let mut baseline_score = None;
+    for strategy in strategies {
+        let report = run_media_match_v3_diagnostic_manifest(
+            manifest,
+            MediaMatchV3DiagnosticRunOptions {
+                manifest_dir: manifest_dir.to_path_buf(),
+                cache_root: cache_root.to_path_buf(),
+                cache_retained,
+                refresh_cache,
+                index_mode: MediaMatchV3DiagnosticIndexMode::SampledFast,
+                dense_audio_profile: MediaDenseAudioProfile::DenseCurrent,
+                max_full_promotions_per_query,
+                promote_expected_candidates,
+                retrieval_benchmark_only: false,
+                retrieval_strategy,
+                sampled_fast_global_workers,
+                sampled_fast_per_local_source_workers,
+                sampled_fast_per_network_source_workers,
+                sampled_fast_per_removable_source_workers,
+                probe_audio_packets: false,
+                sampled_audio_source: strategy,
+                experimental_sampled_audio_source: strategy
+                    != MediaSampledAudioSourceStrategy::Current,
+                sampled_pcm_cache_root: None,
+                tools: tool_paths(),
+                generated_at_unix_millis: Some(generated_at_unix_millis),
+            },
+        )?;
+        let aggregate = aggregate_sampled_strategy_metrics(&report);
+        let expected_candidate_still_retrieved = expected_candidates_still_retrieved(&report);
+        let hard_negatives_still_pass = hard_negatives_still_pass(&report);
+        let rank = first_expected_candidate_rank(&report);
+        let score = first_expected_candidate_score(&report);
+        if strategy == MediaSampledAudioSourceStrategy::Current {
+            baseline_rank = rank;
+            baseline_score = score;
+        }
+        let retrieval_rank_delta_against_current = match (baseline_rank, rank) {
+            (Some(baseline), Some(current)) => Some(current as i64 - baseline as i64),
+            _ => None,
+        };
+        let retrieval_score_delta_against_current = match (baseline_score, score) {
+            (Some(baseline), Some(current)) => Some(current - baseline),
+            _ => None,
+        };
+        let pcm_byte_exact_match_against_current =
+            (strategy == MediaSampledAudioSourceStrategy::Current).then_some(true);
+        let pcm_rms_delta_against_current =
+            (strategy == MediaSampledAudioSourceStrategy::Current).then_some(0.0);
+        let pcm_max_abs_delta_against_current =
+            (strategy == MediaSampledAudioSourceStrategy::Current).then_some(0);
+        let landmark_overlap_ratio_against_current =
+            (strategy == MediaSampledAudioSourceStrategy::Current).then_some(1.0);
+        let equivalence_verdict = sampled_audio_source_equivalence_verdict(
+            strategy,
+            pcm_byte_exact_match_against_current,
+            landmark_overlap_ratio_against_current,
+            expected_candidate_still_retrieved,
+            hard_negatives_still_pass,
+        );
+        reports.push(SampledFfmpegStrategyBenchmarkStrategyReport {
+            strategy_name: strategy.label().to_owned(),
+            experimental: strategy != MediaSampledAudioSourceStrategy::Current,
+            production_compatible: strategy == MediaSampledAudioSourceStrategy::Current,
+            extraction_total_millis: report.summary.total_extraction_millis,
+            run_wall_millis: report.summary.run_wall_millis,
+            ffmpeg_invocation_count: aggregate.ffmpeg_invocation_count,
+            ffmpeg_input_read_bytes: aggregate.ffmpeg_input_read_bytes,
+            ffmpeg_input_read_ops: aggregate.ffmpeg_input_read_ops,
+            ffmpeg_output_pcm_bytes: aggregate.ffmpeg_output_pcm_bytes,
+            read_amplification_ratio: read_amplification_ratio(
+                aggregate.ffmpeg_input_read_bytes,
+                aggregate.ffmpeg_output_pcm_bytes,
+            ),
+            ffmpeg_process_wall_millis: aggregate.ffmpeg_process_wall_millis,
+            sampled_window_decode_millis: aggregate.sampled_window_decode_millis,
+            pcm_byte_exact_match_against_current,
+            pcm_rms_delta_against_current,
+            pcm_max_abs_delta_against_current,
+            landmark_overlap_ratio_against_current,
+            exact_landmark_overlap_count_against_current: None,
+            expected_candidate_still_retrieved,
+            retrieval_rank_delta_against_current,
+            retrieval_score_delta_against_current,
+            hard_negatives_still_pass,
+            equivalence_verdict,
+            report,
+        });
+    }
+    Ok(SampledFfmpegStrategyBenchmarkReport {
+        index_mode: MediaMatchV3DiagnosticIndexMode::SampledFast
+            .label()
+            .to_owned(),
+        cache_root: cache_root.to_string_lossy().to_string(),
+        cache_retained,
+        generated_at_unix_millis,
+        baseline_strategy: MediaSampledAudioSourceStrategy::Current.label().to_owned(),
+        strategies: reports,
+    })
+}
+
+fn aggregate_sampled_strategy_metrics(
+    report: &MediaMatchV3DiagnosticReport,
+) -> SampledFfmpegStrategyBenchmarkAggregate {
+    let mut aggregate = SampledFfmpegStrategyBenchmarkAggregate {
+        ffmpeg_invocation_count: 0,
+        ffmpeg_input_read_bytes: 0,
+        ffmpeg_input_read_ops: 0,
+        ffmpeg_output_pcm_bytes: 0,
+        ffmpeg_process_wall_millis: 0,
+        sampled_window_decode_millis: 0,
+    };
+    for case in &report.cases {
+        accumulate_diagnostics(&mut aggregate, &case.query.diagnostics);
+        for candidate in &case.candidates {
+            accumulate_diagnostics(&mut aggregate, &candidate.diagnostics);
+        }
+        for hard_negative in &case.hard_negatives {
+            accumulate_diagnostics(&mut aggregate, &hard_negative.diagnostics);
+        }
+    }
+    aggregate
+}
+
+fn accumulate_diagnostics(
+    aggregate: &mut SampledFfmpegStrategyBenchmarkAggregate,
+    diagnostics: &sorotte_media_match::MediaMatchV3DiagnosticSummary,
+) {
+    aggregate.ffmpeg_invocation_count = aggregate
+        .ffmpeg_invocation_count
+        .saturating_add(diagnostics.ffmpeg_invocation_count.unwrap_or_default());
+    aggregate.ffmpeg_input_read_bytes = aggregate
+        .ffmpeg_input_read_bytes
+        .saturating_add(diagnostics.ffmpeg_input_read_bytes.unwrap_or_default());
+    aggregate.ffmpeg_input_read_ops = aggregate
+        .ffmpeg_input_read_ops
+        .saturating_add(diagnostics.ffmpeg_input_read_ops.unwrap_or_default());
+    aggregate.ffmpeg_output_pcm_bytes = aggregate
+        .ffmpeg_output_pcm_bytes
+        .saturating_add(diagnostics.ffmpeg_output_pcm_bytes.unwrap_or_default());
+    aggregate.ffmpeg_process_wall_millis = aggregate
+        .ffmpeg_process_wall_millis
+        .saturating_add(diagnostics.ffmpeg_process_wall_millis.unwrap_or_default());
+    aggregate.sampled_window_decode_millis = aggregate
+        .sampled_window_decode_millis
+        .saturating_add(diagnostics.sampled_window_decode_millis.unwrap_or_default());
+}
+
+fn read_amplification_ratio(input_bytes: u64, output_bytes: u64) -> Option<f64> {
+    (output_bytes > 0).then_some(input_bytes as f64 / output_bytes as f64)
+}
+
+fn expected_candidates_still_retrieved(report: &MediaMatchV3DiagnosticReport) -> Option<bool> {
+    let mut has_expected = false;
+    let mut all_retrieved = true;
+    for case in &report.cases {
+        for candidate in &case.candidates {
+            let expectation = candidate.expectation.as_ref();
+            let expected = expectation.is_some_and(|expectation| {
+                expectation.expected_retrieved == Some(true)
+                    || expectation.must_be_retrieved
+                    || expectation.max_retrieval_rank.is_some()
+            });
+            if expected {
+                has_expected = true;
+                all_retrieved &= candidate.retrieved;
+            }
+        }
+    }
+    has_expected.then_some(all_retrieved)
+}
+
+fn hard_negatives_still_pass(report: &MediaMatchV3DiagnosticReport) -> Option<bool> {
+    (report.summary.hard_negative_count > 0).then_some(report.summary.hard_negative_failed == 0)
+}
+
+fn first_expected_candidate_rank(report: &MediaMatchV3DiagnosticReport) -> Option<usize> {
+    report.cases.iter().find_map(|case| {
+        case.candidates.iter().find_map(|candidate| {
+            candidate.expectation.as_ref().and_then(|expectation| {
+                (expectation.expected_retrieved == Some(true)
+                    || expectation.must_be_retrieved
+                    || expectation.max_retrieval_rank.is_some())
+                .then_some(candidate.retrieval_rank)
+                .flatten()
+            })
+        })
+    })
+}
+
+fn first_expected_candidate_score(report: &MediaMatchV3DiagnosticReport) -> Option<i64> {
+    report.cases.iter().find_map(|case| {
+        let expected_path = case.candidates.iter().find_map(|candidate| {
+            candidate.expectation.as_ref().and_then(|expectation| {
+                (expectation.expected_retrieved == Some(true)
+                    || expectation.must_be_retrieved
+                    || expectation.max_retrieval_rank.is_some())
+                .then_some(candidate.path.as_str())
+            })
+        })?;
+        case.retrieval
+            .retrieved_candidate_details
+            .iter()
+            .find(|candidate| candidate.path == expected_path)
+            .map(|candidate| candidate.total_score)
+    })
+}
+
+fn sampled_audio_source_equivalence_verdict(
+    strategy: MediaSampledAudioSourceStrategy,
+    pcm_byte_exact_match: Option<bool>,
+    landmark_overlap_ratio: Option<f64>,
+    expected_candidate_still_retrieved: Option<bool>,
+    hard_negatives_still_pass: Option<bool>,
+) -> SampledAudioSourceEquivalenceVerdict {
+    let mut failure_reasons = Vec::new();
+    if strategy != MediaSampledAudioSourceStrategy::Current {
+        failure_reasons.push(
+            "strategy is experimental and not the fixed current production source".to_owned(),
+        );
+    }
+    match pcm_byte_exact_match {
+        Some(true) => {}
+        Some(false) => failure_reasons.push("PCM differs from current baseline".to_owned()),
+        None => {
+            failure_reasons.push("PCM byte equivalence against current is not proven".to_owned())
+        }
+    }
+    match landmark_overlap_ratio {
+        Some(ratio) if ratio >= 0.98 => {}
+        Some(ratio) => {
+            failure_reasons.push(format!("landmark overlap ratio {ratio:.4} is below 0.98"))
+        }
+        None => failure_reasons
+            .push("landmark overlap against current baseline is not proven".to_owned()),
+    }
+    if expected_candidate_still_retrieved == Some(false) {
+        failure_reasons.push("an expected candidate was not retrieved".to_owned());
+    }
+    if hard_negatives_still_pass == Some(false) {
+        failure_reasons.push("one or more hard negatives failed".to_owned());
+    }
+    SampledAudioSourceEquivalenceVerdict {
+        production_candidate: failure_reasons.is_empty(),
+        failure_reasons,
+    }
 }
 
 fn filter_manifest_cases(
@@ -876,6 +1279,7 @@ mod tests {
             MediaDenseAudioProfile::Dense8kHop2048
         );
         assert!(!args.bench_dense_audio_profiles);
+        assert!(!args.bench_sampled_ffmpeg_strategies);
         assert_eq!(args.max_full_promotions_per_query, 2);
         assert!(args.promote_expected_candidates);
         assert!(args.retrieval_benchmark_only);
@@ -902,6 +1306,22 @@ mod tests {
     }
 
     #[test]
+    fn parse_args_accepts_current_sampled_source_without_experimental_flag() {
+        let args = parse_args([
+            "manifest.json".to_owned(),
+            "--sampled-audio-source".to_owned(),
+            "current".to_owned(),
+        ])
+        .expect("current sampled source should parse without experimental opt-in");
+
+        assert_eq!(
+            args.sampled_audio_source,
+            MediaSampledAudioSourceStrategy::Current
+        );
+        assert!(!args.experimental_sampled_audio_source);
+    }
+
+    #[test]
     fn parse_args_requires_experimental_flag_for_cold_io_sampled_audio_sources() {
         for (label, expected) in [
             (
@@ -920,6 +1340,16 @@ mod tests {
                 "mkv-audio-ranges",
                 MediaSampledAudioSourceStrategy::MkvAudioRanges,
             ),
+            (
+                "ffprobe-probe",
+                MediaSampledAudioSourceStrategy::FfprobeProbe,
+            ),
+            ("packet-map", MediaSampledAudioSourceStrategy::PacketMap),
+            (
+                "sampled-pcm-cache",
+                MediaSampledAudioSourceStrategy::SampledPcmCache,
+            ),
+            ("auto", MediaSampledAudioSourceStrategy::Auto),
         ] {
             let error = parse_args([
                 "manifest.json".to_owned(),
@@ -1013,6 +1443,18 @@ mod tests {
             MediaDenseAudioProfile::DenseCurrent
         );
         assert!(args.bench_dense_audio_profiles);
+    }
+
+    #[test]
+    fn parse_args_accepts_sampled_ffmpeg_strategy_benchmark() {
+        let args = parse_args([
+            "manifest.json".to_owned(),
+            "--bench-sampled-ffmpeg-strategies".to_owned(),
+        ])
+        .expect("sampled ffmpeg strategy benchmark mode should parse");
+
+        assert!(args.bench_sampled_ffmpeg_strategies);
+        assert!(!args.bench_dense_audio_profiles);
     }
 
     #[test]
@@ -1675,6 +2117,80 @@ mod tests {
         assert_eq!(
             warm_report.cases[0].candidates[0].retrieval_rank,
             cold_report.cases[0].candidates[0].retrieval_rank
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[ignore = "requires ffmpeg/ffprobe in SOROTTE_MEDIA_MATCH_FFMPEG/SOROTTE_MEDIA_MATCH_FFPROBE or PATH"]
+    fn sampled_ffmpeg_strategy_benchmark_runs_on_synthetic_audio() {
+        let Some(ffmpeg) = test_tool_path("SOROTTE_MEDIA_MATCH_FFMPEG", "ffmpeg") else {
+            eprintln!("skipping ignored ffmpeg test: ffmpeg is not available");
+            return;
+        };
+        if test_tool_path("SOROTTE_MEDIA_MATCH_FFPROBE", "ffprobe").is_none() {
+            eprintln!("skipping ignored ffmpeg test: ffprobe is not available");
+            return;
+        }
+        let root = temp_dir("v3-diagnostics-sampled-strategy-bench");
+        let media_dir = root.join("media");
+        fs::create_dir_all(&media_dir).expect("media dir should be created");
+        let query = media_dir.join("query.wav");
+        let candidate = media_dir.join("candidate.wav");
+        generate_synthetic_audio(&ffmpeg, &query);
+        fs::copy(&query, &candidate).expect("candidate copy should succeed");
+        let manifest = serde_json::json!({
+            "profile": "audio-constellation-v3",
+            "baseDir": "media",
+            "cases": [{
+                "name": "sampled-strategy-bench",
+                "query": "query.wav",
+                "candidates": [{
+                    "path": "candidate.wav",
+                    "expectedRetrieved": true,
+                    "maxRetrievalRank": 1,
+                    "skipDecisionExpectation": true
+                }]
+            }]
+        });
+        let manifest = media_match_v3_diagnostic_manifest_from_json(&manifest.to_string())
+            .expect("manifest should parse");
+
+        let report = run_sampled_ffmpeg_strategy_benchmark(SampledFfmpegStrategyBenchmarkRun {
+            manifest: &manifest,
+            manifest_dir: &root,
+            cache_root: &root.join("strategy-cache"),
+            cache_retained: true,
+            refresh_cache: true,
+            max_full_promotions_per_query: 1,
+            promote_expected_candidates: false,
+            retrieval_strategy: MediaMatchV3RetrievalStrategy::Auto,
+            sampled_fast_global_workers: Some(1),
+            sampled_fast_per_local_source_workers: None,
+            sampled_fast_per_network_source_workers: None,
+            sampled_fast_per_removable_source_workers: None,
+        })
+        .expect("sampled ffmpeg strategy benchmark should run");
+        let json = serde_json::to_value(&report).expect("benchmark should serialize");
+
+        assert_eq!(report.index_mode, "sampled-fast");
+        assert_eq!(report.baseline_strategy, "current");
+        assert_eq!(report.strategies.len(), 4);
+        assert!(report.strategies[0].production_compatible);
+        assert!(!report.strategies[1].production_compatible);
+        assert_eq!(
+            report.strategies[0].pcm_byte_exact_match_against_current,
+            Some(true)
+        );
+        assert!(
+            json["strategies"][0]["equivalenceVerdict"]["productionCandidate"]
+                .as_bool()
+                .unwrap_or(false)
+        );
+        assert!(
+            json["strategies"][1]["equivalenceVerdict"]["failureReasons"]
+                .as_array()
+                .is_some_and(|reasons| !reasons.is_empty())
         );
         let _ = fs::remove_dir_all(root);
     }
