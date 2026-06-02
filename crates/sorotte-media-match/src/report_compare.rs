@@ -195,6 +195,25 @@ pub fn validate_media_match_v3_diagnostic_report(
             report.summary.failed
         ));
     }
+    if report.summary.unique_fresh_fingerprint_count > 0
+        && report.summary.total_extraction_millis == 0
+    {
+        return Err("summary has fresh fingerprints but totalExtractionMillis is zero".to_owned());
+    }
+    if report.summary.unique_fresh_fingerprint_count > 0
+        && report.summary.total_audio_blob_bytes == 0
+    {
+        return Err("summary has fresh fingerprints but totalAudioBlobBytes is zero".to_owned());
+    }
+    if report.summary.fresh_fingerprint_report_count > 0
+        && report.summary.total_sqlite_save_millis == 0
+        && report.summary.total_sqlite_index_insert_millis == 0
+    {
+        return Err(
+            "summary has fresh fingerprint reports but SQLite write timing totals are zero"
+                .to_owned(),
+        );
+    }
     Ok(())
 }
 
@@ -502,13 +521,13 @@ fn metric_deltas(
             baseline.db_total_bytes.unwrap_or_default() as i128,
             current.db_total_bytes.unwrap_or_default() as i128,
         ),
-        metric_delta(
-            "dbAnchorIndexBytes",
-            baseline.db_anchor_index_bytes.unwrap_or_default() as i128,
-            current.db_anchor_index_bytes.unwrap_or_default() as i128,
-        ),
     ]
     .into_iter()
+    .chain(optional_metric_delta(
+        "dbAnchorIndexBytes",
+        baseline.db_anchor_index_bytes,
+        current.db_anchor_index_bytes,
+    ))
     .filter(|delta| delta.delta != 0)
     .collect()
 }
@@ -520,6 +539,14 @@ fn metric_delta(field: &str, baseline: i128, current: i128) -> MediaMatchV3Repor
         current,
         delta: current - baseline,
     }
+}
+
+fn optional_metric_delta(
+    field: &str,
+    baseline: Option<u64>,
+    current: Option<u64>,
+) -> Option<MediaMatchV3ReportMetricDelta> {
+    Some(metric_delta(field, baseline? as i128, current? as i128))
 }
 
 #[cfg(test)]
@@ -549,6 +576,30 @@ mod tests {
         let comparison = compare_media_match_v3_reports(&baseline, &current).unwrap();
 
         assert!(comparison.current_has_regressions());
+    }
+
+    #[test]
+    fn validation_rejects_fresh_fingerprints_with_zero_aggregate_totals() {
+        let mut report = report(true, true);
+        report.summary.unique_fresh_fingerprint_count = 2;
+        report.summary.fresh_fingerprint_report_count = 2;
+
+        let error = validate_media_match_v3_diagnostic_report(&report).unwrap_err();
+
+        assert!(error.contains("totalExtractionMillis"));
+    }
+
+    #[test]
+    fn validation_accepts_fresh_fingerprints_with_aggregate_totals() {
+        let mut report = report(true, true);
+        report.summary.unique_fresh_fingerprint_count = 2;
+        report.summary.fresh_fingerprint_report_count = 2;
+        report.summary.total_extraction_millis = 10;
+        report.summary.total_sqlite_save_millis = 1;
+        report.summary.total_sqlite_index_insert_millis = 1;
+        report.summary.total_audio_blob_bytes = 20;
+
+        validate_media_match_v3_diagnostic_report(&report).unwrap();
     }
 
     fn report(retrieved: bool, passed: bool) -> MediaMatchV3DiagnosticReport {

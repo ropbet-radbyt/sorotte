@@ -84,14 +84,26 @@ pub struct MediaMatchV3SqliteSizeReport {
     pub live_bytes: u64,
     pub free_bytes: u64,
     pub dbstat_available: bool,
+    pub db_object_bytes_available: bool,
     pub object_bytes: Vec<MediaMatchV3SqliteObjectBytes>,
     pub row_counts: Vec<MediaMatchV3SqliteRowCount>,
-    pub anchor_index_bytes: u64,
-    pub anchor_index_bytes_per_anchor: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor_index_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor_index_bytes_per_anchor: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint_bytes: Option<u64>,
     pub fingerprint_blob_bytes: u64,
-    pub media_file_bytes: u64,
-    pub metadata_bytes: u64,
-    pub db_index_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_file_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db_index_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_anchor_index_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_fingerprint_bytes: Option<u64>,
     pub db_bytes_per_fingerprint: f64,
     pub db_bytes_per_anchor: f64,
 }
@@ -1280,14 +1292,18 @@ pub fn media_match_v3_sqlite_size_report(
     let free_bytes = page_size.saturating_mul(freelist_count);
     let live_bytes = total_bytes.saturating_sub(free_bytes);
     let object_bytes = sqlite_object_bytes(connection).unwrap_or_default();
-    let row_counts = sqlite_row_counts(connection, &object_bytes).unwrap_or_default();
+    let db_object_bytes_available = !object_bytes.is_empty();
+    let row_counts =
+        sqlite_row_counts(connection, &object_bytes, db_object_bytes_available).unwrap_or_default();
     let anchor_rows = row_count(connection, "audio_anchor_occurrences_v3");
     let fingerprint_rows = row_count(connection, "fingerprints_v3");
-    let anchor_index_bytes = object_bytes
-        .iter()
-        .filter(|object| object.name.contains("audio_anchor"))
-        .map(|object| object.bytes)
-        .sum();
+    let anchor_index_bytes = db_object_bytes_available.then(|| {
+        object_bytes
+            .iter()
+            .filter(|object| object.name.contains("audio_anchor"))
+            .map(|object| object.bytes)
+            .sum()
+    });
     let fingerprint_blob_bytes: u64 = connection
         .query_row(
             "SELECT COALESCE(SUM(COALESCE(length(audio_blob), 0)), 0) FROM fingerprints_v3",
@@ -1295,21 +1311,38 @@ pub fn media_match_v3_sqlite_size_report(
             |row| row.get(0),
         )
         .unwrap_or(0);
-    let media_file_bytes = object_bytes
-        .iter()
-        .filter(|object| object.name.contains("media_files_v3"))
-        .map(|object| object.bytes)
-        .sum();
-    let metadata_bytes = object_bytes
-        .iter()
-        .filter(|object| object.name == "metadata" || object.name == "settings_v3")
-        .map(|object| object.bytes)
-        .sum();
-    let db_index_bytes = object_bytes
-        .iter()
-        .filter(|object| object.object_type == "index")
-        .map(|object| object.bytes)
-        .sum();
+    let fingerprint_bytes = db_object_bytes_available.then(|| {
+        object_bytes
+            .iter()
+            .filter(|object| object.name.contains("fingerprints_v3"))
+            .map(|object| object.bytes)
+            .sum()
+    });
+    let media_file_bytes = db_object_bytes_available.then(|| {
+        object_bytes
+            .iter()
+            .filter(|object| object.name.contains("media_files_v3"))
+            .map(|object| object.bytes)
+            .sum()
+    });
+    let metadata_bytes = db_object_bytes_available.then(|| {
+        object_bytes
+            .iter()
+            .filter(|object| object.name == "metadata" || object.name == "settings_v3")
+            .map(|object| object.bytes)
+            .sum()
+    });
+    let db_index_bytes = db_object_bytes_available.then(|| {
+        object_bytes
+            .iter()
+            .filter(|object| object.object_type == "index")
+            .map(|object| object.bytes)
+            .sum()
+    });
+    let estimated_anchor_index_bytes =
+        (!db_object_bytes_available).then(|| total_bytes.saturating_sub(fingerprint_blob_bytes));
+    let estimated_fingerprint_bytes =
+        (!db_object_bytes_available).then_some(fingerprint_blob_bytes);
     Ok(MediaMatchV3SqliteSizeReport {
         database_path: index_path.display().to_string(),
         page_size,
@@ -1318,15 +1351,20 @@ pub fn media_match_v3_sqlite_size_report(
         total_bytes,
         live_bytes,
         free_bytes,
-        dbstat_available: !object_bytes.is_empty(),
+        dbstat_available: db_object_bytes_available,
+        db_object_bytes_available,
         object_bytes,
         row_counts,
         anchor_index_bytes,
-        anchor_index_bytes_per_anchor: ratio_u64(anchor_index_bytes, anchor_rows),
+        anchor_index_bytes_per_anchor: anchor_index_bytes
+            .map(|bytes| ratio_u64(bytes, anchor_rows)),
+        fingerprint_bytes,
         fingerprint_blob_bytes,
         media_file_bytes,
         metadata_bytes,
         db_index_bytes,
+        estimated_anchor_index_bytes,
+        estimated_fingerprint_bytes,
         db_bytes_per_fingerprint: ratio_u64(total_bytes, fingerprint_rows),
         db_bytes_per_anchor: ratio_u64(total_bytes, anchor_rows),
     })
@@ -1362,6 +1400,7 @@ fn sqlite_object_bytes(
 fn sqlite_row_counts(
     connection: &Connection,
     object_bytes: &[MediaMatchV3SqliteObjectBytes],
+    db_object_bytes_available: bool,
 ) -> Result<Vec<MediaMatchV3SqliteRowCount>, String> {
     let mut rows = Vec::new();
     for table in [
@@ -1380,7 +1419,8 @@ fn sqlite_row_counts(
         rows.push(MediaMatchV3SqliteRowCount {
             table: table.to_owned(),
             row_count,
-            avg_bytes_per_row: (row_count > 0).then(|| bytes as f64 / row_count as f64),
+            avg_bytes_per_row: (db_object_bytes_available && row_count > 0)
+                .then(|| bytes as f64 / row_count as f64),
         });
     }
     Ok(rows)
@@ -1404,6 +1444,20 @@ fn sqlite_table_exists(connection: &Connection, table: &str) -> Result<bool, Str
         )
         .map_err(|error| format!("failed checking SQLite table '{table}': {error}"))?;
     Ok(exists > 0)
+}
+
+#[cfg(test)]
+fn table_has_column(connection: &Connection, table: &str, column: &str) -> Result<bool, String> {
+    let mut statement = connection
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|error| format!("failed reading SQLite table info for '{table}': {error}"))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| format!("failed querying SQLite table info for '{table}': {error}"))?;
+    let columns = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed reading SQLite table info for '{table}': {error}"))?;
+    Ok(columns.iter().any(|name| name == column))
 }
 
 fn ratio_u64(numerator: u64, denominator: u64) -> f64 {
@@ -1472,6 +1526,15 @@ mod tests {
         initialize_media_match_v3_index(&connection).unwrap();
 
         assert!(sqlite_table_exists(&connection, "audio_anchor_occurrences_v3").unwrap());
+        assert!(sqlite_table_exists(&connection, "audio_anchor_buckets_v3").unwrap());
+        assert!(!sqlite_table_exists(&connection, "video_anchor_occurrences_v3").unwrap());
+        assert!(!sqlite_table_exists(&connection, "video_anchor_buckets_v3").unwrap());
+        assert!(!sqlite_table_exists(&connection, "anchor_index_v3").unwrap());
+        assert!(!sqlite_table_exists(&connection, "anchor_stats_v3").unwrap());
+        assert!(!table_has_column(&connection, "fingerprints_v3", "video_blob").unwrap());
+        assert!(!table_has_column(&connection, "fingerprints_v3", "video_index_count").unwrap());
+        assert!(table_has_column(&connection, "fingerprints_v3", "audio_blob").unwrap());
+        assert!(table_has_column(&connection, "fingerprints_v3", "audio_index_count").unwrap());
     }
 
     #[test]
@@ -1513,5 +1576,41 @@ mod tests {
             candidate.identity.normalized_path
         );
         assert!(!candidates.is_empty());
+    }
+
+    #[test]
+    fn sqlite_size_report_omits_unavailable_object_bytes() {
+        let report = MediaMatchV3SqliteSizeReport {
+            database_path: "index-v3.sqlite3".to_owned(),
+            page_size: 4096,
+            page_count: 10,
+            freelist_count: 0,
+            total_bytes: 40960,
+            live_bytes: 40960,
+            free_bytes: 0,
+            dbstat_available: false,
+            db_object_bytes_available: false,
+            object_bytes: Vec::new(),
+            row_counts: Vec::new(),
+            anchor_index_bytes: None,
+            anchor_index_bytes_per_anchor: None,
+            fingerprint_bytes: None,
+            fingerprint_blob_bytes: 2400,
+            media_file_bytes: None,
+            metadata_bytes: None,
+            db_index_bytes: None,
+            estimated_anchor_index_bytes: Some(38560),
+            estimated_fingerprint_bytes: Some(2400),
+            db_bytes_per_fingerprint: 10240.0,
+            db_bytes_per_anchor: 26.6,
+        };
+
+        let value = serde_json::to_value(&report).unwrap();
+
+        assert_eq!(value["dbObjectBytesAvailable"], false);
+        assert!(value.get("anchorIndexBytes").is_none());
+        assert!(value.get("dbIndexBytes").is_none());
+        assert_eq!(value["estimatedAnchorIndexBytes"], 38560);
+        assert_eq!(value["fingerprintBlobBytes"], 2400);
     }
 }

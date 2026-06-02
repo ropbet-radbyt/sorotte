@@ -115,7 +115,9 @@ The normal SQLite cache stores one fixed sampled-fast policy in the compact
 audio-only schema. Records generated with any other settings hash are
 incompatible and must be regenerated.
 
-Cache size reports expose total bytes, anchor/index bytes, fingerprint blob bytes, row counts, and bytes per anchor/fingerprint. Schema resets are acceptable for V3 work.
+Cold reports aggregate extraction, SQLite write, index insert, and audio blob totals for every unique indexed fingerprint even when individual library rows are omitted from the JSON.
+
+Cache size reports always expose total bytes, row counts, fingerprint blob bytes, and bytes per anchor/fingerprint. Exact table/index byte fields are present only when SQLite `dbstat` is available; otherwise `dbObjectBytesAvailable` is false and estimated fields are clearly labelled. Schema resets are acceptable for V3 work.
 
 ## Troubleshooting
 

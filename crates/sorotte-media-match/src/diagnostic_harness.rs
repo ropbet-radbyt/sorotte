@@ -384,12 +384,18 @@ pub struct MediaMatchV3DiagnosticSummaryReport {
     pub total_audio_blob_bytes: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub db_total_bytes: Option<u64>,
+    #[serde(default)]
+    pub db_object_bytes_available: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub db_anchor_index_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub db_fingerprint_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub db_index_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_anchor_index_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_fingerprint_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub db_bytes_per_fingerprint: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -673,16 +679,6 @@ pub fn run_media_match_v3_diagnostic_manifest(
             if evaluation.top_k_retrieval_passed {
                 summary.top_k_retrieval_passed += 1;
             }
-            summary.total_sqlite_save_millis += fingerprint.report.sqlite_save_millis;
-            summary.total_sqlite_index_insert_millis += fingerprint.report.index_insert_millis;
-            summary.total_audio_blob_bytes += fingerprint.report.diagnostics.audio_blob_bytes;
-            if fingerprint.report.source == "fresh" {
-                summary.total_extraction_millis += fingerprint
-                    .report
-                    .diagnostics
-                    .extraction_total_millis
-                    .unwrap_or_default();
-            }
             candidate_reports.push(MediaMatchV3DiagnosticCandidateReport {
                 id: candidate.id.clone(),
                 path: candidate.path.clone(),
@@ -766,13 +762,20 @@ pub fn run_media_match_v3_diagnostic_manifest(
     summary.fresh_fingerprint_report_count = source_counts.report_fresh;
     summary.memory_cache_fingerprint_report_count = source_counts.report_memory;
     summary.sqlite_cache_fingerprint_report_count = source_counts.report_sqlite;
+    summary.total_extraction_millis = source_counts.total_extraction_millis;
+    summary.total_sqlite_save_millis = source_counts.total_sqlite_save_millis;
+    summary.total_sqlite_index_insert_millis = source_counts.total_sqlite_index_insert_millis;
+    summary.total_audio_blob_bytes = source_counts.total_audio_blob_bytes;
 
     let sqlite_size = media_match_v3_sqlite_size_report(&options.cache_root, &connection).ok();
     if let Some(size) = &sqlite_size {
         summary.db_total_bytes = Some(size.total_bytes);
-        summary.db_anchor_index_bytes = Some(size.anchor_index_bytes);
-        summary.db_fingerprint_bytes = Some(size.fingerprint_blob_bytes);
-        summary.db_index_bytes = Some(size.db_index_bytes);
+        summary.db_object_bytes_available = size.db_object_bytes_available;
+        summary.db_anchor_index_bytes = size.anchor_index_bytes;
+        summary.db_fingerprint_bytes = size.fingerprint_bytes;
+        summary.db_index_bytes = size.db_index_bytes;
+        summary.estimated_anchor_index_bytes = size.estimated_anchor_index_bytes;
+        summary.estimated_fingerprint_bytes = size.estimated_fingerprint_bytes;
         summary.db_bytes_per_fingerprint = Some(size.db_bytes_per_fingerprint);
         summary.db_bytes_per_anchor = Some(size.db_bytes_per_anchor);
     }
@@ -845,6 +848,7 @@ fn fingerprint_cached(
             blob_encode_millis: 0,
             index_insert_millis: 0,
         };
+        source_counts.add_unique_fingerprint(&report);
         let cached = CachedFingerprint { record, report };
         memory.insert(normalized, cached.clone());
         return Ok(cached);
@@ -866,6 +870,7 @@ fn fingerprint_cached(
         blob_encode_millis: save_stats.blob_encode_millis,
         index_insert_millis: save_stats.index_insert_millis,
     };
+    source_counts.add_unique_fingerprint(&report);
     let cached = CachedFingerprint {
         record: fingerprint.record,
         report,
@@ -882,6 +887,24 @@ struct SourceCounts {
     report_fresh: usize,
     report_memory: usize,
     report_sqlite: usize,
+    total_extraction_millis: u128,
+    total_sqlite_save_millis: u128,
+    total_sqlite_index_insert_millis: u128,
+    total_audio_blob_bytes: usize,
+}
+
+impl SourceCounts {
+    fn add_unique_fingerprint(&mut self, report: &MediaMatchV3DiagnosticFingerprintReport) {
+        if report.source == "fresh" {
+            self.total_extraction_millis += report
+                .diagnostics
+                .extraction_total_millis
+                .unwrap_or_default();
+            self.total_sqlite_save_millis += report.sqlite_save_millis;
+            self.total_sqlite_index_insert_millis += report.index_insert_millis;
+        }
+        self.total_audio_blob_bytes += report.diagnostics.audio_blob_bytes;
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1067,6 +1090,41 @@ fn hex_hash(hash: &[u8; 32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fingerprint_report(
+        source: &str,
+        extraction_total_millis: Option<u128>,
+        sqlite_save_millis: u128,
+        index_insert_millis: u128,
+        audio_blob_bytes: usize,
+    ) -> MediaMatchV3DiagnosticFingerprintReport {
+        MediaMatchV3DiagnosticFingerprintReport {
+            path: format!("{source}.mkv"),
+            source: source.to_owned(),
+            diagnostics: crate::MediaMatchV3DiagnosticSummary {
+                extraction_total_millis,
+                audio_blob_bytes,
+                ..crate::MediaMatchV3DiagnosticSummary::default()
+            },
+            sqlite_save_millis,
+            blob_encode_millis: 0,
+            index_insert_millis,
+        }
+    }
+
+    #[test]
+    fn source_counts_aggregate_unique_fingerprint_metrics() {
+        let mut counts = SourceCounts::default();
+
+        counts.add_unique_fingerprint(&fingerprint_report("fresh", Some(12), 3, 4, 1200));
+        counts.add_unique_fingerprint(&fingerprint_report("fresh", Some(15), 5, 6, 1300));
+        counts.add_unique_fingerprint(&fingerprint_report("sqlite-cache", None, 0, 0, 1100));
+
+        assert_eq!(counts.total_extraction_millis, 27);
+        assert_eq!(counts.total_sqlite_save_millis, 8);
+        assert_eq!(counts.total_sqlite_index_insert_millis, 10);
+        assert_eq!(counts.total_audio_blob_bytes, 3600);
+    }
 
     #[test]
     fn manifest_validation_rejects_blank_candidate_id() {
