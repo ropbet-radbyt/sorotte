@@ -345,9 +345,11 @@ fn gui_shell_app_state_projects_media_match_plugin_widgets_and_actions() {
                 ffmpeg_status: Some("ffmpeg 7.1 (C:/Tools/ffmpeg.exe)".to_owned()),
                 ffprobe_status: Some("ffprobe 7.1 (C:/Tools/ffprobe.exe)".to_owned()),
                 cache_status: Some("2 fingerprint records".to_owned()),
-                current_decision: Some("strong: aligned video hashes".to_owned()),
-                nearest_match: Some("episode-b.mkv (strong: aligned video hashes)".to_owned()),
-                last_evidence: Some("audio=0.94 video=0.82 offset=20s".to_owned()),
+                current_decision: Some("probable: sampled-fast audio match".to_owned()),
+                nearest_match: Some(
+                    "episode-b.mkv (probable: sampled-fast audio match)".to_owned()
+                ),
+                last_evidence: Some("audio=0.94 offset=20s".to_owned()),
                 remote_status: Some("bob: strong".to_owned()),
                 background_status: Some("idle".to_owned()),
                 open_install_location_available: true,
@@ -389,13 +391,13 @@ fn gui_shell_app_state_projects_media_match_plugin_widgets_and_actions() {
         plugins
             .find("plugins:media-matching:current-decision")
             .and_then(|node| node.value.as_deref()),
-        Some("strong: aligned video hashes")
+        Some("probable: sampled-fast audio match")
     );
     assert_eq!(
         plugins
             .find("plugins:media-matching:nearest-match")
             .and_then(|node| node.value.as_deref()),
-        Some("episode-b.mkv (strong: aligned video hashes)")
+        Some("episode-b.mkv (probable: sampled-fast audio match)")
     );
     assert_eq!(
         plugins
@@ -415,7 +417,7 @@ fn gui_shell_app_state_projects_media_match_plugin_widgets_and_actions() {
     assert_eq!(last_evidence.kind, GuiWidgetKind::TextArea);
     assert_eq!(
         last_evidence.value.as_deref(),
-        Some("audio=0.94 video=0.82 offset=20s")
+        Some("audio=0.94 offset=20s")
     );
 
     let fingerprinting = plugins

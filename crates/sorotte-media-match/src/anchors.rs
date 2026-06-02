@@ -3,16 +3,13 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    MEDIA_MATCH_ANCHOR_VERSION,
+    MEDIA_MATCH_ANCHOR_VERSION, MEDIA_MATCH_V3_PROFILE_LABEL,
     audio_v3::{AudioLandmarkV3, bounded_time_distributed_audio_landmarks_v3_for_duration},
     identity::duration_seconds_to_millis,
     settings::media_extraction_settings_hash,
-    tuning::V3_AUDIO_INDEX_LANDMARK_LIMIT,
+    tuning::V3_AUDIO_SAMPLED_FAST_INDEX_LANDMARK_LIMIT,
     types::MediaFingerprintRecord,
 };
-
-#[cfg(test)]
-use crate::tuning::V3_AUDIO_VERIFY_LANDMARK_LIMIT;
 
 const MAX_WIRE_ANCHORS: usize = 1024;
 const MAX_V3_LANDMARKS: usize = 4096;
@@ -136,7 +133,7 @@ pub fn media_fingerprint_wire_summary_from_record(
 ) -> MediaFingerprintWireSummary {
     let audio_anchors = audio_anchors_from_record(record);
     MediaFingerprintWireSummary {
-        profile: record.extraction_settings.profile.label().to_owned(),
+        profile: MEDIA_MATCH_V3_PROFILE_LABEL.to_owned(),
         settings_hash: media_extraction_settings_hash(&record.extraction_settings),
         duration_ms: record.duration_seconds.and_then(duration_seconds_to_millis),
         audio_summary: (!audio_anchors.is_empty())
@@ -148,7 +145,7 @@ pub fn media_fingerprint_wire_summary_from_record(
 pub fn media_anchor_profile_from_record(record: &MediaFingerprintRecord) -> MediaAnchorProfile {
     MediaAnchorProfile {
         version: MEDIA_MATCH_ANCHOR_VERSION,
-        profile: record.extraction_settings.profile.label().to_owned(),
+        profile: MEDIA_MATCH_V3_PROFILE_LABEL.to_owned(),
         duration_ms: record.duration_seconds.and_then(duration_seconds_to_millis),
         audio_anchors: audio_anchors_from_record(record),
     }
@@ -314,7 +311,7 @@ pub fn audio_index_landmarks_v3_from_record(
     let mut landmarks = audio_landmarks_v3_from_record(record);
     bounded_time_distributed_audio_landmarks_v3_for_duration(
         &mut landmarks,
-        V3_AUDIO_INDEX_LANDMARK_LIMIT,
+        V3_AUDIO_SAMPLED_FAST_INDEX_LANDMARK_LIMIT,
         record.duration_seconds,
     )
 }
@@ -489,7 +486,7 @@ mod tests {
             extraction_settings: crate::MediaExtractionSettings::sampled_fast_audio_index_v3(),
             duration_seconds: Some(1500.0),
             container_fingerprint: "container".to_owned(),
-            audio_anchors: (0..(V3_AUDIO_VERIFY_LANDMARK_LIMIT + 100))
+            audio_anchors: (0..(V3_AUDIO_SAMPLED_FAST_INDEX_LANDMARK_LIMIT + 100))
                 .map(|index| AudioAnchor {
                     bucket: index as u32,
                     t_ms: index as u32 * 250,
@@ -500,7 +497,8 @@ mod tests {
         };
 
         assert!(
-            audio_index_landmarks_v3_from_record(&record).len() <= V3_AUDIO_INDEX_LANDMARK_LIMIT
+            audio_index_landmarks_v3_from_record(&record).len()
+                <= V3_AUDIO_SAMPLED_FAST_INDEX_LANDMARK_LIMIT
         );
     }
 }

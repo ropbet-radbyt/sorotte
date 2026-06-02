@@ -9,7 +9,7 @@ use crate::{
         media_anchor_profile_from_wire_summaries,
     },
     matching::{decide_media_match_anchors, media_match_tier_rank},
-    settings::MediaExtractionSettings,
+    settings::{MEDIA_MATCH_V3_AUDIO_ALGORITHM, MEDIA_MATCH_V3_PROFILE_LABEL},
     types::{MediaFingerprintRecord, MediaMatchDecision, MediaMatchSettings},
 };
 
@@ -119,15 +119,11 @@ fn media_match_wire_anchor_profile_from_record(
     record: &MediaFingerprintRecord,
 ) -> Option<MediaMatchWireProfile> {
     let anchor_profile = media_anchor_profile_from_record(record);
-    media_match_wire_anchor_profile_from_anchor_profile(
-        &anchor_profile,
-        &record.extraction_settings.audio_algorithm,
-    )
+    media_match_wire_anchor_profile_from_anchor_profile(&anchor_profile)
 }
 
 pub fn media_match_wire_anchor_profile_from_anchor_profile(
     profile: &MediaAnchorProfile,
-    audio_algorithm: &str,
 ) -> Option<MediaMatchWireProfile> {
     if profile.is_empty() {
         return None;
@@ -139,7 +135,7 @@ pub fn media_match_wire_anchor_profile_from_anchor_profile(
         algorithm_version: profile.version,
         duration_ms: profile.duration_ms,
         audio: audio_summary.map(|summary| MediaMatchWireAnchorBlock {
-            algorithm: audio_algorithm.to_owned(),
+            algorithm: MEDIA_MATCH_V3_AUDIO_ALGORITHM.to_owned(),
             time_base_ms: 1,
             anchors: base64::engine::general_purpose::STANDARD.encode(summary),
         }),
@@ -155,13 +151,12 @@ pub fn media_anchor_profile_from_wire_profile(
             profile.profile, profile.algorithm_version
         ));
     }
-    let expected_settings = media_extraction_settings_for_profile_label(&profile.profile)
-        .ok_or_else(|| format!("media match v3 profile '{}' is unknown", profile.profile))?;
+    validate_wire_profile_label(&profile.profile)?;
     if let Some(block) = profile.audio.as_ref() {
         validate_wire_anchor_block(
             "audio",
             block,
-            &expected_settings.audio_algorithm,
+            MEDIA_MATCH_V3_AUDIO_ALGORITHM,
             profile.profile.as_str(),
         )?;
     }
@@ -182,10 +177,11 @@ pub fn media_anchor_profile_from_wire_profile(
     .map_err(|error| format!("media match v3 anchors could not decode: {error}"))
 }
 
-fn media_extraction_settings_for_profile_label(label: &str) -> Option<MediaExtractionSettings> {
-    match label {
-        "audio-constellation-v3" => Some(MediaExtractionSettings::audio_constellation_v3()),
-        _ => None,
+fn validate_wire_profile_label(label: &str) -> Result<(), String> {
+    if label == MEDIA_MATCH_V3_PROFILE_LABEL {
+        Ok(())
+    } else {
+        Err(format!("media match v3 profile '{label}' is unknown"))
     }
 }
 

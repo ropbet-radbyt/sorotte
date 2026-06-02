@@ -597,7 +597,6 @@ mod tests {
                     raw_hit_rows_processed: 0,
                     candidates_scored: 0,
                     candidates_returned: 0,
-                    retrieval_strategy: "auto".to_owned(),
                     stats: MediaMatchV3RetrievalStats::default(),
                     candidates: Vec::new(),
                 },

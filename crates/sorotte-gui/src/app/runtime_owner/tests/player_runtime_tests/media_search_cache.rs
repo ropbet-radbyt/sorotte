@@ -83,7 +83,7 @@ fn gui_persisted_config_runtime_owner_does_not_open_sampled_only_media_match_can
             ),
             algorithm_version: sorotte_media_match::MEDIA_MATCH_ALGORITHM_VERSION,
             extraction_settings:
-                sorotte_media_match::MediaExtractionSettings::audio_constellation_v3(),
+                sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3(),
             duration_seconds: Some(900.0),
             container_fingerprint: format!("container:{}", path.display()),
             audio_anchors: Vec::new(),
@@ -98,7 +98,7 @@ fn gui_persisted_config_runtime_owner_does_not_open_sampled_only_media_match_can
             identity: sorotte_media_match::MediaFileIdentity::new(path, 1000, 2000),
             algorithm_version: sorotte_media_match::MEDIA_MATCH_ALGORITHM_VERSION,
             extraction_settings:
-                sorotte_media_match::MediaExtractionSettings::audio_constellation_v3(),
+                sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3(),
             duration_seconds: Some(900.0),
             container_fingerprint: format!("container:{path}"),
             audio_anchors: Vec::new(),

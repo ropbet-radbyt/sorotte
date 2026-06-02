@@ -70,7 +70,7 @@ fn set_file_broadcasts_user_file_update_and_list_includes_file() {
     let directed_lines = runtime
         .handle_line_fanout(
             "client-1",
-            r#"{"Set":{"file":{"name":"movie.mkv","duration":95.5,"size":123456789,"mediaMatch":{"schema":"sorotte.mediaMatch.v3","profiles":[{"profile":"combined-v3","algorithmVersion":3,"durationMs":95500,"audio":{"algorithm":"sorotte-audio-constellation-v3","timeBaseMs":1,"anchors":"U0FVMwEAAAA="},"video":{"algorithm":"sorotte-video-scene-v3","timeBaseMs":1,"anchors":"U1ZJMwEAAAA="}}]}}}}"#,
+            r#"{"Set":{"file":{"name":"movie.mkv","duration":95.5,"size":123456789,"mediaMatch":{"schema":"sorotte.mediaMatch.v3","profiles":[{"profile":"audio-constellation-v3","algorithmVersion":3,"durationMs":95500,"audio":{"algorithm":"sorotte-audio-constellation-v3-sampled-fast","timeBaseMs":1,"anchors":"U0FVMwEAAAA="}}]}}}}"#,
         )
         .expect("set file should fan out");
     let directed_messages = decode_directed_lines(&directed_lines);
@@ -101,18 +101,13 @@ fn set_file_broadcasts_user_file_update_and_list_includes_file() {
             Some(&json!({
                 "schema": "sorotte.mediaMatch.v3",
                 "profiles": [{
-                    "profile": "combined-v3",
+                    "profile": "audio-constellation-v3",
                     "algorithmVersion": 3,
                     "durationMs": 95500,
                     "audio": {
-                        "algorithm": "sorotte-audio-constellation-v3",
+                        "algorithm": "sorotte-audio-constellation-v3-sampled-fast",
                         "timeBaseMs": 1,
                         "anchors": "U0FVMwEAAAA="
-                    },
-                    "video": {
-                        "algorithm": "sorotte-video-scene-v3",
-                        "timeBaseMs": 1,
-                        "anchors": "U1ZJMwEAAAA="
                     }
                 }]
             }))
@@ -146,18 +141,13 @@ fn set_file_broadcasts_user_file_update_and_list_includes_file() {
         Some(&json!({
             "schema": "sorotte.mediaMatch.v3",
             "profiles": [{
-                "profile": "combined-v3",
+                "profile": "audio-constellation-v3",
                 "algorithmVersion": 3,
                 "durationMs": 95500,
                 "audio": {
-                    "algorithm": "sorotte-audio-constellation-v3",
+                    "algorithm": "sorotte-audio-constellation-v3-sampled-fast",
                     "timeBaseMs": 1,
                     "anchors": "U0FVMwEAAAA="
-                },
-                "video": {
-                    "algorithm": "sorotte-video-scene-v3",
-                    "timeBaseMs": 1,
-                    "anchors": "U1ZJMwEAAAA="
                 }
             }]
         }))

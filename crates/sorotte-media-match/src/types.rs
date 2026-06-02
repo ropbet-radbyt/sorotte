@@ -61,40 +61,6 @@ pub struct MediaTimelineMapV3 {
     pub best_segment_score: u32,
     #[serde(default)]
     pub second_best_segment_score: u32,
-    #[serde(default)]
-    pub piecewise_pair_count: usize,
-    #[serde(default)]
-    pub piecewise_hypothesis_count: usize,
-    #[serde(default)]
-    pub piecewise_segment_candidate_count: usize,
-    #[serde(default)]
-    pub piecewise_segment_chain_count: usize,
-    #[serde(default)]
-    pub piecewise_fit_millis: u64,
-    #[serde(default)]
-    pub decision_pair_collection_millis: u64,
-    #[serde(default)]
-    pub fast_audio_verifier_millis: u64,
-    #[serde(default)]
-    pub global_fit_millis: u64,
-    #[serde(default)]
-    pub offset_histogram_millis: u64,
-    #[serde(default)]
-    pub fast_global_fit_millis: u64,
-    #[serde(default)]
-    pub broad_global_fit_millis: u64,
-    #[serde(default)]
-    pub global_fit_candidate_count: usize,
-    #[serde(default)]
-    pub global_fit_inlier_count: usize,
-    #[serde(default)]
-    pub global_fit_fallback_used: bool,
-    #[serde(default)]
-    pub timeline_map_millis: u64,
-    #[serde(default)]
-    pub evidence_formatting_millis: u64,
-    #[serde(default)]
-    pub total_decision_millis: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

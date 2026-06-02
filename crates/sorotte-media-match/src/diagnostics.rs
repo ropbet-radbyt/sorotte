@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    InstrumentedMediaFingerprint, MatchClassV3, MediaFingerprintExtractionReport,
-    MediaFingerprintRecord, MediaMatchDecision, MediaMatchTier,
+    InstrumentedMediaFingerprint, MEDIA_MATCH_V3_PROFILE_LABEL, MatchClassV3,
+    MediaFingerprintExtractionReport, MediaFingerprintRecord, MediaMatchDecision, MediaMatchTier,
     anchors::{
         MediaFingerprintBlobV3, audio_index_landmarks_v3_from_record,
         audio_landmarks_v3_from_record, encode_media_fingerprint_blob_v3,
@@ -104,7 +104,7 @@ fn summarize_record_v3_diagnostics_with_report(
     ));
     MediaMatchV3DiagnosticSummary {
         file_path: Some(record.identity.normalized_path.clone()),
-        profile: record.extraction_settings.profile.label().to_owned(),
+        profile: MEDIA_MATCH_V3_PROFILE_LABEL.to_owned(),
         index_quality: "sampled-fast".to_owned(),
         duration_ms,
         extraction_total_millis: report.map(|report| report.timings.total_millis),

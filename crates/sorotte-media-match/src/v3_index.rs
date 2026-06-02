@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
 use crate::{
-    MEDIA_MATCH_ALGORITHM_VERSION,
+    MEDIA_MATCH_ALGORITHM_VERSION, MEDIA_MATCH_V3_PROFILE_LABEL,
     anchors::{
         MediaFingerprintBlobV3, audio_index_landmarks_v3_from_record,
         decode_media_fingerprint_blob_v3, encode_media_fingerprint_blob_v3,
@@ -28,14 +28,13 @@ use crate::{
     types::{MediaFileIdentity, MediaFingerprintRecord, MediaMatchCache},
 };
 
-const MEDIA_MATCH_V3_SQLITE_SCHEMA_VERSION: i64 = 5;
+const MEDIA_MATCH_V3_SQLITE_SCHEMA_VERSION: i64 = 6;
 const MEDIA_MATCH_V3_INDEX_FILE: &str = "index-v3.sqlite3";
 const MEDIA_MATCH_V3_ANCHOR_STATS_DIRTY_PREFIX: &str = "anchor_stats_v3_dirty:";
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaMatchV3RetrievalStats {
-    pub retrieval_strategy: String,
     pub query_buckets_total: i64,
     pub query_buckets_skipped_common: i64,
     pub raw_hit_rows_processed: i64,
@@ -111,22 +110,6 @@ pub struct MediaMatchV3SqliteRowCount {
     pub table: String,
     pub row_count: u64,
     pub avg_bytes_per_row: Option<f64>,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum MediaMatchV3RetrievalStrategy {
-    #[default]
-    Auto,
-    BucketFetch,
-}
-
-impl MediaMatchV3RetrievalStrategy {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::BucketFetch => "bucket-fetch",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Default, PartialEq)]
@@ -343,7 +326,7 @@ fn reset_media_match_v3_schema(connection: &Connection) -> Result<(), String> {
                 ON audio_anchor_occurrences_v3(file_id, bucket_id, t_ms, weight);
 
             INSERT INTO metadata (key, value)
-            VALUES ('schema_version', '5');
+            VALUES ('schema_version', '6');
             ",
         )
         .map_err(|error| format!("failed resetting media-match V3 schema: {error}"))?;
@@ -366,12 +349,7 @@ pub fn save_media_match_v3_record_with_stats(
 ) -> Result<MediaMatchV3SaveStats, String> {
     let started_at = Instant::now();
     let settings_hash = media_extraction_settings_hash(&record.extraction_settings);
-    let settings_id = ensure_media_match_v3_settings_id(
-        connection,
-        settings_hash,
-        &record.extraction_settings,
-        now,
-    )?;
+    let settings_id = ensure_media_match_v3_settings_id(connection, settings_hash, now)?;
     let duration_ms = duration_ms_from_seconds(record.duration_seconds);
     let file_id = upsert_media_file_v3(connection, record, duration_ms, now)?;
     let blob_started_at = Instant::now();
@@ -480,7 +458,6 @@ fn upsert_media_file_v3(
 fn ensure_media_match_v3_settings_id(
     connection: &Connection,
     settings_hash: [u8; 32],
-    settings: &MediaExtractionSettings,
     now: i64,
 ) -> Result<i64, String> {
     connection
@@ -493,7 +470,7 @@ fn ensure_media_match_v3_settings_id(
                 settings_hash.as_slice(),
                 MEDIA_MATCH_ALGORITHM_VERSION as i64,
                 MEDIA_MATCH_V3_FINGERPRINT_CACHE_VERSION as i64,
-                settings.profile.label(),
+                MEDIA_MATCH_V3_PROFILE_LABEL,
                 serde_json::to_string(&current_v3_tuning()).unwrap_or_default(),
                 now,
             ],
@@ -715,33 +692,10 @@ pub fn media_match_v3_anchor_candidate_details_with_stats(
     ),
     String,
 > {
-    media_match_v3_anchor_candidate_details_with_strategy(
-        connection,
-        current,
-        now,
-        MediaMatchV3RetrievalStrategy::Auto,
-    )
-}
-
-pub fn media_match_v3_anchor_candidate_details_with_strategy(
-    connection: &Connection,
-    current: &MediaFingerprintRecord,
-    now: i64,
-    strategy: MediaMatchV3RetrievalStrategy,
-) -> Result<
-    (
-        Vec<MediaMatchV3RetrievedCandidate>,
-        MediaMatchV3RetrievalStats,
-    ),
-    String,
-> {
     let started_at = Instant::now();
     let settings_hash = media_extraction_settings_hash(&current.extraction_settings);
     let settings_id = media_match_v3_settings_id_for_hash(connection, &settings_hash)?;
-    let mut stats = MediaMatchV3RetrievalStats {
-        retrieval_strategy: strategy.label().to_owned(),
-        ..MediaMatchV3RetrievalStats::default()
-    };
+    let mut stats = MediaMatchV3RetrievalStats::default();
     let dirty_started_at = Instant::now();
     let dirty = anchor_stats_v3_dirty(connection, &settings_hash)?;
     stats.stats_dirty_check_millis = dirty_started_at.elapsed().as_millis();

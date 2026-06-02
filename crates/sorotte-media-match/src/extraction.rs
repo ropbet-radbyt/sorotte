@@ -28,8 +28,8 @@ use crate::{
     identity::{container_fingerprint_from_metadata, normalize_media_path},
     tuning::{
         FFMPEG_AUDIO_V3_TIMEOUT, FFPROBE_TIMEOUT, MEDIA_TOOL_POLL_INTERVAL,
-        V3_AUDIO_SAMPLED_FAST_INDEX_LANDMARK_LIMIT, V3_AUDIO_SAMPLED_FAST_MAX_WINDOWS,
-        V3_AUDIO_SAMPLED_FAST_SAMPLE_RATE, V3_AUDIO_SAMPLED_FAST_WINDOW_SECONDS,
+        V3_AUDIO_SAMPLED_FAST_INDEX_LANDMARK_LIMIT, V3_AUDIO_SAMPLED_FAST_SAMPLE_RATE,
+        V3_AUDIO_SAMPLED_FAST_WINDOW_COUNT, V3_AUDIO_SAMPLED_FAST_WINDOW_SECONDS,
     },
     types::{MediaFileIdentity, MediaFingerprintRecord},
 };
@@ -289,7 +289,7 @@ pub fn fingerprint_media_file_with_report_and_options(
     let started_at = Instant::now();
     let audio_result =
         extract_fixed_sampled_fast_audio(&tools.ffmpeg, path, duration_seconds, cancel_flag);
-    report.invocations.ffmpeg = V3_AUDIO_SAMPLED_FAST_MAX_WINDOWS as u32;
+    report.invocations.ffmpeg = V3_AUDIO_SAMPLED_FAST_WINDOW_COUNT as u32;
     report.timings.audio_millis = started_at.elapsed().as_millis();
     let (audio_anchors, metrics) = match audio_result {
         Ok((landmarks, metrics)) => (
@@ -466,7 +466,7 @@ fn sampled_audio_windows_v3(duration_seconds: Option<f64>) -> Vec<(f64, u32)> {
     if !duration.is_finite() || duration <= f64::from(window) {
         return vec![(0.0, window)];
     }
-    let count = V3_AUDIO_SAMPLED_FAST_MAX_WINDOWS;
+    let count = V3_AUDIO_SAMPLED_FAST_WINDOW_COUNT;
     let edge_skip: f64 = if duration >= 600.0 { 180.0 } else { 30.0 };
     let body_start = edge_skip.min((duration - f64::from(window)).max(0.0));
     let body_end = (duration - edge_skip - f64::from(window)).max(body_start);

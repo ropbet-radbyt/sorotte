@@ -21,8 +21,8 @@ use std::io::Read;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use sorotte_media_match::{
-    MEDIA_MATCH_ALGORITHM_VERSION, MEDIA_MATCH_ANCHOR_VERSION, MediaExtractionSettings,
-    MediaFingerprintError, MediaFingerprintProfile, MediaFingerprintRecord, MediaMatchCache,
+    MEDIA_MATCH_ALGORITHM_VERSION, MEDIA_MATCH_ANCHOR_VERSION, MEDIA_MATCH_V3_PROFILE_LABEL,
+    MediaExtractionSettings, MediaFingerprintError, MediaFingerprintRecord, MediaMatchCache,
     MediaMatchCandidateDecision, MediaMatchDecision, MediaMatchSettings, MediaMatchTier,
     MediaMatchToolPaths, MediaMatchV3RetrievalStats, decide_media_match,
     delete_media_match_v3_file_and_fingerprints, delete_media_match_v3_fingerprints_and_anchors,
@@ -503,7 +503,7 @@ pub(super) fn probe_media_match_runtime_snapshot(
     root: Option<&Path>,
     settings: &MediaMatchSettings,
 ) -> GuiMediaMatchRuntimeSnapshot {
-    let extraction_settings = MediaExtractionSettings::audio_constellation_v3();
+    let extraction_settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
     let ffmpeg = probe_tool(root, MediaMatchTool::Ffmpeg);
     let ffprobe = probe_tool(root, MediaMatchTool::Ffprobe);
     media_match_runtime_snapshot_from_probes(root, settings, ffmpeg, ffprobe, &extraction_settings)
@@ -2304,19 +2304,14 @@ fn format_media_match_evidence_summary(decision: &MediaMatchDecision) -> String 
     }
     if let Some(map) = decision.evidence.timeline_map_v3.as_ref() {
         parts.push(format!(
-            "v3 class={:?} segments={} span={:.1}s largest_gap={:.1}s edge_only={} best_segment={} second_segment={} pairs={} hypotheses={} segment_candidates={} chained_segments={} piecewise_fit_ms={}",
+            "v3 class={:?} segments={} span={:.1}s largest_gap={:.1}s edge_only={} best_segment={} second_segment={}",
             map.global_class,
             map.segments.len(),
             f64::from(map.total_aligned_span_ms) / 1000.0,
             f64::from(map.largest_gap_ms) / 1000.0,
             map.edge_only,
             map.best_segment_score,
-            map.second_best_segment_score,
-            map.piecewise_pair_count,
-            map.piecewise_hypothesis_count,
-            map.piecewise_segment_candidate_count,
-            map.piecewise_segment_chain_count,
-            map.piecewise_fit_millis
+            map.second_best_segment_score
         ));
     }
     parts.push(format!(
@@ -2510,7 +2505,7 @@ pub(super) fn media_match_wire_value_for_path(
     let record = media_match_record_for_path(
         root,
         current_player_path,
-        &MediaExtractionSettings::audio_constellation_v3(),
+        &MediaExtractionSettings::sampled_fast_audio_index_v3(),
     )?;
     media_match_wire_value_from_records(std::slice::from_ref(&record))
 }
@@ -2623,7 +2618,7 @@ fn media_match_sqlite_all_settings_counts(root: &Path) -> Result<(usize, usize),
         .max(0) as usize;
     let count_for_profile = |profile: &str| -> Result<usize, String> {
         let settings = match profile {
-            "audio-constellation-v3" => MediaExtractionSettings::audio_constellation_v3(),
+            "audio-constellation-v3" => MediaExtractionSettings::sampled_fast_audio_index_v3(),
             _ => return Ok(0),
         };
         Ok(connection
@@ -2641,10 +2636,7 @@ fn media_match_sqlite_all_settings_counts(root: &Path) -> Result<(usize, usize),
             .map_err(|error| format!("failed reading media-match profile count: {error}"))?
             .max(0) as usize)
     };
-    Ok((
-        inventory,
-        count_for_profile(MediaFingerprintProfile::AudioConstellationV3.label())?,
-    ))
+    Ok((inventory, count_for_profile(MEDIA_MATCH_V3_PROFILE_LABEL)?))
 }
 
 fn media_match_sqlite_active_settings_counts(root: &Path) -> Result<usize, String> {
@@ -2669,7 +2661,7 @@ fn media_match_sqlite_active_settings_counts(root: &Path) -> Result<usize, Strin
             .map_err(|error| format!("failed reading media-match active-settings count: {error}"))?
             .max(0) as usize)
     };
-    count_for_settings(&MediaExtractionSettings::audio_constellation_v3())
+    count_for_settings(&MediaExtractionSettings::sampled_fast_audio_index_v3())
 }
 
 fn save_managed_media_match_metadata(
@@ -2926,7 +2918,7 @@ mod tests {
     }
 
     fn seed_strong_anchor_fixture(record: &mut MediaFingerprintRecord) {
-        record.extraction_settings = MediaExtractionSettings::audio_constellation_v3();
+        record.extraction_settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
         record.duration_seconds = Some(900.0);
         record.audio_anchors = (0u32..24)
             .map(|index| AudioAnchor {
@@ -2987,7 +2979,7 @@ mod tests {
         anchors: &[(u32, u32, u16)],
     ) -> MediaFingerprintRecord {
         let mut record = fake_media_match_record(path);
-        record.extraction_settings = MediaExtractionSettings::audio_constellation_v3();
+        record.extraction_settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
         record.duration_seconds = Some(1_200.0);
         record.audio_anchors = anchors
             .iter()
@@ -3009,7 +3001,7 @@ mod tests {
             media_match_health_for_settings(
                 &ffmpeg,
                 &ffprobe,
-                &MediaExtractionSettings::audio_constellation_v3()
+                &MediaExtractionSettings::sampled_fast_audio_index_v3()
             ),
             GuiMediaMatchToolHealth::Healthy
         );
@@ -3017,7 +3009,7 @@ mod tests {
             media_match_health_for_settings(
                 &ffmpeg,
                 &ffprobe,
-                &MediaExtractionSettings::audio_constellation_v3()
+                &MediaExtractionSettings::sampled_fast_audio_index_v3()
             ),
             GuiMediaMatchToolHealth::Healthy
         );
@@ -3031,7 +3023,7 @@ mod tests {
             &settings,
             healthy_tool_probe("ffmpeg"),
             healthy_tool_probe("ffprobe"),
-            &MediaExtractionSettings::audio_constellation_v3(),
+            &MediaExtractionSettings::sampled_fast_audio_index_v3(),
         );
 
         assert_eq!(snapshot.health, GuiMediaMatchToolHealth::Healthy);
@@ -3083,7 +3075,7 @@ mod tests {
         let mut instrumentation = MediaMatchRebuildInstrumentation::default();
         refresh_media_match_v3_anchor_stats_for_settings(
             &connection,
-            &MediaExtractionSettings::audio_constellation_v3(),
+            &MediaExtractionSettings::sampled_fast_audio_index_v3(),
             &mut instrumentation,
         )
         .expect("batch stats refresh should succeed");
@@ -3351,7 +3343,7 @@ mod tests {
         let root = unique_media_match_test_root("v3-shared-load");
         let media_path = root.join("media.mkv");
         std::fs::write(&media_path, b"same media bytes").expect("media file should be written");
-        let extraction_settings = MediaExtractionSettings::audio_constellation_v3();
+        let extraction_settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
         let mut record = fake_media_match_record_for_file(&media_path, extraction_settings.clone());
         record.audio_anchors = vec![
             AudioAnchor {
@@ -3415,23 +3407,6 @@ mod tests {
                     edge_only: false,
                     best_segment_score: 32,
                     second_best_segment_score: 0,
-                    piecewise_pair_count: 8,
-                    piecewise_hypothesis_count: 1,
-                    piecewise_segment_candidate_count: 1,
-                    piecewise_segment_chain_count: 1,
-                    piecewise_fit_millis: 1,
-                    decision_pair_collection_millis: 0,
-                    fast_audio_verifier_millis: 0,
-                    global_fit_millis: 0,
-                    offset_histogram_millis: 0,
-                    fast_global_fit_millis: 0,
-                    broad_global_fit_millis: 0,
-                    global_fit_candidate_count: 0,
-                    global_fit_inlier_count: 0,
-                    global_fit_fallback_used: false,
-                    timeline_map_millis: 0,
-                    evidence_formatting_millis: 0,
-                    total_decision_millis: 0,
                 }),
                 ..sorotte_media_match::MediaMatchEvidence::default()
             },
@@ -3648,7 +3623,7 @@ mod tests {
         assert_eq!(
             load_media_match_cache_for_settings(
                 &root,
-                &MediaExtractionSettings::audio_constellation_v3()
+                &MediaExtractionSettings::sampled_fast_audio_index_v3()
             )
             .expect("fixed sampled-fast cache should load")
             .records
@@ -3665,10 +3640,11 @@ mod tests {
         std::fs::create_dir_all(&media_dir).expect("media dir should be created");
         let media_path = media_dir.join("episode.mkv");
         std::fs::write(&media_path, b"episode").expect("media file should be written");
-        let mut altered_settings = MediaExtractionSettings::audio_constellation_v3();
-        altered_settings
-            .audio_algorithm
-            .push_str("-test-settings-hash");
+        let mut altered_settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
+        altered_settings.sampled_audio_policy.policy_version = altered_settings
+            .sampled_audio_policy
+            .policy_version
+            .saturating_add(1);
         let mut record = fake_media_match_record_for_file(&media_path, altered_settings.clone());
         record.audio_anchors = vec![AudioAnchor {
             bucket: 1,
@@ -3682,7 +3658,7 @@ mod tests {
         assert!(
             load_media_match_cache_for_settings(
                 &root,
-                &MediaExtractionSettings::audio_constellation_v3()
+                &MediaExtractionSettings::sampled_fast_audio_index_v3()
             )
             .is_none(),
             "same profile rows with a different settings hash must not be reused"
@@ -3691,7 +3667,7 @@ mod tests {
             media_match_record_for_path(
                 &root,
                 media_path.to_str().expect("test path should be UTF-8"),
-                &MediaExtractionSettings::audio_constellation_v3(),
+                &MediaExtractionSettings::sampled_fast_audio_index_v3(),
             )
             .is_none(),
             "direct single-record lookup must also enforce settings_hash"
@@ -3713,7 +3689,7 @@ mod tests {
         std::fs::write(&query_path, b"query-v1").expect("query media should be written");
         std::fs::write(&candidate_path, b"candidate-v1")
             .expect("candidate media should be written");
-        let extraction_settings = MediaExtractionSettings::audio_constellation_v3();
+        let extraction_settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
         let mut query = fake_media_match_record_for_file(&query_path, extraction_settings.clone());
         query.audio_anchors = vec![AudioAnchor {
             bucket: 42,
@@ -3790,7 +3766,7 @@ mod tests {
         let root = unique_media_match_test_root("valid-audio-v3");
         let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
         let mut record = fake_media_match_record("valid-audio-v3.mkv");
-        record.extraction_settings = MediaExtractionSettings::audio_constellation_v3();
+        record.extraction_settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
         record.audio_anchors = vec![AudioAnchor {
             bucket: 42,
             t_ms: 1_000,
@@ -3801,7 +3777,7 @@ mod tests {
             .expect("valid audio V3 landmark should save");
         let cache = load_media_match_cache_for_settings(
             &root,
-            &MediaExtractionSettings::audio_constellation_v3(),
+            &MediaExtractionSettings::sampled_fast_audio_index_v3(),
         )
         .expect("valid audio V3 cache should load");
         let loaded = cache
@@ -3862,7 +3838,6 @@ mod tests {
                 refresh_cache: false,
                 index_mode: sorotte_media_match::MediaMatchV3DiagnosticIndexMode::SampledFast,
                 retrieval_benchmark_only: false,
-                retrieval_strategy: sorotte_media_match::MediaMatchV3RetrievalStrategy::Auto,
                 tools,
                 generated_at_unix_millis: Some(123),
             },
@@ -3955,7 +3930,7 @@ mod tests {
         let removed_path = media_dir.join("removed.mkv");
         std::fs::write(&kept_path, b"kept").expect("kept media should be written");
         std::fs::write(&removed_path, b"removed").expect("removed media should be written");
-        let extraction_settings = MediaExtractionSettings::audio_constellation_v3();
+        let extraction_settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
         let mut cache = MediaMatchCache::default();
         let kept = fake_media_match_record_for_file(&kept_path, extraction_settings.clone());
         let removed = fake_media_match_record_for_file(&removed_path, extraction_settings.clone());
@@ -3992,7 +3967,7 @@ mod tests {
         let removed_path = media_dir.join("removed.mkv");
         std::fs::write(&kept_path, b"kept").expect("kept media should be written");
         std::fs::write(&removed_path, b"removed").expect("removed media should be written");
-        let extraction_settings = MediaExtractionSettings::audio_constellation_v3();
+        let extraction_settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
         let mut kept = fake_media_match_record_for_file(&kept_path, extraction_settings.clone());
         kept.audio_anchors = vec![AudioAnchor {
             bucket: 500,
@@ -4070,7 +4045,7 @@ mod tests {
     fn media_match_v3_audio_blob_storage_stays_under_two_kb_per_file() {
         let root = unique_media_match_test_root("v3-audio-size");
         let mut record = fake_media_match_record("episode.mkv");
-        record.extraction_settings = MediaExtractionSettings::audio_constellation_v3();
+        record.extraction_settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
         record.audio_anchors = (0..96)
             .map(|index| AudioAnchor {
                 bucket: index,
@@ -4118,7 +4093,7 @@ mod tests {
             std::slice::from_ref(&media_dir),
             None,
             &settings,
-            &MediaExtractionSettings::audio_constellation_v3(),
+            &MediaExtractionSettings::sampled_fast_audio_index_v3(),
             None,
             |_| {},
         )
@@ -4203,7 +4178,7 @@ mod tests {
             Some("episode-current.mkv"),
             &cache,
             &enabled_media_match_settings(),
-            &MediaExtractionSettings::audio_constellation_v3(),
+            &MediaExtractionSettings::sampled_fast_audio_index_v3(),
         );
 
         assert_eq!(
@@ -4237,7 +4212,7 @@ mod tests {
         std::fs::create_dir_all(&media_dir).expect("media dir should be created");
         let media_path = media_dir.join("episode.mkv");
         std::fs::write(&media_path, vec![42u8; 2000]).expect("test media file should be written");
-        let extraction_settings = MediaExtractionSettings::audio_constellation_v3();
+        let extraction_settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
         let record = fake_media_match_record_for_file(&media_path, extraction_settings.clone());
         let mut cache = MediaMatchCache::default();
         cache.insert(record.clone());
@@ -4302,7 +4277,7 @@ mod tests {
                 current_player_path: media_path.to_str(),
                 settings: &settings,
                 tools: &tools,
-                extraction_settings: &MediaExtractionSettings::audio_constellation_v3(),
+                extraction_settings: &MediaExtractionSettings::sampled_fast_audio_index_v3(),
                 cancel_flag: Some(&cancel),
             },
             |_| {},

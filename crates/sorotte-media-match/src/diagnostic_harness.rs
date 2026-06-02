@@ -8,8 +8,9 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    MEDIA_MATCH_ALGORITHM_VERSION, MEDIA_MATCH_V3_FINGERPRINT_CACHE_VERSION, MediaMatchToolPaths,
-    V3Tuning, current_v3_tuning, decide_media_match, fingerprint_media_file_with_report,
+    MEDIA_MATCH_ALGORITHM_VERSION, MEDIA_MATCH_V3_FINGERPRINT_CACHE_VERSION,
+    MEDIA_MATCH_V3_PROFILE_LABEL, MediaMatchToolPaths, V3Tuning, current_v3_tuning,
+    decide_media_match, fingerprint_media_file_with_report,
     identity::normalize_media_path,
     settings::{MediaExtractionSettings, media_extraction_settings_hash},
     summarize_instrumented_record_v3_diagnostics, summarize_record_v3_diagnostics,
@@ -18,11 +19,10 @@ use crate::{
         MediaMatchTier,
     },
     v3_index::{
-        MediaMatchV3RetrievalStats, MediaMatchV3RetrievalStrategy, MediaMatchV3RetrievedCandidate,
-        MediaMatchV3SqliteSizeReport, load_media_match_v3_record_for_path,
-        media_match_v3_anchor_candidate_details_with_strategy, media_match_v3_sqlite_size_report,
-        open_media_match_v3_index, refresh_dirty_anchor_stats_v3_if_needed,
-        save_media_match_v3_record_with_stats,
+        MediaMatchV3RetrievalStats, MediaMatchV3RetrievedCandidate, MediaMatchV3SqliteSizeReport,
+        load_media_match_v3_record_for_path, media_match_v3_anchor_candidate_details_with_stats,
+        media_match_v3_sqlite_size_report, open_media_match_v3_index,
+        refresh_dirty_anchor_stats_v3_if_needed, save_media_match_v3_record_with_stats,
     },
 };
 
@@ -158,7 +158,6 @@ pub struct MediaMatchV3DiagnosticRunOptions {
     pub refresh_cache: bool,
     pub index_mode: MediaMatchV3DiagnosticIndexMode,
     pub retrieval_benchmark_only: bool,
-    pub retrieval_strategy: MediaMatchV3RetrievalStrategy,
     pub tools: MediaMatchToolPaths,
     pub generated_at_unix_millis: Option<u64>,
 }
@@ -254,7 +253,6 @@ pub struct MediaMatchV3DiagnosticRetrievalReport {
     pub raw_hit_rows_processed: i64,
     pub candidates_scored: i64,
     pub candidates_returned: i64,
-    pub retrieval_strategy: String,
     pub stats: MediaMatchV3RetrievalStats,
     pub candidates: Vec<MediaMatchV3DiagnosticRetrievalCandidateReport>,
 }
@@ -620,12 +618,8 @@ pub fn run_media_match_v3_diagnostic_manifest(
         let settings_hash = media_extraction_settings_hash(&settings);
         refresh_dirty_anchor_stats_v3_if_needed(&connection, &settings_hash, now)?;
         let retrieval_started_at = Instant::now();
-        let (retrieved, retrieval_stats) = media_match_v3_anchor_candidate_details_with_strategy(
-            &connection,
-            &query.record,
-            now,
-            options.retrieval_strategy,
-        )?;
+        let (retrieved, retrieval_stats) =
+            media_match_v3_anchor_candidate_details_with_stats(&connection, &query.record, now)?;
         let retrieval_elapsed_ms = retrieval_started_at.elapsed().as_millis();
         summary.total_retrieval_millis += retrieval_elapsed_ms;
         summary.total_raw_hit_rows_processed += retrieval_stats.raw_hit_rows_processed;
@@ -634,7 +628,6 @@ pub fn run_media_match_v3_diagnostic_manifest(
             raw_hit_rows_processed: retrieval_stats.raw_hit_rows_processed,
             candidates_scored: retrieval_stats.candidates_scored,
             candidates_returned: retrieval_stats.candidates_returned,
-            retrieval_strategy: retrieval_stats.retrieval_strategy.clone(),
             stats: retrieval_stats,
             candidates: retrieved.iter().map(Into::into).collect(),
         };
@@ -788,7 +781,7 @@ pub fn run_media_match_v3_diagnostic_manifest(
         schema_version: 3,
         algorithm_version: MEDIA_MATCH_ALGORITHM_VERSION,
         fingerprint_cache_version: MEDIA_MATCH_V3_FINGERPRINT_CACHE_VERSION,
-        profile: settings.profile.label().to_owned(),
+        profile: MEDIA_MATCH_V3_PROFILE_LABEL.to_owned(),
         index_mode: options.index_mode.label().to_owned(),
         sampled_policy_production_compatible: settings
             .sampled_audio_policy
@@ -1107,7 +1100,6 @@ mod tests {
     fn production_sampled_fast_index_mode_is_fixed() {
         let settings = MediaMatchV3DiagnosticIndexMode::SampledFast.settings();
 
-        assert_eq!(settings.profile.label(), "audio-constellation-v3");
         assert!(settings.sampled_audio_policy.is_production_compatible());
     }
 }

@@ -8,7 +8,7 @@ use std::{
 use rusqlite::Connection;
 use sorotte_media_match::{
     MediaMatchToolPaths, MediaMatchV3DiagnosticIndexMode, MediaMatchV3DiagnosticManifest,
-    MediaMatchV3DiagnosticRunOptions, MediaMatchV3ResolvedManifest, MediaMatchV3RetrievalStrategy,
+    MediaMatchV3DiagnosticRunOptions, MediaMatchV3ResolvedManifest,
     media_match_v3_diagnostic_manifest_from_json, media_match_v3_diagnostic_manifest_report_json,
     media_match_v3_index_path, media_match_v3_sqlite_size_report, open_media_match_v3_index,
     refresh_all_anchor_stats_v3, resolve_media_match_v3_diagnostic_manifest,
@@ -104,7 +104,6 @@ fn run_cli_with_output(
         refresh_cache: args.refresh_cache,
         index_mode: MediaMatchV3DiagnosticIndexMode::SampledFast,
         retrieval_benchmark_only: args.retrieval_benchmark_only,
-        retrieval_strategy: args.retrieval_strategy,
         tools: default_tool_paths(),
         generated_at_unix_millis: Some(current_unix_millis()),
     };
@@ -126,7 +125,6 @@ struct CliArgs {
     keep_cache: bool,
     refresh_cache: bool,
     retrieval_benchmark_only: bool,
-    retrieval_strategy: MediaMatchV3RetrievalStrategy,
     selected_cases: Vec<String>,
     mode: CliMode,
 }
@@ -148,7 +146,6 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
         keep_cache: false,
         refresh_cache: false,
         retrieval_benchmark_only: false,
-        retrieval_strategy: MediaMatchV3RetrievalStrategy::Auto,
         selected_cases: Vec::new(),
         mode: CliMode::Run,
     };
@@ -168,10 +165,6 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
             "--case" => parsed
                 .selected_cases
                 .push(expect_value(&mut args, "--case")?),
-            "--retrieval-strategy" => {
-                parsed.retrieval_strategy =
-                    parse_retrieval_strategy(&expect_value(&mut args, "--retrieval-strategy")?)?;
-            }
             "--index-mode" => {
                 let value = expect_value(&mut args, "--index-mode")?;
                 if value != "sampled-fast" {
@@ -199,14 +192,6 @@ fn expect_value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<S
 
 fn expect_path(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<PathBuf, String> {
     Ok(PathBuf::from(expect_value(args, flag)?))
-}
-
-fn parse_retrieval_strategy(value: &str) -> Result<MediaMatchV3RetrievalStrategy, String> {
-    match value {
-        "auto" => Ok(MediaMatchV3RetrievalStrategy::Auto),
-        "bucket-fetch" => Ok(MediaMatchV3RetrievalStrategy::BucketFetch),
-        _ => Err(format!("unsupported retrieval strategy '{value}'")),
-    }
 }
 
 fn filter_manifest_cases(
@@ -344,7 +329,7 @@ fn current_unix_millis() -> u64 {
 }
 
 fn usage() -> String {
-    "usage: v3_diagnostics [--output report.json] [--cache-root dir] [--refresh-cache] [--list-cases|--validate-only|--cache-size-report|--prepare-index-stats] [--case name...] [--retrieval-benchmark-only] [--retrieval-strategy auto|bucket-fetch] <manifest.json>\n\nOnly the fixed sampled-fast V3 production policy is supported.".to_owned()
+    "usage: v3_diagnostics [--output report.json] [--cache-root dir] [--refresh-cache] [--list-cases|--validate-only|--cache-size-report|--prepare-index-stats] [--case name...] [--retrieval-benchmark-only] <manifest.json>\n\nOnly the fixed sampled-fast V3 production policy is supported.".to_owned()
 }
 
 #[cfg(test)]
@@ -373,15 +358,9 @@ mod tests {
     fn parse_retrieval_benchmark() {
         let args = parse_args([
             "--retrieval-benchmark-only".to_owned(),
-            "--retrieval-strategy".to_owned(),
-            "bucket-fetch".to_owned(),
             "manifest.json".to_owned(),
         ])
         .unwrap();
         assert!(args.retrieval_benchmark_only);
-        assert_eq!(
-            args.retrieval_strategy,
-            MediaMatchV3RetrievalStrategy::BucketFetch
-        );
     }
 }

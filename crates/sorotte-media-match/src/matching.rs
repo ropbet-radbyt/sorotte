@@ -325,23 +325,6 @@ fn timeline_map_from_alignment(
         edge_only: false,
         best_segment_score: alignment.aligned_audio_anchors as u32,
         second_best_segment_score: 0,
-        piecewise_pair_count: alignment.aligned_pairs,
-        piecewise_hypothesis_count: 0,
-        piecewise_segment_candidate_count: 0,
-        piecewise_segment_chain_count: 0,
-        piecewise_fit_millis: 0,
-        decision_pair_collection_millis: 0,
-        fast_audio_verifier_millis: 0,
-        global_fit_millis: 0,
-        offset_histogram_millis: 0,
-        fast_global_fit_millis: 0,
-        broad_global_fit_millis: 0,
-        global_fit_candidate_count: 0,
-        global_fit_inlier_count: alignment.aligned_pairs,
-        global_fit_fallback_used: false,
-        timeline_map_millis: 0,
-        evidence_formatting_millis: 0,
-        total_decision_millis: 0,
     }
 }
 

@@ -9,7 +9,7 @@ The fixed sampled-fast policy is:
 - 60 total sampled seconds.
 - 8000 Hz mono PCM through ffmpeg.
 - 384 audio index/verify landmarks.
-- ffmpeg audio extraction uses the first audio stream and disables non-audio streams.
+- ffmpeg audio extraction uses `-map 0:a:0`, `-vn`, `-sn`, and `-dn`.
 
 The supported surface is intentionally narrow: fixed sampled-fast audio matching.
 
@@ -104,11 +104,27 @@ Autoplay remains conservative:
 - Sampled-only evidence can be `Probable`.
 - Sampled-only evidence is never `Strong`/autoplay eligible.
 
+No automatic seek or sync behavior is attached to media matching in this branch.
+Adjacent, split, or merged episodes may appear above the expected file in strict
+rank-1 diagnostics; production validation should check that the expected file is
+inside the top-K retrieval budget.
+
 ## Cache
 
-The normal SQLite cache stores one fixed sampled-fast policy. Records generated with any other sampled policy are incompatible with production diagnostics and must be regenerated.
+The normal SQLite cache stores one fixed sampled-fast policy in the compact
+audio-only schema. Records generated with any other settings hash are
+incompatible and must be regenerated.
 
 Cache size reports expose total bytes, anchor/index bytes, fingerprint blob bytes, row counts, and bytes per anchor/fingerprint. Schema resets are acceptable for V3 work.
+
+## Troubleshooting
+
+- Use `--validate-only` to catch missing paths before indexing.
+- Use `--list-cases` to inspect the manifest without fingerprinting.
+- Use `--refresh-cache` to rebuild stale or suspect cache rows.
+- Use `--cache-size-report` to confirm the compact SQLite schema size.
+- Use a minimal manifest with one query, one expected candidate, and hard negatives
+  when triaging a rank collision.
 
 ## First Real-Corpus Checklist
 

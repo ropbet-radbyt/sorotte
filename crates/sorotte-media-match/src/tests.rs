@@ -7,19 +7,10 @@ use crate::{
 fn fixed_sampled_fast_is_the_only_normal_settings_path() {
     let settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
 
-    assert_eq!(settings.profile.label(), "audio-constellation-v3");
     assert!(settings.sampled_audio_policy.is_production_compatible());
-    assert_eq!(settings.sampled_audio_policy.sampled_fast_max_windows, 3);
-    assert_eq!(
-        settings.sampled_audio_policy.sampled_fast_window_seconds,
-        20
-    );
-    assert_eq!(
-        settings
-            .sampled_audio_policy
-            .sampled_fast_index_landmark_limit,
-        384
-    );
+    assert_eq!(settings.sampled_audio_policy.window_count, 3);
+    assert_eq!(settings.sampled_audio_policy.window_seconds, 20);
+    assert_eq!(settings.sampled_audio_policy.landmark_limit, 384);
 }
 
 #[test]

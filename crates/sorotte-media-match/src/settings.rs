@@ -4,30 +4,15 @@ use sha2::{Digest, Sha256};
 use crate::{
     MEDIA_MATCH_ALGORITHM_VERSION, MEDIA_MATCH_ANCHOR_VERSION, MEDIA_MATCH_WIRE_SCHEMA_V3,
     tuning::{
-        V3_AUDIO_SAMPLED_FAST_INDEX_LANDMARK_LIMIT, V3_AUDIO_SAMPLED_FAST_MAX_WINDOWS,
-        V3_AUDIO_SAMPLED_FAST_MIN_WINDOWS, V3_AUDIO_SAMPLED_FAST_SAMPLE_RATE,
-        V3_AUDIO_SAMPLED_FAST_TARGET_LANDMARKS, V3_AUDIO_SAMPLED_FAST_WINDOW_SECONDS,
-        V3_AUDIO_SAMPLED_MIN_BODY_REGIONS, current_v3_tuning,
+        V3_AUDIO_SAMPLED_FAST_INDEX_LANDMARK_LIMIT, V3_AUDIO_SAMPLED_FAST_SAMPLE_RATE,
+        V3_AUDIO_SAMPLED_FAST_WINDOW_COUNT, V3_AUDIO_SAMPLED_FAST_WINDOW_SECONDS,
+        current_v3_tuning,
     },
 };
 
 pub const MEDIA_MATCH_V3_FINGERPRINT_CACHE_VERSION: u32 = 2;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum MediaFingerprintProfile {
-    AudioConstellationV3,
-}
-
-impl MediaFingerprintProfile {
-    pub fn label(self) -> &'static str {
-        "audio-constellation-v3"
-    }
-}
-
-fn default_media_fingerprint_profile() -> MediaFingerprintProfile {
-    MediaFingerprintProfile::AudioConstellationV3
-}
+pub const MEDIA_MATCH_V3_PROFILE_LABEL: &str = "audio-constellation-v3";
+pub const MEDIA_MATCH_V3_AUDIO_ALGORITHM: &str = "sorotte-audio-constellation-v3-sampled-fast";
 
 fn default_sampled_policy_version() -> u32 {
     1
@@ -38,13 +23,10 @@ fn default_sampled_policy_version() -> u32 {
 pub struct MediaSampledAudioPolicy {
     #[serde(default = "default_sampled_policy_version")]
     pub policy_version: u32,
-    pub sampled_fast_window_seconds: u32,
-    pub sampled_fast_min_windows: usize,
-    pub sampled_fast_max_windows: usize,
-    pub sampled_fast_target_landmarks: usize,
-    pub sampled_fast_index_landmark_limit: usize,
-    pub sampled_fast_min_body_regions: usize,
-    pub sampled_fast_sample_rate: u32,
+    pub window_seconds: u32,
+    pub window_count: usize,
+    pub sample_rate: u32,
+    pub landmark_limit: usize,
 }
 
 impl Default for MediaSampledAudioPolicy {
@@ -57,21 +39,17 @@ impl MediaSampledAudioPolicy {
     pub fn fixed_sampled_fast_current() -> Self {
         Self {
             policy_version: default_sampled_policy_version(),
-            sampled_fast_window_seconds: V3_AUDIO_SAMPLED_FAST_WINDOW_SECONDS,
-            sampled_fast_min_windows: V3_AUDIO_SAMPLED_FAST_MIN_WINDOWS,
-            sampled_fast_max_windows: V3_AUDIO_SAMPLED_FAST_MAX_WINDOWS,
-            sampled_fast_target_landmarks: V3_AUDIO_SAMPLED_FAST_TARGET_LANDMARKS,
-            sampled_fast_index_landmark_limit: V3_AUDIO_SAMPLED_FAST_INDEX_LANDMARK_LIMIT,
-            sampled_fast_min_body_regions: V3_AUDIO_SAMPLED_MIN_BODY_REGIONS
-                .min(V3_AUDIO_SAMPLED_FAST_MAX_WINDOWS),
-            sampled_fast_sample_rate: V3_AUDIO_SAMPLED_FAST_SAMPLE_RATE,
+            window_seconds: V3_AUDIO_SAMPLED_FAST_WINDOW_SECONDS,
+            window_count: V3_AUDIO_SAMPLED_FAST_WINDOW_COUNT,
+            sample_rate: V3_AUDIO_SAMPLED_FAST_SAMPLE_RATE,
+            landmark_limit: V3_AUDIO_SAMPLED_FAST_INDEX_LANDMARK_LIMIT,
         }
     }
 
     pub fn label(&self) -> String {
         format!(
             "sampled-fast-fixed-{}x{}s-current",
-            self.sampled_fast_max_windows, self.sampled_fast_window_seconds
+            self.window_count, self.window_seconds
         )
     }
 
@@ -86,32 +64,23 @@ impl MediaSampledAudioPolicy {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MediaExtractionSettings {
-    #[serde(default = "default_media_fingerprint_profile")]
-    pub profile: MediaFingerprintProfile,
     #[serde(
         default,
         skip_serializing_if = "MediaSampledAudioPolicy::is_default_policy"
     )]
     pub sampled_audio_policy: MediaSampledAudioPolicy,
-    pub audio_algorithm: String,
 }
 
 impl Default for MediaExtractionSettings {
     fn default() -> Self {
-        Self::audio_constellation_v3()
+        Self::sampled_fast_audio_index_v3()
     }
 }
 
 impl MediaExtractionSettings {
-    pub fn audio_constellation_v3() -> Self {
-        Self::sampled_fast_audio_index_v3()
-    }
-
     pub fn sampled_fast_audio_index_v3() -> Self {
         Self {
-            profile: MediaFingerprintProfile::AudioConstellationV3,
             sampled_audio_policy: MediaSampledAudioPolicy::fixed_sampled_fast_current(),
-            audio_algorithm: "sorotte-audio-constellation-v3-sampled-fast".to_owned(),
         }
     }
 }
@@ -166,26 +135,14 @@ mod tests {
     fn production_settings_are_fixed_sampled_fast() {
         let settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
 
-        assert_eq!(settings.profile.label(), "audio-constellation-v3");
         assert!(settings.sampled_audio_policy.is_production_compatible());
         assert_eq!(
-            settings.sampled_audio_policy.sampled_fast_max_windows,
-            V3_AUDIO_SAMPLED_FAST_MAX_WINDOWS
+            settings.sampled_audio_policy.window_count,
+            V3_AUDIO_SAMPLED_FAST_WINDOW_COUNT
         );
-        assert_eq!(
-            settings.sampled_audio_policy.sampled_fast_window_seconds,
-            20
-        );
-        assert_eq!(
-            settings.sampled_audio_policy.sampled_fast_sample_rate,
-            8_000
-        );
-        assert_eq!(
-            settings
-                .sampled_audio_policy
-                .sampled_fast_index_landmark_limit,
-            384
-        );
+        assert_eq!(settings.sampled_audio_policy.window_seconds, 20);
+        assert_eq!(settings.sampled_audio_policy.sample_rate, 8_000);
+        assert_eq!(settings.sampled_audio_policy.landmark_limit, 384);
     }
 
     #[test]
