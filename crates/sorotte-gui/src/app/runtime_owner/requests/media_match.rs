@@ -857,33 +857,29 @@ impl GuiPersistedConfigRuntimeOwner {
             .and_then(|name| name.to_str())
             .unwrap_or(target);
         let remote_targets = self.media_match_remote_targets_for_state(projected_state);
-        let matching_targets = remote_targets.iter().filter(|remote| {
+        let remote = remote_targets.iter().find(|remote| {
             remote.target_file_name.eq_ignore_ascii_case(target)
                 || Path::new(&remote.target_file_name)
                     .file_name()
                     .and_then(|name| name.to_str())
                     .is_some_and(|name| name.eq_ignore_ascii_case(room_target))
-        });
-        for remote in matching_targets {
-            let trigger_key = Self::media_match_remote_lookup_trigger_key(
-                &root,
-                &search_roots,
-                remote,
-                &projected_state.media_match.settings,
-            );
-            if let Some(candidate_path) = self.cached_media_match_remote_lookup_result(&trigger_key)
-            {
-                return candidate_path;
-            }
-            self.queue_media_match_remote_lookup_worker(
-                trigger_key,
-                root.clone(),
-                search_roots.clone(),
-                remote.clone(),
-                projected_state.media_match.settings.clone(),
-            );
-            return None;
+        })?;
+        let trigger_key = Self::media_match_remote_lookup_trigger_key(
+            &root,
+            &search_roots,
+            remote,
+            &projected_state.media_match.settings,
+        );
+        if let Some(candidate_path) = self.cached_media_match_remote_lookup_result(&trigger_key) {
+            return candidate_path;
         }
+        self.queue_media_match_remote_lookup_worker(
+            trigger_key,
+            root,
+            search_roots,
+            remote.clone(),
+            projected_state.media_match.settings.clone(),
+        );
         None
     }
 
