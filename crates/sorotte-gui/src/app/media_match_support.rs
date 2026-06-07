@@ -822,6 +822,7 @@ where
     let mut next_cache = initial_media_match_rebuild_cache(&existing_cache, selected.prefiltered);
     let mut instrumentation = MediaMatchRebuildInstrumentation::default();
     let mut parallel_fresh_results = BTreeMap::new();
+    let mut parallel_fresh_work_done = 0usize;
     if fresh_work_total > 1 {
         let fresh_paths = selected
             .paths
@@ -840,16 +841,35 @@ where
             request.tools,
             request.extraction_settings,
             request.cancel_flag,
+            |completed, path| {
+                parallel_fresh_work_done = completed;
+                let progress_fraction =
+                    0.1 + (0.82 * (completed as f32 / fresh_work_total.max(1) as f32));
+                progress(MediaMatchToolProgress::new(
+                    "Fingerprinting media",
+                    Some(format!(
+                        "{completed}/{fresh_work_total} files needing index: {}",
+                        path.display()
+                    )),
+                    progress_fraction,
+                ));
+            },
         )?;
         instrumentation.add_parallel_stats(&stats);
         parallel_fresh_results = results;
+        fresh_work_done = parallel_fresh_work_done;
     }
 
     for (index, path) in selected.paths.iter().enumerate() {
         let normalized_path = normalize_media_path(path);
         let has_parallel_result = parallel_fresh_results.contains_key(&normalized_path);
         let denominator = total.max(1);
-        let progress_fraction = 0.1 + (0.82 * (index as f32 / denominator as f32));
+        let parallel_prefetched = parallel_fresh_work_done > 0;
+        let progress_fraction = if parallel_prefetched {
+            0.92 + (0.06 * (index as f32 / denominator as f32))
+        } else {
+            0.1 + (0.82 * (index as f32 / denominator as f32))
+        };
         let path_needs_fingerprint =
             !media_match_cache_has_valid_record(&existing_cache, path, request.extraction_settings);
         if request
@@ -863,7 +883,11 @@ where
             continue;
         }
         progress(MediaMatchToolProgress::new(
-            "Fingerprinting media",
+            if parallel_prefetched {
+                "Saving media fingerprints"
+            } else {
+                "Fingerprinting media"
+            },
             Some(format!(
                 "{fresh_work_done}/{fresh_work_total} files needing index: {}",
                 path.display()
@@ -901,7 +925,9 @@ where
                     reused += 1;
                 } else {
                     fingerprinted += 1;
-                    fresh_work_done += 1;
+                    if !from_parallel_result {
+                        fresh_work_done += 1;
+                    }
                     let sqlite_started_at = Instant::now();
                     save_media_match_record_to_sqlite(&checkpoint_connection, &record)?;
                     instrumentation
@@ -927,14 +953,13 @@ where
             Err(MediaFingerprintError::Cancelled { .. }) => {
                 if from_parallel_result {
                     skipped += 1;
-                    fresh_work_done += 1;
                 } else {
                     return Err("Media Matching index rebuild was canceled.".to_owned());
                 }
             }
             Err(_) => {
                 skipped += 1;
-                if path_needs_fingerprint {
+                if path_needs_fingerprint && !from_parallel_result {
                     fresh_work_done += 1;
                 }
             }
@@ -1904,18 +1929,22 @@ fn cached_or_fresh_media_fingerprint(
     .map(|fingerprint| (fingerprint.record, false, Some(fingerprint.report)))
 }
 
-fn parallel_fresh_media_fingerprints(
+fn parallel_fresh_media_fingerprints<F>(
     paths: Vec<PathBuf>,
     tools: &MediaMatchToolPaths,
     extraction_settings: &MediaExtractionSettings,
     cancel_flag: Option<&AtomicBool>,
+    mut progress: F,
 ) -> Result<
     (
         BTreeMap<String, MediaMatchParallelExtractionResult>,
         MediaMatchParallelExtractionStats,
     ),
     String,
-> {
+>
+where
+    F: FnMut(usize, &Path),
+{
     if paths.is_empty() {
         return Ok(Default::default());
     }
@@ -1972,7 +2001,10 @@ fn parallel_fresh_media_fingerprints(
             });
         }
         drop(tx);
-        outputs.extend(rx);
+        for output in rx {
+            progress(outputs.len() + 1, &output.path);
+            outputs.push(output);
+        }
     });
 
     let cancel_requested = cancel_flag.load(Ordering::Relaxed);
@@ -4139,12 +4171,45 @@ mod tests {
             &tools,
             &MediaExtractionSettings::sampled_fast_audio_index_v3(),
             Some(&cancel),
+            |_, _| {},
         )
         .expect("pre-cancelled worker pool should report cancelled work, not tool errors");
 
         assert!(results.is_empty());
         assert_eq!(stats.cancelled_file_count, 2);
         assert_eq!(stats.files_indexed, 0);
+    }
+
+    #[test]
+    fn parallel_sampled_rebuild_reports_progress_for_completed_outputs() {
+        let root = unique_media_match_test_root("parallel-progress");
+        let media_dir = root.join("media");
+        std::fs::create_dir_all(&media_dir).expect("media dir should be created");
+        let first = media_dir.join("one.mkv");
+        let second = media_dir.join("two.mkv");
+        std::fs::write(&first, vec![1u8; 2000]).expect("first media file should be written");
+        std::fs::write(&second, vec![2u8; 2000]).expect("second media file should be written");
+        let tools = MediaMatchToolPaths {
+            ffmpeg: PathBuf::from("ffmpeg-not-used"),
+            ffprobe: PathBuf::from("ffprobe-not-used"),
+        };
+        let mut updates = Vec::new();
+
+        let (results, stats) = parallel_fresh_media_fingerprints(
+            vec![first, second],
+            &tools,
+            &MediaExtractionSettings::sampled_fast_audio_index_v3(),
+            None,
+            |completed, path| updates.push((completed, path.to_path_buf())),
+        )
+        .expect("worker pool should return failed outputs for missing tools");
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(updates.len(), 2);
+        assert_eq!(updates[0].0, 1);
+        assert_eq!(updates[1].0, 2);
+        assert_eq!(stats.files_indexed, 0);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
