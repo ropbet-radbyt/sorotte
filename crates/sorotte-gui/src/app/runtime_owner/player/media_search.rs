@@ -200,7 +200,11 @@ impl GuiPersistedConfigRuntimeOwner {
 
         let search_roots = self.automatic_media_search_roots(state);
         let roots = Self::automatic_media_search_root_keys(&search_roots);
-        let trigger = self.automatic_media_resolution_trigger(&target, &roots);
+        let trigger = self.automatic_media_resolution_trigger(
+            &target,
+            &roots,
+            self.media_match_remote_resolution_token_for_state(state),
+        );
         if !self.should_rerun_automatic_media_resolution(&trigger) {
             if self
                 .session

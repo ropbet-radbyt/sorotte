@@ -593,11 +593,12 @@ pub fn load_media_match_v3_record_for_path(
                     media_files_v3.size_bytes, media_files_v3.container_fingerprint,
                     fingerprints_v3.duration_ms, fingerprints_v3.audio_blob, fingerprints_v3.error
              FROM fingerprints_v3
-             JOIN media_files_v3 ON media_files_v3.file_id = fingerprints_v3.file_id
-             WHERE fingerprints_v3.settings_id = ?1
-               AND media_files_v3.normalized_path = ?2
-               AND media_files_v3.modified_unix_millis = ?3
-               AND media_files_v3.size_bytes = ?4",
+              JOIN media_files_v3 ON media_files_v3.file_id = fingerprints_v3.file_id
+              WHERE fingerprints_v3.settings_id = ?1
+                AND media_files_v3.normalized_path = ?2
+                AND media_files_v3.size_bytes = ?4
+              ORDER BY CASE WHEN media_files_v3.modified_unix_millis = ?3 THEN 0 ELSE 1 END
+              LIMIT 1",
         )
         .map_err(|error| format!("failed preparing V3 record load: {error}"))?;
     statement
@@ -1556,6 +1557,46 @@ mod tests {
 
         assert_eq!(loaded.audio_anchors.len(), 4);
         assert_eq!(loaded.identity, record.identity);
+    }
+
+    #[test]
+    fn load_audio_record_tolerates_modified_time_drift_when_path_and_size_match() {
+        let connection = Connection::open_in_memory().unwrap();
+        initialize_media_match_v3_index(&connection).unwrap();
+        let record = test_record("mtime-drift.mkv", &[1, 2, 3, 4]);
+
+        save_media_match_v3_record(&connection, &record, None).unwrap();
+        let loaded = load_media_match_v3_record_for_path(
+            &connection,
+            &record.identity.normalized_path,
+            &record.extraction_settings,
+            record.identity.modified_unix_millis + 39_600_000,
+            record.identity.size_bytes,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(loaded.audio_anchors.len(), 4);
+        assert_eq!(loaded.identity, record.identity);
+    }
+
+    #[test]
+    fn load_audio_record_rejects_size_mismatch_when_path_matches() {
+        let connection = Connection::open_in_memory().unwrap();
+        initialize_media_match_v3_index(&connection).unwrap();
+        let record = test_record("size-drift.mkv", &[1, 2, 3, 4]);
+
+        save_media_match_v3_record(&connection, &record, None).unwrap();
+        let loaded = load_media_match_v3_record_for_path(
+            &connection,
+            &record.identity.normalized_path,
+            &record.extraction_settings,
+            record.identity.modified_unix_millis + 39_600_000,
+            record.identity.size_bytes + 1,
+        )
+        .unwrap();
+
+        assert!(loaded.is_none());
     }
 
     #[test]

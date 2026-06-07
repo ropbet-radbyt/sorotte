@@ -131,6 +131,13 @@ impl GuiPersistedConfigRuntimeOwner {
         while let Some(update) = player.take_local_file_update() {
             local_file_updates.push(update);
         }
+        let now = Instant::now();
+        if self
+            .pending_attached_player_pause_command
+            .is_some_and(|pending| pending.suppress_until <= now)
+        {
+            self.pending_attached_player_pause_command = None;
+        }
         for update in playback_updates {
             if let Some(paused_for_cache) = update.paused_for_cache {
                 self.player_paused_for_cache = Some(paused_for_cache);
@@ -152,7 +159,16 @@ impl GuiPersistedConfigRuntimeOwner {
             if let Some(paused) = update.paused
                 && self.player_paused_for_cache != Some(true)
             {
-                self.player_paused = Some(paused);
+                let accept_paused = match self.pending_attached_player_pause_command {
+                    Some(pending) if pending.suppress_until > now => {
+                        self.player_paused = Some(pending.target_paused);
+                        paused == pending.target_paused
+                    }
+                    _ => true,
+                };
+                if accept_paused {
+                    self.player_paused = Some(paused);
+                }
             }
             if let Some(position_seconds) = update.position_seconds {
                 self.player_position_seconds = Some(position_seconds - user_offset_seconds);

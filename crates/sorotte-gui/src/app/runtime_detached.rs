@@ -58,6 +58,7 @@ impl GuiPersistedConfigRuntimeOwner {
             self.session = Some(Box::new(session));
             self.session_projects_to_shell = false;
             self.last_published_local_file = None;
+            self.last_published_media_match_signature = None;
         }
         if self.session_transport.is_none() {
             self.session_transport = Some(GuiQueuedSessionTransportHandle::default());
@@ -85,34 +86,31 @@ impl GuiPersistedConfigRuntimeOwner {
         Value::Object(payload)
     }
 
-    fn attach_media_match_wire_signature_to_file_payload(
+    fn media_match_wire_signature_for_local_file(
         &self,
         state: &SorotteGuiShellAppState,
-        payload: &mut Value,
-    ) {
+        local_file: Option<&LocalFileUpdate>,
+    ) -> Option<Value> {
         if !state.media_match.settings.fingerprinting_enabled
             || !state.media_match.settings.wire_sharing_enabled
-            || self.media_match_runtime_snapshot.health
-                != super::shell_state::GuiMediaMatchToolHealth::Healthy
         {
-            return;
+            return None;
         }
         let root = self.legacy_gui_qsettings_root();
-        let Some(root) = root.as_deref() else {
-            return;
-        };
-        let Some(path) = self
-            .player_local_file
-            .as_ref()
-            .and_then(|local_file| local_file.path.as_deref())
-        else {
-            return;
-        };
-        let Some(signature) = media_match_wire_value_for_path(root, path) else {
+        let root = root.as_deref()?;
+        let path = local_file.and_then(|local_file| local_file.path.as_deref())?;
+        media_match_wire_value_for_path(root, path)
+    }
+
+    fn attach_media_match_wire_signature_to_file_payload(
+        payload: &mut Value,
+        signature: Option<&Value>,
+    ) {
+        let Some(signature) = signature else {
             return;
         };
         if let Value::Object(entries) = payload {
-            entries.insert(MEDIA_MATCH_FILE_PAYLOAD_KEY.to_owned(), signature);
+            entries.insert(MEDIA_MATCH_FILE_PAYLOAD_KEY.to_owned(), signature.clone());
         }
     }
 
@@ -162,8 +160,12 @@ impl GuiPersistedConfigRuntimeOwner {
             .filesize_privacy_mode
             .unwrap_or(PrivacyMode::SendRaw);
         let player_local_file = self.player_local_file.clone();
+        let media_match_signature =
+            self.media_match_wire_signature_for_local_file(state, player_local_file.as_ref());
         let file_publish_pending = !self.player_local_file_placeholder
-            && player_local_file != self.last_published_local_file;
+            && (player_local_file != self.last_published_local_file
+                || (player_local_file.is_some()
+                    && media_match_signature != self.last_published_media_match_signature));
         let playlist_control_available = self
             .session
             .as_ref()
@@ -293,7 +295,10 @@ impl GuiPersistedConfigRuntimeOwner {
         if publish_file {
             let mut file_payload =
                 Self::local_file_payload_legacy_compatible(player_local_file.as_ref());
-            self.attach_media_match_wire_signature_to_file_payload(state, &mut file_payload);
+            Self::attach_media_match_wire_signature_to_file_payload(
+                &mut file_payload,
+                media_match_signature.as_ref(),
+            );
             let Some(session) = self.session.as_mut() else {
                 return Ok(());
             };
@@ -303,6 +308,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 filesize_privacy_mode,
             )?;
             self.last_published_local_file = player_local_file;
+            self.last_published_media_match_signature = media_match_signature;
         }
         if let Some(pending_local_attached_pause_override) =
             pending_local_attached_pause_override_update
@@ -632,6 +638,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.session_default_room = Some(default_room);
         self.pending_room_change_request = None;
         self.last_published_local_file = None;
+        self.last_published_media_match_signature = None;
         self.pending_attached_media_resolution = None;
         self.unresolved_attached_media_target = None;
         self.clear_session_attached_player_sync_state();
@@ -676,6 +683,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.session_default_room = None;
         self.pending_room_change_request = None;
         self.last_published_local_file = None;
+        self.last_published_media_match_signature = None;
         self.pending_attached_media_resolution = None;
         self.unresolved_attached_media_target = None;
         self.clear_session_attached_player_sync_state();

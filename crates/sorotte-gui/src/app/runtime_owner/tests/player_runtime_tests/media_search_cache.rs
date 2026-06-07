@@ -1,7 +1,19 @@
 use super::*;
 
+fn wait_for_media_match_remote_lookup(owner: &mut GuiPersistedConfigRuntimeOwner) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while std::time::Instant::now() < deadline {
+        owner.pump_media_match_remote_lookup_worker();
+        if owner.media_match_remote_lookup_rx.is_none() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    panic!("timed out waiting for cached media-match remote lookup completion");
+}
+
 #[test]
-fn gui_persisted_config_runtime_owner_does_not_open_sampled_only_media_match_candidate() {
+fn gui_persisted_config_runtime_owner_opens_probable_media_match_candidate_for_selected_playlist() {
     #[derive(Debug, Default)]
     struct RecordingPlayerState {
         opened_paths: Vec<String>,
@@ -192,15 +204,273 @@ fn gui_persisted_config_runtime_owner_does_not_open_sampled_only_media_match_can
 
     assert_eq!(
         owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
-        SelectedPlaylistMediaSyncOutcome::NoChange
+        SelectedPlaylistMediaSyncOutcome::NoChange,
+        "cached media-match candidate lookup should not block playlist sync"
+    );
+    wait_for_media_match_remote_lookup(&mut owner);
+    assert_eq!(
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+        SelectedPlaylistMediaSyncOutcome::OpenedNewMedia
     );
     assert_eq!(
         player_state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .opened_paths,
+        vec![sorotte_media_match::normalize_media_path(&local_media_path)],
+        "probable sampled-fast media-match signatures should resolve a selected playlist target without making them autoplay-eligible"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_retries_media_match_when_peer_signature_changes() {
+    #[derive(Debug, Default)]
+    struct RecordingPlayerState {
+        opened_paths: Vec<String>,
+    }
+
+    struct RecordingPlayerAdapter {
+        state: std::sync::Arc<std::sync::Mutex<RecordingPlayerState>>,
+    }
+
+    impl PlayerAdapter for RecordingPlayerAdapter {
+        fn name(&self) -> &'static str {
+            "recording"
+        }
+
+        fn open_file(&mut self, path: &str) -> Result<(), sorotte_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .opened_paths
+                .push(path.to_owned());
+            Ok(())
+        }
+    }
+
+    fn seeded_record_for_path(
+        path: impl AsRef<std::path::Path>,
+        anchor_seed: u32,
+    ) -> sorotte_media_match::MediaFingerprintRecord {
+        let path = path.as_ref();
+        let metadata = std::fs::metadata(path).expect("test media should exist");
+        let modified_unix_millis = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+            .unwrap_or(0);
+        let mut record = sorotte_media_match::MediaFingerprintRecord {
+            identity: sorotte_media_match::MediaFileIdentity::new(
+                path,
+                modified_unix_millis,
+                metadata.len(),
+            ),
+            algorithm_version: sorotte_media_match::MEDIA_MATCH_ALGORITHM_VERSION,
+            extraction_settings:
+                sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3(),
+            duration_seconds: Some(900.0),
+            container_fingerprint: format!("container:{}", path.display()),
+            audio_anchors: Vec::new(),
+            audio_error: None,
+        };
+        record.audio_anchors = (0u32..24)
+            .map(|index| sorotte_media_match::AudioAnchor {
+                bucket: anchor_seed + index,
+                t_ms: 30_000 + (index * 30_000),
+                weight: 4,
+            })
+            .collect();
+        record
+    }
+
+    fn seeded_remote_record(
+        path: &str,
+        anchor_seed: u32,
+    ) -> sorotte_media_match::MediaFingerprintRecord {
+        let mut record = sorotte_media_match::MediaFingerprintRecord {
+            identity: sorotte_media_match::MediaFileIdentity::new(path, 1000, 2000),
+            algorithm_version: sorotte_media_match::MEDIA_MATCH_ALGORITHM_VERSION,
+            extraction_settings:
+                sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3(),
+            duration_seconds: Some(900.0),
+            container_fingerprint: format!("container:{path}"),
+            audio_anchors: Vec::new(),
+            audio_error: None,
+        };
+        record.audio_anchors = (0u32..24)
+            .map(|index| sorotte_media_match::AudioAnchor {
+                bucket: anchor_seed + index,
+                t_ms: 30_000 + (index * 30_000),
+                weight: 4,
+            })
+            .collect();
+        record
+    }
+
+    let root = test_temp_root("shared-playlist-media-match-peer-update-retry");
+    let config_path = root.join("sorotte.ini");
+    let media_root = root.join("local-media");
+    std::fs::create_dir_all(&media_root)
+        .expect("media-match peer-update fixture directory should be created");
+    let current_media_path = media_root.join("episode1.mkv");
+    let local_candidate_name = "local-alt-episode2.mkv";
+    let local_candidate_path = media_root.join(local_candidate_name);
+    std::fs::write(&current_media_path, b"current item")
+        .expect("current media fixture should be written");
+    std::fs::write(&local_candidate_path, b"alternate item")
+        .expect("alternate media-match fixture should be written");
+
+    let local_record = seeded_record_for_path(&local_candidate_path, 100);
+    let mut cache = sorotte_media_match::MediaMatchCache::default();
+    cache.insert(local_record);
+    crate::app::media_match_support::save_media_match_cache_for_test(&root, &cache)
+        .expect("media-match cache should be written");
+
+    let stale_signature =
+        sorotte_media_match::media_match_wire_value_from_records(&[seeded_remote_record(
+            "episode1.mkv",
+            900,
+        )])
+        .expect("stale media-match signature should serialize");
+    let selected_signature =
+        sorotte_media_match::media_match_wire_value_from_records(&[seeded_remote_record(
+            "remote-episode2.mkv",
+            100,
+        )])
+        .expect("selected media-match signature should serialize");
+
+    let media_root_key =
+        crate::app::media_search_cache::normalized_media_search_root_key(&media_root);
+    let mut root_index_candidates = std::collections::HashMap::new();
+    root_index_candidates.insert(
+        local_candidate_name.to_owned(),
+        vec![local_candidate_name.to_owned()],
+    );
+    let mut root_indexes_by_key = std::collections::HashMap::new();
+    root_indexes_by_key.insert(
+        media_root_key.clone(),
+        GuiAttachedMediaSearchRootIndex {
+            root_key: media_root_key.clone(),
+            root_path: media_root.clone(),
+            built_at_unix_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after unix epoch")
+                .as_millis() as u64,
+            candidates_by_name: root_index_candidates,
+        },
+    );
+
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
+    let (mut owner, session_transport) =
+        GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
+            .with_client_core_chat_session_runtime("alice", "room1")
+            .expect("client-core chat runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
+        state: player_state.clone(),
+    })));
+    owner.player_local_file = Some(
+        sorotte_player_api::LocalFileUpdate::new("episode1.mkv")
+            .with_path(current_media_path.to_string_lossy().into_owned()),
+    );
+    owner.attached_media_search_index = Some(GuiAttachedMediaSearchIndex {
+        roots: vec![media_root_key],
+        root_indexes_by_key,
+        roots_requiring_refresh: std::collections::BTreeSet::new(),
+    });
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        shared_playlist_enabled: Some(true),
+        media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
+        media_match_fingerprinting_enabled: Some(true),
+        media_match_wire_sharing_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    owner.media_match_runtime_snapshot.settings = state.media_match.settings.clone();
+    owner.media_match_runtime_snapshot.health = crate::app::GuiMediaMatchToolHealth::Healthy;
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let _ = handle.drain_actions();
+    let _ = session_transport.drain_outbound_protocol_lines();
+
+    session_transport.push_inbound_protocol_lines([
+        r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"sharedPlaylists":true}}}"#
+            .to_owned(),
+        serde_json::json!({
+            "Set": {
+                "user": {
+                    "bob": {
+                        "room": { "name": "room1" },
+                        "file": {
+                            "name": "episode1.mkv",
+                            "mediaMatch": stale_signature,
+                        }
+                    }
+                }
+            }
+        })
+        .to_string(),
+        r#"{"Set":{"playlistChange":{"files":["episode1.mkv","remote-episode2.mkv"],"user":"bob"}}}"#
+            .to_owned(),
+        r#"{"Set":{"playlistIndex":{"index":1,"user":"bob"}}}"#.to_owned(),
+    ]);
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert_eq!(
+        player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .opened_paths,
         Vec::<String>::new(),
-        "sampled-only media-match signatures are not strong enough to open alternate media automatically"
+        "stale peer metadata for the previous playlist item must not open an alternate match"
+    );
+
+    session_transport.push_inbound_protocol_line(
+        serde_json::json!({
+            "Set": {
+                "user": {
+                    "bob": {
+                        "room": { "name": "room1" },
+                        "file": {
+                            "name": "remote-episode2.mkv",
+                            "mediaMatch": selected_signature,
+                        }
+                    }
+                }
+            }
+        })
+        .to_string(),
+    );
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    let retry_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while std::time::Instant::now() < retry_deadline {
+        if !player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .opened_paths
+            .is_empty()
+        {
+            break;
+        }
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    assert_eq!(
+        player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .opened_paths,
+        vec![sorotte_media_match::normalize_media_path(
+            &local_candidate_path
+        )],
+        "updated peer media-match metadata for the selected playlist item should retrigger automatic resolution"
     );
 
     let _ = std::fs::remove_dir_all(&root);

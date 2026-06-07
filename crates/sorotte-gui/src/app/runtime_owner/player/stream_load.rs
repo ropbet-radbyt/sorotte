@@ -195,6 +195,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.player_local_file_placeholder = false;
         self.player_position_seconds = None;
         self.last_published_local_file = None;
+        self.last_published_media_match_signature = None;
         let user_initiated =
             self.take_pending_stream_load_user_initiated_for_target(&outcome.requested_target);
         let failure_message = outcome

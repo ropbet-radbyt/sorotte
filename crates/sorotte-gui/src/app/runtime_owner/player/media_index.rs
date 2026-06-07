@@ -106,10 +106,12 @@ impl GuiPersistedConfigRuntimeOwner {
         &self,
         target: &str,
         roots: &[String],
+        media_match_remote_targets: String,
     ) -> GuiAutomaticMediaResolutionTrigger {
         GuiAutomaticMediaResolutionTrigger {
             target: target.to_owned(),
             roots: roots.to_vec(),
+            media_match_remote_targets,
             current_player_path: self.current_player_media_path(),
             index_revision: self.attached_media_search_index_revision,
             retry_due: self.attached_media_search_retry_due(),

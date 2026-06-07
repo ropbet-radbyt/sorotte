@@ -13,6 +13,7 @@ use rustls::{
     ClientConfig, RootCertStore, ServerConfig, ServerConnection, StreamOwned,
     pki_types::CertificateDer,
 };
+use sorotte_protocol::DEFAULT_MAX_PROTOCOL_LINE_BYTES;
 
 const TEST_TLS_CERT_PEM: &str = include_str!("../../../../../../fixtures/tls/test_cert.pem");
 const TEST_TLS_CHAIN_PEM: &str = include_str!("../../../../../../fixtures/tls/test_chain.pem");
@@ -74,6 +75,16 @@ fn valid_chat_line_with_len(line_len: usize) -> String {
     let message_len = line_len - prefix.len() - suffix.len();
     let line = format!("{prefix}{}{suffix}", "a".repeat(message_len));
     assert_eq!(line.len(), line_len);
+    line
+}
+
+fn oversized_media_match_list_snapshot_line() -> String {
+    let signature = "A".repeat(32 * 1024);
+    let line = format!(
+        r#"{{"List":{{"room1":{{"alice":{{"file":{{"name":"episode1.mkv","mediaMatch":{{"schema":"sorotte.mediaMatch.v3","profiles":[{{"profile":"audio-constellation-v3","algorithmVersion":3,"durationMs":100000,"audio":{{"algorithm":"sorotte-audio-constellation-v3-sampled-fast","timeBaseMs":1,"anchors":"{signature}"}}}}]}}}}}},"bob":{{"file":{{"name":"episode2.mkv","mediaMatch":{{"schema":"sorotte.mediaMatch.v3","profiles":[{{"profile":"audio-constellation-v3","algorithmVersion":3,"durationMs":100000,"audio":{{"algorithm":"sorotte-audio-constellation-v3-sampled-fast","timeBaseMs":1,"anchors":"{signature}"}}}}]}}}}}}}}}}}}"#
+    );
+    assert!(line.len() > DEFAULT_MAX_PROTOCOL_LINE_BYTES);
+    assert!(line.len() <= MAX_INBOUND_PROTOCOL_LINE_BYTES);
     line
 }
 
@@ -208,6 +219,63 @@ fn gui_tcp_accepts_line_at_or_under_max_bytes() {
     server_thread
         .join()
         .expect("max-line transport test server thread should join");
+}
+
+#[test]
+fn gui_tcp_accepts_media_match_room_snapshot_above_default_protocol_limit() {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .expect("above-default-line transport test server should bind");
+    let address = listener
+        .local_addr()
+        .expect("above-default-line transport test server should expose its address");
+    let expected_line = oversized_media_match_list_snapshot_line();
+    let server_line = expected_line.clone();
+    let server_thread = thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("above-default-line transport test server should accept a client");
+        let reader_stream = stream
+            .try_clone()
+            .expect("above-default-line transport test server should clone the socket");
+        let mut reader = BufReader::new(reader_stream);
+        let mut first_line = String::new();
+        reader
+            .read_line(&mut first_line)
+            .expect("above-default-line transport test server should read the TLS request");
+        write_plaintext_tls_fallback(&mut stream);
+        stream
+            .write_all(server_line.as_bytes())
+            .expect("above-default-line transport test server should write the large line");
+        stream
+            .write_all(b"\n")
+            .expect("above-default-line transport test server should terminate the large line");
+        thread::sleep(Duration::from_millis(250));
+    });
+
+    let mut driver = connect_gui_transport_driver(address.port());
+    let transport = GuiQueuedSessionTransportHandle::default();
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let inbound_lines = loop {
+        driver
+            .pump(&transport)
+            .expect("above-default inbound line should not fail the TCP transport");
+        let inbound_lines = transport.drain_inbound_protocol_lines();
+        if !inbound_lines.is_empty() {
+            break inbound_lines;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the above-default inbound line",
+        );
+        thread::sleep(Duration::from_millis(10));
+    };
+
+    assert_eq!(inbound_lines, vec![expected_line]);
+
+    server_thread
+        .join()
+        .expect("above-default-line transport test server thread should join");
 }
 
 #[test]

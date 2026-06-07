@@ -15,6 +15,7 @@ pub(in crate::app) enum GuiPendingCompletionRequest {
     ConnectPublicServer,
     RefreshPublicServers(Vec<(String, String)>),
     SearchMissingMedia,
+    SetPlaybackPause(bool),
     TogglePlaybackPause,
     SendChatMessage(String),
 }
@@ -49,6 +50,7 @@ impl GuiPendingCompletionRequest {
                     .collect(),
             ),
             GuiPendingOperationKind::SearchMissingMedia => Self::SearchMissingMedia,
+            GuiPendingOperationKind::SetPlaybackPause(paused) => Self::SetPlaybackPause(paused),
             GuiPendingOperationKind::TogglePlaybackPause => Self::TogglePlaybackPause,
             GuiPendingOperationKind::SendChatMessage => {
                 Self::SendChatMessage(state.outgoing_chat_message.clone()?)
@@ -76,6 +78,7 @@ impl GuiPendingCompletionRequest {
                 GuiShellAction::CompletePublicServerRefresh(servers)
             }
             Self::SearchMissingMedia => GuiShellAction::CompleteMissingMediaSearch(None),
+            Self::SetPlaybackPause(paused) => GuiShellAction::CompletePlaybackPauseState(paused),
             Self::TogglePlaybackPause => GuiShellAction::CompletePlaybackPauseToggle,
             Self::SendChatMessage(_) => GuiShellAction::CompleteLocalChatSend,
         }

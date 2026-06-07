@@ -41,6 +41,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.sync_detached_session_runtime_state_or_notify(handle, &mut projected_state);
         self.pump_media_match_tool_worker(handle, &mut projected_state);
         self.pump_media_match_background_worker(handle, &mut projected_state);
+        self.pump_media_match_remote_lookup_worker();
         let _ = self.maybe_sync_media_match_wire_decisions(handle, &mut projected_state);
         if !self.startup_saved_connect_attempted {
             self.startup_saved_connect_attempted = true;
@@ -77,10 +78,13 @@ impl GuiPersistedConfigRuntimeOwner {
             self.sync_detached_session_runtime_state_or_notify(handle, &mut projected_state);
             self.pump_media_match_tool_worker(handle, &mut projected_state);
             self.pump_media_match_background_worker(handle, &mut projected_state);
+            self.pump_media_match_remote_lookup_worker();
             let _ = self.maybe_sync_media_match_wire_decisions(handle, &mut projected_state);
         }
         self.ensure_configured_player_attached_for_active_session();
         self.sync_player_runtime_state(handle, &projected_state);
+        self.maybe_queue_media_match_exact_playlist_signature(handle, &mut projected_state);
+        self.pump_media_match_remote_lookup_worker();
         let _ = self.maybe_sync_media_match_wire_decisions(handle, &mut projected_state);
         self.maybe_queue_media_match_background_warmup(handle, &mut projected_state);
         self.pump_startup_plex_server_refresh(handle, &mut projected_state);

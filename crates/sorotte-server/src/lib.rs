@@ -18,11 +18,11 @@ use sha1::{Digest, Sha1};
 use sha2::Sha256;
 use sorotte_core::{DomainError, SyncDomain};
 use sorotte_protocol::{
-    ChatPayload, ControllerAuthPayload, HelloPayload, IgnoringOnTheFlyPayload, ListPayload,
-    ListUserEntry, NewControlledRoomPayload, PingPayload, PlaylistChangePayload,
-    PlaylistIndexPayload, PlaystatePayload, ProtocolError, ProtocolMessage, ReadyPayload, RoomRef,
-    SetPayload, StatePayload, TlsPayload, UserSetPayload, decode_line, decode_message_line_items,
-    encode_message_line,
+    ChatPayload, ControllerAuthPayload, DEFAULT_MAX_PROTOCOL_LINE_BYTES, HelloPayload,
+    IgnoringOnTheFlyPayload, ListPayload, ListUserEntry, NewControlledRoomPayload, PingPayload,
+    PlaylistChangePayload, PlaylistIndexPayload, PlaystatePayload, ProtocolError, ProtocolMessage,
+    ReadyPayload, RoomRef, SetPayload, StatePayload, TlsPayload, UserSetPayload, decode_line,
+    decode_message_line_items, encode_message_line,
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -70,7 +70,9 @@ const PING_MOVING_AVERAGE_WEIGHT: f64 = 0.85;
 const SERVER_STATS_SNAPSHOT_INTERVAL_SECONDS: f64 = 3600.0;
 const SERVER_STATS_DELAY_STEP_SECONDS: f64 = 5.0;
 const SERVER_NETWORK_TICK_INTERVAL_SECONDS: f64 = 0.25;
-const MAX_PROTOCOL_LINE_BYTES: usize = 64 * 1024;
+// Media-match signatures can push otherwise valid Set/List lines above the
+// base Syncplay line size, especially when multiple users publish signatures.
+const MAX_PROTOCOL_LINE_BYTES: usize = DEFAULT_MAX_PROTOCOL_LINE_BYTES * 8;
 const PROTOCOL_LINE_TOO_LONG_ERROR: &str = "Protocol line too long";
 const CLIENT_OUTBOUND_QUEUE_CAPACITY: usize = 256;
 const ACCEPTED_CLIENT_QUEUE_CAPACITY: usize = 1024;

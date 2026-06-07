@@ -193,6 +193,10 @@ impl SorotteGuiShellAppState {
             GuiShellAction::BeginPlaybackPause => self.begin_playback_pause_state(true),
             GuiShellAction::BeginPlaybackResume => self.begin_playback_pause_state(false),
             GuiShellAction::BeginPlaybackPauseToggle => self.begin_playback_pause_toggle(),
+            GuiShellAction::CompletePlaybackPauseState(paused) => {
+                self.complete_playback_pause_state(paused)
+            }
+            GuiShellAction::CancelPlaybackPauseState => self.cancel_playback_pause_state(),
             GuiShellAction::CompletePlaybackPauseToggle => self.complete_playback_pause_toggle(),
             GuiShellAction::CancelPlaybackPauseToggle => self.cancel_playback_pause_toggle(),
             GuiShellAction::AnnouncePlaybackPaused => self.announce_playback_pause_state(true),

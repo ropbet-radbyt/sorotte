@@ -98,6 +98,7 @@ impl GuiPersistedConfigRuntimeOwner {
         error: String,
     ) {
         let error_message = format!("Session transport driver pump failed: {error}");
+        eprintln!("{error_message}");
         let now_seconds = system_time_seconds();
         if Self::session_transport_failure_is_terminal(&error) {
             self.handle_terminal_session_transport_failure(
@@ -260,6 +261,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.session_default_room = None;
         self.pending_room_change_request = None;
         self.last_published_local_file = None;
+        self.last_published_media_match_signature = None;
         self.pending_attached_media_resolution = None;
         self.unresolved_attached_media_target = None;
         self.clear_session_attached_player_sync_state();

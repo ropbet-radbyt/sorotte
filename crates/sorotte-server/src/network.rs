@@ -131,11 +131,13 @@ fn timeout_io_error(operation: &str, timeout_duration: std::time::Duration) -> i
     )
 }
 
-pub(crate) async fn read_network_line_from_stream<S>(stream: &mut S) -> io::Result<Option<String>>
+pub(crate) async fn read_network_line_from_stream_with_buffer<S>(
+    stream: &mut S,
+    bytes: &mut Vec<u8>,
+) -> io::Result<Option<String>>
 where
     S: AsyncRead + Unpin,
 {
-    let mut bytes = Vec::new();
     let mut byte = [0_u8; 1];
     loop {
         let bytes_read = stream.read(&mut byte).await?;
@@ -161,7 +163,8 @@ where
         bytes.pop();
     }
 
-    String::from_utf8(bytes).map(Some).map_err(|source| {
+    let line_bytes = std::mem::take(bytes);
+    String::from_utf8(line_bytes).map(Some).map_err(|source| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!("inbound protocol line is not valid utf-8: {source}"),
@@ -169,10 +172,25 @@ where
     })
 }
 
+#[cfg(test)]
+pub(crate) async fn read_network_line_from_stream<S>(stream: &mut S) -> io::Result<Option<String>>
+where
+    S: AsyncRead + Unpin,
+{
+    let mut bytes = Vec::new();
+    read_network_line_from_stream_with_buffer(stream, &mut bytes).await
+}
+
 #[derive(Debug)]
 enum ServerNetworkTransport {
-    Plain(TcpStream),
-    Tls(Box<TlsStream<TcpStream>>),
+    Plain {
+        stream: TcpStream,
+        read_buffer: Vec<u8>,
+    },
+    Tls {
+        stream: Box<TlsStream<TcpStream>>,
+        read_buffer: Vec<u8>,
+    },
     Closed,
     #[cfg(test)]
     StalledWrite,
@@ -180,13 +198,19 @@ enum ServerNetworkTransport {
 
 impl ServerNetworkTransport {
     fn is_tls(&self) -> bool {
-        matches!(self, Self::Tls(_))
+        matches!(self, Self::Tls { .. })
     }
 
     async fn read_line(&mut self) -> io::Result<Option<String>> {
         match self {
-            Self::Plain(stream) => read_network_line_from_stream(stream).await,
-            Self::Tls(stream) => read_network_line_from_stream(stream.as_mut()).await,
+            Self::Plain {
+                stream,
+                read_buffer,
+            } => read_network_line_from_stream_with_buffer(stream, read_buffer).await,
+            Self::Tls {
+                stream,
+                read_buffer,
+            } => read_network_line_from_stream_with_buffer(stream.as_mut(), read_buffer).await,
             Self::Closed => Err(io::Error::new(
                 io::ErrorKind::NotConnected,
                 "transport is closed",
@@ -198,8 +222,8 @@ impl ServerNetworkTransport {
 
     async fn write_line_without_timeout(&mut self, line: &str) -> io::Result<()> {
         match self {
-            Self::Plain(stream) => write_network_line_to_stream(stream, line).await,
-            Self::Tls(stream) => write_network_line_to_stream(stream.as_mut(), line).await,
+            Self::Plain { stream, .. } => write_network_line_to_stream(stream, line).await,
+            Self::Tls { stream, .. } => write_network_line_to_stream(stream.as_mut(), line).await,
             Self::Closed => Err(io::Error::new(
                 io::ErrorKind::NotConnected,
                 "transport is closed",
@@ -222,8 +246,8 @@ impl ServerNetworkTransport {
 
     async fn shutdown(&mut self) -> io::Result<()> {
         match self {
-            Self::Plain(stream) => stream.shutdown().await,
-            Self::Tls(stream) => stream.shutdown().await,
+            Self::Plain { stream, .. } => stream.shutdown().await,
+            Self::Tls { stream, .. } => stream.shutdown().await,
             Self::Closed => Ok(()),
             #[cfg(test)]
             Self::StalledWrite => Ok(()),
@@ -232,11 +256,23 @@ impl ServerNetworkTransport {
 
     async fn upgrade_to_tls(self, acceptor: TlsAcceptor) -> io::Result<Self> {
         match self {
-            Self::Plain(stream) => {
+            Self::Plain {
+                stream,
+                read_buffer,
+            } => {
                 let tls_stream = acceptor.accept(stream).await?;
-                Ok(Self::Tls(Box::new(tls_stream)))
+                Ok(Self::Tls {
+                    stream: Box::new(tls_stream),
+                    read_buffer,
+                })
             }
-            Self::Tls(stream) => Ok(Self::Tls(stream)),
+            Self::Tls {
+                stream,
+                read_buffer,
+            } => Ok(Self::Tls {
+                stream,
+                read_buffer,
+            }),
             Self::Closed => Err(io::Error::new(
                 io::ErrorKind::NotConnected,
                 "transport is closed",
@@ -333,7 +369,10 @@ pub(crate) async fn run_server_network_client_session_with_timeouts(
         senders.insert(client_id.clone(), event_tx);
     }
 
-    let mut transport = ServerNetworkTransport::Plain(stream);
+    let mut transport = ServerNetworkTransport::Plain {
+        stream,
+        read_buffer: Vec::new(),
+    };
     let mut session_error: Option<ServerNetworkError> = None;
     let pre_hello_timer = time::sleep(timeouts.pre_hello);
     tokio::pin!(pre_hello_timer);

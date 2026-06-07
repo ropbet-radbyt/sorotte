@@ -2183,7 +2183,7 @@ fn summarize_current_media_match(
     )
 }
 
-pub(super) fn media_match_cached_strong_candidate_for_remote_signature(
+pub(super) fn media_match_cached_probable_candidate_for_remote_signature(
     root: &Path,
     search_roots: &[PathBuf],
     target_file_name: &str,
@@ -2202,7 +2202,7 @@ pub(super) fn media_match_cached_strong_candidate_for_remote_signature(
         settings,
         extraction_settings,
     )
-    .filter(|candidate| media_match_tier_is_strong_or_exact(candidate.decision.tier))
+    .filter(|candidate| media_match_tier_is_probable_or_better(candidate.decision.tier))
 }
 
 fn best_remote_candidate_match(
@@ -2231,6 +2231,13 @@ fn best_remote_candidate_match(
 
 fn media_match_tier_is_strong_or_exact(tier: MediaMatchTier) -> bool {
     matches!(tier, MediaMatchTier::Exact | MediaMatchTier::Strong)
+}
+
+fn media_match_tier_is_probable_or_better(tier: MediaMatchTier) -> bool {
+    matches!(
+        tier,
+        MediaMatchTier::Exact | MediaMatchTier::Strong | MediaMatchTier::Probable
+    )
 }
 
 fn media_match_decision_is_better(

@@ -28,7 +28,8 @@ use super::super::media_match_support::{
     MediaMatchRemoteCandidateRebuildRequest, MediaMatchTool, MediaMatchToolProgress,
     clear_persisted_media_match_cache_at_root, import_managed_media_match_tool_with_progress,
     install_or_update_managed_media_match_tools_with_progress, managed_media_match_bin_dir,
-    media_match_cached_strong_candidate_for_remote_signature, media_match_tool_paths_for_settings,
+    media_match_cached_probable_candidate_for_remote_signature,
+    media_match_tool_paths_for_settings,
     rebuild_persisted_media_match_candidates_with_progress_and_cancel,
     rebuild_persisted_media_match_index_with_extraction_settings_and_cancel,
     rebuild_persisted_media_match_remote_candidates_with_progress_and_cancel,
@@ -393,8 +394,20 @@ impl GuiPersistedConfigRuntimeOwner {
             GuiRuntimeRequest::SendChatMessage(message) => {
                 return self.handle_send_chat_message_request(handle, projected_state, message);
             }
+            GuiRuntimeRequest::SetPlaybackPaused(paused) => {
+                return self.handle_set_playback_paused_request(handle, projected_state, paused);
+            }
             GuiRuntimeRequest::TogglePlaybackPause => {
                 return self.handle_toggle_playback_pause_request(handle, projected_state);
+            }
+            GuiRuntimeRequest::CompletePendingOperation(
+                GuiPendingCompletionRequest::SetPlaybackPause(paused),
+            ) => {
+                return self.handle_complete_set_playback_pause_request(
+                    handle,
+                    projected_state,
+                    paused,
+                );
             }
             GuiRuntimeRequest::CompletePendingOperation(
                 GuiPendingCompletionRequest::TogglePlaybackPause,

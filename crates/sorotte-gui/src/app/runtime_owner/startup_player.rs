@@ -28,6 +28,7 @@ impl GuiPersistedConfigRuntimeOwner {
             player_local_file: None,
             player_local_file_placeholder: false,
             last_published_local_file: None,
+            last_published_media_match_signature: None,
             attached_media_search_index: None,
             attached_media_search_next_retry_at: None,
             pending_attached_media_resolution: None,
@@ -43,6 +44,7 @@ impl GuiPersistedConfigRuntimeOwner {
             pending_local_attached_pause_override: None,
             pending_attached_cache_unpause: false,
             pending_attached_player_pause_confirmation_pump: None,
+            pending_attached_player_pause_command: None,
             player_position_seconds: None,
             player_paused: None,
             player_paused_for_cache: None,
@@ -62,6 +64,9 @@ impl GuiPersistedConfigRuntimeOwner {
             media_match_background_trigger_key: None,
             media_match_background_index_backup: None,
             media_match_background_cancel_disposition: None,
+            media_match_remote_lookup_rx: None,
+            media_match_remote_lookup_trigger_key: None,
+            media_match_remote_lookup_result: None,
             media_match_wire_sync_token: None,
             plex_client: None,
             plex_auth_session: None,
@@ -181,11 +186,13 @@ impl GuiPersistedConfigRuntimeOwner {
         self.player_paused = None;
         self.pending_attached_cache_unpause = false;
         self.pending_attached_player_pause_confirmation_pump = None;
+        self.pending_attached_player_pause_command = None;
         self.stream_helper_runtime_snapshot = GuiStreamHelperRuntimeSnapshot::default();
         self.media_match_runtime_snapshot.current_decision = None;
         self.media_match_runtime_snapshot.nearest_match = None;
         self.media_match_runtime_snapshot.last_evidence = None;
         self.media_match_runtime_snapshot.remote_status = Some("unavailable".to_owned());
+        self.clear_media_match_remote_lookup_state();
         self.media_match_wire_sync_token = None;
         self.pending_stream_retry_target = None;
         self.pending_stream_feedback.clear();
@@ -223,6 +230,7 @@ impl GuiPersistedConfigRuntimeOwner {
             self.attached_media_search_index_revision.wrapping_add(1);
         self.unresolved_attached_media_target = None;
         self.last_attached_media_resolution_trigger = None;
+        self.clear_media_match_remote_lookup_state();
     }
 
     pub(in crate::app) fn clear_session_attached_player_sync_state(&mut self) {
@@ -231,6 +239,13 @@ impl GuiPersistedConfigRuntimeOwner {
         self.pending_local_attached_pause_override = None;
         self.pending_attached_cache_unpause = false;
         self.pending_attached_player_pause_confirmation_pump = None;
+        self.pending_attached_player_pause_command = None;
+    }
+
+    pub(in crate::app) fn clear_media_match_remote_lookup_state(&mut self) {
+        self.media_match_remote_lookup_rx = None;
+        self.media_match_remote_lookup_trigger_key = None;
+        self.media_match_remote_lookup_result = None;
     }
 
     fn detach_player(&mut self) {

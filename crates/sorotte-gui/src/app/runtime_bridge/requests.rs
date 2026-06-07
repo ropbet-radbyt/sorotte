@@ -87,6 +87,7 @@ pub(in crate::app) enum GuiRuntimeRequest {
     SeekOffset(f64),
     SeekToPosition(f64),
     AdvancePlaylistIndex,
+    SetPlaybackPaused(bool),
     TogglePlaybackPause,
     CompletePendingOperation(GuiPendingCompletionRequest),
     CancelPendingOperation(GuiPendingOperationKind),

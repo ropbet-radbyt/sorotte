@@ -927,6 +927,7 @@ pub(super) enum GuiPendingOperationKind {
     ConnectPublicServer,
     RefreshPublicServers,
     SearchMissingMedia,
+    SetPlaybackPause(bool),
     TogglePlaybackPause,
     SendChatMessage,
 }
@@ -944,6 +945,8 @@ impl GuiPendingOperationKind {
             Self::ConnectPublicServer => "connect-public-server",
             Self::RefreshPublicServers => "refresh-public-servers",
             Self::SearchMissingMedia => "search-missing-media",
+            Self::SetPlaybackPause(true) => "pause-playback",
+            Self::SetPlaybackPause(false) => "resume-playback",
             Self::TogglePlaybackPause => "toggle-playback-pause",
             Self::SendChatMessage => "send-chat-message",
         }

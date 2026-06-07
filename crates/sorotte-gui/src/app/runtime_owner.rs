@@ -106,6 +106,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) player_local_file: Option<LocalFileUpdate>,
     pub(super) player_local_file_placeholder: bool,
     pub(super) last_published_local_file: Option<LocalFileUpdate>,
+    pub(super) last_published_media_match_signature: Option<serde_json::Value>,
     pub(super) attached_media_search_index: Option<GuiAttachedMediaSearchIndex>,
     pub(super) attached_media_search_next_retry_at: Option<Instant>,
     pub(super) pending_attached_media_resolution: Option<GuiPendingAttachedMediaResolution>,
@@ -122,6 +123,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) pending_local_attached_pause_override: Option<bool>,
     pub(super) pending_attached_cache_unpause: bool,
     pub(super) pending_attached_player_pause_confirmation_pump: Option<u64>,
+    pub(super) pending_attached_player_pause_command: Option<GuiPendingAttachedPlayerPauseCommand>,
     pub(super) player_position_seconds: Option<f64>,
     pub(super) player_paused: Option<bool>,
     pub(super) player_paused_for_cache: Option<bool>,
@@ -142,6 +144,10 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) media_match_background_index_backup: Option<GuiMediaMatchIndexRebuildBackup>,
     pub(super) media_match_background_cancel_disposition:
         Option<GuiMediaMatchBackgroundCancelDisposition>,
+    pub(super) media_match_remote_lookup_rx:
+        Option<mpsc::Receiver<GuiMediaMatchRemoteLookupResult>>,
+    pub(super) media_match_remote_lookup_trigger_key: Option<String>,
+    pub(super) media_match_remote_lookup_result: Option<GuiMediaMatchRemoteLookupResult>,
     pub(super) media_match_wire_sync_token: Option<String>,
     pub(super) plex_client: Option<PlexHttpClient>,
     pub(super) plex_auth_session: Option<PlexAuthSession>,
@@ -165,6 +171,14 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) managed_stream_helper_refresh_required: bool,
     pub(super) pending_stream_feedback: VecDeque<Vec<GuiShellAction>>,
     pub(super) pending_stream_load_context: Option<GuiPendingStreamLoadContext>,
+}
+
+pub(super) const ATTACHED_PLAYER_PAUSE_COMMAND_SUPPRESSION: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct GuiPendingAttachedPlayerPauseCommand {
+    pub(super) target_paused: bool,
+    pub(super) suppress_until: Instant,
 }
 
 pub(super) struct GuiPlexServerRefreshOutcome {
@@ -196,6 +210,12 @@ pub(super) enum GuiMediaMatchToolWorkerEvent {
 pub(super) enum GuiMediaMatchBackgroundWorkerEvent {
     Progress(MediaMatchToolProgress),
     Finished(Result<MediaMatchIndexRebuildResult, String>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct GuiMediaMatchRemoteLookupResult {
+    pub(super) trigger_key: String,
+    pub(super) candidate_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -266,6 +286,7 @@ pub(super) enum GuiUserMediaTargetResolution {
 pub(super) struct GuiAutomaticMediaResolutionTrigger {
     pub(super) target: String,
     pub(super) roots: Vec<String>,
+    pub(super) media_match_remote_targets: String,
     pub(super) current_player_path: Option<String>,
     pub(super) index_revision: u64,
     pub(super) retry_due: bool,

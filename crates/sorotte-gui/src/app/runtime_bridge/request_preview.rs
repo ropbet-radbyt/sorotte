@@ -147,6 +147,17 @@ impl GuiRuntimeRequest {
                 ]
             }
             Self::AdvancePlaylistIndex => Vec::new(),
+            Self::SetPlaybackPaused(paused) => {
+                if state.main_window.playback_paused == *paused {
+                    Vec::new()
+                } else {
+                    vec![if *paused {
+                        GuiShellAction::AnnouncePlaybackPaused
+                    } else {
+                        GuiShellAction::AnnouncePlaybackResumed
+                    }]
+                }
+            }
             Self::TogglePlaybackPause => vec![GuiShellAction::CompletePlaybackPauseToggle],
             Self::CompletePendingOperation(GuiPendingCompletionRequest::ConnectSavedServer)
                 if state.pending_saved_server_connect_saves_configuration =>
@@ -342,6 +353,7 @@ impl GuiRuntimeRequest {
             | Self::SetRoom(_)
             | Self::ReturnToDefaultRoom
             | Self::SendChatMessage(_)
+            | Self::SetPlaybackPaused(_)
             | Self::TogglePlaybackPause => Vec::new(),
             Self::SeekOffset(offset_seconds) => {
                 let message = format!("Seek requested: {offset_seconds} seconds.");

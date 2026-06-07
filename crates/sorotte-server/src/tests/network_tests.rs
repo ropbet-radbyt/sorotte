@@ -69,6 +69,109 @@ async fn server_network_rejects_line_over_max_bytes() {
 }
 
 #[tokio::test]
+async fn server_network_accepts_media_match_line_above_default_protocol_limit() {
+    let (mut client_stream, mut server_stream) = connected_tcp_pair().await;
+    let signature = "a".repeat(sorotte_protocol::DEFAULT_MAX_PROTOCOL_LINE_BYTES + 1024);
+    let line = format!(
+        r#"{{"Set":{{"file":{{"name":"episode.mkv","duration":100.0,"mediaMatch":{{"schema":"sorotte.mediaMatch.v3","profiles":[{{"profile":"audio-constellation-v3","algorithmVersion":3,"durationMs":100000,"audio":{{"algorithm":"sorotte-audio-constellation-v3-sampled-fast","timeBaseMs":1,"anchors":"{signature}"}}}}]}}}}}}}}"#
+    );
+    assert!(line.len() > sorotte_protocol::DEFAULT_MAX_PROTOCOL_LINE_BYTES);
+    assert!(line.len() <= crate::MAX_PROTOCOL_LINE_BYTES);
+
+    client_stream
+        .write_all(line.as_bytes())
+        .await
+        .expect("large media-match line bytes should write");
+    client_stream
+        .write_all(b"\n")
+        .await
+        .expect("large media-match line should terminate");
+    client_stream
+        .flush()
+        .await
+        .expect("large media-match line should flush");
+
+    let received_line = timeout(
+        Duration::from_secs(2),
+        super::read_network_line_from_stream(&mut server_stream),
+    )
+    .await
+    .expect("large media-match line should arrive before timeout")
+    .expect("large media-match line read should succeed")
+    .expect("large media-match line should be present");
+
+    assert_eq!(received_line, line);
+    decode_message_line(&received_line).expect("large media-match line should decode");
+}
+
+#[tokio::test]
+async fn server_network_buffered_line_reader_keeps_partial_line_after_cancel() {
+    let (mut client_stream, mut server_stream) = connected_tcp_pair().await;
+    let mut read_buffer = Vec::new();
+    let prefix = br#"{"State":{"ping":{"clientRtt":0.0446634"#;
+    let suffix = br#"29260253906}}}"#;
+    let expected_line = r#"{"State":{"ping":{"clientRtt":0.044663429260253906}}}"#;
+
+    client_stream
+        .write_all(prefix)
+        .await
+        .expect("partial line prefix should write");
+    client_stream
+        .flush()
+        .await
+        .expect("partial line prefix should flush");
+
+    let cancelled = timeout(
+        Duration::from_millis(50),
+        crate::network::read_network_line_from_stream_with_buffer(
+            &mut server_stream,
+            &mut read_buffer,
+        ),
+    )
+    .await;
+    assert!(
+        cancelled.is_err(),
+        "read without a newline should remain pending until cancelled"
+    );
+    assert_eq!(
+        read_buffer, prefix,
+        "cancelled reads must not discard bytes already consumed from the stream"
+    );
+
+    client_stream
+        .write_all(suffix)
+        .await
+        .expect("partial line suffix should write");
+    client_stream
+        .write_all(b"\r\n")
+        .await
+        .expect("line terminator should write");
+    client_stream
+        .flush()
+        .await
+        .expect("completed line should flush");
+
+    let received_line = timeout(
+        Duration::from_secs(2),
+        crate::network::read_network_line_from_stream_with_buffer(
+            &mut server_stream,
+            &mut read_buffer,
+        ),
+    )
+    .await
+    .expect("completed line should arrive before timeout")
+    .expect("completed line read should succeed")
+    .expect("completed line should be present");
+
+    assert_eq!(received_line, expected_line);
+    serde_json::from_str::<Value>(&received_line).expect("completed line should be valid JSON");
+    assert!(
+        read_buffer.is_empty(),
+        "successful reads should clear the persistent line buffer"
+    );
+}
+
+#[tokio::test]
 async fn server_network_closes_pre_hello_idle_client() {
     let (mut client_stream, server_stream) = connected_tcp_pair().await;
     let runtime = Arc::new(Mutex::new(ServerRuntime::new()));

@@ -16,7 +16,9 @@ use sorotte_protocol::{
 use super::handle::{GuiQueuedSessionTransportHandle, GuiSessionTransportDriver};
 
 pub(in crate::app::runtime_stack::transport) const MAX_INBOUND_PROTOCOL_LINE_BYTES: usize =
-    DEFAULT_MAX_PROTOCOL_LINE_BYTES;
+    // Server List snapshots aggregate per-user file metadata; media-match signatures are capped
+    // per file, so a valid multi-user snapshot can exceed the base single-line protocol default.
+    DEFAULT_MAX_PROTOCOL_LINE_BYTES * 8;
 
 enum GuiTcpSessionNetworkTransport {
     Plain(TcpStream),

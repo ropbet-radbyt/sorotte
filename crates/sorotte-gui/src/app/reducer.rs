@@ -134,6 +134,8 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::BeginPlaybackPause
             | GuiShellAction::BeginPlaybackResume
             | GuiShellAction::BeginPlaybackPauseToggle
+            | GuiShellAction::CompletePlaybackPauseState(_)
+            | GuiShellAction::CancelPlaybackPauseState
             | GuiShellAction::CompletePlaybackPauseToggle
             | GuiShellAction::CancelPlaybackPauseToggle
             | GuiShellAction::AnnouncePlaybackPaused

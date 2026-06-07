@@ -140,6 +140,8 @@ pub(in crate::app) enum GuiShellAction {
     BeginPlaybackPause,
     BeginPlaybackResume,
     BeginPlaybackPauseToggle,
+    CompletePlaybackPauseState(bool),
+    CancelPlaybackPauseState,
     CompletePlaybackPauseToggle,
     CancelPlaybackPauseToggle,
     AnnouncePlaybackPaused,

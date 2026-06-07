@@ -21,7 +21,7 @@ use crate::app::media_match_support::{
 
 use super::super::{
     GuiMediaMatchBackgroundCancelDisposition, GuiMediaMatchBackgroundWorkerEvent,
-    GuiMediaMatchIndexRebuildBackup, GuiMediaMatchToolWorkerEvent,
+    GuiMediaMatchIndexRebuildBackup, GuiMediaMatchRemoteLookupResult, GuiMediaMatchToolWorkerEvent,
 };
 use super::*;
 
@@ -80,6 +80,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let snapshot =
             self.refresh_media_match_runtime_snapshot(&projected_state.media_match.settings);
         self.last_published_local_file = None;
+        self.last_published_media_match_signature = None;
         self.media_match_wire_sync_token = None;
         let actions = vec![
             GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(snapshot),
@@ -159,8 +160,6 @@ impl GuiPersistedConfigRuntimeOwner {
             "disabled: fingerprinting off".to_owned()
         } else if !projected_state.media_match.settings.wire_sharing_enabled {
             "disabled: sharing off".to_owned()
-        } else if self.media_match_runtime_snapshot.health != GuiMediaMatchToolHealth::Healthy {
-            "unavailable: tools unhealthy".to_owned()
         } else {
             let Some(root) = self.media_match_root_for_request(projected_state) else {
                 let status = "unavailable: no storage root".to_owned();
@@ -171,32 +170,37 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.update_media_match_remote_status(handle, projected_state, status);
                 return true;
             };
-            let current_path = if let Some(path) =
-                self.media_match_current_local_path_for_state(projected_state)
-            {
-                path
-            } else if let Some(path) = self
-                .media_match_room_target_for_state(projected_state)
-                .and_then(|target| {
-                    self.media_match_cached_room_candidate_for_target(projected_state, &target)
-                })
-            {
-                path
-            } else {
-                let status = "unavailable: no current file".to_owned();
-                let gate_tiers = BTreeMap::new();
-                if !self.set_media_match_peer_tiers(handle, projected_state, gate_tiers) {
-                    return false;
-                }
-                self.update_media_match_remote_status(handle, projected_state, status);
-                return true;
-            };
+            let current_path =
+                if let Some(path) = self.media_match_wire_local_path_for_state(projected_state) {
+                    path
+                } else if let Some(path) = self
+                    .media_match_room_target_for_state(projected_state)
+                    .and_then(|target| {
+                        self.media_match_cached_room_candidate_for_target(projected_state, &target)
+                    })
+                {
+                    path
+                } else {
+                    let status = "unavailable: no current file".to_owned();
+                    let gate_tiers = BTreeMap::new();
+                    if !self.set_media_match_peer_tiers(handle, projected_state, gate_tiers) {
+                        return false;
+                    }
+                    self.update_media_match_remote_status(handle, projected_state, status);
+                    return true;
+                };
             let Some(local_record) = media_match_record_for_path(
                 &root,
                 &current_path,
                 &media_match_sampled_fast_extraction_settings(),
             ) else {
-                let status = "pending local fingerprint".to_owned();
+                let status = if self.media_match_runtime_snapshot.health
+                    == GuiMediaMatchToolHealth::Healthy
+                {
+                    "pending local fingerprint".to_owned()
+                } else {
+                    "unavailable: tools unhealthy".to_owned()
+                };
                 let gate_tiers = BTreeMap::new();
                 if !self.set_media_match_peer_tiers(handle, projected_state, gate_tiers) {
                     return false;
@@ -271,7 +275,7 @@ impl GuiPersistedConfigRuntimeOwner {
         projected_state: &SorotteGuiShellAppState,
     ) -> String {
         let current_path = self
-            .media_match_current_local_path_for_state(projected_state)
+            .media_match_wire_local_path_for_state(projected_state)
             .unwrap_or_default();
         let remote_peer_states = self
             .session
@@ -681,6 +685,28 @@ impl GuiPersistedConfigRuntimeOwner {
             .collect()
     }
 
+    pub(in crate::app::runtime_owner) fn media_match_remote_resolution_token_for_state(
+        &self,
+        projected_state: &SorotteGuiShellAppState,
+    ) -> String {
+        if !projected_state.media_match.settings.fingerprinting_enabled {
+            return String::new();
+        }
+
+        let mut targets = self
+            .media_match_remote_targets_for_state(projected_state)
+            .into_iter()
+            .map(|target| {
+                format!(
+                    "{}\t{}",
+                    target.target_file_name, target.media_match_signature
+                )
+            })
+            .collect::<Vec<_>>();
+        targets.sort();
+        targets.join("\n")
+    }
+
     fn media_match_preferred_remote_target_for_state(
         &self,
         projected_state: &SorotteGuiShellAppState,
@@ -702,6 +728,115 @@ impl GuiPersistedConfigRuntimeOwner {
             return None;
         }
         targets.into_iter().next()
+    }
+
+    fn media_match_remote_lookup_trigger_key(
+        root: &Path,
+        search_roots: &[PathBuf],
+        remote: &GuiMediaMatchRemoteTarget,
+        settings: &sorotte_media_match::MediaMatchSettings,
+    ) -> String {
+        let roots = search_roots
+            .iter()
+            .map(|root| root.display().to_string())
+            .collect::<Vec<_>>()
+            .join("|");
+        format!(
+            "root={}\nroots={roots}\ntarget={}\nsignature={}\nsettings={settings:?}",
+            root.display(),
+            remote.target_file_name,
+            remote.media_match_signature
+        )
+    }
+
+    fn cached_media_match_remote_lookup_result(&self, trigger_key: &str) -> Option<Option<String>> {
+        self.media_match_remote_lookup_result
+            .as_ref()
+            .filter(|result| result.trigger_key == trigger_key)
+            .map(|result| result.candidate_path.clone())
+    }
+
+    fn queue_media_match_remote_lookup_worker(
+        &mut self,
+        trigger_key: String,
+        root: PathBuf,
+        search_roots: Vec<PathBuf>,
+        remote: GuiMediaMatchRemoteTarget,
+        settings: sorotte_media_match::MediaMatchSettings,
+    ) {
+        if self
+            .media_match_remote_lookup_trigger_key
+            .as_deref()
+            .is_some_and(|current| current == trigger_key)
+        {
+            return;
+        }
+        if self.media_match_remote_lookup_rx.is_some() {
+            return;
+        }
+
+        let worker_trigger_key = trigger_key.clone();
+        let (tx, rx) = mpsc::channel();
+        match thread::Builder::new()
+            .name("sorotte-gui-media-match-remote-lookup".to_owned())
+            .spawn(move || {
+                let extraction_settings = media_match_sampled_fast_extraction_settings();
+                let candidate = media_match_cached_probable_candidate_for_remote_signature(
+                    &root,
+                    &search_roots,
+                    &remote.target_file_name,
+                    &remote.media_match_signature,
+                    &settings,
+                    &extraction_settings,
+                )
+                .map(|candidate| candidate.path);
+                let _ = tx.send(GuiMediaMatchRemoteLookupResult {
+                    trigger_key: worker_trigger_key,
+                    candidate_path: candidate,
+                });
+            }) {
+            Ok(_thread) => {
+                self.media_match_remote_lookup_rx = Some(rx);
+                self.media_match_remote_lookup_trigger_key = Some(trigger_key);
+            }
+            Err(_) => {
+                self.media_match_remote_lookup_result = Some(GuiMediaMatchRemoteLookupResult {
+                    trigger_key,
+                    candidate_path: None,
+                });
+            }
+        }
+    }
+
+    pub(in crate::app::runtime_owner) fn pump_media_match_remote_lookup_worker(&mut self) {
+        let Some(rx) = self.media_match_remote_lookup_rx.take() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(result) => {
+                if self.media_match_remote_lookup_trigger_key.as_deref()
+                    == Some(result.trigger_key.as_str())
+                {
+                    self.media_match_remote_lookup_trigger_key = None;
+                    self.media_match_remote_lookup_result = Some(result);
+                    self.media_match_wire_sync_token = None;
+                    self.last_attached_media_resolution_trigger = None;
+                }
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                self.media_match_remote_lookup_rx = Some(rx);
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                if let Some(trigger_key) = self.media_match_remote_lookup_trigger_key.take() {
+                    self.media_match_remote_lookup_result = Some(GuiMediaMatchRemoteLookupResult {
+                        trigger_key,
+                        candidate_path: None,
+                    });
+                    self.media_match_wire_sync_token = None;
+                    self.last_attached_media_resolution_trigger = None;
+                }
+            }
+        }
     }
 
     pub(in crate::app::runtime_owner) fn media_match_cached_room_candidate_for_target(
@@ -730,16 +865,24 @@ impl GuiPersistedConfigRuntimeOwner {
                     .is_some_and(|name| name.eq_ignore_ascii_case(room_target))
         });
         for remote in matching_targets {
-            if let Some(candidate) = media_match_cached_strong_candidate_for_remote_signature(
+            let trigger_key = Self::media_match_remote_lookup_trigger_key(
                 &root,
                 &search_roots,
-                &remote.target_file_name,
-                &remote.media_match_signature,
+                remote,
                 &projected_state.media_match.settings,
-                &media_match_sampled_fast_extraction_settings(),
-            ) {
-                return Some(candidate.path);
+            );
+            if let Some(candidate_path) = self.cached_media_match_remote_lookup_result(&trigger_key)
+            {
+                return candidate_path;
             }
+            self.queue_media_match_remote_lookup_worker(
+                trigger_key,
+                root.clone(),
+                search_roots.clone(),
+                remote.clone(),
+                projected_state.media_match.settings.clone(),
+            );
+            return None;
         }
         None
     }
@@ -762,16 +905,23 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         projected_state: &SorotteGuiShellAppState,
     ) -> Option<String> {
+        let room_target = self.media_match_room_target_for_state(projected_state);
         if let Some(path) = self
             .player_local_file
             .as_ref()
             .and_then(|file| file.path.clone())
             .filter(|path| Path::new(path).is_file())
         {
-            return Some(path);
+            match room_target.as_deref() {
+                None => return Some(path),
+                Some(target) if self.current_player_matches_media_target(target) => {
+                    return Some(path);
+                }
+                Some(_) => {}
+            }
         }
 
-        let target = self.media_match_room_target_for_state(projected_state)?;
+        let target = room_target?;
         match self.resolve_main_window_user_media_target(projected_state, &target) {
             Ok(GuiUserMediaTargetResolution::Resolved(path)) if Path::new(&path).is_file() => {
                 Some(path)
@@ -780,6 +930,17 @@ impl GuiPersistedConfigRuntimeOwner {
             | Ok(GuiUserMediaTargetResolution::Pending | GuiUserMediaTargetResolution::Missing)
             | Err(_) => None,
         }
+    }
+
+    fn media_match_wire_local_path_for_state(
+        &mut self,
+        projected_state: &SorotteGuiShellAppState,
+    ) -> Option<String> {
+        self.player_local_file
+            .as_ref()
+            .and_then(|file| file.path.clone())
+            .filter(|path| Path::new(path).is_file())
+            .or_else(|| self.media_match_current_local_path_for_state(projected_state))
     }
 
     fn attached_media_match_candidate_paths(&self, roots: &[String]) -> Option<Vec<PathBuf>> {
@@ -1113,8 +1274,10 @@ impl GuiPersistedConfigRuntimeOwner {
         snapshot.background_status = Some(background_status.into());
         self.media_match_runtime_snapshot = snapshot.clone();
         self.last_published_local_file = None;
+        self.last_published_media_match_signature = None;
         self.media_match_wire_sync_token = None;
         self.last_attached_media_resolution_trigger = None;
+        self.clear_media_match_remote_lookup_state();
         if !self.sync_media_match_wire_decisions(handle, projected_state) {
             return false;
         }
@@ -1300,6 +1463,34 @@ impl GuiPersistedConfigRuntimeOwner {
             handle,
             projected_state,
             "background warmup",
+            false,
+            false,
+        );
+    }
+
+    pub(in crate::app::runtime_owner) fn maybe_queue_media_match_exact_playlist_signature(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+    ) {
+        if !projected_state.media_match.settings.fingerprinting_enabled
+            || !projected_state.media_match.settings.wire_sharing_enabled
+        {
+            return;
+        }
+        let Some(root) = self.media_match_root_for_request(projected_state) else {
+            return;
+        };
+        let GuiMediaMatchExactPlaylistPlan::ExactNeedsSignature { path } =
+            self.media_match_exact_playlist_plan_for_state(projected_state, &root)
+        else {
+            return;
+        };
+        let _ = self.queue_exact_playlist_signature_worker(
+            handle,
+            projected_state,
+            root,
+            path,
             false,
             false,
         );
@@ -1550,6 +1741,7 @@ impl GuiPersistedConfigRuntimeOwner {
         snapshot.background_status = Some("idle".to_owned());
         self.media_match_runtime_snapshot = snapshot.clone();
         self.last_published_local_file = None;
+        self.last_published_media_match_signature = None;
         self.media_match_wire_sync_token = None;
         if !self.sync_media_match_wire_decisions(handle, projected_state) {
             return true;
@@ -1636,6 +1828,7 @@ impl GuiPersistedConfigRuntimeOwner {
     ) -> bool {
         projected_state.media_match.settings.wire_sharing_enabled = enabled;
         self.last_published_local_file = None;
+        self.last_published_media_match_signature = None;
         self.persist_media_match_settings_request(handle, projected_state)
     }
 
@@ -1695,6 +1888,7 @@ impl GuiPersistedConfigRuntimeOwner {
             self.refresh_media_match_runtime_snapshot(&projected_state.media_match.settings);
         self.media_match_runtime_snapshot = snapshot.clone();
         self.last_published_local_file = None;
+        self.last_published_media_match_signature = None;
         self.media_match_wire_sync_token = None;
         if !self.sync_media_match_wire_decisions(handle, projected_state) {
             return false;
@@ -1759,6 +1953,105 @@ mod tests {
         ) -> Result<Vec<(String, String)>, String> {
             Ok(current_servers)
         }
+    }
+
+    #[derive(Debug, Clone)]
+    struct MediaMatchPeerStateSession {
+        peer_files: Vec<sorotte_client_core::ClientMediaMatchPeerFileState>,
+    }
+
+    impl GuiSessionRuntimeAdapter for MediaMatchPeerStateSession {
+        fn current_room_media_match_peer_file_states(
+            &self,
+        ) -> Vec<sorotte_client_core::ClientMediaMatchPeerFileState> {
+            self.peer_files.clone()
+        }
+
+        fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn connect_public_server(
+            &mut self,
+            _selected_server: Option<(String, String)>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn refresh_public_servers(
+            &mut self,
+            current_servers: Vec<(String, String)>,
+            _language: Option<&str>,
+        ) -> Result<Vec<(String, String)>, String> {
+            Ok(current_servers)
+        }
+
+        fn search_missing_media(
+            &mut self,
+            _directories: Vec<String>,
+        ) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+    }
+
+    fn media_match_test_record_for_path(
+        path: impl AsRef<std::path::Path>,
+        anchor_seed: u32,
+    ) -> sorotte_media_match::MediaFingerprintRecord {
+        let path = path.as_ref();
+        let metadata = std::fs::metadata(path).expect("test media should exist");
+        let modified_unix_millis = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+            .unwrap_or(0);
+        let mut record = sorotte_media_match::MediaFingerprintRecord {
+            identity: sorotte_media_match::MediaFileIdentity::new(
+                path,
+                modified_unix_millis,
+                metadata.len(),
+            ),
+            algorithm_version: sorotte_media_match::MEDIA_MATCH_ALGORITHM_VERSION,
+            extraction_settings:
+                sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3(),
+            duration_seconds: Some(900.0),
+            container_fingerprint: format!("container:{}", path.display()),
+            audio_anchors: Vec::new(),
+            audio_error: None,
+        };
+        record.audio_anchors = (0u32..24)
+            .map(|index| sorotte_media_match::AudioAnchor {
+                bucket: anchor_seed + index,
+                t_ms: 30_000 + (index * 30_000),
+                weight: 4,
+            })
+            .collect();
+        record
+    }
+
+    fn remote_media_match_test_record(
+        path: &str,
+        anchor_seed: u32,
+    ) -> sorotte_media_match::MediaFingerprintRecord {
+        let mut record = sorotte_media_match::MediaFingerprintRecord {
+            identity: sorotte_media_match::MediaFileIdentity::new(path, 1000, 2000),
+            algorithm_version: sorotte_media_match::MEDIA_MATCH_ALGORITHM_VERSION,
+            extraction_settings:
+                sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3(),
+            duration_seconds: Some(900.0),
+            container_fingerprint: format!("container:{path}"),
+            audio_anchors: Vec::new(),
+            audio_error: None,
+        };
+        record.audio_anchors = (0u32..24)
+            .map(|index| sorotte_media_match::AudioAnchor {
+                bucket: anchor_seed + index,
+                t_ms: 30_000 + (index * 30_000),
+                weight: 4,
+            })
+            .collect();
+        record
     }
 
     #[test]
@@ -1951,6 +2244,141 @@ mod tests {
     }
 
     #[test]
+    fn media_match_current_path_ignores_previous_player_file_for_new_playlist_target() {
+        let mut root = std::env::temp_dir();
+        root.push(format!(
+            "sorotte-gui-media-match-runtime-playlist-previous-{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            let _ = std::fs::remove_dir_all(&root);
+        }
+        std::fs::create_dir_all(&root).expect("test root should be created");
+        let config_path = root.join("sorotte.ini");
+        let media_root = root.join("media");
+        std::fs::create_dir_all(&media_root).expect("media root should be created");
+        let previous_media_path = media_root.join("episode1.mkv");
+        std::fs::write(&previous_media_path, b"not real media")
+            .expect("previous media file should be created");
+        let saved_settings = StoredClientSettingsMvp {
+            media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
+            media_match_fingerprinting_enabled: Some(true),
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        };
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+        state.apply_shared_playlist_entries(
+            vec!["episode1.mkv".to_owned(), "episode2.mkv".to_owned()],
+            Some(1),
+            false,
+        );
+        let root_key =
+            crate::app::media_search_cache::normalized_media_search_root_key(&media_root);
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
+        owner.active_shared_playlist_index = Some(1);
+        owner.player_local_file = Some(
+            sorotte_player_api::LocalFileUpdate::new("episode1.mkv")
+                .with_path(previous_media_path.to_string_lossy().into_owned()),
+        );
+        owner.attached_media_search_index = Some(GuiAttachedMediaSearchIndex {
+            roots: vec![root_key.clone()],
+            root_indexes_by_key: std::collections::HashMap::from([(
+                root_key.clone(),
+                GuiAttachedMediaSearchRootIndex {
+                    root_key: root_key.clone(),
+                    root_path: media_root.clone(),
+                    built_at_unix_ms: 1,
+                    candidates_by_name: std::collections::HashMap::new(),
+                },
+            )]),
+            roots_requiring_refresh: std::collections::BTreeSet::new(),
+        });
+
+        assert_eq!(
+            owner.media_match_room_target_for_state(&state).as_deref(),
+            Some("episode2.mkv")
+        );
+        assert_eq!(owner.media_match_current_local_path_for_state(&state), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn media_match_wire_status_uses_open_alternate_encode_for_playlist_target() {
+        let mut root = std::env::temp_dir();
+        root.push(format!(
+            "sorotte-gui-media-match-runtime-wire-alternate-{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            let _ = std::fs::remove_dir_all(&root);
+        }
+        std::fs::create_dir_all(&root).expect("test root should be created");
+        let config_path = root.join("sorotte.ini");
+        let media_root = root.join("media");
+        std::fs::create_dir_all(&media_root).expect("media root should be created");
+        let local_media_path = media_root.join("coalgirls-episode4.mkv");
+        std::fs::write(&local_media_path, b"alternate local encode")
+            .expect("local alternate fixture should be written");
+        let remote_file_name = "mtbb-mini-episode4.mkv";
+
+        let local_record = media_match_test_record_for_path(&local_media_path, 100);
+        let mut cache = sorotte_media_match::MediaMatchCache::default();
+        cache.insert(local_record);
+        crate::app::media_match_support::save_media_match_cache_for_test(&root, &cache)
+            .expect("media-match cache should be written");
+        let remote_signature = sorotte_media_match::media_match_wire_value_from_records(&[
+            remote_media_match_test_record(remote_file_name, 100),
+        ])
+        .expect("remote media-match signature should serialize");
+
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
+            .with_session_runtime(Box::new(MediaMatchPeerStateSession {
+                peer_files: vec![sorotte_client_core::ClientMediaMatchPeerFileState {
+                    username: "bob".to_owned(),
+                    has_file: true,
+                    file_name: Some(remote_file_name.to_owned()),
+                    file_size: None,
+                    file_duration: None,
+                    media_match_signature: Some(remote_signature),
+                }],
+            }));
+        owner.active_shared_playlist_index = Some(0);
+        owner.player_local_file = Some(
+            sorotte_player_api::LocalFileUpdate::new("coalgirls-episode4.mkv")
+                .with_path(local_media_path.to_string_lossy().into_owned()),
+        );
+        owner.media_match_runtime_snapshot.health = crate::app::GuiMediaMatchToolHealth::Healthy;
+
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            shared_playlist_enabled: Some(true),
+            media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
+            media_match_fingerprinting_enabled: Some(true),
+            media_match_wire_sharing_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+        state.apply_shared_playlist_entries(vec![remote_file_name.to_owned()], Some(0), false);
+        let handle = GuiQueuedRuntimeBridgeHandle::default();
+
+        assert_eq!(
+            owner.media_match_current_local_path_for_state(&state),
+            None,
+            "strict playlist resolution should still reject a stale or different basename player file"
+        );
+        assert_eq!(
+            owner.media_match_wire_local_path_for_state(&state),
+            Some(local_media_path.to_string_lossy().into_owned()),
+            "wire comparison should use the real open local file for alternate encodes"
+        );
+
+        assert!(owner.sync_media_match_wire_decisions(&handle, &mut state));
+        assert_eq!(
+            owner.media_match_runtime_snapshot.remote_status.as_deref(),
+            Some("bob: probable")
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn exact_shared_playlist_match_skips_background_fingerprinting_without_wire_sharing() {
         let mut root = std::env::temp_dir();
         root.push(format!(
@@ -2038,6 +2466,62 @@ mod tests {
             GuiMediaMatchExactPlaylistPlan::ExactNeedsSignature {
                 path: media_path.to_string_lossy().into_owned(),
             }
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn exact_playlist_signature_sharing_runs_when_background_warmup_is_disabled() {
+        let mut root = std::env::temp_dir();
+        root.push(format!(
+            "sorotte-gui-media-match-runtime-exact-no-warmup-{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            let _ = std::fs::remove_dir_all(&root);
+        }
+        std::fs::create_dir_all(&root).expect("test root should be created");
+        let config_path = root.join("sorotte.ini");
+        let media_path = root.join("episode.mkv");
+        std::fs::write(&media_path, b"not real media").expect("media file should be created");
+        let saved_settings = StoredClientSettingsMvp {
+            media_match_fingerprinting_enabled: Some(true),
+            media_match_wire_sharing_enabled: Some(true),
+            media_match_background_warmup_enabled: Some(false),
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        };
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+        state.apply_shared_playlist_entries(vec!["episode.mkv".to_owned()], Some(0), false);
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
+        owner.active_shared_playlist_index = Some(0);
+        owner.player_local_file = Some(
+            sorotte_player_api::LocalFileUpdate::new("episode.mkv")
+                .with_path(media_path.to_string_lossy().into_owned()),
+        );
+        let (_tx, rx) = mpsc::channel();
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        owner.media_match_background_worker_rx = Some(rx);
+        owner.media_match_background_worker_cancel = Some(cancel_flag.clone());
+        owner.media_match_background_trigger_key = Some("background warmup".to_owned());
+        let handle = GuiQueuedRuntimeBridgeHandle::default();
+
+        owner.maybe_queue_media_match_exact_playlist_signature(&handle, &mut state);
+
+        assert!(
+            cancel_flag.load(Ordering::Relaxed),
+            "exact playlist signature sharing must preempt broad warmup work even when warmup is disabled"
+        );
+        assert_eq!(
+            owner
+                .media_match_runtime_snapshot
+                .background_status
+                .as_deref(),
+            Some("canceling broad Media Matching work for exact playlist fingerprint")
+        );
+        assert_eq!(
+            owner.media_match_background_cancel_disposition,
+            Some(GuiMediaMatchBackgroundCancelDisposition::KeepCheckpoint)
         );
         let _ = std::fs::remove_dir_all(&root);
     }
