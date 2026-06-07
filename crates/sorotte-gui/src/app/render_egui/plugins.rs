@@ -1063,7 +1063,15 @@ impl GuiWidgetEguiRenderer {
     fn paint_stream_support_health_chip(ui: &egui::Ui, rect: egui::Rect, value: &str) {
         let palette = Self::palette_for_ui(ui);
         let normalized = value.to_ascii_lowercase();
-        let (fill, stroke, text) = if normalized.contains("healthy")
+        let (fill, stroke, text) = if normalized.contains("disabled") {
+            (
+                palette.surface_muted,
+                palette.neutral_border,
+                palette.neutral_text,
+            )
+        } else if normalized.contains("indexing") || normalized.contains("working") {
+            (palette.info_bg, palette.info_border, palette.info_text)
+        } else if normalized.contains("healthy")
             || normalized.contains("ready")
             || normalized.contains("connected")
             || normalized.contains("enabled")

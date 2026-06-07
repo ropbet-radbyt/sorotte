@@ -22,7 +22,7 @@ impl SorotteGuiShellAppState {
                     "plugins:list:media-matching",
                     "Media Matching",
                     GuiWidgetKind::ListItem,
-                    Some(self.media_match.health.label().to_owned()),
+                    Some(self.media_match_effective_status_label().to_owned()),
                     true,
                     media_matching_selected,
                 ),
@@ -196,11 +196,14 @@ impl SorotteGuiShellAppState {
                     ),
                     GuiWidgetNode::leaf(
                         "plugins:media-matching:rebuild-index",
-                        "Rebuild Index",
+                        "Rebuild Library Index",
                         GuiWidgetKind::Button,
                         None,
                         self.media_matching_plugin_action_enabled("index"),
                         false,
+                    )
+                    .with_tooltip(
+                        "Builds the fixed sampled-fast audio index for configured media folders. A cold rebuild can take a long time on large or network-backed libraries.",
                     ),
                     GuiWidgetNode::leaf(
                         "plugins:media-matching:cancel-rebuild",
@@ -212,11 +215,14 @@ impl SorotteGuiShellAppState {
                     ),
                     GuiWidgetNode::leaf(
                         "plugins:media-matching:clear-cache",
-                        "Clear Cache",
+                        "Clear Match Cache",
                         GuiWidgetKind::Button,
                         None,
                         self.media_matching_plugin_action_enabled("cache"),
                         false,
+                    )
+                    .with_tooltip(
+                        "Deletes local Media Matching cache data. The library will need to be indexed again before background matches are fast.",
                     ),
                 ],
             ),
@@ -259,7 +265,15 @@ impl SorotteGuiShellAppState {
             ),
             GuiWidgetNode::leaf(
                 "plugins:media-matching:health",
-                "Health",
+                "State",
+                GuiWidgetKind::Status,
+                Some(self.media_match_effective_status_label().to_owned()),
+                true,
+                false,
+            ),
+            GuiWidgetNode::leaf(
+                "plugins:media-matching:tool-health",
+                "Tools",
                 GuiWidgetKind::Status,
                 Some(self.media_match.health.label().to_owned()),
                 true,
@@ -342,35 +356,45 @@ impl SorotteGuiShellAppState {
         vec![
             GuiWidgetNode::leaf(
                 "plugins:media-matching:setting:fingerprinting",
-                "Fingerprinting",
+                "Enable Media Matching",
                 GuiWidgetKind::Checkbox,
                 Some(bool_label(fingerprinting_enabled).to_owned()),
                 self.pending_operation.is_none(),
                 false,
-            ),
+            )
+            .with_tooltip("Turns local sampled-fast media matching on or off."),
             GuiWidgetNode::leaf(
                 "plugins:media-matching:setting:background-warmup",
-                "Background Warmup",
+                "Background Library Indexing",
                 GuiWidgetKind::Checkbox,
                 Some(bool_label(background_warmup_enabled).to_owned()),
                 self.pending_operation.is_none(),
                 false,
+            )
+            .with_tooltip(
+                "Indexes configured media folders with the fixed sampled-fast policy before a room match is needed.",
             ),
             GuiWidgetNode::leaf(
                 "plugins:media-matching:setting:wire-sharing",
-                "Share Raw Fingerprints",
+                "Share Room Match Signatures",
                 GuiWidgetKind::Checkbox,
                 Some(bool_label(wire_sharing_enabled).to_owned()),
                 self.pending_operation.is_none(),
                 false,
+            )
+            .with_tooltip(
+                "Shares compact sampled-fast match signatures with the room. Exact playlist matches do not need a library search.",
             ),
             GuiWidgetNode::leaf(
                 "plugins:media-matching:setting:runtime-tolerance",
-                "Runtime Tolerance",
+                "Allow Small Duration Tolerance",
                 GuiWidgetKind::Checkbox,
                 Some(bool_label(runtime_tolerance_enabled).to_owned()),
                 self.pending_operation.is_none(),
                 false,
+            )
+            .with_tooltip(
+                "Allows a small duration difference when classifying sampled-fast matches.",
             ),
             GuiWidgetNode::leaf(
                 "plugins:media-matching:policy:diagnostics",
@@ -379,14 +403,18 @@ impl SorotteGuiShellAppState {
                 Some(self.media_match_autoplay_policy_summary()),
                 self.pending_operation.is_none(),
                 !strong_policy,
-            ),
+            )
+            .with_tooltip("Media Matching can report matches but will not autoplay from them."),
             GuiWidgetNode::leaf(
                 "plugins:media-matching:policy:strong",
-                "Allow Strong Same-Media",
+                "Allow Verified Strong Matches",
                 GuiWidgetKind::Button,
                 Some(self.media_match_autoplay_policy_summary()),
                 self.pending_operation.is_none(),
                 strong_policy,
+            )
+            .with_tooltip(
+                "Allows autoplay only for exact matches or verified SameCutStrong matches. Sampled-only probable matches never autoplay.",
             ),
         ]
     }
@@ -440,21 +468,13 @@ impl SorotteGuiShellAppState {
             "install" => self.media_match.install_supported,
             "import" => self.media_match.integration_supported,
             "recheck" | "cache" => true,
-            "index" => self.media_match.integration_supported,
+            "index" => {
+                self.media_match.settings.fingerprinting_enabled
+                    && self.media_match.integration_supported
+                    && self.media_match.health == crate::app::GuiMediaMatchToolHealth::Healthy
+            }
             _ => false,
         }
-    }
-
-    fn media_matching_background_active(&self) -> bool {
-        self.media_match
-            .background_status
-            .as_deref()
-            .is_some_and(|status| {
-                let lower = status.to_ascii_lowercase();
-                !lower.starts_with("idle")
-                    && !lower.starts_with("failed")
-                    && !lower.starts_with("canceled")
-            })
     }
 
     fn plex_plugin_status_rows(&self) -> Vec<GuiWidgetNode> {

@@ -324,7 +324,23 @@ impl SorotteGuiShellAppState {
             || self.stream_helper.js_runtime_status.is_some()
     }
 
+    pub(super) fn media_match_effective_status_label(&self) -> &'static str {
+        if !self.media_match.settings.fingerprinting_enabled {
+            return "disabled";
+        }
+        if self.media_matching_background_active() {
+            return "indexing";
+        }
+        self.media_match.health.label()
+    }
+
     pub(super) fn media_match_status_title(&self) -> &'static str {
+        if !self.media_match.settings.fingerprinting_enabled {
+            return "Media matching disabled";
+        }
+        if self.media_matching_background_active() {
+            return "Media matching indexing";
+        }
         match self.media_match.health {
             super::GuiMediaMatchToolHealth::Healthy => "Media matching ready",
             super::GuiMediaMatchToolHealth::MissingFfmpeg => "ffmpeg required",
@@ -334,27 +350,47 @@ impl SorotteGuiShellAppState {
     }
 
     pub(super) fn media_match_status_summary(&self) -> String {
+        if !self.media_match.settings.fingerprinting_enabled {
+            return if self.media_match.health == super::GuiMediaMatchToolHealth::Healthy {
+                "Media Matching is off. Existing cache data is kept; enable it to index local files and match room media.".to_owned()
+            } else {
+                "Media Matching is off. Import or install ffmpeg and ffprobe before enabling matching.".to_owned()
+            };
+        }
         if let Some(message) = self.media_match.message.as_ref() {
             return message.clone();
         }
-        if !self.media_match.settings.fingerprinting_enabled {
-            return "Fingerprinting is off; matches are diagnostic only.".to_owned();
+        if self.media_matching_background_active() {
+            return "Building the fixed sampled-fast library index for background matching."
+                .to_owned();
         }
         if self.media_match.health == super::GuiMediaMatchToolHealth::Healthy {
-            return "ffmpeg and ffprobe are available for Media Matching V3.".to_owned();
+            return "Fixed sampled-fast audio matching is ready. Exact playlist matches skip library search.".to_owned();
         }
-        "Import or install ffmpeg and ffprobe to enable V3 local media fingerprints.".to_owned()
+        "Import or install ffmpeg and ffprobe to enable local media matching.".to_owned()
     }
 
     pub(super) fn media_match_autoplay_policy_summary(&self) -> String {
         match self.media_match.settings.autoplay_policy {
             sorotte_media_match::MediaMatchAutoplayPolicy::DiagnosticsOnly => {
-                "Diagnostics only".to_owned()
+                "Matches are reported but never used for media-match autoplay.".to_owned()
             }
             sorotte_media_match::MediaMatchAutoplayPolicy::AllowStrongSameMedia => {
-                "Allow strong same-media autoplay".to_owned()
+                "Only exact matches and verified SameCutStrong matches may autoplay; sampled-only probable matches never autoplay.".to_owned()
             }
         }
+    }
+
+    pub(super) fn media_matching_background_active(&self) -> bool {
+        self.media_match
+            .background_status
+            .as_deref()
+            .is_some_and(|status| {
+                let lower = status.to_ascii_lowercase();
+                !lower.starts_with("idle")
+                    && !lower.starts_with("failed")
+                    && !lower.starts_with("canceled")
+            })
     }
 
     pub(super) fn apply_persisted_ui_state(&mut self, persisted_ui_state: &GuiPersistedUiState) {

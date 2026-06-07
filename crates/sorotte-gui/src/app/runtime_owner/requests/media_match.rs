@@ -1530,7 +1530,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 projected_state,
                 vec![GuiShellAction::PushTransientNotification {
                     level: GuiTransientNotificationLevel::Info,
-                    message: "Canceling Media Matching background work before clearing cache. Run Clear Cache again when it is idle.".to_owned(),
+                    message: "Canceling Media Matching background work before clearing cache. Run Clear Match Cache again when it is idle.".to_owned(),
                 }],
             );
             return true;
