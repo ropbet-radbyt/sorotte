@@ -173,6 +173,7 @@ fn gui_tcp_accepts_line_at_or_under_max_bytes() {
         .expect("max-line transport test server should expose its address");
     let expected_line = valid_chat_line_with_len(MAX_INBOUND_PROTOCOL_LINE_BYTES);
     let server_line = expected_line.clone();
+    let (line_observed_tx, line_observed_rx) = mpsc::channel();
     let server_thread = thread::spawn(move || {
         let (mut stream, _) = listener
             .accept()
@@ -192,7 +193,7 @@ fn gui_tcp_accepts_line_at_or_under_max_bytes() {
         stream
             .write_all(b"\n")
             .expect("max-line transport test server should terminate the max-sized line");
-        thread::sleep(Duration::from_millis(250));
+        let _ = line_observed_rx.recv_timeout(Duration::from_secs(5));
     });
 
     let mut driver = connect_gui_transport_driver(address.port());
@@ -215,6 +216,7 @@ fn gui_tcp_accepts_line_at_or_under_max_bytes() {
     };
 
     assert_eq!(inbound_lines, vec![expected_line]);
+    let _ = line_observed_tx.send(());
 
     server_thread
         .join()
@@ -230,6 +232,7 @@ fn gui_tcp_accepts_media_match_room_snapshot_above_default_protocol_limit() {
         .expect("above-default-line transport test server should expose its address");
     let expected_line = oversized_media_match_list_snapshot_line();
     let server_line = expected_line.clone();
+    let (line_observed_tx, line_observed_rx) = mpsc::channel();
     let server_thread = thread::spawn(move || {
         let (mut stream, _) = listener
             .accept()
@@ -249,7 +252,7 @@ fn gui_tcp_accepts_media_match_room_snapshot_above_default_protocol_limit() {
         stream
             .write_all(b"\n")
             .expect("above-default-line transport test server should terminate the large line");
-        thread::sleep(Duration::from_millis(250));
+        let _ = line_observed_rx.recv_timeout(Duration::from_secs(5));
     });
 
     let mut driver = connect_gui_transport_driver(address.port());
@@ -272,6 +275,7 @@ fn gui_tcp_accepts_media_match_room_snapshot_above_default_protocol_limit() {
     };
 
     assert_eq!(inbound_lines, vec![expected_line]);
+    let _ = line_observed_tx.send(());
 
     server_thread
         .join()
