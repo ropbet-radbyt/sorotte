@@ -89,6 +89,25 @@ fn hello_records_server_shared_playlist_support_flag() {
 }
 
 #[test]
+fn hello_records_server_media_match_support_flag() {
+    let mut supported_session = ClientSession::default();
+    supported_session
+        .apply_hello_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"mediaMatch":true}}}"#,
+        )
+        .expect("hello should apply");
+    assert_eq!(supported_session.server_media_match_supported(), Some(true));
+
+    let mut legacy_session = ClientSession::default();
+    legacy_session
+        .apply_hello_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+    assert_eq!(legacy_session.server_media_match_supported(), Some(false));
+}
+
+#[test]
 fn hello_records_server_managed_rooms_support_flag() {
     let mut session = ClientSession::default();
     session

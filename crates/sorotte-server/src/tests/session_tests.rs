@@ -52,12 +52,12 @@ fn hello_truncates_room_name_to_legacy_limit() {
 }
 
 #[test]
-fn set_file_broadcasts_user_file_update_and_list_includes_file() {
+fn set_file_broadcasts_user_file_update_and_list_filters_media_match_by_recipient_support() {
     let mut runtime = ServerRuntime::default();
     runtime
         .handle_line(
             "client-1",
-            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255","features":{"mediaMatch":true}}}"#,
         )
         .expect("alice hello should establish session");
     runtime
@@ -75,7 +75,7 @@ fn set_file_broadcasts_user_file_update_and_list_includes_file() {
         .expect("set file should fan out");
     let directed_messages = decode_directed_lines(&directed_lines);
 
-    for recipient in ["client-1", "client-2"] {
+    for (recipient, should_receive_media_match) in [("client-1", true), ("client-2", false)] {
         let file = directed_messages
             .iter()
             .find_map(|(client_id, message)| {
@@ -96,22 +96,27 @@ fn set_file_broadcasts_user_file_update_and_list_includes_file() {
         assert_eq!(file.get("name").and_then(Value::as_str), Some("movie.mkv"));
         assert_eq!(file.get("duration").and_then(Value::as_f64), Some(95.5));
         assert_eq!(file.get("size").and_then(Value::as_i64), Some(123456789));
-        assert_eq!(
-            file.get("mediaMatch"),
-            Some(&json!({
-                "schema": "sorotte.mediaMatch.v3",
-                "profiles": [{
-                    "profile": "audio-constellation-v3",
-                    "algorithmVersion": 3,
-                    "durationMs": 95500,
-                    "audio": {
-                        "algorithm": "sorotte-audio-constellation-v3-sampled-fast",
-                        "timeBaseMs": 1,
-                        "anchors": "U0FVMwEAAAA="
-                    }
-                }]
-            }))
-        );
+        let media_match = file.get("mediaMatch");
+        if should_receive_media_match {
+            assert_eq!(
+                media_match,
+                Some(&json!({
+                    "schema": "sorotte.mediaMatch.v3",
+                    "profiles": [{
+                        "profile": "audio-constellation-v3",
+                        "algorithmVersion": 3,
+                        "durationMs": 95500,
+                        "audio": {
+                            "algorithm": "sorotte-audio-constellation-v3-sampled-fast",
+                            "timeBaseMs": 1,
+                            "anchors": "U0FVMwEAAAA="
+                        }
+                    }]
+                }))
+            );
+        } else {
+            assert_eq!(media_match, None);
+        }
     }
 
     let outbound_lines = runtime
@@ -136,6 +141,22 @@ fn set_file_broadcasts_user_file_update_and_list_includes_file() {
         alice_file.get("duration").and_then(Value::as_f64),
         Some(95.5)
     );
+    assert_eq!(alice_file.get("mediaMatch"), None);
+
+    let outbound_lines = runtime
+        .handle_line("client-1", r#"{"List":null}"#)
+        .expect("list request should succeed");
+    let response = decode_message_line(&outbound_lines[0]).expect("list response should decode");
+    let ProtocolMessage::List(payload) = response else {
+        panic!("expected List message");
+    };
+    let ListPayload::Rooms(rooms) = payload.list else {
+        panic!("expected room snapshot list");
+    };
+    let alice_file = rooms["room1"]["alice"]
+        .file
+        .as_ref()
+        .expect("alice list entry should include file");
     assert_eq!(
         alice_file.get("mediaMatch"),
         Some(&json!({
@@ -261,7 +282,7 @@ fn set_file_truncates_filename_to_legacy_limit() {
     runtime
         .handle_line(
             "client-1",
-            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255","features":{"mediaMatch":true}}}"#,
         )
         .expect("alice hello should establish session");
 
@@ -742,11 +763,15 @@ fn hello_response_features_reflect_chat_readiness_and_length_limits() {
 }
 
 #[test]
-fn server_feature_list_includes_shared_playlists() {
+fn server_feature_list_includes_shared_playlists_and_media_match() {
     let features = crate::server_feature_list(false, false, true, true, 150, 16);
 
     assert_eq!(
         features.get("sharedPlaylists").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        features.get("mediaMatch").and_then(Value::as_bool),
         Some(true)
     );
 }

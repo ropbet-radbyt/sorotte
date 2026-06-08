@@ -624,6 +624,10 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             .and_then(|index| usize::try_from(index).ok())
     }
 
+    fn server_media_match_supported(&self) -> Option<bool> {
+        self.runtime.session().server_media_match_supported()
+    }
+
     fn note_local_playlist_index_reset_intent(&mut self, pause_before_sync: bool) {
         self.runtime
             .session_mut()

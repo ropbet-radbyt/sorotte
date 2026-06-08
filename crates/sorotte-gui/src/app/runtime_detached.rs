@@ -96,6 +96,14 @@ impl GuiPersistedConfigRuntimeOwner {
         {
             return None;
         }
+        if self
+            .session
+            .as_ref()
+            .and_then(|session| session.server_media_match_supported())
+            != Some(true)
+        {
+            return None;
+        }
         let root = self.legacy_gui_qsettings_root();
         let root = root.as_deref()?;
         let path = local_file.and_then(|local_file| local_file.path.as_deref())?;

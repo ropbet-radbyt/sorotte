@@ -853,6 +853,40 @@ impl ServerRuntime {
         })
     }
 
+    pub(crate) fn file_payload_for_client(&self, client_id: &str, mut file: Value) -> Value {
+        if !self.client_session_supports_media_match(client_id)
+            && let Some(file_object) = file.as_object_mut()
+        {
+            file_object.remove("mediaMatch");
+        }
+        file
+    }
+
+    fn client_session_supports_media_match(&self, client_id: &str) -> bool {
+        self.sessions
+            .get(client_id)
+            .is_some_and(|session| client_supports_media_match(session.features.as_ref()))
+    }
+
+    fn sanitize_list_rooms_snapshot_for_client(
+        &self,
+        client_id: &str,
+        rooms: &mut BTreeMap<String, BTreeMap<String, ListUserEntry>>,
+    ) {
+        if self.client_session_supports_media_match(client_id) {
+            return;
+        }
+        for room_entries in rooms.values_mut() {
+            for entry in room_entries.values_mut() {
+                if let Some(file) = entry.file.as_mut()
+                    && let Some(file_object) = file.as_object_mut()
+                {
+                    file_object.remove("mediaMatch");
+                }
+            }
+        }
+    }
+
     pub(crate) fn list_rooms_snapshot_for_client(
         &self,
         client_id: &str,
@@ -877,6 +911,7 @@ impl ServerRuntime {
         ) {
             self.add_empty_room_dummy_entries(&mut rooms);
         }
+        self.sanitize_list_rooms_snapshot_for_client(client_id, &mut rooms);
         rooms
     }
 

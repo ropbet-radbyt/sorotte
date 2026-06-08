@@ -626,13 +626,14 @@ impl ServerRuntime {
                     if self.isolate_rooms
                         && let Some(file) = session.file.clone().filter(legacy_json_value_truthy)
                     {
-                        let file_message =
-                            user_file_update_message(&session.username, &session.room, file);
                         for peer_client in self.clients_in_room(&session.room) {
-                            outbound_messages.push(DirectedProtocolMessage::new(
-                                peer_client,
-                                file_message.clone(),
-                            ));
+                            let file_message = user_file_update_message(
+                                &session.username,
+                                &session.room,
+                                self.file_payload_for_client(&peer_client, file.clone()),
+                            );
+                            outbound_messages
+                                .push(DirectedProtocolMessage::new(peer_client, file_message));
                         }
                     }
 
@@ -700,18 +701,19 @@ impl ServerRuntime {
                     self.sessions.insert(client_id.to_owned(), session.clone());
 
                     if legacy_json_value_truthy(&file) {
-                        let file_message =
-                            user_file_update_message(&session.username, &session.room, file);
                         let recipients = if self.isolate_rooms {
                             self.clients_in_room(&session.room)
                         } else {
                             self.clients_all()
                         };
                         for peer_client in recipients {
-                            outbound_messages.push(DirectedProtocolMessage::new(
-                                peer_client,
-                                file_message.clone(),
-                            ));
+                            let file_message = user_file_update_message(
+                                &session.username,
+                                &session.room,
+                                self.file_payload_for_client(&peer_client, file.clone()),
+                            );
+                            outbound_messages
+                                .push(DirectedProtocolMessage::new(peer_client, file_message));
                         }
                     }
                 }

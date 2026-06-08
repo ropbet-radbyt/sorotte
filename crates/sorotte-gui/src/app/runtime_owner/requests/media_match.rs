@@ -25,6 +25,8 @@ use super::super::{
 };
 use super::*;
 
+const MEDIA_MATCH_BACKGROUND_EVENTS_PER_PUMP: usize = 64;
+
 #[derive(Debug, Clone)]
 struct GuiMediaMatchRemoteTarget {
     target_file_name: String,
@@ -1299,16 +1301,19 @@ impl GuiPersistedConfigRuntimeOwner {
             return;
         };
         let mut keep_rx = true;
+        let mut processed_events = 0usize;
+        let mut latest_progress = None;
         loop {
+            if processed_events >= MEDIA_MATCH_BACKGROUND_EVENTS_PER_PUMP {
+                break;
+            }
             match rx.try_recv() {
                 Ok(GuiMediaMatchBackgroundWorkerEvent::Progress(progress)) => {
-                    self.publish_media_match_background_status(
-                        handle,
-                        projected_state,
-                        Self::media_match_background_progress_status(&progress),
-                    );
+                    processed_events += 1;
+                    latest_progress = Some(progress);
                 }
                 Ok(GuiMediaMatchBackgroundWorkerEvent::Finished(result)) => {
+                    latest_progress = None;
                     keep_rx = false;
                     self.media_match_background_worker_cancel = None;
                     if !matches!(&result, Err(error) if error.contains("canceled")) {
@@ -1411,6 +1416,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
+                    latest_progress = None;
                     keep_rx = false;
                     self.media_match_background_worker_cancel = None;
                     self.media_match_background_cancel_disposition = None;
@@ -1431,6 +1437,13 @@ impl GuiPersistedConfigRuntimeOwner {
                     break;
                 }
             }
+        }
+        if let Some(progress) = latest_progress {
+            self.publish_media_match_background_status(
+                handle,
+                projected_state,
+                Self::media_match_background_progress_status(&progress),
+            );
         }
         if keep_rx {
             self.media_match_background_worker_rx = Some(rx);
@@ -2372,6 +2385,45 @@ mod tests {
             Some("bob: probable")
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn media_match_background_progress_backlog_yields_between_runtime_pumps() {
+        let handle = GuiQueuedRuntimeBridgeHandle::default();
+        let mut state =
+            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        let (tx, rx) = mpsc::channel();
+
+        for index in 0..(MEDIA_MATCH_BACKGROUND_EVENTS_PER_PUMP + 10) {
+            tx.send(GuiMediaMatchBackgroundWorkerEvent::Progress(
+                MediaMatchToolProgress {
+                    label: "Fingerprinting media".to_owned(),
+                    detail: Some(format!("{index} files needing index")),
+                    progress_fraction: index as f32
+                        / (MEDIA_MATCH_BACKGROUND_EVENTS_PER_PUMP + 10) as f32,
+                },
+            ))
+            .expect("progress backlog should be queued");
+        }
+
+        owner.media_match_background_worker_rx = Some(rx);
+        owner.media_match_background_worker_cancel = Some(Arc::new(AtomicBool::new(false)));
+        owner.media_match_background_trigger_key = Some("progress-backlog".to_owned());
+
+        owner.pump_media_match_background_worker(&handle, &mut state);
+
+        let rx = owner
+            .media_match_background_worker_rx
+            .as_ref()
+            .expect("background worker should remain pending after a partial progress drain");
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Ok(GuiMediaMatchBackgroundWorkerEvent::Progress(_))
+            ),
+            "a single GUI runtime pump must not consume an unbounded background progress backlog"
+        );
     }
 
     #[test]

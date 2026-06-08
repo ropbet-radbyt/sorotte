@@ -451,6 +451,10 @@ impl ClientSession {
         self.server_shared_playlists_supported
     }
 
+    pub fn server_media_match_supported(&self) -> Option<bool> {
+        self.server_media_match_supported
+    }
+
     pub fn server_chat_supported(&self) -> Option<bool> {
         self.server_chat_supported
     }
@@ -476,6 +480,7 @@ impl ClientSession {
         self.server_set_others_readiness_supported = None;
         self.server_managed_rooms_supported = None;
         self.server_shared_playlists_supported = None;
+        self.server_media_match_supported = None;
         self.server_chat_supported = None;
         self.server_persistent_rooms_supported = None;
         self.server_max_username_length = None;

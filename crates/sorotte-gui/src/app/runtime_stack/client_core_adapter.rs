@@ -243,6 +243,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         features.insert("managedRooms".to_owned(), Value::Bool(true));
         features.insert("persistentRooms".to_owned(), Value::Bool(true));
         features.insert("setOthersReadiness".to_owned(), Value::Bool(true));
+        features.insert("mediaMatch".to_owned(), Value::Bool(true));
         Value::Object(features)
     }
 

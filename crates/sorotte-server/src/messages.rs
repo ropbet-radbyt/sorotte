@@ -209,6 +209,7 @@ pub(crate) fn server_feature_list(
         "maxUsernameLength": max_username_length,
         "featureList": true,
         "sharedPlaylists": true,
+        "mediaMatch": true,
         "setOthersReadiness": readiness_enabled,
         "uiMode": LEGACY_UI_MODE_UNKNOWN,
     })

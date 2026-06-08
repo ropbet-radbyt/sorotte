@@ -42,6 +42,8 @@ impl ClientSession {
                 )
             }),
         );
+        self.server_media_match_supported =
+            Some(Self::feature_bool(hello.features.as_ref(), "mediaMatch").unwrap_or(false));
         self.server_chat_supported = Some(
             Self::feature_bool(hello.features.as_ref(), "chat").unwrap_or_else(|| {
                 Self::meets_min_version_legacy_compatible(&server_version, LEGACY_CHAT_MIN_VERSION)

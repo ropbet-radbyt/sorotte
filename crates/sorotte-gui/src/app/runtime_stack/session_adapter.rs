@@ -207,6 +207,10 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         true
     }
 
+    fn server_media_match_supported(&self) -> Option<bool> {
+        None
+    }
+
     fn current_room_playstate(&self) -> Option<GuiSessionRoomPlaystate> {
         None
     }
