@@ -90,7 +90,7 @@ pub(in crate::app) struct GuiTcpSessionTransportDriver {
 impl GuiTcpSessionTransportDriver {
     const CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
     const CONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(1500);
-    const INBOUND_IDLE_TIMEOUT: Duration = Duration::from_millis(12_500);
+    const INBOUND_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
     fn normalized_connect_host(host: &str) -> &str {
         host.strip_prefix('[')

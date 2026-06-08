@@ -655,7 +655,7 @@ fn persistent_timeout_disconnect_emits_ui_mode_scoped_list_update() {
     acknowledge_server_state_counter(&mut runtime, "client-3", 1);
 
     runtime
-        .advance_time_and_collect_fanout(10.0)
+        .advance_time_and_collect_fanout(crate::PROTOCOL_TIMEOUT_SECONDS - 2.0)
         .expect("time advance should succeed");
     runtime
         .handle_line_fanout(
@@ -671,7 +671,7 @@ fn persistent_timeout_disconnect_emits_ui_mode_scoped_list_update() {
         .expect("client-3 heartbeat state should succeed");
 
     let timeout_lines = runtime
-        .advance_time_and_collect_fanout(4.0)
+        .advance_time_and_collect_fanout(3.0)
         .expect("timeout-producing time advance should succeed");
     let timeout_messages = decode_directed_lines(&timeout_lines);
     let list_recipients: BTreeSet<_> = timeout_messages

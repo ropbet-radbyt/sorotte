@@ -65,7 +65,11 @@ const DEFAULT_PLAYLIST_MAX_ITEMS: usize = 250;
 const DEFAULT_PLAYLIST_MAX_CHARACTERS: usize = 10_000;
 const SERVER_STATE_INTERVAL_SECONDS: f64 = 1.0;
 const INITIAL_SERVER_STATE_DELAY_SECONDS: f64 = 0.1;
-const PROTOCOL_TIMEOUT_SECONDS: f64 = 12.5;
+// GUI clients can spend tens of seconds doing local media-match fingerprinting
+// or media-root scans. Keep room liveness tolerant of those local stalls while
+// retaining shorter IO-specific timeouts below for handshakes and writes.
+const PROTOCOL_TIMEOUT_SECONDS: f64 = 90.0;
+const IO_TIMEOUT_SECONDS: f64 = 12.5;
 const PING_MOVING_AVERAGE_WEIGHT: f64 = 0.85;
 const SERVER_STATS_SNAPSHOT_INTERVAL_SECONDS: f64 = 3600.0;
 const SERVER_STATS_DELAY_STEP_SECONDS: f64 = 5.0;
@@ -76,8 +80,8 @@ const MAX_PROTOCOL_LINE_BYTES: usize = DEFAULT_MAX_PROTOCOL_LINE_BYTES * 8;
 const PROTOCOL_LINE_TOO_LONG_ERROR: &str = "Protocol line too long";
 const CLIENT_OUTBOUND_QUEUE_CAPACITY: usize = 256;
 const ACCEPTED_CLIENT_QUEUE_CAPACITY: usize = 1024;
-const TLS_HANDSHAKE_TIMEOUT_SECONDS: f64 = PROTOCOL_TIMEOUT_SECONDS;
-const SERVER_WRITE_TIMEOUT_SECONDS: f64 = PROTOCOL_TIMEOUT_SECONDS;
+const TLS_HANDSHAKE_TIMEOUT_SECONDS: f64 = IO_TIMEOUT_SECONDS;
+const SERVER_WRITE_TIMEOUT_SECONDS: f64 = IO_TIMEOUT_SECONDS;
 const TLS_REQUIRED_CERT_FILENAMES: [&str; 3] = ["privkey.pem", "cert.pem", "chain.pem"];
 const TLS_CERT_ROTATION_MAX_RETRIES: u32 = 10;
 const LEGACY_SERVER_UNKNOWN_COMMAND_ERROR_PREFIX: &str = "Unknown command";

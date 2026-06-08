@@ -671,7 +671,7 @@ fn state_timeout_uses_actual_elapsed_seconds() {
         .expect("alice hello should establish session");
 
     let before_timeout = runtime
-        .collect_dispatch_at(112.0)
+        .collect_dispatch_at(100.0 + crate::PROTOCOL_TIMEOUT_SECONDS - 1.0)
         .expect("pre-timeout absolute tick should collect");
     assert!(
         !has_close_transport_action(&before_timeout.transport_actions, "client-1"),
@@ -680,7 +680,7 @@ fn state_timeout_uses_actual_elapsed_seconds() {
     assert!(runtime.session("client-1").is_some());
 
     let timeout_dispatch = runtime
-        .collect_dispatch_at(113.2)
+        .collect_dispatch_at(100.0 + crate::PROTOCOL_TIMEOUT_SECONDS + 0.7)
         .expect("timeout absolute tick should collect");
     assert!(
         has_close_transport_action(&timeout_dispatch.transport_actions, "client-1"),
@@ -921,7 +921,7 @@ fn periodic_timeout_disconnects_stale_client_and_broadcasts_left_event() {
     acknowledge_server_state_counter(&mut runtime, "client-2", 1);
 
     let _ = runtime
-        .advance_time_and_collect_fanout(10.0)
+        .advance_time_and_collect_fanout(crate::PROTOCOL_TIMEOUT_SECONDS - 2.0)
         .expect("periodic state ticks before timeout should encode");
     runtime
         .handle_line_fanout(
@@ -931,7 +931,7 @@ fn periodic_timeout_disconnects_stale_client_and_broadcasts_left_event() {
         .expect("ping-only update should refresh client timeout timestamp");
 
     let timeout_dispatch = runtime
-        .advance_time_and_collect_dispatch(4.0)
+        .advance_time_and_collect_dispatch(3.0)
         .expect("timeout tick should encode outbound fanout lines");
     let timeout_messages = decode_directed_lines(&timeout_dispatch.outbound_lines);
 

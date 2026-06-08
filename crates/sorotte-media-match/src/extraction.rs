@@ -17,6 +17,8 @@ use std::os::windows::process::CommandExt;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+#[cfg(windows)]
+const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x00004000;
 
 use crate::{
     AudioAnchor, MEDIA_MATCH_ALGORITHM_VERSION,
@@ -860,6 +862,7 @@ where
                 let _ = stdout_error_sender.send(error.clone());
                 return Err(error);
             }
+            thread::yield_now();
         }
     });
     let stderr_reader = thread::spawn(move || read_pipe_to_end(stderr));
@@ -984,7 +987,7 @@ fn ensure_tool_success(tool: &'static str, output: &Output) -> Result<(), MediaF
 #[cfg(windows)]
 fn hidden_media_match_command(executable: &Path) -> Command {
     let mut command = Command::new(executable);
-    command.creation_flags(CREATE_NO_WINDOW);
+    command.creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS);
     command
 }
 
