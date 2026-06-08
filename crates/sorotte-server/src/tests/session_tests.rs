@@ -66,6 +66,12 @@ fn set_file_broadcasts_user_file_update_and_list_filters_media_match_by_recipien
             r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}"#,
         )
         .expect("bob hello should establish session");
+    runtime
+        .handle_line(
+            "client-3",
+            r#"{"Hello":{"username":"charlie","room":{"name":"room1"},"version":"1.2.255","features":{"mediaMatch":true}}}"#,
+        )
+        .expect("charlie hello should establish session");
 
     let directed_lines = runtime
         .handle_line_fanout(
@@ -75,7 +81,9 @@ fn set_file_broadcasts_user_file_update_and_list_filters_media_match_by_recipien
         .expect("set file should fan out");
     let directed_messages = decode_directed_lines(&directed_lines);
 
-    for (recipient, should_receive_media_match) in [("client-1", true), ("client-2", false)] {
+    for (recipient, should_receive_media_match) in
+        [("client-1", false), ("client-2", false), ("client-3", true)]
+    {
         let file = directed_messages
             .iter()
             .find_map(|(client_id, message)| {
@@ -157,6 +165,22 @@ fn set_file_broadcasts_user_file_update_and_list_filters_media_match_by_recipien
         .file
         .as_ref()
         .expect("alice list entry should include file");
+    assert_eq!(alice_file.get("mediaMatch"), None);
+
+    let outbound_lines = runtime
+        .handle_line("client-3", r#"{"List":null}"#)
+        .expect("list request should succeed");
+    let response = decode_message_line(&outbound_lines[0]).expect("list response should decode");
+    let ProtocolMessage::List(payload) = response else {
+        panic!("expected List message");
+    };
+    let ListPayload::Rooms(rooms) = payload.list else {
+        panic!("expected room snapshot list");
+    };
+    let alice_file = rooms["room1"]["alice"]
+        .file
+        .as_ref()
+        .expect("alice list entry should include file");
     assert_eq!(
         alice_file.get("mediaMatch"),
         Some(&json!({
@@ -173,6 +197,71 @@ fn set_file_broadcasts_user_file_update_and_list_filters_media_match_by_recipien
             }]
         }))
     );
+}
+
+#[test]
+fn set_file_keeps_media_match_self_echo_compact_for_large_signatures() {
+    let mut runtime = ServerRuntime::default();
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255","features":{"mediaMatch":true}}}"#,
+        )
+        .expect("alice hello should establish session");
+    runtime
+        .handle_line(
+            "client-2",
+            r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255","features":{"mediaMatch":true}}}"#,
+        )
+        .expect("bob hello should establish session");
+
+    let anchors = "a".repeat(sorotte_protocol::DEFAULT_MAX_PROTOCOL_LINE_BYTES + 1024);
+    let set_file = format!(
+        r#"{{"Set":{{"file":{{"name":"episode.mkv","duration":100.0,"mediaMatch":{{"schema":"sorotte.mediaMatch.v3","profiles":[{{"profile":"audio-constellation-v3","algorithmVersion":3,"durationMs":100000,"audio":{{"algorithm":"sorotte-audio-constellation-v3-sampled-fast","timeBaseMs":1,"anchors":"{anchors}"}}}}]}}}}}}}}"#
+    );
+    let directed_lines = runtime
+        .handle_line_fanout("client-1", &set_file)
+        .expect("large media-match file update should fan out");
+
+    let self_line = directed_lines
+        .iter()
+        .find(|line| line.client_id == "client-1")
+        .expect("sender should receive a self echo");
+    let peer_line = directed_lines
+        .iter()
+        .find(|line| line.client_id == "client-2")
+        .expect("media-match-capable peer should receive the peer update");
+
+    assert!(
+        self_line.line.len() < sorotte_protocol::DEFAULT_MAX_PROTOCOL_LINE_BYTES,
+        "self echoes should not carry large mediaMatch signatures"
+    );
+    assert!(
+        peer_line.line.len() > sorotte_protocol::DEFAULT_MAX_PROTOCOL_LINE_BYTES,
+        "media-match-capable peers still need the signature for matching"
+    );
+
+    let directed_messages = decode_directed_lines(&directed_lines);
+    for (recipient, should_receive_media_match) in [("client-1", false), ("client-2", true)] {
+        let file = directed_messages
+            .iter()
+            .find_map(|(client_id, message)| {
+                if client_id != recipient {
+                    return None;
+                }
+                let ProtocolMessage::Set(payload) = message else {
+                    return None;
+                };
+                payload
+                    .set
+                    .user
+                    .as_ref()
+                    .and_then(|users| users.get("alice"))
+                    .and_then(|user| user.file.as_ref())
+            })
+            .expect("recipient should receive alice file update");
+        assert_eq!(file.get("mediaMatch").is_some(), should_receive_media_match);
+    }
 }
 
 #[test]
@@ -314,13 +403,7 @@ fn set_file_truncates_filename_to_legacy_limit() {
         .and_then(Value::as_str)
         .expect("file update should include a name");
     assert_eq!(file_name.chars().count(), DEFAULT_MAX_FILENAME_LENGTH);
-    assert_eq!(
-        file.get("mediaMatch"),
-        Some(&json!({
-            "schema": "sorotte.mediaMatch.v3",
-            "profiles": [{"profile": "audio-constellation-v3"}]
-        }))
-    );
+    assert_eq!(file.get("mediaMatch"), None);
 }
 
 #[test]

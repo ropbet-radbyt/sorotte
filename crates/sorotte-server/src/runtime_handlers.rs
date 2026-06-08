@@ -630,7 +630,11 @@ impl ServerRuntime {
                             let file_message = user_file_update_message(
                                 &session.username,
                                 &session.room,
-                                self.file_payload_for_client(&peer_client, file.clone()),
+                                self.file_payload_for_client_from_source(
+                                    &peer_client,
+                                    client_id,
+                                    file.clone(),
+                                ),
                             );
                             outbound_messages
                                 .push(DirectedProtocolMessage::new(peer_client, file_message));
@@ -710,7 +714,11 @@ impl ServerRuntime {
                             let file_message = user_file_update_message(
                                 &session.username,
                                 &session.room,
-                                self.file_payload_for_client(&peer_client, file.clone()),
+                                self.file_payload_for_client_from_source(
+                                    &peer_client,
+                                    client_id,
+                                    file.clone(),
+                                ),
                             );
                             outbound_messages
                                 .push(DirectedProtocolMessage::new(peer_client, file_message));

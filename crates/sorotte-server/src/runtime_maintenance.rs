@@ -853,8 +853,13 @@ impl ServerRuntime {
         })
     }
 
-    pub(crate) fn file_payload_for_client(&self, client_id: &str, mut file: Value) -> Value {
-        if !self.client_session_supports_media_match(client_id)
+    pub(crate) fn file_payload_for_client_from_source(
+        &self,
+        client_id: &str,
+        source_client_id: &str,
+        mut file: Value,
+    ) -> Value {
+        if (!self.client_session_supports_media_match(client_id) || client_id == source_client_id)
             && let Some(file_object) = file.as_object_mut()
         {
             file_object.remove("mediaMatch");
@@ -873,16 +878,23 @@ impl ServerRuntime {
         client_id: &str,
         rooms: &mut BTreeMap<String, BTreeMap<String, ListUserEntry>>,
     ) {
-        if self.client_session_supports_media_match(client_id) {
-            return;
-        }
+        let supports_media_match = self.client_session_supports_media_match(client_id);
+        let own_username = self
+            .sessions
+            .get(client_id)
+            .map(|session| session.username.as_str());
         for room_entries in rooms.values_mut() {
-            for entry in room_entries.values_mut() {
-                if let Some(file) = entry.file.as_mut()
-                    && let Some(file_object) = file.as_object_mut()
-                {
-                    file_object.remove("mediaMatch");
+            for (username, entry) in room_entries.iter_mut() {
+                if supports_media_match && own_username != Some(username.as_str()) {
+                    continue;
                 }
+                let Some(file) = entry.file.as_mut() else {
+                    continue;
+                };
+                let Some(file_object) = file.as_object_mut() else {
+                    continue;
+                };
+                file_object.remove("mediaMatch");
             }
         }
     }
