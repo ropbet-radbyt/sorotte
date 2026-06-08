@@ -933,10 +933,10 @@ impl ServerRuntime {
             }
             self.ingest_client_ping_metrics(client_id, ping.latency_calculation, ping.client_rtt);
         }
+        self.record_client_state_update_now(client_id);
         if self.server_ignoring_counter(client_id) > 0 {
             return Ok(Vec::new());
         }
-        self.record_client_state_update_now(client_id);
 
         let Some(playstate) = state.playstate else {
             return Ok(Vec::new());
