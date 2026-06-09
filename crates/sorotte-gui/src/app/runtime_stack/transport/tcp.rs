@@ -2,15 +2,20 @@ use std::{
     collections::VecDeque,
     io::{self, Read, Write},
     net::{SocketAddr, TcpStream, ToSocketAddrs},
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    thread,
     time::{Duration, Instant},
 };
 
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned, pki_types::ServerName};
 use sorotte_client_app::app_boundary::state::parse_host_and_optional_port_from_host_arg_legacy_compatible;
 use sorotte_protocol::{
-    DEFAULT_MAX_PROTOCOL_LINE_BYTES, ProtocolMessage, decode_message_line,
-    decode_message_line_items, encode_message_line,
+    DEFAULT_MAX_PROTOCOL_LINE_BYTES, PingPayload, ProtocolMessage, StatePayload,
+    decode_message_line, decode_message_line_items, encode_message_line,
 };
 
 use super::handle::{GuiQueuedSessionTransportHandle, GuiSessionTransportDriver};
@@ -591,6 +596,186 @@ impl GuiSessionTransportDriver for GuiTcpSessionTransportDriver {
 
     fn reconnect(&mut self) -> Result<(), String> {
         self.reconnect_stream()
+    }
+}
+
+pub(in crate::app) struct GuiThreadedTcpSessionTransportDriver {
+    host_arg: String,
+    pending_driver: Option<GuiTcpSessionTransportDriver>,
+    transport_handle: Option<GuiQueuedSessionTransportHandle>,
+    worker: Option<GuiThreadedTcpSessionTransportWorker>,
+    liveness_enabled: Arc<AtomicBool>,
+    worker_failed: bool,
+}
+
+struct GuiThreadedTcpSessionTransportWorker {
+    stop_tx: mpsc::Sender<()>,
+    error_rx: mpsc::Receiver<String>,
+    join_handle: Option<thread::JoinHandle<()>>,
+}
+
+impl GuiThreadedTcpSessionTransportDriver {
+    const WORKER_PUMP_INTERVAL: Duration = Duration::from_millis(25);
+    const LIVENESS_INTERVAL: Duration = Duration::from_secs(1);
+    const LIVENESS_INITIAL_DELAY: Duration = Duration::from_secs(2);
+
+    pub(in crate::app) fn connect_from_host_arg(host_arg: &str) -> Result<Self, String> {
+        Ok(Self {
+            host_arg: host_arg.to_owned(),
+            pending_driver: Some(GuiTcpSessionTransportDriver::connect_from_host_arg(
+                host_arg,
+            )?),
+            transport_handle: None,
+            worker: None,
+            liveness_enabled: Arc::new(AtomicBool::new(false)),
+            worker_failed: false,
+        })
+    }
+
+    fn liveness_protocol_line() -> Result<String, String> {
+        encode_message_line(&ProtocolMessage::state(
+            StatePayload::new().with_ping(PingPayload::new()),
+        ))
+        .map_err(|error| format!("Session transport TCP liveness encode failed: {error}"))
+    }
+
+    fn start_worker(
+        &mut self,
+        mut driver: GuiTcpSessionTransportDriver,
+        transport: GuiQueuedSessionTransportHandle,
+    ) -> Result<(), String> {
+        let liveness_line = Self::liveness_protocol_line()?;
+        let liveness_enabled = self.liveness_enabled.clone();
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let (error_tx, error_rx) = mpsc::channel();
+        let join_handle = thread::Builder::new()
+            .name("sorotte-gui-tcp-transport".to_owned())
+            .spawn(move || {
+                let mut liveness_was_enabled = false;
+                let mut observed_outbound_activity =
+                    transport.outbound_protocol_activity_revision();
+                let mut next_liveness_at = Instant::now() + Self::LIVENESS_INITIAL_DELAY;
+                loop {
+                    if stop_rx.try_recv().is_ok() {
+                        break;
+                    }
+
+                    let now = Instant::now();
+                    let current_outbound_activity = transport.outbound_protocol_activity_revision();
+                    if current_outbound_activity != observed_outbound_activity {
+                        observed_outbound_activity = current_outbound_activity;
+                        next_liveness_at = now + Self::LIVENESS_INITIAL_DELAY;
+                    }
+
+                    let liveness_is_enabled = liveness_enabled.load(Ordering::Relaxed);
+                    if liveness_is_enabled {
+                        if !liveness_was_enabled {
+                            next_liveness_at = now + Self::LIVENESS_INITIAL_DELAY;
+                        }
+                        if now >= next_liveness_at {
+                            transport.push_outbound_liveness_protocol_line(liveness_line.clone());
+                            next_liveness_at = now + Self::LIVENESS_INTERVAL;
+                        }
+                    } else {
+                        next_liveness_at = now + Self::LIVENESS_INITIAL_DELAY;
+                    }
+                    liveness_was_enabled = liveness_is_enabled;
+
+                    if let Err(error) = driver.pump(&transport) {
+                        let _ = error_tx.send(error);
+                        break;
+                    }
+                    thread::sleep(Self::WORKER_PUMP_INTERVAL);
+                }
+            })
+            .map_err(|error| format!("Session transport TCP worker spawn failed: {error}"))?;
+
+        self.worker = Some(GuiThreadedTcpSessionTransportWorker {
+            stop_tx,
+            error_rx,
+            join_handle: Some(join_handle),
+        });
+        Ok(())
+    }
+
+    fn ensure_worker_started(
+        &mut self,
+        transport: &GuiQueuedSessionTransportHandle,
+    ) -> Result<(), String> {
+        if self.worker.is_some() || self.worker_failed {
+            return Ok(());
+        }
+        let Some(driver) = self.pending_driver.take() else {
+            return Ok(());
+        };
+        self.start_worker(driver, transport.clone())
+    }
+
+    fn stop_worker(&mut self) {
+        if let Some(worker) = self.worker.take() {
+            worker.stop();
+        }
+    }
+
+    fn take_worker_error(&mut self) -> Option<String> {
+        let worker = self.worker.as_mut()?;
+        match worker.error_rx.try_recv() {
+            Ok(error) => {
+                self.stop_worker();
+                self.worker_failed = true;
+                Some(error)
+            }
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.stop_worker();
+                self.worker_failed = true;
+                Some("Session transport TCP worker exited unexpectedly.".to_owned())
+            }
+        }
+    }
+}
+
+impl GuiSessionTransportDriver for GuiThreadedTcpSessionTransportDriver {
+    fn pump(&mut self, transport: &GuiQueuedSessionTransportHandle) -> Result<(), String> {
+        if self.transport_handle.is_none() {
+            self.transport_handle = Some(transport.clone());
+        }
+        if let Some(error) = self.take_worker_error() {
+            return Err(error);
+        }
+        self.ensure_worker_started(transport)
+    }
+
+    fn set_protocol_liveness_enabled(&mut self, enabled: bool) {
+        self.liveness_enabled.store(enabled, Ordering::Relaxed);
+    }
+
+    fn reconnect(&mut self) -> Result<(), String> {
+        self.set_protocol_liveness_enabled(false);
+        self.stop_worker();
+        self.worker_failed = false;
+        let driver = GuiTcpSessionTransportDriver::connect_from_host_arg(&self.host_arg)?;
+        if let Some(transport) = self.transport_handle.clone() {
+            self.start_worker(driver, transport)
+        } else {
+            self.pending_driver = Some(driver);
+            Ok(())
+        }
+    }
+}
+
+impl GuiThreadedTcpSessionTransportWorker {
+    fn stop(mut self) {
+        let _ = self.stop_tx.send(());
+        if let Some(join_handle) = self.join_handle.take() {
+            let _ = join_handle.join();
+        }
+    }
+}
+
+impl Drop for GuiThreadedTcpSessionTransportDriver {
+    fn drop(&mut self) {
+        self.stop_worker();
     }
 }
 

@@ -38,7 +38,8 @@ use super::super::remote_services;
 use super::super::runtime_bridge::{GuiPendingCompletionRequest, GuiRuntimeRequest};
 use super::super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 use super::super::runtime_stack::{
-    GuiClientCoreChatSessionRuntimeAdapter, GuiSessionTransportDriver, GuiTcpSessionTransportDriver,
+    GuiClientCoreChatSessionRuntimeAdapter, GuiSessionTransportDriver,
+    GuiThreadedTcpSessionTransportDriver,
 };
 use super::super::shell_state::{
     GuiConfigStorageRuntimeSnapshot, GuiConfigurationRuntimeSnapshot, GuiMediaMatchToolHealth,

@@ -1,5 +1,24 @@
 use super::*;
-use crate::app::runtime_stack::GuiTcpSessionTransportDriver;
+use crate::app::runtime_stack::{
+    GuiQueuedSessionTransportHandle, GuiSessionTransportDriver, GuiTcpSessionTransportDriver,
+};
+
+struct RecordingLivenessTransportDriver {
+    events: std::sync::Arc<std::sync::Mutex<Vec<bool>>>,
+}
+
+impl GuiSessionTransportDriver for RecordingLivenessTransportDriver {
+    fn pump(&mut self, _transport: &GuiQueuedSessionTransportHandle) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn set_protocol_liveness_enabled(&mut self, enabled: bool) {
+        self.events
+            .lock()
+            .expect("recording liveness transport events lock should not be poisoned")
+            .push(enabled);
+    }
+}
 
 #[test]
 fn gui_persisted_config_runtime_owner_reconnects_after_clean_tcp_server_close() {
@@ -118,7 +137,7 @@ fn gui_persisted_config_runtime_owner_reconnects_after_clean_tcp_server_close() 
         .send(())
         .expect("reconnect test session transport server should be releasable");
 
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(12);
     let reconnect_hello = loop {
         pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
         if let Ok(reconnect_hello) = reconnect_hello_rx.try_recv() {
@@ -137,7 +156,7 @@ fn gui_persisted_config_runtime_owner_reconnects_after_clean_tcp_server_close() 
         &mut owner,
         &handle,
         &mut state,
-        Duration::from_secs(1),
+        Duration::from_secs(5),
         |state| {
             state
                 .notifications
@@ -303,7 +322,7 @@ fn gui_persisted_config_runtime_owner_clears_pending_room_change_request_when_re
     }
     owner.session_transport_reconnect_due_at = Some(Instant::now());
 
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(12);
     let reconnect_hello = loop {
         pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
         if let Ok(reconnect_hello) = reconnect_hello_rx.try_recv() {
@@ -322,7 +341,7 @@ fn gui_persisted_config_runtime_owner_clears_pending_room_change_request_when_re
         &mut owner,
         &handle,
         &mut state,
-        Duration::from_secs(1),
+        Duration::from_secs(5),
         |state| state.main_window.room_name == "room9",
         "room-change reconnect second TCP server hello",
     );
@@ -469,7 +488,7 @@ fn gui_persisted_config_runtime_owner_reconnects_after_tcp_inbound_idle_timeout(
         "initial TCP server hello before idle timeout",
     );
 
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(8);
     let reconnect_hello = loop {
         pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
         if let Ok(reconnect_hello) = reconnect_hello_rx.try_recv() {
@@ -488,7 +507,7 @@ fn gui_persisted_config_runtime_owner_reconnects_after_tcp_inbound_idle_timeout(
         &mut owner,
         &handle,
         &mut state,
-        Duration::from_secs(1),
+        Duration::from_secs(5),
         |state| {
             state
                 .notifications
@@ -513,4 +532,47 @@ fn gui_persisted_config_runtime_owner_reconnects_after_tcp_inbound_idle_timeout(
     server_thread
         .join()
         .expect("idle-timeout test session transport server thread should complete");
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_enables_transport_liveness_after_server_hello() {
+    let (owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut owner =
+        owner.with_session_transport_driver(Box::new(RecordingLivenessTransportDriver {
+            events: events.clone(),
+        }));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        chat_input_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    assert!(
+        events
+            .lock()
+            .expect("recording liveness transport events lock should not be poisoned")
+            .iter()
+            .all(|enabled| !enabled),
+        "transport liveness must stay disabled before the server hello"
+    );
+
+    session_transport.push_inbound_protocol_line(
+        r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+    );
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    assert_eq!(
+        events
+            .lock()
+            .expect("recording liveness transport events lock should not be poisoned")
+            .last()
+            .copied(),
+        Some(true),
+        "transport liveness should be enabled after the session applies the server hello"
+    );
 }

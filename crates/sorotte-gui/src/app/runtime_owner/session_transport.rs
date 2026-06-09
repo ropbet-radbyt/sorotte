@@ -237,6 +237,7 @@ impl GuiPersistedConfigRuntimeOwner {
             );
             return;
         };
+        session_transport_driver.set_protocol_liveness_enabled(false);
         if let Err(error) = session_transport_driver.reconnect() {
             self.handle_session_transport_failure(
                 handle,
@@ -349,7 +350,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let (owner, _session_transport) =
             self.with_client_core_chat_session_runtime(username, room)?;
         Ok(owner.with_session_transport_driver(Box::new(
-            GuiTcpSessionTransportDriver::connect_from_host_arg(host_arg.as_ref())?,
+            GuiThreadedTcpSessionTransportDriver::connect_from_host_arg(host_arg.as_ref())?,
         )))
     }
 
@@ -364,6 +365,11 @@ impl GuiPersistedConfigRuntimeOwner {
         let Some(session_transport_driver) = self.session_transport_driver.as_mut() else {
             return;
         };
+        let liveness_enabled = self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.server_handshake_completed());
+        session_transport_driver.set_protocol_liveness_enabled(liveness_enabled);
         if let Err(error) = session_transport_driver.pump(session_transport) {
             self.handle_session_transport_failure(handle, projected_state, error);
         }

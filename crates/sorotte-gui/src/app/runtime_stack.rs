@@ -49,7 +49,9 @@ pub(super) use self::session_adapter::{
     GuiAttachedPlayerRuntimeAction, GuiLocalPlayerUnpauseDecision, GuiSessionRoomPlaystate,
     GuiSessionRuntimeAdapter,
 };
+#[cfg(test)]
+pub(super) use self::transport::GuiTcpSessionTransportDriver;
 pub(super) use self::transport::{
     GuiLoopbackSessionTransportDriver, GuiQueuedSessionTransportHandle, GuiSessionTransportDriver,
-    GuiTcpSessionTransportDriver,
+    GuiThreadedTcpSessionTransportDriver,
 };

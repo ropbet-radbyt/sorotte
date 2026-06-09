@@ -22,7 +22,7 @@ impl GuiPersistedConfigRuntimeOwner {
             selected_server
                 .as_ref()
                 .map(|(_label, address)| {
-                    GuiTcpSessionTransportDriver::connect_from_host_arg(address)
+                    GuiThreadedTcpSessionTransportDriver::connect_from_host_arg(address)
                         .map(|driver| Box::new(driver) as Box<dyn GuiSessionTransportDriver + Send>)
                 })
                 .transpose()

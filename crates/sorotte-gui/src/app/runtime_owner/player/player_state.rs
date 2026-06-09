@@ -1,7 +1,7 @@
 use super::*;
 
 impl GuiPersistedConfigRuntimeOwner {
-    fn normalized_current_player_match_key(path: &str) -> String {
+    pub(in crate::app::runtime_owner) fn normalized_current_player_match_key(path: &str) -> String {
         let mut key = path.trim().replace('\\', "/");
         while key.ends_with('/') && key.len() > 1 {
             key.pop();

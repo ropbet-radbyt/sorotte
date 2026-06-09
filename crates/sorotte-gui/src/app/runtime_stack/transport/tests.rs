@@ -97,6 +97,31 @@ fn write_plaintext_tls_fallback(stream: &mut std::net::TcpStream) {
         .expect("test server should terminate the TLS decline");
 }
 
+fn read_line_until_timeout(
+    reader: &mut BufReader<std::net::TcpStream>,
+    timeout: Duration,
+    context: &str,
+) -> Option<String> {
+    reader
+        .get_mut()
+        .set_read_timeout(Some(timeout))
+        .unwrap_or_else(|error| panic!("{context} should configure a read timeout: {error}"));
+    let mut line = String::new();
+    match reader.read_line(&mut line) {
+        Ok(0) => None,
+        Ok(_) => Some(line),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+            ) =>
+        {
+            None
+        }
+        Err(error) => panic!("{context} should read a protocol line or time out: {error}"),
+    }
+}
+
 fn connect_gui_transport_driver(port: u16) -> GuiTcpSessionTransportDriver {
     GuiTcpSessionTransportDriver::connect_from_host_arg(&format!("localhost:{port}"))
         .expect("transport test client driver should connect")
@@ -513,4 +538,137 @@ fn tcp_session_transport_driver_upgrades_to_tls_before_sending_hello() {
     server_thread
         .join()
         .expect("TLS upgrade test server thread should join");
+}
+
+#[test]
+fn threaded_tcp_session_transport_does_not_send_liveness_before_enabled() {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .expect("threaded TCP liveness gating test server should bind");
+    let address = listener
+        .local_addr()
+        .expect("threaded TCP liveness gating test server should expose its address");
+    let (observed_tx, observed_rx) = mpsc::channel();
+    let server_thread = thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("threaded TCP liveness gating test server should accept a client");
+        let reader_stream = stream
+            .try_clone()
+            .expect("threaded TCP liveness gating test server should clone the socket");
+        let mut reader = BufReader::new(reader_stream);
+        let mut tls_request = String::new();
+        reader
+            .read_line(&mut tls_request)
+            .expect("threaded TCP liveness gating test server should read the TLS request");
+        write_plaintext_tls_fallback(&mut stream);
+        let mut hello = String::new();
+        reader
+            .read_line(&mut hello)
+            .expect("threaded TCP liveness gating test server should read the hello");
+        let extra = read_line_until_timeout(
+            &mut reader,
+            Duration::from_millis(1300),
+            "threaded TCP liveness gating test server",
+        );
+        observed_tx
+            .send((tls_request, hello, extra))
+            .expect("threaded TCP liveness gating test server should report observed lines");
+    });
+
+    let mut driver = GuiThreadedTcpSessionTransportDriver::connect_from_host_arg(&format!(
+        "localhost:{}",
+        address.port()
+    ))
+    .expect("threaded TCP liveness gating client driver should connect");
+    let transport = GuiQueuedSessionTransportHandle::default();
+    transport.push_outbound_protocol_lines([hello_line()]);
+    driver
+        .pump(&transport)
+        .expect("threaded TCP liveness gating driver should start");
+
+    let (tls_request, hello, extra) = observed_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("threaded TCP liveness gating server should report observed lines");
+    assert!(tls_request.contains(r#""TLS""#));
+    assert!(tls_request.contains(r#""startTLS":"send""#));
+    assert!(hello.contains(r#""Hello""#));
+    assert!(
+        extra.is_none(),
+        "threaded TCP transport must not send liveness State before it is enabled"
+    );
+
+    drop(driver);
+    server_thread
+        .join()
+        .expect("threaded TCP liveness gating test server thread should join");
+}
+
+#[test]
+fn threaded_tcp_session_transport_sends_liveness_without_gui_pump() {
+    let listener =
+        TcpListener::bind(("127.0.0.1", 0)).expect("threaded TCP liveness test server should bind");
+    let address = listener
+        .local_addr()
+        .expect("threaded TCP liveness test server should expose its address");
+    let (hello_tx, hello_rx) = mpsc::channel();
+    let (state_tx, state_rx) = mpsc::channel();
+    let server_thread = thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("threaded TCP liveness test server should accept a client");
+        let reader_stream = stream
+            .try_clone()
+            .expect("threaded TCP liveness test server should clone the socket");
+        let mut reader = BufReader::new(reader_stream);
+        let mut tls_request = String::new();
+        reader
+            .read_line(&mut tls_request)
+            .expect("threaded TCP liveness test server should read the TLS request");
+        write_plaintext_tls_fallback(&mut stream);
+        let mut hello = String::new();
+        reader
+            .read_line(&mut hello)
+            .expect("threaded TCP liveness test server should read the hello");
+        hello_tx
+            .send((tls_request, hello))
+            .expect("threaded TCP liveness test server should report the hello");
+        let state = read_line_until_timeout(
+            &mut reader,
+            Duration::from_secs(3),
+            "threaded TCP liveness test server",
+        );
+        state_tx
+            .send(state)
+            .expect("threaded TCP liveness test server should report the liveness line");
+    });
+
+    let mut driver = GuiThreadedTcpSessionTransportDriver::connect_from_host_arg(&format!(
+        "localhost:{}",
+        address.port()
+    ))
+    .expect("threaded TCP liveness client driver should connect");
+    let transport = GuiQueuedSessionTransportHandle::default();
+    transport.push_outbound_protocol_lines([hello_line()]);
+    driver
+        .pump(&transport)
+        .expect("threaded TCP liveness driver should start");
+
+    let (tls_request, hello) = hello_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("threaded TCP liveness server should receive the startup lines");
+    assert!(tls_request.contains(r#""TLS""#));
+    assert!(hello.contains(r#""Hello""#));
+
+    driver.set_protocol_liveness_enabled(true);
+    let state = state_rx
+        .recv_timeout(Duration::from_secs(4))
+        .expect("threaded TCP liveness server should report a liveness line")
+        .expect("threaded TCP transport should send a liveness line without another GUI pump");
+    assert!(state.contains(r#""State""#));
+    assert!(state.contains(r#""ping""#));
+
+    drop(driver);
+    server_thread
+        .join()
+        .expect("threaded TCP liveness test server thread should join");
 }

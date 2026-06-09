@@ -373,7 +373,15 @@ impl ProtocolClient {
     }
 
     pub fn read_until(&mut self, predicate: impl Fn(&ProtocolMessage) -> bool) -> ProtocolMessage {
-        for _ in 0..64 {
+        self.read_until_with_limit(64, predicate)
+    }
+
+    pub fn read_until_with_limit(
+        &mut self,
+        message_limit: usize,
+        predicate: impl Fn(&ProtocolMessage) -> bool,
+    ) -> ProtocolMessage {
+        for _ in 0..message_limit {
             let message = self
                 .read_message()
                 .expect("server should not close before expected response");

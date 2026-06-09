@@ -861,6 +861,64 @@ fn gui_persisted_config_runtime_owner_does_not_match_path_bearing_targets_by_bas
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_does_not_add_nested_current_player_root_when_configured_root_covers_it()
+ {
+    let root = test_temp_root("covered-current-player-search-root");
+    let media_root = root.join("anime shows");
+    let current_directory = media_root.join("bakemonogatari");
+    let current_path = current_directory.join("[mtbb-minis] bakemonogatari - 08.mkv");
+    std::fs::create_dir_all(&current_directory)
+        .expect("current player fixture directory should be created");
+    std::fs::write(&current_path, b"current").expect("current player fixture should be written");
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player_local_file = Some(
+        sorotte_player_api::LocalFileUpdate::new("[mtbb-minis] bakemonogatari - 08.mkv")
+            .with_path(current_path.to_string_lossy().into_owned()),
+    );
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    let roots = owner.automatic_media_search_roots(&state);
+    assert_eq!(
+        roots,
+        vec![media_root.clone()],
+        "a current player file under a configured media root should not add a nested second scan root"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_uses_current_player_parent_as_search_root_without_configured_roots()
+ {
+    let root = test_temp_root("current-player-fallback-search-root");
+    let current_directory = root.join("bakemonogatari");
+    let current_path = current_directory.join("[mtbb-minis] bakemonogatari - 08.mkv");
+    std::fs::create_dir_all(&current_directory)
+        .expect("current player fixture directory should be created");
+    std::fs::write(&current_path, b"current").expect("current player fixture should be written");
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player_local_file = Some(
+        sorotte_player_api::LocalFileUpdate::new("[mtbb-minis] bakemonogatari - 08.mkv")
+            .with_path(current_path.to_string_lossy().into_owned()),
+    );
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+    let roots = owner.automatic_media_search_roots(&state);
+    assert_eq!(
+        roots,
+        vec![current_directory.clone()],
+        "the current player folder remains a fallback when no media-search roots are configured"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_prefers_exact_cached_relative_path_for_path_bearing_targets()
 {
     let root = test_temp_root("path-bearing-cache-ranking");

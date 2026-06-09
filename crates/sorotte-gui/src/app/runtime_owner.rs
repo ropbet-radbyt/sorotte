@@ -55,8 +55,8 @@ use super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 use super::runtime_stack::{
     GuiClientCoreChatSessionRuntimeAdapter, GuiLoopbackSessionTransportDriver, GuiOwnedPlayer,
     GuiPlayerLaunchRuntimeState, GuiQueuedSessionTransportHandle, GuiSessionRoomPlaystate,
-    GuiSessionRuntimeAdapter, GuiSessionTransportDriver, GuiTcpSessionTransportDriver,
-    GuiTestPlayerAdapter,
+    GuiSessionRuntimeAdapter, GuiSessionTransportDriver, GuiTestPlayerAdapter,
+    GuiThreadedTcpSessionTransportDriver,
 };
 use super::shell_state::{
     GuiCommandAvailabilityState, GuiConfigurationRuntimeSnapshot,

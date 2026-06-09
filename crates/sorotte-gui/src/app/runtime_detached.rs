@@ -19,7 +19,7 @@ use super::runtime_owner::GuiPersistedConfigRuntimeOwner;
 use super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 use super::runtime_stack::{
     GuiClientCoreChatSessionRuntimeAdapter, GuiQueuedSessionTransportHandle,
-    GuiTcpSessionTransportDriver,
+    GuiThreadedTcpSessionTransportDriver,
 };
 use super::shell_state::{
     GuiCommandRuntimeSnapshot, GuiSavedConfigurationRuntimeSnapshot, GuiShellAction,
@@ -594,7 +594,7 @@ impl GuiPersistedConfigRuntimeOwner {
             }
             return;
         };
-        let transport_driver = match GuiTcpSessionTransportDriver::connect_from_host_arg(
+        let transport_driver = match GuiThreadedTcpSessionTransportDriver::connect_from_host_arg(
             &target.address,
         ) {
             Ok(driver) => driver,
