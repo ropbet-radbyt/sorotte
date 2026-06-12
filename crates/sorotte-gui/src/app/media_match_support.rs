@@ -1045,14 +1045,7 @@ where
             request.cancel_flag,
         )?;
     }
-    let selected = explicit_candidates.map_or_else(
-        || select_remote_media_match_candidates(&candidates, request.target_file_name),
-        |paths| MediaMatchRebuildCandidateSelection {
-            paths: paths.clone(),
-            discovered_files: paths.len(),
-            prefiltered: false,
-        },
-    );
+    let selected = select_remote_media_match_candidates(&candidates, request.target_file_name);
     let existing_cache =
         load_media_match_cache_for_settings(request.root, request.extraction_settings)
             .unwrap_or_default();
@@ -2186,13 +2179,16 @@ fn summarize_current_media_match(
 pub(super) fn media_match_cached_probable_candidate_for_remote_signature(
     root: &Path,
     search_roots: &[PathBuf],
+    candidates: Option<&[PathBuf]>,
     target_file_name: &str,
     media_match_signature: &serde_json::Value,
     settings: &MediaMatchSettings,
     extraction_settings: &MediaExtractionSettings,
 ) -> Option<MediaMatchRemoteCandidateMatch> {
     let signature = media_match_wire_signature_from_value(media_match_signature).ok()?;
-    let candidates = collect_media_match_candidates(search_roots);
+    let candidates = candidates
+        .map(<[PathBuf]>::to_vec)
+        .unwrap_or_else(|| collect_media_match_candidates(search_roots));
     let selected = select_remote_media_match_candidates(&candidates, target_file_name);
     let cache = load_media_match_cache_for_settings(root, extraction_settings)?;
     best_remote_candidate_match(

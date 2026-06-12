@@ -140,14 +140,21 @@ fn gui_persisted_config_runtime_owner_opens_probable_media_match_candidate_for_s
     let local_media_path = media_root.join(local_file_name);
     std::fs::write(&local_media_path, b"alternate encode")
         .expect("alternate-encode fixture should be written");
+    let unindexed_file_name = "[Decoy] Bakemonogatari - Ep04 [1080p].mkv";
+    let unindexed_media_path = media_root.join(unindexed_file_name);
+    std::fs::write(&unindexed_media_path, b"unindexed alternate encode")
+        .expect("unindexed alternate fixture should be written");
     let remote_file_name = "[MTBB-Minis] Bakemonogatari - 04 [19103080].mkv";
 
     let local_record = media_match_record_for_file(&local_media_path);
+    let unindexed_record = media_match_record_for_file(&unindexed_media_path);
     let mut cache = sorotte_media_match::MediaMatchCache::default();
     cache.insert(local_record);
+    cache.insert(unindexed_record.clone());
     crate::app::media_match_support::save_media_match_cache_for_test(&root, &cache)
         .expect("media-match cache should be written");
-    let remote_record = remote_media_match_record(remote_file_name);
+    let mut remote_record = remote_media_match_record(remote_file_name);
+    remote_record.container_fingerprint = unindexed_record.container_fingerprint;
     let remote_signature = sorotte_media_match::media_match_wire_value_from_records(
         std::slice::from_ref(&remote_record),
     )
@@ -218,7 +225,7 @@ fn gui_persisted_config_runtime_owner_opens_probable_media_match_candidate_for_s
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .opened_paths,
         vec![sorotte_media_match::normalize_media_path(&local_media_path)],
-        "probable sampled-fast media-match signatures should resolve a selected playlist target without making them autoplay-eligible"
+        "probable sampled-fast media-match signatures should use indexed candidates instead of scanning every search-root file"
     );
 
     let _ = std::fs::remove_dir_all(&root);

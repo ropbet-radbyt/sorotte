@@ -1,5 +1,6 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, hash_map::DefaultHasher},
+    hash::{Hash, Hasher},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -786,6 +787,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn media_match_remote_lookup_trigger_key(
         root: &Path,
         search_roots: &[PathBuf],
+        candidate_paths: Option<&[PathBuf]>,
         remote: &GuiMediaMatchRemoteTarget,
         settings: &sorotte_media_match::MediaMatchSettings,
     ) -> String {
@@ -794,12 +796,28 @@ impl GuiPersistedConfigRuntimeOwner {
             .map(|root| root.display().to_string())
             .collect::<Vec<_>>()
             .join("|");
+        let candidate_source = Self::media_match_remote_lookup_candidate_source(candidate_paths);
         format!(
-            "root={}\nroots={roots}\ntarget={}\nsignature={}\nsettings={settings:?}",
+            "root={}\nroots={roots}\ncandidates={candidate_source}\ntarget={}\nsignature={}\nsettings={settings:?}",
             root.display(),
             remote.target_file_name,
             remote.media_match_signature
         )
+    }
+
+    fn media_match_remote_lookup_candidate_source(candidate_paths: Option<&[PathBuf]>) -> String {
+        let Some(candidate_paths) = candidate_paths else {
+            return "search-roots".to_owned();
+        };
+        let mut hasher = DefaultHasher::new();
+        for path in candidate_paths {
+            let mut key = path.to_string_lossy().replace('\\', "/");
+            if cfg!(windows) {
+                key = key.to_ascii_lowercase();
+            }
+            key.hash(&mut hasher);
+        }
+        format!("indexed:{}:{:016x}", candidate_paths.len(), hasher.finish())
     }
 
     fn cached_media_match_remote_lookup_result(&self, trigger_key: &str) -> Option<Option<String>> {
@@ -822,6 +840,7 @@ impl GuiPersistedConfigRuntimeOwner {
         trigger_key: String,
         root: PathBuf,
         search_roots: Vec<PathBuf>,
+        candidate_paths: Option<Vec<PathBuf>>,
         remote: GuiMediaMatchRemoteTarget,
         settings: sorotte_media_match::MediaMatchSettings,
     ) {
@@ -845,6 +864,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 let candidate = media_match_cached_probable_candidate_for_remote_signature(
                     &root,
                     &search_roots,
+                    candidate_paths.as_deref(),
                     &remote.target_file_name,
                     &remote.media_match_signature,
                     &settings,
@@ -914,9 +934,12 @@ impl GuiPersistedConfigRuntimeOwner {
             return None;
         }
         let remote = self.media_match_remote_target_for_target(projected_state, target)?;
+        let roots = Self::automatic_media_search_root_keys(&search_roots);
+        let candidate_paths = self.attached_media_match_candidate_paths(&roots);
         let trigger_key = Self::media_match_remote_lookup_trigger_key(
             &root,
             &search_roots,
+            candidate_paths.as_deref(),
             &remote,
             &projected_state.media_match.settings,
         );
@@ -930,6 +953,7 @@ impl GuiPersistedConfigRuntimeOwner {
             trigger_key,
             root,
             search_roots,
+            candidate_paths,
             remote.clone(),
             projected_state.media_match.settings.clone(),
         );
@@ -951,9 +975,12 @@ impl GuiPersistedConfigRuntimeOwner {
             return None;
         }
         let remote = self.media_match_remote_target_for_target(projected_state, target)?;
+        let roots = Self::automatic_media_search_root_keys(&search_roots);
+        let candidate_paths = self.attached_media_match_candidate_paths(&roots);
         let trigger_key = Self::media_match_remote_lookup_trigger_key(
             &root,
             &search_roots,
+            candidate_paths.as_deref(),
             &remote,
             &projected_state.media_match.settings,
         );
@@ -1065,6 +1092,13 @@ impl GuiPersistedConfigRuntimeOwner {
                 }
             }
         }
+        paths.sort_by(|left, right| {
+            Self::normalized_current_player_match_key(&left.to_string_lossy())
+                .cmp(&Self::normalized_current_player_match_key(
+                    &right.to_string_lossy(),
+                ))
+                .then_with(|| left.cmp(right))
+        });
 
         (!paths.is_empty()).then_some(paths)
     }
@@ -1237,18 +1271,19 @@ impl GuiPersistedConfigRuntimeOwner {
                         let extraction_settings =
                             sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3();
                         media_match_tool_paths_for_settings(&root, &extraction_settings).and_then(|tools| {
+                            let request = MediaMatchRemoteCandidateRebuildRequest {
+                                root: &root,
+                                search_roots: &search_roots,
+                                candidates: candidates.clone(),
+                                target_file_name: &remote_candidate.target_file_name,
+                                media_match_signature: &remote_candidate.media_match_signature,
+                                settings: &settings,
+                                tools: &tools,
+                                extraction_settings: &extraction_settings,
+                                cancel_flag: Some(worker_cancel_flag.as_ref()),
+                            };
                             rebuild_persisted_media_match_remote_candidates_with_progress_and_cancel(
-                                MediaMatchRemoteCandidateRebuildRequest {
-                                    root: &root,
-                                    search_roots: &search_roots,
-                                    candidates: None,
-                                    target_file_name: &remote_candidate.target_file_name,
-                                    media_match_signature: &remote_candidate.media_match_signature,
-                                    settings: &settings,
-                                    tools: &tools,
-                                    extraction_settings: &extraction_settings,
-                                    cancel_flag: Some(worker_cancel_flag.as_ref()),
-                                },
+                                request,
                                 |progress| {
                                     let _ = progress_tx.send(
                                         GuiMediaMatchBackgroundWorkerEvent::Progress(progress),
