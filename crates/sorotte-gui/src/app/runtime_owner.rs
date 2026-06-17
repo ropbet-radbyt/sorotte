@@ -107,6 +107,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) player_local_file_placeholder: bool,
     pub(super) last_published_local_file: Option<LocalFileUpdate>,
     pub(super) last_published_media_match_signature: Option<serde_json::Value>,
+    pub(super) local_shared_playlist_media_match_signature_path: Option<String>,
     pub(super) attached_media_search_index: Option<GuiAttachedMediaSearchIndex>,
     pub(super) attached_media_search_next_retry_at: Option<Instant>,
     pub(super) pending_attached_media_resolution: Option<GuiPendingAttachedMediaResolution>,

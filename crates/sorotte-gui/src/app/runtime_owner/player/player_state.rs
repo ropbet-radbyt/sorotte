@@ -45,6 +45,12 @@ impl GuiPersistedConfigRuntimeOwner {
             .and_then(|session| session.current_room_playlist_index())
             .and_then(|index| Self::playlist_target_for_index(state, index))
             .or_else(|| {
+                state
+                    .main_window
+                    .active_playlist_index
+                    .and_then(|index| Self::playlist_target_for_index(state, index))
+            })
+            .or_else(|| {
                 self.active_shared_playlist_index
                     .and_then(|index| Self::playlist_target_for_index(state, index))
             })

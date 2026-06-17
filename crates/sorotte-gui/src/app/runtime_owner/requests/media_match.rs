@@ -532,6 +532,51 @@ impl GuiPersistedConfigRuntimeOwner {
         format!("exact-playlist-signature={path}")
     }
 
+    fn local_shared_playlist_media_match_signature_path_matches(&self, path: &str) -> bool {
+        self.local_shared_playlist_media_match_signature_path
+            .as_deref()
+            .is_some_and(|source_path| {
+                Self::normalized_current_player_match_key(source_path)
+                    == Self::normalized_current_player_match_key(path)
+            })
+    }
+
+    pub(in crate::app::runtime_owner) fn remember_local_shared_playlist_media_match_signature_path(
+        &mut self,
+        path: &str,
+    ) {
+        self.local_shared_playlist_media_match_signature_path = Some(path.to_owned());
+    }
+
+    pub(in crate::app) fn clear_local_shared_playlist_media_match_signature_path_if_current(
+        &mut self,
+        local_file: Option<&sorotte_player_api::LocalFileUpdate>,
+    ) {
+        let Some(path) = local_file.and_then(|file| file.path.as_deref()) else {
+            return;
+        };
+        if self.local_shared_playlist_media_match_signature_path_matches(path) {
+            self.local_shared_playlist_media_match_signature_path = None;
+        }
+    }
+
+    pub(in crate::app) fn media_match_wire_signature_allowed_for_local_file(
+        &self,
+        projected_state: &SorotteGuiShellAppState,
+        local_file: Option<&sorotte_player_api::LocalFileUpdate>,
+    ) -> bool {
+        let Some(path) = local_file.and_then(|file| file.path.as_deref()) else {
+            return false;
+        };
+        let Some(target) = self.current_shared_playlist_target(projected_state) else {
+            return true;
+        };
+        if !self.current_player_matches_media_target(&target) {
+            return true;
+        }
+        self.local_shared_playlist_media_match_signature_path_matches(path)
+    }
+
     fn media_match_exact_playlist_plan_for_state(
         &self,
         projected_state: &SorotteGuiShellAppState,
@@ -554,6 +599,7 @@ impl GuiPersistedConfigRuntimeOwner {
         };
 
         if projected_state.media_match.settings.wire_sharing_enabled
+            && self.local_shared_playlist_media_match_signature_path_matches(&path)
             && media_match_record_for_path(
                 root,
                 &path,
@@ -2803,7 +2849,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_shared_playlist_match_needs_only_signature_fingerprint_when_sharing_enabled() {
+    fn local_exact_shared_playlist_match_needs_only_signature_fingerprint_when_sharing_enabled() {
         let mut root = std::env::temp_dir();
         root.push(format!(
             "sorotte-gui-media-match-runtime-exact-signature-{}",
@@ -2830,6 +2876,9 @@ mod tests {
             sorotte_player_api::LocalFileUpdate::new("episode.mkv")
                 .with_path(media_path.to_string_lossy().into_owned()),
         );
+        owner.remember_local_shared_playlist_media_match_signature_path(
+            &media_path.to_string_lossy(),
+        );
 
         assert_eq!(
             owner.media_match_exact_playlist_plan_for_state(&state, &root),
@@ -2837,6 +2886,58 @@ mod tests {
                 path: media_path.to_string_lossy().into_owned(),
             }
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn remote_exact_shared_playlist_match_does_not_need_signature_fingerprint_when_sharing_enabled()
+    {
+        let mut root = std::env::temp_dir();
+        root.push(format!(
+            "sorotte-gui-media-match-runtime-remote-exact-no-signature-{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            let _ = std::fs::remove_dir_all(&root);
+        }
+        std::fs::create_dir_all(&root).expect("test root should be created");
+        let config_path = root.join("sorotte.ini");
+        let media_path = root.join("episode.mkv");
+        std::fs::write(&media_path, b"not real media").expect("media file should be created");
+        let saved_settings = StoredClientSettingsMvp {
+            media_match_fingerprinting_enabled: Some(true),
+            media_match_wire_sharing_enabled: Some(true),
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        };
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+        state.apply_shared_playlist_entries(vec!["episode.mkv".to_owned()], Some(0), false);
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
+        owner.active_shared_playlist_index = Some(0);
+        owner.player_local_file = Some(
+            sorotte_player_api::LocalFileUpdate::new("episode.mkv")
+                .with_path(media_path.to_string_lossy().into_owned()),
+        );
+        let (_tx, rx) = mpsc::channel();
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        owner.media_match_background_worker_rx = Some(rx);
+        owner.media_match_background_worker_cancel = Some(cancel_flag.clone());
+        owner.media_match_background_trigger_key = Some("background warmup".to_owned());
+        let handle = GuiQueuedRuntimeBridgeHandle::default();
+
+        assert_eq!(
+            owner.media_match_exact_playlist_plan_for_state(&state, &root),
+            GuiMediaMatchExactPlaylistPlan::ExactNoFingerprint {
+                path: media_path.to_string_lossy().into_owned(),
+            }
+        );
+        owner.maybe_queue_media_match_exact_playlist_signature(&handle, &mut state);
+
+        assert!(
+            !cancel_flag.load(Ordering::Relaxed),
+            "a remote exact shared-playlist receiver must not preempt broad work for signature sharing"
+        );
+        assert_eq!(owner.media_match_background_cancel_disposition, None);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -2868,6 +2969,9 @@ mod tests {
         owner.player_local_file = Some(
             sorotte_player_api::LocalFileUpdate::new("episode.mkv")
                 .with_path(media_path.to_string_lossy().into_owned()),
+        );
+        owner.remember_local_shared_playlist_media_match_signature_path(
+            &media_path.to_string_lossy(),
         );
         let (_tx, rx) = mpsc::channel();
         let cancel_flag = Arc::new(AtomicBool::new(false));

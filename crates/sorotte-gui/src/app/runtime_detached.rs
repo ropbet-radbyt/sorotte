@@ -104,6 +104,9 @@ impl GuiPersistedConfigRuntimeOwner {
         {
             return None;
         }
+        if !self.media_match_wire_signature_allowed_for_local_file(state, local_file) {
+            return None;
+        }
         let root = self.legacy_gui_qsettings_root();
         let root = root.as_deref()?;
         let path = local_file.and_then(|local_file| local_file.path.as_deref())?;
@@ -315,8 +318,15 @@ impl GuiPersistedConfigRuntimeOwner {
                 filename_privacy_mode,
                 filesize_privacy_mode,
             )?;
+            let published_file = player_local_file.clone();
+            let published_media_match_signature = media_match_signature.clone();
             self.last_published_local_file = player_local_file;
             self.last_published_media_match_signature = media_match_signature;
+            if published_media_match_signature.is_some() {
+                self.clear_local_shared_playlist_media_match_signature_path_if_current(
+                    published_file.as_ref(),
+                );
+            }
         }
         if let Some(pending_local_attached_pause_override) =
             pending_local_attached_pause_override_update
