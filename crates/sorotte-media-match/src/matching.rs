@@ -2,11 +2,13 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::{
     anchors::{AudioAnchor, MediaAnchorProfile, media_anchor_profile_from_record},
+    identity::duration_seconds_to_millis,
     tuning::DEFAULT_ANCHOR_OFFSET_BIN_MS,
     types::{
-        AlignedSegmentV3, AudioMatchEvidence, MatchClassV3, MediaFingerprintRecord,
-        MediaMatchDecision, MediaMatchEvidence, MediaMatchSettings, MediaMatchTier,
-        MediaTimelineAlignment, MediaTimelineMapV3, MetadataMatchEvidence,
+        AlignedSegmentV3, AudioMatchEvidence, MatchClassV3, MediaDurationCompatibility,
+        MediaFingerprintRecord, MediaMatchDecision, MediaMatchEvidence, MediaMatchSettings,
+        MediaMatchTier, MediaTimelineAlignment, MediaTimelineMapV3, MetadataMatchEvidence,
+        media_duration_compatibility_ms, media_duration_ratio_ms,
     },
 };
 
@@ -43,12 +45,74 @@ pub fn rank_media_match_candidates<'a>(
         media_match_tier_rank(right.decision.tier)
             .cmp(&media_match_tier_rank(left.decision.tier))
             .then_with(|| {
+                media_match_class_rank(right.decision.evidence.v3_class)
+                    .cmp(&media_match_class_rank(left.decision.evidence.v3_class))
+            })
+            .then_with(|| {
                 media_match_candidate_aligned_pairs(&right.decision)
                     .cmp(&media_match_candidate_aligned_pairs(&left.decision))
+            })
+            .then_with(|| {
+                media_match_duration_rank(
+                    right
+                        .decision
+                        .evidence
+                        .metadata
+                        .duration_compatibility
+                        .unwrap_or(MediaDurationCompatibility::Unknown),
+                )
+                .cmp(&media_match_duration_rank(
+                    left.decision
+                        .evidence
+                        .metadata
+                        .duration_compatibility
+                        .unwrap_or(MediaDurationCompatibility::Unknown),
+                ))
+            })
+            .then_with(|| {
+                media_match_filename_similarity(&right.decision)
+                    .total_cmp(&media_match_filename_similarity(&left.decision))
+            })
+            .then_with(|| {
+                media_match_same_size_rank(&right.decision)
+                    .cmp(&media_match_same_size_rank(&left.decision))
             })
             .then_with(|| left.candidate_path.cmp(&right.candidate_path))
     });
     decisions
+}
+
+fn media_match_class_rank(class: Option<MatchClassV3>) -> u8 {
+    match class.unwrap_or(MatchClassV3::Unknown) {
+        MatchClassV3::SameCutStrong => 5,
+        MatchClassV3::SameCutProbable => 4,
+        MatchClassV3::SameMediaDifferentCut => 3,
+        MatchClassV3::PartialOverlap => 2,
+        MatchClassV3::SharedIntroOutroOnly => 1,
+        MatchClassV3::Reject | MatchClassV3::Unknown => 0,
+    }
+}
+
+fn media_match_duration_rank(compatibility: MediaDurationCompatibility) -> u8 {
+    match compatibility {
+        MediaDurationCompatibility::SameCutCompatible => 4,
+        MediaDurationCompatibility::NearCompatible => 3,
+        MediaDurationCompatibility::Unknown => 2,
+        MediaDurationCompatibility::ContainedOrPartial => 1,
+        MediaDurationCompatibility::IncompatibleSameCut => 0,
+    }
+}
+
+fn media_match_filename_similarity(decision: &MediaMatchDecision) -> f64 {
+    decision
+        .evidence
+        .metadata
+        .filename_stem_similarity
+        .unwrap_or(0.0)
+}
+
+fn media_match_same_size_rank(decision: &MediaMatchDecision) -> u8 {
+    u8::from(decision.evidence.metadata.same_size.unwrap_or(false))
 }
 
 fn media_match_candidate_aligned_pairs(decision: &MediaMatchDecision) -> usize {
@@ -71,6 +135,7 @@ pub fn decide_media_match(
     };
 
     if query.identity.normalized_path == candidate.identity.normalized_path {
+        push_metadata_notes(&mut evidence);
         evidence.v3_class = Some(MatchClassV3::SameCutStrong);
         evidence.notes.push("same normalized path".to_owned());
         return MediaMatchDecision {
@@ -88,12 +153,19 @@ pub fn decide_media_match(
 pub(crate) fn decide_media_match_anchors(
     query: &MediaAnchorProfile,
     candidate: &MediaAnchorProfile,
-    _settings: &MediaMatchSettings,
+    settings: &MediaMatchSettings,
 ) -> MediaMatchDecision {
     decide_media_match_anchors_with_evidence(
         query.clone(),
         candidate.clone(),
-        MediaMatchEvidence::default(),
+        MediaMatchEvidence {
+            metadata: metadata_evidence_for_duration_ms(
+                query.duration_ms,
+                candidate.duration_ms,
+                settings,
+            ),
+            ..MediaMatchEvidence::default()
+        },
     )
 }
 
@@ -128,8 +200,9 @@ fn decide_media_match_anchors_with_evidence(
             .map(|(left, right)| (f64::from(left) - f64::from(right)).abs() / 1000.0),
     });
     evidence.alignment = Some(alignment.clone());
-    let class =
-        classify_sampled_audio_alignment(&alignment, query.duration_ms, candidate.duration_ms);
+    let audio_class = classify_sampled_audio_alignment(&alignment);
+    push_metadata_notes(&mut evidence);
+    let class = apply_duration_compatibility(audio_class, &alignment, &mut evidence);
     evidence.v3_class = Some(class);
     evidence.timeline_map_v3 = Some(timeline_map_from_alignment(&alignment, class));
     evidence.notes.push(format!(
@@ -143,10 +216,10 @@ fn decide_media_match_anchors_with_evidence(
     let tier = match class {
         MatchClassV3::SameCutStrong => MediaMatchTier::Probable,
         MatchClassV3::SameCutProbable => MediaMatchTier::Probable,
-        MatchClassV3::PartialOverlap | MatchClassV3::SharedIntroOutroOnly => MediaMatchTier::Weak,
-        MatchClassV3::Reject | MatchClassV3::Unknown | MatchClassV3::SameMediaDifferentCut => {
-            MediaMatchTier::Reject
-        }
+        MatchClassV3::SameMediaDifferentCut
+        | MatchClassV3::PartialOverlap
+        | MatchClassV3::SharedIntroOutroOnly => MediaMatchTier::Weak,
+        MatchClassV3::Reject | MatchClassV3::Unknown => MediaMatchTier::Reject,
     };
     MediaMatchDecision {
         tier,
@@ -164,6 +237,10 @@ fn metadata_evidence(
     candidate: &MediaFingerprintRecord,
     settings: &MediaMatchSettings,
 ) -> MetadataMatchEvidence {
+    let query_duration_ms = query.duration_seconds.and_then(duration_seconds_to_millis);
+    let candidate_duration_ms = candidate
+        .duration_seconds
+        .and_then(duration_seconds_to_millis);
     let duration_delta_seconds = query
         .duration_seconds
         .zip(candidate.duration_seconds)
@@ -174,7 +251,87 @@ fn metadata_evidence(
         duration_delta_seconds,
         duration_within_tolerance: duration_delta_seconds
             .map(|delta| delta <= settings.runtime_tolerance_seconds),
+        extension_match: Some(
+            media_path_extension(&query.identity.normalized_path)
+                == media_path_extension(&candidate.identity.normalized_path),
+        ),
+        duration_compatibility: Some(media_duration_compatibility_ms(
+            query_duration_ms,
+            candidate_duration_ms,
+        )),
+        duration_ratio: media_duration_ratio_ms(query_duration_ms, candidate_duration_ms),
+        filename_stem_similarity: Some(filename_stem_similarity(
+            &query.identity.normalized_path,
+            &candidate.identity.normalized_path,
+        )),
+    }
+}
+
+fn metadata_evidence_for_duration_ms(
+    query_duration_ms: Option<u32>,
+    candidate_duration_ms: Option<u32>,
+    settings: &MediaMatchSettings,
+) -> MetadataMatchEvidence {
+    let duration_delta_seconds = query_duration_ms
+        .zip(candidate_duration_ms)
+        .map(|(left, right)| f64::from(left.abs_diff(right)) / 1000.0);
+    MetadataMatchEvidence {
+        same_normalized_path: false,
+        same_size: None,
+        duration_delta_seconds,
+        duration_within_tolerance: duration_delta_seconds
+            .map(|delta| delta <= settings.runtime_tolerance_seconds),
         extension_match: None,
+        duration_compatibility: Some(media_duration_compatibility_ms(
+            query_duration_ms,
+            candidate_duration_ms,
+        )),
+        duration_ratio: media_duration_ratio_ms(query_duration_ms, candidate_duration_ms),
+        filename_stem_similarity: None,
+    }
+}
+
+fn push_metadata_notes(evidence: &mut MediaMatchEvidence) {
+    if let Some(compatibility) = evidence.metadata.duration_compatibility {
+        match compatibility {
+            MediaDurationCompatibility::SameCutCompatible => {
+                if let Some(delta) = evidence.metadata.duration_delta_seconds {
+                    evidence.notes.push(format!(
+                        "duration compatible delta={}s",
+                        format_seconds(delta)
+                    ));
+                }
+            }
+            MediaDurationCompatibility::NearCompatible => {
+                if let Some(delta) = evidence.metadata.duration_delta_seconds {
+                    evidence.notes.push(format!(
+                        "duration near-compatible delta={}s",
+                        format_seconds(delta)
+                    ));
+                }
+            }
+            MediaDurationCompatibility::ContainedOrPartial => {
+                if let Some(delta) = evidence.metadata.duration_delta_seconds {
+                    evidence.notes.push(format!(
+                        "duration suggests contained/partial overlap delta={}s ratio={}",
+                        format_seconds(delta),
+                        format_ratio(evidence.metadata.duration_ratio)
+                    ));
+                }
+            }
+            MediaDurationCompatibility::IncompatibleSameCut
+            | MediaDurationCompatibility::Unknown => {}
+        }
+    }
+    if let Some(false) = evidence.metadata.extension_match {
+        evidence.notes.push("extension mismatch".to_owned());
+    } else if let Some(true) = evidence.metadata.extension_match {
+        evidence.notes.push("extension match".to_owned());
+    }
+    if let Some(similarity) = evidence.metadata.filename_stem_similarity {
+        evidence
+            .notes
+            .push(format!("filename stem similarity={similarity:.2}"));
     }
 }
 
@@ -271,25 +428,96 @@ fn rounded_offset_bin(offset_ms: i64) -> i64 {
     ((offset_ms + bin / 2).div_euclid(bin)) * bin
 }
 
-fn classify_sampled_audio_alignment(
-    alignment: &MediaTimelineAlignment,
-    query_duration_ms: Option<u32>,
-    candidate_duration_ms: Option<u32>,
-) -> MatchClassV3 {
-    let duration_delta_ok = query_duration_ms
-        .zip(candidate_duration_ms)
-        .map(|(left, right)| left.abs_diff(right) <= 5_000)
-        .unwrap_or(true);
+fn classify_sampled_audio_alignment(alignment: &MediaTimelineAlignment) -> MatchClassV3 {
     let enough_span = alignment.aligned_span_seconds >= 20.0;
     let enough_pairs = alignment.aligned_pairs >= 16;
     let margin_ok = alignment.second_best_offset_margin >= 1.15;
-    if duration_delta_ok && enough_span && enough_pairs && margin_ok {
+    if enough_span && enough_pairs && margin_ok {
         MatchClassV3::SameCutProbable
     } else if enough_pairs && alignment.aligned_span_seconds >= 5.0 {
         MatchClassV3::PartialOverlap
     } else {
         MatchClassV3::SharedIntroOutroOnly
     }
+}
+
+fn apply_duration_compatibility(
+    class: MatchClassV3,
+    alignment: &MediaTimelineAlignment,
+    evidence: &mut MediaMatchEvidence,
+) -> MatchClassV3 {
+    let compatibility = evidence
+        .metadata
+        .duration_compatibility
+        .unwrap_or(MediaDurationCompatibility::Unknown);
+    match compatibility {
+        MediaDurationCompatibility::Unknown | MediaDurationCompatibility::SameCutCompatible => {
+            class
+        }
+        MediaDurationCompatibility::NearCompatible => {
+            if class == MatchClassV3::SameCutProbable
+                && sampled_audio_strong_enough_for_near_duration(alignment)
+            {
+                class
+            } else if class == MatchClassV3::SameCutProbable {
+                if let Some(delta) = evidence.metadata.duration_delta_seconds {
+                    evidence.notes.push(format!(
+                        "duration near mismatch delta={}s downgraded same-cut audio to different-cut",
+                        format_seconds(delta)
+                    ));
+                }
+                MatchClassV3::SameMediaDifferentCut
+            } else {
+                class
+            }
+        }
+        MediaDurationCompatibility::ContainedOrPartial => match class {
+            MatchClassV3::SameCutStrong
+            | MatchClassV3::SameCutProbable
+            | MatchClassV3::SameMediaDifferentCut
+            | MatchClassV3::PartialOverlap => {
+                if let Some(delta) = evidence.metadata.duration_delta_seconds {
+                    evidence.notes.push(format!(
+                        "duration contained/partial delta={}s downgraded same-cut audio to partial-overlap",
+                        format_seconds(delta)
+                    ));
+                }
+                MatchClassV3::PartialOverlap
+            }
+            MatchClassV3::SharedIntroOutroOnly | MatchClassV3::Reject | MatchClassV3::Unknown => {
+                class
+            }
+        },
+        MediaDurationCompatibility::IncompatibleSameCut => match class {
+            MatchClassV3::SameCutStrong | MatchClassV3::SameCutProbable => {
+                if let Some(delta) = evidence.metadata.duration_delta_seconds {
+                    evidence.notes.push(format!(
+                        "duration mismatch delta={}s downgraded same-cut audio to partial-overlap",
+                        format_seconds(delta)
+                    ));
+                }
+                MatchClassV3::PartialOverlap
+            }
+            MatchClassV3::SameMediaDifferentCut
+            | MatchClassV3::PartialOverlap
+            | MatchClassV3::SharedIntroOutroOnly => {
+                if let Some(delta) = evidence.metadata.duration_delta_seconds {
+                    evidence.notes.push(format!(
+                        "duration mismatch delta={}s rejected weak sampled-fast audio",
+                        format_seconds(delta)
+                    ));
+                }
+                MatchClassV3::Reject
+            }
+            MatchClassV3::Reject | MatchClassV3::Unknown => class,
+        },
+    }
+}
+
+fn sampled_audio_strong_enough_for_near_duration(alignment: &MediaTimelineAlignment) -> bool {
+    alignment.aligned_span_seconds >= 20.0
+        && alignment.aligned_pairs >= 24
+        && alignment.second_best_offset_margin >= 1.15
 }
 
 fn timeline_map_from_alignment(
@@ -334,6 +562,143 @@ fn unique_audio_anchor_count(anchors: &[AudioAnchor]) -> usize {
         .map(|anchor| (anchor.bucket, anchor.t_ms))
         .collect::<HashSet<_>>()
         .len()
+}
+
+fn media_path_extension(path: &str) -> Option<String> {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path).trim();
+    let dot = name.rfind('.')?;
+    (dot + 1 < name.len()).then(|| name[dot + 1..].to_ascii_lowercase())
+}
+
+fn filename_stem_similarity(left: &str, right: &str) -> f64 {
+    let left_episode = episode_token_from_stem(left);
+    let right_episode = episode_token_from_stem(right);
+    let left_stem = normalized_filename_stem(left);
+    let right_stem = normalized_filename_stem(right);
+    let mut score = if left_stem == right_stem && !left_stem.is_empty() {
+        1.0
+    } else {
+        token_jaccard_similarity(&left_stem, &right_stem)
+    };
+    if left_episode.is_some() && right_episode.is_some() && left_episode != right_episode {
+        score = score.min(0.2);
+    }
+    score
+}
+
+fn normalized_filename_stem(path: &str) -> String {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    let stem = name
+        .rfind('.')
+        .filter(|dot| *dot > 0)
+        .map(|dot| &name[..dot])
+        .unwrap_or(name);
+    let mut cleaned = String::with_capacity(stem.len());
+    let mut bracket_depth = 0u8;
+    for character in stem.to_ascii_lowercase().chars() {
+        match character {
+            '[' | '(' | '{' => bracket_depth = bracket_depth.saturating_add(1),
+            ']' | ')' | '}' => bracket_depth = bracket_depth.saturating_sub(1),
+            _ if bracket_depth > 0 => {}
+            '.' | '_' | '-' => cleaned.push(' '),
+            _ => cleaned.push(character),
+        }
+    }
+    cleaned
+        .split_whitespace()
+        .filter(|token| !is_filename_noise_token(token))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn is_filename_noise_token(token: &str) -> bool {
+    matches!(
+        token,
+        "480p"
+            | "720p"
+            | "1080p"
+            | "2160p"
+            | "x264"
+            | "x265"
+            | "h264"
+            | "h265"
+            | "hevc"
+            | "bluray"
+            | "web"
+            | "webrip"
+            | "webdl"
+            | "dl"
+            | "hdr"
+            | "dv"
+            | "aac"
+            | "flac"
+    )
+}
+
+fn token_jaccard_similarity(left: &str, right: &str) -> f64 {
+    let left_tokens = left.split_whitespace().collect::<BTreeSet<_>>();
+    let right_tokens = right.split_whitespace().collect::<BTreeSet<_>>();
+    if left_tokens.is_empty() || right_tokens.is_empty() {
+        return 0.0;
+    }
+    let intersection = left_tokens.intersection(&right_tokens).count();
+    let union = left_tokens.union(&right_tokens).count();
+    intersection as f64 / union.max(1) as f64
+}
+
+fn episode_token_from_stem(path: &str) -> Option<(u32, u32)> {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    let stem = name
+        .rfind('.')
+        .filter(|dot| *dot > 0)
+        .map(|dot| &name[..dot])
+        .unwrap_or(name)
+        .to_ascii_lowercase();
+    let bytes = stem.as_bytes();
+    for index in 0..bytes.len() {
+        if bytes[index] == b's'
+            && let Some((season, after_season)) = parse_digits(bytes, index + 1, 2)
+            && after_season < bytes.len()
+            && bytes[after_season] == b'e'
+            && let Some((episode, _)) = parse_digits(bytes, after_season + 1, 2)
+        {
+            return Some((season, episode));
+        }
+        if bytes[index].is_ascii_digit()
+            && (index == 0 || !bytes[index - 1].is_ascii_digit())
+            && let Some((season, after_season)) = parse_digits(bytes, index, 2)
+            && after_season < bytes.len()
+            && bytes[after_season] == b'x'
+            && let Some((episode, _)) = parse_digits(bytes, after_season + 1, 2)
+        {
+            return Some((season, episode));
+        }
+    }
+    None
+}
+
+fn parse_digits(bytes: &[u8], start: usize, max_len: usize) -> Option<(u32, usize)> {
+    let mut value = 0u32;
+    let mut end = start;
+    while end < bytes.len() && end - start < max_len && bytes[end].is_ascii_digit() {
+        value = value * 10 + u32::from(bytes[end] - b'0');
+        end += 1;
+    }
+    (end > start).then_some((value, end))
+}
+
+fn format_seconds(seconds: f64) -> String {
+    if seconds >= 100.0 {
+        format!("{seconds:.0}")
+    } else {
+        format!("{seconds:.1}")
+    }
+}
+
+fn format_ratio(ratio: Option<f64>) -> String {
+    ratio
+        .map(|ratio| format!("{ratio:.2}"))
+        .unwrap_or_else(|| "unknown".to_owned())
 }
 
 #[cfg(test)]

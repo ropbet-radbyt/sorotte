@@ -62,10 +62,11 @@ pub use timeline_v3::{
 };
 pub use tuning::{V3Tuning, current_v3_tuning};
 pub use types::{
-    AlignedSegmentV3, AudioMatchEvidence, MatchClassV3, MediaFileIdentity, MediaFingerprintRecord,
-    MediaMatchAutoplayPolicy, MediaMatchCache, MediaMatchDecision, MediaMatchEvidence,
-    MediaMatchSettings, MediaMatchTier, MediaTimelineAlignment, MediaTimelineMapV3,
-    MetadataMatchEvidence, TimelinePositionMapResult,
+    AlignedSegmentV3, AudioMatchEvidence, MatchClassV3, MediaDurationCompatibility,
+    MediaFileIdentity, MediaFingerprintRecord, MediaMatchAutoplayPolicy, MediaMatchCache,
+    MediaMatchDecision, MediaMatchEvidence, MediaMatchSettings, MediaMatchTier,
+    MediaTimelineAlignment, MediaTimelineMapV3, MetadataMatchEvidence, TimelinePositionMapResult,
+    media_duration_compatibility_ms, media_duration_ratio_ms,
 };
 // The GUI/runtime owns cache location and rebuild lifecycle; these wrappers keep the SQL/index
 // implementation centralized in this crate while still letting runtime code maintain the cache.

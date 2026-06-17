@@ -15,8 +15,8 @@ use crate::{
     settings::{MediaExtractionSettings, media_extraction_settings_hash},
     summarize_instrumented_record_v3_diagnostics, summarize_record_v3_diagnostics,
     types::{
-        MatchClassV3, MediaFingerprintRecord, MediaMatchAutoplayPolicy, MediaMatchSettings,
-        MediaMatchTier,
+        MatchClassV3, MediaDurationCompatibility, MediaFingerprintRecord, MediaMatchAutoplayPolicy,
+        MediaMatchSettings, MediaMatchTier,
     },
     v3_index::{
         MediaMatchV3RetrievalStats, MediaMatchV3RetrievedCandidate, MediaMatchV3SqliteSizeReport,
@@ -279,7 +279,8 @@ pub struct MediaMatchV3DiagnosticRetrievalCandidateReport {
     pub query_duration_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidate_duration_ms: Option<i64>,
-    pub duration_compatibility: String,
+    #[serde(default)]
+    pub duration_compatibility: MediaDurationCompatibility,
     pub short_clip_penalty_applied: bool,
 }
 
@@ -302,7 +303,7 @@ impl From<&MediaMatchV3RetrievedCandidate> for MediaMatchV3DiagnosticRetrievalCa
             score_ratio_to_next: candidate.score_ratio_to_next,
             query_duration_ms: candidate.query_duration_ms,
             candidate_duration_ms: candidate.candidate_duration_ms,
-            duration_compatibility: candidate.duration_compatibility.clone(),
+            duration_compatibility: candidate.duration_compatibility,
             short_clip_penalty_applied: candidate.short_clip_penalty_applied,
         }
     }

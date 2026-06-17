@@ -29,6 +29,86 @@ pub enum MatchClassV3 {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MediaDurationCompatibility {
+    #[default]
+    Unknown,
+    #[serde(alias = "compatible")]
+    SameCutCompatible,
+    NearCompatible,
+    #[serde(alias = "query-full-candidate-short")]
+    ContainedOrPartial,
+    #[serde(alias = "incompatible")]
+    IncompatibleSameCut,
+}
+
+pub fn media_duration_compatibility_ms<T, U>(
+    left_duration_ms: Option<T>,
+    right_duration_ms: Option<U>,
+) -> MediaDurationCompatibility
+where
+    T: Into<i64> + Copy,
+    U: Into<i64> + Copy,
+{
+    let Some((shorter, longer)) = ordered_positive_durations(left_duration_ms, right_duration_ms)
+    else {
+        return MediaDurationCompatibility::Unknown;
+    };
+    let delta = longer - shorter;
+    let same_cut_threshold = 3_000.max((shorter as f64 * 0.005).ceil() as i64);
+    if delta <= same_cut_threshold {
+        return MediaDurationCompatibility::SameCutCompatible;
+    }
+    let near_threshold = 10_000.max((shorter as f64 * 0.01).ceil() as i64);
+    if delta <= near_threshold {
+        return MediaDurationCompatibility::NearCompatible;
+    }
+
+    let ratio = shorter as f64 / longer as f64;
+    let large_full_length_mismatch =
+        shorter >= 10 * 60 * 1000 && longer >= 20 * 60 * 1000 && delta >= 5 * 60 * 1000;
+    if large_full_length_mismatch && ratio >= 0.45 {
+        MediaDurationCompatibility::IncompatibleSameCut
+    } else if ratio >= 0.08 || shorter >= 60_000 {
+        MediaDurationCompatibility::ContainedOrPartial
+    } else {
+        MediaDurationCompatibility::IncompatibleSameCut
+    }
+}
+
+pub fn media_duration_ratio_ms<T, U>(
+    left_duration_ms: Option<T>,
+    right_duration_ms: Option<U>,
+) -> Option<f64>
+where
+    T: Into<i64> + Copy,
+    U: Into<i64> + Copy,
+{
+    let (shorter, longer) = ordered_positive_durations(left_duration_ms, right_duration_ms)?;
+    Some(shorter as f64 / longer as f64)
+}
+
+fn ordered_positive_durations<T, U>(
+    left_duration_ms: Option<T>,
+    right_duration_ms: Option<U>,
+) -> Option<(i64, i64)>
+where
+    T: Into<i64> + Copy,
+    U: Into<i64> + Copy,
+{
+    let left = left_duration_ms?.into();
+    let right = right_duration_ms?.into();
+    if left <= 0 || right <= 0 {
+        return None;
+    }
+    Some(if left <= right {
+        (left, right)
+    } else {
+        (right, left)
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AlignedSegmentV3 {
     pub query_start_ms: u32,
@@ -176,10 +256,20 @@ pub struct MediaMatchEvidence {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct MetadataMatchEvidence {
     pub same_normalized_path: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub same_size: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_delta_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_within_tolerance: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extension_match: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_compatibility: Option<MediaDurationCompatibility>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ratio: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filename_stem_similarity: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

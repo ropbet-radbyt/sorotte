@@ -25,7 +25,10 @@ use crate::{
         V3_RETRIEVAL_OFFSET_BIN_MS, V3_RETRIEVAL_PREFILTER_LIMIT, V3_RETRIEVAL_REGION_MS,
         current_v3_tuning,
     },
-    types::{MediaFileIdentity, MediaFingerprintRecord, MediaMatchCache},
+    types::{
+        MediaDurationCompatibility, MediaFileIdentity, MediaFingerprintRecord, MediaMatchCache,
+        media_duration_compatibility_ms,
+    },
 };
 
 const MEDIA_MATCH_V3_SQLITE_SCHEMA_VERSION: i64 = 6;
@@ -142,7 +145,7 @@ pub struct MediaMatchV3RetrievedCandidate {
     pub score_ratio_to_next: Option<f64>,
     pub query_duration_ms: Option<i64>,
     pub candidate_duration_ms: Option<i64>,
-    pub duration_compatibility: String,
+    pub duration_compatibility: MediaDurationCompatibility,
     pub short_clip_penalty_applied: bool,
     pub robust_score: f64,
 }
@@ -171,7 +174,7 @@ struct V3CandidateRetrievalScore {
     audio_hits: i64,
     approximate_span_ms: i64,
     robust_score: i128,
-    duration_compatibility: V3DurationCompatibility,
+    duration_compatibility: MediaDurationCompatibility,
     short_clip_penalty_applied: bool,
     offset_bins: BTreeMap<i64, V3CandidateOffsetScore>,
 }
@@ -186,26 +189,6 @@ struct V3CandidateOffsetScore {
     query_times: BTreeSet<i64>,
     candidate_times: BTreeSet<i64>,
     audio_hits: i64,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-enum V3DurationCompatibility {
-    #[default]
-    Unknown,
-    Compatible,
-    QueryFullCandidateShort,
-    Incompatible,
-}
-
-impl V3DurationCompatibility {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Unknown => "unknown",
-            Self::Compatible => "compatible",
-            Self::QueryFullCandidateShort => "query-full-candidate-short",
-            Self::Incompatible => "incompatible",
-        }
-    }
 }
 
 pub fn media_match_v3_index_path(root: &Path) -> PathBuf {
@@ -756,7 +739,7 @@ pub fn media_match_v3_anchor_candidate_details_with_stats(
                 normalized_path: row.normalized_path.clone(),
                 query_duration_ms,
                 candidate_duration_ms: row.duration_ms,
-                duration_compatibility: media_match_v3_duration_compatibility(
+                duration_compatibility: media_duration_compatibility_ms(
                     query_duration_ms,
                     row.duration_ms,
                 ),
@@ -949,8 +932,10 @@ fn finalize_v3_candidate_retrieval_score(
         .get(1)
         .map(|(_, offset)| offset.weighted_score)
         .unwrap_or(0);
-    score.short_clip_penalty_applied =
-        score.duration_compatibility == V3DurationCompatibility::QueryFullCandidateShort;
+    score.short_clip_penalty_applied = score.duration_compatibility
+        == MediaDurationCompatibility::ContainedOrPartial
+        && shorter_duration_ms(score.query_duration_ms, score.candidate_duration_ms)
+            .is_some_and(|shorter| shorter <= 5 * 60 * 1000);
     score.robust_score = media_match_v3_robust_retrieval_score(&score);
     MediaMatchV3RetrievedCandidate {
         normalized_path: score.normalized_path,
@@ -968,7 +953,7 @@ fn finalize_v3_candidate_retrieval_score(
         score_ratio_to_next: None,
         query_duration_ms: score.query_duration_ms,
         candidate_duration_ms: score.candidate_duration_ms,
-        duration_compatibility: score.duration_compatibility.label().to_owned(),
+        duration_compatibility: score.duration_compatibility,
         short_clip_penalty_applied: score.short_clip_penalty_applied,
         robust_score: score.robust_score as f64,
     }
@@ -1004,32 +989,20 @@ fn offset_dominance_factor(score: &V3CandidateRetrievalScore) -> i128 {
 
 fn duration_factor(score: &V3CandidateRetrievalScore) -> i128 {
     match score.duration_compatibility {
-        V3DurationCompatibility::Compatible | V3DurationCompatibility::Unknown => 100,
-        V3DurationCompatibility::Incompatible => 75,
-        V3DurationCompatibility::QueryFullCandidateShort => 30,
+        MediaDurationCompatibility::SameCutCompatible | MediaDurationCompatibility::Unknown => 100,
+        MediaDurationCompatibility::NearCompatible => 95,
+        MediaDurationCompatibility::ContainedOrPartial => 75,
+        MediaDurationCompatibility::IncompatibleSameCut => 45,
     }
 }
 
-fn media_match_v3_duration_compatibility(
-    query_duration_ms: Option<i64>,
-    candidate_duration_ms: Option<i64>,
-) -> V3DurationCompatibility {
-    let Some(query) = query_duration_ms else {
-        return V3DurationCompatibility::Unknown;
-    };
-    let Some(candidate) = candidate_duration_ms else {
-        return V3DurationCompatibility::Unknown;
-    };
-    let full = 10 * 60 * 1000;
-    let short = 5 * 60 * 1000;
-    if query >= full && candidate < short {
-        return V3DurationCompatibility::QueryFullCandidateShort;
+fn shorter_duration_ms(left: Option<i64>, right: Option<i64>) -> Option<i64> {
+    let left = left?;
+    let right = right?;
+    if left <= 0 || right <= 0 {
+        return None;
     }
-    if (query - candidate).abs() <= 90_000 {
-        V3DurationCompatibility::Compatible
-    } else {
-        V3DurationCompatibility::Incompatible
-    }
+    Some(left.min(right))
 }
 
 fn media_match_v3_rounded_offset_bin(offset_ms: i64) -> i64 {
@@ -1502,11 +1475,19 @@ mod tests {
     use super::*;
 
     fn test_record(path: &str, buckets: &[u32]) -> MediaFingerprintRecord {
+        test_record_with_duration(path, buckets, Some(120.0))
+    }
+
+    fn test_record_with_duration(
+        path: &str,
+        buckets: &[u32],
+        duration_seconds: Option<f64>,
+    ) -> MediaFingerprintRecord {
         MediaFingerprintRecord {
             identity: MediaFileIdentity::new(path, 10, 20),
             algorithm_version: MEDIA_MATCH_ALGORITHM_VERSION,
             extraction_settings: MediaExtractionSettings::sampled_fast_audio_index_v3(),
-            duration_seconds: Some(120.0),
+            duration_seconds,
             container_fingerprint: "container".to_owned(),
             audio_anchors: buckets
                 .iter()
@@ -1617,6 +1598,38 @@ mod tests {
             candidate.identity.normalized_path
         );
         assert!(!candidates.is_empty());
+    }
+
+    #[test]
+    fn retrieved_candidate_diagnostics_expose_duration_compatibility() {
+        let connection = Connection::open_in_memory().unwrap();
+        initialize_media_match_v3_index(&connection).unwrap();
+        let query =
+            test_record_with_duration("query.mkv", &[1, 2, 3, 4, 5, 6, 7, 8], Some(24.0 * 60.0));
+        let candidate = test_record_with_duration(
+            "candidate.mkv",
+            &[1, 2, 3, 4, 5, 6, 7, 8],
+            Some(12.0 * 60.0),
+        );
+
+        save_media_match_v3_record(&connection, &query, None).unwrap();
+        save_media_match_v3_record(&connection, &candidate, None).unwrap();
+        refresh_all_anchor_stats_v3(&connection, current_unix_millis() as i64).unwrap();
+        let (candidates, _stats) =
+            media_match_v3_anchor_candidate_details_with_stats(&connection, &query, 0).unwrap();
+        let candidate = candidates.first().expect("candidate retrieved");
+
+        assert_eq!(
+            candidate.duration_compatibility,
+            MediaDurationCompatibility::IncompatibleSameCut
+        );
+        let report = crate::MediaMatchV3DiagnosticRetrievalCandidateReport::from(candidate);
+        assert_eq!(
+            report.duration_compatibility,
+            MediaDurationCompatibility::IncompatibleSameCut
+        );
+        let value = serde_json::to_value(&report).unwrap();
+        assert_eq!(value["durationCompatibility"], "incompatible-same-cut");
     }
 
     #[test]
