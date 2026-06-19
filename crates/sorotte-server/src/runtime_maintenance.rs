@@ -867,10 +867,34 @@ impl ServerRuntime {
         file
     }
 
+    pub(crate) fn playlist_change_message_for_client(
+        &self,
+        client_id: &str,
+        files: Vec<String>,
+        set_by: Option<&str>,
+    ) -> ProtocolMessage {
+        let mut playlist_change = playlist_change_with_plex_sidecar(
+            files,
+            self.client_session_supports_sorotte_plex_playlist_uris(client_id),
+        );
+        playlist_change = if let Some(set_by) = set_by {
+            playlist_change.with_user(set_by)
+        } else {
+            playlist_change.with_null_user()
+        };
+        ProtocolMessage::set(SetPayload::new().with_playlist_change(playlist_change))
+    }
+
     fn client_session_supports_media_match(&self, client_id: &str) -> bool {
         self.sessions
             .get(client_id)
             .is_some_and(|session| client_supports_media_match(session.features.as_ref()))
+    }
+
+    fn client_session_supports_sorotte_plex_playlist_uris(&self, client_id: &str) -> bool {
+        self.sessions.get(client_id).is_some_and(|session| {
+            client_supports_sorotte_plex_playlist_uris(session.features.as_ref())
+        })
     }
 
     fn sanitize_list_rooms_snapshot_for_client(

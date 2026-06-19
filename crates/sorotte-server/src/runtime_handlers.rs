@@ -444,7 +444,8 @@ impl ServerRuntime {
             ));
         }
         let room_playlist = self.room_playlist_state(&room_name);
-        let playlist_snapshot_message = playlist_snapshot_change_message(
+        let playlist_snapshot_message = self.playlist_change_message_for_client(
+            client_id,
             room_playlist.files.clone(),
             join_room_playback.set_by.as_deref(),
         );
@@ -671,7 +672,8 @@ impl ServerRuntime {
                     }
 
                     let room_playlist = self.room_playlist_state(&session.room);
-                    let playlist_snapshot_message = playlist_snapshot_change_message(
+                    let playlist_snapshot_message = self.playlist_change_message_for_client(
+                        client_id,
                         room_playlist.files.clone(),
                         room_playback.set_by.as_deref(),
                     );
@@ -840,31 +842,31 @@ impl ServerRuntime {
                     }
                 }
                 "playlistChange" => {
-                    let Some(mut playlist_change) = set.playlist_change.take() else {
+                    let Some(playlist_change) = set.playlist_change.take() else {
                         continue;
                     };
                     self.ensure_room_state(&session.room);
+                    let new_files = canonical_playlist_files_from_change(&playlist_change);
                     if self.user_can_control_playlist(&session.username, &session.room)
-                        && playlist_is_valid(&playlist_change.files)
+                        && playlist_is_valid(&new_files)
                     {
-                        let new_files = playlist_change.files.clone();
-                        self.room_playlist_state_mut(&session.room).files = new_files;
+                        self.room_playlist_state_mut(&session.room).files = new_files.clone();
                         self.persist_room_if_needed(&session.room)?;
-                        playlist_change.user = Some(session.username.clone());
-                        let playlist_message = ProtocolMessage::set(
-                            SetPayload::new().with_playlist_change(playlist_change),
-                        );
                         for peer_client in self.clients_in_room(&session.room) {
-                            outbound_messages.push(DirectedProtocolMessage::new(
-                                peer_client,
-                                playlist_message.clone(),
-                            ));
+                            let playlist_message = self.playlist_change_message_for_client(
+                                &peer_client,
+                                new_files.clone(),
+                                Some(&session.username),
+                            );
+                            outbound_messages
+                                .push(DirectedProtocolMessage::new(peer_client, playlist_message));
                         }
                     } else {
                         let room_state = self.room_playlist_state(&session.room);
                         outbound_messages.push(DirectedProtocolMessage::new(
                             client_id,
-                            playlist_snapshot_change_message(
+                            self.playlist_change_message_for_client(
+                                client_id,
                                 room_state.files.clone(),
                                 Some(&session.room),
                             ),

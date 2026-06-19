@@ -20,6 +20,21 @@ fn controller_auth_payloads(
         .collect()
 }
 
+fn playlist_change_payloads(
+    directed_lines: &[DirectedOutboundLine],
+) -> Vec<(String, PlaylistChangePayload)> {
+    directed_lines
+        .iter()
+        .filter_map(|line| {
+            let message = decode_message_line(&line.line).ok()?;
+            let ProtocolMessage::Set(payload) = message else {
+                return None;
+            };
+            Some((line.client_id.clone(), payload.set.playlist_change?))
+        })
+        .collect()
+}
+
 #[test]
 fn room_change_fanout_emits_global_room_update_and_playlist_snapshot() {
     let mut runtime = ServerRuntime::default();
@@ -378,6 +393,80 @@ fn controlled_room_playlist_updates_require_controller_auth() {
         alice_change.iter().any(|line| line.client_id == "client-1")
             && alice_change.iter().any(|line| line.client_id == "client-2"),
         "controller playlist change should fan out to room peers"
+    );
+}
+
+#[test]
+fn plex_playlist_sidecar_is_sent_only_to_opted_in_sorotte_clients() {
+    let mut runtime = ServerRuntime::default();
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sorottePlexPlaylistUris":true}}}"#,
+        )
+        .expect("alice hello should establish session");
+    runtime
+        .handle_line(
+            "client-2",
+            r#"{"Hello":{"username":"python","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("python hello should establish session");
+
+    let plex_uri =
+        "plex://server/metadata/14452?title=Episode%2011&file=Episode%2011%20%5B1080p%5D.mkv";
+    let directed_lines = runtime
+        .handle_line_fanout(
+            "client-1",
+            &format!(
+                r#"{{"Set":{{"playlistChange":{{"files":["Episode 11 [1080p].mkv"],"sorottePlexPlaylistUris":["{plex_uri}"]}}}}}}"#
+            ),
+        )
+        .expect("playlist sidecar update should fan out");
+
+    let payloads = playlist_change_payloads(&directed_lines);
+    let alice_payload = payloads
+        .iter()
+        .find(|(client_id, _)| client_id == "client-1")
+        .map(|(_, payload)| payload)
+        .expect("alice should receive playlist update");
+    let python_payload = payloads
+        .iter()
+        .find(|(client_id, _)| client_id == "client-2")
+        .map(|(_, payload)| payload)
+        .expect("python client should receive playlist update");
+
+    assert_eq!(
+        alice_payload.files,
+        vec!["Episode 11 [1080p].mkv".to_owned()]
+    );
+    assert_eq!(
+        alice_payload.extra.get("sorottePlexPlaylistUris"),
+        Some(&json!([plex_uri]))
+    );
+    assert_eq!(
+        python_payload.files,
+        vec!["Episode 11 [1080p].mkv".to_owned()]
+    );
+    assert!(!python_payload.extra.contains_key("sorottePlexPlaylistUris"));
+
+    let late_join_lines = runtime
+        .handle_line_fanout(
+            "client-3",
+            r#"{"Hello":{"username":"carol","room":{"name":"room1"},"version":"1.7.5","features":{"sorottePlexPlaylistUris":true}}}"#,
+        )
+        .expect("late Sorotte hello should receive room snapshot");
+    let late_payload = playlist_change_payloads(&late_join_lines)
+        .into_iter()
+        .find(|(client_id, _)| client_id == "client-3")
+        .map(|(_, payload)| payload)
+        .expect("late Sorotte client should receive playlist snapshot");
+    assert_eq!(
+        late_payload.files,
+        vec!["Episode 11 [1080p].mkv".to_owned()]
+    );
+    assert_eq!(
+        late_payload.extra.get("sorottePlexPlaylistUris"),
+        Some(&json!([plex_uri]))
     );
 }
 

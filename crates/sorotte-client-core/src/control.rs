@@ -238,7 +238,8 @@ impl ClientRuntimeControl for QueuedRuntimeControl {
     }
 
     fn set_playlist(&mut self, files: Vec<String>) {
-        let set_payload = SetPayload::new().with_playlist_change(PlaylistChangePayload::new(files));
+        let set_payload =
+            SetPayload::new().with_playlist_change(playlist_change_with_plex_sidecar(files, true));
         self.outbound_messages
             .push(ProtocolMessage::set(set_payload));
     }

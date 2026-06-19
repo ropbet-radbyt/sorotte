@@ -158,11 +158,12 @@ pub(crate) fn new_controlled_room_message(room_name: &str, password: &str) -> Pr
     ProtocolMessage::set(SetPayload::new().with_new_controlled_room(payload))
 }
 
+#[allow(dead_code)]
 pub(crate) fn playlist_snapshot_change_message(
     files: Vec<String>,
     set_by: Option<&str>,
 ) -> ProtocolMessage {
-    let mut playlist_change = PlaylistChangePayload::new(files);
+    let mut playlist_change = playlist_change_with_plex_sidecar(files, false);
     playlist_change = if let Some(set_by) = set_by {
         playlist_change.with_user(set_by)
     } else {
@@ -210,6 +211,7 @@ pub(crate) fn server_feature_list(
         "featureList": true,
         "sharedPlaylists": true,
         "mediaMatch": true,
+        SOROTTE_PLEX_PLAYLIST_URIS_FEATURE: true,
         "setOthersReadiness": readiness_enabled,
         "uiMode": LEGACY_UI_MODE_UNKNOWN,
     })
