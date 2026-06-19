@@ -233,6 +233,12 @@ impl GuiWidgetEguiRenderer {
             "plugins:plex:refresh-servers" => vec![GuiShellAction::RefreshPlexServers],
             "plugins:plex:enable-sync" => vec![GuiShellAction::TogglePlexSync(true)],
             "plugins:plex:disable-sync" => vec![GuiShellAction::TogglePlexSync(false)],
+            "plugins:plex:enable-streaming" => {
+                vec![GuiShellAction::TogglePlexStreaming(true)]
+            }
+            "plugins:plex:disable-streaming" => {
+                vec![GuiShellAction::TogglePlexStreaming(false)]
+            }
             "plugins:plex:disconnect" => vec![GuiShellAction::DisconnectPlex],
             id if id.starts_with("plugins:plex:server:") => id
                 .strip_prefix("plugins:plex:server:")

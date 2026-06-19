@@ -404,6 +404,11 @@ pub fn parse_sorotte_ini_stored_client_settings_mvp(contents: &str) -> StoredCli
                         settings.plex_sync_enabled = Some(parsed);
                     }
                 }
+                "streamingenabled" => {
+                    if let Some(parsed) = parse_ini_bool_legacy_compatible(&value) {
+                        settings.plex_streaming_enabled = Some(parsed);
+                    }
+                }
                 "usertoken" if !value.is_empty() => {
                     settings.plex_user_token = Some(value);
                 }

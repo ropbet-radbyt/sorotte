@@ -230,6 +230,10 @@ impl GuiShellDispatchPlan {
                     plan.runtime_requests
                         .push(GuiRuntimeRequest::TogglePlexSync(enabled));
                 }
+                GuiShellAction::TogglePlexStreaming(enabled) => {
+                    plan.runtime_requests
+                        .push(GuiRuntimeRequest::TogglePlexStreaming(enabled));
+                }
                 GuiShellAction::DisconnectPlex => {
                     plan.runtime_requests
                         .push(GuiRuntimeRequest::DisconnectPlex);

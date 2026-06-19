@@ -221,6 +221,7 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::RefreshPlexServers
             | GuiShellAction::SelectPlexServer { .. }
             | GuiShellAction::TogglePlexSync(_)
+            | GuiShellAction::TogglePlexStreaming(_)
             | GuiShellAction::DisconnectPlex
             | GuiShellAction::ToggleMainWindowPlaybackButtons
             | GuiShellAction::ToggleMainWindowAutoplayControls

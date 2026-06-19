@@ -1,6 +1,39 @@
 use super::*;
+use std::time::SystemTime;
+
+use sorotte_plex::{
+    PlexMediaResolver, PlexStreamTarget, is_plex_playlist_uri, parse_plex_playlist_uri,
+    redact_plex_token,
+};
 
 impl GuiPersistedConfigRuntimeOwner {
+    fn local_media_search_candidates_for_target(target: &str) -> Vec<String> {
+        let mut candidates = Vec::new();
+        if is_plex_playlist_uri(target) {
+            if let Ok(uri) = parse_plex_playlist_uri(target) {
+                if let Some(file_name) = uri.file_name
+                    && let Some(name) = Path::new(&file_name)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .map(str::trim)
+                        .filter(|name| !name.is_empty())
+                {
+                    candidates.push(name.to_owned());
+                }
+                if let Some(title) = uri.title
+                    && !title.trim().is_empty()
+                {
+                    candidates.push(title.trim().to_owned());
+                }
+            }
+        } else {
+            candidates.push(target.to_owned());
+        }
+        candidates.sort();
+        candidates.dedup();
+        candidates
+    }
+
     fn quick_existing_media_target_path(target: &Path) -> Option<String> {
         target
             .is_file()
@@ -18,17 +51,29 @@ impl GuiPersistedConfigRuntimeOwner {
         if browser_is_url(&target) {
             return Ok(Some(target.to_owned()));
         }
-
-        let target_path = Path::new(&target);
-        if let Some(path) = Self::quick_existing_media_target_path(target_path) {
-            return Ok(Some(path));
+        let target_candidates = Self::local_media_search_candidates_for_target(&target);
+        if target_candidates.is_empty() {
+            return Ok(None);
         }
 
-        let target_file_name = target_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .map(str::trim)
-            .filter(|name| !name.is_empty());
+        for target_candidate in &target_candidates {
+            let target_path = Path::new(target_candidate);
+            if let Some(path) = Self::quick_existing_media_target_path(target_path) {
+                return Ok(Some(path));
+            }
+        }
+
+        let target_file_names = target_candidates
+            .iter()
+            .filter_map(|target_candidate| {
+                Path::new(target_candidate)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned)
+            })
+            .collect::<Vec<_>>();
 
         if let Some(local_path) = self
             .player_local_file
@@ -39,19 +84,28 @@ impl GuiPersistedConfigRuntimeOwner {
             let matches_local_file = local_path
                 .file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| name.eq_ignore_ascii_case(&target));
+                .is_some_and(|name| {
+                    target_candidates
+                        .iter()
+                        .any(|target_candidate| name.eq_ignore_ascii_case(target_candidate))
+                });
             if matches_local_file && local_path.is_file() {
                 return Ok(Some(local_path.to_string_lossy().into_owned()));
             }
             if let Some(parent) = local_path.parent() {
-                if let Some(path) = Self::quick_existing_media_target_path(&parent.join(&target)) {
-                    return Ok(Some(path));
+                for target_candidate in &target_candidates {
+                    if let Some(path) =
+                        Self::quick_existing_media_target_path(&parent.join(target_candidate))
+                    {
+                        return Ok(Some(path));
+                    }
                 }
-                if let Some(file_name) = target_file_name
-                    && let Some(path) =
+                for file_name in &target_file_names {
+                    if let Some(path) =
                         Self::quick_existing_media_target_path(&parent.join(file_name))
-                {
-                    return Ok(Some(path));
+                    {
+                        return Ok(Some(path));
+                    }
                 }
             }
         }
@@ -63,13 +117,17 @@ impl GuiPersistedConfigRuntimeOwner {
                 continue;
             }
             let root = Path::new(trimmed);
-            if let Some(path) = Self::quick_existing_media_target_path(&root.join(&target)) {
-                return Ok(Some(path));
+            for target_candidate in &target_candidates {
+                if let Some(path) =
+                    Self::quick_existing_media_target_path(&root.join(target_candidate))
+                {
+                    return Ok(Some(path));
+                }
             }
-            if let Some(file_name) = target_file_name
-                && let Some(path) = Self::quick_existing_media_target_path(&root.join(file_name))
-            {
-                return Ok(Some(path));
+            for file_name in &target_file_names {
+                if let Some(path) = Self::quick_existing_media_target_path(&root.join(file_name)) {
+                    return Ok(Some(path));
+                }
             }
         }
         Ok(None)
@@ -132,11 +190,16 @@ impl GuiPersistedConfigRuntimeOwner {
         }
         self.ensure_loaded_attached_media_search_index(&search_roots, &roots, retry_interval);
         let build_pending = self.poll_attached_media_search_index_build(retry_interval);
+        let indexed_target_candidates = Self::local_media_search_candidates_for_target(&target);
         if let Some(found_path) = self
             .attached_media_search_index
             .as_ref()
             .filter(|index| index.roots == roots)
-            .and_then(|index| self.cached_missing_media_target_path(index, &target))
+            .and_then(|index| {
+                indexed_target_candidates
+                    .iter()
+                    .find_map(|candidate| self.cached_missing_media_target_path(index, candidate))
+            })
         {
             let _ = self.queue_attached_media_search_refresh_if_needed(
                 &search_roots,
@@ -184,6 +247,44 @@ impl GuiPersistedConfigRuntimeOwner {
         self.resolve_main_window_user_media_target_from_index(state, target, false)
     }
 
+    pub(super) fn resolve_plex_stream_target_for_media_target(
+        &mut self,
+        state: &SorotteGuiShellAppState,
+        target: &str,
+    ) -> Result<Option<PlexStreamTarget>, String> {
+        let settings = state.configuration.to_stored_settings();
+        let config = super::super::plex::plex_config_from_settings(&settings);
+        if !config.streaming_enabled {
+            return Ok(None);
+        }
+        let target_is_plex_uri = is_plex_playlist_uri(target);
+        if !target_is_plex_uri && !config.has_selected_server() {
+            return Ok(None);
+        }
+
+        let mut engine = self.take_plex_sync_engine(config.clone())?;
+        let client = self.ensure_plex_client()?.clone();
+        let mut resolver = PlexMediaResolver::new(config, client, engine.cache().clone());
+        let result = resolver
+            .resolve_stream_target(target, SystemTime::now())
+            .map_err(|error| {
+                redact_plex_token(&format!(
+                    "Resolving Plex stream target for '{target}' failed: {error}"
+                ))
+            })?;
+        let (_, _, cache) = resolver.into_parts();
+        let cache_changed = engine.cache() != &cache;
+        *engine.cache_mut() = cache.clone();
+        self.plex_sync_engine = Some(engine);
+        if cache_changed
+            && let Some(cache_path) = self.plex_cache_path()
+            && let Err(error) = cache.save_to_path(&cache_path)
+        {
+            eprintln!("warning: failed to save Plex match cache after stream resolution: {error}");
+        }
+        Ok(result)
+    }
+
     pub(in crate::app::runtime_owner) fn sync_selected_shared_playlist_media_to_attached_player_impl(
         &mut self,
         state: &SorotteGuiShellAppState,
@@ -225,27 +326,49 @@ impl GuiPersistedConfigRuntimeOwner {
             return SelectedPlaylistMediaSyncOutcome::NoChange;
         }
 
-        let resolved_target = match self
-            .resolve_main_window_user_media_target_for_automatic_sync(state, &target)
-        {
-            Ok(GuiUserMediaTargetResolution::Resolved(path)) => path,
-            Ok(GuiUserMediaTargetResolution::Pending) => {
-                return SelectedPlaylistMediaSyncOutcome::NoChange;
-            }
-            Ok(GuiUserMediaTargetResolution::Missing) | Err(_) => {
-                let Some(path) = self.media_match_cached_room_candidate_for_target(state, &target)
-                else {
+        let resolved_target =
+            match self.resolve_main_window_user_media_target_for_automatic_sync(state, &target) {
+                Ok(GuiUserMediaTargetResolution::Resolved(path)) => Some(path),
+                Ok(GuiUserMediaTargetResolution::Pending) => {
                     return SelectedPlaylistMediaSyncOutcome::NoChange;
-                };
-                path
-            }
-        };
+                }
+                Ok(GuiUserMediaTargetResolution::Missing) | Err(_) => {
+                    self.media_match_cached_room_candidate_for_target(state, &target)
+                }
+            };
 
         self.ensure_configured_player_attached();
         if self.player.is_none() {
             return SelectedPlaylistMediaSyncOutcome::NoChange;
         }
-        if self.current_player_matches_media_target(&resolved_target) {
+        if let Some(resolved_target) = resolved_target {
+            if self.current_player_matches_media_target(&resolved_target) {
+                self.unresolved_attached_media_target = None;
+                if !self.attached_media_search_refresh_pending() {
+                    self.attached_media_search_next_retry_at = None;
+                }
+                return SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget;
+            }
+
+            let player_paths = [resolved_target];
+            self.prepare_stream_load_tracking(&player_paths[0], false);
+            let open_result =
+                self.open_media_files_through_attached_player_result_impl(&player_paths);
+            if let Some(Err(message)) = open_result {
+                self.queue_stream_warning(message);
+                return SelectedPlaylistMediaSyncOutcome::NoChange;
+            }
+            if open_result.is_some_and(|result| result.is_ok()) {
+                self.unresolved_attached_media_target = None;
+                if !self.attached_media_search_refresh_pending() {
+                    self.attached_media_search_next_retry_at = None;
+                }
+                return SelectedPlaylistMediaSyncOutcome::OpenedNewMedia;
+            }
+            return SelectedPlaylistMediaSyncOutcome::NoChange;
+        }
+
+        if self.current_player_matches_media_target(&target) {
             self.unresolved_attached_media_target = None;
             if !self.attached_media_search_refresh_pending() {
                 self.attached_media_search_next_retry_at = None;
@@ -253,9 +376,19 @@ impl GuiPersistedConfigRuntimeOwner {
             return SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget;
         }
 
-        let player_paths = [resolved_target];
-        self.prepare_stream_load_tracking(&player_paths[0], false);
-        let open_result = self.open_media_files_through_attached_player_result_impl(&player_paths);
+        let stream_target = match self.resolve_plex_stream_target_for_media_target(state, &target) {
+            Ok(Some(stream_target)) => stream_target,
+            Ok(None) => return SelectedPlaylistMediaSyncOutcome::NoChange,
+            Err(message) => {
+                self.queue_stream_warning(message);
+                return SelectedPlaylistMediaSyncOutcome::NoChange;
+            }
+        };
+        let open_result = self.open_plex_stream_target_through_attached_player_result_impl(
+            &target,
+            stream_target,
+            false,
+        );
         if let Some(Err(message)) = open_result {
             self.queue_stream_warning(message);
             return SelectedPlaylistMediaSyncOutcome::NoChange;
@@ -272,26 +405,71 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(super) fn open_selected_playlist_media_path_through_attached_player_impl(
         &mut self,
+        state: &SorotteGuiShellAppState,
         player_paths: &[String],
     ) -> SelectedPlaylistMediaSyncOutcome {
         let Some(selected_path) = player_paths.first() else {
             return SelectedPlaylistMediaSyncOutcome::NoChange;
         };
+        let mut selected_path = selected_path.clone();
         self.ensure_configured_player_attached();
         if self.player.is_none() {
             return SelectedPlaylistMediaSyncOutcome::NoChange;
         }
-        if !self.preflight_user_stream_target(selected_path) {
+        let selected_path_is_plex_uri = is_plex_playlist_uri(&selected_path);
+        if !self.preflight_user_stream_target(&selected_path) {
             return SelectedPlaylistMediaSyncOutcome::NoChange;
         }
-        if self.current_player_matches_media_target(selected_path) {
+        if self.current_player_matches_media_target(&selected_path) {
             self.cancel_pending_attached_media_search_index_build_impl();
             self.unresolved_attached_media_target = None;
             self.attached_media_search_next_retry_at = None;
             return SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget;
         }
 
-        let player_paths = [selected_path.clone()];
+        if selected_path_is_plex_uri {
+            match self
+                .resolve_main_window_user_media_target_for_automatic_sync(state, &selected_path)
+            {
+                Ok(GuiUserMediaTargetResolution::Resolved(path)) => {
+                    selected_path = path;
+                }
+                Ok(GuiUserMediaTargetResolution::Pending) => {
+                    return SelectedPlaylistMediaSyncOutcome::NoChange;
+                }
+                Ok(GuiUserMediaTargetResolution::Missing) | Err(_) => {
+                    let stream_target = match self
+                        .resolve_plex_stream_target_for_media_target(state, &selected_path)
+                    {
+                        Ok(Some(stream_target)) => stream_target,
+                        Ok(None) => return SelectedPlaylistMediaSyncOutcome::NoChange,
+                        Err(message) => {
+                            self.queue_stream_error(message);
+                            return SelectedPlaylistMediaSyncOutcome::NoChange;
+                        }
+                    };
+                    let open_result = self
+                        .open_plex_stream_target_through_attached_player_result_impl(
+                            &selected_path,
+                            stream_target,
+                            true,
+                        );
+                    if let Some(Err(message)) = open_result {
+                        self.queue_stream_error(message);
+                        return SelectedPlaylistMediaSyncOutcome::NoChange;
+                    }
+                    if open_result.is_some_and(|result| result.is_ok()) {
+                        self.cancel_pending_attached_media_search_index_build_impl();
+                        self.unresolved_attached_media_target = None;
+                        self.attached_media_search_next_retry_at = None;
+                        return SelectedPlaylistMediaSyncOutcome::OpenedNewMedia;
+                    }
+                    return SelectedPlaylistMediaSyncOutcome::NoChange;
+                }
+            }
+        }
+
+        let player_paths = [selected_path];
         self.prepare_stream_load_tracking(&player_paths[0], true);
         let open_result = self.open_media_files_through_attached_player_result_impl(&player_paths);
         if let Some(Err(message)) = open_result {

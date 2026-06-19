@@ -116,6 +116,7 @@ fn gui_persisted_config_runtime_owner_keeps_offset_commands_on_global_timeline()
         managed_stream_helper_refresh_required: false,
         pending_stream_feedback: std::collections::VecDeque::new(),
         pending_stream_load_context: None,
+        pending_logical_media_override: None,
     };
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());

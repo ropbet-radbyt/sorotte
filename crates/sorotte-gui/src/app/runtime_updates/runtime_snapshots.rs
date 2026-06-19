@@ -502,6 +502,7 @@ impl SorotteGuiShellAppState {
                 .record_action_error("GUI Plex runtime snapshots cannot contain empty status.");
         }
         self.plex.enabled = snapshot.enabled;
+        self.plex.streaming_enabled = snapshot.streaming_enabled;
         self.plex.authenticated = snapshot.authenticated;
         self.plex.authenticating = snapshot.authenticating;
         self.plex.auth_code = snapshot

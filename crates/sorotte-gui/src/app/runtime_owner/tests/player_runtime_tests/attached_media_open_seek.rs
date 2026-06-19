@@ -165,6 +165,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
         managed_stream_helper_refresh_required: false,
         pending_stream_feedback: std::collections::VecDeque::new(),
         pending_stream_load_context: None,
+        pending_logical_media_override: None,
     };
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {

@@ -176,6 +176,7 @@ pub(super) enum GuiStreamTargetKind {
     LocalPath,
     DirectMediaUrl,
     ExtractorPageUrl,
+    PlexUri,
     UntrustedUrl,
 }
 
@@ -433,6 +434,7 @@ impl GuiPlexServerReachability {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct GuiPlexState {
     pub(super) enabled: bool,
+    pub(super) streaming_enabled: bool,
     pub(super) authenticated: bool,
     pub(super) authenticating: bool,
     pub(super) auth_code: Option<String>,
@@ -456,6 +458,7 @@ impl GuiPlexState {
         let selected_server_url = settings.plex_selected_server_url.clone();
         Self {
             enabled: settings.plex_sync_enabled.unwrap_or(false),
+            streaming_enabled: settings.plex_streaming_enabled.unwrap_or(false),
             authenticated,
             authenticating: false,
             auth_code: None,
@@ -478,6 +481,7 @@ impl GuiPlexState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct GuiPlexRuntimeSnapshot {
     pub(super) enabled: bool,
+    pub(super) streaming_enabled: bool,
     pub(super) authenticated: bool,
     pub(super) authenticating: bool,
     pub(super) auth_code: Option<String>,
@@ -495,6 +499,7 @@ impl From<&GuiPlexState> for GuiPlexRuntimeSnapshot {
     fn from(value: &GuiPlexState) -> Self {
         Self {
             enabled: value.enabled,
+            streaming_enabled: value.streaming_enabled,
             authenticated: value.authenticated,
             authenticating: value.authenticating,
             auth_code: value.auth_code.clone(),

@@ -75,6 +75,7 @@ fn cli_plex_config_uses_stored_settings_unless_env_overrides() {
     let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let keys = [
         "SOROTTE_CLIENT_PLEX_SYNC",
+        "SOROTTE_CLIENT_PLEX_STREAMING",
         "SOROTTE_CLIENT_PLEX_TOKEN",
         "SOROTTE_CLIENT_PLEX_SERVER_ID",
         "SOROTTE_CLIENT_PLEX_SERVER_URL",
@@ -91,6 +92,7 @@ fn cli_plex_config_uses_stored_settings_unless_env_overrides() {
 
     let config = cli_plex_config_from_env_and_stored_settings(Some(&StoredClientSettingsMvp {
         plex_sync_enabled: Some(true),
+        plex_streaming_enabled: Some(true),
         plex_user_token: Some("stored-user-token".to_owned()),
         plex_selected_server_id: Some("stored-machine".to_owned()),
         plex_selected_server_url: Some("http://stored-plex:32400".to_owned()),
@@ -99,6 +101,7 @@ fn cli_plex_config_uses_stored_settings_unless_env_overrides() {
     }));
 
     assert!(config.enabled);
+    assert!(config.streaming_enabled);
     assert_eq!(config.user_token.as_deref(), Some("stored-user-token"));
     assert_eq!(config.selected_server_id.as_deref(), Some("stored-machine"));
     assert_eq!(

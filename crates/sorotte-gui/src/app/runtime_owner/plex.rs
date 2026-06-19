@@ -491,6 +491,19 @@ impl GuiPersistedConfigRuntimeOwner {
         true
     }
 
+    pub(super) fn handle_toggle_plex_streaming_request(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        enabled: bool,
+    ) -> bool {
+        let mut settings = projected_state.configuration.to_stored_settings();
+        settings.plex_streaming_enabled = Some(enabled);
+        self.persist_plex_settings_and_project(handle, projected_state, settings);
+        self.sync_plex_runtime_snapshot(handle, projected_state, None);
+        true
+    }
+
     pub(super) fn handle_disconnect_plex_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
@@ -510,6 +523,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.plex_sync_next_tick_due_at = None;
         let mut settings = projected_state.configuration.to_stored_settings();
         settings.plex_sync_enabled = Some(false);
+        settings.plex_streaming_enabled = Some(false);
         settings.plex_user_token = None;
         settings.plex_selected_server_id = None;
         settings.plex_selected_server_url = None;
@@ -605,7 +619,9 @@ impl GuiPersistedConfigRuntimeOwner {
         }
     }
 
-    fn ensure_plex_client(&mut self) -> Result<&PlexHttpClient, String> {
+    pub(in crate::app::runtime_owner) fn ensure_plex_client(
+        &mut self,
+    ) -> Result<&PlexHttpClient, String> {
         if self.plex_client.is_none() {
             self.plex_client = Some(
                 PlexHttpClient::new("sorotte-gui")
@@ -617,7 +633,7 @@ impl GuiPersistedConfigRuntimeOwner {
             .ok_or_else(|| "Failed to create Plex HTTP client.".to_owned())
     }
 
-    fn take_plex_sync_engine(
+    pub(in crate::app::runtime_owner) fn take_plex_sync_engine(
         &mut self,
         config: PlexClientConfig,
     ) -> Result<PlexSyncEngine<PlexHttpClient>, String> {
@@ -849,6 +865,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
         GuiPlexRuntimeSnapshot {
             enabled: settings.plex_sync_enabled.unwrap_or(false),
+            streaming_enabled: settings.plex_streaming_enabled.unwrap_or(false),
             authenticated,
             authenticating,
             auth_code: self
@@ -923,7 +940,7 @@ impl GuiPersistedConfigRuntimeOwner {
         Ok(changed)
     }
 
-    pub(super) fn plex_cache_path(&self) -> Option<PathBuf> {
+    pub(in crate::app::runtime_owner) fn plex_cache_path(&self) -> Option<PathBuf> {
         self.config_path
             .as_ref()
             .and_then(|path| path.parent())
@@ -935,9 +952,12 @@ impl GuiPersistedConfigRuntimeOwner {
     }
 }
 
-fn plex_config_from_settings(settings: &StoredClientSettingsMvp) -> PlexClientConfig {
+pub(in crate::app::runtime_owner) fn plex_config_from_settings(
+    settings: &StoredClientSettingsMvp,
+) -> PlexClientConfig {
     PlexClientConfig {
         enabled: settings.plex_sync_enabled.unwrap_or(false),
+        streaming_enabled: settings.plex_streaming_enabled.unwrap_or(false),
         user_token: settings.plex_user_token.clone(),
         selected_server_id: settings.plex_selected_server_id.clone(),
         selected_server_url: settings.plex_selected_server_url.clone(),

@@ -484,6 +484,40 @@ fn gui_persisted_config_runtime_owner_retries_media_match_when_peer_signature_ch
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_prefers_local_media_for_plex_playlist_uri() {
+    let root = test_temp_root("plex-playlist-uri-local-first");
+    let selected_media_path = root.join("Episode 1.mkv");
+    std::fs::write(&selected_media_path, b"test")
+        .expect("Plex local-first fixture should be written");
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    owner.active_shared_playlist_index = Some(0);
+
+    let plex_uri = "plex://machine-1/metadata/123?title=Episode%201&file=Episode%201.mkv";
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.apply_shared_playlist_entries(vec![plex_uri.to_owned()], Some(0), false);
+
+    let outcome = owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
+    let selected_media_path = selected_media_path.to_string_lossy().into_owned();
+
+    assert_eq!(outcome, SelectedPlaylistMediaSyncOutcome::OpenedNewMedia);
+    assert_eq!(
+        owner
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.as_deref()),
+        Some(selected_media_path.as_str())
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_warm_starts_shared_playlist_resolution_from_persisted_cache()
 {
     #[derive(Debug, Default)]

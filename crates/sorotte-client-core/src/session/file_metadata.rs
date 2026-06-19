@@ -1,4 +1,5 @@
 use super::*;
+use sorotte_plex::{is_plex_playlist_uri, parse_plex_playlist_uri};
 
 impl ClientSession {
     pub(super) fn list_payload_has_file(file: Option<&Value>) -> bool {
@@ -198,8 +199,22 @@ impl ClientSession {
             || left_hash == right_hash
     }
 
+    pub(super) fn is_web_url(filename: &str) -> bool {
+        let filename = filename.trim_start();
+        filename
+            .get(..7)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"))
+            || filename
+                .get(..8)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"))
+    }
+
+    pub(super) fn is_plex_uri(filename: &str) -> bool {
+        is_plex_playlist_uri(filename)
+    }
+
     pub(super) fn is_url(filename: &str) -> bool {
-        filename.contains("://")
+        Self::is_web_url(filename)
     }
 
     pub(super) fn hash_filename_for_compare(filename: &str) -> String {
@@ -322,16 +337,68 @@ impl ClientSession {
             < different_duration_threshold
     }
 
-    pub(super) fn same_filename_legacy_like(left: &str, right: &str) -> bool {
-        if left == PRIVACY_HIDDEN_FILENAME || right == PRIVACY_HIDDEN_FILENAME {
-            return true;
+    fn filename_compare_stem(value: &str) -> Option<String> {
+        let basename = value
+            .replace('\\', "/")
+            .rsplit('/')
+            .next()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())?
+            .to_owned();
+        basename
+            .rsplit_once('.')
+            .map(|(stem, _)| stem.trim().to_owned())
+            .filter(|stem| !stem.is_empty())
+    }
+
+    fn filename_compare_candidates(value: &str) -> Vec<String> {
+        let mut candidates = Vec::new();
+        if Self::is_plex_uri(value) {
+            if let Ok(uri) = parse_plex_playlist_uri(value) {
+                if let Some(file_name) = uri.file_name {
+                    candidates.push(file_name.clone());
+                    if let Some(stem) = Self::filename_compare_stem(&file_name) {
+                        candidates.push(stem);
+                    }
+                }
+                if let Some(title) = uri.title {
+                    candidates.push(title);
+                }
+            }
+        } else {
+            candidates.push(value.to_owned());
+            if let Some(stem) = Self::filename_compare_stem(value) {
+                candidates.push(stem);
+            }
         }
+        candidates.sort();
+        candidates.dedup();
+        candidates
+    }
+
+    fn same_filename_without_plex_uri_hints(left: &str, right: &str) -> bool {
         let strip_url = Self::is_url(left) ^ Self::is_url(right);
         let left_stripped = Self::strip_filename_for_compare(left, strip_url);
         let right_stripped = Self::strip_filename_for_compare(right, strip_url);
         let left_hash = Self::hash_filename_for_compare(&left_stripped);
         let right_hash = Self::hash_filename_for_compare(&right_stripped);
         Self::same_hashed_legacy_like(&left_stripped, &left_hash, &right_stripped, &right_hash)
+    }
+
+    pub(super) fn same_filename_legacy_like(left: &str, right: &str) -> bool {
+        if left == PRIVACY_HIDDEN_FILENAME || right == PRIVACY_HIDDEN_FILENAME {
+            return true;
+        }
+        if Self::is_plex_uri(left) || Self::is_plex_uri(right) {
+            let left_candidates = Self::filename_compare_candidates(left);
+            let right_candidates = Self::filename_compare_candidates(right);
+            return left_candidates.iter().any(|left_candidate| {
+                right_candidates.iter().any(|right_candidate| {
+                    Self::same_filename_without_plex_uri_hints(left_candidate, right_candidate)
+                })
+            });
+        }
+        Self::same_filename_without_plex_uri_hints(left, right)
     }
 
     pub(super) fn file_payload_from_user_view(user_view: &ClientUserView) -> Option<Value> {

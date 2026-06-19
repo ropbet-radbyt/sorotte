@@ -196,14 +196,16 @@ impl GuiPersistedConfigRuntimeOwner {
             return;
         }
 
-        let dispatch =
-            match Self::shared_playlist_open_dispatch_for_paths_impl(selected_paths.clone()) {
-                Ok(dispatch) => dispatch,
-                Err(error) => {
-                    Self::push_runtime_unavailable(handle, error);
-                    return;
-                }
-            };
+        let dispatch = match self.shared_playlist_open_dispatch_for_selected_paths_impl(
+            projected_state,
+            selected_paths.clone(),
+        ) {
+            Ok(dispatch) => dispatch,
+            Err(error) => {
+                Self::push_runtime_unavailable(handle, error);
+                return;
+            }
+        };
         let current_playlist_entry_count = projected_state.main_window.playlist.len();
         let current_playlist_index =
             self.shared_playlist_mutation_current_index(projected_state, false);
@@ -268,9 +270,10 @@ impl GuiPersistedConfigRuntimeOwner {
             let selected_media_sync = selected_media_source_path
                 .clone()
                 .map(|selected_path| {
-                    self.open_selected_playlist_media_path_through_attached_player_impl(&[
-                        selected_path,
-                    ])
+                    self.open_selected_playlist_media_path_through_attached_player_impl(
+                        projected_state,
+                        &[selected_path],
+                    )
                 })
                 .unwrap_or(SelectedPlaylistMediaSyncOutcome::NoChange);
             let selection_handoff_ready = selected_media_sync.selection_handoff_ready(false);
@@ -335,9 +338,10 @@ impl GuiPersistedConfigRuntimeOwner {
             selected_media_source_path
                 .clone()
                 .map(|selected_path| {
-                    self.open_selected_playlist_media_path_through_attached_player_impl(&[
-                        selected_path,
-                    ])
+                    self.open_selected_playlist_media_path_through_attached_player_impl(
+                        projected_state,
+                        &[selected_path],
+                    )
                 })
                 .unwrap_or(SelectedPlaylistMediaSyncOutcome::NoChange)
         } else {

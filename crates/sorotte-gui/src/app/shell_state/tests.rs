@@ -79,6 +79,13 @@ fn browser_stream_target_kind_classifies_direct_and_extractor_urls() {
         browser_stream_target_kind("https://cdn.example.com/shorts/trailer.mp4", None),
         GuiStreamTargetKind::DirectMediaUrl
     );
+    assert_eq!(
+        browser_stream_target_kind(
+            "plex://machine-1/metadata/123?title=Episode%201&file=Episode%201.mkv",
+            None,
+        ),
+        GuiStreamTargetKind::PlexUri
+    );
 
     let trusted_domains = vec!["example.org".to_owned()];
     assert_eq!(

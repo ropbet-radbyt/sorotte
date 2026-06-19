@@ -88,6 +88,7 @@ impl GuiPersistedConfigRuntimeOwner {
             managed_stream_helper_refresh_required: false,
             pending_stream_feedback: VecDeque::new(),
             pending_stream_load_context: None,
+            pending_logical_media_override: None,
         }
     }
 
@@ -198,6 +199,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.pending_stream_retry_target = None;
         self.pending_stream_feedback.clear();
         self.pending_stream_load_context = None;
+        self.pending_logical_media_override = None;
         if let Some(pending_resolution) = self.pending_attached_media_resolution.take() {
             pending_resolution
                 .cancel_flag

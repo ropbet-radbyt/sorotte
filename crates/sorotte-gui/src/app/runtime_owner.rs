@@ -36,7 +36,7 @@ use sorotte_player_mpv::MpvAdapter;
 use sorotte_plex::{
     PlexAuthPollResult, PlexAuthSession, PlexClientConfig, PlexHttpClient, PlexMatchCache,
     PlexServerConnection, PlexSyncEngine, PlexSyncState, PlexSyncStatus, PlexWatchEvent,
-    plex_server_connection_kind_from_uri,
+    SecretPlexPlaybackUrl, plex_server_connection_kind_from_uri,
 };
 
 use super::media_match_support::{
@@ -172,6 +172,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) managed_stream_helper_refresh_required: bool,
     pub(super) pending_stream_feedback: VecDeque<Vec<GuiShellAction>>,
     pub(super) pending_stream_load_context: Option<GuiPendingStreamLoadContext>,
+    pub(super) pending_logical_media_override: Option<GuiPendingLogicalMediaOverride>,
 }
 
 pub(super) const ATTACHED_PLAYER_PAUSE_COMMAND_SUPPRESSION: Duration = Duration::from_secs(5);
@@ -304,6 +305,25 @@ pub(super) struct GuiPendingAttachedMediaResolution {
 pub(super) struct GuiPendingStreamLoadContext {
     pub(super) requested_target: String,
     pub(super) user_initiated: bool,
+}
+
+#[derive(Clone, PartialEq)]
+pub(super) struct GuiPendingLogicalMediaOverride {
+    pub(super) requested_target: String,
+    pub(super) loaded_target_secret: SecretPlexPlaybackUrl,
+    pub(super) logical_file: LocalFileUpdate,
+    pub(super) user_initiated: bool,
+}
+
+impl std::fmt::Debug for GuiPendingLogicalMediaOverride {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GuiPendingLogicalMediaOverride")
+            .field("requested_target", &self.requested_target)
+            .field("loaded_target_secret", &self.loaded_target_secret)
+            .field("logical_file", &self.logical_file)
+            .field("user_initiated", &self.user_initiated)
+            .finish()
+    }
 }
 
 impl Drop for GuiPendingAttachedMediaResolution {

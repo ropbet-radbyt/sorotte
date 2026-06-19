@@ -173,6 +173,40 @@ fn gui_shell_app_state_projects_main_window_widget_trees() {
 }
 
 #[test]
+fn gui_shell_app_state_displays_plex_playlist_rows_by_media_name() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    let media_name = "[EG]Gurren_Lagann_03_BD(720p_10bit)[BB5590A5].mkv";
+    let playlist_entry = format_plex_playlist_uri(&PlexPlaylistUri {
+        machine_identifier: "3f6ba9fad8b4b33a803f1151b5d49ee1fd83e860".to_owned(),
+        rating_key: "2918".to_owned(),
+        title: Some("Gurren Lagann Episode 3".to_owned()),
+        file_name: Some(media_name.to_owned()),
+        duration_millis: Some(1_452_000),
+        size_bytes: Some(657_000_000),
+        media_type: Some(PlexMediaType::Episode),
+    });
+
+    assert!(
+        state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+            playlist_entry.clone(),
+        ]))
+    );
+
+    let tree = state.main_window_widget_tree();
+    let playlist_row = tree
+        .find("main-window:playlist:0")
+        .expect("Plex playlist row should exist");
+    assert_eq!(playlist_row.label, media_name);
+    assert_eq!(
+        state.current_shared_playlist_entries(),
+        vec![playlist_entry]
+    );
+}
+
+#[test]
 fn gui_shell_app_state_projects_compact_playback_controls_and_ready_button_text() {
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         username: Some("alice".to_owned()),

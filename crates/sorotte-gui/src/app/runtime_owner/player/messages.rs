@@ -1,5 +1,7 @@
 use super::*;
 
+use sorotte_plex::redact_plex_token;
+
 impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn seek_unavailable_message_impl(
         &self,
@@ -35,6 +37,7 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         message: String,
     ) {
+        let message = redact_plex_token(&message);
         handle.push_actions([
             GuiShellAction::SwitchView(GuiShellView::Room),
             GuiShellAction::PushTransientNotification {
@@ -49,6 +52,7 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         message: String,
     ) {
+        let message = redact_plex_token(&message);
         handle.push_actions([
             GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Error,

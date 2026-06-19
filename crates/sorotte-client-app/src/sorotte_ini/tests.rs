@@ -34,6 +34,7 @@ fn parse_sorotte_ini_stored_client_settings_mvp_normalizes_and_reads_known_secti
          autoplayMinUsers = 3\n\
          [plex]\n\
          syncEnabled = yes\n\
+         streamingEnabled = true\n\
          userToken = user-token\n\
          selectedServerId = machine-id\n\
          selectedServerUrl = http://plex.local:32400\n\
@@ -50,6 +51,7 @@ fn parse_sorotte_ini_stored_client_settings_mvp_normalizes_and_reads_known_secti
         Some(AutoplayThresholdOverride::Set(3))
     );
     assert_eq!(settings.plex_sync_enabled, Some(true));
+    assert_eq!(settings.plex_streaming_enabled, Some(true));
     assert_eq!(settings.plex_user_token.as_deref(), Some("user-token"));
     assert_eq!(
         settings.plex_selected_server_id.as_deref(),
@@ -148,6 +150,7 @@ fn upsert_sorotte_ini_stored_client_settings_mvp_writes_plex_settings() {
         "",
         &StoredClientSettingsMvp {
             plex_sync_enabled: Some(true),
+            plex_streaming_enabled: Some(true),
             plex_user_token: Some("user-token".to_owned()),
             plex_selected_server_id: Some("machine-id".to_owned()),
             plex_selected_server_url: Some("http://plex.local:32400".to_owned()),
@@ -158,6 +161,7 @@ fn upsert_sorotte_ini_stored_client_settings_mvp_writes_plex_settings() {
 
     assert!(updated.contains("[plex]\n"));
     assert!(updated.contains("syncEnabled = True\n"));
+    assert!(updated.contains("streamingEnabled = True\n"));
     assert!(updated.contains("userToken = user-token\n"));
     assert!(updated.contains("selectedServerId = machine-id\n"));
     assert!(updated.contains("selectedServerUrl = http://plex.local:32400\n"));

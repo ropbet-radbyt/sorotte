@@ -26,6 +26,7 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::RefreshPlexServers
             | GuiShellAction::SelectPlexServer { .. }
             | GuiShellAction::TogglePlexSync(_)
+            | GuiShellAction::TogglePlexStreaming(_)
             | GuiShellAction::DisconnectPlex => {
                 self.clear_action_error_and_refresh();
                 true

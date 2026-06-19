@@ -96,7 +96,10 @@ impl GuiPersistedConfigRuntimeOwner {
         })
     }
 
-    fn local_file_identity_matches(current: &LocalFileUpdate, next: &LocalFileUpdate) -> bool {
+    pub(super) fn local_file_identity_matches(
+        current: &LocalFileUpdate,
+        next: &LocalFileUpdate,
+    ) -> bool {
         let current_path = current
             .path
             .as_deref()

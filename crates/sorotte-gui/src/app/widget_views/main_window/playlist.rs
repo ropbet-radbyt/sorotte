@@ -20,6 +20,7 @@ impl SorotteGuiShellAppState {
                 .iter()
                 .enumerate()
                 .map(|(index, row)| {
+                    let display_label = shared_playlist_display_label(&row.label);
                     let remove_button = GuiWidgetNode::leaf(
                         format!("main-window:playlist:{index}:remove"),
                         "Remove",
@@ -30,7 +31,7 @@ impl SorotteGuiShellAppState {
                     );
                     let mut row_node = GuiWidgetNode::leaf(
                         format!("main-window:playlist:{index}"),
-                        &row.label,
+                        display_label,
                         GuiWidgetKind::ListItem,
                         None,
                         true,
@@ -293,4 +294,21 @@ impl SorotteGuiShellAppState {
             playlist_column_children,
         )
     }
+}
+
+fn shared_playlist_display_label(entry: &str) -> String {
+    let trimmed = entry.trim();
+    let Ok(uri) = sorotte_plex::parse_plex_playlist_uri(trimmed) else {
+        return sorotte_plex::redact_plex_token(entry);
+    };
+    uri.file_name
+        .as_deref()
+        .and_then(non_empty_display_text)
+        .or_else(|| uri.title.as_deref().and_then(non_empty_display_text))
+        .unwrap_or_else(|| sorotte_plex::redact_plex_token(trimmed))
+}
+
+fn non_empty_display_text(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_owned())
 }

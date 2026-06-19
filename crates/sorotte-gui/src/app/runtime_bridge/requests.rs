@@ -82,6 +82,7 @@ pub(in crate::app) enum GuiRuntimeRequest {
         uri: String,
     },
     TogglePlexSync(bool),
+    TogglePlexStreaming(bool),
     DisconnectPlex,
     SendChatMessage(String),
     SeekOffset(f64),

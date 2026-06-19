@@ -248,6 +248,7 @@ pub(in crate::app) enum GuiShellAction {
         uri: String,
     },
     TogglePlexSync(bool),
+    TogglePlexStreaming(bool),
     DisconnectPlex,
     ToggleMainWindowPlaybackButtons,
     ToggleMainWindowAutoplayControls,

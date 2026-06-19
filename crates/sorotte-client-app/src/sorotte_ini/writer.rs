@@ -151,6 +151,14 @@ fn upsert_sorotte_ini_stored_client_settings_mvp_with_plex_identity_clear(
             format_ini_bool_legacy_compatible(value),
         );
     }
+    if let Some(value) = settings.plex_streaming_enabled {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "plex",
+            "streamingEnabled",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
     if clear_plex_identity {
         remove_ini_value_legacy_compatible(&mut lines, "plex", "userToken");
         remove_ini_value_legacy_compatible(&mut lines, "plex", "selectedServerId");

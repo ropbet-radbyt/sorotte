@@ -86,6 +86,7 @@ impl SorotteGuiShellAppState {
                         false,
                     ),
                     self.plex_sync_action_node(),
+                    self.plex_streaming_action_node(),
                 ],
             ),
         ];
@@ -533,6 +534,21 @@ impl SorotteGuiShellAppState {
                 false,
             ));
         }
+        rows.push(GuiWidgetNode::leaf(
+            "plugins:plex:status:streaming",
+            "Streaming",
+            GuiWidgetKind::Status,
+            Some(
+                if self.plex.streaming_enabled {
+                    "enabled"
+                } else {
+                    "off"
+                }
+                .to_owned(),
+            ),
+            true,
+            false,
+        ));
         if let Some(last_report) = self.plex.last_report.as_ref() {
             rows.push(GuiWidgetNode::leaf(
                 "plugins:plex:status:last-report",
@@ -564,9 +580,14 @@ impl SorotteGuiShellAppState {
             ));
         }
         if let Some(error) = self.plex.last_error.as_ref() {
+            let (id, label) = if self.plex_status_is_error() {
+                ("plugins:plex:status:error", "Last Error")
+            } else {
+                ("plugins:plex:status:last-issue", "Last Sync Issue")
+            };
             rows.push(GuiWidgetNode::leaf(
-                "plugins:plex:status:error",
-                "Last Error",
+                id,
+                label,
                 GuiWidgetKind::Status,
                 Some(error.clone()),
                 true,
@@ -599,8 +620,12 @@ impl SorotteGuiShellAppState {
     }
 
     fn plex_status_summary(&self) -> String {
-        if let Some(error) = self.plex.last_error.as_deref() {
-            return error.to_owned();
+        if self.plex_status_is_error() {
+            return self
+                .plex
+                .last_error
+                .clone()
+                .unwrap_or_else(|| "Plex sync encountered an error.".to_owned());
         }
         if !self.plex.authenticated && !self.plex.authenticating {
             return "Connect your Plex account to report watch progress.".to_owned();
@@ -662,7 +687,7 @@ impl SorotteGuiShellAppState {
     }
 
     fn plex_status_health(&self) -> String {
-        if self.plex.last_error.is_some() {
+        if self.plex_status_is_error() {
             "error".to_owned()
         } else if self.plex.enabled {
             "enabled".to_owned()
@@ -681,6 +706,10 @@ impl SorotteGuiShellAppState {
         } else {
             "disconnected".to_owned()
         }
+    }
+
+    fn plex_status_is_error(&self) -> bool {
+        self.plex.status.eq_ignore_ascii_case("error")
     }
 
     fn plex_account_action_node(&self) -> GuiWidgetNode {
@@ -729,6 +758,25 @@ impl SorotteGuiShellAppState {
             GuiWidgetKind::Button,
             None,
             self.plex_plugin_action_enabled("toggle-sync"),
+            false,
+        )
+    }
+
+    fn plex_streaming_action_node(&self) -> GuiWidgetNode {
+        GuiWidgetNode::leaf(
+            if self.plex.streaming_enabled {
+                "plugins:plex:disable-streaming"
+            } else {
+                "plugins:plex:enable-streaming"
+            },
+            if self.plex.streaming_enabled {
+                "Turn Streaming Off"
+            } else {
+                "Turn Streaming On"
+            },
+            GuiWidgetKind::Button,
+            None,
+            self.plex_plugin_action_enabled("toggle-streaming"),
             false,
         )
     }
@@ -782,8 +830,17 @@ impl SorotteGuiShellAppState {
                             | Some(GuiPlexServerReachability::Unreachable)
                     )
             }
+            "toggle-streaming" => {
+                if self.plex.streaming_enabled {
+                    return true;
+                }
+                self.plex.authenticated && self.selected_plex_server().is_some()
+            }
             "disconnect" => {
-                self.plex.authenticated || self.plex.authenticating || self.plex.enabled
+                self.plex.authenticated
+                    || self.plex.authenticating
+                    || self.plex.enabled
+                    || self.plex.streaming_enabled
             }
             _ => false,
         }

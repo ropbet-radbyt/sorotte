@@ -57,6 +57,22 @@ fn same_filename_legacy_like_matches_url_encoded_and_plain_names() {
 }
 
 #[test]
+fn same_filename_uses_plex_uri_file_hint() {
+    assert!(ClientSession::same_filename_legacy_like(
+        "plex://machine/metadata/456?title=Other&file=Movie%20Name.mkv&duration=7200000&type=movie",
+        "Movie Name.mkv",
+    ));
+}
+
+#[test]
+fn same_filename_uses_plex_uri_title_hint() {
+    assert!(ClientSession::same_filename_legacy_like(
+        "plex://machine/metadata/456?title=Movie%20Name&duration=7200000&type=movie",
+        "Movie Name.mkv",
+    ));
+}
+
+#[test]
 fn same_filename_legacy_like_matches_raw_filename_and_hash_form() {
     let raw_name = "Movie Name.mkv";
     let stripped = ClientSession::strip_filename_for_compare(raw_name, false);

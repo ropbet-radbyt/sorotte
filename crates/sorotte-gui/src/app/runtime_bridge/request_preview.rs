@@ -131,6 +131,16 @@ impl GuiRuntimeRequest {
                     "Disabling Plex watch sync.".to_owned()
                 },
             }],
+            Self::TogglePlexStreaming(enabled) => {
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: if *enabled {
+                        "Enabling Plex streaming.".to_owned()
+                    } else {
+                        "Disabling Plex streaming.".to_owned()
+                    },
+                }]
+            }
             Self::DisconnectPlex => vec![GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Info,
                 message: "Disconnecting Plex.".to_owned(),
@@ -312,6 +322,16 @@ impl GuiRuntimeRequest {
                     "Disabling Plex watch sync.".to_owned()
                 },
             }],
+            Self::TogglePlexStreaming(enabled) => {
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: if *enabled {
+                        "Enabling Plex streaming.".to_owned()
+                    } else {
+                        "Disabling Plex streaming.".to_owned()
+                    },
+                }]
+            }
             Self::DisconnectPlex => vec![GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Info,
                 message: "Disconnecting Plex.".to_owned(),

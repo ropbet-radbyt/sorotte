@@ -298,6 +298,9 @@ impl GuiPersistedConfigRuntimeOwner {
             GuiRuntimeRequest::TogglePlexSync(enabled) => {
                 return self.handle_toggle_plex_sync_request(handle, projected_state, enabled);
             }
+            GuiRuntimeRequest::TogglePlexStreaming(enabled) => {
+                return self.handle_toggle_plex_streaming_request(handle, projected_state, enabled);
+            }
             GuiRuntimeRequest::DisconnectPlex => {
                 return self.handle_disconnect_plex_request(handle, projected_state);
             }

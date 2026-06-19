@@ -1,13 +1,31 @@
 use serde_json::Value;
+use sorotte_plex::is_plex_playlist_uri;
 
 use super::super::support::normalized_editable_text;
 use super::GuiStreamTargetKind;
 
+pub(in crate::app) fn browser_is_web_url(value: &str) -> bool {
+    let value = value.trim_start();
+    value
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"))
+        || value
+            .get(..8)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"))
+}
+
+pub(in crate::app) fn browser_is_plex_uri(value: &str) -> bool {
+    is_plex_playlist_uri(value)
+}
+
 pub(in crate::app) fn browser_is_url(value: &str) -> bool {
-    value.contains("://")
+    value.contains("://") && !browser_is_plex_uri(value)
 }
 
 pub(in crate::app) fn browser_domain_from_url(value: &str) -> Option<String> {
+    if !browser_is_web_url(value) {
+        return None;
+    }
     reqwest::Url::parse(value).ok().and_then(|url| {
         url.host_str()
             .map(|host| host.strip_prefix("www.").unwrap_or(host).to_owned())
@@ -92,7 +110,7 @@ pub(in crate::app) fn browser_uri_is_trusted(
     only_switch_to_trusted_domains: bool,
     trusted_domains: &[String],
 ) -> bool {
-    if !browser_is_url(uri) {
+    if !browser_is_web_url(uri) {
         return true;
     }
     let Some((host, path)) = browser_parse_trustable_web_uri_host_and_path(uri) else {
@@ -133,11 +151,15 @@ pub(in crate::app) fn browser_stream_target_kind(
     value: &str,
     trust_policy: Option<(bool, &[String])>,
 ) -> GuiStreamTargetKind {
+    if browser_is_plex_uri(value) {
+        return GuiStreamTargetKind::PlexUri;
+    }
     if !browser_is_url(value) {
         return GuiStreamTargetKind::LocalPath;
     }
 
     if let Some((only_switch_to_trusted_domains, trusted_domains)) = trust_policy
+        && browser_is_web_url(value)
         && !browser_uri_is_trusted(value, only_switch_to_trusted_domains, trusted_domains)
     {
         return GuiStreamTargetKind::UntrustedUrl;

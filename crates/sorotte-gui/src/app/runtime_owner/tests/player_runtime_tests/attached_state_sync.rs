@@ -1,5 +1,9 @@
 use super::*;
 
+use sorotte_plex::{
+    PlexMatchedItem, PlexMediaType, PlexPlaylistUri, PlexStreamTarget, SecretPlexPlaybackUrl,
+};
+
 #[test]
 fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
     #[derive(Debug, Default)]
@@ -123,6 +127,7 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         managed_stream_helper_refresh_required: false,
         pending_stream_feedback: std::collections::VecDeque::new(),
         pending_stream_load_context: None,
+        pending_logical_media_override: None,
     };
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state =
@@ -402,6 +407,189 @@ fn gui_persisted_config_runtime_owner_clears_placeholder_after_media_load_failur
             message,
         } if message.contains("network timeout")
     )));
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_opens_plex_stream_as_logical_playlist_uri() {
+    let playlist_uri = PlexPlaylistUri {
+        machine_identifier: "machine-1".to_owned(),
+        rating_key: "123".to_owned(),
+        title: Some("Episode 1".to_owned()),
+        file_name: Some("Episode 1.mkv".to_owned()),
+        duration_millis: Some(90_000),
+        size_bytes: Some(123_456),
+        media_type: Some(PlexMediaType::Episode),
+    };
+    let logical_uri = playlist_uri.to_string();
+    let logical_file = sorotte_player_api::LocalFileUpdate::new("Episode 1.mkv")
+        .with_path(logical_uri.clone())
+        .with_duration_seconds(90.0)
+        .with_size_bytes(123_456);
+    let stream_target = PlexStreamTarget {
+        playlist_uri,
+        matched_item: PlexMatchedItem {
+            rating_key: "123".to_owned(),
+            title: "Episode 1".to_owned(),
+            media_type: PlexMediaType::Episode,
+            duration_millis: Some(90_000),
+        },
+        logical_file: logical_file.clone(),
+        playback_url: SecretPlexPlaybackUrl::new(
+            "http://127.0.0.1:32400/library/parts/1/file.mkv?X-Plex-Token=secret-token",
+        ),
+    };
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+
+    let message = owner
+        .open_plex_stream_target_through_attached_player_result_impl(
+            &logical_uri,
+            stream_target,
+            true,
+        )
+        .expect("Plex stream open should have a player")
+        .expect("Plex stream open should succeed");
+
+    assert!(message.contains("Episode 1.mkv"));
+    assert!(!message.contains("secret-token"));
+    assert_eq!(owner.player_local_file, Some(logical_file));
+    assert!(!owner.player_local_file_placeholder);
+    assert!(owner.pending_logical_media_override.is_some());
+    assert_eq!(owner.pending_stream_retry_target, None);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_keeps_plex_stream_logical_identity_across_url_telemetry() {
+    #[derive(Debug, Default)]
+    struct PlexStreamTelemetryState {
+        local_file_updates: std::collections::VecDeque<sorotte_player_api::LocalFileUpdate>,
+        playback_updates:
+            std::collections::VecDeque<sorotte_player_api::PlayerPlaybackTelemetryUpdate>,
+        media_load_outcomes: std::collections::VecDeque<sorotte_player_api::PlayerMediaLoadOutcome>,
+    }
+
+    struct PlexStreamTelemetryAdapter {
+        state: std::sync::Arc<std::sync::Mutex<PlexStreamTelemetryState>>,
+    }
+
+    impl PlayerAdapter for PlexStreamTelemetryAdapter {
+        fn name(&self) -> &'static str {
+            "plex-telemetry"
+        }
+
+        fn open_file(&mut self, path: &str) -> Result<(), sorotte_player_api::PlayerError> {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state
+                .local_file_updates
+                .push_back(sorotte_player_api::LocalFileUpdate::new(path).with_path(path));
+            state.media_load_outcomes.push_back(
+                sorotte_player_api::PlayerMediaLoadOutcome::success(path, Some(path.to_owned())),
+            );
+            state.playback_updates.push_back(
+                sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
+                    .with_position_seconds(0.0),
+            );
+            Ok(())
+        }
+
+        fn take_playback_telemetry_update(
+            &mut self,
+        ) -> Option<sorotte_player_api::PlayerPlaybackTelemetryUpdate> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .playback_updates
+                .pop_front()
+        }
+
+        fn take_media_load_outcome(
+            &mut self,
+        ) -> Option<sorotte_player_api::PlayerMediaLoadOutcome> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .media_load_outcomes
+                .pop_front()
+        }
+
+        fn take_local_file_update(&mut self) -> Option<sorotte_player_api::LocalFileUpdate> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .local_file_updates
+                .pop_front()
+        }
+    }
+
+    let playlist_uri = PlexPlaylistUri {
+        machine_identifier: "machine-1".to_owned(),
+        rating_key: "123".to_owned(),
+        title: Some("Episode 1".to_owned()),
+        file_name: Some("Episode 1.mkv".to_owned()),
+        duration_millis: Some(90_000),
+        size_bytes: Some(123_456),
+        media_type: Some(PlexMediaType::Episode),
+    };
+    let logical_uri = playlist_uri.to_string();
+    let logical_file = sorotte_player_api::LocalFileUpdate::new("Episode 1.mkv")
+        .with_path(logical_uri.clone())
+        .with_duration_seconds(90.0)
+        .with_size_bytes(123_456);
+    let loaded_url = "http://plex.local:32400/library/parts/1/file.mkv?X-Plex-Token=secret-token";
+    let redirected_url = "https://87-121-73-171.example.plex.direct/library/parts/1/file.mkv?X-Plex-Token=secret-token";
+    let stream_target = PlexStreamTarget {
+        playlist_uri,
+        matched_item: PlexMatchedItem {
+            rating_key: "123".to_owned(),
+            title: "Episode 1".to_owned(),
+            media_type: PlexMediaType::Episode,
+            duration_millis: Some(90_000),
+        },
+        logical_file: logical_file.clone(),
+        playback_url: SecretPlexPlaybackUrl::new(loaded_url),
+    };
+    let player_state =
+        std::sync::Arc::new(std::sync::Mutex::new(PlexStreamTelemetryState::default()));
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(
+        PlexStreamTelemetryAdapter {
+            state: player_state.clone(),
+        },
+    )));
+
+    owner
+        .open_plex_stream_target_through_attached_player_result_impl(
+            &logical_uri,
+            stream_target,
+            false,
+        )
+        .expect("Plex stream open should have a player")
+        .expect("Plex stream open should succeed");
+    assert_eq!(owner.player_local_file, Some(logical_file.clone()));
+    assert_eq!(owner.player_position_seconds, Some(0.0));
+    assert!(owner.pending_logical_media_override.is_some());
+
+    owner.player_position_seconds = Some(42.0);
+    player_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .local_file_updates
+        .push_back(
+            sorotte_player_api::LocalFileUpdate::new(redirected_url).with_path(redirected_url),
+        );
+    owner.refresh_player_state_impl();
+
+    assert_eq!(owner.player_local_file, Some(logical_file));
+    assert!(!owner.player_local_file_placeholder);
+    assert_eq!(
+        owner.player_position_seconds,
+        Some(42.0),
+        "repeated Plex URL telemetry for the active stream should not reset playback"
+    );
+    assert!(owner.pending_logical_media_override.is_some());
 }
 
 #[test]

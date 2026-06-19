@@ -3387,6 +3387,7 @@ dependencies = [
  "sorotte-core",
  "sorotte-media-match",
  "sorotte-player-api",
+ "sorotte-plex",
  "sorotte-protocol",
  "tokio",
 ]

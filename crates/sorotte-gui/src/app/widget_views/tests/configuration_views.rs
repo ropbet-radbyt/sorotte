@@ -803,6 +803,93 @@ fn gui_shell_app_state_projects_plex_as_connection_and_server_cards() {
 }
 
 #[test]
+fn gui_shell_app_state_treats_plex_media_miss_as_sync_issue_not_plugin_error() {
+    let mut state =
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    assert!(state.apply(GuiShellAction::SelectPlugin(GuiPluginSelection::Plex)));
+    let miss = "No unambiguous Plex match for [EG]Gurren_Lagann_03_BD(720p_10bit)[BB5590A5].mkv"
+        .to_owned();
+    let server = GuiPlexServerRow {
+        name: "Raptor".to_owned(),
+        machine_identifier: "raptor-machine".to_owned(),
+        uri: "https://raptor.example:32400".to_owned(),
+        reachability: GuiPlexServerReachability::Reachable,
+        connection_kind: PlexServerConnectionKind::Remote,
+        has_local_connection: true,
+        owned: true,
+        selected: true,
+    };
+
+    assert!(state.apply(GuiShellAction::ApplyGuiPlexRuntimeSnapshot(
+        GuiPlexRuntimeSnapshot {
+            enabled: true,
+            streaming_enabled: true,
+            authenticated: true,
+            selected_server_id: Some("raptor-machine".to_owned()),
+            selected_server_url: Some("https://raptor.example:32400".to_owned()),
+            servers: vec![server.clone()],
+            status: "ready".to_owned(),
+            last_error: Some(miss.clone()),
+            ..GuiPlexRuntimeSnapshot::default()
+        }
+    )));
+
+    let plugins = state.plugins_widget_tree();
+    assert_eq!(
+        plugins
+            .find("plugins:plex:title")
+            .and_then(|node| node.value.as_deref()),
+        Some("Plex sync active")
+    );
+    assert_eq!(
+        plugins
+            .find("plugins:plex:health")
+            .and_then(|node| node.value.as_deref()),
+        Some("enabled")
+    );
+    assert_ne!(
+        plugins
+            .find("plugins:plex:summary")
+            .and_then(|node| node.value.as_deref()),
+        Some(miss.as_str())
+    );
+    let issue = plugins
+        .find("plugins:plex:status:last-issue")
+        .expect("per-media Plex miss should be shown as a neutral issue");
+    assert_eq!(issue.label, "Last Sync Issue");
+    assert_eq!(issue.value.as_deref(), Some(miss.as_str()));
+    assert!(plugins.find("plugins:plex:status:error").is_none());
+
+    assert!(state.apply(GuiShellAction::ApplyGuiPlexRuntimeSnapshot(
+        GuiPlexRuntimeSnapshot {
+            enabled: true,
+            streaming_enabled: true,
+            authenticated: true,
+            selected_server_id: Some("raptor-machine".to_owned()),
+            selected_server_url: Some("https://raptor.example:32400".to_owned()),
+            servers: vec![server],
+            status: "error".to_owned(),
+            last_error: Some("Plex server rejected the timeline update.".to_owned()),
+            ..GuiPlexRuntimeSnapshot::default()
+        }
+    )));
+
+    let plugins = state.plugins_widget_tree();
+    assert_eq!(
+        plugins
+            .find("plugins:plex:health")
+            .and_then(|node| node.value.as_deref()),
+        Some("error")
+    );
+    assert_eq!(
+        plugins
+            .find("plugins:plex:status:error")
+            .map(|node| node.label.as_str()),
+        Some("Last Error")
+    );
+}
+
+#[test]
 fn gui_shell_app_state_projects_stream_helper_remediation_progress_into_widgets() {
     let mut state =
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());

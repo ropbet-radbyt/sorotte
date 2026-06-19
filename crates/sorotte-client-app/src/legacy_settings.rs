@@ -25,6 +25,7 @@ pub struct StoredClientSettingsMvp {
     pub media_search_directories: Option<Vec<String>>,
     pub public_servers: Option<Vec<(String, String)>>,
     pub plex_sync_enabled: Option<bool>,
+    pub plex_streaming_enabled: Option<bool>,
     pub plex_user_token: Option<String>,
     pub plex_selected_server_id: Option<String>,
     pub plex_selected_server_url: Option<String>,
@@ -114,6 +115,7 @@ impl fmt::Debug for StoredClientSettingsMvp {
             .field("media_search_directories", &self.media_search_directories)
             .field("public_servers", &self.public_servers)
             .field("plex_sync_enabled", &self.plex_sync_enabled)
+            .field("plex_streaming_enabled", &self.plex_streaming_enabled)
             .field(
                 "plex_user_token",
                 &redacted_secret_debug(&self.plex_user_token),

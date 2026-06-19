@@ -107,6 +107,7 @@ pub(crate) fn persist_sorotte_cli_stored_settings_mvp_legacy_compatible(
         show_different_room_osd: config.show_different_room_osd_override,
         show_contact_info: None,
         plex_sync_enabled: None,
+        plex_streaming_enabled: None,
         plex_user_token: None,
         plex_selected_server_id: None,
         plex_selected_server_url: None,
