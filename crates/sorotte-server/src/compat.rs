@@ -255,6 +255,10 @@ pub(crate) fn client_supports_persistent_rooms(advertised_features: Option<&Valu
     client_supports_feature(advertised_features, "persistentRooms")
 }
 
+pub(crate) fn client_supports_media_match(advertised_features: Option<&Value>) -> bool {
+    client_supports_feature(advertised_features, "mediaMatch")
+}
+
 pub(crate) fn client_supports_feature(
     advertised_features: Option<&Value>,
     feature_name: &str,

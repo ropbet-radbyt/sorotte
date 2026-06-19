@@ -448,7 +448,7 @@ fn release_verify_tls_and_idle_timeout_behavior() {
     stale.hello("stale", "timeout-room");
     let mut watcher = ProtocolClient::connect_ipv4(timeout_port);
     watcher.hello("watcher", "timeout-room");
-    for _ in 0..4 {
+    for _ in 0..23 {
         thread::sleep(Duration::from_secs(4));
         watcher.write_message(&ProtocolMessage::state(
             StatePayload::new().with_ping(
@@ -458,7 +458,7 @@ fn release_verify_tls_and_idle_timeout_behavior() {
             ),
         ));
     }
-    watcher.read_until(|message| {
+    watcher.read_until_with_limit(160, |message| {
         message_pointer_eq(message, "/Set/user/stale/event/left", json!(true))
     });
 

@@ -1,5 +1,5 @@
 {"client":"client-1","message":{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}}
 {"client":"client-2","message":{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}}
-{"client":"client-2","advanceSeconds":10.0,"message":{"State":{"ping":{"latencyCalculation":10.0}}}}
+{"client":"client-2","advanceSeconds":88.0,"message":{"State":{"ping":{"latencyCalculation":88.0}}}}
 {"client":"client-2","advanceSeconds":4.0,"message":{"State":{"ping":{"latencyCalculation":14.0}}}}
 {"client":"client-2","message":{"List":null}}

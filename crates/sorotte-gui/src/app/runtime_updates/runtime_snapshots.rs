@@ -5,13 +5,13 @@ use super::super::shell_state::{
     GuiConfigurationRuntimeSnapshot, GuiDialogControlKind, GuiDraftRuntimeSnapshot,
     GuiErrorRuntimeSnapshot, GuiFeedbackRuntimeSnapshot, GuiFocusedConfigurationControlState,
     GuiInteractionRuntimeSnapshot, GuiMainWindowUserEditSessionState, GuiMediaIndexRuntimeSnapshot,
-    GuiPendingOperationKind, GuiPendingOperationState, GuiPlayerSetupIssue,
-    GuiPlayerSetupRuntimeSnapshot, GuiPlaylistTextEditSessionState, GuiPlexRuntimeSnapshot,
-    GuiPlexServerRow, GuiPublicServerEditSessionState, GuiSavedConfigurationRuntimeSnapshot,
-    GuiStreamHelperHealth, GuiStreamHelperRemediationRuntimeSnapshot,
-    GuiStreamHelperRuntimeSnapshot, GuiTextEditSessionState, GuiTransientNotification,
-    GuiUrlEditSessionState, GuiValidationIssue, MenuDialogRuntimeSnapshot, MenuDialogShellState,
-    SorotteGuiShellAppState,
+    GuiMediaMatchRemediationRuntimeSnapshot, GuiMediaMatchRuntimeSnapshot, GuiPendingOperationKind,
+    GuiPendingOperationState, GuiPlayerSetupIssue, GuiPlayerSetupRuntimeSnapshot,
+    GuiPlaylistTextEditSessionState, GuiPlexRuntimeSnapshot, GuiPlexServerRow,
+    GuiPublicServerEditSessionState, GuiSavedConfigurationRuntimeSnapshot, GuiStreamHelperHealth,
+    GuiStreamHelperRemediationRuntimeSnapshot, GuiStreamHelperRuntimeSnapshot,
+    GuiTextEditSessionState, GuiTransientNotification, GuiUrlEditSessionState, GuiValidationIssue,
+    MenuDialogRuntimeSnapshot, MenuDialogShellState, SorotteGuiShellAppState,
 };
 use super::super::support::normalized_editable_text;
 
@@ -348,6 +348,143 @@ impl SorotteGuiShellAppState {
         self.stream_helper_remediation.label = label.filter(|_| snapshot.active);
         self.stream_helper_remediation.detail = detail.filter(|_| snapshot.active);
         self.stream_helper_remediation.progress_fraction = if snapshot.active {
+            snapshot.progress_fraction
+        } else {
+            0.0
+        };
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    pub(in crate::app) fn apply_gui_media_match_runtime_snapshot(
+        &mut self,
+        snapshot: GuiMediaMatchRuntimeSnapshot,
+    ) -> bool {
+        let mut normalize_optional_value =
+            |value: Option<String>, error_message: &'static str| -> Result<Option<String>, bool> {
+                match value {
+                    Some(value) => {
+                        let Some(value) = normalized_editable_text(&value) else {
+                            return Err(self.record_action_error(error_message));
+                        };
+                        Ok(Some(value.to_owned()))
+                    }
+                    None => Ok(None),
+                }
+            };
+        let message = match snapshot.message {
+            Some(message) => {
+                let Some(message) = normalized_editable_text(&message) else {
+                    return self.record_action_error(
+                        "GUI media-match runtime snapshots cannot contain an empty issue message.",
+                    );
+                };
+                Some(message)
+            }
+            None => None,
+        };
+        if snapshot.health != super::super::shell_state::GuiMediaMatchToolHealth::Healthy
+            && message.is_none()
+        {
+            return self.record_action_error(
+            "GUI media-match runtime snapshots must include a non-empty message while unhealthy.",
+        );
+        }
+        let install_location = match normalize_optional_value(
+            snapshot.install_location,
+            "GUI media-match runtime snapshots cannot contain an empty install location.",
+        ) {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        let ffmpeg_status = match normalize_optional_value(
+            snapshot.ffmpeg_status,
+            "GUI media-match runtime snapshots cannot contain an empty ffmpeg status.",
+        ) {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        let ffprobe_status = match normalize_optional_value(
+            snapshot.ffprobe_status,
+            "GUI media-match runtime snapshots cannot contain an empty ffprobe status.",
+        ) {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        self.media_match.settings = snapshot.settings;
+        self.media_match.health = snapshot.health;
+        self.media_match.message = message;
+        self.media_match.install_supported = snapshot.install_supported;
+        self.media_match.integration_supported = snapshot.integration_supported;
+        self.media_match.install_location = install_location;
+        self.media_match.ffmpeg_status = ffmpeg_status;
+        self.media_match.ffprobe_status = ffprobe_status;
+        self.media_match.cache_status = snapshot
+            .cache_status
+            .and_then(|value| normalized_editable_text(&value));
+        self.media_match.current_decision = snapshot
+            .current_decision
+            .and_then(|value| normalized_editable_text(&value));
+        self.media_match.nearest_match = snapshot
+            .nearest_match
+            .and_then(|value| normalized_editable_text(&value));
+        self.media_match.last_evidence = snapshot
+            .last_evidence
+            .and_then(|value| normalized_editable_text(&value));
+        self.media_match.remote_status = snapshot
+            .remote_status
+            .and_then(|value| normalized_editable_text(&value));
+        self.media_match.background_status = snapshot
+            .background_status
+            .and_then(|value| normalized_editable_text(&value));
+        self.media_match.open_install_location_available = snapshot.open_install_location_available;
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    pub(in crate::app) fn apply_gui_media_match_remediation_runtime_snapshot(
+        &mut self,
+        snapshot: GuiMediaMatchRemediationRuntimeSnapshot,
+    ) -> bool {
+        let label = match snapshot.label {
+            Some(label) => {
+                let Some(label) = normalized_editable_text(&label) else {
+                    return self.record_action_error(
+                        "GUI media-match remediation snapshots cannot contain an empty label.",
+                    );
+                };
+                Some(label)
+            }
+            None => None,
+        };
+        let detail = match snapshot.detail {
+            Some(detail) => {
+                let Some(detail) = normalized_editable_text(&detail) else {
+                    return self.record_action_error(
+                        "GUI media-match remediation snapshots cannot contain an empty detail.",
+                    );
+                };
+                Some(detail)
+            }
+            None => None,
+        };
+        if snapshot.active && label.is_none() {
+            return self.record_action_error(
+            "GUI media-match remediation snapshots must include a non-empty label while active.",
+        );
+        }
+        if !snapshot.progress_fraction.is_finite()
+            || !(0.0..=1.0).contains(&snapshot.progress_fraction)
+        {
+            return self.record_action_error(
+            "GUI media-match remediation snapshots must use a progress value between 0.0 and 1.0.",
+        );
+        }
+
+        self.media_match_remediation.active = snapshot.active;
+        self.media_match_remediation.label = label.filter(|_| snapshot.active);
+        self.media_match_remediation.detail = detail.filter(|_| snapshot.active);
+        self.media_match_remediation.progress_fraction = if snapshot.active {
             snapshot.progress_fraction
         } else {
             0.0

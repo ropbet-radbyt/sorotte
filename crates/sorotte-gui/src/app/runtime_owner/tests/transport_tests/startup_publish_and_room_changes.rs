@@ -325,6 +325,405 @@ fn gui_persisted_config_runtime_owner_does_not_publish_placeholder_local_file_ov
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_publishes_cached_media_match_without_health_probe() {
+    let root = test_temp_root("cached-media-match-publish-without-health");
+    let config_path = root.join("settings.ini");
+    let media_path = root.join("episode2.mkv");
+    std::fs::write(&media_path, b"indexed media").expect("indexed media fixture should be written");
+    let metadata = std::fs::metadata(&media_path).expect("indexed media metadata should load");
+    let modified_unix_millis = metadata
+        .modified()
+        .expect("indexed media modified time should load")
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("indexed media modified time should be after unix epoch")
+        .as_millis() as u64;
+    let extraction_settings =
+        sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3();
+    let record = sorotte_media_match::MediaFingerprintRecord {
+        identity: sorotte_media_match::MediaFileIdentity::new(
+            &media_path,
+            modified_unix_millis,
+            metadata.len(),
+        ),
+        algorithm_version: sorotte_media_match::MEDIA_MATCH_ALGORITHM_VERSION,
+        extraction_settings,
+        duration_seconds: Some(42.0),
+        container_fingerprint: "cached-signature-fixture".to_owned(),
+        audio_anchors: vec![sorotte_media_match::AudioAnchor {
+            bucket: 700,
+            t_ms: 10_000,
+            weight: 4,
+        }],
+        audio_error: None,
+    };
+    let mut cache = sorotte_media_match::MediaMatchCache::default();
+    cache.insert(record);
+    crate::app::media_match_support::save_media_match_cache_for_test(&root, &cache)
+        .expect("cached media-match record should be saved");
+    assert!(
+        crate::app::media_match_support::media_match_wire_value_for_path(
+            &root,
+            &media_path.to_string_lossy()
+        )
+        .is_some(),
+        "cached media-match record should be loadable for the indexed file"
+    );
+
+    let (mut owner, session_transport) =
+        GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
+            .with_client_core_chat_session_runtime("alice", "room1")
+            .expect("client-core chat runtime owner should bootstrap");
+    owner.player_local_file = Some(
+        sorotte_player_api::LocalFileUpdate::new("episode2.mkv")
+            .with_duration_seconds(42.0)
+            .with_size_bytes(metadata.len())
+            .with_path(media_path.to_string_lossy().into_owned()),
+    );
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        media_match_fingerprinting_enabled: Some(true),
+        media_match_wire_sharing_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    owner.media_match_runtime_snapshot.settings = state.media_match.settings.clone();
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let _ = session_transport.drain_outbound_protocol_lines();
+    session_transport.push_inbound_protocol_line(
+        r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"sharedPlaylists":true,"mediaMatch":true}}}"#,
+    );
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    assert!(
+        outbound_protocol_lines.iter().any(|line| {
+            let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
+                return false;
+            };
+            message
+                .get("Set")
+                .and_then(|set| set.get("file"))
+                .and_then(|file| file.get(sorotte_media_match::MEDIA_MATCH_FILE_PAYLOAD_KEY))
+                .is_some()
+        }),
+        "cached media-match signatures should be shared even before the runtime health snapshot has been probed; outbound_protocol_lines={outbound_protocol_lines:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_suppresses_cached_media_match_for_remote_exact_playlist_item()
+{
+    let root = test_temp_root("cached-media-match-suppressed-remote-exact-playlist");
+    let config_path = root.join("settings.ini");
+    let media_path = root.join("episode2.mkv");
+    std::fs::write(&media_path, b"indexed media").expect("indexed media fixture should be written");
+    let metadata = std::fs::metadata(&media_path).expect("indexed media metadata should load");
+    let modified_unix_millis = metadata
+        .modified()
+        .expect("indexed media modified time should load")
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("indexed media modified time should be after unix epoch")
+        .as_millis() as u64;
+    let record = sorotte_media_match::MediaFingerprintRecord {
+        identity: sorotte_media_match::MediaFileIdentity::new(
+            &media_path,
+            modified_unix_millis,
+            metadata.len(),
+        ),
+        algorithm_version: sorotte_media_match::MEDIA_MATCH_ALGORITHM_VERSION,
+        extraction_settings:
+            sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3(),
+        duration_seconds: Some(42.0),
+        container_fingerprint: "cached-signature-fixture".to_owned(),
+        audio_anchors: vec![sorotte_media_match::AudioAnchor {
+            bucket: 700,
+            t_ms: 10_000,
+            weight: 4,
+        }],
+        audio_error: None,
+    };
+    let mut cache = sorotte_media_match::MediaMatchCache::default();
+    cache.insert(record);
+    crate::app::media_match_support::save_media_match_cache_for_test(&root, &cache)
+        .expect("cached media-match record should be saved");
+
+    let (mut owner, session_transport) =
+        GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
+            .with_client_core_chat_session_runtime("alice", "room1")
+            .expect("client-core chat runtime owner should bootstrap");
+    owner.player_local_file = Some(
+        sorotte_player_api::LocalFileUpdate::new("episode2.mkv")
+            .with_duration_seconds(42.0)
+            .with_size_bytes(metadata.len())
+            .with_path(media_path.to_string_lossy().into_owned()),
+    );
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        shared_playlist_enabled: Some(true),
+        media_match_fingerprinting_enabled: Some(true),
+        media_match_wire_sharing_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    owner.media_match_runtime_snapshot.settings = state.media_match.settings.clone();
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let _ = session_transport.drain_outbound_protocol_lines();
+    session_transport.push_inbound_protocol_lines([
+        r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"sharedPlaylists":true,"mediaMatch":true}}}"#
+            .to_owned(),
+        r#"{"Set":{"playlistChange":{"files":["episode2.mkv"],"user":"bob"}}}"#.to_owned(),
+        r#"{"Set":{"playlistIndex":{"index":0,"user":"bob"}}}"#.to_owned(),
+    ]);
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    assert!(
+        outbound_protocol_lines.iter().any(|line| {
+            let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
+                return false;
+            };
+            message
+                .get("Set")
+                .and_then(|set| set.get("file"))
+                .is_some_and(|file| {
+                    file.get("name").and_then(serde_json::Value::as_str) == Some("episode2.mkv")
+                        && file
+                            .get(sorotte_media_match::MEDIA_MATCH_FILE_PAYLOAD_KEY)
+                            .is_none()
+                })
+        }),
+        "exact shared-playlist receivers should publish normal file metadata without a media-match signature; outbound_protocol_lines={outbound_protocol_lines:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_suppresses_media_match_without_server_capability() {
+    let root = test_temp_root("cached-media-match-suppressed-without-capability");
+    let config_path = root.join("settings.ini");
+    let media_path = root.join("episode2.mkv");
+    std::fs::write(&media_path, b"indexed media").expect("indexed media fixture should be written");
+    let metadata = std::fs::metadata(&media_path).expect("indexed media metadata should load");
+    let modified_unix_millis = metadata
+        .modified()
+        .expect("indexed media modified time should load")
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("indexed media modified time should be after unix epoch")
+        .as_millis() as u64;
+    let extraction_settings =
+        sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3();
+    let record = sorotte_media_match::MediaFingerprintRecord {
+        identity: sorotte_media_match::MediaFileIdentity::new(
+            &media_path,
+            modified_unix_millis,
+            metadata.len(),
+        ),
+        algorithm_version: sorotte_media_match::MEDIA_MATCH_ALGORITHM_VERSION,
+        extraction_settings,
+        duration_seconds: Some(42.0),
+        container_fingerprint: "cached-signature-fixture".to_owned(),
+        audio_anchors: vec![sorotte_media_match::AudioAnchor {
+            bucket: 700,
+            t_ms: 10_000,
+            weight: 4,
+        }],
+        audio_error: None,
+    };
+    let mut cache = sorotte_media_match::MediaMatchCache::default();
+    cache.insert(record);
+    crate::app::media_match_support::save_media_match_cache_for_test(&root, &cache)
+        .expect("cached media-match record should be saved");
+    assert!(
+        crate::app::media_match_support::media_match_wire_value_for_path(
+            &root,
+            &media_path.to_string_lossy()
+        )
+        .is_some(),
+        "test setup should have a cached media-match signature"
+    );
+
+    let (mut owner, session_transport) =
+        GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
+            .with_client_core_chat_session_runtime("alice", "room1")
+            .expect("client-core chat runtime owner should bootstrap");
+    owner.player_local_file = Some(
+        sorotte_player_api::LocalFileUpdate::new("episode2.mkv")
+            .with_duration_seconds(42.0)
+            .with_size_bytes(metadata.len())
+            .with_path(media_path.to_string_lossy().into_owned()),
+    );
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        media_match_fingerprinting_enabled: Some(true),
+        media_match_wire_sharing_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    owner.media_match_runtime_snapshot.settings = state.media_match.settings.clone();
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let _ = session_transport.drain_outbound_protocol_lines();
+    session_transport.push_inbound_protocol_line(
+        r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"sharedPlaylists":true}}}"#,
+    );
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    assert!(
+        outbound_protocol_lines.iter().any(|line| {
+            let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
+                return false;
+            };
+            let Some(file) = message.get("Set").and_then(|set| set.get("file")) else {
+                return false;
+            };
+            file.get("name").and_then(serde_json::Value::as_str) == Some("episode2.mkv")
+                && file
+                    .get(sorotte_media_match::MEDIA_MATCH_FILE_PAYLOAD_KEY)
+                    .is_none()
+        }),
+        "normal file metadata should still publish without the media-match server capability; outbound_protocol_lines={outbound_protocol_lines:?}"
+    );
+    assert!(
+        outbound_protocol_lines.iter().all(|line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .ok()
+                .and_then(|message| message.get("Set").and_then(|set| set.get("file")).cloned())
+                .and_then(|file| {
+                    file.get(sorotte_media_match::MEDIA_MATCH_FILE_PAYLOAD_KEY)
+                        .cloned()
+                })
+                .is_none()
+        }),
+        "media-match signatures must not be sent unless the server explicitly advertises support; outbound_protocol_lines={outbound_protocol_lines:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_republishes_media_match_when_signature_becomes_available() {
+    let root = test_temp_root("cached-media-match-republish-after-file-publish");
+    let config_path = root.join("settings.ini");
+    let media_path = root.join("episode2.mkv");
+    std::fs::write(&media_path, b"indexed media").expect("indexed media fixture should be written");
+    let metadata = std::fs::metadata(&media_path).expect("indexed media metadata should load");
+
+    let (mut owner, session_transport) =
+        GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
+            .with_client_core_chat_session_runtime("alice", "room1")
+            .expect("client-core chat runtime owner should bootstrap");
+    owner.player_local_file = Some(
+        sorotte_player_api::LocalFileUpdate::new("episode2.mkv")
+            .with_duration_seconds(42.0)
+            .with_size_bytes(metadata.len())
+            .with_path(media_path.to_string_lossy().into_owned()),
+    );
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        media_match_fingerprinting_enabled: Some(true),
+        media_match_wire_sharing_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    owner.media_match_runtime_snapshot.settings = state.media_match.settings.clone();
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let _ = session_transport.drain_outbound_protocol_lines();
+    session_transport.push_inbound_protocol_line(
+        r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"sharedPlaylists":true,"mediaMatch":true}}}"#,
+    );
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    let first_publish_lines = session_transport.drain_outbound_protocol_lines();
+    assert!(
+        first_publish_lines.iter().any(|line| {
+            let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
+                return false;
+            };
+            message
+                .get("Set")
+                .and_then(|set| set.get("file"))
+                .is_some_and(|file| {
+                    file.get("name").and_then(serde_json::Value::as_str) == Some("episode2.mkv")
+                        && file
+                            .get(sorotte_media_match::MEDIA_MATCH_FILE_PAYLOAD_KEY)
+                            .is_none()
+                })
+        }),
+        "first file publish should occur before the test cache has a media-match signature; first_publish_lines={first_publish_lines:?}"
+    );
+
+    let modified_unix_millis = metadata
+        .modified()
+        .expect("indexed media modified time should load")
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("indexed media modified time should be after unix epoch")
+        .as_millis() as u64;
+    let record = sorotte_media_match::MediaFingerprintRecord {
+        identity: sorotte_media_match::MediaFileIdentity::new(
+            &media_path,
+            modified_unix_millis,
+            metadata.len(),
+        ),
+        algorithm_version: sorotte_media_match::MEDIA_MATCH_ALGORITHM_VERSION,
+        extraction_settings:
+            sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3(),
+        duration_seconds: Some(42.0),
+        container_fingerprint: "cached-signature-fixture".to_owned(),
+        audio_anchors: vec![sorotte_media_match::AudioAnchor {
+            bucket: 700,
+            t_ms: 10_000,
+            weight: 4,
+        }],
+        audio_error: None,
+    };
+    let mut cache = sorotte_media_match::MediaMatchCache::default();
+    cache.insert(record);
+    crate::app::media_match_support::save_media_match_cache_for_test(&root, &cache)
+        .expect("cached media-match record should be saved");
+    assert!(
+        crate::app::media_match_support::media_match_wire_value_for_path(
+            &root,
+            &media_path.to_string_lossy()
+        )
+        .is_some(),
+        "cached media-match record should be loadable for the indexed file"
+    );
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let republish_lines = session_transport.drain_outbound_protocol_lines();
+    assert!(
+        republish_lines.iter().any(|line| {
+            let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
+                return false;
+            };
+            message
+                .get("Set")
+                .and_then(|set| set.get("file"))
+                .and_then(|file| file.get(sorotte_media_match::MEDIA_MATCH_FILE_PAYLOAD_KEY))
+                .is_some()
+        }),
+        "same local file should republish once its media-match signature becomes available; republish_lines={republish_lines:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_routes_room_changes_over_tcp_transport() {
     use std::{
         io::{BufRead, BufReader, Write},

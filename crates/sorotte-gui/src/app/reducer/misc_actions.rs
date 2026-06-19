@@ -13,12 +13,65 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::RecheckStreamHelper
             | GuiShellAction::OpenStreamHelperInstallLocation
             | GuiShellAction::RetryPendingStreamMediaOpen
+            | GuiShellAction::InstallMediaMatchTools
+            | GuiShellAction::ImportMediaMatchFfmpeg(_)
+            | GuiShellAction::ImportMediaMatchFfprobe(_)
+            | GuiShellAction::RecheckMediaMatchTools
+            | GuiShellAction::RebuildMediaMatchIndex
+            | GuiShellAction::CancelMediaMatchRebuild
+            | GuiShellAction::ClearMediaMatchCache
+            | GuiShellAction::OpenMediaMatchInstallLocation
             | GuiShellAction::StartPlexAuth
             | GuiShellAction::PollPlexAuth
             | GuiShellAction::RefreshPlexServers
             | GuiShellAction::SelectPlexServer { .. }
             | GuiShellAction::TogglePlexSync(_)
             | GuiShellAction::DisconnectPlex => {
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::SetMediaMatchFingerprintingEnabled(enabled) => {
+                self.media_match.settings.fingerprinting_enabled = enabled;
+                apply_media_match_settings_to_stored_settings(
+                    &mut self.configuration.settings,
+                    &self.media_match.settings,
+                );
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::SetMediaMatchBackgroundWarmupEnabled(enabled) => {
+                self.media_match.settings.background_warmup_enabled = enabled;
+                apply_media_match_settings_to_stored_settings(
+                    &mut self.configuration.settings,
+                    &self.media_match.settings,
+                );
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::SetMediaMatchWireSharingEnabled(enabled) => {
+                self.media_match.settings.wire_sharing_enabled = enabled;
+                apply_media_match_settings_to_stored_settings(
+                    &mut self.configuration.settings,
+                    &self.media_match.settings,
+                );
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::SetMediaMatchRuntimeToleranceEnabled(enabled) => {
+                self.media_match.settings.runtime_tolerance_enabled = enabled;
+                apply_media_match_settings_to_stored_settings(
+                    &mut self.configuration.settings,
+                    &self.media_match.settings,
+                );
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::SetMediaMatchAutoplayPolicy(policy) => {
+                self.media_match.settings.autoplay_policy = policy;
+                apply_media_match_settings_to_stored_settings(
+                    &mut self.configuration.settings,
+                    &self.media_match.settings,
+                );
                 self.clear_action_error_and_refresh();
                 true
             }

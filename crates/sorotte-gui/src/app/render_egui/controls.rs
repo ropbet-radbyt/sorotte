@@ -763,14 +763,18 @@ impl GuiWidgetEguiRenderer {
             | "plugins:stream-support:install"
             | "plugins:stream-support:alert:install"
             | "plugins:stream-support:recheck"
-            | "plugins:stream-support:alert:recheck" => {
+            | "plugins:stream-support:alert:recheck"
+            | "plugins:media-matching:install"
+            | "plugins:media-matching:recheck" => {
                 Some((palette.primary, palette.primary_hover, palette.primary_text))
             }
             "config-command:disconnect"
             | "main-window:connection:disconnect"
             | "main-window:room:leave"
             | "main-window:media-url-edit:cancel"
-            | "plugins:plex:disconnect" => {
+            | "plugins:plex:disconnect"
+            | "plugins:media-matching:rebuild-index"
+            | "plugins:media-matching:cancel-rebuild" => {
                 Some((palette.danger, palette.danger_hover, palette.danger_text))
             }
             _ => None,

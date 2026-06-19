@@ -253,6 +253,9 @@ impl PlayerAdapter for MpvAdapter {
     fn take_playback_telemetry_update(&mut self) -> Option<PlayerPlaybackTelemetryUpdate> {
         self.ensure_observers_registered_if_attached();
         self.drain_ipc_events_if_attached();
+        if self.pending_playback_telemetry_update.is_none() {
+            self.poll_paused_position_telemetry_if_attached();
+        }
         self.pending_playback_telemetry_update.take()
     }
 

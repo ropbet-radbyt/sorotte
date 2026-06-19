@@ -103,6 +103,46 @@ fn upsert_sorotte_ini_stored_client_settings_mvp_with_plex_identity_clear(
             &serialized,
         );
     }
+    if let Some(value) = settings.media_match_fingerprinting_enabled {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "mediaMatchFingerprintingEnabled",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(value) = settings.media_match_background_warmup_enabled {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "mediaMatchBackgroundWarmupEnabled",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(value) = settings.media_match_wire_sharing_enabled {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "mediaMatchWireSharingEnabled",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(value) = settings.media_match_runtime_tolerance_enabled {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "mediaMatchRuntimeToleranceEnabled",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(value) = settings.media_match_autoplay_policy.as_deref() {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "mediaMatchAutoplayPolicy",
+            value,
+        );
+    }
     if let Some(value) = settings.plex_sync_enabled {
         upsert_ini_value_legacy_compatible(
             &mut lines,

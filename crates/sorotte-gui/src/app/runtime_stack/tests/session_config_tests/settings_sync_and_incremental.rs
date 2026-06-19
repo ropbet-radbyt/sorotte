@@ -167,6 +167,50 @@ fn gui_client_core_chat_session_runtime_adapter_syncs_runtime_settings_into_sess
 }
 
 #[test]
+fn gui_client_core_chat_session_runtime_adapter_sets_media_match_peer_tiers() {
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+
+    assert!(
+        adapter
+            .runtime
+            .session()
+            .media_match_peer_tiers()
+            .is_empty()
+    );
+
+    GuiSessionRuntimeAdapter::set_media_match_peer_tiers(
+        &mut adapter,
+        std::collections::BTreeMap::from([(
+            "bob".to_owned(),
+            sorotte_media_match::MediaMatchTier::Strong,
+        )]),
+    )
+    .expect("media-match peer tiers should update");
+    assert_eq!(
+        adapter
+            .runtime
+            .session()
+            .media_match_peer_tiers()
+            .get("bob"),
+        Some(&sorotte_media_match::MediaMatchTier::Strong)
+    );
+
+    GuiSessionRuntimeAdapter::set_media_match_peer_tiers(
+        &mut adapter,
+        std::collections::BTreeMap::new(),
+    )
+    .expect("media-match peer tiers should clear");
+    assert!(
+        adapter
+            .runtime
+            .session()
+            .media_match_peer_tiers()
+            .is_empty()
+    );
+}
+
+#[test]
 fn gui_client_core_chat_session_runtime_adapter_clears_cached_username_when_runtime_settings_blank()
 {
     let runtime_settings =

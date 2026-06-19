@@ -65,6 +65,8 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         player_local_file: None,
         player_local_file_placeholder: false,
         last_published_local_file: None,
+        last_published_media_match_signature: None,
+        local_shared_playlist_media_match_signature_path: None,
         attached_media_search_index: None,
         attached_media_search_next_retry_at: None,
         pending_attached_media_resolution: None,
@@ -80,6 +82,7 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         pending_local_attached_pause_override: None,
         pending_attached_cache_unpause: false,
         pending_attached_player_pause_confirmation_pump: None,
+        pending_attached_player_pause_command: None,
         player_position_seconds: None,
         player_paused: None,
         player_paused_for_cache: None,
@@ -89,6 +92,18 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         user_offset_seconds: 0.0,
         stream_helper_runtime_snapshot: Default::default(),
         stream_helper_remediation_runtime_snapshot: Default::default(),
+        media_match_runtime_snapshot: Default::default(),
+        media_match_remediation_runtime_snapshot: Default::default(),
+        media_match_tool_worker_rx: None,
+        media_match_background_worker_rx: None,
+        media_match_background_worker_cancel: None,
+        media_match_background_trigger_key: None,
+        media_match_background_index_backup: None,
+        media_match_background_cancel_disposition: None,
+        media_match_remote_lookup_rx: None,
+        media_match_remote_lookup_trigger_key: None,
+        media_match_remote_lookup_result: None,
+        media_match_wire_sync_token: None,
         plex_client: None,
         plex_auth_session: None,
         plex_auth_start_rx: None,
@@ -114,7 +129,7 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
 
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
-    let bootstrap_actions = handle.drain_actions();
+    let bootstrap_actions = without_media_match_runtime_snapshots(handle.drain_actions());
     assert_eq!(
         bootstrap_actions,
         vec![
@@ -217,7 +232,7 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         Some("Chat input is unavailable because no session runtime is connected.")
     );
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
-    let refreshed_command_actions = handle.drain_actions();
+    let refreshed_command_actions = without_media_match_runtime_snapshots(handle.drain_actions());
     assert!(refreshed_command_actions.is_empty());
     for action in refreshed_command_actions {
         assert!(state.apply(action));
@@ -235,7 +250,7 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
                 .with_size_bytes(734003200),
         );
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
-    let local_file_actions = handle.drain_actions();
+    let local_file_actions = without_media_match_runtime_snapshots(handle.drain_actions());
     assert_eq!(
         local_file_actions,
         vec![GuiShellAction::ApplyMainWindowRuntimeSnapshot(
@@ -285,7 +300,7 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         .playback_updates
         .push(sorotte_player_api::PlayerPlaybackTelemetryUpdate::default().with_paused(true));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
-    let paused_actions = handle.drain_actions();
+    let paused_actions = without_media_match_runtime_snapshots(handle.drain_actions());
     assert_eq!(
         paused_actions,
         vec![GuiShellAction::ApplyMainWindowRuntimeSnapshot(
@@ -322,7 +337,7 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
 
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     assert!(
-        handle.drain_actions().is_empty(),
+        without_media_match_runtime_snapshots(handle.drain_actions()).is_empty(),
         "idle runtime pumps should not emit redundant player projection actions"
     );
 }

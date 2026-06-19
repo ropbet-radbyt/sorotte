@@ -47,10 +47,11 @@ mod stream_load;
 mod telemetry;
 
 use super::{
-    GuiAttachedMediaSearchBuildProgress, GuiAttachedMediaSearchBuildState,
-    GuiAttachedMediaSearchBuildStatus, GuiAttachedMediaSearchIndex,
-    GuiAttachedMediaSearchRootIndex, GuiAttachedMediaSearchRootRefreshResult,
-    GuiAutomaticMediaResolutionTrigger, GuiPendingAttachedMediaResolution,
+    ATTACHED_PLAYER_PAUSE_COMMAND_SUPPRESSION, GuiAttachedMediaSearchBuildProgress,
+    GuiAttachedMediaSearchBuildState, GuiAttachedMediaSearchBuildStatus,
+    GuiAttachedMediaSearchIndex, GuiAttachedMediaSearchRootIndex,
+    GuiAttachedMediaSearchRootRefreshResult, GuiAutomaticMediaResolutionTrigger,
+    GuiPendingAttachedMediaResolution, GuiPendingAttachedPlayerPauseCommand,
     GuiPersistedConfigRuntimeOwner, GuiUserMediaTargetResolution,
 };
 

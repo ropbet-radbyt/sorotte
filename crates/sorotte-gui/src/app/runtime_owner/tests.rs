@@ -16,7 +16,7 @@ use crate::app::{
     GuiAttachedMediaSearchBuildStatus, GuiAttachedMediaSearchIndex,
     GuiAttachedMediaSearchRootIndex, GuiAttachedMediaSearchRootRefreshResult,
     GuiCommandAvailabilityState, GuiCommandRuntimeSnapshot, GuiConfigStorageChangeTarget,
-    GuiInteractionRuntimeSnapshot, GuiLaunchMode, GuiOwnedPlayer,
+    GuiConfigStorageRuntimeSnapshot, GuiInteractionRuntimeSnapshot, GuiLaunchMode, GuiOwnedPlayer,
     GuiPendingAttachedMediaResolution, GuiPendingCompletionRequest, GuiPendingOperationKind,
     GuiPendingRoomChangeRequest, GuiPersistedUiState, GuiPlayerLaunchRuntimeState,
     GuiQueuedRuntimeBridgeHandle, GuiQueuedRuntimeOwner, GuiRuntimeRequest,

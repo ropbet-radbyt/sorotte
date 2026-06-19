@@ -32,9 +32,9 @@ fn gui_shell_app_state_triggers_selected_menu_actions() {
     assert!(state.apply(GuiShellAction::TriggerSelectedMenuAction));
     assert_eq!(
         state.pending_operation.as_ref().map(|pending| pending.kind),
-        Some(GuiPendingOperationKind::TogglePlaybackPause)
+        Some(GuiPendingOperationKind::SetPlaybackPause(true))
     );
-    assert!(state.apply(GuiShellAction::CompletePlaybackPauseToggle));
+    assert!(state.apply(GuiShellAction::CompletePlaybackPauseState(true)));
     assert!(state.main_window.playback_paused);
 
     let mut disabled_state =

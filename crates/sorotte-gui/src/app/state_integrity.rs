@@ -272,6 +272,7 @@ impl SorotteGuiShellAppState {
             }
             GuiPendingOperationKind::RefreshPublicServers => self.cancel_public_server_refresh(),
             GuiPendingOperationKind::SearchMissingMedia => self.cancel_missing_media_search(),
+            GuiPendingOperationKind::SetPlaybackPause(_) => self.cancel_playback_pause_state(),
             GuiPendingOperationKind::TogglePlaybackPause => self.cancel_playback_pause_toggle(),
             GuiPendingOperationKind::SendChatMessage => self.cancel_local_chat_send(),
         }

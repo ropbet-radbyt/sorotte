@@ -6,6 +6,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
     struct RecordingPlayerState {
         opened_paths: Vec<String>,
         local_file_updates: Vec<sorotte_player_api::LocalFileUpdate>,
+        playback_updates: Vec<sorotte_player_api::PlayerPlaybackTelemetryUpdate>,
         set_paused_values: Vec<bool>,
         set_positions: Vec<f64>,
     }
@@ -42,6 +43,16 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .local_file_updates
+                .pop()
+        }
+
+        fn take_playback_telemetry_update(
+            &mut self,
+        ) -> Option<sorotte_player_api::PlayerPlaybackTelemetryUpdate> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .playback_updates
                 .pop()
         }
 
@@ -96,6 +107,8 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
         player_local_file: None,
         player_local_file_placeholder: false,
         last_published_local_file: None,
+        last_published_media_match_signature: None,
+        local_shared_playlist_media_match_signature_path: None,
         attached_media_search_index: None,
         attached_media_search_next_retry_at: None,
         pending_attached_media_resolution: None,
@@ -111,6 +124,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
         pending_local_attached_pause_override: None,
         pending_attached_cache_unpause: false,
         pending_attached_player_pause_confirmation_pump: None,
+        pending_attached_player_pause_command: None,
         player_position_seconds: None,
         player_paused: None,
         player_paused_for_cache: None,
@@ -120,6 +134,18 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
         user_offset_seconds: 0.0,
         stream_helper_runtime_snapshot: Default::default(),
         stream_helper_remediation_runtime_snapshot: Default::default(),
+        media_match_runtime_snapshot: Default::default(),
+        media_match_remediation_runtime_snapshot: Default::default(),
+        media_match_tool_worker_rx: None,
+        media_match_background_worker_rx: None,
+        media_match_background_worker_cancel: None,
+        media_match_background_trigger_key: None,
+        media_match_background_index_backup: None,
+        media_match_background_cancel_disposition: None,
+        media_match_remote_lookup_rx: None,
+        media_match_remote_lookup_trigger_key: None,
+        media_match_remote_lookup_result: None,
+        media_match_wire_sync_token: None,
         plex_client: None,
         plex_auth_session: None,
         plex_auth_start_rx: None,
@@ -155,7 +181,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
         playlist_insert_slot: None,
     });
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
-    let open_actions = handle.drain_actions();
+    let open_actions = without_media_match_runtime_snapshots(handle.drain_actions());
     assert_eq!(
         open_actions,
         vec![
@@ -328,8 +354,8 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     let toggle_actions = handle.drain_actions();
     assert!(
-        toggle_actions.contains(&GuiShellAction::CompletePlaybackPauseToggle),
-        "pending pause-toggle completion should still emit the completion action",
+        toggle_actions.contains(&GuiShellAction::CompletePlaybackPauseState(true)),
+        "pending pause-toggle completion should emit the actual pause state",
     );
     for action in toggle_actions {
         assert!(state.apply(action));
@@ -361,6 +387,45 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
         assert!(state.apply(action));
     }
     assert!(!state.main_window.playback_paused);
+
+    assert!(state.apply(GuiShellAction::BeginPlaybackPause));
+    assert_eq!(
+        state.pending_operation.as_ref().map(|pending| pending.kind),
+        Some(GuiPendingOperationKind::SetPlaybackPause(true))
+    );
+    state.main_window.playback_paused = true;
+    handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+        GuiPendingCompletionRequest::SetPlaybackPause(true),
+    ));
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    let targeted_pause_actions = handle.drain_actions();
+    assert!(
+        targeted_pause_actions.contains(&GuiShellAction::CompletePlaybackPauseState(true)),
+        "explicit pause completion should keep the requested target even if shell state drifts",
+    );
+    for action in targeted_pause_actions {
+        assert!(state.apply(action));
+    }
+    assert!(state.main_window.playback_paused);
+    player_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .playback_updates
+        .push(sorotte_player_api::PlayerPlaybackTelemetryUpdate::default().with_paused(false));
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    let _ = handle.drain_actions();
+    assert_eq!(
+        owner.player_paused,
+        Some(true),
+        "stale mpv paused=false telemetry must not immediately undo an explicit GUI pause command",
+    );
+    assert_eq!(
+        player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_paused_values,
+        vec![true, false, true]
+    );
 
     handle.push_request(GuiRuntimeRequest::SeekOffset(12.5));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
@@ -427,7 +492,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .set_paused_values,
-        vec![true, false]
+        vec![true, false, true]
     );
 }
 

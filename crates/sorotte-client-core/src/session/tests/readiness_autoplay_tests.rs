@@ -257,6 +257,75 @@ fn autoplay_require_same_filenames_uses_legacy_filename_comparison() {
 }
 
 #[test]
+fn per_peer_strong_media_match_can_satisfy_same_filename_autoplay_gate() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("hello should apply");
+    session
+            .apply_message_json(
+                r#"{"List":{"room1":{"alice":{"isReady":true,"file":{"name":"Movie-Name.mkv"}},"bob":{"isReady":true,"file":{"name":"other-release.mkv"}}}}}"#,
+            )
+            .expect("mismatched filenames list snapshot should apply");
+    session.set_autoplay_enabled(true);
+    session.readiness_autoplay_config_mut().auto_play_threshold = Some(2);
+    session
+        .readiness_autoplay_config_mut()
+        .autoplay_require_same_filenames = true;
+    session.local_paused = Some(true);
+
+    assert!(!session.autoplay_conditions_met(true, true, false, false));
+
+    session
+        .set_media_match_peer_tiers(BTreeMap::from([("bob".to_owned(), MediaMatchTier::Strong)]));
+
+    assert!(
+        session.autoplay_conditions_met(true, true, false, false),
+        "only an explicit strong same-media match for the mismatched peer should bypass filename mismatch"
+    );
+
+    session.set_media_match_peer_tiers(BTreeMap::from([(
+        "bob".to_owned(),
+        MediaMatchTier::Probable,
+    )]));
+
+    assert!(
+        !session.autoplay_conditions_met(true, true, false, false),
+        "non-strong wire matches must keep the filename gate closed"
+    );
+}
+
+#[test]
+fn missing_peer_media_match_keeps_same_filename_gate_closed() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json(
+            r#"{"List":{"room1":{"alice":{"isReady":true,"file":{"name":"Movie-Name.mkv"}},"bob":{"isReady":true,"file":{"name":"other-release.mkv"}},"carol":{"isReady":true,"file":{"name":"third-release.mkv"}}}}}"#,
+        )
+        .expect("mismatched filenames list snapshot should apply");
+    session.set_autoplay_enabled(true);
+    session.readiness_autoplay_config_mut().auto_play_threshold = Some(3);
+    session
+        .readiness_autoplay_config_mut()
+        .autoplay_require_same_filenames = true;
+    session.local_paused = Some(true);
+    session
+        .set_media_match_peer_tiers(BTreeMap::from([("bob".to_owned(), MediaMatchTier::Strong)]));
+
+    assert!(
+        !session.autoplay_conditions_met(true, true, false, false),
+        "every mismatched peer needs either a legacy filename match or strong media-match tier"
+    );
+}
+
+#[test]
 fn readiness_autoplay_config_defaults_include_legacy_duration_comparison_settings() {
     let config = ReadinessAutoplayConfig::default();
     assert!(config.show_duration_notification);

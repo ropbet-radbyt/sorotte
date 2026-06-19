@@ -365,8 +365,10 @@ impl GuiPersistedConfigRuntimeOwner {
         self.refresh_player_state();
         self.ensure_configured_player_attached();
         if self.player.is_some() {
-            let target_paused = !projected_state.main_window.playback_paused;
-            let previous_paused = projected_state.main_window.playback_paused;
+            let previous_paused = self
+                .player_paused
+                .unwrap_or(projected_state.main_window.playback_paused);
+            let target_paused = !previous_paused;
             match self.apply_playback_pause_change_with_detached_session(
                 projected_state,
                 previous_paused,
@@ -376,7 +378,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     if let Some(error) = sync_error {
                         Self::push_player_error(handle, error);
                     }
-                    let actions = if actual_paused == previous_paused {
+                    let actions = if projected_state.main_window.playback_paused == actual_paused {
                         Vec::new()
                     } else {
                         vec![if actual_paused {
@@ -395,6 +397,91 @@ impl GuiPersistedConfigRuntimeOwner {
         true
     }
 
+    pub(super) fn handle_set_playback_paused_request(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        target_paused: bool,
+    ) -> bool {
+        self.refresh_player_state();
+        self.ensure_configured_player_attached();
+        if self.player.is_some() {
+            let previous_paused = self
+                .player_paused
+                .unwrap_or(projected_state.main_window.playback_paused);
+            match self.apply_playback_pause_change_with_detached_session(
+                projected_state,
+                previous_paused,
+                target_paused,
+            ) {
+                Ok((actual_paused, sync_error)) => {
+                    if let Some(error) = sync_error {
+                        Self::push_player_error(handle, error);
+                    }
+                    let actions = if projected_state.main_window.playback_paused == actual_paused {
+                        Vec::new()
+                    } else {
+                        vec![if actual_paused {
+                            GuiShellAction::AnnouncePlaybackPaused
+                        } else {
+                            GuiShellAction::AnnouncePlaybackResumed
+                        }]
+                    };
+                    Self::push_actions_and_project(handle, projected_state, actions);
+                }
+                Err(error) => Self::push_player_error(handle, error),
+            }
+        } else {
+            Self::push_runtime_unavailable(handle, self.toggle_pause_unavailable_message());
+        }
+        true
+    }
+
+    pub(super) fn handle_complete_set_playback_pause_request(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        target_paused: bool,
+    ) -> bool {
+        self.refresh_player_state();
+        self.ensure_configured_player_attached();
+        if self.player.is_some() {
+            let previous_paused = self
+                .player_paused
+                .unwrap_or(projected_state.main_window.playback_paused);
+            let actions = match self.apply_playback_pause_change_with_detached_session(
+                projected_state,
+                previous_paused,
+                target_paused,
+            ) {
+                Ok((actual_paused, sync_error)) => {
+                    if let Some(error) = sync_error {
+                        Self::push_player_error(handle, error);
+                    }
+                    vec![GuiShellAction::CompletePlaybackPauseState(actual_paused)]
+                }
+                Err(error) => vec![
+                    GuiShellAction::CancelPlaybackPauseState,
+                    GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Error,
+                        message: error,
+                    },
+                ],
+            };
+            Self::push_actions_and_project(handle, projected_state, actions);
+        } else {
+            let actions = vec![
+                GuiShellAction::CancelPlaybackPauseState,
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Error,
+                    message: self.toggle_pause_unavailable_message(),
+                },
+            ];
+            Self::push_actions_and_project(handle, projected_state, actions);
+        }
+        true
+    }
+
     pub(super) fn handle_complete_toggle_playback_pause_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
@@ -403,18 +490,20 @@ impl GuiPersistedConfigRuntimeOwner {
         self.refresh_player_state();
         self.ensure_configured_player_attached();
         if self.player.is_some() {
-            let target_paused = !projected_state.main_window.playback_paused;
-            let previous_paused = projected_state.main_window.playback_paused;
+            let previous_paused = self
+                .player_paused
+                .unwrap_or(projected_state.main_window.playback_paused);
+            let target_paused = !previous_paused;
             let actions = match self.apply_playback_pause_change_with_detached_session(
                 projected_state,
                 previous_paused,
                 target_paused,
             ) {
-                Ok((_actual_paused, sync_error)) => {
+                Ok((actual_paused, sync_error)) => {
                     if let Some(error) = sync_error {
                         Self::push_player_error(handle, error);
                     }
-                    vec![GuiShellAction::CompletePlaybackPauseToggle]
+                    vec![GuiShellAction::CompletePlaybackPauseState(actual_paused)]
                 }
                 Err(error) => vec![
                     GuiShellAction::CancelPlaybackPauseToggle,

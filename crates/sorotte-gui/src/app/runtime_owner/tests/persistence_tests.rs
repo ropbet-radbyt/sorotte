@@ -86,6 +86,164 @@ fn gui_persisted_config_runtime_owner_plex_cache_uses_sorotte_cache_directory() 
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_persists_media_match_settings() {
+    let root = test_temp_root("media-match-settings-owner");
+    let config_path = root.join("sorotte.ini");
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state =
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+    handle.push_request(GuiRuntimeRequest::SetMediaMatchFingerprintingEnabled(true));
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    handle.push_request(GuiRuntimeRequest::SetMediaMatchBackgroundWarmupEnabled(
+        false,
+    ));
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    handle.push_request(GuiRuntimeRequest::SetMediaMatchWireSharingEnabled(false));
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    handle.push_request(GuiRuntimeRequest::SetMediaMatchRuntimeToleranceEnabled(
+        false,
+    ));
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    handle.push_request(GuiRuntimeRequest::SetMediaMatchAutoplayPolicy(
+        sorotte_media_match::MediaMatchAutoplayPolicy::AllowStrongSameMedia,
+    ));
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    let settings = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
+        .expect("media-match settings config should be readable")
+        .expect("media-match settings config should exist");
+    assert_eq!(settings.media_match_fingerprinting_enabled, Some(true));
+    assert_eq!(settings.media_match_background_warmup_enabled, Some(false));
+    assert_eq!(settings.media_match_wire_sharing_enabled, Some(false));
+    assert_eq!(settings.media_match_runtime_tolerance_enabled, Some(false));
+    assert_eq!(
+        settings.media_match_autoplay_policy.as_deref(),
+        Some("AllowStrongSameMedia")
+    );
+
+    let restarted_owner =
+        GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player(Some(config_path));
+    assert!(
+        restarted_owner
+            .media_match_runtime_snapshot
+            .settings
+            .fingerprinting_enabled
+    );
+    assert!(
+        !restarted_owner
+            .media_match_runtime_snapshot
+            .settings
+            .background_warmup_enabled
+    );
+    assert!(
+        !restarted_owner
+            .media_match_runtime_snapshot
+            .settings
+            .wire_sharing_enabled
+    );
+    assert!(
+        !restarted_owner
+            .media_match_runtime_snapshot
+            .settings
+            .runtime_tolerance_enabled
+    );
+    assert_eq!(
+        restarted_owner
+            .media_match_runtime_snapshot
+            .settings
+            .autoplay_policy,
+        sorotte_media_match::MediaMatchAutoplayPolicy::AllowStrongSameMedia
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_recovers_media_match_config_path_from_storage_snapshot() {
+    let root = test_temp_root("media-match-settings-storage-snapshot");
+    let config_path = root.join("sorotte.ini");
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state =
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    assert!(
+        state.apply(GuiShellAction::ApplyGuiConfigStorageRuntimeSnapshot(
+            GuiConfigStorageRuntimeSnapshot {
+                config_path: Some(config_path.to_string_lossy().into_owned()),
+                storage_root: Some(root.to_string_lossy().into_owned()),
+                default_storage_root: Some(root.to_string_lossy().into_owned()),
+                source_label: "test".to_owned(),
+                external_override_active: false,
+            },
+        ))
+    );
+
+    handle.push_request(GuiRuntimeRequest::SetMediaMatchFingerprintingEnabled(true));
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert_eq!(owner.config_path, Some(config_path.clone()));
+    let settings = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
+        .expect("media-match settings config should be readable")
+        .expect("media-match settings config should exist");
+    assert_eq!(settings.media_match_fingerprinting_enabled, Some(true));
+    let expected_install_location = root
+        .join("tools")
+        .join("media-match")
+        .join("bin")
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(
+        state.media_match.install_location.as_deref(),
+        Some(expected_install_location.as_str())
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_preserves_media_match_tools_when_player_cache_clears() {
+    let root = test_temp_root("media-match-player-cache-clear");
+    let config_path = root.join("sorotte.ini");
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
+    owner.refresh_startup_media_match_snapshot(None);
+    owner.media_match_runtime_snapshot.current_decision = Some("strong: seeded".to_owned());
+    owner.media_match_runtime_snapshot.nearest_match =
+        Some("episode-b.mkv (strong: seeded)".to_owned());
+    owner.media_match_runtime_snapshot.last_evidence = Some("seeded evidence".to_owned());
+    let before = owner.media_match_runtime_snapshot.clone();
+
+    owner.sync_player_from_lookup_and_settings(
+        &|name| (name == "SOROTTE_GUI_ENABLE_TEST_PLAYER").then(|| "true".to_owned()),
+        None,
+        true,
+    );
+
+    assert_eq!(
+        owner.media_match_runtime_snapshot.install_location,
+        before.install_location
+    );
+    assert_eq!(
+        owner.media_match_runtime_snapshot.ffmpeg_status,
+        before.ffmpeg_status
+    );
+    assert_eq!(
+        owner.media_match_runtime_snapshot.ffprobe_status,
+        before.ffprobe_status
+    );
+    assert_eq!(
+        owner.media_match_runtime_snapshot.cache_status,
+        before.cache_status
+    );
+    assert_eq!(owner.media_match_runtime_snapshot.current_decision, None);
+    assert_eq!(owner.media_match_runtime_snapshot.nearest_match, None);
+    assert_eq!(owner.media_match_runtime_snapshot.last_evidence, None);
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_changes_config_storage_root_and_copies_known_files() {
     let env = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
     let prior_appdata = std::env::var_os("APPDATA");
@@ -133,6 +291,17 @@ fn gui_persisted_config_runtime_owner_changes_config_storage_root_and_copies_kno
         "tool",
     )
     .expect("tool file should be written");
+    std::fs::create_dir_all(old_root.join("tools").join("media-match").join("bin"))
+        .expect("media-match tools directory should be created");
+    std::fs::write(
+        old_root
+            .join("tools")
+            .join("media-match")
+            .join("bin")
+            .join("ffmpeg.exe"),
+        "tool",
+    )
+    .expect("media-match tool file should be written");
     std::fs::create_dir_all(old_root.join("updates")).expect("updates directory should be created");
     std::fs::write(old_root.join("updates").join("stage.txt"), "update")
         .expect("update staging file should be written");
@@ -192,6 +361,15 @@ fn gui_persisted_config_runtime_owner_changes_config_storage_root_and_copies_kno
             .join("helper.txt")
             .exists(),
         "stream-helper tools should be copied to the new root"
+    );
+    assert!(
+        new_root
+            .join("tools")
+            .join("media-match")
+            .join("bin")
+            .join("ffmpeg.exe")
+            .exists(),
+        "media-match tools should be copied to the new root"
     );
     assert!(
         new_root.join("updates").join("stage.txt").exists(),

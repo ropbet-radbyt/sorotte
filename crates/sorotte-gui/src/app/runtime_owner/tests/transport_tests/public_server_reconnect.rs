@@ -512,6 +512,7 @@ fn gui_persisted_config_runtime_owner_republishes_local_file_after_public_server
             .with_path("C:/Media/episode1.mkv".to_owned()),
     );
     owner.last_published_local_file = owner.player_local_file.clone();
+    owner.last_published_media_match_signature = None;
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {

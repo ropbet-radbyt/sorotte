@@ -43,6 +43,10 @@ impl fmt::Debug for MpvAdapter {
                 "last_polled_local_file_update",
                 &self.last_polled_local_file_update,
             )
+            .field(
+                "last_paused_position_poll_at",
+                &self.last_paused_position_poll_at,
+            )
             .field("observed_state", &self.observed_state)
             .field("observers_registered", &self.observers_registered)
             .field(
@@ -98,6 +102,7 @@ impl Default for MpvAdapter {
             pending_chat_requests: VecDeque::new(),
             pending_load_request: None,
             last_polled_local_file_update: None,
+            last_paused_position_poll_at: None,
             observed_state: MpvObservedState::default(),
             observers_registered: false,
             legacy_syncplay_ui_settings: LegacySyncplayUiSettings::default(),

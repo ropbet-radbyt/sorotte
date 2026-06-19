@@ -98,6 +98,7 @@ impl GuiPersistedConfigRuntimeOwner {
         error: String,
     ) {
         let error_message = format!("Session transport driver pump failed: {error}");
+        eprintln!("{error_message}");
         let now_seconds = system_time_seconds();
         if Self::session_transport_failure_is_terminal(&error) {
             self.handle_terminal_session_transport_failure(
@@ -236,6 +237,7 @@ impl GuiPersistedConfigRuntimeOwner {
             );
             return;
         };
+        session_transport_driver.set_protocol_liveness_enabled(false);
         if let Err(error) = session_transport_driver.reconnect() {
             self.handle_session_transport_failure(
                 handle,
@@ -260,6 +262,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.session_default_room = None;
         self.pending_room_change_request = None;
         self.last_published_local_file = None;
+        self.last_published_media_match_signature = None;
         self.pending_attached_media_resolution = None;
         self.unresolved_attached_media_target = None;
         self.clear_session_attached_player_sync_state();
@@ -347,7 +350,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let (owner, _session_transport) =
             self.with_client_core_chat_session_runtime(username, room)?;
         Ok(owner.with_session_transport_driver(Box::new(
-            GuiTcpSessionTransportDriver::connect_from_host_arg(host_arg.as_ref())?,
+            GuiThreadedTcpSessionTransportDriver::connect_from_host_arg(host_arg.as_ref())?,
         )))
     }
 
@@ -362,6 +365,11 @@ impl GuiPersistedConfigRuntimeOwner {
         let Some(session_transport_driver) = self.session_transport_driver.as_mut() else {
             return;
         };
+        let liveness_enabled = self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.server_handshake_completed());
+        session_transport_driver.set_protocol_liveness_enabled(liveness_enabled);
         if let Err(error) = session_transport_driver.pump(session_transport) {
             self.handle_session_transport_failure(handle, projected_state, error);
         }

@@ -281,6 +281,45 @@ impl GuiPersistedConfigRuntimeOwner {
             );
         }
 
+        let desired_media_match = self.media_match_runtime_snapshot.clone();
+        if state.media_match.settings != desired_media_match.settings
+            || state.media_match.health != desired_media_match.health
+            || state.media_match.message != desired_media_match.message
+            || state.media_match.install_supported != desired_media_match.install_supported
+            || state.media_match.integration_supported != desired_media_match.integration_supported
+            || state.media_match.install_location != desired_media_match.install_location
+            || state.media_match.ffmpeg_status != desired_media_match.ffmpeg_status
+            || state.media_match.ffprobe_status != desired_media_match.ffprobe_status
+            || state.media_match.cache_status != desired_media_match.cache_status
+            || state.media_match.current_decision != desired_media_match.current_decision
+            || state.media_match.nearest_match != desired_media_match.nearest_match
+            || state.media_match.last_evidence != desired_media_match.last_evidence
+            || state.media_match.remote_status != desired_media_match.remote_status
+            || state.media_match.background_status != desired_media_match.background_status
+            || state.media_match.open_install_location_available
+                != desired_media_match.open_install_location_available
+        {
+            handle.push_action(GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(
+                desired_media_match,
+            ));
+        }
+
+        let desired_media_match_remediation = self.media_match_remediation_runtime_snapshot.clone();
+        if state.media_match_remediation.active != desired_media_match_remediation.active
+            || state.media_match_remediation.label != desired_media_match_remediation.label
+            || state.media_match_remediation.detail != desired_media_match_remediation.detail
+            || (state.media_match_remediation.progress_fraction
+                - desired_media_match_remediation.progress_fraction)
+                .abs()
+                > f32::EPSILON
+        {
+            handle.push_action(
+                GuiShellAction::ApplyGuiMediaMatchRemediationRuntimeSnapshot(
+                    desired_media_match_remediation,
+                ),
+            );
+        }
+
         let playback_section = state
             .menus
             .sections

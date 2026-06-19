@@ -214,9 +214,16 @@ impl ClientSession {
         };
 
         if let Some(username) = self.username.clone() {
-            let (has_file, file_name, file_size, file_duration) =
+            let (has_file, file_name, file_size, file_duration, media_match_signature) =
                 Self::list_payload_file_info(Some(&sanitized_payload));
-            self.set_user_file_info(&username, has_file, file_name, file_size, file_duration);
+            self.set_user_file_info(
+                &username,
+                has_file,
+                file_name,
+                file_size,
+                file_duration,
+                media_match_signature,
+            );
         }
 
         let mut actions = vec![ClientRuntimeAction::SetFile {
@@ -444,6 +451,10 @@ impl ClientSession {
         self.server_shared_playlists_supported
     }
 
+    pub fn server_media_match_supported(&self) -> Option<bool> {
+        self.server_media_match_supported
+    }
+
     pub fn server_chat_supported(&self) -> Option<bool> {
         self.server_chat_supported
     }
@@ -469,6 +480,7 @@ impl ClientSession {
         self.server_set_others_readiness_supported = None;
         self.server_managed_rooms_supported = None;
         self.server_shared_playlists_supported = None;
+        self.server_media_match_supported = None;
         self.server_chat_supported = None;
         self.server_persistent_rooms_supported = None;
         self.server_max_username_length = None;
@@ -642,6 +654,53 @@ impl ClientSession {
         if !enabled {
             self.stop_autoplay_countdown();
         }
+    }
+
+    pub fn set_media_match_peer_tiers(&mut self, tiers: BTreeMap<String, MediaMatchTier>) {
+        self.media_match_peer_tiers = tiers;
+    }
+
+    pub fn media_match_peer_tiers(&self) -> &BTreeMap<String, MediaMatchTier> {
+        &self.media_match_peer_tiers
+    }
+
+    pub fn user_media_match_signature(&self, username: &str) -> Option<&Value> {
+        self.user_views
+            .get(username)
+            .and_then(|user_view| user_view.media_match_signature.as_ref())
+    }
+
+    pub fn current_room_media_match_signatures(&self) -> Vec<(String, Value)> {
+        self.current_room_media_match_peer_file_states()
+            .into_iter()
+            .filter_map(|state| {
+                state
+                    .media_match_signature
+                    .map(|signature| (state.username, signature))
+            })
+            .collect()
+    }
+
+    pub fn current_room_media_match_peer_file_states(&self) -> Vec<ClientMediaMatchPeerFileState> {
+        let Some((local_username, local_room)) = self.local_username_and_room() else {
+            return Vec::new();
+        };
+        self.user_views
+            .iter()
+            .filter_map(|(username, user_view)| {
+                if username == local_username || user_view.room.as_deref() != Some(local_room) {
+                    return None;
+                }
+                Some(ClientMediaMatchPeerFileState {
+                    username: username.clone(),
+                    has_file: user_view.has_file,
+                    file_name: user_view.file_name.clone(),
+                    file_size: user_view.file_size.clone(),
+                    file_duration: user_view.file_duration.clone(),
+                    media_match_signature: user_view.media_match_signature.clone(),
+                })
+            })
+            .collect()
     }
 
     pub fn autoplay_timer_is_running(&self) -> bool {

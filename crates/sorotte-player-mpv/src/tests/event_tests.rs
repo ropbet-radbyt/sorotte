@@ -223,6 +223,53 @@ fn async_property_change_events_queue_playback_telemetry_update() {
 }
 
 #[test]
+fn paused_playback_telemetry_polls_time_pos_without_async_seek_event() {
+    let (transport, state) = fake_transport_with_reads(&[
+        r#"{"request_id":1,"error":"success"}"#,
+        r#"{"request_id":2,"error":"success"}"#,
+        r#"{"request_id":3,"error":"success"}"#,
+        r#"{"request_id":4,"error":"success"}"#,
+        r#"{"request_id":5,"error":"success"}"#,
+        r#"{"request_id":6,"error":"success"}"#,
+        r#"{"request_id":7,"error":"success"}"#,
+        r#"{"request_id":8,"error":"success"}"#,
+        r#"{"request_id":9,"error":"success"}"#,
+        r#"{"request_id":10,"error":"success","data":222.5}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+
+    adapter
+        .set_paused(true)
+        .expect("attached mpv transport should accept pause command");
+
+    let telemetry = adapter
+        .take_playback_telemetry_update()
+        .expect("paused telemetry should poll current mpv position");
+    assert_eq!(
+        telemetry,
+        PlayerPlaybackTelemetryUpdate {
+            paused: None,
+            position_seconds: Some(222.5),
+            playback_rate: None,
+            paused_for_cache: None,
+            cache_buffering_percent: None,
+        }
+    );
+    assert_eq!(adapter.position_seconds(), 222.5);
+
+    let writes = state.writes();
+    assert_eq!(writes.len(), 10);
+    let last_payload: Value = serde_json::from_str(writes[9].trim_end()).expect("valid json");
+    assert_eq!(
+        last_payload,
+        json!({
+            "command": ["get_property", "time-pos"],
+            "request_id": 10
+        })
+    );
+}
+
+#[test]
 fn cache_property_change_events_queue_cache_playback_telemetry_without_manual_pause() {
     let (transport, _state) = fake_transport_with_reads(&[
         r#"{"request_id":1,"error":"success"}"#,

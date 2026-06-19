@@ -12,6 +12,18 @@ impl GuiWidgetEguiRenderer {
         if node.id == "main-window:browser:hide-empty" {
             return Some(GuiShellAction::ToggleMainWindowHideEmptyRooms);
         }
+        if node.id == "plugins:media-matching:setting:fingerprinting" {
+            return Some(GuiShellAction::SetMediaMatchFingerprintingEnabled(value));
+        }
+        if node.id == "plugins:media-matching:setting:background-warmup" {
+            return Some(GuiShellAction::SetMediaMatchBackgroundWarmupEnabled(value));
+        }
+        if node.id == "plugins:media-matching:setting:wire-sharing" {
+            return Some(GuiShellAction::SetMediaMatchWireSharingEnabled(value));
+        }
+        if node.id == "plugins:media-matching:setting:runtime-tolerance" {
+            return Some(GuiShellAction::SetMediaMatchRuntimeToleranceEnabled(value));
+        }
         let (section, label, kind) = Self::configuration_control_identity(state, node)?;
         if kind != GuiDialogControlKind::Checkbox {
             return None;

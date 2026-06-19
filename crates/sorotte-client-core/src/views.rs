@@ -8,8 +8,19 @@ pub struct ClientUserView {
     pub file_name: Option<String>,
     pub file_size: Option<Value>,
     pub file_duration: Option<Value>,
+    pub media_match_signature: Option<Value>,
     pub features: Option<Value>,
     pub controller: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ClientMediaMatchPeerFileState {
+    pub username: String,
+    pub has_file: bool,
+    pub file_name: Option<String>,
+    pub file_size: Option<Value>,
+    pub file_duration: Option<Value>,
+    pub media_match_signature: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

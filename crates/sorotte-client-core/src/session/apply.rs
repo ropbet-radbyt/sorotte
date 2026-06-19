@@ -42,6 +42,8 @@ impl ClientSession {
                 )
             }),
         );
+        self.server_media_match_supported =
+            Some(Self::feature_bool(hello.features.as_ref(), "mediaMatch").unwrap_or(false));
         self.server_chat_supported = Some(
             Self::feature_bool(hello.features.as_ref(), "chat").unwrap_or_else(|| {
                 Self::meets_min_version_legacy_compatible(&server_version, LEGACY_CHAT_MIN_VERSION)
@@ -94,9 +96,16 @@ impl ClientSession {
         }
 
         if let Some(restored_file_payload) = self.reconnect_file_restore_snapshot.take() {
-            let (has_file, file_name, file_size, file_duration) =
+            let (has_file, file_name, file_size, file_duration, media_match_signature) =
                 Self::list_payload_file_info(Some(&restored_file_payload));
-            self.set_user_file_info(&username, has_file, file_name, file_size, file_duration);
+            self.set_user_file_info(
+                &username,
+                has_file,
+                file_name,
+                file_size,
+                file_duration,
+                media_match_signature,
+            );
             self.reconnect_file_restore_intent = Some(restored_file_payload);
         }
 
@@ -158,9 +167,16 @@ impl ClientSession {
                 if let Some(file) = user_payload.file.as_ref()
                     && Self::legacy_json_value_truthy(file)
                 {
-                    let (file_name, file_size, file_duration) =
+                    let (file_name, file_size, file_duration, media_match_signature) =
                         Self::file_metadata_from_payload(file);
-                    self.set_user_file_info(&username, true, file_name, file_size, file_duration);
+                    self.set_user_file_info(
+                        &username,
+                        true,
+                        file_name,
+                        file_size,
+                        file_duration,
+                        media_match_signature,
+                    );
                 }
 
                 if let Some(controller) = user_payload.controller {
@@ -425,6 +441,7 @@ impl ClientSession {
         };
 
         self.user_views.clear();
+        self.media_match_peer_tiers.clear();
         self.known_rooms.clear();
         self.domain = SyncDomain::default();
 
@@ -438,9 +455,16 @@ impl ClientSession {
                     continue;
                 }
                 self.set_user_room(&username, Some(room_name.clone()));
-                let (has_file, file_name, file_size, file_duration) =
+                let (has_file, file_name, file_size, file_duration, media_match_signature) =
                     Self::list_payload_file_info(user_entry.file.as_ref());
-                self.set_user_file_info(&username, has_file, file_name, file_size, file_duration);
+                self.set_user_file_info(
+                    &username,
+                    has_file,
+                    file_name,
+                    file_size,
+                    file_duration,
+                    media_match_signature,
+                );
                 self.set_user_controller(&username, user_entry.controller.unwrap_or(false));
                 self.set_user_ready_state(&username, user_entry.is_ready);
                 self.set_user_features(&username, user_entry.features);

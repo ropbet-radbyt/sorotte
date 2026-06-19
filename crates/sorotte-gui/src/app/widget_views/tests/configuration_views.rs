@@ -320,6 +320,371 @@ fn gui_shell_app_state_projects_stream_support_into_plugins_widgets() {
 }
 
 #[test]
+fn gui_shell_app_state_projects_media_match_plugin_widgets_and_actions() {
+    let mut state =
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    assert!(state.apply(GuiShellAction::SelectPlugin(
+        GuiPluginSelection::MediaMatching,
+    )));
+    assert!(
+        state.apply(GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(
+            GuiMediaMatchRuntimeSnapshot {
+                settings: MediaMatchSettings {
+                    fingerprinting_enabled: true,
+                    runtime_tolerance_enabled: true,
+                    autoplay_policy: MediaMatchAutoplayPolicy::DiagnosticsOnly,
+                    ..MediaMatchSettings::default()
+                },
+                health: GuiMediaMatchToolHealth::Healthy,
+                message: None,
+                install_supported: true,
+                integration_supported: true,
+                install_location: Some(
+                    "C:/Users/test/AppData/Roaming/Sorotte/tools/media-match/bin".to_owned(),
+                ),
+                ffmpeg_status: Some("ffmpeg 7.1 (C:/Tools/ffmpeg.exe)".to_owned()),
+                ffprobe_status: Some("ffprobe 7.1 (C:/Tools/ffprobe.exe)".to_owned()),
+                cache_status: Some("2 fingerprint records".to_owned()),
+                current_decision: Some("probable: sampled-fast audio match".to_owned()),
+                nearest_match: Some(
+                    "episode-b.mkv (probable: sampled-fast audio match)".to_owned()
+                ),
+                last_evidence: Some("audio=0.94 offset=20s".to_owned()),
+                remote_status: Some("bob: strong".to_owned()),
+                background_status: Some("idle".to_owned()),
+                open_install_location_available: true,
+            },
+        ))
+    );
+
+    let plugins = state.plugins_widget_tree();
+    assert!(
+        plugins
+            .find("plugins:list:media-matching")
+            .expect("media matching list row should exist")
+            .selected
+    );
+    assert!(
+        !plugins
+            .find("plugins:list:stream-support")
+            .unwrap()
+            .selected
+    );
+    let details = plugins
+        .find("plugins:details")
+        .expect("plugin details should exist");
+    assert_eq!(details.children.len(), 1);
+    assert_eq!(details.children[0].id, "plugins:media-matching");
+    assert_eq!(
+        plugins
+            .find("plugins:list:media-matching")
+            .and_then(|node| node.value.as_deref()),
+        Some("healthy")
+    );
+    assert_eq!(
+        plugins
+            .find("plugins:media-matching:health")
+            .and_then(|node| node.value.as_deref()),
+        Some("healthy")
+    );
+    assert_eq!(
+        plugins
+            .find("plugins:media-matching:health")
+            .map(|node| node.label.as_str()),
+        Some("State")
+    );
+    assert_eq!(
+        plugins
+            .find("plugins:media-matching:tool-health")
+            .and_then(|node| node.value.as_deref()),
+        Some("healthy")
+    );
+    assert_eq!(
+        plugins
+            .find("plugins:media-matching:cache-status")
+            .and_then(|node| node.value.as_deref()),
+        Some("2 fingerprint records")
+    );
+    assert_eq!(
+        plugins
+            .find("plugins:media-matching:current-decision")
+            .and_then(|node| node.value.as_deref()),
+        Some("probable: sampled-fast audio match")
+    );
+    assert_eq!(
+        plugins
+            .find("plugins:media-matching:nearest-match")
+            .and_then(|node| node.value.as_deref()),
+        Some("episode-b.mkv (probable: sampled-fast audio match)")
+    );
+    assert_eq!(
+        plugins
+            .find("plugins:media-matching:background-status")
+            .and_then(|node| node.value.as_deref()),
+        Some("idle")
+    );
+    assert_eq!(
+        plugins
+            .find("plugins:media-matching:remote-status")
+            .and_then(|node| node.value.as_deref()),
+        Some("bob: strong")
+    );
+    let last_evidence = plugins
+        .find("plugins:media-matching:last-evidence")
+        .expect("last evidence should exist");
+    assert_eq!(last_evidence.kind, GuiWidgetKind::TextArea);
+    assert_eq!(
+        last_evidence.value.as_deref(),
+        Some("audio=0.94 offset=20s")
+    );
+
+    let fingerprinting = plugins
+        .find("plugins:media-matching:setting:fingerprinting")
+        .expect("fingerprinting checkbox should exist");
+    assert_eq!(fingerprinting.kind, GuiWidgetKind::Checkbox);
+    assert_eq!(fingerprinting.label.as_str(), "Enable Media Matching");
+    assert_eq!(fingerprinting.value.as_deref(), Some("yes"));
+    assert_eq!(
+        GuiWidgetEguiRenderer::action_for_checkbox_node(&state, fingerprinting, false),
+        Some(GuiShellAction::SetMediaMatchFingerprintingEnabled(false))
+    );
+    let background_warmup = plugins
+        .find("plugins:media-matching:setting:background-warmup")
+        .expect("background warmup checkbox should exist");
+    assert_eq!(
+        background_warmup.label.as_str(),
+        "Background Library Indexing"
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::action_for_checkbox_node(&state, background_warmup, false),
+        Some(GuiShellAction::SetMediaMatchBackgroundWarmupEnabled(false))
+    );
+    let wire_sharing = plugins
+        .find("plugins:media-matching:setting:wire-sharing")
+        .expect("wire sharing checkbox should exist");
+    assert_eq!(wire_sharing.label.as_str(), "Share Room Match Signatures");
+    assert_eq!(
+        GuiWidgetEguiRenderer::action_for_checkbox_node(&state, wire_sharing, false),
+        Some(GuiShellAction::SetMediaMatchWireSharingEnabled(false))
+    );
+    let runtime_tolerance = plugins
+        .find("plugins:media-matching:setting:runtime-tolerance")
+        .expect("runtime tolerance checkbox should exist");
+    assert_eq!(
+        runtime_tolerance.label.as_str(),
+        "Allow Small Duration Tolerance"
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::action_for_checkbox_node(&state, runtime_tolerance, false),
+        Some(GuiShellAction::SetMediaMatchRuntimeToleranceEnabled(false))
+    );
+
+    let rebuild = plugins
+        .find("plugins:media-matching:rebuild-index")
+        .expect("rebuild-index button should exist");
+    assert_eq!(rebuild.label.as_str(), "Rebuild Library Index");
+    assert!(rebuild.enabled);
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, rebuild),
+        vec![GuiShellAction::RebuildMediaMatchIndex]
+    );
+    let cancel = plugins
+        .find("plugins:media-matching:cancel-rebuild")
+        .expect("cancel-rebuild button should exist");
+    assert!(!cancel.enabled);
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, cancel),
+        vec![GuiShellAction::CancelMediaMatchRebuild]
+    );
+    let clear = plugins
+        .find("plugins:media-matching:clear-cache")
+        .expect("clear-cache button should exist");
+    assert_eq!(clear.label.as_str(), "Clear Match Cache");
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, clear),
+        vec![GuiShellAction::ClearMediaMatchCache]
+    );
+    let strong_policy = plugins
+        .find("plugins:media-matching:policy:strong")
+        .expect("strong policy button should exist");
+    assert_eq!(
+        strong_policy.label.as_str(),
+        "Allow Verified Strong Matches"
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, strong_policy),
+        vec![GuiShellAction::SetMediaMatchAutoplayPolicy(
+            MediaMatchAutoplayPolicy::AllowStrongSameMedia,
+        )]
+    );
+}
+
+#[test]
+fn gui_shell_app_state_projects_disabled_media_match_as_disabled_not_healthy() {
+    let mut state =
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    assert!(state.apply(GuiShellAction::SelectPlugin(
+        GuiPluginSelection::MediaMatching,
+    )));
+    assert!(
+        state.apply(GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(
+            GuiMediaMatchRuntimeSnapshot {
+                settings: MediaMatchSettings {
+                    fingerprinting_enabled: false,
+                    ..MediaMatchSettings::default()
+                },
+                health: GuiMediaMatchToolHealth::Healthy,
+                message: Some("tools ready".to_owned()),
+                install_supported: true,
+                integration_supported: true,
+                install_location: Some(
+                    "C:/Users/test/AppData/Roaming/Sorotte/tools/media-match/bin".to_owned(),
+                ),
+                ffmpeg_status: Some("ffmpeg 8.1".to_owned()),
+                ffprobe_status: Some("ffprobe 8.1".to_owned()),
+                cache_status: Some("4013 sampled-fast records".to_owned()),
+                current_decision: None,
+                nearest_match: None,
+                last_evidence: None,
+                remote_status: None,
+                background_status: Some("idle".to_owned()),
+                open_install_location_available: true,
+            },
+        ))
+    );
+
+    let plugins = state.plugins_widget_tree();
+    assert_eq!(
+        plugins
+            .find("plugins:list:media-matching")
+            .and_then(|node| node.value.as_deref()),
+        Some("disabled")
+    );
+    assert_eq!(
+        plugins
+            .find("plugins:media-matching:title")
+            .and_then(|node| node.value.as_deref()),
+        Some("Media matching disabled")
+    );
+    assert_eq!(
+        plugins
+            .find("plugins:media-matching:summary")
+            .and_then(|node| node.value.as_deref()),
+        Some(
+            "Media Matching is off. Existing cache data is kept; enable it to index local files and match room media."
+        )
+    );
+    assert_eq!(
+        plugins
+            .find("plugins:media-matching:health")
+            .and_then(|node| node.value.as_deref()),
+        Some("disabled")
+    );
+    assert_eq!(
+        plugins
+            .find("plugins:media-matching:tool-health")
+            .and_then(|node| node.value.as_deref()),
+        Some("healthy")
+    );
+    assert!(
+        !plugins
+            .find("plugins:media-matching:rebuild-index")
+            .expect("rebuild-index button should exist")
+            .enabled
+    );
+    assert!(
+        plugins
+            .find("plugins:media-matching:clear-cache")
+            .expect("clear-cache button should exist")
+            .enabled
+    );
+}
+
+#[test]
+fn gui_shell_app_state_projects_media_match_remediation_progress_into_widgets() {
+    let mut state =
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    assert!(state.apply(GuiShellAction::SelectPlugin(
+        GuiPluginSelection::MediaMatching,
+    )));
+    assert!(state.apply(
+        GuiShellAction::ApplyGuiMediaMatchRemediationRuntimeSnapshot(
+            GuiMediaMatchRemediationRuntimeSnapshot {
+                active: true,
+                label: Some("Downloading ffmpeg".to_owned()),
+                detail: Some("Saving ffmpeg and ffprobe into Sorotte's tool directory.".to_owned()),
+                progress_fraction: 0.5,
+            },
+        )
+    ));
+
+    let plugins = state.plugins_widget_tree();
+    assert_eq!(
+        plugins
+            .find("plugins:media-matching:remediation:label")
+            .and_then(|node| node.value.as_deref()),
+        Some("Downloading ffmpeg")
+    );
+    assert_eq!(
+        plugins
+            .find("plugins:media-matching:remediation:progress")
+            .and_then(|node| node.value.as_deref()),
+        Some("50%")
+    );
+    assert!(
+        !plugins
+            .find("plugins:media-matching:install")
+            .expect("install button should exist")
+            .enabled
+    );
+}
+
+#[test]
+fn gui_shell_app_state_disables_media_match_rebuild_when_tools_missing() {
+    let mut state =
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    assert!(state.apply(GuiShellAction::SelectPlugin(
+        GuiPluginSelection::MediaMatching,
+    )));
+    assert!(
+        state.apply(GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(
+            GuiMediaMatchRuntimeSnapshot {
+                settings: MediaMatchSettings {
+                    fingerprinting_enabled: true,
+                    ..MediaMatchSettings::default()
+                },
+                health: crate::app::shell_state::GuiMediaMatchToolHealth::MissingFfmpeg,
+                integration_supported: true,
+                ..GuiMediaMatchRuntimeSnapshot::default()
+            },
+        ))
+    );
+
+    let plugins = state.plugins_widget_tree();
+    assert_eq!(
+        plugins
+            .find("plugins:list:media-matching")
+            .and_then(|node| node.value.as_deref()),
+        Some("missing-ffmpeg")
+    );
+    assert_eq!(
+        plugins
+            .find("plugins:media-matching:title")
+            .and_then(|node| node.value.as_deref()),
+        Some("ffmpeg required")
+    );
+    let rebuild = plugins
+        .find("plugins:media-matching:rebuild-index")
+        .expect("rebuild-index button should exist");
+
+    assert!(!rebuild.enabled);
+    let cancel = plugins
+        .find("plugins:media-matching:cancel-rebuild")
+        .expect("cancel-rebuild button should exist");
+    assert!(!cancel.enabled);
+}
+
+#[test]
 fn gui_shell_app_state_projects_only_selected_plugin_detail() {
     let mut state =
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());

@@ -62,6 +62,47 @@ impl GuiRuntimeRequest {
                 level: GuiTransientNotificationLevel::Info,
                 message: "Rechecking stream helper support for the current URL.".to_owned(),
             }],
+            Self::InstallMediaMatchTools => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Installing media matching helper tools.".to_owned(),
+            }],
+            Self::ImportMediaMatchFfmpeg(_) => {
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: "Importing ffmpeg into Sorotte's managed media matching tools."
+                        .to_owned(),
+                }]
+            }
+            Self::ImportMediaMatchFfprobe(_) => {
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: "Importing ffprobe into Sorotte's managed media matching tools."
+                        .to_owned(),
+                }]
+            }
+            Self::OpenMediaMatchInstallLocation => {
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: "Opening Sorotte's managed media matching install location."
+                        .to_owned(),
+                }]
+            }
+            Self::RecheckMediaMatchTools => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Rechecking media matching helper tools.".to_owned(),
+            }],
+            Self::RebuildMediaMatchIndex => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Rebuilding the media matching index.".to_owned(),
+            }],
+            Self::CancelMediaMatchRebuild => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Canceling the media matching index rebuild.".to_owned(),
+            }],
+            Self::ClearMediaMatchCache => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Clearing media matching cache data.".to_owned(),
+            }],
             Self::RetryPendingStreamMediaOpen => vec![GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Info,
                 message: "Retrying the pending media URL open request.".to_owned(),
@@ -106,6 +147,17 @@ impl GuiRuntimeRequest {
                 ]
             }
             Self::AdvancePlaylistIndex => Vec::new(),
+            Self::SetPlaybackPaused(paused) => {
+                if state.main_window.playback_paused == *paused {
+                    Vec::new()
+                } else {
+                    vec![if *paused {
+                        GuiShellAction::AnnouncePlaybackPaused
+                    } else {
+                        GuiShellAction::AnnouncePlaybackResumed
+                    }]
+                }
+            }
             Self::TogglePlaybackPause => vec![GuiShellAction::CompletePlaybackPauseToggle],
             Self::CompletePendingOperation(GuiPendingCompletionRequest::ConnectSavedServer)
                 if state.pending_saved_server_connect_saves_configuration =>
@@ -191,6 +243,47 @@ impl GuiRuntimeRequest {
                 level: GuiTransientNotificationLevel::Info,
                 message: "Rechecking stream helper support for the current URL.".to_owned(),
             }],
+            Self::InstallMediaMatchTools => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Installing media matching helper tools.".to_owned(),
+            }],
+            Self::ImportMediaMatchFfmpeg(_) => {
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: "Importing ffmpeg into Sorotte's managed media matching tools."
+                        .to_owned(),
+                }]
+            }
+            Self::ImportMediaMatchFfprobe(_) => {
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: "Importing ffprobe into Sorotte's managed media matching tools."
+                        .to_owned(),
+                }]
+            }
+            Self::OpenMediaMatchInstallLocation => {
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: "Opening Sorotte's managed media matching install location."
+                        .to_owned(),
+                }]
+            }
+            Self::RecheckMediaMatchTools => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Rechecking media matching helper tools.".to_owned(),
+            }],
+            Self::RebuildMediaMatchIndex => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Rebuilding the media matching index.".to_owned(),
+            }],
+            Self::CancelMediaMatchRebuild => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Canceling the media matching index rebuild.".to_owned(),
+            }],
+            Self::ClearMediaMatchCache => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Clearing media matching cache data.".to_owned(),
+            }],
             Self::RetryPendingStreamMediaOpen => vec![GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Info,
                 message: "Retrying the pending media URL open request.".to_owned(),
@@ -242,6 +335,11 @@ impl GuiRuntimeRequest {
             }
             Self::SetAutoplayEnabled(_)
             | Self::SetAutoplayThreshold(_)
+            | Self::SetMediaMatchFingerprintingEnabled(_)
+            | Self::SetMediaMatchBackgroundWarmupEnabled(_)
+            | Self::SetMediaMatchWireSharingEnabled(_)
+            | Self::SetMediaMatchRuntimeToleranceEnabled(_)
+            | Self::SetMediaMatchAutoplayPolicy(_)
             | Self::SetReadyForUser { .. }
             | Self::RequestControllerAuth { .. }
             | Self::QueuePlaylistEntry { .. }
@@ -255,6 +353,7 @@ impl GuiRuntimeRequest {
             | Self::SetRoom(_)
             | Self::ReturnToDefaultRoom
             | Self::SendChatMessage(_)
+            | Self::SetPlaybackPaused(_)
             | Self::TogglePlaybackPause => Vec::new(),
             Self::SeekOffset(offset_seconds) => {
                 let message = format!("Seek requested: {offset_seconds} seconds.");

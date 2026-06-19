@@ -504,6 +504,7 @@ pub(super) fn run_gui_semantic_detached_runtime_ownership_flow()
                 GuiShellAction::CompleteMissingMediaSearch(Some(path))
                     if path == &found_path_text
             ) && !matches!(action, GuiShellAction::ApplyGuiMediaIndexRuntimeSnapshot(_))
+                && !matches!(action, GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(_))
                 && !matches!(action, GuiShellAction::ApplyMainWindowRuntimeSnapshot(_))
                 && !matches!(action, GuiShellAction::ApplyMenuDialogRuntimeSnapshot(_))
                 && !matches!(action, GuiShellAction::ApplyGuiCommandRuntimeSnapshot(_))

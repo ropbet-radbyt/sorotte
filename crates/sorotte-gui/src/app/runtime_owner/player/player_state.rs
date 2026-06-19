@@ -1,7 +1,7 @@
 use super::*;
 
 impl GuiPersistedConfigRuntimeOwner {
-    fn normalized_current_player_match_key(path: &str) -> String {
+    pub(in crate::app::runtime_owner) fn normalized_current_player_match_key(path: &str) -> String {
         let mut key = path.trim().replace('\\', "/");
         while key.ends_with('/') && key.len() > 1 {
             key.pop();
@@ -44,6 +44,12 @@ impl GuiPersistedConfigRuntimeOwner {
             .as_ref()
             .and_then(|session| session.current_room_playlist_index())
             .and_then(|index| Self::playlist_target_for_index(state, index))
+            .or_else(|| {
+                state
+                    .main_window
+                    .active_playlist_index
+                    .and_then(|index| Self::playlist_target_for_index(state, index))
+            })
             .or_else(|| {
                 self.active_shared_playlist_index
                     .and_then(|index| Self::playlist_target_for_index(state, index))

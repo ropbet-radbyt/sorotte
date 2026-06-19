@@ -331,7 +331,8 @@ impl ClientSession {
             .readiness_autoplay_config
             .autoplay_require_same_filenames;
         self.all_other_users_in_current_room_ready()
-            && (!require_same_filenames || self.all_users_in_current_room_match_filename())
+            && (!require_same_filenames
+                || self.all_users_in_current_room_match_filename_or_strong_media())
     }
 
     pub(super) fn all_other_users_in_current_room_ready(&self) -> bool {
@@ -369,7 +370,7 @@ impl ClientSession {
         1 + ready_others
     }
 
-    pub(super) fn all_users_in_current_room_match_filename(&self) -> bool {
+    pub(super) fn all_users_in_current_room_match_filename_or_strong_media(&self) -> bool {
         let Some((local_username, local_room)) = self.local_username_and_room() else {
             return false;
         };
@@ -381,12 +382,16 @@ impl ClientSession {
             if username == local_username || user_view.room.as_deref() != Some(local_room) {
                 return true;
             }
-            user_view
+            if user_view
                 .file_name
                 .as_deref()
                 .is_some_and(|other_file_name| {
                     Self::same_filename_legacy_like(local_file_name, other_file_name)
                 })
+            {
+                return true;
+            }
+            self.media_match_peer_tiers.get(username) == Some(&MediaMatchTier::Strong)
         })
     }
 
@@ -457,6 +462,13 @@ impl ClientSession {
         {
             let _ = self.domain.leave_room(username, previous_room_name);
         }
+        if previous_room != room_name {
+            if self.username.as_deref() == Some(username) {
+                self.media_match_peer_tiers.clear();
+            } else {
+                self.media_match_peer_tiers.remove(username);
+            }
+        }
 
         if let Some(new_room_name) = room_name.as_deref() {
             self.known_rooms.insert(new_room_name.to_owned());
@@ -489,12 +501,34 @@ impl ClientSession {
         file_name: Option<String>,
         file_size: Option<Value>,
         file_duration: Option<Value>,
+        media_match_signature: Option<Value>,
     ) {
         let user_view = self.user_views.entry(username.to_owned()).or_default();
+        let next_file_name = if has_file { file_name } else { None };
+        let next_file_size = if has_file { file_size } else { None };
+        let next_file_duration = if has_file { file_duration } else { None };
+        let next_media_match_signature = if has_file {
+            media_match_signature
+        } else {
+            None
+        };
+        let file_changed = user_view.has_file != has_file
+            || user_view.file_name != next_file_name
+            || user_view.file_size != next_file_size
+            || user_view.file_duration != next_file_duration
+            || user_view.media_match_signature != next_media_match_signature;
         user_view.has_file = has_file;
-        user_view.file_name = if has_file { file_name } else { None };
-        user_view.file_size = if has_file { file_size } else { None };
-        user_view.file_duration = if has_file { file_duration } else { None };
+        user_view.file_name = next_file_name;
+        user_view.file_size = next_file_size;
+        user_view.file_duration = next_file_duration;
+        user_view.media_match_signature = next_media_match_signature;
+        if file_changed {
+            if self.username.as_deref() == Some(username) {
+                self.media_match_peer_tiers.clear();
+            } else {
+                self.media_match_peer_tiers.remove(username);
+            }
+        }
     }
 
     pub(super) fn set_user_controller(&mut self, username: &str, controller: bool) {
@@ -513,5 +547,6 @@ impl ClientSession {
         {
             let _ = self.domain.leave_room(username, &room_name);
         }
+        self.media_match_peer_tiers.remove(username);
     }
 }

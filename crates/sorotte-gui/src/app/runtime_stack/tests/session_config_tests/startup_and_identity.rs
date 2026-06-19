@@ -92,6 +92,12 @@ fn gui_client_core_chat_session_runtime_adapter_startup_hello_includes_hashed_pa
             .and_then(serde_json::Value::as_bool),
         Some(true)
     );
+    assert_eq!(
+        features
+            .get("mediaMatch")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
 }
 
 #[test]

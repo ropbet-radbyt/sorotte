@@ -207,6 +207,10 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         true
     }
 
+    fn server_media_match_supported(&self) -> Option<bool> {
+        None
+    }
+
     fn current_room_playstate(&self) -> Option<GuiSessionRoomPlaystate> {
         None
     }
@@ -239,6 +243,21 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
 
     fn set_autoplay_threshold(&mut self, _threshold: usize) -> Result<(), String> {
         Ok(())
+    }
+
+    fn set_media_match_peer_tiers(
+        &mut self,
+        _tiers: BTreeMap<String, MediaMatchTier>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn current_room_media_match_signatures(&self) -> Vec<(String, Value)> {
+        Vec::new()
+    }
+
+    fn current_room_media_match_peer_file_states(&self) -> Vec<ClientMediaMatchPeerFileState> {
+        Vec::new()
     }
 
     fn sync_runtime_settings(

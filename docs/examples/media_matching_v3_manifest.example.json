@@ -1,0 +1,29 @@
+{
+  "profile": "audio-constellation-v3",
+  "baseDir": ".",
+  "cases": [
+    {
+      "name": "same-episode-x264-x265",
+      "query": "episode-x264.mkv",
+      "candidates": [
+        {
+          "id": "same-episode-x264-x265",
+          "path": "episode-x265.mkv",
+          "expectedRetrieved": true,
+          "maxRetrievalRank": 1,
+          "skipDecisionExpectation": true,
+          "expectWithinTopK": true,
+          "maxTopRank": 3
+        }
+      ],
+      "hardNegatives": [
+        {
+          "id": "wrong-episode-shared-op",
+          "path": "wrong-episode.mkv",
+          "mustNotBeTopRank": true,
+          "mustNotBeatCandidateId": "same-episode-x264-x265"
+        }
+      ]
+    }
+  ]
+}

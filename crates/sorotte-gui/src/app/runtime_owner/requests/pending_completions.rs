@@ -22,7 +22,7 @@ impl GuiPersistedConfigRuntimeOwner {
             selected_server
                 .as_ref()
                 .map(|(_label, address)| {
-                    GuiTcpSessionTransportDriver::connect_from_host_arg(address)
+                    GuiThreadedTcpSessionTransportDriver::connect_from_host_arg(address)
                         .map(|driver| Box::new(driver) as Box<dyn GuiSessionTransportDriver + Send>)
                 })
                 .transpose()
@@ -68,6 +68,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.pending_room_change_request = None;
                 self.clear_session_attached_player_sync_state();
                 self.last_published_local_file = None;
+                self.last_published_media_match_signature = None;
                 if let Some(driver) = replacement_transport_driver {
                     if let Some(session_transport) = self.session_transport.as_ref() {
                         session_transport.clear_protocol_lines();
@@ -137,12 +138,13 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) -> bool {
-        let target_file_name = if let Some(session) = self.session.as_ref() {
+        let target_file_name_result = if let Some(session) = self.session.as_ref() {
             session.missing_media_search_target_file_name()
         } else {
             self.detached_missing_media_target_file_name(projected_state)
         };
-        let search_result = match target_file_name {
+        let target_file_name = target_file_name_result.as_ref().ok().cloned();
+        let search_result = match target_file_name_result {
             Ok(target_file_name) => {
                 self.resolve_main_window_user_media_target(projected_state, &target_file_name)
             }
@@ -153,7 +155,14 @@ impl GuiPersistedConfigRuntimeOwner {
                 let found_path = match result {
                     GuiUserMediaTargetResolution::Resolved(path) => normalized_editable_text(&path),
                     GuiUserMediaTargetResolution::Pending => return true,
-                    GuiUserMediaTargetResolution::Missing => None,
+                    GuiUserMediaTargetResolution::Missing => {
+                        target_file_name.as_deref().and_then(|target| {
+                            self.media_match_cached_room_candidate_for_target(
+                                projected_state,
+                                target,
+                            )
+                        })
+                    }
                 };
                 self.ensure_configured_player_attached();
                 match found_path {

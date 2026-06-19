@@ -8,32 +8,26 @@ type CachedMissingMediaMatchRank = (usize, usize, usize, usize, String);
 type CachedMissingMediaMatch = (CachedMissingMediaMatchRank, String);
 
 impl GuiPersistedConfigRuntimeOwner {
-    pub(super) fn automatic_media_search_roots(
+    fn push_unique_existing_media_search_root(
+        roots: &mut Vec<PathBuf>,
+        seen: &mut BTreeSet<String>,
+        path: &Path,
+    ) {
+        if !path.is_dir() {
+            return;
+        }
+        let key = normalized_media_search_root_key(path);
+        if seen.insert(key) {
+            roots.push(path.to_path_buf());
+        }
+    }
+
+    pub(in crate::app::runtime_owner) fn automatic_media_search_roots(
         &self,
         state: &SorotteGuiShellAppState,
     ) -> Vec<PathBuf> {
         let mut roots = Vec::new();
         let mut seen = BTreeSet::new();
-
-        let mut push_root = |path: &Path| {
-            if !path.is_dir() {
-                return;
-            }
-            let key = normalized_media_search_root_key(path);
-            if seen.insert(key) {
-                roots.push(path.to_path_buf());
-            }
-        };
-
-        if let Some(local_path) = self
-            .player_local_file
-            .as_ref()
-            .and_then(|file| file.path.as_deref())
-            .map(PathBuf::from)
-            && let Some(parent) = local_path.parent()
-        {
-            push_root(parent);
-        }
 
         let settings = state.configuration.to_stored_settings();
         for directory in settings.media_search_directories.unwrap_or_default() {
@@ -41,13 +35,29 @@ impl GuiPersistedConfigRuntimeOwner {
             if trimmed.is_empty() {
                 continue;
             }
-            push_root(Path::new(trimmed));
+            Self::push_unique_existing_media_search_root(&mut roots, &mut seen, Path::new(trimmed));
+        }
+
+        if let Some(local_path) = self
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.as_deref())
+            .map(PathBuf::from)
+            && let Some(parent) = local_path.parent()
+            && !roots.iter().any(|root| {
+                Self::path_is_under_directory(parent, root)
+                    || Self::path_is_under_directory(root, parent)
+            })
+        {
+            Self::push_unique_existing_media_search_root(&mut roots, &mut seen, parent);
         }
 
         roots
     }
 
-    pub(super) fn automatic_media_search_root_keys(search_roots: &[PathBuf]) -> Vec<String> {
+    pub(in crate::app::runtime_owner) fn automatic_media_search_root_keys(
+        search_roots: &[PathBuf],
+    ) -> Vec<String> {
         search_roots
             .iter()
             .map(|path| normalized_media_search_root_key(path))
@@ -104,10 +114,12 @@ impl GuiPersistedConfigRuntimeOwner {
         &self,
         target: &str,
         roots: &[String],
+        media_match_remote_targets: String,
     ) -> GuiAutomaticMediaResolutionTrigger {
         GuiAutomaticMediaResolutionTrigger {
             target: target.to_owned(),
             roots: roots.to_vec(),
+            media_match_remote_targets,
             current_player_path: self.current_player_media_path(),
             index_revision: self.attached_media_search_index_revision,
             retry_due: self.attached_media_search_retry_due(),
@@ -195,7 +207,9 @@ impl GuiPersistedConfigRuntimeOwner {
                 .is_some_and(|index| !index.roots_requiring_refresh.is_empty())
     }
 
-    pub(super) fn cancel_pending_attached_media_search_index_build_impl(&mut self) {
+    pub(in crate::app::runtime_owner) fn cancel_pending_attached_media_search_index_build_impl(
+        &mut self,
+    ) {
         let pending_roots =
             if let Some(pending_resolution) = self.pending_attached_media_resolution.take() {
                 pending_resolution

@@ -18,11 +18,11 @@ use sha1::{Digest, Sha1};
 use sha2::Sha256;
 use sorotte_core::{DomainError, SyncDomain};
 use sorotte_protocol::{
-    ChatPayload, ControllerAuthPayload, HelloPayload, IgnoringOnTheFlyPayload, ListPayload,
-    ListUserEntry, NewControlledRoomPayload, PingPayload, PlaylistChangePayload,
-    PlaylistIndexPayload, PlaystatePayload, ProtocolError, ProtocolMessage, ReadyPayload, RoomRef,
-    SetPayload, StatePayload, TlsPayload, UserSetPayload, decode_line, decode_message_line_items,
-    encode_message_line,
+    ChatPayload, ControllerAuthPayload, DEFAULT_MAX_PROTOCOL_LINE_BYTES, HelloPayload,
+    IgnoringOnTheFlyPayload, ListPayload, ListUserEntry, NewControlledRoomPayload, PingPayload,
+    PlaylistChangePayload, PlaylistIndexPayload, PlaystatePayload, ProtocolError, ProtocolMessage,
+    ReadyPayload, RoomRef, SetPayload, StatePayload, TlsPayload, UserSetPayload, decode_line,
+    decode_message_line_items, encode_message_line,
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -65,17 +65,23 @@ const DEFAULT_PLAYLIST_MAX_ITEMS: usize = 250;
 const DEFAULT_PLAYLIST_MAX_CHARACTERS: usize = 10_000;
 const SERVER_STATE_INTERVAL_SECONDS: f64 = 1.0;
 const INITIAL_SERVER_STATE_DELAY_SECONDS: f64 = 0.1;
-const PROTOCOL_TIMEOUT_SECONDS: f64 = 12.5;
+// GUI clients can spend tens of seconds doing local media-match fingerprinting
+// or media-root scans. Keep room liveness tolerant of those local stalls while
+// retaining shorter IO-specific timeouts below for handshakes and writes.
+const PROTOCOL_TIMEOUT_SECONDS: f64 = 90.0;
+const IO_TIMEOUT_SECONDS: f64 = 12.5;
 const PING_MOVING_AVERAGE_WEIGHT: f64 = 0.85;
 const SERVER_STATS_SNAPSHOT_INTERVAL_SECONDS: f64 = 3600.0;
 const SERVER_STATS_DELAY_STEP_SECONDS: f64 = 5.0;
 const SERVER_NETWORK_TICK_INTERVAL_SECONDS: f64 = 0.25;
-const MAX_PROTOCOL_LINE_BYTES: usize = 64 * 1024;
+// Media-match signatures can push otherwise valid Set/List lines above the
+// base Syncplay line size, especially when multiple users publish signatures.
+const MAX_PROTOCOL_LINE_BYTES: usize = DEFAULT_MAX_PROTOCOL_LINE_BYTES * 8;
 const PROTOCOL_LINE_TOO_LONG_ERROR: &str = "Protocol line too long";
 const CLIENT_OUTBOUND_QUEUE_CAPACITY: usize = 256;
 const ACCEPTED_CLIENT_QUEUE_CAPACITY: usize = 1024;
-const TLS_HANDSHAKE_TIMEOUT_SECONDS: f64 = PROTOCOL_TIMEOUT_SECONDS;
-const SERVER_WRITE_TIMEOUT_SECONDS: f64 = PROTOCOL_TIMEOUT_SECONDS;
+const TLS_HANDSHAKE_TIMEOUT_SECONDS: f64 = IO_TIMEOUT_SECONDS;
+const SERVER_WRITE_TIMEOUT_SECONDS: f64 = IO_TIMEOUT_SECONDS;
 const TLS_REQUIRED_CERT_FILENAMES: [&str; 3] = ["privkey.pem", "cert.pem", "chain.pem"];
 const TLS_CERT_ROTATION_MAX_RETRIES: u32 = 10;
 const LEGACY_SERVER_UNKNOWN_COMMAND_ERROR_PREFIX: &str = "Unknown command";

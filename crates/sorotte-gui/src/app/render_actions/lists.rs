@@ -10,6 +10,11 @@ impl GuiWidgetEguiRenderer {
                     GuiPluginSelection::StreamSupport,
                 ));
             }
+            "plugins:list:media-matching" => {
+                return Some(GuiShellAction::SelectPlugin(
+                    GuiPluginSelection::MediaMatching,
+                ));
+            }
             "plugins:list:plex" => {
                 return Some(GuiShellAction::SelectPlugin(GuiPluginSelection::Plex));
             }

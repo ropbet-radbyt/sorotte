@@ -530,3 +530,78 @@ fn gui_shell_dispatch_plan_routes_stream_helper_import_actions_to_runtime_reques
     );
     assert!(plan.shell_actions.is_empty());
 }
+
+#[test]
+fn gui_shell_dispatch_plan_routes_media_match_actions_to_runtime_requests() {
+    let state = runtime_ready_state();
+    let plan = GuiShellDispatchPlan::from_shell_actions(
+        &state,
+        vec![
+            GuiShellAction::InstallMediaMatchTools,
+            GuiShellAction::ImportMediaMatchFfmpeg("C:/Tools/ffmpeg.exe".to_owned()),
+            GuiShellAction::ImportMediaMatchFfprobe("C:/Tools/ffprobe.exe".to_owned()),
+            GuiShellAction::OpenMediaMatchInstallLocation,
+            GuiShellAction::RecheckMediaMatchTools,
+            GuiShellAction::RebuildMediaMatchIndex,
+            GuiShellAction::CancelMediaMatchRebuild,
+            GuiShellAction::ClearMediaMatchCache,
+        ],
+    );
+
+    assert_eq!(
+        plan.runtime_requests,
+        vec![
+            GuiRuntimeRequest::InstallMediaMatchTools,
+            GuiRuntimeRequest::ImportMediaMatchFfmpeg("C:/Tools/ffmpeg.exe".to_owned()),
+            GuiRuntimeRequest::ImportMediaMatchFfprobe("C:/Tools/ffprobe.exe".to_owned()),
+            GuiRuntimeRequest::OpenMediaMatchInstallLocation,
+            GuiRuntimeRequest::RecheckMediaMatchTools,
+            GuiRuntimeRequest::RebuildMediaMatchIndex,
+            GuiRuntimeRequest::CancelMediaMatchRebuild,
+            GuiRuntimeRequest::ClearMediaMatchCache,
+        ]
+    );
+    assert!(plan.shell_actions.is_empty());
+}
+
+#[test]
+fn gui_shell_dispatch_plan_routes_media_match_settings_to_shell_and_runtime() {
+    let state = runtime_ready_state();
+    let plan = GuiShellDispatchPlan::from_shell_actions(
+        &state,
+        vec![
+            GuiShellAction::SetMediaMatchFingerprintingEnabled(true),
+            GuiShellAction::SetMediaMatchBackgroundWarmupEnabled(false),
+            GuiShellAction::SetMediaMatchWireSharingEnabled(false),
+            GuiShellAction::SetMediaMatchRuntimeToleranceEnabled(false),
+            GuiShellAction::SetMediaMatchAutoplayPolicy(
+                sorotte_media_match::MediaMatchAutoplayPolicy::AllowStrongSameMedia,
+            ),
+        ],
+    );
+
+    assert_eq!(
+        plan.shell_actions,
+        vec![
+            GuiShellAction::SetMediaMatchFingerprintingEnabled(true),
+            GuiShellAction::SetMediaMatchBackgroundWarmupEnabled(false),
+            GuiShellAction::SetMediaMatchWireSharingEnabled(false),
+            GuiShellAction::SetMediaMatchRuntimeToleranceEnabled(false),
+            GuiShellAction::SetMediaMatchAutoplayPolicy(
+                sorotte_media_match::MediaMatchAutoplayPolicy::AllowStrongSameMedia,
+            ),
+        ]
+    );
+    assert_eq!(
+        plan.runtime_requests,
+        vec![
+            GuiRuntimeRequest::SetMediaMatchFingerprintingEnabled(true),
+            GuiRuntimeRequest::SetMediaMatchBackgroundWarmupEnabled(false),
+            GuiRuntimeRequest::SetMediaMatchWireSharingEnabled(false),
+            GuiRuntimeRequest::SetMediaMatchRuntimeToleranceEnabled(false),
+            GuiRuntimeRequest::SetMediaMatchAutoplayPolicy(
+                sorotte_media_match::MediaMatchAutoplayPolicy::AllowStrongSameMedia,
+            ),
+        ]
+    );
+}

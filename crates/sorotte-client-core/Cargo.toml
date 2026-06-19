@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 sorotte-core = { path = "../sorotte-core" }
+sorotte-media-match = { path = "../sorotte-media-match" }
 sorotte-protocol = { path = "../sorotte-protocol" }
 sorotte-player-api = { path = "../sorotte-player-api" }
 md-5.workspace = true

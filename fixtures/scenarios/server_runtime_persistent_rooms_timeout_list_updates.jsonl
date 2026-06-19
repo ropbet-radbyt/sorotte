@@ -1,7 +1,7 @@
 {"client":"client-1","message":{"Hello":{"username":"alice","room":{"name":"room1"},"version":"9.9.9","features":{"chat":false,"featureList":false,"managedRooms":true,"persistentRooms":false,"readiness":true,"sharedPlaylists":true,"uiMode":"CLI"}}}}
 {"client":"client-2","message":{"Hello":{"username":"bob","room":{"name":"room1"},"version":"9.9.9","features":{"chat":false,"featureList":false,"managedRooms":true,"persistentRooms":false,"readiness":true,"sharedPlaylists":true,"uiMode":"CLI"}}}}
 {"client":"client-3","message":{"Hello":{"username":"charlie","room":{"name":"room1"},"version":"9.9.9"}}}
-{"client":"client-1","advanceSeconds":10.0,"message":{"State":{"ping":{"latencyCalculation":10.0}}}}
+{"client":"client-1","advanceSeconds":88.0,"message":{"State":{"ping":{"latencyCalculation":88.0}}}}
 {"client":"client-3","message":{"State":{"ping":{"latencyCalculation":10.0}}}}
 {"client":"client-1","advanceSeconds":4.0,"message":{"State":{"ping":{"latencyCalculation":14.0}}}}
 {"client":"client-1","message":{"List":null}}

@@ -1,9 +1,10 @@
+mod media_match;
 mod pending_completions;
 mod playback;
 mod session_controls;
 mod stream_helper;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use sorotte_client_app::app_boundary::{
     commands::{
@@ -22,17 +23,31 @@ use sorotte_client_app::app_boundary::{
 };
 use sorotte_player_api::PlayerAdapter;
 
+use super::super::media_match_support::{
+    MediaMatchCandidateRebuildRequest, MediaMatchIndexRebuildResult,
+    MediaMatchRemoteCandidateRebuildRequest, MediaMatchTool, MediaMatchToolProgress,
+    clear_persisted_media_match_cache_at_root, import_managed_media_match_tool_with_progress,
+    install_or_update_managed_media_match_tools_with_progress, managed_media_match_bin_dir,
+    media_match_cached_probable_candidate_for_remote_signature,
+    media_match_tool_paths_for_settings,
+    rebuild_persisted_media_match_candidates_with_progress_and_cancel,
+    rebuild_persisted_media_match_index_with_extraction_settings_and_cancel,
+    rebuild_persisted_media_match_remote_candidates_with_progress_and_cancel,
+};
 use super::super::remote_services;
 use super::super::runtime_bridge::{GuiPendingCompletionRequest, GuiRuntimeRequest};
 use super::super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 use super::super::runtime_stack::{
-    GuiClientCoreChatSessionRuntimeAdapter, GuiSessionTransportDriver, GuiTcpSessionTransportDriver,
+    GuiClientCoreChatSessionRuntimeAdapter, GuiSessionTransportDriver,
+    GuiThreadedTcpSessionTransportDriver,
 };
 use super::super::shell_state::{
-    GuiConfigStorageRuntimeSnapshot, GuiShellAction, GuiStreamHelperHealth, GuiStreamTargetKind,
-    GuiTransientNotificationLevel, MainWindowRuntimeSnapshot, SorotteGuiShellAppState,
-    browser_stream_target_kind,
+    GuiConfigStorageRuntimeSnapshot, GuiConfigurationRuntimeSnapshot, GuiMediaMatchToolHealth,
+    GuiShellAction, GuiStreamHelperHealth, GuiStreamTargetKind, GuiTransientNotificationLevel,
+    MainWindowRuntimeSnapshot, SorotteGuiShellAppState,
+    apply_media_match_settings_to_stored_settings, browser_stream_target_kind,
 };
+use super::super::startup::resolve_sorotte_gui_config_path_legacy_compatible;
 use super::super::startup_support::env_trimmed;
 use super::super::stream_support::{
     StreamHelperRemediationProgress, import_managed_stream_helper_downloader_with_progress,
@@ -190,6 +205,76 @@ impl GuiPersistedConfigRuntimeOwner {
                 return self
                     .handle_retry_pending_stream_media_open_request(handle, projected_state);
             }
+            GuiRuntimeRequest::InstallMediaMatchTools => {
+                return self.handle_install_media_match_tools_request(handle, projected_state);
+            }
+            GuiRuntimeRequest::ImportMediaMatchFfmpeg(source_path) => {
+                return self.handle_import_media_match_tool_request(
+                    handle,
+                    projected_state,
+                    MediaMatchTool::Ffmpeg,
+                    source_path,
+                );
+            }
+            GuiRuntimeRequest::ImportMediaMatchFfprobe(source_path) => {
+                return self.handle_import_media_match_tool_request(
+                    handle,
+                    projected_state,
+                    MediaMatchTool::Ffprobe,
+                    source_path,
+                );
+            }
+            GuiRuntimeRequest::OpenMediaMatchInstallLocation => {
+                return self
+                    .handle_open_media_match_install_location_request(handle, projected_state);
+            }
+            GuiRuntimeRequest::RecheckMediaMatchTools => {
+                return self.handle_recheck_media_match_tools_request(handle, projected_state);
+            }
+            GuiRuntimeRequest::RebuildMediaMatchIndex => {
+                return self.handle_rebuild_media_match_index_request(handle, projected_state);
+            }
+            GuiRuntimeRequest::CancelMediaMatchRebuild => {
+                return self.handle_cancel_media_match_rebuild_request(handle, projected_state);
+            }
+            GuiRuntimeRequest::ClearMediaMatchCache => {
+                return self.handle_clear_media_match_cache_request(handle, projected_state);
+            }
+            GuiRuntimeRequest::SetMediaMatchFingerprintingEnabled(enabled) => {
+                return self.handle_set_media_match_fingerprinting_request(
+                    handle,
+                    projected_state,
+                    enabled,
+                );
+            }
+            GuiRuntimeRequest::SetMediaMatchBackgroundWarmupEnabled(enabled) => {
+                return self.handle_set_media_match_background_warmup_request(
+                    handle,
+                    projected_state,
+                    enabled,
+                );
+            }
+            GuiRuntimeRequest::SetMediaMatchWireSharingEnabled(enabled) => {
+                return self.handle_set_media_match_wire_sharing_request(
+                    handle,
+                    projected_state,
+                    enabled,
+                );
+            }
+            GuiRuntimeRequest::SetMediaMatchRuntimeToleranceEnabled(enabled) => {
+                return self.handle_set_media_match_runtime_tolerance_request(
+                    handle,
+                    projected_state,
+                    enabled,
+                );
+            }
+            GuiRuntimeRequest::SetMediaMatchAutoplayPolicy(policy) => {
+                return self.handle_set_media_match_autoplay_policy_request(
+                    handle,
+                    projected_state,
+                    policy,
+                );
+            }
             GuiRuntimeRequest::StartPlexAuth => {
                 return self.handle_start_plex_auth_request(handle, projected_state);
             }
@@ -310,8 +395,20 @@ impl GuiPersistedConfigRuntimeOwner {
             GuiRuntimeRequest::SendChatMessage(message) => {
                 return self.handle_send_chat_message_request(handle, projected_state, message);
             }
+            GuiRuntimeRequest::SetPlaybackPaused(paused) => {
+                return self.handle_set_playback_paused_request(handle, projected_state, paused);
+            }
             GuiRuntimeRequest::TogglePlaybackPause => {
                 return self.handle_toggle_playback_pause_request(handle, projected_state);
+            }
+            GuiRuntimeRequest::CompletePendingOperation(
+                GuiPendingCompletionRequest::SetPlaybackPause(paused),
+            ) => {
+                return self.handle_complete_set_playback_pause_request(
+                    handle,
+                    projected_state,
+                    paused,
+                );
             }
             GuiRuntimeRequest::CompletePendingOperation(
                 GuiPendingCompletionRequest::TogglePlaybackPause,

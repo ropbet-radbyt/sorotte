@@ -228,6 +228,12 @@ impl GuiPersistedConfigRuntimeOwner {
             opened_entry_count,
             playlist_insert_slot,
         );
+        let selected_media_source_path = selected_opened_entry_offset.and_then(|offset| {
+            dispatch
+                .player_paths
+                .as_ref()
+                .and_then(|player_paths| player_paths.get(offset).cloned())
+        });
 
         if self.session.is_none() {
             self.ensure_configured_player_attached();
@@ -259,13 +265,8 @@ impl GuiPersistedConfigRuntimeOwner {
                 )],
             );
 
-            let selected_media_sync = selected_opened_entry_offset
-                .and_then(|offset| {
-                    dispatch
-                        .player_paths
-                        .as_ref()
-                        .and_then(|player_paths| player_paths.get(offset).cloned())
-                })
+            let selected_media_sync = selected_media_source_path
+                .clone()
                 .map(|selected_path| {
                     self.open_selected_playlist_media_path_through_attached_player_impl(&[
                         selected_path,
@@ -321,6 +322,9 @@ impl GuiPersistedConfigRuntimeOwner {
         let session_success = session_result.is_ok();
         if session_success {
             self.active_shared_playlist_index = selected_playlist_index;
+            if let Some(path) = selected_media_source_path.as_deref() {
+                self.remember_local_shared_playlist_media_match_signature_path(path);
+            }
         }
         let selected_media_sync = if session_success
             && Self::project_loaded_shared_playlist_into_state(
@@ -328,13 +332,8 @@ impl GuiPersistedConfigRuntimeOwner {
                 playlist_entries.clone(),
                 selected_playlist_index,
             ) {
-            selected_opened_entry_offset
-                .and_then(|offset| {
-                    dispatch
-                        .player_paths
-                        .as_ref()
-                        .and_then(|player_paths| player_paths.get(offset).cloned())
-                })
+            selected_media_source_path
+                .clone()
                 .map(|selected_path| {
                     self.open_selected_playlist_media_path_through_attached_player_impl(&[
                         selected_path,

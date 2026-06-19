@@ -671,7 +671,7 @@ fn state_timeout_uses_actual_elapsed_seconds() {
         .expect("alice hello should establish session");
 
     let before_timeout = runtime
-        .collect_dispatch_at(112.0)
+        .collect_dispatch_at(100.0 + crate::PROTOCOL_TIMEOUT_SECONDS - 1.0)
         .expect("pre-timeout absolute tick should collect");
     assert!(
         !has_close_transport_action(&before_timeout.transport_actions, "client-1"),
@@ -680,7 +680,7 @@ fn state_timeout_uses_actual_elapsed_seconds() {
     assert!(runtime.session("client-1").is_some());
 
     let timeout_dispatch = runtime
-        .collect_dispatch_at(113.2)
+        .collect_dispatch_at(100.0 + crate::PROTOCOL_TIMEOUT_SECONDS + 0.7)
         .expect("timeout absolute tick should collect");
     assert!(
         has_close_transport_action(&timeout_dispatch.transport_actions, "client-1"),
@@ -921,7 +921,7 @@ fn periodic_timeout_disconnects_stale_client_and_broadcasts_left_event() {
     acknowledge_server_state_counter(&mut runtime, "client-2", 1);
 
     let _ = runtime
-        .advance_time_and_collect_fanout(10.0)
+        .advance_time_and_collect_fanout(crate::PROTOCOL_TIMEOUT_SECONDS - 2.0)
         .expect("periodic state ticks before timeout should encode");
     runtime
         .handle_line_fanout(
@@ -931,7 +931,7 @@ fn periodic_timeout_disconnects_stale_client_and_broadcasts_left_event() {
         .expect("ping-only update should refresh client timeout timestamp");
 
     let timeout_dispatch = runtime
-        .advance_time_and_collect_dispatch(4.0)
+        .advance_time_and_collect_dispatch(3.0)
         .expect("timeout tick should encode outbound fanout lines");
     let timeout_messages = decode_directed_lines(&timeout_dispatch.outbound_lines);
 
@@ -950,5 +950,67 @@ fn periodic_timeout_disconnects_stale_client_and_broadcasts_left_event() {
     assert!(
         has_close_transport_action(&timeout_dispatch.transport_actions, "client-1"),
         "stale network clients should be closed after timeout"
+    );
+}
+
+#[test]
+fn state_packets_refresh_timeout_while_forced_sync_ack_is_pending() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_time_now_override_seconds(Some(0.0));
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("alice hello should establish session");
+    runtime
+        .handle_line(
+            "client-2",
+            r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("bob hello should establish session");
+    acknowledge_server_state_counter(&mut runtime, "client-1", 1);
+    acknowledge_server_state_counter(&mut runtime, "client-2", 1);
+
+    let forced_sync_lines = runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":true}}}"#,
+        )
+        .expect("controller playstate should force room sync");
+    let forced_sync_messages = decode_directed_lines(&forced_sync_lines);
+    assert!(
+        has_state_update(
+            &forced_sync_messages,
+            "client-2",
+            "alice",
+            10.0,
+            false,
+            true
+        ),
+        "bob should receive a forced state sync that requires an ignoringOnTheFly.server ack"
+    );
+
+    for now_seconds in [4.0, 8.0, 12.0] {
+        runtime.set_time_now_override_seconds(Some(now_seconds));
+        runtime
+            .handle_line_fanout(
+                "client-2",
+                r#"{"State":{"ping":{"latencyCalculation":1.0}}}"#,
+            )
+            .expect("bob keepalive state should be accepted while forced-sync ack is pending");
+    }
+
+    let dispatch = runtime
+        .collect_dispatch_at(14.0)
+        .expect("timeout tick should collect dispatch");
+
+    assert!(
+        runtime.session("client-2").is_some(),
+        "bob should not be treated as stale while he is still sending State packets"
+    );
+    assert!(
+        !has_close_transport_action(&dispatch.transport_actions, "client-2"),
+        "bob should not be closed while forced-sync acknowledgement is pending"
     );
 }

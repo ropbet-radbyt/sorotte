@@ -449,7 +449,20 @@ impl SorotteGuiShellAppState {
                 "Playback is already running."
             });
         }
-        self.begin_playback_pause_toggle()
+        if self.pending_operation.is_some() {
+            return self.record_action_error("Another GUI operation is already in progress.");
+        }
+        if !self.main_window.playback.can_toggle_pause {
+            return self.record_action_error(
+                "Playback pause toggling is unavailable when pause controls are disabled.",
+            );
+        }
+
+        self.pending_operation = Some(GuiPendingOperationState {
+            kind: GuiPendingOperationKind::SetPlaybackPause(paused),
+        });
+        self.clear_action_error_and_refresh();
+        true
     }
 
     pub(super) fn begin_playback_pause_toggle(&mut self) -> bool {
@@ -482,6 +495,45 @@ impl SorotteGuiShellAppState {
 
         self.pending_operation = None;
         self.set_playback_pause_state(!self.main_window.playback_paused, false)
+    }
+
+    pub(super) fn complete_playback_pause_state(&mut self, paused: bool) -> bool {
+        let Some(pending) = self.pending_operation.as_ref() else {
+            return self.record_action_error("No playback pause change is currently in progress.");
+        };
+        if !matches!(
+            pending.kind,
+            GuiPendingOperationKind::SetPlaybackPause(_)
+                | GuiPendingOperationKind::TogglePlaybackPause
+        ) {
+            return self
+                .record_action_error("The active GUI operation is not a playback pause change.");
+        }
+
+        self.pending_operation = None;
+        if self.main_window.playback_paused == paused {
+            self.clear_action_error_and_refresh();
+            return true;
+        }
+        self.set_playback_pause_state(paused, false)
+    }
+
+    pub(super) fn cancel_playback_pause_state(&mut self) -> bool {
+        let Some(pending) = self.pending_operation.as_ref() else {
+            return self.record_action_error("No playback pause change is currently in progress.");
+        };
+        if !matches!(pending.kind, GuiPendingOperationKind::SetPlaybackPause(_)) {
+            return self
+                .record_action_error("The active GUI operation is not a playback pause change.");
+        }
+
+        self.pending_operation = None;
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Warning,
+            "Playback pause change canceled.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
     }
 
     pub(super) fn cancel_playback_pause_toggle(&mut self) -> bool {

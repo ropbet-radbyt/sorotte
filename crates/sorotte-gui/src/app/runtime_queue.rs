@@ -221,6 +221,8 @@ impl GuiQueuedRuntimeBridge {
                 | GuiShellAction::CompleteSelectedPublicServerConnect
                 | GuiShellAction::CompletePublicServerRefresh(_)
                 | GuiShellAction::CompleteMissingMediaSearch(_)
+                | GuiShellAction::CompletePlaybackPauseState(_)
+                | GuiShellAction::CancelPlaybackPauseState
                 | GuiShellAction::CompletePlaybackPauseToggle
                 | GuiShellAction::CancelPlaybackPauseToggle
                 | GuiShellAction::CompleteLocalChatSend

@@ -53,6 +53,7 @@ impl ClientSession {
         self.pending_local_room_switch_target = None;
         self.controller_reidentify_intent = None;
         self.user_views.clear();
+        self.media_match_peer_tiers.clear();
         self.known_rooms.clear();
         self.domain = SyncDomain::default();
         self.room_playlists.clear();

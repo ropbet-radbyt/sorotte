@@ -93,6 +93,29 @@ pub fn parse_sorotte_ini_stored_client_settings_mvp(contents: &str) -> StoredCli
                         settings.public_servers = Some(parsed);
                     }
                 }
+                "mediamatchfingerprintingenabled" => {
+                    if let Some(parsed) = parse_ini_bool_legacy_compatible(&value) {
+                        settings.media_match_fingerprinting_enabled = Some(parsed);
+                    }
+                }
+                "mediamatchbackgroundwarmupenabled" => {
+                    if let Some(parsed) = parse_ini_bool_legacy_compatible(&value) {
+                        settings.media_match_background_warmup_enabled = Some(parsed);
+                    }
+                }
+                "mediamatchwiresharingenabled" => {
+                    if let Some(parsed) = parse_ini_bool_legacy_compatible(&value) {
+                        settings.media_match_wire_sharing_enabled = Some(parsed);
+                    }
+                }
+                "mediamatchruntimetoleranceenabled" => {
+                    if let Some(parsed) = parse_ini_bool_legacy_compatible(&value) {
+                        settings.media_match_runtime_tolerance_enabled = Some(parsed);
+                    }
+                }
+                "mediamatchautoplaypolicy" if !value.is_empty() => {
+                    settings.media_match_autoplay_policy = Some(value);
+                }
                 "foldersearchfirstfiletimeout" => {
                     if let Some(parsed) = parse_ini_non_negative_f64_legacy_compatible(&value) {
                         settings.folder_search_first_file_timeout_seconds = Some(parsed);

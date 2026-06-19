@@ -166,6 +166,8 @@ impl GuiSemanticStep {
             "connect-public-server" => GuiPendingOperationKind::ConnectPublicServer,
             "refresh-public-servers" => GuiPendingOperationKind::RefreshPublicServers,
             "search-missing-media" => GuiPendingOperationKind::SearchMissingMedia,
+            "pause-playback" => GuiPendingOperationKind::SetPlaybackPause(true),
+            "resume-playback" => GuiPendingOperationKind::SetPlaybackPause(false),
             "toggle-playback-pause" => GuiPendingOperationKind::TogglePlaybackPause,
             "send-chat-message" => GuiPendingOperationKind::SendChatMessage,
             _ => return Err(format!("unknown pending-operation label {token:?}")),

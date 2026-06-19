@@ -89,6 +89,25 @@ fn hello_records_server_shared_playlist_support_flag() {
 }
 
 #[test]
+fn hello_records_server_media_match_support_flag() {
+    let mut supported_session = ClientSession::default();
+    supported_session
+        .apply_hello_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"mediaMatch":true}}}"#,
+        )
+        .expect("hello should apply");
+    assert_eq!(supported_session.server_media_match_supported(), Some(true));
+
+    let mut legacy_session = ClientSession::default();
+    legacy_session
+        .apply_hello_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+    assert_eq!(legacy_session.server_media_match_supported(), Some(false));
+}
+
+#[test]
 fn hello_records_server_managed_rooms_support_flag() {
     let mut session = ClientSession::default();
     session
@@ -352,7 +371,7 @@ fn list_set_and_state_messages_reconcile_client_view() {
 
     session
             .apply_message_json(
-                r#"{"Set":{"user":{"bob":{"room":{"name":"room2"},"file":{"name":"bob.mp4","size":"15e2b0d3c338","duration":95.5},"isReady":true,"features":{"uiMode":"GUI"},"controller":true}}}}"#,
+                r#"{"Set":{"user":{"bob":{"room":{"name":"room2"},"file":{"name":"bob.mp4","size":"15e2b0d3c338","duration":95.5,"mediaMatch":{"schema":"sorotte.mediaMatch.v3","profiles":[{"profile":"audio-constellation-v3"}]}},"isReady":true,"features":{"uiMode":"GUI"},"controller":true}}}}"#,
             )
             .expect("set user message should apply");
     assert_eq!(session.user_room("bob"), Some("room2"));
@@ -360,6 +379,13 @@ fn list_set_and_state_messages_reconcile_client_view() {
     assert_eq!(session.user_file_name("bob"), Some("bob.mp4"));
     assert_eq!(session.user_file_size("bob"), Some(&json!("15e2b0d3c338")));
     assert_eq!(session.user_file_duration("bob"), Some(&json!(95.5)));
+    assert_eq!(
+        session.user_media_match_signature("bob"),
+        Some(&json!({
+            "schema": "sorotte.mediaMatch.v3",
+            "profiles": [{"profile": "audio-constellation-v3"}]
+        }))
+    );
     assert_eq!(session.user_features("bob"), Some(&json!({"uiMode":"GUI"})));
     assert_eq!(session.user_controller("bob"), Some(true));
 
@@ -389,6 +415,7 @@ fn list_set_and_state_messages_reconcile_client_view() {
     assert_eq!(session.user_file_name("bob"), None);
     assert_eq!(session.user_file_size("bob"), None);
     assert_eq!(session.user_file_duration("bob"), None);
+    assert_eq!(session.user_media_match_signature("bob"), None);
     assert_eq!(
         session.user_features("bob"),
         Some(&json!({"uiMode":"desktop"}))
@@ -497,7 +524,7 @@ fn list_snapshot_file_payload_tracks_mixed_raw_and_hashed_metadata() {
         .expect("hello should apply");
     session
             .apply_message_json(
-                r#"{"List":{"room1":{"alice":{"isReady":true,"file":{"name":"**Hidden filename**","size":"15e2b0d3c338","duration":95}},"bob":{"isReady":true,"file":{"name":"movie.mkv","size":123456789,"duration":95.5}}}}}"#,
+                r#"{"List":{"room1":{"alice":{"isReady":true,"file":{"name":"**Hidden filename**","size":"15e2b0d3c338","duration":95}},"bob":{"isReady":true,"file":{"name":"movie.mkv","size":123456789,"duration":95.5,"mediaMatch":{"schema":"sorotte.mediaMatch.v3","profiles":[{"profile":"audio-constellation-v3","algorithmVersion":3}]}}}}}}"#,
             )
             .expect("list snapshot with mixed file metadata should apply");
 
@@ -513,6 +540,23 @@ fn list_snapshot_file_payload_tracks_mixed_raw_and_hashed_metadata() {
     assert_eq!(session.user_file_name("bob"), Some("movie.mkv"));
     assert_eq!(session.user_file_size("bob"), Some(&json!(123456789)));
     assert_eq!(session.user_file_duration("bob"), Some(&json!(95.5)));
+    assert_eq!(
+        session.user_media_match_signature("bob"),
+        Some(&json!({
+            "schema": "sorotte.mediaMatch.v3",
+            "profiles": [{"profile": "audio-constellation-v3", "algorithmVersion": 3}]
+        }))
+    );
+    assert_eq!(
+        session.current_room_media_match_signatures(),
+        vec![(
+            "bob".to_owned(),
+            json!({
+                "schema": "sorotte.mediaMatch.v3",
+                "profiles": [{"profile": "audio-constellation-v3", "algorithmVersion": 3}]
+            })
+        )]
+    );
 }
 
 #[test]

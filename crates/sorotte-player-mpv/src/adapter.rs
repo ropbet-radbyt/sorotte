@@ -1,7 +1,11 @@
 mod player_adapter;
 mod state;
 
-use std::{collections::VecDeque, path::Path};
+use std::{
+    collections::VecDeque,
+    path::Path,
+    time::{Duration, Instant},
+};
 
 use serde_json::{Value, json};
 use sorotte_player_api::{
@@ -19,6 +23,8 @@ use crate::legacy_ui::{
 };
 
 use self::state::MpvObservedState;
+
+const PAUSED_POSITION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 pub struct MpvAdapter {
     paused: bool,
@@ -50,6 +56,7 @@ pub struct MpvAdapter {
     pending_chat_requests: VecDeque<String>,
     pending_load_request: Option<String>,
     last_polled_local_file_update: Option<LocalFileUpdate>,
+    last_paused_position_poll_at: Option<Instant>,
     observed_state: MpvObservedState,
     observers_registered: bool,
     legacy_syncplay_ui_settings: LegacySyncplayUiSettings,
@@ -439,6 +446,43 @@ impl MpvAdapter {
         }
 
         Ok(Some(local_file_update))
+    }
+
+    fn poll_paused_position_telemetry_if_attached(&mut self) {
+        if !self.paused {
+            return;
+        }
+
+        let now = Instant::now();
+        if self
+            .last_paused_position_poll_at
+            .is_some_and(|last_poll| now.duration_since(last_poll) < PAUSED_POSITION_POLL_INTERVAL)
+        {
+            return;
+        }
+        self.last_paused_position_poll_at = Some(now);
+
+        let polled_position = {
+            let Some(ipc_client) = self.ipc_client.as_mut() else {
+                return;
+            };
+            ipc_client.get_property_f64(MPV_PROPERTY_TIME_POS)
+        };
+        self.drain_ipc_events_if_attached();
+
+        let Ok(Some(position_seconds)) = polled_position else {
+            return;
+        };
+        if !position_seconds.is_finite() || (self.position_seconds - position_seconds).abs() < 1e-6
+        {
+            return;
+        }
+
+        self.position_seconds = position_seconds;
+        self.observed_state.position_seconds = Some(position_seconds);
+        self.queue_playback_telemetry_update(
+            PlayerPlaybackTelemetryUpdate::default().with_position_seconds(position_seconds),
+        );
     }
 
     fn record_local_file_update_if_changed(&mut self, update: LocalFileUpdate) {

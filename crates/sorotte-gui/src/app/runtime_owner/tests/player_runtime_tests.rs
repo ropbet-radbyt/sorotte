@@ -32,6 +32,13 @@ fn write_persisted_media_search_root_index(
         .expect("persisted media-search cache fixture should be written");
 }
 
+fn without_media_match_runtime_snapshots(actions: Vec<GuiShellAction>) -> Vec<GuiShellAction> {
+    actions
+        .into_iter()
+        .filter(|action| !matches!(action, GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(_)))
+        .collect()
+}
+
 mod attached_media_open_seek;
 mod attached_state_sync;
 mod desync_slowdown;

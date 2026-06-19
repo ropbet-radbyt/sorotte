@@ -5,6 +5,7 @@ mod feedback_workflows;
 mod launcher;
 mod local_command_dispatch;
 mod main_window_workflows;
+mod media_match_support;
 mod media_search_cache;
 mod media_workflows;
 mod mpv_launch;

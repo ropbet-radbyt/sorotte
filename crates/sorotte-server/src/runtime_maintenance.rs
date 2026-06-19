@@ -853,6 +853,52 @@ impl ServerRuntime {
         })
     }
 
+    pub(crate) fn file_payload_for_client_from_source(
+        &self,
+        client_id: &str,
+        source_client_id: &str,
+        mut file: Value,
+    ) -> Value {
+        if (!self.client_session_supports_media_match(client_id) || client_id == source_client_id)
+            && let Some(file_object) = file.as_object_mut()
+        {
+            file_object.remove("mediaMatch");
+        }
+        file
+    }
+
+    fn client_session_supports_media_match(&self, client_id: &str) -> bool {
+        self.sessions
+            .get(client_id)
+            .is_some_and(|session| client_supports_media_match(session.features.as_ref()))
+    }
+
+    fn sanitize_list_rooms_snapshot_for_client(
+        &self,
+        client_id: &str,
+        rooms: &mut BTreeMap<String, BTreeMap<String, ListUserEntry>>,
+    ) {
+        let supports_media_match = self.client_session_supports_media_match(client_id);
+        let own_username = self
+            .sessions
+            .get(client_id)
+            .map(|session| session.username.as_str());
+        for room_entries in rooms.values_mut() {
+            for (username, entry) in room_entries.iter_mut() {
+                if supports_media_match && own_username != Some(username.as_str()) {
+                    continue;
+                }
+                let Some(file) = entry.file.as_mut() else {
+                    continue;
+                };
+                let Some(file_object) = file.as_object_mut() else {
+                    continue;
+                };
+                file_object.remove("mediaMatch");
+            }
+        }
+    }
+
     pub(crate) fn list_rooms_snapshot_for_client(
         &self,
         client_id: &str,
@@ -877,6 +923,7 @@ impl ServerRuntime {
         ) {
             self.add_empty_room_dummy_entries(&mut rooms);
         }
+        self.sanitize_list_rooms_snapshot_for_client(client_id, &mut rooms);
         rooms
     }
 

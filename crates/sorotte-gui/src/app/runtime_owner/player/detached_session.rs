@@ -1,6 +1,13 @@
 use super::*;
 
 impl GuiPersistedConfigRuntimeOwner {
+    fn note_local_attached_player_pause_command(&mut self, target_paused: bool) {
+        self.pending_attached_player_pause_command = Some(GuiPendingAttachedPlayerPauseCommand {
+            target_paused,
+            suppress_until: Instant::now() + ATTACHED_PLAYER_PAUSE_COMMAND_SUPPRESSION,
+        });
+    }
+
     fn sync_pending_local_attached_pause_override_from_session(&mut self) {
         let session_pause_state = self
             .session
@@ -93,7 +100,8 @@ impl GuiPersistedConfigRuntimeOwner {
                             format!(
                                 "Playback pause toggle through the attached player failed while resuming playback: {error}"
                             )
-                        })?;
+                    })?;
+                    self.note_local_attached_player_pause_command(false);
                     self.player_paused = Some(false);
                     self.refresh_player_state_impl();
                     let mut telemetry_synced = false;
@@ -132,6 +140,7 @@ impl GuiPersistedConfigRuntimeOwner {
         player.set_paused(target_paused).map_err(|error| {
             format!("Playback pause toggle through the attached player failed: {error}")
         })?;
+        self.note_local_attached_player_pause_command(target_paused);
         self.player_paused = Some(target_paused);
         self.refresh_player_state_impl();
         if let Err(error) = self.sync_playback_pause_into_detached_session_impl(
