@@ -10,6 +10,115 @@ struct GuiDraggedPlaylistRow {
 }
 
 impl GuiWidgetEguiRenderer {
+    pub(super) fn is_plex_playlist_search_result_row(node: &GuiWidgetNode) -> bool {
+        node.id
+            .strip_prefix("main-window:playlist-plex-search:result:")
+            .is_some_and(|suffix| suffix.parse::<usize>().is_ok())
+    }
+
+    pub(super) fn render_plex_playlist_search_result_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SorotteGuiShellAppState,
+    ) {
+        let available_width = Self::visible_available_width(ui);
+        let action_width = 82.0_f32.min((available_width * 0.32).max(58.0));
+        let gap = 10.0;
+        let text_width = (available_width - action_width - gap).max(0.0);
+        let detail_text = node
+            .value
+            .as_deref()
+            .filter(|detail| !detail.trim().is_empty() && !node.label.contains(*detail));
+        let row_height = if detail_text.is_some() { 52.0 } else { 38.0 };
+        let palette = Self::palette_for_ui(ui);
+        let fill = if node.selected {
+            ui.visuals().selection.bg_fill.linear_multiply(0.24)
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        let stroke = if node.selected {
+            egui::Stroke::new(1.0, palette.primary)
+        } else {
+            egui::Stroke::NONE
+        };
+
+        egui::Frame::new()
+            .fill(fill)
+            .stroke(stroke)
+            .corner_radius(egui::CornerRadius::same(4))
+            .inner_margin(egui::Margin::symmetric(8, 6))
+            .show(ui, |ui| {
+                ui.horizontal_top(|ui| {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(text_width, row_height),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.set_width(text_width);
+                            ui.set_max_width(text_width);
+                            let label = egui::Label::new(Self::display_text(node))
+                                .truncate()
+                                .sense(egui::Sense::click());
+                            let response = ui.add_enabled(node.enabled, label);
+                            let response = Self::attach_node_tooltip(response, node);
+                            if response.clicked()
+                                && let Some(action) = Self::action_for_list_item_node(node)
+                            {
+                                self.actions.push(action);
+                            }
+                            if let Some(detail) = detail_text {
+                                let detail_label = egui::Label::new(
+                                    egui::RichText::new(detail)
+                                        .small()
+                                        .color(palette.muted_text),
+                                )
+                                .truncate();
+                                ui.add(detail_label).on_hover_text(detail.to_owned());
+                            }
+                        },
+                    );
+                    ui.add_space(gap);
+                    if let Some(add_button) = node
+                        .children
+                        .iter()
+                        .find(|child| child.id.ends_with(":add"))
+                    {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(action_width, row_height),
+                            egui::Layout::top_down(egui::Align::Center),
+                            |ui| {
+                                ui.add_space(((row_height - 32.0) * 0.5).max(0.0));
+                                let mut label = egui::RichText::new(Self::display_text(add_button));
+                                if add_button.enabled {
+                                    label = label.color(palette.primary_text).strong();
+                                }
+                                let button = egui::Button::new(label)
+                                    .fill(if add_button.enabled {
+                                        palette.primary
+                                    } else {
+                                        ui.visuals().widgets.inactive.bg_fill
+                                    })
+                                    .min_size(egui::vec2(action_width, 30.0));
+                                let response = ui.add_enabled(add_button.enabled, button);
+                                response.widget_info(|| {
+                                    egui::WidgetInfo::labeled(
+                                        egui::WidgetType::Button,
+                                        response.enabled(),
+                                        Self::display_text(add_button),
+                                    )
+                                });
+                                let response = Self::attach_node_tooltip(response, add_button);
+                                if response.clicked() {
+                                    self.handle_button_node_click(state, add_button);
+                                }
+                            },
+                        );
+                    }
+                });
+            });
+        ui.add_space(4.0);
+    }
+
     pub(super) fn render_playlist_header_actions(
         &mut self,
         ui: &mut egui::Ui,
@@ -46,6 +155,7 @@ impl GuiWidgetEguiRenderer {
                 let editor_active = node.children.iter().any(|child| {
                     child.id == "main-window:playlist-edit"
                         || child.id == "main-window:playlist-url-edit"
+                        || child.id == "main-window:playlist-plex-search"
                 });
                 for child in node
                     .children

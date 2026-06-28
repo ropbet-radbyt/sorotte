@@ -26,7 +26,7 @@ use super::super::runtime_stack::{
     GuiLocalPlayerUnpauseDecision, GuiOwnedPlayer,
 };
 use super::super::shell_state::{
-    GuiMediaIndexRuntimeSnapshot, GuiShellAction, GuiShellModal, GuiShellView,
+    GuiMediaIndexRuntimeSnapshot, GuiPluginSelection, GuiShellAction, GuiShellModal, GuiShellView,
     GuiStreamHelperHealth, GuiStreamTargetKind, GuiTransientNotificationLevel,
     MainWindowRuntimeSnapshot, SorotteGuiShellAppState, browser_is_url, browser_stream_target_kind,
 };
@@ -38,6 +38,7 @@ mod attached_sync;
 mod detached_session;
 mod media_index;
 mod media_open;
+mod media_resolution;
 mod media_search;
 mod messages;
 mod player_state;
@@ -52,7 +53,8 @@ use super::{
     GuiAttachedMediaSearchIndex, GuiAttachedMediaSearchRootIndex,
     GuiAttachedMediaSearchRootRefreshResult, GuiAutomaticMediaResolutionTrigger,
     GuiPendingAttachedMediaResolution, GuiPendingAttachedPlayerPauseCommand,
-    GuiPersistedConfigRuntimeOwner, GuiUserMediaTargetResolution,
+    GuiPersistedConfigRuntimeOwner, GuiPlexStreamResolveOutcome, GuiPlexStreamResolveWorkerResult,
+    GuiUserMediaTargetResolution, GuiUserMediaTargetResolutionSource,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -39,6 +39,10 @@ fn parse_sorotte_ini_stored_client_settings_mvp_normalizes_and_reads_known_secti
          selectedServerId = machine-id\n\
          selectedServerUrl = http://plex.local:32400\n\
          selectedServerToken = server-token\n\
+         [plugins]\n\
+         streamSupportEnabled = false\n\
+         mediaMatchingEnabled = yes\n\
+         plexEnabled = no\n\
          [gui]\n\
          chatInputRelativeFontSize = 2\n",
     );
@@ -65,7 +69,20 @@ fn parse_sorotte_ini_stored_client_settings_mvp_normalizes_and_reads_known_secti
         settings.plex_selected_server_token.as_deref(),
         Some("server-token")
     );
+    assert_eq!(settings.stream_support_plugin_enabled, Some(false));
+    assert_eq!(settings.media_matching_plugin_enabled, Some(true));
+    assert_eq!(settings.plex_plugin_enabled, Some(false));
     assert_eq!(settings.chat_input_relative_font_size, Some(2));
+}
+
+#[test]
+fn parse_sorotte_ini_stored_client_settings_mvp_leaves_missing_plugin_gates_unset() {
+    let settings =
+        parse_sorotte_ini_stored_client_settings_mvp("[client_settings]\nname = alice\n");
+
+    assert_eq!(settings.stream_support_plugin_enabled, None);
+    assert_eq!(settings.media_matching_plugin_enabled, None);
+    assert_eq!(settings.plex_plugin_enabled, None);
 }
 
 #[test]
@@ -142,6 +159,62 @@ fn upsert_sorotte_ini_stored_client_settings_mvp_writes_media_match_settings() {
     assert!(updated.contains("mediaMatchWireSharingEnabled = False\n"));
     assert!(updated.contains("mediaMatchRuntimeToleranceEnabled = False\n"));
     assert!(updated.contains("mediaMatchAutoplayPolicy = AllowStrongSameMedia\n"));
+}
+
+#[test]
+fn upsert_sorotte_ini_stored_client_settings_mvp_writes_plugin_enablement() {
+    let updated = upsert_sorotte_ini_stored_client_settings_mvp(
+        "",
+        &StoredClientSettingsMvp {
+            stream_support_plugin_enabled: Some(false),
+            media_matching_plugin_enabled: Some(false),
+            plex_plugin_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        },
+    );
+
+    assert!(updated.contains("[plugins]\n"));
+    assert!(updated.contains("streamSupportEnabled = False\n"));
+    assert!(updated.contains("mediaMatchingEnabled = False\n"));
+    assert!(updated.contains("plexEnabled = True\n"));
+}
+
+#[test]
+fn upsert_sorotte_ini_disabling_plugins_preserves_existing_plugin_data() {
+    let updated = upsert_sorotte_ini_stored_client_settings_mvp(
+        "[plugins]\n\
+         streamSupportEnabled = True\n\
+         mediaMatchingEnabled = True\n\
+         plexEnabled = True\n\
+         [client_settings]\n\
+         mediaMatchFingerprintingEnabled = True\n\
+         mediaMatchBackgroundWarmupEnabled = True\n\
+         [plex]\n\
+         syncEnabled = True\n\
+         streamingEnabled = True\n\
+         userToken = old-user-token\n\
+         selectedServerId = old-machine\n\
+         selectedServerUrl = http://old-plex.local:32400\n\
+         selectedServerToken = old-server-token\n",
+        &StoredClientSettingsMvp {
+            stream_support_plugin_enabled: Some(false),
+            media_matching_plugin_enabled: Some(false),
+            plex_plugin_enabled: Some(false),
+            ..StoredClientSettingsMvp::default()
+        },
+    );
+
+    assert!(updated.contains("streamSupportEnabled = False\n"));
+    assert!(updated.contains("mediaMatchingEnabled = False\n"));
+    assert!(updated.contains("plexEnabled = False\n"));
+    assert!(updated.contains("mediaMatchFingerprintingEnabled = True\n"));
+    assert!(updated.contains("mediaMatchBackgroundWarmupEnabled = True\n"));
+    assert!(updated.contains("syncEnabled = True\n"));
+    assert!(updated.contains("streamingEnabled = True\n"));
+    assert!(updated.contains("userToken = old-user-token\n"));
+    assert!(updated.contains("selectedServerId = old-machine\n"));
+    assert!(updated.contains("selectedServerUrl = http://old-plex.local:32400\n"));
+    assert!(updated.contains("selectedServerToken = old-server-token\n"));
 }
 
 #[test]

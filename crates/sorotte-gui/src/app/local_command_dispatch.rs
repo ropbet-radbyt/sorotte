@@ -30,6 +30,10 @@ impl GuiShellDispatchPlan {
     ) -> Self {
         let mut plan = Self::default();
         let mut selected_menu_action = state.selection.selected_menu_action;
+        let mut selected_plex_playlist_search_result = state
+            .plex_playlist_search
+            .as_ref()
+            .and_then(|search| search.selected_index);
         for action in actions {
             match action {
                 GuiShellAction::BeginLocalChatSend(message) => {
@@ -112,6 +116,12 @@ impl GuiShellDispatchPlan {
                 GuiShellAction::RetryPlayerLaunch => {
                     plan.runtime_requests
                         .push(GuiRuntimeRequest::RetryPlayerLaunch);
+                }
+                GuiShellAction::SetPluginEnabled { plugin, enabled } => {
+                    plan.shell_actions
+                        .push(GuiShellAction::SetPluginEnabled { plugin, enabled });
+                    plan.runtime_requests
+                        .push(GuiRuntimeRequest::SetPluginEnabled { plugin, enabled });
                 }
                 GuiShellAction::InstallStreamHelper => {
                     plan.runtime_requests
@@ -237,6 +247,30 @@ impl GuiShellDispatchPlan {
                 GuiShellAction::DisconnectPlex => {
                     plan.runtime_requests
                         .push(GuiRuntimeRequest::DisconnectPlex);
+                }
+                GuiShellAction::SubmitPlexPlaylistSearch { query } => {
+                    plan.shell_actions
+                        .push(GuiShellAction::SubmitPlexPlaylistSearch {
+                            query: query.clone(),
+                        });
+                    plan.runtime_requests
+                        .push(GuiRuntimeRequest::SearchSelectedPlexServerMedia { query });
+                }
+                GuiShellAction::SelectPlexPlaylistSearchResult(index) => {
+                    selected_plex_playlist_search_result = Some(index);
+                    plan.shell_actions
+                        .push(GuiShellAction::SelectPlexPlaylistSearchResult(index));
+                }
+                GuiShellAction::AddSelectedPlexPlaylistSearchResult => {
+                    plan.shell_actions
+                        .push(GuiShellAction::AddSelectedPlexPlaylistSearchResult);
+                    if let Some(rating_key) = selected_plex_playlist_search_result
+                        .and_then(|index| state.plex_playlist_search.as_ref()?.results.get(index))
+                        .map(|result| result.rating_key.clone())
+                    {
+                        plan.runtime_requests
+                            .push(GuiRuntimeRequest::ResolvePlexPlaylistItem { rating_key });
+                    }
                 }
                 other => plan.shell_actions.push(other),
             }

@@ -123,6 +123,11 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         plex_sync_rx: None,
         plex_sync_next_tick_due_at: None,
         plex_runtime_snapshot: Default::default(),
+        plex_playlist_search_rx: None,
+        plex_playlist_resolve_rx: None,
+        plex_stream_resolve_rx: None,
+        plex_stream_resolve_trigger_key: None,
+        plex_stream_resolve_result: None,
         pending_stream_retry_target: None,
         managed_stream_helper_refresh_required: false,
         pending_stream_feedback: std::collections::VecDeque::new(),
@@ -456,6 +461,148 @@ fn gui_persisted_config_runtime_owner_opens_plex_stream_as_logical_playlist_uri(
     assert!(!owner.player_local_file_placeholder);
     assert!(owner.pending_logical_media_override.is_some());
     assert_eq!(owner.pending_stream_retry_target, None);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_publishes_plex_stream_logical_file_before_player_metadata() {
+    #[derive(Debug, Default)]
+    struct DeferredMetadataPlayerState {
+        opened_paths: Vec<String>,
+    }
+
+    struct DeferredMetadataPlayerAdapter {
+        state: std::sync::Arc<std::sync::Mutex<DeferredMetadataPlayerState>>,
+    }
+
+    impl PlayerAdapter for DeferredMetadataPlayerAdapter {
+        fn name(&self) -> &'static str {
+            "deferred-metadata"
+        }
+
+        fn open_file(&mut self, path: &str) -> Result<(), sorotte_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .opened_paths
+                .push(path.to_owned());
+            Ok(())
+        }
+    }
+
+    let playlist_uri = PlexPlaylistUri {
+        machine_identifier: "machine-1".to_owned(),
+        rating_key: "123".to_owned(),
+        title: Some("Episode 1".to_owned()),
+        file_name: Some("Episode 1.mkv".to_owned()),
+        duration_millis: Some(90_000),
+        size_bytes: Some(123_456),
+        media_type: Some(PlexMediaType::Episode),
+    };
+    let sparse_logical_uri = "plex://machine-1/metadata/123?title=Episode%201";
+    let logical_uri = playlist_uri.to_string();
+    let logical_file = sorotte_player_api::LocalFileUpdate::new("Episode 1.mkv")
+        .with_path(logical_uri.clone())
+        .with_duration_seconds(90.0)
+        .with_size_bytes(123_456);
+    let playback_url = "http://127.0.0.1:32400/library/parts/1/file.mkv?X-Plex-Token=secret-token";
+    let stream_target = PlexStreamTarget {
+        playlist_uri,
+        matched_item: PlexMatchedItem {
+            rating_key: "123".to_owned(),
+            title: "Episode 1".to_owned(),
+            media_type: PlexMediaType::Episode,
+            duration_millis: Some(90_000),
+        },
+        logical_file: logical_file.clone(),
+        playback_url: SecretPlexPlaybackUrl::new(playback_url),
+    };
+    let stored_settings = StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    };
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&stored_settings);
+    state.apply_shared_playlist_entries(vec![sparse_logical_uri.to_owned()], Some(0), false);
+    let player_state =
+        std::sync::Arc::new(std::sync::Mutex::new(DeferredMetadataPlayerState::default()));
+    let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(
+        DeferredMetadataPlayerAdapter {
+            state: player_state.clone(),
+        },
+    )));
+    owner.active_shared_playlist_index = Some(0);
+    owner.player_paused_for_cache = Some(true);
+    owner.player_cache_buffering_percent = Some(99.0);
+    owner.pending_attached_cache_unpause = true;
+    owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+        )
+        .expect("hello should apply");
+    let _ = owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .flush_outbound_protocol_lines()
+        .expect("initial outbound lines should flush");
+
+    owner
+        .open_plex_stream_target_through_attached_player_result_impl(
+            sparse_logical_uri,
+            stream_target,
+            false,
+        )
+        .expect("Plex stream open should have a player")
+        .expect("Plex stream open should succeed");
+
+    assert_eq!(
+        player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .opened_paths,
+        vec![playback_url.to_owned()]
+    );
+    assert_eq!(owner.player_local_file, Some(logical_file.clone()));
+    assert!(
+        !owner.player_local_file_placeholder,
+        "Plex logical file metadata is complete before mpv finishes loading the secret stream URL"
+    );
+    assert_eq!(owner.player_paused_for_cache, None);
+    assert_eq!(owner.player_cache_buffering_percent, None);
+    assert!(!owner.pending_attached_cache_unpause);
+    assert!(
+        owner.current_player_matches_media_target(sparse_logical_uri),
+        "Plex stream identity should match by machine/rating key even when the opened logical URI has richer query metadata"
+    );
+
+    owner
+        .sync_detached_session_preferences_and_player_state(&state)
+        .expect("detached session sync should publish the Plex logical file");
+    let outbound_lines = owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .flush_outbound_protocol_lines()
+        .expect("outbound lines should flush");
+    assert!(
+        outbound_lines
+            .iter()
+            .any(|line| line.contains(r#""file""#) && line.contains("Episode 1.mkv")),
+        "Plex logical file should publish immediately without waiting for player metadata; outbound_lines={outbound_lines:?}"
+    );
+    assert!(
+        outbound_lines
+            .iter()
+            .all(|line| !line.contains("secret-token")),
+        "Plex stream publication must not expose the playback token"
+    );
 }
 
 #[test]

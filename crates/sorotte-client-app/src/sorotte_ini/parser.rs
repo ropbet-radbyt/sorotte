@@ -398,6 +398,24 @@ pub fn parse_sorotte_ini_stored_client_settings_mvp(contents: &str) -> StoredCli
                 }
                 _ => {}
             },
+            Some("plugins") => match key.as_str() {
+                "streamsupportenabled" => {
+                    if let Some(parsed) = parse_ini_bool_legacy_compatible(&value) {
+                        settings.stream_support_plugin_enabled = Some(parsed);
+                    }
+                }
+                "mediamatchingenabled" => {
+                    if let Some(parsed) = parse_ini_bool_legacy_compatible(&value) {
+                        settings.media_matching_plugin_enabled = Some(parsed);
+                    }
+                }
+                "plexenabled" => {
+                    if let Some(parsed) = parse_ini_bool_legacy_compatible(&value) {
+                        settings.plex_plugin_enabled = Some(parsed);
+                    }
+                }
+                _ => {}
+            },
             Some("plex") => match key.as_str() {
                 "syncenabled" => {
                     if let Some(parsed) = parse_ini_bool_legacy_compatible(&value) {

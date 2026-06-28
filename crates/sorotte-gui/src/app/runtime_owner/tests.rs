@@ -1,11 +1,17 @@
 use std::{
-    io::{BufRead, Write},
+    io::{BufRead, Read, Write},
+    net::TcpListener,
     path::PathBuf,
-    sync::{Mutex, MutexGuard},
+    sync::{
+        Arc, Mutex, MutexGuard,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    thread,
 };
 
 use super::super::runtime_stack::{GuiAttachedPlayerRuntimeAction, GuiSessionRoomPlaystate};
-use super::GuiPersistedConfigRuntimeOwner;
+use super::{GuiMediaMatchBackgroundCancelDisposition, GuiPersistedConfigRuntimeOwner};
 
 use crate::app::testing::support::{
     browser_runtime_rooms, browser_runtime_user, pump_and_apply_runtime_owner_actions,
@@ -19,7 +25,7 @@ use crate::app::{
     GuiConfigStorageRuntimeSnapshot, GuiInteractionRuntimeSnapshot, GuiLaunchMode, GuiOwnedPlayer,
     GuiPendingAttachedMediaResolution, GuiPendingCompletionRequest, GuiPendingOperationKind,
     GuiPendingRoomChangeRequest, GuiPersistedUiState, GuiPlayerLaunchRuntimeState,
-    GuiQueuedRuntimeBridgeHandle, GuiQueuedRuntimeOwner, GuiRuntimeRequest,
+    GuiPluginSelection, GuiQueuedRuntimeBridgeHandle, GuiQueuedRuntimeOwner, GuiRuntimeRequest,
     GuiSessionRuntimeAdapter, GuiShellAction, GuiShellView, GuiTestPlayerAdapter,
     GuiTransientNotificationLevel, MainWindowPlaylistRow, MainWindowRuntimeChatSnapshot,
     MainWindowRuntimeSnapshot, MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot,
@@ -70,6 +76,35 @@ impl<'a> TestEnvGuard<'a> {
             std::env::remove_var(key);
         }
     }
+}
+
+fn serve_runtime_plex_json_responses(responses: Vec<String>) -> (String, mpsc::Receiver<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("Plex test listener should bind");
+    let address = listener
+        .local_addr()
+        .expect("Plex test listener should expose its address");
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        for body in responses {
+            let (mut stream, _) = listener.accept().expect("Plex test server should accept");
+            let mut buffer = [0_u8; 8192];
+            let read = stream
+                .read(&mut buffer)
+                .expect("Plex test server should read request");
+            let request = String::from_utf8_lossy(&buffer[..read]).into_owned();
+            tx.send(request)
+                .expect("Plex test server should send captured request");
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("Plex test server should write response");
+        }
+    });
+    (format!("http://{address}"), rx)
 }
 
 fn read_client_hello_after_optional_start_tls<R, W>(
@@ -127,6 +162,174 @@ fn without_default_ready_publish_lines(lines: Vec<String>) -> Vec<String> {
         .into_iter()
         .filter(|line| !is_default_ready_publish_line(line))
         .collect()
+}
+
+#[test]
+fn runtime_owner_searches_and_resolves_plex_playlist_picker_items() {
+    let (server_url, rx) = serve_runtime_plex_json_responses(vec![
+        serde_json::json!({
+            "MediaContainer": {
+                "Directory": [
+                    { "key": "1", "type": "show", "title": "Anime" }
+                ]
+            }
+        })
+        .to_string(),
+        serde_json::json!({
+            "MediaContainer": {
+                "Metadata": [{
+                    "ratingKey": "14452",
+                    "type": "episode",
+                    "title": "Episode 11",
+                    "parentTitle": "Season 4",
+                    "grandparentTitle": "Re:Zero",
+                    "duration": 1470058,
+                    "Media": [{
+                        "Part": [{
+                            "file": "E:/Anime/Re Zero/Episode 11.mkv"
+                        }]
+                    }]
+                }]
+            }
+        })
+        .to_string(),
+        serde_json::json!({
+            "MediaContainer": {
+                "Metadata": []
+            }
+        })
+        .to_string(),
+        serde_json::json!({
+            "MediaContainer": {
+                "Metadata": []
+            }
+        })
+        .to_string(),
+        serde_json::json!({
+            "MediaContainer": {
+                "machineIdentifier": "machine-from-root"
+            }
+        })
+        .to_string(),
+        serde_json::json!({
+            "MediaContainer": {
+                "Metadata": [{
+                    "ratingKey": "14452",
+                    "type": "episode",
+                    "title": "Episode 11",
+                    "duration": 1470058,
+                    "Media": [{
+                        "Part": [{
+                            "id": "part-1",
+                            "key": "/library/parts/1/file.mkv",
+                            "file": "E:/Anime/Re Zero/Episode 11.mkv",
+                            "duration": 1470058,
+                            "size": 458900243
+                        }]
+                    }]
+                }]
+            }
+        })
+        .to_string(),
+    ]);
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player(None);
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        plex_user_token: Some("user-token".to_owned()),
+        plex_selected_server_url: Some(server_url),
+        plex_selected_server_token: Some("server-token".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.main_window.playback.can_manage_playlist = true;
+    assert!(state.apply(GuiShellAction::BeginPlexPlaylistSearch));
+    assert!(state.apply(GuiShellAction::SubmitPlexPlaylistSearch {
+        query: "zero".to_owned(),
+    }));
+
+    handle.push_request(GuiRuntimeRequest::SearchSelectedPlexServerMedia {
+        query: "zero".to_owned(),
+    });
+    pump_and_apply_runtime_owner_actions_until(
+        &mut owner,
+        &handle,
+        &mut state,
+        std::time::Duration::from_secs(3),
+        |state| {
+            state
+                .plex_playlist_search
+                .as_ref()
+                .is_some_and(|search| !search.searching && !search.results.is_empty())
+        },
+        "Plex picker search result",
+    );
+
+    let search = state
+        .plex_playlist_search
+        .as_ref()
+        .expect("Plex picker should remain open");
+    assert_eq!(search.results[0].rating_key, "14452");
+    assert_eq!(
+        search.results[0].grandparent_title.as_deref(),
+        Some("Re:Zero")
+    );
+    assert_eq!(state.plex.status, "ready");
+    assert_eq!(state.plex.last_error, None);
+
+    assert!(state.apply(GuiShellAction::AddSelectedPlexPlaylistSearchResult));
+    handle.push_request(GuiRuntimeRequest::ResolvePlexPlaylistItem {
+        rating_key: "14452".to_owned(),
+    });
+    pump_and_apply_runtime_owner_actions_until(
+        &mut owner,
+        &handle,
+        &mut state,
+        std::time::Duration::from_secs(3),
+        |state| {
+            state
+                .current_shared_playlist_entries()
+                .iter()
+                .any(|entry| entry.starts_with("plex://machine-from-root/metadata/14452?"))
+        },
+        "Plex picker playlist append",
+    );
+
+    let entries = state.current_shared_playlist_entries();
+    let plex_entry = entries
+        .iter()
+        .find(|entry| entry.starts_with("plex://machine-from-root/metadata/14452?"))
+        .expect("Plex entry should be appended");
+    assert!(plex_entry.contains("file=Episode%2011.mkv"));
+    assert!(!plex_entry.to_ascii_lowercase().contains("token"));
+    let queued_requests = handle.drain_requests();
+    assert_eq!(
+        queued_requests,
+        vec![GuiRuntimeRequest::QueuePlaylistEntry {
+            entry: plex_entry.clone(),
+            select_after_queue: false,
+        }]
+    );
+    assert!(
+        state
+            .plex_playlist_search
+            .as_ref()
+            .is_some_and(|search| search.adding_rating_key.is_none())
+    );
+    let requests = (0..6)
+        .map(|_| {
+            rx.recv_timeout(std::time::Duration::from_secs(2))
+                .expect("Plex request should be captured")
+        })
+        .collect::<Vec<_>>();
+    assert!(requests[0].starts_with("GET /library/sections HTTP/1.1"));
+    assert!(requests[1].starts_with("GET /library/sections/1/all?"));
+    assert!(requests[1].contains("title=zero"));
+    assert!(requests[2].starts_with("GET /library/sections/1/all?"));
+    assert!(requests[2].contains("show.title=zero"));
+    assert!(requests[3].starts_with("GET /library/sections/1/all?"));
+    assert!(requests[3].contains("file=zero"));
+    assert!(requests[4].starts_with("GET / HTTP/1.1"));
+    assert!(requests[5].starts_with("GET /library/metadata/14452 HTTP/1.1"));
 }
 
 fn read_next_non_default_ready_line<R>(reader: &mut R, context: &str) -> String

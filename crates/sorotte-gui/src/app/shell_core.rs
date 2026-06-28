@@ -8,9 +8,9 @@ use sorotte_client_app::app_boundary::state::{
 use super::shell_state::{
     FirstRunConfigurationDialogDraft, GuiCommandAvailabilityRuntimeOverride,
     GuiCommandAvailabilityState, GuiConfigStorageRuntimeSnapshot, GuiConfigurationTab,
-    GuiMediaMatchState, GuiPlayerSetupIssueKind, GuiPlexState, GuiPluginSelection,
-    GuiSavedSessionConnectTarget, GuiSelectionState, GuiShellModal, GuiShellView,
-    GuiValidationState, MainWindowShellState, MediaSearchWorkflowShellState,
+    GuiMediaMatchState, GuiPlayerSetupIssueKind, GuiPlexState, GuiPluginEnablementState,
+    GuiPluginSelection, GuiSavedSessionConnectTarget, GuiSelectionState, GuiShellModal,
+    GuiShellView, GuiValidationState, MainWindowShellState, MediaSearchWorkflowShellState,
     MenuActionRuntimeOverride, MenuDialogShellState, PublicServerBrowserShellState,
     SorotteGuiShellAppState,
 };
@@ -33,6 +33,7 @@ impl SorotteGuiShellAppState {
             active_view: GuiShellView::Setup,
             selected_configuration_tab: GuiConfigurationTab::Connection,
             selected_plugin: GuiPluginSelection::default(),
+            plugin_enablement: GuiPluginEnablementState::from_stored_settings(&shell_settings),
             open_modal: None,
             selection: GuiSelectionState::default(),
             main_window_playlist_selection_is_local: false,
@@ -53,6 +54,7 @@ impl SorotteGuiShellAppState {
             text_edit_session: None,
             playlist_text_edit_session: None,
             playlist_url_edit_session: None,
+            plex_playlist_search: None,
             media_url_edit_session: None,
             controlled_room_create_session: None,
             controller_auth_edit_session: None,
@@ -288,11 +290,23 @@ impl SorotteGuiShellAppState {
     }
 
     pub(super) fn stream_helper_status_title(&self) -> &'static str {
+        if !self
+            .plugin_enablement
+            .enabled_for(super::GuiPluginSelection::StreamSupport)
+        {
+            return "Stream Support disabled";
+        }
         self.stream_helper_issue_title()
             .unwrap_or("Stream helper status")
     }
 
     pub(super) fn stream_helper_status_summary(&self) -> String {
+        if !self
+            .plugin_enablement
+            .enabled_for(super::GuiPluginSelection::StreamSupport)
+        {
+            return "Stream Support is off. Installed helper tools are kept; enable it to handle extractor-backed URLs.".to_owned();
+        }
         if let Some(summary) = self.stream_helper_issue_summary() {
             return summary.to_owned();
         }
@@ -325,6 +339,12 @@ impl SorotteGuiShellAppState {
     }
 
     pub(super) fn media_match_effective_status_label(&self) -> &'static str {
+        if !self
+            .plugin_enablement
+            .enabled_for(super::GuiPluginSelection::MediaMatching)
+        {
+            return "disabled";
+        }
         if !self.media_match.settings.fingerprinting_enabled {
             return "disabled";
         }
@@ -335,6 +355,12 @@ impl SorotteGuiShellAppState {
     }
 
     pub(super) fn media_match_status_title(&self) -> &'static str {
+        if !self
+            .plugin_enablement
+            .enabled_for(super::GuiPluginSelection::MediaMatching)
+        {
+            return "Media Matching disabled";
+        }
         if !self.media_match.settings.fingerprinting_enabled {
             return "Media matching disabled";
         }
@@ -350,6 +376,12 @@ impl SorotteGuiShellAppState {
     }
 
     pub(super) fn media_match_status_summary(&self) -> String {
+        if !self
+            .plugin_enablement
+            .enabled_for(super::GuiPluginSelection::MediaMatching)
+        {
+            return "Media Matching is off. Existing tools, cache data, and matching settings are kept.".to_owned();
+        }
         if !self.media_match.settings.fingerprinting_enabled {
             return if self.media_match.health == super::GuiMediaMatchToolHealth::Healthy {
                 "Media Matching is off. Existing cache data is kept; enable it to index local files and match room media.".to_owned()

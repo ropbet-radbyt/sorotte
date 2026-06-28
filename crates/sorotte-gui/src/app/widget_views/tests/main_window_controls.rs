@@ -108,6 +108,14 @@ fn gui_shell_app_state_projects_main_window_widget_trees() {
         .find("main-window:playlist:add-url")
         .expect("playlist add-url button should exist in widget tree");
     assert_eq!(playlist_add_url.kind, GuiWidgetKind::Button);
+    let playlist_add_plex = tree
+        .find("main-window:playlist:add-plex")
+        .expect("playlist add-plex button should exist in widget tree");
+    assert_eq!(playlist_add_plex.kind, GuiWidgetKind::Button);
+    assert!(
+        !playlist_add_plex.enabled,
+        "Plex playlist picker should be disabled until a Plex server is selected"
+    );
     let playlist_header = tree
         .find("main-window:playlist-header:actions")
         .expect("playlist header actions should exist in widget tree");
@@ -120,6 +128,7 @@ fn gui_shell_app_state_projects_main_window_widget_trees() {
         vec![
             "main-window:playlist:add-files",
             "main-window:playlist:add-url",
+            "main-window:playlist:add-plex",
             "main-window:playlist:more-menu",
         ]
     );

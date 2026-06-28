@@ -21,6 +21,7 @@ fn gui_widget_egui_renderer_maps_playlist_workflow_controls_to_actions() {
     let add_files_button = shell_tree.find("main-window:playlist:add-files").unwrap();
     let more_menu_button = shell_tree.find("main-window:playlist:more-menu").unwrap();
     let add_url_button = shell_tree.find("main-window:playlist:add-url").unwrap();
+    let add_plex_button = shell_tree.find("main-window:playlist:add-plex").unwrap();
     assert!(
         shell_tree.find("main-window:control:open-url").is_none(),
         "Open URL should not be exposed from the Controls pane"
@@ -29,12 +30,15 @@ fn gui_widget_egui_renderer_maps_playlist_workflow_controls_to_actions() {
 
     assert_eq!(add_files_button.kind, GuiWidgetKind::Button);
     assert_eq!(add_url_button.kind, GuiWidgetKind::Button);
+    assert_eq!(add_plex_button.kind, GuiWidgetKind::Button);
     assert_eq!(more_menu_button.kind, GuiWidgetKind::Button);
     let add_files_size = GuiWidgetEguiRenderer::compact_action_button_size(add_files_button);
     let add_url_size = GuiWidgetEguiRenderer::compact_action_button_size(add_url_button);
+    let add_plex_size = GuiWidgetEguiRenderer::compact_action_button_size(add_plex_button);
     let more_menu_size = GuiWidgetEguiRenderer::compact_action_button_size(more_menu_button);
     assert_eq!(add_files_size, egui::vec2(40.0, 40.0));
     assert_eq!(add_url_size, egui::vec2(40.0, 40.0));
+    assert_eq!(add_plex_size, egui::vec2(40.0, 40.0));
     assert_eq!(more_menu_size, egui::vec2(52.0, 40.0));
     assert_eq!(
         more_menu_button
@@ -47,6 +51,15 @@ fn gui_widget_egui_renderer_maps_playlist_workflow_controls_to_actions() {
     assert_eq!(
         GuiWidgetEguiRenderer::actions_for_button_node(&state, add_url_button),
         vec![GuiShellAction::BeginSharedPlaylistUrlEdit]
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, add_plex_button),
+        vec![
+            GuiShellAction::BeginPlexPlaylistSearch,
+            GuiShellAction::SubmitPlexPlaylistSearch {
+                query: String::new(),
+            },
+        ]
     );
     assert_eq!(
         GuiWidgetEguiRenderer::actions_for_button_node(&state, row_remove_button),
@@ -193,6 +206,94 @@ fn gui_widget_egui_renderer_maps_playlist_workflow_controls_to_actions() {
             ),
             GuiShellAction::CancelMediaUrlEdit,
         ])
+    );
+}
+
+#[test]
+fn gui_widget_egui_renderer_maps_plex_playlist_picker_controls() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        plex_user_token: Some("user-token".to_owned()),
+        plex_selected_server_url: Some("https://plex.example".to_owned()),
+        plex_selected_server_token: Some("server-token".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.main_window.playback.can_manage_playlist = true;
+    assert!(state.apply(GuiShellAction::BeginPlexPlaylistSearch));
+    assert!(state.apply(GuiShellAction::UpdatePlexPlaylistSearchQuery(
+        "zero".to_owned()
+    )));
+    assert!(state.apply(GuiShellAction::CompletePlexPlaylistSearch {
+        query: "zero".to_owned(),
+        results: vec![GuiPlexPlaylistSearchResult {
+            rating_key: "14452".to_owned(),
+            title: "Episode 11".to_owned(),
+            parent_title: Some("Season 4".to_owned()),
+            grandparent_title: Some("Re:Zero".to_owned()),
+            media_type: PlexMediaType::Episode,
+            duration_millis: Some(1_470_058),
+            file_name: Some("Episode 11.mkv".to_owned()),
+        }],
+        error: None,
+    }));
+
+    let shell_tree = state.shell_widget_tree();
+    let add_plex_button = shell_tree.find("main-window:playlist:add-plex").unwrap();
+    let query_input = shell_tree
+        .find("main-window:playlist-plex-search:query")
+        .unwrap();
+    let submit_button = shell_tree
+        .find("main-window:playlist-plex-search:submit")
+        .unwrap();
+    let result_row = shell_tree
+        .find("main-window:playlist-plex-search:result:0")
+        .unwrap();
+    let result_add = shell_tree
+        .find("main-window:playlist-plex-search:result:0:add")
+        .unwrap();
+
+    assert!(add_plex_button.enabled);
+    assert_eq!(query_input.kind, GuiWidgetKind::TextInput);
+    assert_eq!(query_input.value.as_deref(), Some("zero"));
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_text_input_node(
+            &state,
+            query_input,
+            "rezero",
+            true,
+            true,
+        ),
+        Some(vec![
+            GuiShellAction::UpdatePlexPlaylistSearchQuery("rezero".to_owned()),
+            GuiShellAction::SubmitPlexPlaylistSearch {
+                query: "rezero".to_owned(),
+            },
+        ])
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, submit_button),
+        vec![GuiShellAction::SubmitPlexPlaylistSearch {
+            query: "zero".to_owned(),
+        }]
+    );
+    assert_eq!(
+        result_row.label,
+        "Re:Zero - Season 4 - Episode 11 (24:30) | Episode 11.mkv"
+    );
+    assert!(GuiWidgetEguiRenderer::is_plex_playlist_search_result_row(
+        result_row
+    ));
+    assert!(result_add.enabled);
+    assert_eq!(
+        GuiWidgetEguiRenderer::action_for_list_item_node(result_row),
+        Some(GuiShellAction::SelectPlexPlaylistSearchResult(0))
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, result_add),
+        vec![
+            GuiShellAction::SelectPlexPlaylistSearchResult(0),
+            GuiShellAction::AddSelectedPlexPlaylistSearchResult,
+        ]
     );
 }
 

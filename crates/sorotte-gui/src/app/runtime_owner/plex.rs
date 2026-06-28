@@ -5,6 +5,7 @@ use std::{
 
 use sorotte_plex::PlexServerConnectionKind;
 
+use super::super::runtime_bridge::GuiRuntimeRequest;
 use super::*;
 
 const PLEX_AUTH_AUTO_POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -17,6 +18,17 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) -> bool {
+        if !projected_state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::Plex)
+        {
+            Self::push_plugin_disabled_notification(
+                handle,
+                projected_state,
+                GuiPluginSelection::Plex,
+            );
+            return true;
+        }
         if self.plex_auth_start_rx.is_some() || self.plex_auth_poll_rx.is_some() {
             return true;
         }
@@ -52,6 +64,17 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) -> bool {
+        if !projected_state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::Plex)
+        {
+            Self::push_plugin_disabled_notification(
+                handle,
+                projected_state,
+                GuiPluginSelection::Plex,
+            );
+            return true;
+        }
         self.poll_plex_auth(handle, projected_state, true);
         true
     }
@@ -61,6 +84,12 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) {
+        if !projected_state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::Plex)
+        {
+            return;
+        }
         self.drain_plex_auth_start(handle, projected_state);
         self.drain_plex_auth_poll(handle, projected_state);
         if self.plex_auth_start_rx.is_some() || self.plex_auth_poll_rx.is_some() {
@@ -128,6 +157,12 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) {
+        if !projected_state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::Plex)
+        {
+            return;
+        }
         let settings = projected_state.configuration.to_stored_settings();
         if !self.startup_plex_server_refresh_attempted
             && settings
@@ -208,6 +243,12 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) {
+        if !projected_state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::Plex)
+        {
+            return;
+        }
         let Some(rx) = self.plex_server_refresh_rx.take() else {
             return;
         };
@@ -427,6 +468,17 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) -> bool {
+        if !projected_state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::Plex)
+        {
+            Self::push_plugin_disabled_notification(
+                handle,
+                projected_state,
+                GuiPluginSelection::Plex,
+            );
+            return true;
+        }
         if self.plex_server_refresh_rx.is_some() {
             return true;
         }
@@ -458,6 +510,17 @@ impl GuiPersistedConfigRuntimeOwner {
         machine_identifier: String,
         uri: String,
     ) -> bool {
+        if !projected_state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::Plex)
+        {
+            Self::push_plugin_disabled_notification(
+                handle,
+                projected_state,
+                GuiPluginSelection::Plex,
+            );
+            return true;
+        }
         let Some(server) = self
             .plex_servers
             .iter()
@@ -473,6 +536,12 @@ impl GuiPersistedConfigRuntimeOwner {
         };
         let mut settings = projected_state.configuration.to_stored_settings();
         apply_plex_server_to_settings(&mut settings, &server);
+        self.plex_sync_engine = None;
+        self.plex_sync_rx = None;
+        self.plex_sync_next_tick_due_at = None;
+        self.plex_playlist_search_rx = None;
+        self.plex_playlist_resolve_rx = None;
+        self.clear_plex_stream_resolution_state();
         self.persist_plex_settings_and_project(handle, projected_state, settings);
         self.sync_plex_runtime_snapshot(handle, projected_state, None);
         true
@@ -484,6 +553,17 @@ impl GuiPersistedConfigRuntimeOwner {
         projected_state: &mut SorotteGuiShellAppState,
         enabled: bool,
     ) -> bool {
+        if !projected_state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::Plex)
+        {
+            Self::push_plugin_disabled_notification(
+                handle,
+                projected_state,
+                GuiPluginSelection::Plex,
+            );
+            return true;
+        }
         let mut settings = projected_state.configuration.to_stored_settings();
         settings.plex_sync_enabled = Some(enabled);
         self.persist_plex_settings_and_project(handle, projected_state, settings);
@@ -497,6 +577,17 @@ impl GuiPersistedConfigRuntimeOwner {
         projected_state: &mut SorotteGuiShellAppState,
         enabled: bool,
     ) -> bool {
+        if !projected_state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::Plex)
+        {
+            Self::push_plugin_disabled_notification(
+                handle,
+                projected_state,
+                GuiPluginSelection::Plex,
+            );
+            return true;
+        }
         let mut settings = projected_state.configuration.to_stored_settings();
         settings.plex_streaming_enabled = Some(enabled);
         self.persist_plex_settings_and_project(handle, projected_state, settings);
@@ -521,6 +612,8 @@ impl GuiPersistedConfigRuntimeOwner {
         self.plex_sync_engine = None;
         self.plex_sync_rx = None;
         self.plex_sync_next_tick_due_at = None;
+        self.plex_playlist_search_rx = None;
+        self.plex_playlist_resolve_rx = None;
         let mut settings = projected_state.configuration.to_stored_settings();
         settings.plex_sync_enabled = Some(false);
         settings.plex_streaming_enabled = Some(false);
@@ -537,11 +630,144 @@ impl GuiPersistedConfigRuntimeOwner {
         true
     }
 
+    pub(super) fn handle_search_selected_plex_server_media_request(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        query: String,
+    ) -> bool {
+        if !projected_state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::Plex)
+        {
+            Self::push_plugin_disabled_notification(
+                handle,
+                projected_state,
+                GuiPluginSelection::Plex,
+            );
+            return true;
+        }
+        if self.plex_playlist_search_rx.is_some() {
+            return true;
+        }
+        let client = match self.ensure_plex_client() {
+            Ok(client) => client.clone(),
+            Err(error) => {
+                self.complete_plex_playlist_search_with_error(
+                    handle,
+                    projected_state,
+                    query,
+                    error,
+                );
+                return true;
+            }
+        };
+        let config = plex_config_from_settings(&projected_state.configuration.to_stored_settings());
+        let worker_query = query.clone();
+        let (tx, rx) = mpsc::channel();
+        match std::thread::Builder::new()
+            .name("sorotte-gui-plex-playlist-search".to_owned())
+            .spawn(move || {
+                let result = client
+                    .search_selected_server_media(&config, &worker_query, 25)
+                    .map(|results| {
+                        results
+                            .into_iter()
+                            .map(GuiPlexPlaylistSearchResult::from)
+                            .collect::<Vec<_>>()
+                    })
+                    .map_err(|error| error.to_string());
+                let _ = tx.send(GuiPlexPlaylistSearchWorkerResult {
+                    query: worker_query,
+                    result,
+                });
+            }) {
+            Ok(_thread) => {
+                self.plex_playlist_search_rx = Some(rx);
+            }
+            Err(error) => self.complete_plex_playlist_search_with_error(
+                handle,
+                projected_state,
+                query,
+                format!("Failed to start Plex playlist search worker: {error}"),
+            ),
+        }
+        true
+    }
+
+    pub(super) fn handle_resolve_plex_playlist_item_request(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        rating_key: String,
+    ) -> bool {
+        if !projected_state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::Plex)
+        {
+            Self::push_plugin_disabled_notification(
+                handle,
+                projected_state,
+                GuiPluginSelection::Plex,
+            );
+            return true;
+        }
+        if self.plex_playlist_resolve_rx.is_some() {
+            return true;
+        }
+        let client = match self.ensure_plex_client() {
+            Ok(client) => client.clone(),
+            Err(error) => {
+                self.complete_plex_playlist_resolve_with_error(
+                    handle,
+                    projected_state,
+                    rating_key,
+                    error,
+                );
+                return true;
+            }
+        };
+        let config = plex_config_from_settings(&projected_state.configuration.to_stored_settings());
+        let worker_rating_key = rating_key.clone();
+        let (tx, rx) = mpsc::channel();
+        match std::thread::Builder::new()
+            .name("sorotte-gui-plex-playlist-resolve".to_owned())
+            .spawn(move || {
+                let result = client
+                    .playlist_uri_for_selected_server_rating_key(&config, &worker_rating_key)
+                    .map(|uri| format_plex_playlist_uri(&uri))
+                    .map_err(|error| error.to_string());
+                let _ = tx.send(GuiPlexPlaylistResolveWorkerResult {
+                    rating_key: worker_rating_key,
+                    result,
+                });
+            }) {
+            Ok(_thread) => {
+                self.plex_playlist_resolve_rx = Some(rx);
+            }
+            Err(error) => self.complete_plex_playlist_resolve_with_error(
+                handle,
+                projected_state,
+                rating_key,
+                format!("Failed to start Plex playlist resolve worker: {error}"),
+            ),
+        }
+        true
+    }
+
     pub(super) fn sync_plex_watch_state(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) {
+        if !projected_state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::Plex)
+        {
+            self.plex_sync_rx = None;
+            self.plex_sync_next_tick_due_at = None;
+            return;
+        }
         self.drain_plex_sync_worker(handle, projected_state);
         if self.plex_sync_rx.is_some() {
             return;
@@ -619,6 +845,21 @@ impl GuiPersistedConfigRuntimeOwner {
         }
     }
 
+    pub(super) fn pump_plex_playlist_workers(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+    ) {
+        if !projected_state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::Plex)
+        {
+            return;
+        }
+        self.drain_plex_playlist_search_worker(handle, projected_state);
+        self.drain_plex_playlist_resolve_worker(handle, projected_state);
+    }
+
     pub(in crate::app::runtime_owner) fn ensure_plex_client(
         &mut self,
     ) -> Result<&PlexHttpClient, String> {
@@ -676,6 +917,143 @@ impl GuiPersistedConfigRuntimeOwner {
                 "Plex sync worker stopped before returning a result.".to_owned(),
             ),
         }
+    }
+
+    fn drain_plex_playlist_search_worker(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+    ) {
+        let Some(rx) = self.plex_playlist_search_rx.take() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(result) => {
+                let (results, error) = match result.result {
+                    Ok(results) => (results, None),
+                    Err(error) => (Vec::new(), Some(error)),
+                };
+                Self::push_actions_and_project(
+                    handle,
+                    projected_state,
+                    vec![GuiShellAction::CompletePlexPlaylistSearch {
+                        query: result.query,
+                        results,
+                        error,
+                    }],
+                );
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                self.plex_playlist_search_rx = Some(rx);
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                let query = projected_state
+                    .plex_playlist_search
+                    .as_ref()
+                    .map(|search| search.query.clone())
+                    .unwrap_or_default();
+                self.complete_plex_playlist_search_with_error(
+                    handle,
+                    projected_state,
+                    query,
+                    "Plex playlist search worker stopped before returning a result.".to_owned(),
+                );
+            }
+        }
+    }
+
+    fn drain_plex_playlist_resolve_worker(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+    ) {
+        let Some(rx) = self.plex_playlist_resolve_rx.take() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(result) => match result.result {
+                Ok(playlist_uri) => {
+                    if !projected_state
+                        .current_shared_playlist_entries()
+                        .iter()
+                        .any(|entry| entry == &playlist_uri)
+                    {
+                        handle.push_request(GuiRuntimeRequest::QueuePlaylistEntry {
+                            entry: playlist_uri.clone(),
+                            select_after_queue: false,
+                        });
+                    }
+                    Self::push_actions_and_project(
+                        handle,
+                        projected_state,
+                        vec![
+                            GuiShellAction::AppendSharedPlaylistEntries(vec![playlist_uri]),
+                            GuiShellAction::CompletePlexPlaylistItemResolve {
+                                rating_key: result.rating_key,
+                                error: None,
+                            },
+                        ],
+                    );
+                }
+                Err(error) => self.complete_plex_playlist_resolve_with_error(
+                    handle,
+                    projected_state,
+                    result.rating_key,
+                    error,
+                ),
+            },
+            Err(mpsc::TryRecvError::Empty) => {
+                self.plex_playlist_resolve_rx = Some(rx);
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                let rating_key = projected_state
+                    .plex_playlist_search
+                    .as_ref()
+                    .and_then(|search| search.adding_rating_key.clone())
+                    .unwrap_or_default();
+                self.complete_plex_playlist_resolve_with_error(
+                    handle,
+                    projected_state,
+                    rating_key,
+                    "Plex playlist resolve worker stopped before returning a result.".to_owned(),
+                );
+            }
+        }
+    }
+
+    fn complete_plex_playlist_search_with_error(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        query: String,
+        error: String,
+    ) {
+        Self::push_actions_and_project(
+            handle,
+            projected_state,
+            vec![GuiShellAction::CompletePlexPlaylistSearch {
+                query,
+                results: Vec::new(),
+                error: Some(error),
+            }],
+        );
+    }
+
+    fn complete_plex_playlist_resolve_with_error(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        rating_key: String,
+        error: String,
+    ) {
+        Self::push_actions_and_project(
+            handle,
+            projected_state,
+            vec![GuiShellAction::CompletePlexPlaylistItemResolve {
+                rating_key,
+                error: Some(error),
+            }],
+        );
     }
 
     fn start_plex_server_refresh_worker(
@@ -1285,6 +1663,58 @@ mod tests {
         assert_eq!(
             owner.plex_server_refresh_context,
             Some(GuiPlexServerRefreshContext::Login)
+        );
+    }
+
+    #[test]
+    fn selecting_plex_server_clears_stale_server_scoped_workers() {
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        owner.plex_servers.push(PlexServerConnection {
+            name: "Raptor".to_owned(),
+            machine_identifier: "raptor-machine".to_owned(),
+            uri: "https://raptor.example:32400".to_owned(),
+            access_token: "server-token".to_owned(),
+            owned: true,
+            has_local_connection: false,
+            connection_kind: PlexServerConnectionKind::Remote,
+        });
+        let (_sync_tx, sync_rx) = mpsc::channel();
+        let (_search_tx, search_rx) = mpsc::channel();
+        let (_resolve_tx, resolve_rx) = mpsc::channel();
+        let (_stream_tx, stream_rx) = mpsc::channel();
+        owner.plex_sync_rx = Some(sync_rx);
+        owner.plex_sync_next_tick_due_at = Some(Instant::now());
+        owner.plex_playlist_search_rx = Some(search_rx);
+        owner.plex_playlist_resolve_rx = Some(resolve_rx);
+        owner.plex_stream_resolve_rx = Some(stream_rx);
+        owner.plex_stream_resolve_trigger_key = Some("old-server-target".to_owned());
+
+        let handle = GuiQueuedRuntimeBridgeHandle::default();
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            plex_user_token: Some("user-token".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(owner.handle_select_plex_server_request(
+            &handle,
+            &mut state,
+            "raptor-machine".to_owned(),
+            "https://raptor.example:32400".to_owned(),
+        ));
+
+        assert!(owner.plex_sync_rx.is_none());
+        assert!(owner.plex_sync_next_tick_due_at.is_none());
+        assert!(owner.plex_playlist_search_rx.is_none());
+        assert!(owner.plex_playlist_resolve_rx.is_none());
+        assert!(owner.plex_stream_resolve_rx.is_none());
+        assert!(owner.plex_stream_resolve_trigger_key.is_none());
+        assert_eq!(
+            state
+                .configuration
+                .settings
+                .plex_selected_server_url
+                .as_deref(),
+            Some("https://raptor.example:32400")
         );
     }
 }

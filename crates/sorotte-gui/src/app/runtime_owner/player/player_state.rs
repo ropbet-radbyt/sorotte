@@ -1,5 +1,7 @@
 use super::*;
 
+use sorotte_plex::{is_plex_playlist_uri, parse_plex_playlist_uri};
+
 impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn normalized_current_player_match_key(path: &str) -> String {
         let mut key = path.trim().replace('\\', "/");
@@ -64,6 +66,26 @@ impl GuiPersistedConfigRuntimeOwner {
             return false;
         };
 
+        if is_plex_playlist_uri(target) {
+            if let Some(path) = local_file.path.as_deref()
+                && Self::plex_playlist_target_identity_matches(path, target)
+            {
+                return true;
+            }
+            if self
+                .pending_logical_media_override
+                .as_ref()
+                .is_some_and(|pending| {
+                    Self::plex_playlist_target_identity_matches(&pending.requested_target, target)
+                        || pending.logical_file.path.as_deref().is_some_and(|path| {
+                            Self::plex_playlist_target_identity_matches(path, target)
+                        })
+                })
+            {
+                return true;
+            }
+        }
+
         if let Some(path) = local_file.path.as_deref()
             && Self::normalized_current_player_match_key(path)
                 == Self::normalized_current_player_match_key(target)
@@ -94,6 +116,21 @@ impl GuiPersistedConfigRuntimeOwner {
                 local_file.name == target_name
             }
         })
+    }
+
+    fn plex_playlist_target_identity_matches(left: &str, right: &str) -> bool {
+        if !is_plex_playlist_uri(left) || !is_plex_playlist_uri(right) {
+            return false;
+        }
+        let Ok(left) = parse_plex_playlist_uri(left) else {
+            return false;
+        };
+        let Ok(right) = parse_plex_playlist_uri(right) else {
+            return false;
+        };
+        left.machine_identifier
+            .eq_ignore_ascii_case(&right.machine_identifier)
+            && left.rating_key == right.rating_key
     }
 
     pub(super) fn local_file_identity_matches(

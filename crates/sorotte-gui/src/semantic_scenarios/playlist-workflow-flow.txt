@@ -1,6 +1,7 @@
 # Runtime-backed playlist workflow flow
 setting	username	smoke-user
 setting	shared-playlist-enabled	true
+setting	plex-selected-server	semantic-machine	https://plex.semantic.invalid:32400	semantic-token
 activate	main-window-root
 apply-main-window-runtime	sync-room	true	false	false	true	true	true	true	smoke-user,true,false,false	episode1.mkv|episode2.mkv	system>playlist-ready
 apply-main-window-playlist-selection	1
@@ -12,4 +13,8 @@ assert-label	main-window:playlist:2	https://example.com/live
 activate	main-window:playlist:1:remove
 assert-label	main-window:playlist:1	https://example.com/live
 assert-selected	main-window:playlist:1	true
+assert-enabled	main-window:playlist:add-plex	true
+activate	main-window:playlist:add-plex
+assert-enabled	main-window:playlist-plex-search:query	false
+assert-value	main-window:playlist-plex-search:query	<empty>
 assert-value	shell:active-view	room

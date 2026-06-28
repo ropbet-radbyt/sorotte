@@ -158,6 +158,20 @@ impl GuiPersistedConfigRuntimeOwner {
     ) -> bool {
         let sync_token = self.media_match_wire_sync_token_for_state(projected_state);
         self.media_match_wire_sync_token = Some(sync_token);
+        if !projected_state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::MediaMatching)
+        {
+            if !self.set_media_match_peer_tiers(handle, projected_state, BTreeMap::new()) {
+                return false;
+            }
+            self.update_media_match_remote_status(
+                handle,
+                projected_state,
+                "disabled: plugin off".to_owned(),
+            );
+            return true;
+        }
         let mut tiers = BTreeMap::new();
         let status = if !projected_state.media_match.settings.fingerprinting_enabled {
             "disabled: fingerprinting off".to_owned()
@@ -287,8 +301,11 @@ impl GuiPersistedConfigRuntimeOwner {
             .unwrap_or_default();
         let remote_signature_token = format!("{remote_peer_states:?}");
         format!(
-            "{}|{}|{}|{:?}|{:?}|{}",
+            "{}|{}|{}|{}|{:?}|{:?}|{}",
             current_path,
+            projected_state
+                .plugin_enablement
+                .enabled_for(GuiPluginSelection::MediaMatching),
             projected_state.media_match.settings.fingerprinting_enabled,
             projected_state.media_match.settings.wire_sharing_enabled,
             projected_state.media_match.settings.autoplay_policy,
@@ -303,10 +320,13 @@ impl GuiPersistedConfigRuntimeOwner {
         projected_state: &mut SorotteGuiShellAppState,
         status: String,
     ) {
-        if self.media_match_runtime_snapshot.remote_status.as_deref() == Some(status.as_str()) {
+        if self.media_match_runtime_snapshot.remote_status.as_deref() == Some(status.as_str())
+            && self.media_match_runtime_snapshot.settings == projected_state.media_match.settings
+        {
             return;
         }
         let mut snapshot = self.media_match_runtime_snapshot.clone();
+        snapshot.settings = projected_state.media_match.settings.clone();
         snapshot.remote_status = Some(status);
         self.media_match_runtime_snapshot = snapshot.clone();
         Self::push_actions_and_project(
@@ -438,7 +458,7 @@ impl GuiPersistedConfigRuntimeOwner {
         );
     }
 
-    fn request_media_match_background_worker_cancel(
+    pub(in crate::app::runtime_owner) fn request_media_match_background_worker_cancel(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
@@ -935,9 +955,9 @@ impl GuiPersistedConfigRuntimeOwner {
         }
     }
 
-    pub(in crate::app::runtime_owner) fn pump_media_match_remote_lookup_worker(&mut self) {
+    pub(in crate::app::runtime_owner) fn pump_media_match_remote_lookup_worker(&mut self) -> bool {
         let Some(rx) = self.media_match_remote_lookup_rx.take() else {
-            return;
+            return false;
         };
         match rx.try_recv() {
             Ok(result) => {
@@ -948,10 +968,13 @@ impl GuiPersistedConfigRuntimeOwner {
                     self.media_match_remote_lookup_result = Some(result);
                     self.media_match_wire_sync_token = None;
                     self.last_attached_media_resolution_trigger = None;
+                    return true;
                 }
+                false
             }
             Err(mpsc::TryRecvError::Empty) => {
                 self.media_match_remote_lookup_rx = Some(rx);
+                false
             }
             Err(mpsc::TryRecvError::Disconnected) => {
                 if let Some(trigger_key) = self.media_match_remote_lookup_trigger_key.take() {
@@ -961,7 +984,9 @@ impl GuiPersistedConfigRuntimeOwner {
                     });
                     self.media_match_wire_sync_token = None;
                     self.last_attached_media_resolution_trigger = None;
+                    return true;
                 }
+                false
             }
         }
     }
@@ -1004,6 +1029,20 @@ impl GuiPersistedConfigRuntimeOwner {
             projected_state.media_match.settings.clone(),
         );
         None
+    }
+
+    pub(in crate::app::runtime_owner) fn media_match_cached_exact_inventory_candidate_for_target(
+        &mut self,
+        projected_state: &SorotteGuiShellAppState,
+        target: &str,
+        search_roots: &[PathBuf],
+    ) -> Option<String> {
+        if !projected_state.media_match.settings.fingerprinting_enabled {
+            return None;
+        }
+        let root = self.media_match_root_for_request(projected_state)?;
+        let targets = Self::local_media_search_candidates_for_target(target);
+        media_match_inventory_exact_candidate_for_targets(&root, search_roots, &targets)
     }
 
     fn current_player_path_if_cached_media_match_candidate_for_target(
@@ -1086,10 +1125,12 @@ impl GuiPersistedConfigRuntimeOwner {
 
         let target = room_target?;
         match self.resolve_main_window_user_media_target(projected_state, &target) {
-            Ok(GuiUserMediaTargetResolution::Resolved(path)) if Path::new(&path).is_file() => {
+            Ok(GuiUserMediaTargetResolution::Resolved { path, .. })
+                if Path::new(&path).is_file() =>
+            {
                 Some(path)
             }
-            Ok(GuiUserMediaTargetResolution::Resolved(_))
+            Ok(GuiUserMediaTargetResolution::Resolved { .. })
             | Ok(GuiUserMediaTargetResolution::Pending | GuiUserMediaTargetResolution::Missing)
             | Err(_) => None,
         }
@@ -1476,6 +1517,9 @@ impl GuiPersistedConfigRuntimeOwner {
         let mut keep_rx = true;
         let mut processed_events = 0usize;
         let mut latest_progress = None;
+        let plugin_enabled = projected_state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::MediaMatching);
         loop {
             if processed_events >= MEDIA_MATCH_BACKGROUND_EVENTS_PER_PUMP {
                 break;
@@ -1483,13 +1527,25 @@ impl GuiPersistedConfigRuntimeOwner {
             match rx.try_recv() {
                 Ok(GuiMediaMatchBackgroundWorkerEvent::Progress(progress)) => {
                     processed_events += 1;
-                    latest_progress = Some(progress);
+                    if plugin_enabled {
+                        latest_progress = Some(progress);
+                    }
                 }
                 Ok(GuiMediaMatchBackgroundWorkerEvent::Finished(result)) => {
                     latest_progress = None;
                     keep_rx = false;
                     self.media_match_background_worker_cancel = None;
                     let cancel_disposition = self.media_match_background_cancel_disposition.take();
+                    if !plugin_enabled {
+                        if let Some(disposition) = cancel_disposition {
+                            self.publish_media_match_background_cancel_status(
+                                handle,
+                                projected_state,
+                                disposition,
+                            );
+                        }
+                        break;
+                    }
                     match result {
                         Ok(result) => {
                             if let Some(disposition) = cancel_disposition {
@@ -1581,6 +1637,9 @@ impl GuiPersistedConfigRuntimeOwner {
                     keep_rx = false;
                     self.media_match_background_worker_cancel = None;
                     self.media_match_background_cancel_disposition = None;
+                    if !plugin_enabled {
+                        break;
+                    }
                     let status = self
                         .finish_media_match_background_index_backup(false)
                         .map(|()| "failed: previous index restored".to_owned())
@@ -1616,6 +1675,12 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) {
+        if !projected_state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::MediaMatching)
+        {
+            return;
+        }
         if !projected_state.media_match.settings.fingerprinting_enabled {
             return;
         }
@@ -1675,6 +1740,12 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) {
+        if !projected_state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::MediaMatching)
+        {
+            return;
+        }
         if !projected_state.media_match.settings.fingerprinting_enabled
             || !projected_state.media_match.settings.wire_sharing_enabled
         {
@@ -1703,6 +1774,17 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) -> bool {
+        if !projected_state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::MediaMatching)
+        {
+            Self::push_plugin_disabled_notification(
+                handle,
+                projected_state,
+                GuiPluginSelection::MediaMatching,
+            );
+            return true;
+        }
         if self.media_match_tool_worker_busy_notification(handle, projected_state) {
             return true;
         }
@@ -1757,6 +1839,17 @@ impl GuiPersistedConfigRuntimeOwner {
         tool: MediaMatchTool,
         source_path: String,
     ) -> bool {
+        if !projected_state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::MediaMatching)
+        {
+            Self::push_plugin_disabled_notification(
+                handle,
+                projected_state,
+                GuiPluginSelection::MediaMatching,
+            );
+            return true;
+        }
         if self.media_match_tool_worker_busy_notification(handle, projected_state) {
             return true;
         }
@@ -1844,6 +1937,17 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) -> bool {
+        if !projected_state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::MediaMatching)
+        {
+            Self::push_plugin_disabled_notification(
+                handle,
+                projected_state,
+                GuiPluginSelection::MediaMatching,
+            );
+            return true;
+        }
         let _ = self.media_match_config_path_for_request(projected_state);
         let snapshot =
             self.refresh_media_match_runtime_snapshot(&projected_state.media_match.settings);
@@ -1873,6 +1977,17 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) -> bool {
+        if !projected_state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::MediaMatching)
+        {
+            Self::push_plugin_disabled_notification(
+                handle,
+                projected_state,
+                GuiPluginSelection::MediaMatching,
+            );
+            return true;
+        }
         let _ = self.queue_media_match_background_worker(
             handle,
             projected_state,
@@ -1912,6 +2027,17 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) -> bool {
+        if !projected_state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::MediaMatching)
+        {
+            Self::push_plugin_disabled_notification(
+                handle,
+                projected_state,
+                GuiPluginSelection::MediaMatching,
+            );
+            return true;
+        }
         if self.request_media_match_background_worker_cancel(
             handle,
             projected_state,
@@ -1974,6 +2100,9 @@ impl GuiPersistedConfigRuntimeOwner {
         let was_enabled = projected_state.media_match.settings.fingerprinting_enabled;
         let should_start_initial_index = enabled
             && !was_enabled
+            && projected_state
+                .plugin_enablement
+                .enabled_for(GuiPluginSelection::MediaMatching)
             && self
                 .media_match_root_for_request(projected_state)
                 .is_some_and(|root| !media_match_sqlite_index_exists(&root));
@@ -2720,6 +2849,58 @@ mod tests {
             owner.media_match_runtime_snapshot.last_evidence.as_deref(),
             Some("current evidence"),
             "a worker result that arrives after cancellation must not publish stale evidence"
+        );
+        assert_eq!(
+            owner
+                .media_match_runtime_snapshot
+                .background_status
+                .as_deref(),
+            Some("canceled: checkpoint kept")
+        );
+    }
+
+    #[test]
+    fn disabled_media_match_background_worker_result_does_not_publish_stale_nearest_match() {
+        let handle = GuiQueuedRuntimeBridgeHandle::default();
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            media_matching_plugin_enabled: Some(false),
+            media_match_fingerprinting_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        owner.media_match_runtime_snapshot.nearest_match = Some("current nearest".to_owned());
+        owner.media_match_runtime_snapshot.last_evidence = Some("current evidence".to_owned());
+        let (tx, rx) = mpsc::channel();
+        tx.send(GuiMediaMatchBackgroundWorkerEvent::Finished(Ok(
+            MediaMatchIndexRebuildResult {
+                message: "stale result".to_owned(),
+                cache_status: "stale cache".to_owned(),
+                current_decision: Some("stale decision".to_owned()),
+                nearest_match: Some("stale nearest".to_owned()),
+                last_evidence: Some("stale evidence".to_owned()),
+            },
+        )))
+        .expect("stale worker result should be queued");
+
+        owner.media_match_background_worker_rx = Some(rx);
+        owner.media_match_background_worker_cancel = Some(Arc::new(AtomicBool::new(false)));
+        owner.media_match_background_cancel_disposition =
+            Some(GuiMediaMatchBackgroundCancelDisposition::KeepCheckpoint);
+        owner.media_match_background_trigger_key = Some("disabled-trigger".to_owned());
+
+        owner.pump_media_match_background_worker(&handle, &mut state);
+
+        assert!(owner.media_match_background_worker_rx.is_none());
+        assert!(owner.media_match_background_worker_cancel.is_none());
+        assert_eq!(
+            owner.media_match_runtime_snapshot.nearest_match.as_deref(),
+            Some("current nearest"),
+            "a worker result that arrives while disabled must not publish stale nearest-match text"
+        );
+        assert_eq!(
+            owner.media_match_runtime_snapshot.last_evidence.as_deref(),
+            Some("current evidence"),
+            "a worker result that arrives while disabled must not publish stale evidence"
         );
         assert_eq!(
             owner

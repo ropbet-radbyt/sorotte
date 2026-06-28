@@ -772,6 +772,7 @@ impl SorotteGuiShellAppState {
         self.text_edit_session = text_edit_session;
         self.playlist_text_edit_session = playlist_text_edit_session;
         self.playlist_url_edit_session = playlist_url_edit_session;
+        self.plex_playlist_search = snapshot.plex_playlist_search;
         self.media_url_edit_session = media_url_edit_session;
         self.normalize_selection();
         self.normalize_selected_menu_action_after_runtime_update();

@@ -1,13 +1,24 @@
 use super::*;
 use std::time::SystemTime;
 
+use super::media_resolution::{
+    GuiMediaResolutionCandidate, GuiMediaResolutionPlan, GuiMediaResolutionTarget,
+};
 use sorotte_plex::{
-    PlexMediaResolver, PlexStreamTarget, is_plex_playlist_uri, parse_plex_playlist_uri,
-    redact_plex_token,
+    PlexClientConfig, PlexHttpClient, PlexMatchCache, PlexMediaResolver, PlexStreamTarget,
+    is_plex_playlist_uri, parse_plex_playlist_uri, redact_plex_token,
 };
 
+enum GuiPlexStreamResolutionState {
+    Ready(Option<Box<PlexStreamTarget>>),
+    Pending,
+    Disabled,
+}
+
 impl GuiPersistedConfigRuntimeOwner {
-    fn local_media_search_candidates_for_target(target: &str) -> Vec<String> {
+    pub(in crate::app::runtime_owner) fn local_media_search_candidates_for_target(
+        target: &str,
+    ) -> Vec<String> {
         let mut candidates = Vec::new();
         if is_plex_playlist_uri(target) {
             if let Ok(uri) = parse_plex_playlist_uri(target) {
@@ -152,7 +163,10 @@ impl GuiPersistedConfigRuntimeOwner {
         let roots = Self::automatic_media_search_root_keys(&search_roots);
         let retry_interval = Self::automatic_media_search_retry_interval(state);
         if let Some(path) = self.quick_resolve_main_window_user_media_target(state, &target)? {
-            if search_roots.is_empty() {
+            if Path::new(&target).is_absolute() || browser_is_url(&target) {
+                self.cancel_pending_attached_media_search_index_build_impl();
+                self.attached_media_search_next_retry_at = None;
+            } else if search_roots.is_empty() {
                 if !self.attached_media_search_refresh_pending() {
                     self.cancel_pending_attached_media_search_index_build_impl();
                     self.attached_media_search_next_retry_at = None;
@@ -176,7 +190,25 @@ impl GuiPersistedConfigRuntimeOwner {
                 }
             }
             self.unresolved_attached_media_target = None;
-            return Ok(GuiUserMediaTargetResolution::Resolved(path));
+            return Ok(GuiUserMediaTargetResolution::Resolved {
+                path,
+                source: GuiUserMediaTargetResolutionSource::QuickLocal,
+            });
+        }
+
+        if let Some(path) = self.media_match_cached_exact_inventory_candidate_for_target(
+            state,
+            &target,
+            &search_roots,
+        ) {
+            self.unresolved_attached_media_target = None;
+            if !self.attached_media_search_refresh_pending() {
+                self.attached_media_search_next_retry_at = None;
+            }
+            return Ok(GuiUserMediaTargetResolution::Resolved {
+                path,
+                source: GuiUserMediaTargetResolutionSource::MediaMatchExactInventory,
+            });
         }
 
         if search_roots.is_empty() {
@@ -211,7 +243,10 @@ impl GuiPersistedConfigRuntimeOwner {
             if !self.attached_media_search_refresh_pending() {
                 self.attached_media_search_next_retry_at = None;
             }
-            return Ok(GuiUserMediaTargetResolution::Resolved(found_path));
+            return Ok(GuiUserMediaTargetResolution::Resolved {
+                path: found_path,
+                source: GuiUserMediaTargetResolutionSource::MediaSearchIndex,
+            });
         }
         self.unresolved_attached_media_target = Some(target);
         let queued_refresh = if build_pending {
@@ -247,24 +282,50 @@ impl GuiPersistedConfigRuntimeOwner {
         self.resolve_main_window_user_media_target_from_index(state, target, false)
     }
 
-    pub(super) fn resolve_plex_stream_target_for_media_target(
-        &mut self,
+    fn plex_stream_resolution_config_for_target(
         state: &SorotteGuiShellAppState,
         target: &str,
-    ) -> Result<Option<PlexStreamTarget>, String> {
+    ) -> Option<PlexClientConfig> {
+        if !state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::Plex)
+        {
+            return None;
+        }
         let settings = state.configuration.to_stored_settings();
         let config = super::super::plex::plex_config_from_settings(&settings);
         if !config.streaming_enabled {
-            return Ok(None);
+            return None;
         }
         let target_is_plex_uri = is_plex_playlist_uri(target);
         if !target_is_plex_uri && !config.has_selected_server() {
-            return Ok(None);
+            return None;
         }
+        Some(config)
+    }
 
-        let mut engine = self.take_plex_sync_engine(config.clone())?;
-        let client = self.ensure_plex_client()?.clone();
-        let mut resolver = PlexMediaResolver::new(config, client, engine.cache().clone());
+    fn plex_stream_resolution_trigger_key(config: &PlexClientConfig, target: &str) -> String {
+        let mut token_hasher = std::collections::hash_map::DefaultHasher::new();
+        use std::hash::{Hash, Hasher};
+        config.user_token.hash(&mut token_hasher);
+        config.selected_server_token.hash(&mut token_hasher);
+        format!(
+            "{}\nstreaming={}\nserver-id={}\nserver-url={}\ntoken-hash={:016x}",
+            target,
+            config.streaming_enabled,
+            config.selected_server_id.as_deref().unwrap_or_default(),
+            config.selected_server_url.as_deref().unwrap_or_default(),
+            token_hasher.finish()
+        )
+    }
+
+    fn resolve_plex_stream_target_with_parts(
+        config: PlexClientConfig,
+        client: PlexHttpClient,
+        cache: PlexMatchCache,
+        target: &str,
+    ) -> Result<(Option<PlexStreamTarget>, PlexMatchCache), String> {
+        let mut resolver = PlexMediaResolver::new(config, client, cache);
         let result = resolver
             .resolve_stream_target(target, SystemTime::now())
             .map_err(|error| {
@@ -273,6 +334,15 @@ impl GuiPersistedConfigRuntimeOwner {
                 ))
             })?;
         let (_, _, cache) = resolver.into_parts();
+        Ok((result, cache))
+    }
+
+    fn apply_plex_stream_resolution_cache(
+        &mut self,
+        config: PlexClientConfig,
+        cache: PlexMatchCache,
+    ) -> Result<(), String> {
+        let mut engine = self.take_plex_sync_engine(config)?;
         let cache_changed = engine.cache() != &cache;
         *engine.cache_mut() = cache.clone();
         self.plex_sync_engine = Some(engine);
@@ -282,7 +352,192 @@ impl GuiPersistedConfigRuntimeOwner {
         {
             eprintln!("warning: failed to save Plex match cache after stream resolution: {error}");
         }
-        Ok(result)
+        Ok(())
+    }
+
+    pub(in crate::app::runtime_owner) fn pump_plex_stream_resolution_worker(&mut self) -> bool {
+        let Some(rx) = self.plex_stream_resolve_rx.take() else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(result) => {
+                if self.plex_stream_resolve_trigger_key.as_deref()
+                    == Some(result.trigger_key.as_str())
+                {
+                    self.plex_stream_resolve_trigger_key = None;
+                    self.plex_stream_resolve_result = Some(result);
+                    self.last_attached_media_resolution_trigger = None;
+                    return true;
+                }
+                false
+            }
+            Err(TryRecvError::Empty) => {
+                self.plex_stream_resolve_rx = Some(rx);
+                false
+            }
+            Err(TryRecvError::Disconnected) => {
+                if let Some(trigger_key) = self.plex_stream_resolve_trigger_key.take() {
+                    self.plex_stream_resolve_result = Some(GuiPlexStreamResolveWorkerResult {
+                        trigger_key,
+                        target: String::new(),
+                        result: Err(
+                            "Plex stream resolution worker stopped before returning a result."
+                                .to_owned(),
+                        ),
+                    });
+                    self.last_attached_media_resolution_trigger = None;
+                    return true;
+                }
+                false
+            }
+        }
+    }
+
+    pub(in crate::app::runtime_owner) fn clear_plex_stream_resolution_state(&mut self) {
+        self.plex_stream_resolve_rx = None;
+        self.plex_stream_resolve_trigger_key = None;
+        self.plex_stream_resolve_result = None;
+    }
+
+    fn cached_or_queue_plex_stream_target_for_media_target(
+        &mut self,
+        state: &SorotteGuiShellAppState,
+        target: &str,
+    ) -> Result<GuiPlexStreamResolutionState, String> {
+        let Some(config) = Self::plex_stream_resolution_config_for_target(state, target) else {
+            self.clear_plex_stream_resolution_state();
+            return Ok(GuiPlexStreamResolutionState::Disabled);
+        };
+        let trigger_key = Self::plex_stream_resolution_trigger_key(&config, target);
+
+        if self
+            .plex_stream_resolve_result
+            .as_ref()
+            .is_some_and(|result| result.trigger_key != trigger_key)
+        {
+            self.plex_stream_resolve_result = None;
+        }
+
+        if self
+            .plex_stream_resolve_result
+            .as_ref()
+            .is_some_and(|result| result.trigger_key == trigger_key)
+        {
+            let result = self
+                .plex_stream_resolve_result
+                .take()
+                .expect("checked plex stream resolve result should exist");
+            let outcome = result.result?;
+            self.apply_plex_stream_resolution_cache(config, outcome.cache)?;
+            return Ok(GuiPlexStreamResolutionState::Ready(
+                outcome.stream_target.map(Box::new),
+            ));
+        }
+
+        if self.plex_stream_resolve_rx.is_some() {
+            return Ok(GuiPlexStreamResolutionState::Pending);
+        }
+
+        let engine = self.take_plex_sync_engine(config.clone())?;
+        let cache = engine.cache().clone();
+        self.plex_sync_engine = Some(engine);
+        let client = self.ensure_plex_client()?.clone();
+        let worker_target = target.to_owned();
+        let worker_trigger_key = trigger_key.clone();
+        let (tx, rx) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("sorotte-gui-plex-stream-resolve".to_owned())
+            .spawn(move || {
+                let result = Self::resolve_plex_stream_target_with_parts(
+                    config,
+                    client,
+                    cache,
+                    &worker_target,
+                )
+                .map(|(stream_target, cache)| GuiPlexStreamResolveOutcome {
+                    stream_target,
+                    cache,
+                });
+                let _ = tx.send(GuiPlexStreamResolveWorkerResult {
+                    trigger_key: worker_trigger_key,
+                    target: worker_target,
+                    result,
+                });
+            })
+            .map_err(|error| format!("Failed to start Plex stream resolution worker: {error}"))?;
+        self.plex_stream_resolve_rx = Some(rx);
+        self.plex_stream_resolve_trigger_key = Some(trigger_key);
+        Ok(GuiPlexStreamResolutionState::Pending)
+    }
+
+    fn open_media_resolution_candidate(
+        &mut self,
+        requested_target: &str,
+        candidate: GuiMediaResolutionCandidate,
+        user_initiated: bool,
+    ) -> SelectedPlaylistMediaSyncOutcome {
+        match candidate.target() {
+            GuiMediaResolutionTarget::CurrentPlayer => {
+                self.unresolved_attached_media_target = None;
+                if !self.attached_media_search_refresh_pending() {
+                    self.attached_media_search_next_retry_at = None;
+                }
+                SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget
+            }
+            GuiMediaResolutionTarget::LocalPath(resolved_target) => {
+                if self.current_player_matches_media_target(resolved_target) {
+                    self.unresolved_attached_media_target = None;
+                    if !self.attached_media_search_refresh_pending() {
+                        self.attached_media_search_next_retry_at = None;
+                    }
+                    return SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget;
+                }
+
+                let player_paths = [resolved_target.clone()];
+                self.prepare_stream_load_tracking(&player_paths[0], user_initiated);
+                let open_result =
+                    self.open_media_files_through_attached_player_result_impl(&player_paths);
+                if let Some(Err(message)) = open_result {
+                    if user_initiated {
+                        self.queue_stream_error(message);
+                    } else {
+                        self.queue_stream_warning(message);
+                    }
+                    return SelectedPlaylistMediaSyncOutcome::NoChange;
+                }
+                if open_result.is_some_and(|result| result.is_ok()) {
+                    self.unresolved_attached_media_target = None;
+                    if !self.attached_media_search_refresh_pending() {
+                        self.attached_media_search_next_retry_at = None;
+                    }
+                    return SelectedPlaylistMediaSyncOutcome::OpenedNewMedia;
+                }
+                SelectedPlaylistMediaSyncOutcome::NoChange
+            }
+            GuiMediaResolutionTarget::PlexStream(stream_target) => {
+                let open_result = self.open_plex_stream_target_through_attached_player_result_impl(
+                    requested_target,
+                    stream_target.as_ref().clone(),
+                    user_initiated,
+                );
+                if let Some(Err(message)) = open_result {
+                    if user_initiated {
+                        self.queue_stream_error(message);
+                    } else {
+                        self.queue_stream_warning(message);
+                    }
+                    return SelectedPlaylistMediaSyncOutcome::NoChange;
+                }
+                if open_result.is_some_and(|result| result.is_ok()) {
+                    self.unresolved_attached_media_target = None;
+                    if !self.attached_media_search_refresh_pending() {
+                        self.attached_media_search_next_retry_at = None;
+                    }
+                    return SelectedPlaylistMediaSyncOutcome::OpenedNewMedia;
+                }
+                SelectedPlaylistMediaSyncOutcome::NoChange
+            }
+        }
     }
 
     pub(in crate::app::runtime_owner) fn sync_selected_shared_playlist_media_to_attached_player_impl(
@@ -296,13 +551,15 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.attached_media_search_next_retry_at = None;
             }
             self.last_attached_media_resolution_trigger = None;
+            self.clear_plex_stream_resolution_state();
             return SelectedPlaylistMediaSyncOutcome::NoChange;
         };
+        let mut plan = GuiMediaResolutionPlan::new(target);
 
         let search_roots = self.automatic_media_search_roots(state);
         let roots = Self::automatic_media_search_root_keys(&search_roots);
         let trigger = self.automatic_media_resolution_trigger(
-            &target,
+            plan.target(),
             &roots,
             self.media_match_remote_resolution_token_for_state(state),
         );
@@ -311,7 +568,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 .session
                 .as_ref()
                 .is_some_and(|session| session.has_pending_playlist_index_reset_intent())
-                && self.current_player_matches_media_target(&target)
+                && self.current_player_matches_media_target(plan.target())
             {
                 self.unresolved_attached_media_target = None;
                 if !self.attached_media_search_refresh_pending() {
@@ -322,88 +579,88 @@ impl GuiPersistedConfigRuntimeOwner {
             return SelectedPlaylistMediaSyncOutcome::NoChange;
         }
         self.last_attached_media_resolution_trigger = Some(trigger);
-        if !self.preflight_room_stream_target(state, &target) {
+
+        if self.current_player_matches_media_target(plan.target()) {
+            plan.push_current_player_candidate();
+            return self.open_media_resolution_candidate(
+                plan.target(),
+                plan.best_candidate()
+                    .cloned()
+                    .expect("current-player candidate should exist"),
+                false,
+            );
+        }
+
+        if !self.preflight_room_stream_target(state, plan.target()) {
             return SelectedPlaylistMediaSyncOutcome::NoChange;
         }
 
-        let resolved_target =
-            match self.resolve_main_window_user_media_target_for_automatic_sync(state, &target) {
-                Ok(GuiUserMediaTargetResolution::Resolved(path)) => Some(path),
-                Ok(GuiUserMediaTargetResolution::Pending) => {
-                    return SelectedPlaylistMediaSyncOutcome::NoChange;
-                }
-                Ok(GuiUserMediaTargetResolution::Missing) | Err(_) => {
-                    self.media_match_cached_room_candidate_for_target(state, &target)
-                }
-            };
-
-        self.ensure_configured_player_attached();
-        if self.player.is_none() {
-            return SelectedPlaylistMediaSyncOutcome::NoChange;
-        }
-        if let Some(resolved_target) = resolved_target {
-            if self.current_player_matches_media_target(&resolved_target) {
-                self.unresolved_attached_media_target = None;
-                if !self.attached_media_search_refresh_pending() {
-                    self.attached_media_search_next_retry_at = None;
-                }
-                return SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget;
+        match self.resolve_main_window_user_media_target_for_automatic_sync(state, plan.target()) {
+            Ok(GuiUserMediaTargetResolution::Resolved { path, source }) => {
+                plan.push_user_media_candidate(path, source);
             }
+            Ok(GuiUserMediaTargetResolution::Pending) => {
+                plan.record_pending_media_search();
+                if let Some(path) =
+                    self.media_match_cached_room_candidate_for_target(state, plan.target())
+                {
+                    plan.push_media_match_candidate(path);
+                } else if self.media_match_remote_lookup_rx.is_some() {
+                    plan.record_pending_media_match();
+                }
+            }
+            Ok(GuiUserMediaTargetResolution::Missing) | Err(_) => {
+                if let Some(path) =
+                    self.media_match_cached_room_candidate_for_target(state, plan.target())
+                {
+                    plan.push_media_match_candidate(path);
+                } else if self.media_match_remote_lookup_rx.is_some() {
+                    plan.record_pending_media_match();
+                }
+            }
+        }
 
-            let player_paths = [resolved_target];
-            self.prepare_stream_load_tracking(&player_paths[0], false);
-            let open_result =
-                self.open_media_files_through_attached_player_result_impl(&player_paths);
-            if let Some(Err(message)) = open_result {
-                self.queue_stream_warning(message);
+        if let Some(candidate) = plan.best_candidate().cloned() {
+            if plan.has_pending_media_search_above(candidate.priority()) {
                 return SelectedPlaylistMediaSyncOutcome::NoChange;
             }
-            if open_result.is_some_and(|result| result.is_ok()) {
-                self.unresolved_attached_media_target = None;
-                if !self.attached_media_search_refresh_pending() {
-                    self.attached_media_search_next_retry_at = None;
-                }
-                return SelectedPlaylistMediaSyncOutcome::OpenedNewMedia;
+            self.ensure_configured_player_attached();
+            if self.player.is_none() {
+                return SelectedPlaylistMediaSyncOutcome::NoChange;
             }
-            return SelectedPlaylistMediaSyncOutcome::NoChange;
+            return self.open_media_resolution_candidate(plan.target(), candidate, false);
         }
 
-        if self.current_player_matches_media_target(&target) {
-            self.unresolved_attached_media_target = None;
-            if !self.attached_media_search_refresh_pending() {
-                self.attached_media_search_next_retry_at = None;
+        match self.cached_or_queue_plex_stream_target_for_media_target(state, plan.target()) {
+            Ok(GuiPlexStreamResolutionState::Ready(Some(stream_target))) => {
+                plan.push_plex_stream_candidate(*stream_target);
             }
-            return SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget;
-        }
-
-        let stream_target = match self.resolve_plex_stream_target_for_media_target(state, &target) {
-            Ok(Some(stream_target)) => stream_target,
-            Ok(None) => return SelectedPlaylistMediaSyncOutcome::NoChange,
+            Ok(
+                GuiPlexStreamResolutionState::Ready(None) | GuiPlexStreamResolutionState::Disabled,
+            ) => {
+                return SelectedPlaylistMediaSyncOutcome::NoChange;
+            }
+            Ok(GuiPlexStreamResolutionState::Pending) => {
+                plan.record_pending_plex_stream();
+                return SelectedPlaylistMediaSyncOutcome::NoChange;
+            }
             Err(message) => {
                 self.queue_stream_warning(message);
                 return SelectedPlaylistMediaSyncOutcome::NoChange;
             }
+        }
+
+        let Some(candidate) = plan.best_candidate().cloned() else {
+            return SelectedPlaylistMediaSyncOutcome::NoChange;
         };
-        let open_result = self.open_plex_stream_target_through_attached_player_result_impl(
-            &target,
-            stream_target,
-            false,
-        );
-        if let Some(Err(message)) = open_result {
-            self.queue_stream_warning(message);
+        self.ensure_configured_player_attached();
+        if self.player.is_none() {
             return SelectedPlaylistMediaSyncOutcome::NoChange;
         }
-        if open_result.is_some_and(|result| result.is_ok()) {
-            self.unresolved_attached_media_target = None;
-            if !self.attached_media_search_refresh_pending() {
-                self.attached_media_search_next_retry_at = None;
-            }
-            return SelectedPlaylistMediaSyncOutcome::OpenedNewMedia;
-        }
-        SelectedPlaylistMediaSyncOutcome::NoChange
+        self.open_media_resolution_candidate(plan.target(), candidate, false)
     }
 
-    pub(super) fn open_selected_playlist_media_path_through_attached_player_impl(
+    pub(in crate::app::runtime_owner) fn open_selected_playlist_media_path_through_attached_player_impl(
         &mut self,
         state: &SorotteGuiShellAppState,
         player_paths: &[String],
@@ -417,6 +674,17 @@ impl GuiPersistedConfigRuntimeOwner {
             return SelectedPlaylistMediaSyncOutcome::NoChange;
         }
         let selected_path_is_plex_uri = is_plex_playlist_uri(&selected_path);
+        if browser_stream_target_kind(&selected_path, None) == GuiStreamTargetKind::ExtractorPageUrl
+            && !state
+                .plugin_enablement
+                .enabled_for(GuiPluginSelection::StreamSupport)
+        {
+            self.queue_stream_warning(
+                "Stream Support is disabled; extractor-backed URLs cannot be opened until it is enabled."
+                    .to_owned(),
+            );
+            return SelectedPlaylistMediaSyncOutcome::NoChange;
+        }
         if !self.preflight_user_stream_target(&selected_path) {
             return SelectedPlaylistMediaSyncOutcome::NoChange;
         }
@@ -431,18 +699,25 @@ impl GuiPersistedConfigRuntimeOwner {
             match self
                 .resolve_main_window_user_media_target_for_automatic_sync(state, &selected_path)
             {
-                Ok(GuiUserMediaTargetResolution::Resolved(path)) => {
+                Ok(GuiUserMediaTargetResolution::Resolved { path, .. }) => {
                     selected_path = path;
                 }
-                Ok(GuiUserMediaTargetResolution::Pending) => {
-                    return SelectedPlaylistMediaSyncOutcome::NoChange;
-                }
-                Ok(GuiUserMediaTargetResolution::Missing) | Err(_) => {
+                Ok(GuiUserMediaTargetResolution::Pending)
+                | Ok(GuiUserMediaTargetResolution::Missing)
+                | Err(_) => {
                     let stream_target = match self
-                        .resolve_plex_stream_target_for_media_target(state, &selected_path)
+                        .cached_or_queue_plex_stream_target_for_media_target(state, &selected_path)
                     {
-                        Ok(Some(stream_target)) => stream_target,
-                        Ok(None) => return SelectedPlaylistMediaSyncOutcome::NoChange,
+                        Ok(GuiPlexStreamResolutionState::Ready(Some(stream_target))) => {
+                            *stream_target
+                        }
+                        Ok(
+                            GuiPlexStreamResolutionState::Ready(None)
+                            | GuiPlexStreamResolutionState::Disabled,
+                        )
+                        | Ok(GuiPlexStreamResolutionState::Pending) => {
+                            return SelectedPlaylistMediaSyncOutcome::NoChange;
+                        }
                         Err(message) => {
                             self.queue_stream_error(message);
                             return SelectedPlaylistMediaSyncOutcome::NoChange;

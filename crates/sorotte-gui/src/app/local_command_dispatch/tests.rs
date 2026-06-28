@@ -4,9 +4,11 @@ use super::super::remote_services::{
     LegacyUpdateCheckStatus, StagedUpdate, UpdateCandidate, UpdateCandidateSource, UpdateChannel,
 };
 use crate::app::{
-    GuiDraftRuntimeSnapshot, GuiRuntimeRequest, GuiShellAction, MainWindowRuntimeSnapshot,
-    MainWindowRuntimeUserSnapshot, SorotteGuiShellAppState, StoredClientSettingsMvp,
+    GuiDraftRuntimeSnapshot, GuiPlexPlaylistSearchResult, GuiPluginSelection, GuiRuntimeRequest,
+    GuiShellAction, MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot,
+    SorotteGuiShellAppState, StoredClientSettingsMvp,
 };
+use sorotte_plex::PlexMediaType;
 
 fn runtime_ready_state() -> SorotteGuiShellAppState {
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
@@ -114,6 +116,79 @@ fn gui_shell_dispatch_plan_routes_update_checks_to_runtime_owner() {
             language: "en".to_owned(),
             update_channel: Some("dev".to_owned()),
             user_initiated: true,
+        }]
+    );
+}
+
+#[test]
+fn gui_shell_dispatch_plan_routes_plugin_enablement_to_runtime_owner() {
+    let state = runtime_ready_state();
+    let action = GuiShellAction::SetPluginEnabled {
+        plugin: GuiPluginSelection::Plex,
+        enabled: false,
+    };
+    let plan = GuiShellDispatchPlan::from_shell_actions(&state, vec![action.clone()]);
+
+    assert_eq!(plan.shell_actions, vec![action]);
+    assert_eq!(
+        plan.runtime_requests,
+        vec![GuiRuntimeRequest::SetPluginEnabled {
+            plugin: GuiPluginSelection::Plex,
+            enabled: false,
+        }]
+    );
+}
+
+#[test]
+fn gui_shell_dispatch_plan_routes_plex_playlist_picker_requests_to_runtime_owner() {
+    let mut state = runtime_ready_state();
+    state.plex_playlist_search = Some(super::super::shell_state::GuiPlexPlaylistSearchState {
+        query: "zero".to_owned(),
+        results: vec![GuiPlexPlaylistSearchResult {
+            rating_key: "14452".to_owned(),
+            title: "Episode 11".to_owned(),
+            parent_title: Some("Season 4".to_owned()),
+            grandparent_title: Some("Re:Zero".to_owned()),
+            media_type: PlexMediaType::Episode,
+            duration_millis: Some(1_470_058),
+            file_name: Some("Episode 11.mkv".to_owned()),
+        }],
+        selected_index: Some(0),
+        searching: false,
+        adding_rating_key: None,
+        error: None,
+    });
+
+    let search_plan = GuiShellDispatchPlan::from_shell_actions(
+        &state,
+        vec![GuiShellAction::SubmitPlexPlaylistSearch {
+            query: "zero".to_owned(),
+        }],
+    );
+    assert_eq!(
+        search_plan.shell_actions,
+        vec![GuiShellAction::SubmitPlexPlaylistSearch {
+            query: "zero".to_owned(),
+        }]
+    );
+    assert_eq!(
+        search_plan.runtime_requests,
+        vec![GuiRuntimeRequest::SearchSelectedPlexServerMedia {
+            query: "zero".to_owned(),
+        }]
+    );
+
+    let add_plan = GuiShellDispatchPlan::from_shell_actions(
+        &state,
+        vec![
+            GuiShellAction::SelectPlexPlaylistSearchResult(0),
+            GuiShellAction::AddSelectedPlexPlaylistSearchResult,
+        ],
+    );
+    assert_eq!(
+        add_plan.runtime_requests,
+        vec![GuiRuntimeRequest::ResolvePlexPlaylistItem {
+            rating_key: "14452".to_owned(),
         }]
     );
 }

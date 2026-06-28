@@ -16,6 +16,52 @@ fn gui_widget_egui_renderer_maps_configuration_tab_buttons_to_shell_actions() {
 }
 
 #[test]
+fn gui_widget_egui_renderer_maps_plugin_enablement_checkboxes_to_shell_actions() {
+    let mut state =
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+    let plugins = state.plugins_widget_tree();
+    let stream_enabled = plugins
+        .find("plugins:stream-support:enabled")
+        .expect("stream enablement checkbox should exist");
+    assert_eq!(
+        GuiWidgetEguiRenderer::action_for_checkbox_node(&state, stream_enabled, false),
+        Some(GuiShellAction::SetPluginEnabled {
+            plugin: GuiPluginSelection::StreamSupport,
+            enabled: false,
+        })
+    );
+
+    assert!(state.apply(GuiShellAction::SelectPlugin(
+        GuiPluginSelection::MediaMatching,
+    )));
+    let plugins = state.plugins_widget_tree();
+    let media_matching_enabled = plugins
+        .find("plugins:media-matching:enabled")
+        .expect("media matching enablement checkbox should exist");
+    assert_eq!(
+        GuiWidgetEguiRenderer::action_for_checkbox_node(&state, media_matching_enabled, false),
+        Some(GuiShellAction::SetPluginEnabled {
+            plugin: GuiPluginSelection::MediaMatching,
+            enabled: false,
+        })
+    );
+
+    assert!(state.apply(GuiShellAction::SelectPlugin(GuiPluginSelection::Plex)));
+    let plugins = state.plugins_widget_tree();
+    let plex_enabled = plugins
+        .find("plugins:plex:enabled")
+        .expect("plex enablement checkbox should exist");
+    assert_eq!(
+        GuiWidgetEguiRenderer::action_for_checkbox_node(&state, plex_enabled, false),
+        Some(GuiShellAction::SetPluginEnabled {
+            plugin: GuiPluginSelection::Plex,
+            enabled: false,
+        })
+    );
+}
+
+#[test]
 fn gui_widget_egui_renderer_maps_config_storage_buttons_and_external_override_state() {
     let mut state =
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
@@ -168,6 +214,7 @@ fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
     let local_ready_button = shell_tree.find("main-window:control:set-ready").unwrap();
     let playlist_add_files_button = shell_tree.find("main-window:playlist:add-files").unwrap();
     let playlist_add_url_button = shell_tree.find("main-window:playlist:add-url").unwrap();
+    let playlist_add_plex_button = shell_tree.find("main-window:playlist:add-plex").unwrap();
     let playlist_more_menu = shell_tree.find("main-window:playlist:more-menu").unwrap();
     let playlist_remove_button = shell_tree.find("main-window:playlist:0:remove").unwrap();
     let chat_send_button = shell_tree.find("main-window:chat:send").unwrap();
@@ -302,6 +349,7 @@ fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
     );
     assert_eq!(playlist_add_files_button.kind, GuiWidgetKind::Button);
     assert_eq!(playlist_add_url_button.kind, GuiWidgetKind::Button);
+    assert_eq!(playlist_add_plex_button.kind, GuiWidgetKind::Button);
     assert_eq!(playlist_more_menu.kind, GuiWidgetKind::Button);
     assert_eq!(
         playlist_more_menu
@@ -316,6 +364,15 @@ fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
         vec![
             GuiShellAction::SelectMainWindowPlaylist(0),
             GuiShellAction::RemoveSelectedMainWindowPlaylist
+        ]
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, playlist_add_plex_button),
+        vec![
+            GuiShellAction::BeginPlexPlaylistSearch,
+            GuiShellAction::SubmitPlexPlaylistSearch {
+                query: String::new()
+            }
         ]
     );
     assert_eq!(

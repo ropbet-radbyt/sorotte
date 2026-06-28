@@ -327,6 +327,42 @@ impl GuiPersistedConfigRuntimeOwner {
         }
     }
 
+    #[cfg(windows)]
+    fn display_path_for_existing_media_file(path: &Path) -> PathBuf {
+        fn strip_verbatim_prefix(path: &Path) -> PathBuf {
+            let mut components = path.components();
+            let Some(std::path::Component::Prefix(prefix)) = components.next() else {
+                return path.to_path_buf();
+            };
+            match prefix.kind() {
+                std::path::Prefix::VerbatimDisk(disk) => {
+                    let mut output = PathBuf::from(format!("{}:\\", char::from(disk)));
+                    output.extend(components);
+                    output
+                }
+                std::path::Prefix::VerbatimUNC(server, share) => {
+                    let mut output = PathBuf::from(format!(
+                        "\\\\{}\\{}",
+                        server.to_string_lossy(),
+                        share.to_string_lossy()
+                    ));
+                    output.extend(components);
+                    output
+                }
+                _ => path.to_path_buf(),
+            }
+        }
+
+        std::fs::canonicalize(path)
+            .map(|path| strip_verbatim_prefix(&path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    }
+
+    #[cfg(not(windows))]
+    fn display_path_for_existing_media_file(path: &Path) -> PathBuf {
+        path.to_path_buf()
+    }
+
     fn cached_missing_media_relative_target_key(target: &str) -> Option<String> {
         if browser_is_url(target) {
             return None;
@@ -424,7 +460,9 @@ impl GuiPersistedConfigRuntimeOwner {
                     depth,
                     lexical,
                 );
-                let candidate_path = candidate_path.to_string_lossy().into_owned();
+                let candidate_path = Self::display_path_for_existing_media_file(&candidate_path)
+                    .to_string_lossy()
+                    .into_owned();
                 if best_match
                     .as_ref()
                     .is_none_or(|(best_rank, _)| rank < *best_rank)

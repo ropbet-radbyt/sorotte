@@ -717,6 +717,116 @@ fn gui_shell_app_state_projects_only_selected_plugin_detail() {
 }
 
 #[test]
+fn gui_shell_app_state_projects_plugin_enablement_gates_without_losing_subsettings() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        stream_support_plugin_enabled: Some(false),
+        media_matching_plugin_enabled: Some(false),
+        plex_plugin_enabled: Some(false),
+        media_match_fingerprinting_enabled: Some(true),
+        media_match_background_warmup_enabled: Some(true),
+        media_match_wire_sharing_enabled: Some(true),
+        plex_sync_enabled: Some(true),
+        plex_streaming_enabled: Some(true),
+        plex_user_token: Some("user-token".to_owned()),
+        plex_selected_server_url: Some("https://plex.example".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    let plugins = state.plugins_widget_tree();
+    assert_eq!(
+        plugins
+            .find("plugins:list:stream-support")
+            .and_then(|node| node.value.as_deref()),
+        Some("disabled")
+    );
+    assert_eq!(
+        plugins
+            .find("plugins:stream-support:enabled")
+            .and_then(|node| node.value.as_deref()),
+        Some("no")
+    );
+    assert!(
+        !plugins
+            .find("plugins:stream-support:install")
+            .expect("stream install button should exist")
+            .enabled
+    );
+
+    assert!(state.apply(GuiShellAction::SelectPlugin(
+        GuiPluginSelection::MediaMatching,
+    )));
+    let plugins = state.plugins_widget_tree();
+    assert_eq!(
+        plugins
+            .find("plugins:list:media-matching")
+            .and_then(|node| node.value.as_deref()),
+        Some("disabled")
+    );
+    assert_eq!(
+        plugins
+            .find("plugins:media-matching:enabled")
+            .and_then(|node| node.value.as_deref()),
+        Some("no")
+    );
+    assert_eq!(
+        plugins
+            .find("plugins:media-matching:setting:fingerprinting")
+            .and_then(|node| node.value.as_deref()),
+        Some("yes")
+    );
+    assert!(
+        !plugins
+            .find("plugins:media-matching:setting:fingerprinting")
+            .expect("fingerprinting setting should exist")
+            .enabled
+    );
+    assert!(
+        !plugins
+            .find("plugins:media-matching:rebuild-index")
+            .expect("rebuild button should exist")
+            .enabled
+    );
+
+    assert!(state.apply(GuiShellAction::SelectPlugin(GuiPluginSelection::Plex)));
+    let plugins = state.plugins_widget_tree();
+    assert_eq!(
+        plugins
+            .find("plugins:list:plex")
+            .and_then(|node| node.value.as_deref()),
+        Some("disabled")
+    );
+    assert_eq!(
+        plugins
+            .find("plugins:plex:enabled")
+            .and_then(|node| node.value.as_deref()),
+        Some("no")
+    );
+    assert_eq!(
+        plugins
+            .find("plugins:plex:health")
+            .and_then(|node| node.value.as_deref()),
+        Some("disabled")
+    );
+    assert!(
+        !plugins
+            .find("plugins:plex:disable-sync")
+            .expect("sync button should exist")
+            .enabled
+    );
+
+    assert!(state.apply(GuiShellAction::SetPluginEnabled {
+        plugin: GuiPluginSelection::Plex,
+        enabled: true,
+    }));
+    assert_eq!(
+        state.configuration.to_stored_settings().plex_plugin_enabled,
+        Some(true)
+    );
+    assert!(state.plex.enabled);
+    assert!(state.plex.streaming_enabled);
+}
+
+#[test]
 fn gui_shell_app_state_projects_empty_plex_server_discovery_status() {
     let mut state =
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
@@ -735,6 +845,12 @@ fn gui_shell_app_state_projects_empty_plex_server_discovery_status() {
             .find("plugins:plex:status:servers")
             .and_then(|node| node.value.as_deref()),
         Some("none found")
+    );
+    assert!(
+        plugins
+            .find("plugins:plex:enable-streaming")
+            .is_some_and(|node| node.enabled),
+        "Plex streaming can resolve plex:// machine URIs through accessible servers without a preselected server"
     );
 }
 

@@ -84,6 +84,11 @@ impl GuiPersistedConfigRuntimeOwner {
             plex_sync_rx: None,
             plex_sync_next_tick_due_at: None,
             plex_runtime_snapshot: GuiPlexRuntimeSnapshot::default(),
+            plex_playlist_search_rx: None,
+            plex_playlist_resolve_rx: None,
+            plex_stream_resolve_rx: None,
+            plex_stream_resolve_trigger_key: None,
+            plex_stream_resolve_result: None,
             pending_stream_retry_target: None,
             managed_stream_helper_refresh_required: false,
             pending_stream_feedback: VecDeque::new(),
@@ -108,7 +113,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let mut owner = Self::with_config_path(config_path);
         let startup_settings = owner.load_startup_player_settings_from_config_path();
         owner.configure_startup_player_from_lookup_and_settings(lookup, startup_settings.as_ref());
-        owner.refresh_startup_stream_helper_snapshot();
+        owner.refresh_startup_stream_helper_snapshot(startup_settings.as_ref());
         owner.refresh_startup_media_match_snapshot(startup_settings.as_ref());
         owner
     }
@@ -195,6 +200,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.media_match_runtime_snapshot.last_evidence = None;
         self.media_match_runtime_snapshot.remote_status = Some("unavailable".to_owned());
         self.clear_media_match_remote_lookup_state();
+        self.clear_plex_stream_resolution_state();
         self.media_match_wire_sync_token = None;
         self.pending_stream_retry_target = None;
         self.pending_stream_feedback.clear();
@@ -517,7 +523,16 @@ impl GuiPersistedConfigRuntimeOwner {
         snapshot
     }
 
-    pub(super) fn refresh_startup_stream_helper_snapshot(&mut self) {
+    pub(super) fn refresh_startup_stream_helper_snapshot(
+        &mut self,
+        settings: Option<&StoredClientSettingsMvp>,
+    ) {
+        if let Some(settings) = settings
+            && !settings.stream_support_plugin_enabled.unwrap_or(true)
+        {
+            self.stream_helper_runtime_snapshot = GuiStreamHelperRuntimeSnapshot::default();
+            return;
+        }
         let snapshot = probe_stream_helper_startup_snapshot(
             self.legacy_gui_qsettings_root().as_deref(),
             self.player_stream_helper_attach_mode(),
@@ -546,6 +561,13 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         settings: Option<&StoredClientSettingsMvp>,
     ) {
+        if let Some(settings) = settings
+            && !settings.media_matching_plugin_enabled.unwrap_or(true)
+        {
+            let state = GuiMediaMatchState::from_stored_settings(settings);
+            self.media_match_runtime_snapshot = GuiMediaMatchRuntimeSnapshot::from(&state);
+            return;
+        }
         let snapshot = probe_media_match_startup_snapshot(
             self.legacy_gui_qsettings_root().as_deref(),
             settings,

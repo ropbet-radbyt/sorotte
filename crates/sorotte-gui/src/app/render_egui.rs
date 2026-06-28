@@ -930,6 +930,10 @@ impl GuiWidgetEguiRenderer {
             self.render_playlist_playback_footer(ui, node, state, 76.0);
             return;
         }
+        if Self::is_plex_playlist_search_result_row(node) {
+            self.render_plex_playlist_search_result_row(ui, node, state);
+            return;
+        }
         if node.id == "main-window:playlist-edit" || node.id == "main-window:playlist-url-edit" {
             self.render_inline_editor_panel(ui, node, state);
             return;

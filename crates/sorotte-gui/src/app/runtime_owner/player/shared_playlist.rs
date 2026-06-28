@@ -189,6 +189,12 @@ impl GuiPersistedConfigRuntimeOwner {
         state: &SorotteGuiShellAppState,
         path: &str,
     ) -> Option<String> {
+        if !state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::Plex)
+        {
+            return None;
+        }
         let settings = state.configuration.to_stored_settings();
         let config = super::super::plex::plex_config_from_settings(&settings);
         if !config.streaming_enabled || !config.has_selected_server() {
@@ -198,14 +204,9 @@ impl GuiPersistedConfigRuntimeOwner {
         if let Some(uri) = self.cached_plex_playlist_uri_for_local_file(&config, &local_file) {
             return Some(format_plex_playlist_uri(&uri));
         }
-        match self.resolve_plex_stream_target_for_media_target(state, path) {
-            Ok(Some(stream_target)) => Some(format_plex_playlist_uri(&stream_target.playlist_uri)),
-            Ok(None) => None,
-            Err(message) => {
-                self.queue_stream_warning(message);
-                None
-            }
-        }
+        // Cache misses may require blocking Plex HTTP search/metadata calls. Keep playlist
+        // projection cheap; explicit Plex search/open paths resolve uncached streams on workers.
+        None
     }
 
     pub(in crate::app::runtime_owner) fn shared_playlist_open_dispatch_for_selected_paths_impl(

@@ -7,6 +7,13 @@ impl SorotteGuiShellAppState {
                 self.clear_action_error_and_refresh();
                 true
             }
+            GuiShellAction::SetPluginEnabled { plugin, enabled } => {
+                self.plugin_enablement.set_enabled_for(plugin, enabled);
+                self.plugin_enablement
+                    .apply_to_stored_settings(&mut self.configuration.settings);
+                self.clear_action_error_and_refresh();
+                true
+            }
             GuiShellAction::InstallStreamHelper
             | GuiShellAction::IntegrateStreamHelperDownloader(_)
             | GuiShellAction::IntegrateStreamHelperJsRuntime(_)

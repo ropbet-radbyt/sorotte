@@ -28,6 +28,10 @@ impl GuiWidgetEguiRenderer {
                     .map(GuiShellAction::SelectMainWindowPlaylist)
             })
             .or_else(|| {
+                Self::parse_index_suffix(&node.id, "main-window:playlist-plex-search:result:")
+                    .map(GuiShellAction::SelectPlexPlaylistSearchResult)
+            })
+            .or_else(|| {
                 Self::parse_index_suffix(&node.id, "public-servers:row:")
                     .map(GuiShellAction::SelectPublicServer)
             })

@@ -3,9 +3,9 @@ use std::collections::BTreeSet;
 use sha2::{Digest, Sha256};
 
 use super::shell_state::{
-    GuiPlaylistTextEditSessionState, GuiShellView, GuiTransientNotificationLevel,
-    GuiUrlEditSessionState, MainWindowPlaylistRow, SorotteGuiShellAppState,
-    playlist_entries_multiline_text, shuffle_playlist_entries_in_place,
+    GuiPlaylistTextEditSessionState, GuiPlexPlaylistSearchResult, GuiPlexPlaylistSearchState,
+    GuiShellView, GuiTransientNotificationLevel, GuiUrlEditSessionState, MainWindowPlaylistRow,
+    SorotteGuiShellAppState, playlist_entries_multiline_text, shuffle_playlist_entries_in_place,
 };
 use super::support::normalized_editable_text;
 
@@ -465,6 +465,144 @@ impl SorotteGuiShellAppState {
             return self.record_action_error("No shared playlist URL editor is currently active.");
         }
         self.playlist_url_edit_session = None;
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    pub(super) fn begin_plex_playlist_search(&mut self) -> bool {
+        if !self.ensure_shared_playlist_event_allowed() {
+            return false;
+        }
+        if !self.plex.authenticated
+            || self
+                .plex
+                .selected_server_url
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
+        {
+            return self.record_action_error(
+                "Select a Plex server before adding Plex media to the shared playlist.",
+            );
+        }
+        self.active_view = GuiShellView::Room;
+        self.plex_playlist_search = Some(GuiPlexPlaylistSearchState::default());
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    pub(super) fn update_plex_playlist_search_query(&mut self, query: String) -> bool {
+        let Some(search) = self.plex_playlist_search.as_mut() else {
+            return self.record_action_error("No Plex playlist picker is currently active.");
+        };
+        search.query = query;
+        search.error = None;
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    pub(super) fn submit_plex_playlist_search(&mut self, query: String) -> bool {
+        let Some(search) = self.plex_playlist_search.as_mut() else {
+            return self.record_action_error("No Plex playlist picker is currently active.");
+        };
+        search.query = query;
+        search.searching = true;
+        search.adding_rating_key = None;
+        search.error = None;
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    pub(super) fn complete_plex_playlist_search(
+        &mut self,
+        query: String,
+        results: Vec<GuiPlexPlaylistSearchResult>,
+        error: Option<String>,
+    ) -> bool {
+        let Some(search) = self.plex_playlist_search.as_mut() else {
+            return false;
+        };
+        search.query = query;
+        search.searching = false;
+        search.adding_rating_key = None;
+        search.error = error.and_then(|message| normalized_editable_text(&message));
+        if search.error.is_some() {
+            search.results.clear();
+            search.selected_index = None;
+        } else {
+            search.results = results;
+            search.selected_index = if search.results.is_empty() {
+                None
+            } else {
+                Some(
+                    search
+                        .selected_index
+                        .unwrap_or(0)
+                        .min(search.results.len().saturating_sub(1)),
+                )
+            };
+        }
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    pub(super) fn select_plex_playlist_search_result(&mut self, index: usize) -> bool {
+        let Some(search) = self.plex_playlist_search.as_mut() else {
+            return self.record_action_error("No Plex playlist picker is currently active.");
+        };
+        if index >= search.results.len() {
+            return self
+                .record_action_error("No Plex playlist search result exists at that index.");
+        }
+        search.selected_index = Some(index);
+        search.error = None;
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    pub(super) fn add_selected_plex_playlist_search_result(&mut self) -> bool {
+        let Some(search) = self.plex_playlist_search.as_mut() else {
+            return self.record_action_error("No Plex playlist picker is currently active.");
+        };
+        let Some(index) = search.selected_index else {
+            return self.record_action_error("No Plex playlist search result is selected.");
+        };
+        let Some(result) = search.results.get(index) else {
+            return self
+                .record_action_error("No Plex playlist search result exists at that index.");
+        };
+        search.adding_rating_key = Some(result.rating_key.clone());
+        search.error = None;
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    pub(super) fn complete_plex_playlist_item_resolve(
+        &mut self,
+        rating_key: String,
+        error: Option<String>,
+    ) -> bool {
+        let Some(search) = self.plex_playlist_search.as_mut() else {
+            return false;
+        };
+        if search.adding_rating_key.as_deref() != Some(rating_key.as_str()) {
+            if error.is_some() {
+                return false;
+            }
+            if search.adding_rating_key.is_none() {
+                return false;
+            }
+        }
+        search.adding_rating_key = None;
+        search.error = error.and_then(|message| normalized_editable_text(&message));
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    pub(super) fn cancel_plex_playlist_search(&mut self) -> bool {
+        if self.plex_playlist_search.is_none() {
+            return self.record_action_error("No Plex playlist picker is currently active.");
+        }
+        self.plex_playlist_search = None;
         self.clear_action_error_and_refresh();
         true
     }

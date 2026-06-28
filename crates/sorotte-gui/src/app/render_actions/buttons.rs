@@ -69,6 +69,19 @@ impl GuiWidgetEguiRenderer {
                 Vec::new()
             };
         }
+        if let Some(index) = Self::plex_playlist_search_result_action_index(&node.id, "add") {
+            return state
+                .plex_playlist_search
+                .as_ref()
+                .and_then(|search| search.results.get(index))
+                .map(|_| {
+                    vec![
+                        GuiShellAction::SelectPlexPlaylistSearchResult(index),
+                        GuiShellAction::AddSelectedPlexPlaylistSearchResult,
+                    ]
+                })
+                .unwrap_or_default();
+        }
         if node.id == "main-window:playlist:add-files" {
             return Self::pick_media_files(state)
                 .map(Self::shared_playlist_entries_for_media_paths)
@@ -328,6 +341,12 @@ impl GuiWidgetEguiRenderer {
                 vec![GuiShellAction::RemoveSelectedMainWindowPlaylist]
             }
             "main-window:playlist:add-url" => vec![GuiShellAction::BeginSharedPlaylistUrlEdit],
+            "main-window:playlist:add-plex" => vec![
+                GuiShellAction::BeginPlexPlaylistSearch,
+                GuiShellAction::SubmitPlexPlaylistSearch {
+                    query: String::new(),
+                },
+            ],
             "main-window:playlist:open-selected" => state
                 .selected_shared_playlist_entry()
                 .map(|target| {
@@ -384,6 +403,18 @@ impl GuiWidgetEguiRenderer {
             }
             "main-window:playlist-url-edit:close" => {
                 vec![GuiShellAction::CancelSharedPlaylistUrlEdit]
+            }
+            "main-window:playlist-plex-search:submit" => state
+                .plex_playlist_search
+                .as_ref()
+                .map(|search| {
+                    vec![GuiShellAction::SubmitPlexPlaylistSearch {
+                        query: search.query.clone(),
+                    }]
+                })
+                .unwrap_or_default(),
+            "main-window:playlist-plex-search:close" => {
+                vec![GuiShellAction::CancelPlexPlaylistSearch]
             }
             "main-window:media-url-edit:commit" => state
                 .media_url_edit_session

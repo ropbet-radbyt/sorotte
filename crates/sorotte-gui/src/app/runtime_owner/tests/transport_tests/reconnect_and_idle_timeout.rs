@@ -21,6 +21,35 @@ impl GuiSessionTransportDriver for RecordingLivenessTransportDriver {
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_clears_pending_disconnect_on_transport_cleanup() {
+    let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.pending_operation = Some(crate::app::GuiPendingOperationState {
+        kind: GuiPendingOperationKind::DisconnectSession,
+    });
+
+    owner.handle_session_transport_failure(
+        &handle,
+        &mut state,
+        "Session transport TCP received an invalid protocol line: invalid JSON payload".to_owned(),
+    );
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert!(owner.session.is_none());
+    assert!(
+        state.pending_operation.is_none(),
+        "transport cleanup must complete a pending disconnect operation instead of leaving the UI stuck"
+    );
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_reconnects_after_clean_tcp_server_close() {
     use std::{
         io::{BufReader, Write},

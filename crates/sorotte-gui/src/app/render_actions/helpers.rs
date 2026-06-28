@@ -61,4 +61,13 @@ impl GuiWidgetEguiRenderer {
         let (index, suffix) = identity.split_once(':')?;
         (suffix == action).then(|| index.parse().ok()).flatten()
     }
+
+    pub(in crate::app::render_actions) fn plex_playlist_search_result_action_index(
+        id: &str,
+        action: &str,
+    ) -> Option<usize> {
+        let identity = id.strip_prefix("main-window:playlist-plex-search:result:")?;
+        let (index, suffix) = identity.split_once(':')?;
+        (suffix == action).then(|| index.parse().ok()).flatten()
+    }
 }

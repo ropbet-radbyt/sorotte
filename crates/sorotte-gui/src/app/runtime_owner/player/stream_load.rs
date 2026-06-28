@@ -158,6 +158,17 @@ impl GuiPersistedConfigRuntimeOwner {
                 false
             }
             GuiStreamTargetKind::ExtractorPageUrl => {
+                if !state
+                    .plugin_enablement
+                    .enabled_for(GuiPluginSelection::StreamSupport)
+                {
+                    self.refresh_stream_helper_runtime_snapshot_for_target(None);
+                    self.queue_stream_warning(
+                        "Automatic room URL open is unavailable locally: Stream Support is disabled."
+                            .to_owned(),
+                    );
+                    return false;
+                }
                 let snapshot = self.refresh_stream_helper_runtime_snapshot_for_target(Some(target));
                 if snapshot.health == GuiStreamHelperHealth::Healthy {
                     if let Err(error) =
@@ -296,8 +307,11 @@ impl GuiPersistedConfigRuntimeOwner {
             Ok(()) => {
                 self.player_local_file =
                     Some(Self::placeholder_local_file_for_path(&selected_path));
-                self.player_local_file_placeholder = true;
+                self.player_local_file_placeholder = browser_is_url(&selected_path);
                 self.player_position_seconds = Some(0.0);
+                self.player_paused_for_cache = None;
+                self.player_cache_buffering_percent = None;
+                self.pending_attached_cache_unpause = false;
                 self.refresh_player_state_impl();
                 let preserve_ready_for_auto_advanced_playlist_item =
                     self.playlist_auto_advance_eof_latched
@@ -371,8 +385,11 @@ impl GuiPersistedConfigRuntimeOwner {
                         user_initiated,
                     });
                 self.player_local_file = Some(logical_file);
-                self.player_local_file_placeholder = true;
+                self.player_local_file_placeholder = false;
                 self.player_position_seconds = Some(0.0);
+                self.player_paused_for_cache = None;
+                self.player_cache_buffering_percent = None;
+                self.pending_attached_cache_unpause = false;
                 self.refresh_player_state_impl();
                 let preserve_ready_for_auto_advanced_playlist_item =
                     self.playlist_auto_advance_eof_latched

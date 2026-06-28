@@ -153,6 +153,28 @@ impl SorotteGuiShellAppState {
                 self.update_shared_playlist_url_edit(buffer)
             }
             GuiShellAction::CancelSharedPlaylistUrlEdit => self.cancel_shared_playlist_url_edit(),
+            GuiShellAction::BeginPlexPlaylistSearch => self.begin_plex_playlist_search(),
+            GuiShellAction::UpdatePlexPlaylistSearchQuery(query) => {
+                self.update_plex_playlist_search_query(query)
+            }
+            GuiShellAction::SubmitPlexPlaylistSearch { query } => {
+                self.submit_plex_playlist_search(query)
+            }
+            GuiShellAction::CompletePlexPlaylistSearch {
+                query,
+                results,
+                error,
+            } => self.complete_plex_playlist_search(query, results, error),
+            GuiShellAction::SelectPlexPlaylistSearchResult(index) => {
+                self.select_plex_playlist_search_result(index)
+            }
+            GuiShellAction::AddSelectedPlexPlaylistSearchResult => {
+                self.add_selected_plex_playlist_search_result()
+            }
+            GuiShellAction::CompletePlexPlaylistItemResolve { rating_key, error } => {
+                self.complete_plex_playlist_item_resolve(rating_key, error)
+            }
+            GuiShellAction::CancelPlexPlaylistSearch => self.cancel_plex_playlist_search(),
             GuiShellAction::BeginMediaUrlEdit => self.begin_media_url_edit(),
             GuiShellAction::UpdateMediaUrlEdit(buffer) => self.update_media_url_edit(buffer),
             GuiShellAction::CancelMediaUrlEdit => self.cancel_media_url_edit(),

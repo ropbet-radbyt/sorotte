@@ -34,6 +34,9 @@ impl GuiWidgetEguiRenderer {
         let playlist_editor_active = playlist_column.find("main-window:playlist-edit").is_some()
             || playlist_column
                 .find("main-window:playlist-url-edit")
+                .is_some()
+            || playlist_column
+                .find("main-window:playlist-plex-search")
                 .is_some();
         match Self::room_dashboard_layout_for_width(available_width) {
             GuiRoomDashboardLayout::Narrow => {

@@ -55,6 +55,103 @@ fn gui_shell_app_state_moves_and_removes_playlist_rows() {
 }
 
 #[test]
+fn gui_shell_app_state_tracks_plex_playlist_picker_lifecycle() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        plex_user_token: Some("user-token".to_owned()),
+        plex_selected_server_url: Some("https://plex.example".to_owned()),
+        plex_selected_server_token: Some("server-token".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.main_window.playback.can_manage_playlist = true;
+
+    assert!(state.apply(GuiShellAction::BeginPlexPlaylistSearch));
+    assert!(state.apply(GuiShellAction::SubmitPlexPlaylistSearch {
+        query: String::new(),
+    }));
+    assert!(
+        state
+            .plex_playlist_search
+            .as_ref()
+            .is_some_and(|search| search.searching)
+    );
+    assert!(state.apply(GuiShellAction::CompletePlexPlaylistSearch {
+        query: String::new(),
+        results: vec![GuiPlexPlaylistSearchResult {
+            rating_key: "14452".to_owned(),
+            title: "Episode 11".to_owned(),
+            parent_title: Some("Season 4".to_owned()),
+            grandparent_title: Some("Re:Zero".to_owned()),
+            media_type: PlexMediaType::Episode,
+            duration_millis: Some(1_470_058),
+            file_name: Some("Episode 11.mkv".to_owned()),
+        }],
+        error: None,
+    }));
+    let search = state
+        .plex_playlist_search
+        .as_ref()
+        .expect("picker should remain open");
+    assert!(!search.searching);
+    assert_eq!(search.selected_index, Some(0));
+    assert_eq!(search.results[0].rating_key, "14452");
+
+    assert!(state.apply(GuiShellAction::AddSelectedPlexPlaylistSearchResult));
+    assert_eq!(
+        state
+            .plex_playlist_search
+            .as_ref()
+            .and_then(|search| search.adding_rating_key.as_deref()),
+        Some("14452")
+    );
+    assert!(
+        state.apply(GuiShellAction::CompletePlexPlaylistItemResolve {
+            rating_key: "14452".to_owned(),
+            error: None,
+        })
+    );
+    assert!(
+        state
+            .plex_playlist_search
+            .as_ref()
+            .is_some_and(|search| search.adding_rating_key.is_none())
+    );
+
+    assert!(state.apply(GuiShellAction::AddSelectedPlexPlaylistSearchResult));
+    assert!(
+        state.apply(GuiShellAction::CompletePlexPlaylistItemResolve {
+            rating_key: "stale-worker-result".to_owned(),
+            error: None,
+        }),
+        "successful stale resolve completion should clear the pending add state so the picker cannot stay disabled"
+    );
+    assert!(
+        state
+            .plex_playlist_search
+            .as_ref()
+            .is_some_and(|search| search.adding_rating_key.is_none())
+    );
+
+    assert!(state.apply(GuiShellAction::AddSelectedPlexPlaylistSearchResult));
+    assert!(
+        state.apply(GuiShellAction::CompletePlexPlaylistItemResolve {
+            rating_key: "14452".to_owned(),
+            error: Some("Plex metadata 14452 did not include a playable part".to_owned()),
+        })
+    );
+    assert_eq!(
+        state
+            .plex_playlist_search
+            .as_ref()
+            .and_then(|search| search.error.as_deref()),
+        Some("Plex metadata 14452 did not include a playable part")
+    );
+
+    assert!(state.apply(GuiShellAction::CancelPlexPlaylistSearch));
+    assert!(state.plex_playlist_search.is_none());
+}
+
+#[test]
 fn gui_shell_app_state_moves_playlist_rows_to_arbitrary_targets() {
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),

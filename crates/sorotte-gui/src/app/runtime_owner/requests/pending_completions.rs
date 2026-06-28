@@ -153,7 +153,9 @@ impl GuiPersistedConfigRuntimeOwner {
         match search_result {
             Ok(result) => {
                 let found_path = match result {
-                    GuiUserMediaTargetResolution::Resolved(path) => normalized_editable_text(&path),
+                    GuiUserMediaTargetResolution::Resolved { path, .. } => {
+                        normalized_editable_text(&path)
+                    }
                     GuiUserMediaTargetResolution::Pending => return true,
                     GuiUserMediaTargetResolution::Missing => {
                         target_file_name.as_deref().and_then(|target| {

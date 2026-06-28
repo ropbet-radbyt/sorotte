@@ -13,7 +13,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let resolved_target = match self
             .resolve_main_window_user_media_target(projected_state, &target)
         {
-            Ok(GuiUserMediaTargetResolution::Resolved(path)) => path,
+            Ok(GuiUserMediaTargetResolution::Resolved { path, .. }) => path,
             Ok(GuiUserMediaTargetResolution::Pending) => {
                 Self::push_actions_and_project(
                     handle,
@@ -55,6 +55,18 @@ impl GuiPersistedConfigRuntimeOwner {
 
         self.ensure_configured_player_attached();
         if self.player.is_some() {
+            if browser_stream_target_kind(&resolved_target, None)
+                == GuiStreamTargetKind::ExtractorPageUrl
+                && !projected_state
+                    .plugin_enablement
+                    .enabled_for(GuiPluginSelection::StreamSupport)
+            {
+                Self::push_runtime_unavailable(
+                    handle,
+                    "Stream Support is disabled; extractor-backed URLs cannot be opened until it is enabled.".to_owned(),
+                );
+                return;
+            }
             if !self.preflight_user_stream_target(&resolved_target) {
                 return;
             }
@@ -135,7 +147,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let resolved_target = match self
             .resolve_main_window_user_media_target(projected_state, &target)
         {
-            Ok(GuiUserMediaTargetResolution::Resolved(path)) => path,
+            Ok(GuiUserMediaTargetResolution::Resolved { path, .. }) => path,
             Ok(GuiUserMediaTargetResolution::Pending) => {
                 Self::push_actions_and_project(
                     handle,
@@ -329,12 +341,19 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.remember_local_shared_playlist_media_match_signature_path(path);
             }
         }
-        let selected_media_sync = if session_success
+        let session_playlist_projected = session_success
             && Self::project_loaded_shared_playlist_into_state(
                 projected_state,
                 playlist_entries.clone(),
                 selected_playlist_index,
-            ) {
+            );
+        if session_playlist_projected {
+            handle.push_action(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+                MainWindowRuntimeSnapshot::from_shell_state(&projected_state.main_window),
+            ));
+            self.flush_session_transport_outbound(handle, projected_state);
+        }
+        let selected_media_sync = if session_playlist_projected {
             selected_media_source_path
                 .clone()
                 .map(|selected_path| {

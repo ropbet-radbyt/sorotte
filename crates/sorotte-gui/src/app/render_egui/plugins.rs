@@ -235,6 +235,13 @@ impl GuiWidgetEguiRenderer {
                     ui.add_space(8.0);
                 }
                 if let Some(status_node) = status_node {
+                    renderer.render_plugin_enablement_card(
+                        ui,
+                        status_node,
+                        state,
+                        "plugins:stream-support:enabled",
+                    );
+                    ui.add_space(8.0);
                     renderer.render_stream_support_overview(ui, status_node);
                     ui.add_space(8.0);
                     renderer.render_stream_support_status_cards(ui, status_node);
@@ -267,6 +274,13 @@ impl GuiWidgetEguiRenderer {
                 .body_horizontal_margin(24.0),
             |renderer, ui, _body_width| {
                 if let Some(status_node) = status_node {
+                    renderer.render_plugin_enablement_card(
+                        ui,
+                        status_node,
+                        state,
+                        "plugins:plex:enabled",
+                    );
+                    ui.add_space(8.0);
                     renderer.render_plex_overview(ui, status_node);
                     ui.add_space(8.0);
                     renderer.render_plex_status_cards(ui, status_node);
@@ -304,6 +318,13 @@ impl GuiWidgetEguiRenderer {
                 .body_horizontal_margin(24.0),
             |renderer, ui, _body_width| {
                 if let Some(status_node) = status_node {
+                    renderer.render_plugin_enablement_card(
+                        ui,
+                        status_node,
+                        state,
+                        "plugins:media-matching:enabled",
+                    );
+                    ui.add_space(8.0);
                     renderer.render_media_matching_overview(ui, status_node);
                     ui.add_space(8.0);
                     renderer.render_media_matching_status_cards(ui, status_node);
@@ -448,6 +469,7 @@ impl GuiWidgetEguiRenderer {
                 "plugins:stream-support:title",
                 "plugins:stream-support:summary",
                 "plugins:stream-support:health",
+                "plugins:stream-support:enabled",
             ],
         );
     }
@@ -460,6 +482,7 @@ impl GuiWidgetEguiRenderer {
                 "plugins:plex:title",
                 "plugins:plex:summary",
                 "plugins:plex:health",
+                "plugins:plex:enabled",
             ],
         );
     }
@@ -472,8 +495,45 @@ impl GuiWidgetEguiRenderer {
                 "plugins:media-matching:title",
                 "plugins:media-matching:summary",
                 "plugins:media-matching:health",
+                "plugins:media-matching:enabled",
             ],
         );
+    }
+
+    fn render_plugin_enablement_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        status_node: &GuiWidgetNode,
+        state: &SorotteGuiShellAppState,
+        node_id: &str,
+    ) {
+        let Some(node) = status_node.find(node_id) else {
+            return;
+        };
+        let card_width = Self::visible_available_width(ui);
+        self.render_plugin_setting_card(ui, node, state, card_width);
+    }
+
+    fn render_plugin_setting_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SorotteGuiShellAppState,
+        card_width: f32,
+    ) {
+        let palette = Self::palette_for_ui(ui);
+        egui::Frame::new()
+            .fill(palette.surface_muted.gamma_multiply(0.84))
+            .stroke(egui::Stroke::new(1.0, palette.border))
+            .corner_radius(egui::CornerRadius::same(5))
+            .inner_margin(egui::Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                let inner_width = Self::width_inside_horizontal_margin(card_width, 20.0);
+                ui.set_width(inner_width);
+                ui.set_max_width(inner_width);
+                ui.set_min_height(32.0);
+                self.render_field_control(ui, node, state, false);
+            });
     }
 
     fn render_plugin_status_cards(
@@ -600,7 +660,7 @@ impl GuiWidgetEguiRenderer {
                 ui.spacing_mut().item_spacing = spacing;
                 for child in chunk {
                     Self::allocate_plugin_width(ui, card_width, |ui| {
-                        self.render_media_matching_setting_card(ui, child, state, card_width);
+                        self.render_plugin_setting_card(ui, child, state, card_width);
                     });
                 }
             });
@@ -608,28 +668,6 @@ impl GuiWidgetEguiRenderer {
                 ui.add_space(gap);
             }
         }
-    }
-
-    fn render_media_matching_setting_card(
-        &mut self,
-        ui: &mut egui::Ui,
-        node: &GuiWidgetNode,
-        state: &SorotteGuiShellAppState,
-        card_width: f32,
-    ) {
-        let palette = Self::palette_for_ui(ui);
-        egui::Frame::new()
-            .fill(palette.surface_muted.gamma_multiply(0.84))
-            .stroke(egui::Stroke::new(1.0, palette.border))
-            .corner_radius(egui::CornerRadius::same(5))
-            .inner_margin(egui::Margin::symmetric(10, 8))
-            .show(ui, |ui| {
-                let inner_width = Self::width_inside_horizontal_margin(card_width, 20.0);
-                ui.set_width(inner_width);
-                ui.set_max_width(inner_width);
-                ui.set_min_height(32.0);
-                self.render_field_control(ui, node, state, false);
-            });
     }
 
     fn render_media_matching_policy_card(

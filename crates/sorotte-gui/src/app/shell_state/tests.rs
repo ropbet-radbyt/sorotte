@@ -6,15 +6,16 @@ use super::{
     GuiDialogControlKind, GuiDraftRuntimeSnapshot, GuiErrorRuntimeSnapshot,
     GuiFeedbackRuntimeSnapshot, GuiFocusedConfigurationControlRuntimeSnapshot,
     GuiInteractionRuntimeSnapshot, GuiMainWindowUserEditSessionRuntimeSnapshot,
-    GuiPendingOperationKind, GuiPluginSelection, GuiPublicServerEditSessionRuntimeSnapshot,
-    GuiSavedConfigurationRuntimeSnapshot, GuiSelectionState, GuiShellAction, GuiShellModal,
-    GuiShellView, GuiStreamTargetKind, GuiTextEditSessionRuntimeSnapshot, GuiTransientNotification,
-    GuiTransientNotificationLevel, GuiValidationIssue, GuiWidgetKind, MainWindowPlaylistRow,
-    MainWindowRuntimeChatSnapshot, MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot,
-    MainWindowShellState, MediaSearchDirectoryRow, MediaSearchWorkflowShellState,
-    MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot, MenuDialogShellState,
-    PublicServerBrowserRow, PublicServerBrowserShellState, SorotteGuiRuntimeSnapshot,
-    SorotteGuiShellAppState, browser_stream_target_kind, load_playlist_entries_from_path,
+    GuiPendingOperationKind, GuiPlexPlaylistSearchResult, GuiPluginSelection,
+    GuiPublicServerEditSessionRuntimeSnapshot, GuiSavedConfigurationRuntimeSnapshot,
+    GuiSelectionState, GuiShellAction, GuiShellModal, GuiShellView, GuiStreamTargetKind,
+    GuiTextEditSessionRuntimeSnapshot, GuiTransientNotification, GuiTransientNotificationLevel,
+    GuiValidationIssue, GuiWidgetKind, MainWindowPlaylistRow, MainWindowRuntimeChatSnapshot,
+    MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot, MainWindowShellState,
+    MediaSearchDirectoryRow, MediaSearchWorkflowShellState, MenuActionRuntimeOverride,
+    MenuDialogRuntimeSnapshot, MenuDialogShellState, PublicServerBrowserRow,
+    PublicServerBrowserShellState, SorotteGuiRuntimeSnapshot, SorotteGuiShellAppState,
+    browser_stream_target_kind, load_playlist_entries_from_path,
     playlist_entries_from_multiline_text, save_playlist_entries_to_path,
 };
 
@@ -25,6 +26,7 @@ use crate::app::{
 };
 use sorotte_client_app::app_boundary::state::{AutoplayThresholdOverride, StoredClientSettingsMvp};
 use sorotte_client_core::{PrivacyMode, UnpauseActionMode};
+use sorotte_plex::PlexMediaType;
 
 mod command_tests;
 mod main_window_playlist_tests;

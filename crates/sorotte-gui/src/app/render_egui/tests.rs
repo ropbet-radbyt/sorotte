@@ -2,13 +2,14 @@ use std::path::PathBuf;
 
 use eframe::egui;
 use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
+use sorotte_plex::PlexMediaType;
 
 use super::GuiWidgetEguiRenderer;
 use crate::app::render_io::{GuiDroppedFilesRequest, GuiDroppedFilesTarget};
 use crate::app::shell_state::{
     GuiConfigStorageRuntimeSnapshot, GuiConfigurationTab, GuiDraftRuntimeSnapshot,
-    GuiPendingOperationKind, GuiPluginSelection, GuiShellAction, GuiShellModal, GuiShellView,
-    GuiStreamHelperHealth, GuiStreamHelperRemediationRuntimeSnapshot,
+    GuiPendingOperationKind, GuiPlexPlaylistSearchResult, GuiPluginSelection, GuiShellAction,
+    GuiShellModal, GuiShellView, GuiStreamHelperHealth, GuiStreamHelperRemediationRuntimeSnapshot,
     GuiStreamHelperRuntimeSnapshot, MainWindowRuntimeRoomSnapshot, MainWindowRuntimeSnapshot,
     MainWindowRuntimeUserSnapshot, SorotteGuiShellAppState,
 };

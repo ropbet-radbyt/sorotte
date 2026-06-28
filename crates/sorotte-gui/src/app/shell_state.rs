@@ -14,7 +14,7 @@ use sorotte_client_app::app_boundary::{
     storage::SorotteClientStoragePaths,
 };
 use sorotte_media_match::{MediaMatchAutoplayPolicy, MediaMatchSettings};
-use sorotte_plex::PlexServerConnectionKind;
+use sorotte_plex::{PlexMediaSearchResult, PlexMediaType, PlexServerConnectionKind};
 
 use super::GuiLaunchMode;
 use super::remote_services;
@@ -523,6 +523,47 @@ impl Default for GuiPlexRuntimeSnapshot {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct GuiPlexPlaylistSearchState {
+    pub(super) query: String,
+    pub(super) results: Vec<GuiPlexPlaylistSearchResult>,
+    pub(super) selected_index: Option<usize>,
+    pub(super) searching: bool,
+    pub(super) adding_rating_key: Option<String>,
+    pub(super) error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct GuiPlexPlaylistSearchResult {
+    pub(super) rating_key: String,
+    pub(super) title: String,
+    pub(super) parent_title: Option<String>,
+    pub(super) grandparent_title: Option<String>,
+    pub(super) media_type: PlexMediaType,
+    pub(super) duration_millis: Option<u64>,
+    pub(super) file_name: Option<String>,
+}
+
+impl From<PlexMediaSearchResult> for GuiPlexPlaylistSearchResult {
+    fn from(value: PlexMediaSearchResult) -> Self {
+        Self {
+            rating_key: value.rating_key,
+            title: value.title,
+            parent_title: value.parent_title,
+            grandparent_title: value.grandparent_title,
+            media_type: value.media_type,
+            duration_millis: value.duration_millis,
+            file_name: value.file_paths.into_iter().find_map(|path| {
+                path.rsplit(['/', '\\'])
+                    .next()
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(ToOwned::to_owned)
+            }),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct PublicServerBrowserRuntimeFlags {
     pub(super) can_connect: bool,
@@ -573,6 +614,65 @@ pub(super) enum GuiPluginSelection {
     Plex,
 }
 
+impl GuiPluginSelection {
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::StreamSupport => "Stream Support",
+            Self::MediaMatching => "Media Matching",
+            Self::Plex => "Plex",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct GuiPluginEnablementState {
+    pub(super) stream_support_enabled: bool,
+    pub(super) media_matching_enabled: bool,
+    pub(super) plex_enabled: bool,
+}
+
+impl Default for GuiPluginEnablementState {
+    fn default() -> Self {
+        Self {
+            stream_support_enabled: true,
+            media_matching_enabled: true,
+            plex_enabled: true,
+        }
+    }
+}
+
+impl GuiPluginEnablementState {
+    pub(super) fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
+        Self {
+            stream_support_enabled: settings.stream_support_plugin_enabled.unwrap_or(true),
+            media_matching_enabled: settings.media_matching_plugin_enabled.unwrap_or(true),
+            plex_enabled: settings.plex_plugin_enabled.unwrap_or(true),
+        }
+    }
+
+    pub(super) fn apply_to_stored_settings(self, settings: &mut StoredClientSettingsMvp) {
+        settings.stream_support_plugin_enabled = Some(self.stream_support_enabled);
+        settings.media_matching_plugin_enabled = Some(self.media_matching_enabled);
+        settings.plex_plugin_enabled = Some(self.plex_enabled);
+    }
+
+    pub(super) fn enabled_for(self, plugin: GuiPluginSelection) -> bool {
+        match plugin {
+            GuiPluginSelection::StreamSupport => self.stream_support_enabled,
+            GuiPluginSelection::MediaMatching => self.media_matching_enabled,
+            GuiPluginSelection::Plex => self.plex_enabled,
+        }
+    }
+
+    pub(super) fn set_enabled_for(&mut self, plugin: GuiPluginSelection, enabled: bool) {
+        match plugin {
+            GuiPluginSelection::StreamSupport => self.stream_support_enabled = enabled,
+            GuiPluginSelection::MediaMatching => self.media_matching_enabled = enabled,
+            GuiPluginSelection::Plex => self.plex_enabled = enabled,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct GuiFeedbackRuntimeSnapshot {
     pub(super) validation_issues: Vec<GuiValidationIssue>,
@@ -589,6 +689,7 @@ pub(super) struct SorotteGuiShellAppState {
     pub(super) active_view: GuiShellView,
     pub(super) selected_configuration_tab: GuiConfigurationTab,
     pub(super) selected_plugin: GuiPluginSelection,
+    pub(super) plugin_enablement: GuiPluginEnablementState,
     pub(super) open_modal: Option<GuiShellModal>,
     pub(super) selection: GuiSelectionState,
     pub(super) main_window_playlist_selection_is_local: bool,
@@ -609,6 +710,7 @@ pub(super) struct SorotteGuiShellAppState {
     pub(super) text_edit_session: Option<GuiTextEditSessionState>,
     pub(super) playlist_text_edit_session: Option<GuiPlaylistTextEditSessionState>,
     pub(super) playlist_url_edit_session: Option<GuiUrlEditSessionState>,
+    pub(super) plex_playlist_search: Option<GuiPlexPlaylistSearchState>,
     pub(super) media_url_edit_session: Option<GuiUrlEditSessionState>,
     pub(super) controlled_room_create_session: Option<GuiControlledRoomCreateSessionState>,
     pub(super) controller_auth_edit_session: Option<GuiControllerAuthEditSessionState>,
@@ -817,6 +919,7 @@ pub(super) struct GuiInteractionRuntimeSnapshot {
     pub(super) text_edit_session: Option<GuiTextEditSessionRuntimeSnapshot>,
     pub(super) playlist_text_edit_session: Option<GuiPlaylistTextEditSessionRuntimeSnapshot>,
     pub(super) playlist_url_edit_session: Option<GuiUrlEditSessionRuntimeSnapshot>,
+    pub(super) plex_playlist_search: Option<GuiPlexPlaylistSearchState>,
     pub(super) media_url_edit_session: Option<GuiUrlEditSessionRuntimeSnapshot>,
 }
 
@@ -867,6 +970,7 @@ impl GuiInteractionRuntimeSnapshot {
                     is_dirty: session.is_dirty,
                 }
             }),
+            plex_playlist_search: state.plex_playlist_search.clone(),
             media_url_edit_session: state.media_url_edit_session.as_ref().map(|session| {
                 GuiUrlEditSessionRuntimeSnapshot {
                     buffer: session.buffer.clone(),
