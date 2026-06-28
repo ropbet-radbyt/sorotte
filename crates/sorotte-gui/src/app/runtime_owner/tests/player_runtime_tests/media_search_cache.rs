@@ -1050,11 +1050,15 @@ fn gui_persisted_config_runtime_owner_prefers_media_search_casing_over_media_mat
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system time should be after unix epoch")
         .as_millis() as u64;
+    let indexed_relative_path = std::path::PathBuf::from("Season-1")
+        .join("Episode2.mkv")
+        .to_string_lossy()
+        .into_owned();
     write_persisted_media_search_root_index(
         &root,
         &media_root,
         built_at,
-        &[("episode2.mkv", &["Season-1\\Episode2.mkv"])],
+        &[("episode2.mkv", &[indexed_relative_path.as_str()])],
     );
 
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
