@@ -707,6 +707,105 @@ fn gui_persisted_config_runtime_owner_queues_plex_stream_while_media_search_inde
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_queues_plex_stream_while_media_match_misses() {
+    #[derive(Debug, Clone)]
+    struct MediaMatchPeerSessionRuntimeAdapter {
+        peer_files: Vec<sorotte_client_core::ClientMediaMatchPeerFileState>,
+    }
+
+    impl GuiSessionRuntimeAdapter for MediaMatchPeerSessionRuntimeAdapter {
+        fn current_room_media_match_peer_file_states(
+            &self,
+        ) -> Vec<sorotte_client_core::ClientMediaMatchPeerFileState> {
+            self.peer_files.clone()
+        }
+
+        fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn connect_public_server(
+            &mut self,
+            _selected_server: Option<(String, String)>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn refresh_public_servers(
+            &mut self,
+            _current_servers: Vec<(String, String)>,
+            _language: Option<&str>,
+        ) -> Result<Vec<(String, String)>, String> {
+            Ok(Vec::new())
+        }
+
+        fn search_missing_media(
+            &mut self,
+            _directories: Vec<String>,
+        ) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+    }
+
+    let root = test_temp_root("plex-stream-while-media-match-misses");
+    let config_path = root.join("sorotte.ini");
+    let media_root = root.join("library");
+    std::fs::create_dir_all(&media_root)
+        .expect("Plex stream Media Match miss fixture root should be created");
+
+    let plex_uri = "plex://machine-1/metadata/123?title=Episode%201&file=Episode%201.mkv";
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
+        .with_session_runtime(Box::new(MediaMatchPeerSessionRuntimeAdapter {
+            peer_files: vec![sorotte_client_core::ClientMediaMatchPeerFileState {
+                username: "remote".to_owned(),
+                has_file: true,
+                file_name: None,
+                file_size: None,
+                file_duration: None,
+                media_match_signature: Some(serde_json::json!({
+                    "algorithm": "test",
+                    "records": [],
+                })),
+            }],
+        }));
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    owner.active_shared_playlist_index = Some(0);
+
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
+        media_matching_plugin_enabled: Some(true),
+        media_match_fingerprinting_enabled: Some(true),
+        media_match_wire_sharing_enabled: Some(true),
+        plex_streaming_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.apply_shared_playlist_entries(vec![plex_uri.to_owned()], Some(0), false);
+
+    let outcome = owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
+
+    assert_eq!(outcome, SelectedPlaylistMediaSyncOutcome::NoChange);
+    assert!(
+        owner.pending_attached_media_resolution.is_some(),
+        "missing local media should still start filename indexing"
+    );
+    assert!(
+        owner.media_match_remote_lookup_rx.is_some(),
+        "Media Match remote lookup should be queued but must not block Plex fallback"
+    );
+    assert!(
+        owner.plex_stream_resolve_rx.is_some(),
+        "Plex stream resolution should queue immediately even while Media Match is a miss or pending"
+    );
+    assert!(
+        owner.player_local_file.is_none(),
+        "the player should wait until the Plex stream worker resolves a playable URL"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_queues_selected_plex_stream_without_blocking_on_indexing() {
     let root = test_temp_root("selected-plex-stream-with-index-pending");
     std::fs::create_dir_all(&root).expect("selected Plex stream index fixture root should exist");

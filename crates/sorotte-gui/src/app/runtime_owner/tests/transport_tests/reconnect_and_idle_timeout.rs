@@ -67,6 +67,8 @@ fn gui_persisted_config_runtime_owner_reconnects_after_clean_tcp_server_close() 
     let (first_server_ready_tx, first_server_ready_rx) = mpsc::channel();
     let (release_first_tx, release_first_rx) = mpsc::channel();
     let (reconnect_hello_tx, reconnect_hello_rx) = mpsc::channel();
+    let (second_server_ready_tx, second_server_ready_rx) = mpsc::channel();
+    let (release_second_tx, release_second_rx) = mpsc::channel();
     let server_thread = std::thread::spawn(move || {
         let (mut first_stream, _) = listener
             .accept()
@@ -123,6 +125,15 @@ fn gui_persisted_config_runtime_owner_reconnects_after_clean_tcp_server_close() 
         second_stream
             .write_all(b"\n")
             .expect("reconnect test session transport server should terminate the reconnect hello");
+        second_stream
+            .flush()
+            .expect("reconnect test session transport server should flush the reconnect hello");
+        second_server_ready_tx.send(()).expect(
+            "reconnect test session transport server should signal reconnect hello readiness",
+        );
+        release_second_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("reconnect test session transport server should be released after reconnect");
     });
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
@@ -180,6 +191,9 @@ fn gui_persisted_config_runtime_owner_reconnects_after_clean_tcp_server_close() 
     };
     assert!(reconnect_hello.contains("\"Hello\""));
     assert!(reconnect_hello.contains("\"alice\""));
+    second_server_ready_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("reconnect test session transport server should signal the reconnect hello");
 
     pump_and_apply_runtime_owner_actions_until(
         &mut owner,
@@ -206,6 +220,9 @@ fn gui_persisted_config_runtime_owner_reconnects_after_clean_tcp_server_close() 
             .iter()
             .any(|notification| notification.message == "Session reconnected.")
     );
+    release_second_tx
+        .send(())
+        .expect("reconnect test session transport server should be releasable after reconnect");
 
     server_thread
         .join()
