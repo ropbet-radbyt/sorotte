@@ -2,6 +2,8 @@ use super::*;
 
 use sorotte_plex::{PlexStreamTarget, redact_plex_token};
 
+const MPV_FORCE_MEDIA_TITLE_OPTION: &str = "force-media-title";
+
 impl GuiPersistedConfigRuntimeOwner {
     fn stream_helper_issue_notification_level(
         health: GuiStreamHelperHealth,
@@ -17,6 +19,43 @@ impl GuiPersistedConfigRuntimeOwner {
                 GuiTransientNotificationLevel::Warning
             }
         }
+    }
+
+    fn normalized_forced_media_title(title: &str) -> Option<String> {
+        let normalized = title
+            .chars()
+            .map(|ch| if ch.is_control() { ' ' } else { ch })
+            .collect::<String>();
+        let trimmed = normalized.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_owned())
+    }
+
+    fn media_title_for_opened_path(path: &str) -> String {
+        let placeholder = Self::placeholder_local_file_for_path(path);
+        Self::normalized_forced_media_title(&redact_plex_token(&placeholder.name))
+            .unwrap_or_else(|| "Media".to_owned())
+    }
+
+    fn media_title_for_plex_stream(stream_target: &PlexStreamTarget) -> String {
+        [
+            stream_target.playlist_uri.title.as_deref(),
+            Some(stream_target.matched_item.title.as_str()),
+            Some(stream_target.logical_file.name.as_str()),
+        ]
+        .into_iter()
+        .flatten()
+        .find_map(Self::normalized_forced_media_title)
+        .unwrap_or_else(|| "Plex Stream".to_owned())
+    }
+
+    fn set_attached_player_forced_media_title(&mut self, title: &str) {
+        let Some(title) = Self::normalized_forced_media_title(title) else {
+            return;
+        };
+        let Some(player) = self.player.as_mut() else {
+            return;
+        };
+        let _ = player.set_option_string(MPV_FORCE_MEDIA_TITLE_OPTION, &title);
     }
 
     fn room_stream_target_kind(
@@ -305,6 +344,9 @@ impl GuiPersistedConfigRuntimeOwner {
         };
         Some(match open_result {
             Ok(()) => {
+                self.set_attached_player_forced_media_title(&Self::media_title_for_opened_path(
+                    &selected_path,
+                ));
                 self.player_local_file =
                     Some(Self::placeholder_local_file_for_path(&selected_path));
                 self.player_local_file_placeholder = browser_is_url(&selected_path);
@@ -364,6 +406,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let loaded_target_secret = stream_target.playback_url.clone();
         let logical_file = stream_target.logical_file.clone();
         let logical_name = logical_file.name.clone();
+        let media_title = Self::media_title_for_plex_stream(&stream_target);
         let (player_name, open_result) = {
             let player = self.player.as_mut()?;
             (
@@ -373,6 +416,7 @@ impl GuiPersistedConfigRuntimeOwner {
         };
         Some(match open_result {
             Ok(()) => {
+                self.set_attached_player_forced_media_title(&media_title);
                 self.pending_stream_load_context = None;
                 if user_initiated {
                     self.pending_stream_retry_target = None;
