@@ -1058,7 +1058,10 @@ fn gui_persisted_config_runtime_owner_prefers_media_search_casing_over_media_mat
         &root,
         &media_root,
         built_at,
-        &[("episode2.mkv", &[indexed_relative_path.as_str()])],
+        &[
+            ("episode2.mkv", &[indexed_relative_path.as_str()]),
+            ("Episode2.mkv", &[indexed_relative_path.as_str()]),
+        ],
     );
 
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
