@@ -74,6 +74,43 @@ pub(crate) fn test_temp_root(label: &str) -> std::path::PathBuf {
     ));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("test temp root should be created");
+    normalize_test_temp_root(root)
+}
+
+#[cfg(windows)]
+fn normalize_test_temp_root(root: std::path::PathBuf) -> std::path::PathBuf {
+    let Ok(canonical_root) = std::fs::canonicalize(&root) else {
+        return root;
+    };
+    let normalized_root = {
+        let mut components = canonical_root.components();
+        match components.next() {
+            Some(std::path::Component::Prefix(prefix)) => match prefix.kind() {
+                std::path::Prefix::VerbatimDisk(disk) => {
+                    let mut normalized_root =
+                        std::path::PathBuf::from(format!("{}:\\", char::from(disk)));
+                    normalized_root.extend(components);
+                    Some(normalized_root)
+                }
+                std::path::Prefix::VerbatimUNC(server, share) => {
+                    let mut normalized_root = std::path::PathBuf::from(format!(
+                        "\\\\{}\\{}",
+                        server.to_string_lossy(),
+                        share.to_string_lossy()
+                    ));
+                    normalized_root.extend(components);
+                    Some(normalized_root)
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    };
+    normalized_root.unwrap_or(canonical_root)
+}
+
+#[cfg(not(windows))]
+fn normalize_test_temp_root(root: std::path::PathBuf) -> std::path::PathBuf {
     root
 }
 
