@@ -25,6 +25,38 @@ impl GuiMediaSourceProviderId {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(in crate::app) struct GuiPlaylistDefaultSourceId(Option<GuiMediaSourceProviderId>);
+
+impl GuiPlaylistDefaultSourceId {
+    pub(in crate::app) fn automatic() -> Self {
+        Self(None)
+    }
+
+    pub(in crate::app) fn provider(provider_id: GuiMediaSourceProviderId) -> Self {
+        Self(Some(provider_id))
+    }
+
+    pub(in crate::app) fn from_action_id(value: &str) -> Self {
+        if value == "automatic" {
+            Self::automatic()
+        } else {
+            Self::provider(GuiMediaSourceProviderId::new(value.to_owned()))
+        }
+    }
+
+    pub(in crate::app) fn as_action_id(&self) -> &str {
+        self.0
+            .as_ref()
+            .map(GuiMediaSourceProviderId::as_str)
+            .unwrap_or("automatic")
+    }
+
+    pub(in crate::app) fn provider_id(&self) -> Option<&GuiMediaSourceProviderId> {
+        self.0.as_ref()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::app) enum GuiPlaylistSourceStatus {
     Available,
@@ -61,6 +93,33 @@ pub(in crate::app) struct GuiPlaylistSourceOption {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::app) struct GuiPlaylistDefaultSourceOption {
+    pub(in crate::app) source_id: GuiPlaylistDefaultSourceId,
+    pub(in crate::app) label: String,
+    pub(in crate::app) status: GuiPlaylistSourceStatus,
+    pub(in crate::app) detail: Option<String>,
+    pub(in crate::app) enabled: bool,
+    pub(in crate::app) selected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::app) struct GuiPlaylistDefaultSourceState {
+    pub(in crate::app) current_source_id: GuiPlaylistDefaultSourceId,
+    pub(in crate::app) current_label: String,
+    pub(in crate::app) options: Vec<GuiPlaylistDefaultSourceOption>,
+}
+
+impl Default for GuiPlaylistDefaultSourceState {
+    fn default() -> Self {
+        Self {
+            current_source_id: GuiPlaylistDefaultSourceId::automatic(),
+            current_label: "Automatic".to_owned(),
+            options: default_playlist_source_default_options(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::app) struct GuiPlaylistResolutionStep {
     pub(in crate::app) provider_id: GuiMediaSourceProviderId,
     pub(in crate::app) label: String,
@@ -80,17 +139,19 @@ pub(in crate::app) struct GuiPlaylistSourceState {
 
 impl GuiPlaylistSourceState {
     pub(in crate::app) fn inferred_for_entry(entry: &str) -> Self {
-        let provider_id = if sorotte_plex::is_plex_playlist_uri(entry) {
+        Self::for_provider(Self::inferred_provider_for_entry(entry))
+    }
+
+    pub(in crate::app) fn inferred_provider_for_entry(entry: &str) -> GuiMediaSourceProviderId {
+        if sorotte_plex::is_plex_playlist_uri(entry) {
             GuiMediaSourceProviderId::plex_stream()
         } else {
             GuiMediaSourceProviderId::local()
-        };
-        let current_label = if provider_id == GuiMediaSourceProviderId::plex_stream() {
-            "Plex Stream"
-        } else {
-            "Local"
         }
-        .to_owned();
+    }
+
+    pub(in crate::app) fn for_provider(provider_id: GuiMediaSourceProviderId) -> Self {
+        let current_label = playlist_source_provider_label(&provider_id).to_owned();
         Self {
             current_provider_id: provider_id.clone(),
             current_label,
@@ -100,6 +161,44 @@ impl GuiPlaylistSourceState {
             resolution_steps: Vec::new(),
         }
     }
+}
+
+fn playlist_source_provider_label(provider_id: &GuiMediaSourceProviderId) -> &'static str {
+    if provider_id == &GuiMediaSourceProviderId::plex_stream() {
+        "Plex Stream"
+    } else if provider_id == &GuiMediaSourceProviderId::media_matching() {
+        "Media Matching"
+    } else {
+        "Local"
+    }
+}
+
+fn default_playlist_source_default_options() -> Vec<GuiPlaylistDefaultSourceOption> {
+    [
+        (GuiPlaylistDefaultSourceId::automatic(), "Automatic"),
+        (
+            GuiPlaylistDefaultSourceId::provider(GuiMediaSourceProviderId::local()),
+            "Local",
+        ),
+        (
+            GuiPlaylistDefaultSourceId::provider(GuiMediaSourceProviderId::media_matching()),
+            "Media Matching",
+        ),
+        (
+            GuiPlaylistDefaultSourceId::provider(GuiMediaSourceProviderId::plex_stream()),
+            "Plex Stream",
+        ),
+    ]
+    .into_iter()
+    .map(|(source_id, label)| GuiPlaylistDefaultSourceOption {
+        selected: source_id == GuiPlaylistDefaultSourceId::automatic(),
+        source_id,
+        label: label.to_owned(),
+        status: GuiPlaylistSourceStatus::Available,
+        detail: None,
+        enabled: true,
+    })
+    .collect()
 }
 
 fn default_playlist_source_options(
@@ -196,6 +295,7 @@ pub(in crate::app) struct MainWindowShellState {
     pub(in crate::app) rooms: Vec<MainWindowRoomRow>,
     pub(in crate::app) users: Vec<MainWindowUserRow>,
     pub(in crate::app) playlist: Vec<MainWindowPlaylistRow>,
+    pub(in crate::app) playlist_default_source: GuiPlaylistDefaultSourceState,
     pub(in crate::app) active_playlist_index: Option<usize>,
     pub(in crate::app) chat: Vec<MainWindowChatRow>,
     pub(in crate::app) playback: MainWindowPlaybackControls,

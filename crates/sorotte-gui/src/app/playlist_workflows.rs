@@ -3,7 +3,8 @@ use std::collections::BTreeSet;
 use sha2::{Digest, Sha256};
 
 use super::shell_state::{
-    GuiMediaMatchToolHealth, GuiMediaSourceProviderId, GuiPlaylistResolutionStep,
+    GuiMediaMatchToolHealth, GuiMediaSourceProviderId, GuiPlaylistDefaultSourceId,
+    GuiPlaylistDefaultSourceOption, GuiPlaylistDefaultSourceState, GuiPlaylistResolutionStep,
     GuiPlaylistSourceOption, GuiPlaylistSourceState, GuiPlaylistSourceStatus,
     GuiPlaylistTextEditSessionState, GuiPlexPlaylistSearchResult, GuiPlexPlaylistSearchState,
     GuiPluginSelection, GuiShellView, GuiTransientNotificationLevel, GuiUrlEditSessionState,
@@ -53,10 +54,34 @@ impl SorotteGuiShellAppState {
     }
 
     pub(super) fn playlist_source_state_for_entry(&self, entry: &str) -> GuiPlaylistSourceState {
+        let provider_id = self.playlist_default_provider_for_new_entry(entry);
         self.refreshed_playlist_source_state_for_entry(
             entry,
-            GuiPlaylistSourceState::inferred_for_entry(entry),
+            GuiPlaylistSourceState::for_provider(provider_id),
         )
+    }
+
+    fn playlist_default_provider_for_new_entry(&self, entry: &str) -> GuiMediaSourceProviderId {
+        let inferred_provider = GuiPlaylistSourceState::inferred_provider_for_entry(entry);
+        let Some(default_provider) = self
+            .main_window
+            .playlist_default_source
+            .current_source_id
+            .provider_id()
+            .cloned()
+        else {
+            return inferred_provider;
+        };
+        let default_available = self
+            .playlist_source_options_for_entry(entry, &default_provider)
+            .into_iter()
+            .find(|option| option.provider_id == default_provider)
+            .is_some_and(|option| option.enabled);
+        if default_available {
+            default_provider
+        } else {
+            inferred_provider
+        }
     }
 
     pub(super) fn refreshed_playlist_source_state_for_entry(
@@ -73,9 +98,11 @@ impl SorotteGuiShellAppState {
             state.current_label = selected_option.label.clone();
             if !selected_option.enabled {
                 state.status = GuiPlaylistSourceStatus::Disabled;
-                if state.detail.is_none() {
-                    state.detail = selected_option.detail.clone();
-                }
+                state.detail = selected_option.detail.clone();
+            } else if state.status == GuiPlaylistSourceStatus::Disabled {
+                state.status = GuiPlaylistSourceStatus::Available;
+                state.detail = Some("Waiting for playlist activation.".to_owned());
+                state.resolution_steps.clear();
             }
         }
         state
@@ -115,6 +142,9 @@ impl SorotteGuiShellAppState {
         for (row, source_state) in self.main_window.playlist.iter_mut().zip(refreshed_states) {
             row.source_state = source_state;
         }
+        self.main_window.playlist_default_source = self.refreshed_playlist_source_default_state(
+            self.main_window.playlist_default_source.clone(),
+        );
     }
 
     pub(super) fn select_main_window_playlist_source(
@@ -162,6 +192,33 @@ impl SorotteGuiShellAppState {
         }
         self.set_main_window_playlist_selection(Some(index), true);
         self.apply_selection_to_surfaces();
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    pub(super) fn select_main_window_playlist_default_source(
+        &mut self,
+        source_id: GuiPlaylistDefaultSourceId,
+    ) -> bool {
+        let Some(option) = self
+            .playlist_source_default_options(&source_id)
+            .into_iter()
+            .find(|option| option.source_id == source_id)
+        else {
+            return self
+                .record_action_error("The requested playlist default source is not registered.");
+        };
+        if !option.enabled {
+            return self.record_action_error(option.detail.unwrap_or_else(|| {
+                "The requested playlist default source is disabled.".to_owned()
+            }));
+        }
+        self.main_window.playlist_default_source =
+            self.refreshed_playlist_source_default_state(GuiPlaylistDefaultSourceState {
+                current_source_id: option.source_id,
+                current_label: option.label,
+                options: Vec::new(),
+            });
         self.clear_action_error_and_refresh();
         true
     }
@@ -216,6 +273,77 @@ impl SorotteGuiShellAppState {
             self.playlist_media_match_source_option(selected_provider_id),
             self.playlist_plex_stream_source_option(entry, selected_provider_id),
         ]
+    }
+
+    pub(super) fn refreshed_playlist_source_default_state(
+        &self,
+        mut state: GuiPlaylistDefaultSourceState,
+    ) -> GuiPlaylistDefaultSourceState {
+        state.options = self.playlist_source_default_options(&state.current_source_id);
+        if let Some(selected_option) = state
+            .options
+            .iter()
+            .find(|option| option.source_id == state.current_source_id)
+        {
+            state.current_label = selected_option.label.clone();
+        } else {
+            state.current_source_id = GuiPlaylistDefaultSourceId::automatic();
+            state.current_label = "Automatic".to_owned();
+            state.options = self.playlist_source_default_options(&state.current_source_id);
+        }
+        state
+    }
+
+    fn playlist_source_default_options(
+        &self,
+        selected_source_id: &GuiPlaylistDefaultSourceId,
+    ) -> Vec<GuiPlaylistDefaultSourceOption> {
+        let mut options = vec![self.playlist_source_default_option(
+            GuiPlaylistDefaultSourceId::automatic(),
+            "Automatic",
+            selected_source_id,
+            true,
+            Some("Use the built-in source priority for new playlist items."),
+        )];
+        options.extend(
+            self.playlist_source_options_for_entry("", &GuiMediaSourceProviderId::local())
+                .into_iter()
+                .map(|option| {
+                    self.playlist_source_default_option(
+                        GuiPlaylistDefaultSourceId::provider(option.provider_id),
+                        &option.label,
+                        selected_source_id,
+                        option.enabled,
+                        option.detail.as_deref(),
+                    )
+                }),
+        );
+        options
+    }
+
+    fn playlist_source_default_option(
+        &self,
+        source_id: GuiPlaylistDefaultSourceId,
+        label: &str,
+        selected_source_id: &GuiPlaylistDefaultSourceId,
+        enabled: bool,
+        detail: Option<&str>,
+    ) -> GuiPlaylistDefaultSourceOption {
+        let selected = &source_id == selected_source_id;
+        GuiPlaylistDefaultSourceOption {
+            source_id,
+            label: label.to_owned(),
+            status: if !enabled {
+                GuiPlaylistSourceStatus::Disabled
+            } else if selected {
+                GuiPlaylistSourceStatus::Active
+            } else {
+                GuiPlaylistSourceStatus::Available
+            },
+            detail: detail.map(str::to_owned),
+            enabled,
+            selected,
+        }
     }
 
     fn playlist_media_match_source_option(

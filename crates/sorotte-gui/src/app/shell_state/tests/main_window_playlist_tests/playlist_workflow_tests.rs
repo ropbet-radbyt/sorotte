@@ -249,6 +249,7 @@ fn gui_shell_app_state_preserves_selected_playlist_entry_when_reordering_another
 fn gui_shell_app_state_projects_playlist_source_defaults_and_disabled_options() {
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         shared_playlist_enabled: Some(true),
+        media_match_fingerprinting_enabled: Some(true),
         ..StoredClientSettingsMvp::default()
     });
     assert!(
@@ -285,6 +286,235 @@ fn gui_shell_app_state_projects_playlist_source_defaults_and_disabled_options() 
             .detail
             .as_deref()
             .is_some_and(|detail| detail.contains("disabled"))
+    );
+}
+
+#[test]
+fn gui_shell_app_state_playlist_default_source_applies_only_to_new_rows() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        media_match_fingerprinting_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    assert!(
+        state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+            "Episode 1".to_owned(),
+        ]))
+    );
+
+    assert!(
+        state.apply(GuiShellAction::SelectMainWindowPlaylistDefaultSource {
+            source_id: GuiPlaylistDefaultSourceId::provider(
+                GuiMediaSourceProviderId::media_matching()
+            ),
+        })
+    );
+
+    assert_eq!(
+        state.main_window.playlist[0]
+            .source_state
+            .current_provider_id
+            .as_str(),
+        "local",
+        "changing the playlist default must not rewrite existing row source selections"
+    );
+    assert!(
+        state.apply(GuiShellAction::AppendSharedPlaylistEntries(vec![
+            "Episode 2".to_owned(),
+        ]))
+    );
+    assert_eq!(
+        state.main_window.playlist[1]
+            .source_state
+            .current_provider_id
+            .as_str(),
+        "media-matching",
+        "new rows should prioritize the selected playlist default when it is available"
+    );
+
+    assert!(state.apply(GuiShellAction::SetMediaMatchFingerprintingEnabled(false)));
+    assert!(
+        state.apply(GuiShellAction::AppendSharedPlaylistEntries(vec![
+            "Episode 3".to_owned(),
+        ]))
+    );
+    assert_eq!(
+        state.main_window.playlist[2]
+            .source_state
+            .current_provider_id
+            .as_str(),
+        "local",
+        "new rows should fall back to automatic inference when the selected default is unavailable"
+    );
+    assert_eq!(
+        state
+            .main_window
+            .playlist_default_source
+            .current_source_id
+            .provider_id()
+            .map(GuiMediaSourceProviderId::as_str),
+        Some("media-matching"),
+        "unavailable defaults stay selected globally so future settings can make them available again"
+    );
+
+    assert!(state.apply(GuiShellAction::SetMediaMatchFingerprintingEnabled(true)));
+    assert!(
+        state.apply(GuiShellAction::AppendSharedPlaylistEntries(vec![
+            "Episode 4".to_owned(),
+        ]))
+    );
+    assert_eq!(
+        state.main_window.playlist[3]
+            .source_state
+            .current_provider_id
+            .as_str(),
+        "media-matching",
+        "future rows should use the selected playlist default again once it becomes available"
+    );
+}
+
+#[test]
+fn gui_shell_app_state_playlist_source_override_recovers_after_plugin_reenabled() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        media_matching_plugin_enabled: Some(true),
+        media_match_fingerprinting_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    assert!(
+        state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+            "Episode 1".to_owned(),
+        ]))
+    );
+    assert!(state.apply(GuiShellAction::SelectMainWindowPlaylistSource {
+        index: 0,
+        provider_id: GuiMediaSourceProviderId::media_matching(),
+    }));
+    assert_eq!(
+        state.main_window.playlist[0].source_state.status,
+        GuiPlaylistSourceStatus::Resolving
+    );
+
+    assert!(state.apply(GuiShellAction::SetPluginEnabled {
+        plugin: GuiPluginSelection::MediaMatching,
+        enabled: false,
+    }));
+    assert_eq!(
+        state.main_window.playlist[0]
+            .source_state
+            .current_provider_id
+            .as_str(),
+        "media-matching"
+    );
+    assert_eq!(
+        state.main_window.playlist[0].source_state.status,
+        GuiPlaylistSourceStatus::Disabled
+    );
+    assert!(
+        state.main_window.playlist[0]
+            .source_state
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("disabled"))
+    );
+
+    assert!(state.apply(GuiShellAction::SetPluginEnabled {
+        plugin: GuiPluginSelection::MediaMatching,
+        enabled: true,
+    }));
+    assert_eq!(
+        state.main_window.playlist[0]
+            .source_state
+            .current_provider_id
+            .as_str(),
+        "media-matching",
+        "plugin availability changes must not discard the row override"
+    );
+    assert_eq!(
+        state.main_window.playlist[0].source_state.status,
+        GuiPlaylistSourceStatus::Available,
+        "re-enabled providers should recover from a transient disabled row state"
+    );
+    assert_eq!(
+        state.main_window.playlist[0].source_state.detail.as_deref(),
+        Some("Waiting for playlist activation.")
+    );
+}
+
+#[test]
+fn gui_shell_app_state_playlist_source_override_recovers_after_plex_runtime_unavailable() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        plex_plugin_enabled: Some(true),
+        plex_streaming_enabled: Some(true),
+        plex_user_token: Some("user-token".to_owned()),
+        plex_selected_server_id: Some("machine-1".to_owned()),
+        plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    assert!(
+        state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+            "Episode 1".to_owned(),
+        ]))
+    );
+    assert!(state.apply(GuiShellAction::SelectMainWindowPlaylistSource {
+        index: 0,
+        provider_id: GuiMediaSourceProviderId::plex_stream(),
+    }));
+
+    assert!(state.apply(GuiShellAction::ApplyGuiPlexRuntimeSnapshot(
+        GuiPlexRuntimeSnapshot {
+            enabled: true,
+            streaming_enabled: true,
+            authenticated: false,
+            selected_server_id: Some("machine-1".to_owned()),
+            selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
+            status: "Plex authentication expired.".to_owned(),
+            ..GuiPlexRuntimeSnapshot::default()
+        },
+    )));
+    assert_eq!(
+        state.main_window.playlist[0]
+            .source_state
+            .current_provider_id
+            .as_str(),
+        "plex-stream"
+    );
+    assert_eq!(
+        state.main_window.playlist[0].source_state.status,
+        GuiPlaylistSourceStatus::Disabled
+    );
+    assert_eq!(
+        state.main_window.playlist[0].source_state.detail.as_deref(),
+        Some("Plex is not authenticated.")
+    );
+
+    assert!(state.apply(GuiShellAction::ApplyGuiPlexRuntimeSnapshot(
+        GuiPlexRuntimeSnapshot {
+            enabled: true,
+            streaming_enabled: true,
+            authenticated: true,
+            selected_server_id: Some("machine-1".to_owned()),
+            selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
+            status: "Plex connected.".to_owned(),
+            ..GuiPlexRuntimeSnapshot::default()
+        },
+    )));
+    assert_eq!(
+        state.main_window.playlist[0]
+            .source_state
+            .current_provider_id
+            .as_str(),
+        "plex-stream",
+        "runtime availability changes must not discard the row override"
+    );
+    assert_eq!(
+        state.main_window.playlist[0].source_state.status,
+        GuiPlaylistSourceStatus::Available
+    );
+    assert_eq!(
+        state.main_window.playlist[0].source_state.detail.as_deref(),
+        Some("Waiting for playlist activation.")
     );
 }
 

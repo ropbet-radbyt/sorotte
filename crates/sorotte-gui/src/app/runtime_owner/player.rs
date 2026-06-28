@@ -27,9 +27,10 @@ use super::super::runtime_stack::{
 };
 use super::super::shell_state::{
     GuiMediaIndexRuntimeSnapshot, GuiMediaSourceProviderId, GuiPlaylistResolutionStep,
-    GuiPlaylistSourceStatus, GuiPluginSelection, GuiShellAction, GuiShellModal, GuiShellView,
-    GuiStreamHelperHealth, GuiStreamTargetKind, GuiTransientNotificationLevel,
-    MainWindowRuntimeSnapshot, SorotteGuiShellAppState, browser_is_url, browser_stream_target_kind,
+    GuiPlaylistSourceState, GuiPlaylistSourceStatus, GuiPluginSelection, GuiShellAction,
+    GuiShellModal, GuiShellView, GuiStreamHelperHealth, GuiStreamTargetKind,
+    GuiTransientNotificationLevel, MainWindowRuntimeSnapshot, SorotteGuiShellAppState,
+    browser_is_url, browser_stream_target_kind,
 };
 use super::super::startup_support::env_trimmed;
 use super::super::support::{

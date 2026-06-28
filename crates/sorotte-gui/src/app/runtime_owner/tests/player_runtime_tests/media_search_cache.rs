@@ -2,7 +2,8 @@ use super::*;
 
 use crate::app::runtime_owner::{GuiPlexStreamResolveOutcome, GuiPlexStreamResolveWorkerResult};
 use crate::app::{
-    GuiClientCoreChatSessionRuntimeAdapter, GuiMediaSourceProviderId, GuiPlaylistSourceStatus,
+    GuiClientCoreChatSessionRuntimeAdapter, GuiMediaSourceProviderId, GuiPlaylistSourceState,
+    GuiPlaylistSourceStatus,
 };
 
 fn wait_for_media_match_remote_lookup(owner: &mut GuiPersistedConfigRuntimeOwner) {
@@ -755,6 +756,102 @@ fn gui_persisted_config_runtime_owner_queues_plex_stream_resolution_for_automati
         owner.player_local_file.is_none(),
         "the player should not open until the background Plex stream target is resolved"
     );
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_honors_selected_plex_source_when_local_media_exists() {
+    let root = test_temp_root("selected-plex-stream-over-local-playlist-activation");
+    let config_path = root.join("sorotte.ini");
+    let first_media_path = root.join("Episode 1.mkv");
+    let second_media_path = root.join("Episode 2.mkv");
+    std::fs::write(&first_media_path, b"test")
+        .expect("first local playlist fixture should be written");
+    std::fs::write(&second_media_path, b"test")
+        .expect("second local playlist fixture should be written");
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    owner.active_shared_playlist_index = Some(1);
+
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
+        plex_plugin_enabled: Some(true),
+        plex_streaming_enabled: Some(true),
+        plex_user_token: Some("user-token".to_owned()),
+        plex_selected_server_id: Some("machine-1".to_owned()),
+        plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
+        plex_selected_server_token: Some("server-token".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.apply_shared_playlist_entries(
+        vec!["Episode 1.mkv".to_owned(), "Episode 2.mkv".to_owned()],
+        Some(1),
+        false,
+    );
+    state.main_window.active_playlist_index = Some(1);
+    state.main_window.playlist[1].source_state =
+        GuiPlaylistSourceState::for_provider(GuiMediaSourceProviderId::plex_stream());
+
+    let outcome = owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
+
+    assert_eq!(outcome, SelectedPlaylistMediaSyncOutcome::NoChange);
+    assert!(
+        owner.plex_stream_resolve_rx.is_some(),
+        "activating a row manually set to Plex Stream should queue Plex even when a local file exists"
+    );
+    assert!(
+        owner.player_local_file.is_none(),
+        "the automatic playlist activation path must not satisfy a Plex-selected row with local media"
+    );
+    assert!(
+        owner.pending_attached_media_resolution.is_none(),
+        "a Plex-selected row should not start local media search before Plex resolution"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_prefers_local_media_for_selected_media_match_source() {
+    let root = test_temp_root("selected-media-match-local-first-playlist-activation");
+    let selected_media_path = root.join("Episode 2.mkv");
+    std::fs::write(&selected_media_path, b"test")
+        .expect("selected Media Match local-first fixture should be written");
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    owner.active_shared_playlist_index = Some(0);
+
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
+        media_matching_plugin_enabled: Some(true),
+        media_match_fingerprinting_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.apply_shared_playlist_entries(vec!["Episode 2.mkv".to_owned()], Some(0), false);
+    state.main_window.playlist[0].source_state =
+        GuiPlaylistSourceState::for_provider(GuiMediaSourceProviderId::media_matching());
+
+    let outcome = owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
+    let selected_media_path = selected_media_path.to_string_lossy().into_owned();
+
+    assert_eq!(outcome, SelectedPlaylistMediaSyncOutcome::OpenedNewMedia);
+    assert_eq!(
+        owner
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.as_deref()),
+        Some(selected_media_path.as_str()),
+        "Media Matching selection should not displace an available local match"
+    );
+    assert!(
+        owner.media_match_remote_lookup_rx.is_none(),
+        "Media Matching lookup should not run when local media resolved first"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]

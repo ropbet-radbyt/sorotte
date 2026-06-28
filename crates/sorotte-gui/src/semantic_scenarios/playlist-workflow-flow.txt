@@ -6,6 +6,15 @@ setting	plex-streaming-enabled	true
 activate	main-window-root
 apply-main-window-runtime	sync-room	true	false	false	true	true	true	true	smoke-user,true,false,false	episode1.mkv|episode2.mkv	system>playlist-ready
 apply-main-window-playlist-selection	1
+assert-label	main-window:playlist-default-source	Default Source: Automatic
+assert-selected	main-window:playlist-default-source:automatic	true
+assert-label	main-window:playlist-default-source:local	Local
+assert-label	main-window:playlist-default-source:media-matching	Media Matching
+assert-label	main-window:playlist-default-source:plex-stream	Plex Stream
+assert-enabled	main-window:playlist-default-source:plex-stream	true
+activate	main-window:playlist-default-source:plex-stream
+assert-label	main-window:playlist-default-source	Default Source: Plex Stream
+assert-selected	main-window:playlist-default-source:plex-stream	true
 assert-label	main-window:playlist:1:source	Local
 assert-value	main-window:playlist:1:source	available
 assert-selected	main-window:playlist:1:source:local	true
@@ -23,6 +32,8 @@ assert-enabled	main-window:playlist-url-edit:text	true
 enter-text	main-window:playlist-url-edit:text	false	https://example.com/live
 activate	main-window:playlist-url-edit:commit
 assert-label	main-window:playlist:2	https://example.com/live
+assert-label	main-window:playlist:2:source	Plex Stream
+assert-selected	main-window:playlist:2:source:plex-stream	true
 activate	main-window:playlist:1:remove
 assert-label	main-window:playlist:1	https://example.com/live
 assert-selected	main-window:playlist:1	true

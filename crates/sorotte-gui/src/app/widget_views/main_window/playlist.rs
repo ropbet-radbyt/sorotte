@@ -46,6 +46,9 @@ impl SorotteGuiShellAppState {
                         true,
                         row.is_selected,
                     );
+                    if let Some(source_button) = self.playlist_source_button_node(index) {
+                        row_node.children.push(source_button);
+                    }
                     row_node.children.push(remove_button);
                     row_node
                 })
@@ -312,6 +315,57 @@ impl SorotteGuiShellAppState {
             )
         });
 
+        let mut playlist_default_source_button = GuiWidgetNode::branch(
+            "main-window:playlist-default-source",
+            format!(
+                "Default Source: {}",
+                self.main_window.playlist_default_source.current_label
+            ),
+            GuiWidgetKind::Button,
+            self.main_window
+                .playlist_default_source
+                .options
+                .iter()
+                .map(|option| {
+                    let mut option_node = GuiWidgetNode::leaf(
+                        format!(
+                            "main-window:playlist-default-source:{}",
+                            option.source_id.as_action_id()
+                        ),
+                        option.label.clone(),
+                        GuiWidgetKind::Button,
+                        Some(option.status.label().to_owned()),
+                        option.enabled,
+                        option.selected,
+                    );
+                    if let Some(detail) = option.detail.as_ref() {
+                        option_node = option_node.with_tooltip(detail.clone());
+                    }
+                    option_node
+                })
+                .collect(),
+        );
+        playlist_default_source_button.value = Some(
+            self.main_window
+                .playlist_default_source
+                .options
+                .iter()
+                .find(|option| option.selected)
+                .map(|option| option.status.label().to_owned())
+                .unwrap_or_else(|| "available".to_owned()),
+        );
+        playlist_default_source_button = playlist_default_source_button.with_tooltip(
+            playlist_default_source_tooltip(&self.main_window.playlist_default_source),
+        );
+        let playlist_default_source_footer = GuiWidgetNode::layout(
+            "main-window:playlist-default-source-row",
+            "Default Source",
+            GuiLayoutMode::ButtonWrap {
+                min_button_width: 180.0,
+            },
+            vec![playlist_default_source_button],
+        );
+
         let mut control_buttons = Vec::new();
         if self.main_window.show_playback_buttons {
             control_buttons.extend([
@@ -391,6 +445,7 @@ impl SorotteGuiShellAppState {
                 plex_playlist_search_panel.clone(),
             ])
             .chain([Some(playlist_panel.clone())])
+            .chain([Some(playlist_default_source_footer.clone())])
             .chain([Some(playlist_playback_footer.clone())])
             .flatten()
             .collect();
@@ -414,6 +469,28 @@ impl SorotteGuiShellAppState {
             playlist_column_children,
         )
     }
+}
+
+fn playlist_default_source_tooltip(source_state: &GuiPlaylistDefaultSourceState) -> String {
+    let mut lines = vec![
+        format!(
+            "Default source for new items: {}",
+            source_state.current_label
+        ),
+        "Existing playlist items keep their own selected source.".to_owned(),
+    ];
+    if !source_state.options.is_empty() {
+        lines.push("Available defaults:".to_owned());
+        lines.extend(source_state.options.iter().map(|option| {
+            let mut line = format!("- {}: {}", option.label, option.status.label());
+            if let Some(detail) = option.detail.as_deref() {
+                line.push_str(" - ");
+                line.push_str(detail);
+            }
+            line
+        }));
+    }
+    lines.join("\n")
 }
 
 fn shared_playlist_display_label(entry: &str) -> String {

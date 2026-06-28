@@ -198,6 +198,9 @@ pub(in crate::app) enum GuiShellAction {
         index: usize,
         provider_id: GuiMediaSourceProviderId,
     },
+    SelectMainWindowPlaylistDefaultSource {
+        source_id: GuiPlaylistDefaultSourceId,
+    },
     MoveMainWindowPlaylistRow {
         from_index: usize,
         to_index: usize,

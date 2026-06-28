@@ -335,6 +335,7 @@ pub(super) enum GuiUserMediaTargetResolutionSource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct GuiAutomaticMediaResolutionTrigger {
     pub(super) target: String,
+    pub(super) source_provider: String,
     pub(super) roots: Vec<String>,
     pub(super) media_match_remote_targets: String,
     pub(super) current_player_path: Option<String>,

@@ -24,4 +24,17 @@ fn gui_widget_egui_renderer_maps_playlist_source_menu_options_to_shell_actions()
             provider_id: GuiMediaSourceProviderId::local(),
         }]
     );
+
+    let media_match_default = tree
+        .find("main-window:playlist-default-source:media-matching")
+        .expect("Media Matching default source menu option should exist");
+
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, media_match_default),
+        vec![GuiShellAction::SelectMainWindowPlaylistDefaultSource {
+            source_id: GuiPlaylistDefaultSourceId::provider(
+                GuiMediaSourceProviderId::media_matching()
+            ),
+        }]
+    );
 }

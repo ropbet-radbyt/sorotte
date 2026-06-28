@@ -27,7 +27,6 @@ impl SorotteGuiShellAppState {
             local_ready_available,
             false,
         );
-        let local_source_button = self.local_playlist_source_button_node();
         let saved_session_target = self.saved_session_connect_target();
         let connection_status = match self.pending_operation.as_ref().map(|pending| pending.kind) {
             Some(GuiPendingOperationKind::ConnectSavedServer) => "connecting",
@@ -220,9 +219,6 @@ impl SorotteGuiShellAppState {
                     ],
                 )];
                 if user.is_self {
-                    if let Some(source_button) = local_source_button.clone() {
-                        user_children.push(source_button);
-                    }
                     user_children.push(ready_button.clone());
                 }
 
@@ -445,12 +441,7 @@ impl SorotteGuiShellAppState {
         (player_setup_panel, summary_column)
     }
 
-    fn local_playlist_source_button_node(&self) -> Option<GuiWidgetNode> {
-        let index = self
-            .selection
-            .selected_main_window_playlist
-            .or(self.main_window.active_playlist_index)
-            .filter(|index| *index < self.main_window.playlist.len())?;
+    pub(super) fn playlist_source_button_node(&self, index: usize) -> Option<GuiWidgetNode> {
         let row = self.main_window.playlist.get(index)?;
         let mut source_button = GuiWidgetNode::branch(
             format!("main-window:playlist:{index}:source"),

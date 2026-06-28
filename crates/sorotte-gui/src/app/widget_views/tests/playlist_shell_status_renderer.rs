@@ -80,20 +80,9 @@ fn gui_shell_app_state_projects_playlist_source_badge_menu() {
     let playlist_row = tree
         .find("main-window:playlist:0")
         .expect("playlist row should exist");
-    assert!(
-        !playlist_row
-            .children
-            .iter()
-            .any(|child| child.id.ends_with(":source")),
-        "source selector should live with the local participant, not the playlist row"
-    );
-
-    let local_user = tree
-        .find("main-window:user:0")
-        .expect("local participant should exist");
-    let source = local_user
+    let source = playlist_row
         .find("main-window:playlist:0:source")
-        .expect("playlist source badge should be projected under the local participant");
+        .expect("playlist source badge should be projected on its playlist row");
     assert_eq!(source.kind, GuiWidgetKind::Button);
     assert_eq!(source.label, "Local");
     assert_eq!(source.value.as_deref(), Some("available"));
@@ -121,6 +110,27 @@ fn gui_shell_app_state_projects_playlist_source_badge_menu() {
             .tooltip
             .as_deref()
             .is_some_and(|tooltip| tooltip.contains("disabled"))
+    );
+
+    let default_source = tree
+        .find("main-window:playlist-default-source")
+        .expect("playlist default source selector should be projected below playlist entries");
+    assert_eq!(default_source.kind, GuiWidgetKind::Button);
+    assert_eq!(default_source.label, "Default Source: Automatic");
+    assert!(default_source.tooltip.as_deref().is_some_and(|tooltip| {
+        tooltip.contains("Existing playlist items keep their own selected source")
+    }));
+    assert!(
+        default_source
+            .children
+            .iter()
+            .any(|option| option.id.ends_with(":automatic") && option.selected)
+    );
+    assert!(
+        default_source
+            .children
+            .iter()
+            .any(|option| option.id.ends_with(":media-matching") && !option.enabled)
     );
 }
 

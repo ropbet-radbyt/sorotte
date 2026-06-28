@@ -173,6 +173,7 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::SelectMainWindowPlaylist(_)
             | GuiShellAction::ActivateMainWindowPlaylist(_)
             | GuiShellAction::SelectMainWindowPlaylistSource { .. }
+            | GuiShellAction::SelectMainWindowPlaylistDefaultSource { .. }
             | GuiShellAction::MoveMainWindowPlaylistRow { .. }
             | GuiShellAction::MoveSelectedMainWindowPlaylistUp
             | GuiShellAction::MoveSelectedMainWindowPlaylistDown

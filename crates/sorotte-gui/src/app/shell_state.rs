@@ -52,7 +52,8 @@ pub(super) use self::configuration_dialog::{
 #[cfg(any(test, feature = "gui-semantic-smoke"))]
 pub(super) use self::main_window::MainWindowRuntimeChatSnapshot;
 pub(super) use self::main_window::{
-    GuiMediaSourceProviderId, GuiPlaylistResolutionStep, GuiPlaylistSourceOption,
+    GuiMediaSourceProviderId, GuiPlaylistDefaultSourceId, GuiPlaylistDefaultSourceOption,
+    GuiPlaylistDefaultSourceState, GuiPlaylistResolutionStep, GuiPlaylistSourceOption,
     GuiPlaylistSourceState, GuiPlaylistSourceStatus, MainWindowChatRow, MainWindowPlaybackControls,
     MainWindowPlaylistRow, MainWindowRoomRow, MainWindowRuntimeRoomSnapshot,
     MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot, MainWindowShellState,

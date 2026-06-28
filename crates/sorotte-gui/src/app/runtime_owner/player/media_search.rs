@@ -16,6 +16,15 @@ enum GuiPlexStreamResolutionState {
     Disabled,
 }
 
+struct GuiPlaylistSourceStateUpdate<'a> {
+    index: usize,
+    target: &'a str,
+    provider_id: GuiMediaSourceProviderId,
+    status: GuiPlaylistSourceStatus,
+    detail: String,
+    resolution_steps: Vec<GuiPlaylistResolutionStep>,
+}
+
 impl GuiPersistedConfigRuntimeOwner {
     fn playlist_source_resolution_index_for_state(
         state: &SorotteGuiShellAppState,
@@ -677,7 +686,8 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         state: &SorotteGuiShellAppState,
     ) -> SelectedPlaylistMediaSyncOutcome {
-        let Some(target) = self.current_shared_playlist_target(state) else {
+        let Some((playlist_index, target)) = self.current_shared_playlist_index_and_target(state)
+        else {
             self.refresh_stream_helper_runtime_snapshot_for_target(None);
             self.unresolved_attached_media_target = None;
             if !self.attached_media_search_refresh_pending() {
@@ -688,11 +698,18 @@ impl GuiPersistedConfigRuntimeOwner {
             return SelectedPlaylistMediaSyncOutcome::NoChange;
         };
         let mut plan = GuiMediaResolutionPlan::new(target);
+        let source_override =
+            Self::selected_playlist_source_override_for_index(state, playlist_index, plan.target());
+        let source_provider = source_override
+            .as_ref()
+            .map(|provider_id| provider_id.as_str())
+            .unwrap_or("automatic");
 
         let search_roots = self.automatic_media_search_roots(state);
         let roots = Self::automatic_media_search_root_keys(&search_roots);
         let trigger = self.automatic_media_resolution_trigger(
             plan.target(),
+            source_provider,
             &roots,
             self.media_match_remote_resolution_token_for_state(state),
         );
@@ -712,6 +729,17 @@ impl GuiPersistedConfigRuntimeOwner {
             return SelectedPlaylistMediaSyncOutcome::NoChange;
         }
         self.last_attached_media_resolution_trigger = Some(trigger);
+
+        if let Some(provider_id) = source_override.as_ref() {
+            if !self.preflight_room_stream_target(state, plan.target()) {
+                return SelectedPlaylistMediaSyncOutcome::NoChange;
+            }
+            return self.sync_selected_playlist_source_override_to_attached_player(
+                state,
+                plan.target(),
+                provider_id,
+            );
+        }
 
         if self.current_player_matches_media_target(plan.target()) {
             plan.push_current_player_candidate();
@@ -793,6 +821,151 @@ impl GuiPersistedConfigRuntimeOwner {
         self.open_media_resolution_candidate(plan.target(), candidate, false)
     }
 
+    fn selected_playlist_source_override_for_index(
+        state: &SorotteGuiShellAppState,
+        index: usize,
+        target: &str,
+    ) -> Option<GuiMediaSourceProviderId> {
+        let selected = state
+            .main_window
+            .playlist
+            .get(index)?
+            .source_state
+            .current_provider_id
+            .clone();
+        let inferred = GuiPlaylistSourceState::inferred_provider_for_entry(target);
+        (selected != inferred).then_some(selected)
+    }
+
+    pub(super) fn sync_selected_playlist_source_override_to_attached_player(
+        &mut self,
+        state: &SorotteGuiShellAppState,
+        target: &str,
+        provider_id: &GuiMediaSourceProviderId,
+    ) -> SelectedPlaylistMediaSyncOutcome {
+        if provider_id == &GuiMediaSourceProviderId::local() {
+            return self.sync_selected_local_playlist_source_to_attached_player(state, target);
+        }
+        if provider_id == &GuiMediaSourceProviderId::media_matching() {
+            return self
+                .sync_selected_media_match_playlist_source_to_attached_player(state, target);
+        }
+        if provider_id == &GuiMediaSourceProviderId::plex_stream() {
+            return self
+                .sync_selected_plex_stream_playlist_source_to_attached_player(state, target);
+        }
+        SelectedPlaylistMediaSyncOutcome::NoChange
+    }
+
+    fn sync_selected_local_playlist_source_to_attached_player(
+        &mut self,
+        state: &SorotteGuiShellAppState,
+        target: &str,
+    ) -> SelectedPlaylistMediaSyncOutcome {
+        let mut plan = GuiMediaResolutionPlan::new(target);
+        match self.resolve_main_window_user_media_target_local_only(state, plan.target()) {
+            Ok(GuiUserMediaTargetResolution::Resolved { path, source }) => {
+                plan.push_user_media_candidate(path, source);
+            }
+            Ok(GuiUserMediaTargetResolution::Pending) => {
+                plan.record_pending_media_search();
+                return SelectedPlaylistMediaSyncOutcome::NoChange;
+            }
+            Ok(GuiUserMediaTargetResolution::Missing) | Err(_) => {
+                return SelectedPlaylistMediaSyncOutcome::NoChange;
+            }
+        }
+
+        let Some(candidate) = plan.best_candidate().cloned() else {
+            return SelectedPlaylistMediaSyncOutcome::NoChange;
+        };
+        self.ensure_configured_player_attached();
+        if self.player.is_none() {
+            return SelectedPlaylistMediaSyncOutcome::NoChange;
+        }
+        self.open_media_resolution_candidate(plan.target(), candidate, false)
+    }
+
+    fn sync_selected_media_match_playlist_source_to_attached_player(
+        &mut self,
+        state: &SorotteGuiShellAppState,
+        target: &str,
+    ) -> SelectedPlaylistMediaSyncOutcome {
+        let mut local_plan = GuiMediaResolutionPlan::new(target);
+        match self.resolve_main_window_user_media_target_local_only(state, local_plan.target()) {
+            Ok(GuiUserMediaTargetResolution::Resolved { path, source }) => {
+                local_plan.push_user_media_candidate(path, source);
+                let Some(candidate) = local_plan.best_candidate().cloned() else {
+                    return SelectedPlaylistMediaSyncOutcome::NoChange;
+                };
+                self.ensure_configured_player_attached();
+                if self.player.is_none() {
+                    return SelectedPlaylistMediaSyncOutcome::NoChange;
+                }
+                return self.open_media_resolution_candidate(local_plan.target(), candidate, false);
+            }
+            Ok(GuiUserMediaTargetResolution::Pending)
+            | Ok(GuiUserMediaTargetResolution::Missing)
+            | Err(_) => {}
+        }
+
+        if !state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::MediaMatching)
+            || !state.media_match.settings.fingerprinting_enabled
+        {
+            return SelectedPlaylistMediaSyncOutcome::NoChange;
+        }
+
+        let Some(path) = self.media_match_cached_room_candidate_for_target(state, target) else {
+            let _ = self.media_match_remote_lookup_pending_for_target(state, target);
+            return SelectedPlaylistMediaSyncOutcome::NoChange;
+        };
+        let mut plan = GuiMediaResolutionPlan::new(target);
+        plan.push_media_match_candidate(path);
+        let Some(candidate) = plan.best_candidate().cloned() else {
+            return SelectedPlaylistMediaSyncOutcome::NoChange;
+        };
+        self.ensure_configured_player_attached();
+        if self.player.is_none() {
+            return SelectedPlaylistMediaSyncOutcome::NoChange;
+        }
+        self.open_media_resolution_candidate(plan.target(), candidate, false)
+    }
+
+    fn sync_selected_plex_stream_playlist_source_to_attached_player(
+        &mut self,
+        state: &SorotteGuiShellAppState,
+        target: &str,
+    ) -> SelectedPlaylistMediaSyncOutcome {
+        let mut plan = GuiMediaResolutionPlan::new(target);
+        match self.cached_or_queue_plex_stream_target_for_media_target(state, plan.target()) {
+            Ok(GuiPlexStreamResolutionState::Ready(Some(stream_target))) => {
+                plan.push_plex_stream_candidate(*stream_target);
+            }
+            Ok(
+                GuiPlexStreamResolutionState::Ready(None)
+                | GuiPlexStreamResolutionState::Disabled
+                | GuiPlexStreamResolutionState::Pending,
+            ) => {
+                return SelectedPlaylistMediaSyncOutcome::NoChange;
+            }
+            Err(message) => {
+                self.queue_stream_warning(message);
+                return SelectedPlaylistMediaSyncOutcome::NoChange;
+            }
+        }
+
+        let Some(candidate) = plan.best_candidate().cloned() else {
+            return SelectedPlaylistMediaSyncOutcome::NoChange;
+        };
+        self.ensure_configured_player_attached();
+        if self.player.is_none() {
+            return SelectedPlaylistMediaSyncOutcome::NoChange;
+        }
+        self.open_media_resolution_candidate(plan.target(), candidate, false)
+    }
+
     pub(in crate::app::runtime_owner) fn handle_resolve_playlist_source_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
@@ -837,12 +1010,14 @@ impl GuiPersistedConfigRuntimeOwner {
         self.publish_playlist_source_state(
             handle,
             projected_state,
-            index,
-            &target,
-            provider_id,
-            GuiPlaylistSourceStatus::Disabled,
-            "The requested playlist source is not registered.".to_owned(),
-            vec![],
+            GuiPlaylistSourceStateUpdate {
+                index,
+                target: &target,
+                provider_id,
+                status: GuiPlaylistSourceStatus::Disabled,
+                detail: "The requested playlist source is not registered.".to_owned(),
+                resolution_steps: vec![],
+            },
         );
         true
     }
@@ -867,17 +1042,20 @@ impl GuiPersistedConfigRuntimeOwner {
                     self.publish_playlist_source_state(
                         handle,
                         projected_state,
-                        index,
-                        target,
-                        provider_id,
-                        GuiPlaylistSourceStatus::Failed,
-                        "No attached player is available for the resolved local file.".to_owned(),
-                        vec![Self::playlist_resolution_step(
-                            GuiMediaSourceProviderId::local(),
-                            "Local",
-                            GuiPlaylistSourceStatus::Failed,
-                            Some("Resolved locally, but no player is attached.".to_owned()),
-                        )],
+                        GuiPlaylistSourceStateUpdate {
+                            index,
+                            target,
+                            provider_id,
+                            status: GuiPlaylistSourceStatus::Failed,
+                            detail: "No attached player is available for the resolved local file."
+                                .to_owned(),
+                            resolution_steps: vec![Self::playlist_resolution_step(
+                                GuiMediaSourceProviderId::local(),
+                                "Local",
+                                GuiPlaylistSourceStatus::Failed,
+                                Some("Resolved locally, but no player is attached.".to_owned()),
+                            )],
+                        },
                     );
                     return true;
                 }
@@ -896,68 +1074,80 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.publish_playlist_source_state(
                     handle,
                     projected_state,
-                    index,
-                    target,
-                    provider_id,
-                    status,
-                    detail.clone(),
-                    vec![Self::playlist_resolution_step(
-                        GuiMediaSourceProviderId::local(),
-                        "Local",
+                    GuiPlaylistSourceStateUpdate {
+                        index,
+                        target,
+                        provider_id,
                         status,
-                        Some(detail),
-                    )],
+                        detail: detail.clone(),
+                        resolution_steps: vec![Self::playlist_resolution_step(
+                            GuiMediaSourceProviderId::local(),
+                            "Local",
+                            status,
+                            Some(detail),
+                        )],
+                    },
                 );
             }
             Ok(GuiUserMediaTargetResolution::Pending) => {
                 self.publish_playlist_source_state(
                     handle,
                     projected_state,
-                    index,
-                    target,
-                    provider_id,
-                    GuiPlaylistSourceStatus::Pending,
-                    "Local media-search index is still resolving this entry.".to_owned(),
-                    vec![Self::playlist_resolution_step(
-                        GuiMediaSourceProviderId::local(),
-                        "Local",
-                        GuiPlaylistSourceStatus::Pending,
-                        Some("Waiting for local media-search index refresh.".to_owned()),
-                    )],
+                    GuiPlaylistSourceStateUpdate {
+                        index,
+                        target,
+                        provider_id,
+                        status: GuiPlaylistSourceStatus::Pending,
+                        detail: "Local media-search index is still resolving this entry."
+                            .to_owned(),
+                        resolution_steps: vec![Self::playlist_resolution_step(
+                            GuiMediaSourceProviderId::local(),
+                            "Local",
+                            GuiPlaylistSourceStatus::Pending,
+                            Some("Waiting for local media-search index refresh.".to_owned()),
+                        )],
+                    },
                 );
             }
             Ok(GuiUserMediaTargetResolution::Missing) => {
                 self.publish_playlist_source_state(
                     handle,
                     projected_state,
-                    index,
-                    target,
-                    provider_id,
-                    GuiPlaylistSourceStatus::Missing,
-                    "No local file matched this playlist entry.".to_owned(),
-                    vec![Self::playlist_resolution_step(
-                        GuiMediaSourceProviderId::local(),
-                        "Local",
-                        GuiPlaylistSourceStatus::Missing,
-                        Some("Checked direct, current-player, and indexed local paths.".to_owned()),
-                    )],
+                    GuiPlaylistSourceStateUpdate {
+                        index,
+                        target,
+                        provider_id,
+                        status: GuiPlaylistSourceStatus::Missing,
+                        detail: "No local file matched this playlist entry.".to_owned(),
+                        resolution_steps: vec![Self::playlist_resolution_step(
+                            GuiMediaSourceProviderId::local(),
+                            "Local",
+                            GuiPlaylistSourceStatus::Missing,
+                            Some(
+                                "Checked direct, current-player, and indexed local paths."
+                                    .to_owned(),
+                            ),
+                        )],
+                    },
                 );
             }
             Err(message) => {
                 self.publish_playlist_source_state(
                     handle,
                     projected_state,
-                    index,
-                    target,
-                    provider_id,
-                    GuiPlaylistSourceStatus::Failed,
-                    message.clone(),
-                    vec![Self::playlist_resolution_step(
-                        GuiMediaSourceProviderId::local(),
-                        "Local",
-                        GuiPlaylistSourceStatus::Failed,
-                        Some(message),
-                    )],
+                    GuiPlaylistSourceStateUpdate {
+                        index,
+                        target,
+                        provider_id,
+                        status: GuiPlaylistSourceStatus::Failed,
+                        detail: message.clone(),
+                        resolution_steps: vec![Self::playlist_resolution_step(
+                            GuiMediaSourceProviderId::local(),
+                            "Local",
+                            GuiPlaylistSourceStatus::Failed,
+                            Some(message),
+                        )],
+                    },
                 );
             }
         }
@@ -971,6 +1161,15 @@ impl GuiPersistedConfigRuntimeOwner {
         index: usize,
         target: &str,
     ) -> bool {
+        match self.resolve_main_window_user_media_target_local_only(projected_state, target) {
+            Ok(GuiUserMediaTargetResolution::Resolved { .. }) => {
+                return self.resolve_playlist_source_local(handle, projected_state, index, target);
+            }
+            Ok(GuiUserMediaTargetResolution::Pending)
+            | Ok(GuiUserMediaTargetResolution::Missing)
+            | Err(_) => {}
+        }
+
         let provider_id = GuiMediaSourceProviderId::media_matching();
         if !projected_state
             .plugin_enablement
@@ -980,17 +1179,19 @@ impl GuiPersistedConfigRuntimeOwner {
             self.publish_playlist_source_state(
                 handle,
                 projected_state,
-                index,
-                target,
-                provider_id,
-                GuiPlaylistSourceStatus::Disabled,
-                "Media Matching is disabled for this client.".to_owned(),
-                vec![Self::playlist_resolution_step(
-                    GuiMediaSourceProviderId::media_matching(),
-                    "Media Matching",
-                    GuiPlaylistSourceStatus::Disabled,
-                    Some("Enable the plugin and fingerprinting to use this source.".to_owned()),
-                )],
+                GuiPlaylistSourceStateUpdate {
+                    index,
+                    target,
+                    provider_id,
+                    status: GuiPlaylistSourceStatus::Disabled,
+                    detail: "Media Matching is disabled for this client.".to_owned(),
+                    resolution_steps: vec![Self::playlist_resolution_step(
+                        GuiMediaSourceProviderId::media_matching(),
+                        "Media Matching",
+                        GuiPlaylistSourceStatus::Disabled,
+                        Some("Enable the plugin and fingerprinting to use this source.".to_owned()),
+                    )],
+                },
             );
             return true;
         }
@@ -1008,17 +1209,20 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.publish_playlist_source_state(
                     handle,
                     projected_state,
-                    index,
-                    target,
-                    provider_id,
-                    GuiPlaylistSourceStatus::Failed,
-                    "No attached player is available for the Media Matching result.".to_owned(),
-                    vec![Self::playlist_resolution_step(
-                        GuiMediaSourceProviderId::media_matching(),
-                        "Media Matching",
-                        GuiPlaylistSourceStatus::Failed,
-                        Some("Resolved a match, but no player is attached.".to_owned()),
-                    )],
+                    GuiPlaylistSourceStateUpdate {
+                        index,
+                        target,
+                        provider_id,
+                        status: GuiPlaylistSourceStatus::Failed,
+                        detail: "No attached player is available for the Media Matching result."
+                            .to_owned(),
+                        resolution_steps: vec![Self::playlist_resolution_step(
+                            GuiMediaSourceProviderId::media_matching(),
+                            "Media Matching",
+                            GuiPlaylistSourceStatus::Failed,
+                            Some("Resolved a match, but no player is attached.".to_owned()),
+                        )],
+                    },
                 );
                 return true;
             }
@@ -1039,49 +1243,55 @@ impl GuiPersistedConfigRuntimeOwner {
             self.publish_playlist_source_state(
                 handle,
                 projected_state,
-                index,
-                target,
-                provider_id,
-                status,
-                detail.clone(),
-                vec![Self::playlist_resolution_step(
-                    GuiMediaSourceProviderId::media_matching(),
-                    "Media Matching",
+                GuiPlaylistSourceStateUpdate {
+                    index,
+                    target,
+                    provider_id,
                     status,
-                    Some(detail),
-                )],
+                    detail: detail.clone(),
+                    resolution_steps: vec![Self::playlist_resolution_step(
+                        GuiMediaSourceProviderId::media_matching(),
+                        "Media Matching",
+                        status,
+                        Some(detail),
+                    )],
+                },
             );
         } else if self.media_match_remote_lookup_pending_for_target(projected_state, target) {
             self.publish_playlist_source_state(
                 handle,
                 projected_state,
-                index,
-                target,
-                provider_id,
-                GuiPlaylistSourceStatus::Pending,
-                "Media Matching lookup is running.".to_owned(),
-                vec![Self::playlist_resolution_step(
-                    GuiMediaSourceProviderId::media_matching(),
-                    "Media Matching",
-                    GuiPlaylistSourceStatus::Pending,
-                    Some("Waiting for the Media Matching worker.".to_owned()),
-                )],
+                GuiPlaylistSourceStateUpdate {
+                    index,
+                    target,
+                    provider_id,
+                    status: GuiPlaylistSourceStatus::Pending,
+                    detail: "Media Matching lookup is running.".to_owned(),
+                    resolution_steps: vec![Self::playlist_resolution_step(
+                        GuiMediaSourceProviderId::media_matching(),
+                        "Media Matching",
+                        GuiPlaylistSourceStatus::Pending,
+                        Some("Waiting for the Media Matching worker.".to_owned()),
+                    )],
+                },
             );
         } else {
             self.publish_playlist_source_state(
                 handle,
                 projected_state,
-                index,
-                target,
-                provider_id,
-                GuiPlaylistSourceStatus::Missing,
-                "Media Matching did not find a usable target.".to_owned(),
-                vec![Self::playlist_resolution_step(
-                    GuiMediaSourceProviderId::media_matching(),
-                    "Media Matching",
-                    GuiPlaylistSourceStatus::Missing,
-                    Some("No cached or worker match is available for this entry.".to_owned()),
-                )],
+                GuiPlaylistSourceStateUpdate {
+                    index,
+                    target,
+                    provider_id,
+                    status: GuiPlaylistSourceStatus::Missing,
+                    detail: "Media Matching did not find a usable target.".to_owned(),
+                    resolution_steps: vec![Self::playlist_resolution_step(
+                        GuiMediaSourceProviderId::media_matching(),
+                        "Media Matching",
+                        GuiPlaylistSourceStatus::Missing,
+                        Some("No cached or worker match is available for this entry.".to_owned()),
+                    )],
+                },
             );
         }
         true
@@ -1107,17 +1317,20 @@ impl GuiPersistedConfigRuntimeOwner {
                     self.publish_playlist_source_state(
                         handle,
                         projected_state,
-                        index,
-                        target,
-                        provider_id,
-                        GuiPlaylistSourceStatus::Failed,
-                        "No attached player is available for the Plex stream.".to_owned(),
-                        vec![Self::playlist_resolution_step(
-                            GuiMediaSourceProviderId::plex_stream(),
-                            "Plex Stream",
-                            GuiPlaylistSourceStatus::Failed,
-                            Some("Resolved a stream, but no player is attached.".to_owned()),
-                        )],
+                        GuiPlaylistSourceStateUpdate {
+                            index,
+                            target,
+                            provider_id,
+                            status: GuiPlaylistSourceStatus::Failed,
+                            detail: "No attached player is available for the Plex stream."
+                                .to_owned(),
+                            resolution_steps: vec![Self::playlist_resolution_step(
+                                GuiMediaSourceProviderId::plex_stream(),
+                                "Plex Stream",
+                                GuiPlaylistSourceStatus::Failed,
+                                Some("Resolved a stream, but no player is attached.".to_owned()),
+                            )],
+                        },
                     );
                     return true;
                 }
@@ -1136,85 +1349,95 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.publish_playlist_source_state(
                     handle,
                     projected_state,
-                    index,
-                    target,
-                    provider_id,
-                    status,
-                    detail.clone(),
-                    vec![Self::playlist_resolution_step(
-                        GuiMediaSourceProviderId::plex_stream(),
-                        "Plex Stream",
+                    GuiPlaylistSourceStateUpdate {
+                        index,
+                        target,
+                        provider_id,
                         status,
-                        Some(detail),
-                    )],
+                        detail: detail.clone(),
+                        resolution_steps: vec![Self::playlist_resolution_step(
+                            GuiMediaSourceProviderId::plex_stream(),
+                            "Plex Stream",
+                            status,
+                            Some(detail),
+                        )],
+                    },
                 );
             }
             Ok(GuiPlexStreamResolutionState::Pending) => {
                 self.publish_playlist_source_state(
                     handle,
                     projected_state,
-                    index,
-                    target,
-                    provider_id,
-                    GuiPlaylistSourceStatus::Pending,
-                    "Plex stream resolution is running.".to_owned(),
-                    vec![Self::playlist_resolution_step(
-                        GuiMediaSourceProviderId::plex_stream(),
-                        "Plex Stream",
-                        GuiPlaylistSourceStatus::Pending,
-                        Some("Waiting for the Plex stream worker.".to_owned()),
-                    )],
+                    GuiPlaylistSourceStateUpdate {
+                        index,
+                        target,
+                        provider_id,
+                        status: GuiPlaylistSourceStatus::Pending,
+                        detail: "Plex stream resolution is running.".to_owned(),
+                        resolution_steps: vec![Self::playlist_resolution_step(
+                            GuiMediaSourceProviderId::plex_stream(),
+                            "Plex Stream",
+                            GuiPlaylistSourceStatus::Pending,
+                            Some("Waiting for the Plex stream worker.".to_owned()),
+                        )],
+                    },
                 );
             }
             Ok(GuiPlexStreamResolutionState::Ready(None)) => {
                 self.publish_playlist_source_state(
                     handle,
                     projected_state,
-                    index,
-                    target,
-                    provider_id,
-                    GuiPlaylistSourceStatus::Missing,
-                    "Plex did not find a stream target for this entry.".to_owned(),
-                    vec![Self::playlist_resolution_step(
-                        GuiMediaSourceProviderId::plex_stream(),
-                        "Plex Stream",
-                        GuiPlaylistSourceStatus::Missing,
-                        Some("Plex returned no streamable match.".to_owned()),
-                    )],
+                    GuiPlaylistSourceStateUpdate {
+                        index,
+                        target,
+                        provider_id,
+                        status: GuiPlaylistSourceStatus::Missing,
+                        detail: "Plex did not find a stream target for this entry.".to_owned(),
+                        resolution_steps: vec![Self::playlist_resolution_step(
+                            GuiMediaSourceProviderId::plex_stream(),
+                            "Plex Stream",
+                            GuiPlaylistSourceStatus::Missing,
+                            Some("Plex returned no streamable match.".to_owned()),
+                        )],
+                    },
                 );
             }
             Ok(GuiPlexStreamResolutionState::Disabled) => {
                 self.publish_playlist_source_state(
                     handle,
                     projected_state,
-                    index,
-                    target,
-                    provider_id,
-                    GuiPlaylistSourceStatus::Disabled,
-                    "Plex streaming is disabled or not configured.".to_owned(),
-                    vec![Self::playlist_resolution_step(
-                        GuiMediaSourceProviderId::plex_stream(),
-                        "Plex Stream",
-                        GuiPlaylistSourceStatus::Disabled,
-                        Some("Enable Plex streaming and select a server if needed.".to_owned()),
-                    )],
+                    GuiPlaylistSourceStateUpdate {
+                        index,
+                        target,
+                        provider_id,
+                        status: GuiPlaylistSourceStatus::Disabled,
+                        detail: "Plex streaming is disabled or not configured.".to_owned(),
+                        resolution_steps: vec![Self::playlist_resolution_step(
+                            GuiMediaSourceProviderId::plex_stream(),
+                            "Plex Stream",
+                            GuiPlaylistSourceStatus::Disabled,
+                            Some("Enable Plex streaming and select a server if needed.".to_owned()),
+                        )],
+                    },
                 );
             }
             Err(message) => {
                 self.publish_playlist_source_state(
                     handle,
                     projected_state,
-                    index,
-                    target,
-                    provider_id,
-                    GuiPlaylistSourceStatus::Failed,
-                    message.clone(),
-                    vec![Self::playlist_resolution_step(
-                        GuiMediaSourceProviderId::plex_stream(),
-                        "Plex Stream",
-                        GuiPlaylistSourceStatus::Failed,
-                        Some(message),
-                    )],
+                    GuiPlaylistSourceStateUpdate {
+                        index,
+                        target,
+                        provider_id,
+                        status: GuiPlaylistSourceStatus::Failed,
+                        detail: message.clone(),
+                        resolution_steps: vec![Self::playlist_resolution_step(
+                            GuiMediaSourceProviderId::plex_stream(),
+                            "Plex Stream",
+                            GuiPlaylistSourceStatus::Failed,
+                            Some(message),
+                        )],
+                    },
                 );
             }
         }
@@ -1225,13 +1448,16 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
-        index: usize,
-        target: &str,
-        provider_id: GuiMediaSourceProviderId,
-        status: GuiPlaylistSourceStatus,
-        detail: String,
-        resolution_steps: Vec<GuiPlaylistResolutionStep>,
+        update: GuiPlaylistSourceStateUpdate<'_>,
     ) {
+        let GuiPlaylistSourceStateUpdate {
+            index,
+            target,
+            provider_id,
+            status,
+            detail,
+            resolution_steps,
+        } = update;
         let mut source_state = projected_state
             .main_window
             .playlist

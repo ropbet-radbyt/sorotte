@@ -9,6 +9,17 @@ struct GuiDraggedPlaylistRow {
     index: usize,
 }
 
+struct PlaylistRowPaint<'a> {
+    ui: &'a egui::Ui,
+    row_rect: egui::Rect,
+    response: &'a egui::Response,
+    label: &'a str,
+    is_selected: bool,
+    is_room_active: bool,
+    has_remove_button: bool,
+    has_source_button: bool,
+}
+
 impl GuiWidgetEguiRenderer {
     pub(super) fn is_plex_playlist_search_result_row(node: &GuiWidgetNode) -> bool {
         node.id
@@ -495,16 +506,16 @@ impl GuiWidgetEguiRenderer {
                             text.clone(),
                         )
                     });
-                    let truncated = Self::paint_playlist_row(
+                    let truncated = Self::paint_playlist_row(PlaylistRowPaint {
                         ui,
-                        rect,
-                        &response,
-                        &text,
-                        node.selected,
+                        row_rect: rect,
+                        response: &response,
+                        label: &text,
+                        is_selected: node.selected,
                         is_room_active,
-                        remove_button.is_some(),
-                        source_button.is_some(),
-                    );
+                        has_remove_button: remove_button.is_some(),
+                        has_source_button: source_button.is_some(),
+                    });
                     let response = if truncated {
                         response.on_hover_text(text.clone())
                     } else {
@@ -755,16 +766,17 @@ impl GuiWidgetEguiRenderer {
         Vec::new()
     }
 
-    fn paint_playlist_row(
-        ui: &egui::Ui,
-        row_rect: egui::Rect,
-        response: &egui::Response,
-        label: &str,
-        is_selected: bool,
-        is_room_active: bool,
-        has_remove_button: bool,
-        has_source_button: bool,
-    ) -> bool {
+    fn paint_playlist_row(row: PlaylistRowPaint<'_>) -> bool {
+        let PlaylistRowPaint {
+            ui,
+            row_rect,
+            response,
+            label,
+            is_selected,
+            is_room_active,
+            has_remove_button,
+            has_source_button,
+        } = row;
         let visuals = ui.style().interact(response);
         let palette = Self::palette_for_ui(ui);
         let active_color = palette.success_text;

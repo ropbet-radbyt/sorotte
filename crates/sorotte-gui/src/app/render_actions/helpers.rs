@@ -74,6 +74,13 @@ impl GuiWidgetEguiRenderer {
         ))
     }
 
+    pub(in crate::app::render_actions) fn main_window_playlist_default_source_action(
+        id: &str,
+    ) -> Option<GuiPlaylistDefaultSourceId> {
+        let source_id = id.strip_prefix("main-window:playlist-default-source:")?;
+        Some(GuiPlaylistDefaultSourceId::from_action_id(source_id))
+    }
+
     pub(in crate::app::render_actions) fn plex_playlist_search_result_action_index(
         id: &str,
         action: &str,

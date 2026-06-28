@@ -13,14 +13,15 @@ use super::shell_state::{
     FirstRunConfigurationDialogDraft, GuiCommandAvailabilityRuntimeOverride,
     GuiCommandAvailabilityState, GuiControlledRoomCreateSessionState,
     GuiControllerAuthEditSessionState, GuiFocusedConfigurationControlState,
-    GuiMainWindowUserEditSessionState, GuiMediaIndexStatusState, GuiPlaylistTextEditSessionState,
-    GuiPublicServerEditSessionState, GuiRoomHistoryEditSessionState, GuiSelectionState,
-    GuiTextEditSessionState, GuiTransientNotification, GuiUrlEditSessionState, GuiValidationState,
-    MainWindowChatRow, MainWindowPlaybackControls, MainWindowPlaylistRow, MainWindowRoomRow,
-    MainWindowShellState, MainWindowUserRow, MediaSearchDirectoryRow,
-    MediaSearchWorkflowRuntimeFlags, MediaSearchWorkflowShellState, MenuActionShellItem,
-    MenuDialogShellState, MenuSectionShellState, PublicServerBrowserRow,
-    PublicServerBrowserRuntimeFlags, PublicServerBrowserShellState, SorotteGuiShellAppState,
+    GuiMainWindowUserEditSessionState, GuiMediaIndexStatusState, GuiPlaylistDefaultSourceState,
+    GuiPlaylistTextEditSessionState, GuiPublicServerEditSessionState,
+    GuiRoomHistoryEditSessionState, GuiSelectionState, GuiTextEditSessionState,
+    GuiTransientNotification, GuiUrlEditSessionState, GuiValidationState, MainWindowChatRow,
+    MainWindowPlaybackControls, MainWindowPlaylistRow, MainWindowRoomRow, MainWindowShellState,
+    MainWindowUserRow, MediaSearchDirectoryRow, MediaSearchWorkflowRuntimeFlags,
+    MediaSearchWorkflowShellState, MenuActionShellItem, MenuDialogShellState,
+    MenuSectionShellState, PublicServerBrowserRow, PublicServerBrowserRuntimeFlags,
+    PublicServerBrowserShellState, SorotteGuiShellAppState,
 };
 #[cfg(test)]
 use super::shell_state::{GuiPendingOperationState, GuiShellModal};

@@ -111,15 +111,19 @@ impl GuiPersistedConfigRuntimeOwner {
             .saturating_add(opened_entry_count)
             .min(projected_state.main_window.playlist.len());
         for index in start_index..end_index {
-            let Some(label) = projected_state
+            let Some(mut source_state) = projected_state
                 .main_window
                 .playlist
                 .get(index)
-                .map(|row| row.label.clone())
+                .map(|row| row.source_state.clone())
             else {
                 continue;
             };
-            let mut source_state = projected_state.playlist_source_state_for_entry(&label);
+            if source_state.current_provider_id != GuiMediaSourceProviderId::local()
+                && source_state.current_provider_id != GuiMediaSourceProviderId::media_matching()
+            {
+                continue;
+            }
             source_state.current_provider_id = GuiMediaSourceProviderId::local();
             source_state.current_label = "Local".to_owned();
             source_state.status = GuiPlaylistSourceStatus::Available;
@@ -127,6 +131,50 @@ impl GuiPersistedConfigRuntimeOwner {
             source_state.resolution_steps.clear();
             let _ = projected_state.set_playlist_source_state(index, source_state);
         }
+    }
+
+    fn open_selected_playlist_media_after_shared_playlist_projection(
+        &mut self,
+        projected_state: &SorotteGuiShellAppState,
+        selected_playlist_index: Option<usize>,
+        selected_media_source_path: Option<String>,
+    ) -> SelectedPlaylistMediaSyncOutcome {
+        let Some(selected_path) = selected_media_source_path else {
+            return SelectedPlaylistMediaSyncOutcome::NoChange;
+        };
+        let Some(selected_index) = selected_playlist_index else {
+            return SelectedPlaylistMediaSyncOutcome::NoChange;
+        };
+        let Some(row) = projected_state.main_window.playlist.get(selected_index) else {
+            return SelectedPlaylistMediaSyncOutcome::NoChange;
+        };
+        let source_is_local =
+            row.source_state.current_provider_id == GuiMediaSourceProviderId::local();
+        let source_is_automatic_inference = projected_state
+            .main_window
+            .playlist_default_source
+            .current_source_id
+            .provider_id()
+            .is_none()
+            && row.source_state.current_provider_id
+                == GuiPlaylistSourceState::inferred_provider_for_entry(&row.label);
+        if source_is_local || source_is_automatic_inference {
+            return self.open_selected_playlist_media_path_through_attached_player_impl(
+                projected_state,
+                &[selected_path],
+            );
+        }
+
+        let target = row.label.clone();
+        let provider_id = row.source_state.current_provider_id.clone();
+        if !self.preflight_room_stream_target(projected_state, &target) {
+            return SelectedPlaylistMediaSyncOutcome::NoChange;
+        }
+        self.sync_selected_playlist_source_override_to_attached_player(
+            projected_state,
+            &target,
+            &provider_id,
+        )
     }
 
     fn open_system_folder(path: &Path, description: &str) -> Result<(), String> {
@@ -319,15 +367,12 @@ impl GuiPersistedConfigRuntimeOwner {
                 )],
             );
 
-            let selected_media_sync = selected_media_source_path
-                .clone()
-                .map(|selected_path| {
-                    self.open_selected_playlist_media_path_through_attached_player_impl(
-                        projected_state,
-                        &[selected_path],
-                    )
-                })
-                .unwrap_or(SelectedPlaylistMediaSyncOutcome::NoChange);
+            let selected_media_sync = self
+                .open_selected_playlist_media_after_shared_playlist_projection(
+                    projected_state,
+                    selected_playlist_index,
+                    selected_media_source_path.clone(),
+                );
             let selection_handoff_ready = selected_media_sync.selection_handoff_ready(false);
             self.sync_session_playstate_to_attached_player_impl(
                 projected_state,
@@ -401,15 +446,11 @@ impl GuiPersistedConfigRuntimeOwner {
             self.flush_session_transport_outbound(handle, projected_state);
         }
         let selected_media_sync = if session_playlist_projected {
-            selected_media_source_path
-                .clone()
-                .map(|selected_path| {
-                    self.open_selected_playlist_media_path_through_attached_player_impl(
-                        projected_state,
-                        &[selected_path],
-                    )
-                })
-                .unwrap_or(SelectedPlaylistMediaSyncOutcome::NoChange)
+            self.open_selected_playlist_media_after_shared_playlist_projection(
+                projected_state,
+                selected_playlist_index,
+                selected_media_source_path.clone(),
+            )
         } else {
             SelectedPlaylistMediaSyncOutcome::NoChange
         };

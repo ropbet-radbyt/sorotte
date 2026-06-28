@@ -42,19 +42,29 @@ impl GuiPersistedConfigRuntimeOwner {
         &self,
         state: &SorotteGuiShellAppState,
     ) -> Option<String> {
+        self.current_shared_playlist_index_and_target(state)
+            .map(|(_, target)| target)
+    }
+
+    pub(in crate::app::runtime_owner) fn current_shared_playlist_index_and_target(
+        &self,
+        state: &SorotteGuiShellAppState,
+    ) -> Option<(usize, String)> {
         self.session
             .as_ref()
             .and_then(|session| session.current_room_playlist_index())
-            .and_then(|index| Self::playlist_target_for_index(state, index))
-            .or_else(|| {
-                state
-                    .main_window
-                    .active_playlist_index
-                    .and_then(|index| Self::playlist_target_for_index(state, index))
+            .and_then(|index| {
+                Self::playlist_target_for_index(state, index).map(|target| (index, target))
             })
             .or_else(|| {
-                self.active_shared_playlist_index
-                    .and_then(|index| Self::playlist_target_for_index(state, index))
+                state.main_window.active_playlist_index.and_then(|index| {
+                    Self::playlist_target_for_index(state, index).map(|target| (index, target))
+                })
+            })
+            .or_else(|| {
+                self.active_shared_playlist_index.and_then(|index| {
+                    Self::playlist_target_for_index(state, index).map(|target| (index, target))
+                })
             })
     }
 

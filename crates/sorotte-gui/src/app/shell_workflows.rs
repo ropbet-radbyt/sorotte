@@ -477,6 +477,9 @@ impl SorotteGuiShellAppState {
             rooms: normalized_rooms,
             users: normalized_users,
             playlist: normalized_playlist,
+            playlist_default_source: self.refreshed_playlist_source_default_state(
+                self.main_window.playlist_default_source.clone(),
+            ),
             active_playlist_index: snapshot.active_playlist_index,
             chat: normalized_chat,
             playback: MainWindowPlaybackControls {
