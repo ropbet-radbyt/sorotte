@@ -96,6 +96,39 @@ impl GuiPersistedConfigRuntimeOwner {
         true
     }
 
+    fn mark_loaded_shared_playlist_entries_as_local_sources(
+        projected_state: &mut SorotteGuiShellAppState,
+        playlist_insert_slot: Option<usize>,
+        opened_entry_count: usize,
+    ) {
+        if opened_entry_count == 0 {
+            return;
+        }
+        let start_index = playlist_insert_slot
+            .unwrap_or(0)
+            .min(projected_state.main_window.playlist.len());
+        let end_index = start_index
+            .saturating_add(opened_entry_count)
+            .min(projected_state.main_window.playlist.len());
+        for index in start_index..end_index {
+            let Some(label) = projected_state
+                .main_window
+                .playlist
+                .get(index)
+                .map(|row| row.label.clone())
+            else {
+                continue;
+            };
+            let mut source_state = projected_state.playlist_source_state_for_entry(&label);
+            source_state.current_provider_id = GuiMediaSourceProviderId::local();
+            source_state.current_label = "Local".to_owned();
+            source_state.status = GuiPlaylistSourceStatus::Available;
+            source_state.detail = Some("Added from the local filesystem.".to_owned());
+            source_state.resolution_steps.clear();
+            let _ = projected_state.set_playlist_source_state(index, source_state);
+        }
+    }
+
     fn open_system_folder(path: &Path, description: &str) -> Result<(), String> {
         #[cfg(target_os = "windows")]
         let mut command = {
@@ -270,6 +303,13 @@ impl GuiPersistedConfigRuntimeOwner {
                 );
                 return;
             }
+            if dispatch.player_paths.is_some() && !dispatch.imported_from_file {
+                Self::mark_loaded_shared_playlist_entries_as_local_sources(
+                    projected_state,
+                    playlist_insert_slot,
+                    opened_entry_count,
+                );
+            }
             self.active_shared_playlist_index = selected_playlist_index;
             Self::push_actions_and_project(
                 handle,
@@ -348,6 +388,13 @@ impl GuiPersistedConfigRuntimeOwner {
                 selected_playlist_index,
             );
         if session_playlist_projected {
+            if dispatch.player_paths.is_some() && !dispatch.imported_from_file {
+                Self::mark_loaded_shared_playlist_entries_as_local_sources(
+                    projected_state,
+                    playlist_insert_slot,
+                    opened_entry_count,
+                );
+            }
             handle.push_action(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
                 MainWindowRuntimeSnapshot::from_shell_state(&projected_state.main_window),
             ));

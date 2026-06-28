@@ -62,8 +62,8 @@ use super::runtime_stack::{
 use super::shell_state::{
     GuiCommandAvailabilityState, GuiConfigurationRuntimeSnapshot,
     GuiMediaMatchRemediationRuntimeSnapshot, GuiMediaMatchRuntimeSnapshot, GuiMediaMatchState,
-    GuiPlexPlaylistSearchResult, GuiPlexRuntimeSnapshot, GuiPlexServerReachability,
-    GuiPlexServerRow, GuiPluginSelection, GuiShellAction,
+    GuiMediaSourceProviderId, GuiPlexPlaylistSearchResult, GuiPlexRuntimeSnapshot,
+    GuiPlexServerReachability, GuiPlexServerRow, GuiPluginSelection, GuiShellAction,
     GuiStreamHelperRemediationRuntimeSnapshot, GuiStreamHelperRuntimeSnapshot,
     GuiTransientNotificationLevel, SorotteGuiShellAppState,
 };
@@ -175,6 +175,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) plex_stream_resolve_rx: Option<mpsc::Receiver<GuiPlexStreamResolveWorkerResult>>,
     pub(super) plex_stream_resolve_trigger_key: Option<String>,
     pub(super) plex_stream_resolve_result: Option<GuiPlexStreamResolveWorkerResult>,
+    pub(super) pending_playlist_source_resolution: Option<GuiPendingPlaylistSourceResolution>,
     pub(super) pending_stream_retry_target: Option<String>,
     pub(super) managed_stream_helper_refresh_required: bool,
     pub(super) pending_stream_feedback: VecDeque<Vec<GuiShellAction>>,
@@ -228,6 +229,13 @@ pub(super) struct GuiPlexStreamResolveWorkerResult {
     pub(super) trigger_key: String,
     pub(super) target: String,
     pub(super) result: Result<GuiPlexStreamResolveOutcome, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct GuiPendingPlaylistSourceResolution {
+    pub(super) index: usize,
+    pub(super) target: String,
+    pub(super) provider_id: GuiMediaSourceProviderId,
 }
 
 #[derive(Debug)]

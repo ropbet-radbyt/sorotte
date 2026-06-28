@@ -89,6 +89,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.maybe_queue_media_match_background_warmup(handle, &mut projected_state);
         media_resolution_completed |= self.pump_plex_stream_resolution_worker();
         if media_resolution_completed {
+            let _ = self.retry_pending_playlist_source_resolution(handle, &mut projected_state);
             self.sync_active_shared_playlist_media_and_playstate_impl(&projected_state);
         }
         self.sync_player_runtime_state(handle, &projected_state);

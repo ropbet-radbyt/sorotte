@@ -272,6 +272,28 @@ impl GuiShellDispatchPlan {
                             .push(GuiRuntimeRequest::ResolvePlexPlaylistItem { rating_key });
                     }
                 }
+                GuiShellAction::SelectMainWindowPlaylistSource { index, provider_id } => {
+                    let enabled = state
+                        .main_window
+                        .playlist
+                        .get(index)
+                        .and_then(|row| {
+                            row.source_state
+                                .options
+                                .iter()
+                                .find(|option| option.provider_id == provider_id && option.enabled)
+                        })
+                        .is_some();
+                    plan.shell_actions
+                        .push(GuiShellAction::SelectMainWindowPlaylistSource {
+                            index,
+                            provider_id: provider_id.clone(),
+                        });
+                    if enabled {
+                        plan.runtime_requests
+                            .push(GuiRuntimeRequest::ResolvePlaylistSource { index, provider_id });
+                    }
+                }
                 other => plan.shell_actions.push(other),
             }
         }

@@ -438,6 +438,7 @@ impl SorotteGuiShellAppState {
             .background_status
             .and_then(|value| normalized_editable_text(&value));
         self.media_match.open_install_location_available = snapshot.open_install_location_available;
+        self.refresh_playlist_source_states();
         self.clear_action_error_and_refresh();
         true
     }
@@ -543,6 +544,7 @@ impl SorotteGuiShellAppState {
         self.plex.last_error = snapshot
             .last_error
             .and_then(|value| normalized_editable_text(&value));
+        self.refresh_playlist_source_states();
         self.clear_action_error_and_refresh();
         true
     }

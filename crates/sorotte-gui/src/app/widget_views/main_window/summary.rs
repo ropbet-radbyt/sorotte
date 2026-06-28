@@ -27,6 +27,7 @@ impl SorotteGuiShellAppState {
             local_ready_available,
             false,
         );
+        let local_source_button = self.local_playlist_source_button_node();
         let saved_session_target = self.saved_session_connect_target();
         let connection_status = match self.pending_operation.as_ref().map(|pending| pending.kind) {
             Some(GuiPendingOperationKind::ConnectSavedServer) => "connecting",
@@ -219,6 +220,9 @@ impl SorotteGuiShellAppState {
                     ],
                 )];
                 if user.is_self {
+                    if let Some(source_button) = local_source_button.clone() {
+                        user_children.push(source_button);
+                    }
                     user_children.push(ready_button.clone());
                 }
 
@@ -440,4 +444,68 @@ impl SorotteGuiShellAppState {
 
         (player_setup_panel, summary_column)
     }
+
+    fn local_playlist_source_button_node(&self) -> Option<GuiWidgetNode> {
+        let index = self
+            .selection
+            .selected_main_window_playlist
+            .or(self.main_window.active_playlist_index)
+            .filter(|index| *index < self.main_window.playlist.len())?;
+        let row = self.main_window.playlist.get(index)?;
+        let mut source_button = GuiWidgetNode::branch(
+            format!("main-window:playlist:{index}:source"),
+            row.source_state.current_label.clone(),
+            GuiWidgetKind::Button,
+            row.source_state
+                .options
+                .iter()
+                .map(|option| {
+                    let mut option_node = GuiWidgetNode::leaf(
+                        format!(
+                            "main-window:playlist:{index}:source:{}",
+                            option.provider_id.as_str()
+                        ),
+                        option.label.clone(),
+                        GuiWidgetKind::Button,
+                        Some(option.status.label().to_owned()),
+                        option.enabled,
+                        option.selected,
+                    );
+                    if let Some(detail) = option.detail.as_ref() {
+                        option_node = option_node.with_tooltip(detail.clone());
+                    }
+                    option_node
+                })
+                .collect(),
+        )
+        .with_tooltip(playlist_source_tooltip(&row.source_state));
+        source_button.value = Some(row.source_state.status.label().to_owned());
+        Some(source_button)
+    }
+}
+
+fn playlist_source_tooltip(source_state: &GuiPlaylistSourceState) -> String {
+    let mut lines = vec![
+        format!("Current source: {}", source_state.current_label),
+        format!(
+            "Selected provider: {}",
+            source_state.current_provider_id.as_str()
+        ),
+        format!("Status: {}", source_state.status.label()),
+    ];
+    if let Some(detail) = source_state.detail.as_deref() {
+        lines.push(detail.to_owned());
+    }
+    if !source_state.resolution_steps.is_empty() {
+        lines.push("Resolution steps:".to_owned());
+        lines.extend(source_state.resolution_steps.iter().map(|step| {
+            let mut line = format!("- {}: {}", step.label, step.status.label());
+            if let Some(detail) = step.detail.as_deref() {
+                line.push_str(" - ");
+                line.push_str(detail);
+            }
+            line
+        }));
+    }
+    lines.join("\n")
 }

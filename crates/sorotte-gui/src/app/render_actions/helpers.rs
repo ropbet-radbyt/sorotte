@@ -62,6 +62,18 @@ impl GuiWidgetEguiRenderer {
         (suffix == action).then(|| index.parse().ok()).flatten()
     }
 
+    pub(in crate::app::render_actions) fn main_window_playlist_source_action(
+        id: &str,
+    ) -> Option<(usize, GuiMediaSourceProviderId)> {
+        let identity = id.strip_prefix("main-window:playlist:")?;
+        let (index, suffix) = identity.split_once(':')?;
+        let provider_id = suffix.strip_prefix("source:")?;
+        Some((
+            index.parse().ok()?,
+            GuiMediaSourceProviderId::new(provider_id.to_owned()),
+        ))
+    }
+
     pub(in crate::app::render_actions) fn plex_playlist_search_result_action_index(
         id: &str,
         action: &str,

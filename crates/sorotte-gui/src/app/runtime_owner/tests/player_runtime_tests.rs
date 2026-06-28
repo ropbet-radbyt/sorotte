@@ -1,7 +1,7 @@
 use super::*;
 use crate::app::runtime_owner::GuiPendingStreamLoadContext;
 use crate::app::runtime_owner::player::SelectedPlaylistMediaSyncOutcome;
-use crate::app::{GuiStreamHelperHealth, GuiStreamHelperRuntimeSnapshot};
+use crate::app::{GuiPlaylistSourceState, GuiStreamHelperHealth, GuiStreamHelperRuntimeSnapshot};
 use sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot_legacy_compatible;
 
 fn write_persisted_media_search_root_index(
@@ -36,6 +36,23 @@ fn without_media_match_runtime_snapshots(actions: Vec<GuiShellAction>) -> Vec<Gu
     actions
         .into_iter()
         .filter(|action| !matches!(action, GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(_)))
+        .collect()
+}
+
+fn expected_playlist_source_states_for_entries(
+    state: &SorotteGuiShellAppState,
+    entries: &[&str],
+    detail: Option<&str>,
+) -> Vec<GuiPlaylistSourceState> {
+    entries
+        .iter()
+        .map(|entry| {
+            let mut source_state = state.playlist_source_state_for_entry(entry);
+            if let Some(detail) = detail {
+                source_state.detail = Some(detail.to_owned());
+            }
+            source_state
+        })
         .collect()
 }
 

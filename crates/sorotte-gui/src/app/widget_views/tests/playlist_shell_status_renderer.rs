@@ -64,6 +64,67 @@ fn gui_shell_app_state_projects_playlist_editors_inside_playlist_column() {
 }
 
 #[test]
+fn gui_shell_app_state_projects_playlist_source_badge_menu() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        media_matching_plugin_enabled: Some(false),
+        ..StoredClientSettingsMvp::default()
+    });
+    assert!(
+        state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+            "Episode 1".to_owned(),
+        ]))
+    );
+
+    let tree = state.main_window_widget_tree();
+    let playlist_row = tree
+        .find("main-window:playlist:0")
+        .expect("playlist row should exist");
+    assert!(
+        !playlist_row
+            .children
+            .iter()
+            .any(|child| child.id.ends_with(":source")),
+        "source selector should live with the local participant, not the playlist row"
+    );
+
+    let local_user = tree
+        .find("main-window:user:0")
+        .expect("local participant should exist");
+    let source = local_user
+        .find("main-window:playlist:0:source")
+        .expect("playlist source badge should be projected under the local participant");
+    assert_eq!(source.kind, GuiWidgetKind::Button);
+    assert_eq!(source.label, "Local");
+    assert_eq!(source.value.as_deref(), Some("available"));
+    assert!(
+        source
+            .tooltip
+            .as_deref()
+            .is_some_and(|tooltip| tooltip.contains("Current source: Local"))
+    );
+    assert!(
+        source
+            .children
+            .iter()
+            .any(|option| option.id.ends_with(":source:local") && option.selected)
+    );
+    let media_matching = source
+        .children
+        .iter()
+        .find(|option| option.label == "Media Matching")
+        .expect("disabled Media Matching source should remain visible");
+    assert!(!media_matching.enabled);
+    assert_eq!(media_matching.value.as_deref(), Some("disabled"));
+    assert!(
+        media_matching
+            .tooltip
+            .as_deref()
+            .is_some_and(|tooltip| tooltip.contains("disabled"))
+    );
+}
+
+#[test]
 fn gui_shell_app_state_projects_unified_room_content_and_selected_configuration_tab_content() {
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         chat_input_enabled: Some(true),

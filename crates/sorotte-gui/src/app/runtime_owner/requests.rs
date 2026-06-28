@@ -43,9 +43,10 @@ use super::super::runtime_stack::{
 };
 use super::super::shell_state::{
     GuiConfigStorageRuntimeSnapshot, GuiConfigurationRuntimeSnapshot, GuiMediaMatchToolHealth,
-    GuiPluginSelection, GuiShellAction, GuiStreamHelperHealth, GuiStreamTargetKind,
-    GuiTransientNotificationLevel, MainWindowRuntimeSnapshot, SorotteGuiShellAppState,
-    apply_media_match_settings_to_stored_settings, browser_stream_target_kind,
+    GuiMediaSourceProviderId, GuiPluginSelection, GuiShellAction, GuiStreamHelperHealth,
+    GuiStreamTargetKind, GuiTransientNotificationLevel, MainWindowRuntimeSnapshot,
+    SorotteGuiShellAppState, apply_media_match_settings_to_stored_settings,
+    browser_stream_target_kind,
 };
 use super::super::startup::resolve_sorotte_gui_config_path_legacy_compatible;
 use super::super::startup_support::env_trimmed;
@@ -106,6 +107,9 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.media_match_remote_lookup_trigger_key = None;
                 self.media_match_remote_lookup_result = None;
                 self.media_match_wire_sync_token = None;
+                self.clear_pending_playlist_source_resolution_for_provider(
+                    &GuiMediaSourceProviderId::media_matching(),
+                );
                 self.clear_media_match_remediation_progress(handle, projected_state);
                 let _ = self.maybe_sync_media_match_wire_decisions(handle, projected_state);
             }
@@ -125,6 +129,9 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.plex_stream_resolve_rx = None;
                 self.plex_stream_resolve_trigger_key = None;
                 self.plex_stream_resolve_result = None;
+                self.clear_pending_playlist_source_resolution_for_provider(
+                    &GuiMediaSourceProviderId::plex_stream(),
+                );
             }
         }
     }
@@ -562,6 +569,14 @@ impl GuiPersistedConfigRuntimeOwner {
                     projected_state,
                     files,
                     selected_index,
+                );
+            }
+            GuiRuntimeRequest::ResolvePlaylistSource { index, provider_id } => {
+                return self.handle_resolve_playlist_source_request(
+                    handle,
+                    projected_state,
+                    index,
+                    provider_id,
                 );
             }
             GuiRuntimeRequest::SendChatMessage(message) => {

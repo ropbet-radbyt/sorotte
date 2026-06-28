@@ -8,8 +8,8 @@ use sorotte_client_app::app_boundary::{
 use super::mpv_launch;
 use super::render_egui::GuiWidgetEguiRenderer;
 use super::shell_state::{
-    GuiConfigurationTab, GuiDialogControlKind, GuiDraftRuntimeSnapshot, GuiPluginSelection,
-    GuiShellAction, GuiShellModal, GuiShellView, GuiTransientNotificationLevel,
+    GuiConfigurationTab, GuiDialogControlKind, GuiDraftRuntimeSnapshot, GuiMediaSourceProviderId,
+    GuiPluginSelection, GuiShellAction, GuiShellModal, GuiShellView, GuiTransientNotificationLevel,
     SorotteGuiShellAppState, browser_domain_from_url, load_playlist_entries_from_path,
     playlist_entries_from_multiline_text, save_playlist_entries_to_path,
 };

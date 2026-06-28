@@ -448,6 +448,10 @@ impl GuiWidgetEguiRenderer {
             .children
             .iter()
             .find(|child| child.id.ends_with(":remove"));
+        let source_button = node
+            .children
+            .iter()
+            .find(|child| child.id.ends_with(":source"));
         let text = Self::display_text(node).to_owned();
         let is_room_active = state.main_window.active_playlist_index == Some(index);
 
@@ -461,9 +465,23 @@ impl GuiWidgetEguiRenderer {
                         egui::pos2(rect.right() - 18.0, rect.center().y),
                         egui::vec2(30.0, 30.0),
                     );
+                    let source_rect = source_button.map(|_| {
+                        let source_width = 104.0_f32.min((rect.width() * 0.34).max(72.0));
+                        egui::Rect::from_center_size(
+                            egui::pos2(
+                                remove_rect.left() - 8.0 - (source_width * 0.5),
+                                rect.center().y,
+                            ),
+                            egui::vec2(source_width, 30.0),
+                        )
+                    });
+                    let row_right = source_rect
+                        .as_ref()
+                        .map(|source_rect| source_rect.left() - 8.0)
+                        .unwrap_or_else(|| remove_rect.left() - 8.0);
                     let row_rect = egui::Rect::from_min_max(
                         rect.left_top(),
-                        egui::pos2(remove_rect.left() - 8.0, rect.bottom()),
+                        egui::pos2(row_right, rect.bottom()),
                     );
                     let response = ui.interact(
                         row_rect,
@@ -485,12 +503,41 @@ impl GuiWidgetEguiRenderer {
                         node.selected,
                         is_room_active,
                         remove_button.is_some(),
+                        source_button.is_some(),
                     );
                     let response = if truncated {
                         response.on_hover_text(text.clone())
                     } else {
                         response
                     };
+                    if let Some((source_button, source_rect)) = source_button.zip(source_rect) {
+                        let source_response = ui
+                            .scope_builder(
+                                egui::UiBuilder::new()
+                                    .max_rect(source_rect)
+                                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                                |ui| {
+                                    ui.set_width(source_rect.width());
+                                    ui.set_max_width(source_rect.width());
+                                    let button = egui::Button::new("")
+                                        .frame(false)
+                                        .min_size(source_rect.size())
+                                        .sense(egui::Sense::click());
+                                    let (response, _) =
+                                        egui::containers::menu::MenuButton::from_button(button).ui(
+                                            ui,
+                                            |ui| {
+                                                self.render_menu_section(ui, source_button, state);
+                                            },
+                                        );
+                                    response
+                                },
+                            )
+                            .inner;
+                        let source_response =
+                            Self::attach_node_tooltip(source_response, source_button);
+                        Self::paint_playlist_source_button(ui, &source_response, source_button);
+                    }
                     let remove_clicked = remove_button.is_some_and(|button| {
                         let remove_response =
                             ui.interact(remove_rect, ui.id().with("remove"), egui::Sense::click());
@@ -716,6 +763,7 @@ impl GuiWidgetEguiRenderer {
         is_selected: bool,
         is_room_active: bool,
         has_remove_button: bool,
+        has_source_button: bool,
     ) -> bool {
         let visuals = ui.style().interact(response);
         let palette = Self::palette_for_ui(ui);
@@ -793,7 +841,8 @@ impl GuiWidgetEguiRenderer {
         }
 
         let text_left = rect.left() + if is_room_active { 50.0 } else { 36.0 };
-        let remove_padding = if has_remove_button { 46.0 } else { 12.0 };
+        let remove_padding = if has_remove_button { 46.0 } else { 12.0 }
+            + if has_source_button { 116.0 } else { 0.0 };
         let text_right = (rect.right() - remove_padding).max(text_left);
         let text_width = (text_right - text_left).max(0.0);
         let (display_label, truncated) = Self::truncate_single_line_text_for_width(
@@ -846,6 +895,74 @@ impl GuiWidgetEguiRenderer {
             .line_segment([icon_rect.left_top(), icon_rect.right_bottom()], stroke);
         ui.painter()
             .line_segment([icon_rect.right_top(), icon_rect.left_bottom()], stroke);
+    }
+
+    pub(super) fn paint_playlist_source_button(
+        ui: &egui::Ui,
+        response: &egui::Response,
+        node: &GuiWidgetNode,
+    ) {
+        let palette = Self::palette_for_ui(ui);
+        let status = node
+            .value
+            .as_deref()
+            .or_else(|| {
+                node.children
+                    .iter()
+                    .find(|child| child.selected)
+                    .and_then(|child| child.value.as_deref())
+            })
+            .unwrap_or("available");
+        let (fill, stroke_color, text_color) = match status {
+            "resolving" | "pending" => (
+                palette.warning_bg,
+                palette.warning_text.gamma_multiply(0.75),
+                palette.warning_text,
+            ),
+            "disabled" | "missing" | "failed" => (
+                palette.surface,
+                palette.border,
+                ui.visuals().weak_text_color(),
+            ),
+            _ => (
+                palette.info_bg.gamma_multiply(0.78),
+                palette.info_border,
+                palette.info_text,
+            ),
+        };
+        let rect = response.rect.shrink2(egui::vec2(0.5, 0.5));
+        ui.painter().rect(
+            rect,
+            4,
+            if response.hovered() {
+                fill.linear_multiply(1.08)
+            } else {
+                fill
+            },
+            egui::Stroke::new(1.0, stroke_color),
+            egui::StrokeKind::Inside,
+        );
+
+        let text_rect = rect.shrink2(egui::vec2(8.0, 3.0));
+        let (display_label, _) = Self::truncate_single_line_text_for_width(
+            ui,
+            &node.label,
+            egui::TextStyle::Small.resolve(ui.style()),
+            text_color,
+            text_rect.width(),
+        );
+        let galley = ui.painter().layout_no_wrap(
+            display_label,
+            egui::TextStyle::Small.resolve(ui.style()),
+            text_color,
+        );
+        let text_pos = egui::pos2(
+            text_rect.left(),
+            text_rect.center().y - (galley.size().y * 0.5),
+        );
+        ui.painter()
+            .with_clip_rect(text_rect)
+            .galley(text_pos, galley, text_color);
     }
 
     fn paint_playlist_file_icon(ui: &egui::Ui, rect: egui::Rect, color: egui::Color32) {

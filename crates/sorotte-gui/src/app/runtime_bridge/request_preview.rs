@@ -171,6 +171,12 @@ impl GuiRuntimeRequest {
                     message: "Adding Plex media to the shared playlist.".to_owned(),
                 }]
             }
+            Self::ResolvePlaylistSource { .. } => {
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: "Resolving playlist source for this client.".to_owned(),
+                }]
+            }
             Self::SendChatMessage(_message) => Vec::new(),
             Self::SeekToPosition(target_position_seconds) => {
                 let message = format!("Seek requested: target {target_position_seconds} seconds.");
@@ -422,6 +428,7 @@ impl GuiRuntimeRequest {
             | Self::ShuffleRemainingPlaylist
             | Self::ShuffleEntirePlaylist
             | Self::ReplacePlaylist { .. }
+            | Self::ResolvePlaylistSource { .. }
             | Self::SetRoom(_)
             | Self::ReturnToDefaultRoom
             | Self::SendChatMessage(_)

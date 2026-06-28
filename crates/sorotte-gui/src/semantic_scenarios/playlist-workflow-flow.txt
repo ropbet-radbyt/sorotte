@@ -2,9 +2,22 @@
 setting	username	smoke-user
 setting	shared-playlist-enabled	true
 setting	plex-selected-server	semantic-machine	https://plex.semantic.invalid:32400	semantic-token
+setting	plex-streaming-enabled	true
 activate	main-window-root
 apply-main-window-runtime	sync-room	true	false	false	true	true	true	true	smoke-user,true,false,false	episode1.mkv|episode2.mkv	system>playlist-ready
 apply-main-window-playlist-selection	1
+assert-label	main-window:playlist:1:source	Local
+assert-value	main-window:playlist:1:source	available
+assert-selected	main-window:playlist:1:source:local	true
+assert-enabled	main-window:playlist:1:source:local	true
+assert-label	main-window:playlist:1:source:media-matching	Media Matching
+assert-enabled	main-window:playlist:1:source:media-matching	false
+assert-label	main-window:playlist:1:source:plex-stream	Plex Stream
+assert-enabled	main-window:playlist:1:source:plex-stream	true
+activate	main-window:playlist:1:source:plex-stream
+assert-label	main-window:playlist:1:source	Plex Stream
+assert-value	main-window:playlist:1:source	resolving
+assert-selected	main-window:playlist:1:source:plex-stream	true
 activate	main-window:playlist:add-url
 assert-enabled	main-window:playlist-url-edit:text	true
 enter-text	main-window:playlist-url-edit:text	false	https://example.com/live

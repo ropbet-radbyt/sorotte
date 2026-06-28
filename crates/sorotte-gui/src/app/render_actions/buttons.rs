@@ -69,6 +69,23 @@ impl GuiWidgetEguiRenderer {
                 Vec::new()
             };
         }
+        if let Some((index, provider_id)) = Self::main_window_playlist_source_action(&node.id) {
+            return state
+                .main_window
+                .playlist
+                .get(index)
+                .and_then(|row| {
+                    row.source_state
+                        .options
+                        .iter()
+                        .any(|option| option.provider_id == provider_id)
+                        .then_some(vec![GuiShellAction::SelectMainWindowPlaylistSource {
+                            index,
+                            provider_id,
+                        }])
+                })
+                .unwrap_or_default();
+        }
         if let Some(index) = Self::plex_playlist_search_result_action_index(&node.id, "add") {
             return state
                 .plex_playlist_search

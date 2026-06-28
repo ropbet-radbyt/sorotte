@@ -280,6 +280,9 @@ impl SorotteGuiShellAppState {
                 self.clear_action_error_and_refresh();
                 true
             }
+            GuiShellAction::SelectMainWindowPlaylistSource { index, provider_id } => {
+                self.select_main_window_playlist_source(index, provider_id)
+            }
             GuiShellAction::MoveMainWindowPlaylistRow {
                 from_index,
                 to_index,

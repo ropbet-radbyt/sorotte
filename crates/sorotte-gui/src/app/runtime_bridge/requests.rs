@@ -54,6 +54,10 @@ pub(in crate::app) enum GuiRuntimeRequest {
         files: Vec<String>,
         selected_index: Option<usize>,
     },
+    ResolvePlaylistSource {
+        index: usize,
+        provider_id: GuiMediaSourceProviderId,
+    },
     RetryPlayerLaunch,
     SetPluginEnabled {
         plugin: GuiPluginSelection,

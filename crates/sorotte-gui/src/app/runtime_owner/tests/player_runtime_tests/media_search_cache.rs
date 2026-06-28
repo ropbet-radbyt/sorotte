@@ -1,6 +1,9 @@
 use super::*;
 
-use crate::app::GuiClientCoreChatSessionRuntimeAdapter;
+use crate::app::runtime_owner::{GuiPlexStreamResolveOutcome, GuiPlexStreamResolveWorkerResult};
+use crate::app::{
+    GuiClientCoreChatSessionRuntimeAdapter, GuiMediaSourceProviderId, GuiPlaylistSourceStatus,
+};
 
 fn wait_for_media_match_remote_lookup(owner: &mut GuiPersistedConfigRuntimeOwner) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -520,6 +523,91 @@ fn gui_persisted_config_runtime_owner_prefers_local_media_for_plex_playlist_uri(
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_keeps_matching_local_file_for_plex_uri_without_streaming() {
+    let root = test_temp_root("plex-playlist-uri-current-local");
+    let selected_media_path = root.join("Episode 1.mkv");
+    std::fs::write(&selected_media_path, b"test")
+        .expect("Plex current-local fixture should be written");
+    let selected_media_path = selected_media_path.to_string_lossy().into_owned();
+    let plex_uri = sorotte_plex::format_plex_playlist_uri(&sorotte_plex::PlexPlaylistUri {
+        machine_identifier: "machine-1".to_owned(),
+        rating_key: "123".to_owned(),
+        title: Some("Episode 1".to_owned()),
+        file_name: Some("Episode 1.mkv".to_owned()),
+        duration_millis: Some(90_000),
+        size_bytes: Some(4),
+        media_type: Some(sorotte_plex::PlexMediaType::Episode),
+    });
+    let mismatched_size_uri =
+        sorotte_plex::format_plex_playlist_uri(&sorotte_plex::PlexPlaylistUri {
+            machine_identifier: "machine-1".to_owned(),
+            rating_key: "124".to_owned(),
+            title: Some("Episode 1".to_owned()),
+            file_name: Some("Episode 1.mkv".to_owned()),
+            duration_millis: Some(90_000),
+            size_bytes: Some(5),
+            media_type: Some(sorotte_plex::PlexMediaType::Episode),
+        });
+    let missing_size_uri = sorotte_plex::format_plex_playlist_uri(&sorotte_plex::PlexPlaylistUri {
+        machine_identifier: "machine-1".to_owned(),
+        rating_key: "125".to_owned(),
+        title: Some("Episode 1".to_owned()),
+        file_name: Some("Episode 1.mkv".to_owned()),
+        duration_millis: Some(90_000),
+        size_bytes: None,
+        media_type: Some(sorotte_plex::PlexMediaType::Episode),
+    });
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    owner.player_local_file = Some(
+        sorotte_player_api::LocalFileUpdate::new("Episode 1.mkv")
+            .with_path(selected_media_path.clone()),
+    );
+    owner.active_shared_playlist_index = Some(0);
+
+    assert!(
+        owner.current_player_matches_media_target(&plex_uri),
+        "a Plex URI published for a local file should match the already-open local path by filename and size"
+    );
+    assert!(
+        !owner.current_player_matches_media_target(&mismatched_size_uri),
+        "filename alone is not enough to suppress Plex streaming for another item"
+    );
+    assert!(
+        !owner.current_player_matches_media_target(&missing_size_uri),
+        "Plex URIs without a size hint must not create loose basename matches"
+    );
+
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        plex_streaming_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.apply_shared_playlist_entries(vec![plex_uri], Some(0), false);
+
+    let outcome = owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
+
+    assert_eq!(
+        outcome,
+        SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget
+    );
+    assert!(
+        owner.plex_stream_resolve_rx.is_none(),
+        "automatic sync must not queue Plex streaming once the local file satisfies the Plex playlist URI"
+    );
+    assert_eq!(
+        owner
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.as_deref()),
+        Some(selected_media_path.as_str())
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_uses_indexed_nested_local_media_for_plex_playlist_uri() {
     let root = test_temp_root("plex-playlist-uri-nested-index-local-first");
     let nested = root.join("Show Title").join("Season 01");
@@ -842,6 +930,123 @@ fn gui_persisted_config_runtime_owner_queues_selected_plex_stream_without_blocki
     );
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_retries_selected_plex_source_when_worker_finishes() {
+    let local_entry = "Episode 1.mkv";
+    let playlist_uri = sorotte_plex::PlexPlaylistUri {
+        machine_identifier: "machine-1".to_owned(),
+        rating_key: "123".to_owned(),
+        title: Some("Episode 1".to_owned()),
+        file_name: Some(local_entry.to_owned()),
+        duration_millis: Some(90_000),
+        size_bytes: Some(123_456),
+        media_type: Some(sorotte_plex::PlexMediaType::Episode),
+    };
+    let logical_uri = sorotte_plex::format_plex_playlist_uri(&playlist_uri);
+    let logical_file = sorotte_player_api::LocalFileUpdate::new(local_entry)
+        .with_path(logical_uri.clone())
+        .with_duration_seconds(90.0)
+        .with_size_bytes(123_456);
+    let stream_target = sorotte_plex::PlexStreamTarget {
+        playlist_uri,
+        matched_item: sorotte_plex::PlexMatchedItem {
+            rating_key: "123".to_owned(),
+            title: "Episode 1".to_owned(),
+            media_type: sorotte_plex::PlexMediaType::Episode,
+            duration_millis: Some(90_000),
+        },
+        logical_file: logical_file.clone(),
+        playback_url: sorotte_plex::SecretPlexPlaybackUrl::new(
+            "http://127.0.0.1:32400/library/parts/1/file.mkv?X-Plex-Token=secret-token",
+        ),
+    };
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    owner.active_shared_playlist_index = Some(0);
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        plex_plugin_enabled: Some(true),
+        plex_streaming_enabled: Some(true),
+        plex_user_token: Some("user-token".to_owned()),
+        plex_selected_server_id: Some("machine-1".to_owned()),
+        plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
+        plex_selected_server_token: Some("server-token".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.apply_shared_playlist_entries(vec![local_entry.to_owned()], Some(0), false);
+    state.main_window.active_playlist_index = Some(0);
+    let plex_settings = state.configuration.to_stored_settings();
+    assert!(
+        state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::Plex)
+    );
+    assert_eq!(plex_settings.plex_streaming_enabled, Some(true));
+    assert_eq!(
+        plex_settings.plex_selected_server_url.as_deref(),
+        Some("http://127.0.0.1:32400")
+    );
+    assert_eq!(
+        plex_settings.plex_selected_server_token.as_deref(),
+        Some("server-token")
+    );
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+
+    assert!(owner.handle_resolve_playlist_source_request(
+        &handle,
+        &mut state,
+        0,
+        GuiMediaSourceProviderId::plex_stream(),
+    ));
+    for action in handle.drain_actions() {
+        assert!(state.apply(action));
+    }
+    assert_eq!(
+        state.main_window.playlist[0].source_state.status,
+        GuiPlaylistSourceStatus::Pending
+    );
+    assert_eq!(
+        state.main_window.playlist[0]
+            .source_state
+            .current_provider_id,
+        GuiMediaSourceProviderId::plex_stream()
+    );
+    assert!(owner.pending_playlist_source_resolution.is_some());
+
+    let trigger_key = owner
+        .plex_stream_resolve_trigger_key
+        .clone()
+        .expect("selected Plex source should have queued a stream worker");
+    let (result_tx, result_rx) = std::sync::mpsc::channel();
+    result_tx
+        .send(GuiPlexStreamResolveWorkerResult {
+            trigger_key,
+            target: local_entry.to_owned(),
+            result: Ok(GuiPlexStreamResolveOutcome {
+                stream_target: Some(stream_target),
+                cache: sorotte_plex::PlexMatchCache::default(),
+            }),
+        })
+        .expect("fake Plex stream result should queue");
+    drop(result_tx);
+    owner.plex_stream_resolve_rx = Some(result_rx);
+    owner.plex_stream_resolve_result = None;
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert_eq!(owner.pending_playlist_source_resolution, None);
+    assert_eq!(owner.player_local_file, Some(logical_file));
+    assert_eq!(
+        state.main_window.playlist[0].source_state.status,
+        GuiPlaylistSourceStatus::Active
+    );
+    assert_eq!(
+        state.main_window.playlist[0].source_state.detail.as_deref(),
+        Some("Loaded Plex stream target.")
+    );
 }
 
 #[test]

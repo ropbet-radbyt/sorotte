@@ -8,14 +8,14 @@ fn gui_shell_app_state_moves_and_removes_playlist_rows() {
         ..StoredClientSettingsMvp::default()
     });
     state.main_window.playback.can_manage_playlist = true;
-    state.main_window.playlist.push(MainWindowPlaylistRow {
-        label: "Second".to_owned(),
-        is_selected: false,
-    });
-    state.main_window.playlist.push(MainWindowPlaylistRow {
-        label: "Third".to_owned(),
-        is_selected: false,
-    });
+    state
+        .main_window
+        .playlist
+        .push(MainWindowPlaylistRow::inferred("Second", false));
+    state
+        .main_window
+        .playlist
+        .push(MainWindowPlaylistRow::inferred("Third", false));
 
     assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(2)));
     assert!(state.apply(GuiShellAction::MoveSelectedMainWindowPlaylistUp));
@@ -243,6 +243,105 @@ fn gui_shell_app_state_preserves_selected_playlist_entry_when_reordering_another
         vec!["A", "B", "C", "D"]
     );
     assert_eq!(state.selection.selected_main_window_playlist, Some(1));
+}
+
+#[test]
+fn gui_shell_app_state_projects_playlist_source_defaults_and_disabled_options() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    assert!(
+        state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+            "Episode 1".to_owned(),
+        ]))
+    );
+
+    let row = state.main_window.playlist.first().unwrap();
+    assert_eq!(row.source_state.current_label, "Local");
+    assert_eq!(row.source_state.current_provider_id.as_str(), "local");
+    assert!(
+        row.source_state
+            .options
+            .iter()
+            .any(|option| option.label == "Plex Stream"),
+        "all registered source providers should be visible"
+    );
+
+    assert!(state.apply(GuiShellAction::SetPluginEnabled {
+        plugin: GuiPluginSelection::MediaMatching,
+        enabled: false,
+    }));
+    let media_matching = state.main_window.playlist[0]
+        .source_state
+        .options
+        .iter()
+        .find(|option| option.label == "Media Matching")
+        .expect("Media Matching option should remain visible");
+    assert!(!media_matching.enabled);
+    assert_eq!(media_matching.status.label(), "disabled");
+    assert!(
+        media_matching
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("disabled"))
+    );
+}
+
+#[test]
+fn gui_shell_app_state_preserves_playlist_source_metadata_across_edits_and_undo() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.main_window.playback.can_manage_playlist = true;
+    assert!(
+        state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+            "A".to_owned(),
+            "B".to_owned(),
+            "C".to_owned(),
+        ]))
+    );
+    state.main_window.playlist[1].source_state.detail =
+        Some("preserve this source detail".to_owned());
+
+    assert!(state.apply(GuiShellAction::MoveMainWindowPlaylistRow {
+        from_index: 1,
+        to_index: 0,
+    }));
+    let moved_row = state
+        .main_window
+        .playlist
+        .iter()
+        .find(|row| row.label == "B")
+        .expect("moved row should still exist");
+    assert_eq!(
+        moved_row.source_state.detail.as_deref(),
+        Some("preserve this source detail")
+    );
+
+    assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(0)));
+    assert!(state.apply(GuiShellAction::AnnounceSelectedSharedPlaylistEntryRemoved));
+    assert!(
+        state
+            .main_window
+            .playlist
+            .iter()
+            .all(|row| row.label != "B")
+    );
+
+    assert!(state.apply(GuiShellAction::UndoSharedPlaylistChange));
+    let restored_row = state
+        .main_window
+        .playlist
+        .iter()
+        .find(|row| row.label == "B")
+        .expect("undo should restore removed row");
+    assert_eq!(
+        restored_row.source_state.detail.as_deref(),
+        Some("preserve this source detail")
+    );
 }
 
 #[test]

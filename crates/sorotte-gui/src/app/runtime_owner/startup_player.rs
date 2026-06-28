@@ -89,6 +89,7 @@ impl GuiPersistedConfigRuntimeOwner {
             plex_stream_resolve_rx: None,
             plex_stream_resolve_trigger_key: None,
             plex_stream_resolve_result: None,
+            pending_playlist_source_resolution: None,
             pending_stream_retry_target: None,
             managed_stream_helper_refresh_required: false,
             pending_stream_feedback: VecDeque::new(),

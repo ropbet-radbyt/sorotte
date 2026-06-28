@@ -52,9 +52,11 @@ pub(super) use self::configuration_dialog::{
 #[cfg(any(test, feature = "gui-semantic-smoke"))]
 pub(super) use self::main_window::MainWindowRuntimeChatSnapshot;
 pub(super) use self::main_window::{
-    MainWindowChatRow, MainWindowPlaybackControls, MainWindowPlaylistRow, MainWindowRoomRow,
-    MainWindowRuntimeRoomSnapshot, MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot,
-    MainWindowShellState, MainWindowUserRow,
+    GuiMediaSourceProviderId, GuiPlaylistResolutionStep, GuiPlaylistSourceOption,
+    GuiPlaylistSourceState, GuiPlaylistSourceStatus, MainWindowChatRow, MainWindowPlaybackControls,
+    MainWindowPlaylistRow, MainWindowRoomRow, MainWindowRuntimeRoomSnapshot,
+    MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot, MainWindowShellState,
+    MainWindowUserRow,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -721,6 +723,7 @@ pub(super) struct SorotteGuiShellAppState {
     pub(super) validation: GuiValidationState,
     pub(super) last_media_dialog_directory: Option<String>,
     pub(super) playlist_undo_snapshot: Option<Vec<String>>,
+    pub(super) playlist_source_undo_snapshot: Option<Vec<GuiPlaylistSourceState>>,
     pub(super) playlist_shuffle_nonce: u64,
     pub(super) media_index_status: GuiMediaIndexStatusState,
     pub(super) player_setup_issue: Option<GuiPlayerSetupIssue>,

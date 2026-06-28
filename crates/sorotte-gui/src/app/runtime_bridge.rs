@@ -9,8 +9,8 @@ use super::render_io::GuiDroppedFilesRequest;
 use super::runtime_owner::GuiPersistedConfigRuntimeOwner;
 use super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 use super::shell_state::{
-    GuiConfigStorageChangeTarget, GuiPendingOperationKind, GuiPluginSelection,
-    GuiSavedConfigurationRuntimeSnapshot, GuiShellAction, GuiShellView,
+    GuiConfigStorageChangeTarget, GuiMediaSourceProviderId, GuiPendingOperationKind,
+    GuiPluginSelection, GuiSavedConfigurationRuntimeSnapshot, GuiShellAction, GuiShellView,
     GuiTransientNotificationLevel, SorotteGuiShellAppState,
 };
 use super::support::format_offset_command;

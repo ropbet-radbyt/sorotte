@@ -84,6 +84,9 @@ impl GuiPersistedConfigRuntimeOwner {
             {
                 return true;
             }
+            if Self::plex_playlist_target_matches_local_file_hints(local_file, target) {
+                return true;
+            }
         }
 
         if let Some(path) = local_file.path.as_deref()
@@ -131,6 +134,58 @@ impl GuiPersistedConfigRuntimeOwner {
         left.machine_identifier
             .eq_ignore_ascii_case(&right.machine_identifier)
             && left.rating_key == right.rating_key
+    }
+
+    fn plex_playlist_target_matches_local_file_hints(
+        local_file: &LocalFileUpdate,
+        target: &str,
+    ) -> bool {
+        let Ok(target) = parse_plex_playlist_uri(target) else {
+            return false;
+        };
+        let Some(target_size_bytes) = target.size_bytes else {
+            return false;
+        };
+        let Some(target_file_name) = target
+            .file_name
+            .as_deref()
+            .and_then(|file_name| Path::new(file_name).file_name())
+            .and_then(|name| name.to_str())
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        else {
+            return false;
+        };
+        let local_file_name = local_file
+            .path
+            .as_deref()
+            .filter(|path| !browser_is_url(path) && !is_plex_playlist_uri(path))
+            .and_then(|path| Path::new(path).file_name())
+            .and_then(|name| name.to_str())
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| local_file.name.trim());
+        if local_file_name.is_empty() {
+            return false;
+        }
+        let name_matches = if cfg!(windows) {
+            local_file_name.eq_ignore_ascii_case(target_file_name)
+        } else {
+            local_file_name == target_file_name
+        };
+        if !name_matches {
+            return false;
+        }
+        let local_size_bytes = local_file.size_bytes.or_else(|| {
+            local_file
+                .path
+                .as_deref()
+                .filter(|path| !browser_is_url(path) && !is_plex_playlist_uri(path))
+                .and_then(|path| std::fs::metadata(path).ok())
+                .filter(|metadata| metadata.is_file())
+                .map(|metadata| metadata.len())
+        });
+        local_size_bytes == Some(target_size_bytes)
     }
 
     pub(super) fn local_file_identity_matches(

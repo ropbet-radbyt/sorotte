@@ -11,6 +11,7 @@ impl SorotteGuiShellAppState {
                 self.plugin_enablement.set_enabled_for(plugin, enabled);
                 self.plugin_enablement
                     .apply_to_stored_settings(&mut self.configuration.settings);
+                self.refresh_playlist_source_states();
                 self.clear_action_error_and_refresh();
                 true
             }
@@ -44,6 +45,7 @@ impl SorotteGuiShellAppState {
                     &mut self.configuration.settings,
                     &self.media_match.settings,
                 );
+                self.refresh_playlist_source_states();
                 self.clear_action_error_and_refresh();
                 true
             }

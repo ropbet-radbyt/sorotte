@@ -3,9 +3,12 @@ use std::collections::BTreeSet;
 use sha2::{Digest, Sha256};
 
 use super::shell_state::{
+    GuiMediaMatchToolHealth, GuiMediaSourceProviderId, GuiPlaylistResolutionStep,
+    GuiPlaylistSourceOption, GuiPlaylistSourceState, GuiPlaylistSourceStatus,
     GuiPlaylistTextEditSessionState, GuiPlexPlaylistSearchResult, GuiPlexPlaylistSearchState,
-    GuiShellView, GuiTransientNotificationLevel, GuiUrlEditSessionState, MainWindowPlaylistRow,
-    SorotteGuiShellAppState, playlist_entries_multiline_text, shuffle_playlist_entries_in_place,
+    GuiPluginSelection, GuiShellView, GuiTransientNotificationLevel, GuiUrlEditSessionState,
+    MainWindowPlaylistRow, SorotteGuiShellAppState, playlist_entries_multiline_text,
+    shuffle_playlist_entries_in_place,
 };
 use super::support::normalized_editable_text;
 
@@ -47,6 +50,261 @@ impl SorotteGuiShellAppState {
             .iter()
             .map(|row| row.label.clone())
             .collect()
+    }
+
+    pub(super) fn playlist_source_state_for_entry(&self, entry: &str) -> GuiPlaylistSourceState {
+        self.refreshed_playlist_source_state_for_entry(
+            entry,
+            GuiPlaylistSourceState::inferred_for_entry(entry),
+        )
+    }
+
+    pub(super) fn refreshed_playlist_source_state_for_entry(
+        &self,
+        entry: &str,
+        mut state: GuiPlaylistSourceState,
+    ) -> GuiPlaylistSourceState {
+        state.options = self.playlist_source_options_for_entry(entry, &state.current_provider_id);
+        if let Some(selected_option) = state
+            .options
+            .iter()
+            .find(|option| option.provider_id == state.current_provider_id)
+        {
+            state.current_label = selected_option.label.clone();
+            if !selected_option.enabled {
+                state.status = GuiPlaylistSourceStatus::Disabled;
+                if state.detail.is_none() {
+                    state.detail = selected_option.detail.clone();
+                }
+            }
+        }
+        state
+    }
+
+    pub(super) fn set_playlist_source_state(
+        &mut self,
+        index: usize,
+        source_state: GuiPlaylistSourceState,
+    ) -> bool {
+        let Some(label) = self
+            .main_window
+            .playlist
+            .get(index)
+            .map(|row| row.label.clone())
+        else {
+            return false;
+        };
+        let source_state = self.refreshed_playlist_source_state_for_entry(&label, source_state);
+        if let Some(row) = self.main_window.playlist.get_mut(index) {
+            row.source_state = source_state;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(super) fn refresh_playlist_source_states(&mut self) {
+        let refreshed_states = self
+            .main_window
+            .playlist
+            .iter()
+            .map(|row| {
+                self.refreshed_playlist_source_state_for_entry(&row.label, row.source_state.clone())
+            })
+            .collect::<Vec<_>>();
+        for (row, source_state) in self.main_window.playlist.iter_mut().zip(refreshed_states) {
+            row.source_state = source_state;
+        }
+    }
+
+    pub(super) fn select_main_window_playlist_source(
+        &mut self,
+        index: usize,
+        provider_id: GuiMediaSourceProviderId,
+    ) -> bool {
+        let Some(label) = self
+            .main_window
+            .playlist
+            .get(index)
+            .map(|row| row.label.clone())
+        else {
+            return self.record_action_error("No playlist row exists at the requested index.");
+        };
+        let Some(option) = self
+            .playlist_source_options_for_entry(&label, &provider_id)
+            .into_iter()
+            .find(|option| option.provider_id == provider_id)
+        else {
+            return self.record_action_error("The requested playlist source is not registered.");
+        };
+        if !option.enabled {
+            return self.record_action_error(
+                option
+                    .detail
+                    .unwrap_or_else(|| "The requested playlist source is disabled.".to_owned()),
+            );
+        }
+        let source_state = GuiPlaylistSourceState {
+            current_provider_id: option.provider_id.clone(),
+            current_label: option.label.clone(),
+            status: GuiPlaylistSourceStatus::Resolving,
+            detail: Some(format!("Resolving with {}.", option.label)),
+            options: Vec::new(),
+            resolution_steps: vec![GuiPlaylistResolutionStep {
+                provider_id: option.provider_id,
+                label: option.label,
+                status: GuiPlaylistSourceStatus::Resolving,
+                detail: Some("Explicitly requested for this client.".to_owned()),
+            }],
+        };
+        if !self.set_playlist_source_state(index, source_state) {
+            return self.record_action_error("No playlist row exists at the requested index.");
+        }
+        self.set_main_window_playlist_selection(Some(index), true);
+        self.apply_selection_to_surfaces();
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    pub(super) fn reconciled_playlist_source_state(
+        previous_rows: &[MainWindowPlaylistRow],
+        used_previous_rows: &mut [bool],
+        index: usize,
+        label: &str,
+    ) -> Option<GuiPlaylistSourceState> {
+        if let Some(row) = previous_rows.get(index)
+            && !used_previous_rows.get(index).copied().unwrap_or(false)
+            && row.label == label
+        {
+            if let Some(used) = used_previous_rows.get_mut(index) {
+                *used = true;
+            }
+            return Some(row.source_state.clone());
+        }
+
+        previous_rows
+            .iter()
+            .enumerate()
+            .find(|(candidate_index, row)| {
+                !used_previous_rows
+                    .get(*candidate_index)
+                    .copied()
+                    .unwrap_or(false)
+                    && row.label == label
+            })
+            .map(|(candidate_index, row)| {
+                if let Some(used) = used_previous_rows.get_mut(candidate_index) {
+                    *used = true;
+                }
+                row.source_state.clone()
+            })
+    }
+
+    fn playlist_source_options_for_entry(
+        &self,
+        entry: &str,
+        selected_provider_id: &GuiMediaSourceProviderId,
+    ) -> Vec<GuiPlaylistSourceOption> {
+        vec![
+            self.playlist_source_option(
+                GuiMediaSourceProviderId::local(),
+                "Local",
+                selected_provider_id,
+                true,
+                Some("Resolve only a direct path, the current player file, or configured local media-search directories."),
+            ),
+            self.playlist_media_match_source_option(selected_provider_id),
+            self.playlist_plex_stream_source_option(entry, selected_provider_id),
+        ]
+    }
+
+    fn playlist_media_match_source_option(
+        &self,
+        selected_provider_id: &GuiMediaSourceProviderId,
+    ) -> GuiPlaylistSourceOption {
+        let detail = if !self
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::MediaMatching)
+        {
+            Some("Media Matching plugin is disabled.")
+        } else if !self.media_match.settings.fingerprinting_enabled {
+            Some("Media Matching fingerprinting is disabled.")
+        } else if self.media_match.health != GuiMediaMatchToolHealth::Healthy {
+            Some("Media Matching will run when its tools and cache can provide a match.")
+        } else {
+            Some("Resolve through cached or background Media Matching lookup.")
+        };
+        let enabled = self
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::MediaMatching)
+            && self.media_match.settings.fingerprinting_enabled;
+        self.playlist_source_option(
+            GuiMediaSourceProviderId::media_matching(),
+            "Media Matching",
+            selected_provider_id,
+            enabled,
+            detail,
+        )
+    }
+
+    fn playlist_plex_stream_source_option(
+        &self,
+        entry: &str,
+        selected_provider_id: &GuiMediaSourceProviderId,
+    ) -> GuiPlaylistSourceOption {
+        let selected_server_available = self
+            .plex
+            .selected_server_url
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty());
+        let entry_is_plex_uri = sorotte_plex::is_plex_playlist_uri(entry);
+        let detail = if !self.plugin_enablement.enabled_for(GuiPluginSelection::Plex) {
+            Some("Plex plugin is disabled.")
+        } else if !self.plex.authenticated {
+            Some("Plex is not authenticated.")
+        } else if !self.plex.streaming_enabled {
+            Some("Plex streaming is disabled.")
+        } else if !entry_is_plex_uri && !selected_server_available {
+            Some("Select a Plex server before resolving non-Plex playlist entries.")
+        } else {
+            Some("Resolve through the Plex stream provider.")
+        };
+        let enabled = self.plugin_enablement.enabled_for(GuiPluginSelection::Plex)
+            && self.plex.authenticated
+            && self.plex.streaming_enabled
+            && (entry_is_plex_uri || selected_server_available);
+        self.playlist_source_option(
+            GuiMediaSourceProviderId::plex_stream(),
+            "Plex Stream",
+            selected_provider_id,
+            enabled,
+            detail,
+        )
+    }
+
+    fn playlist_source_option(
+        &self,
+        provider_id: GuiMediaSourceProviderId,
+        label: &str,
+        selected_provider_id: &GuiMediaSourceProviderId,
+        enabled: bool,
+        detail: Option<&str>,
+    ) -> GuiPlaylistSourceOption {
+        let selected = &provider_id == selected_provider_id;
+        GuiPlaylistSourceOption {
+            provider_id,
+            label: label.to_owned(),
+            status: if !enabled {
+                GuiPlaylistSourceStatus::Disabled
+            } else if selected {
+                GuiPlaylistSourceStatus::Active
+            } else {
+                GuiPlaylistSourceStatus::Available
+            },
+            detail: detail.map(str::to_owned),
+            enabled,
+            selected,
+        }
     }
 
     pub(super) fn unique_shared_playlist_additions(
@@ -129,6 +387,13 @@ impl SorotteGuiShellAppState {
     ) {
         let current_entries = self.current_shared_playlist_entries();
         if current_entries != next_entries {
+            self.playlist_source_undo_snapshot = Some(
+                self.main_window
+                    .playlist
+                    .iter()
+                    .map(|row| row.source_state.clone())
+                    .collect(),
+            );
             self.playlist_undo_snapshot = Some(current_entries);
         }
     }
@@ -192,11 +457,25 @@ impl SorotteGuiShellAppState {
                 )
                 .min(entries.len().saturating_sub(1))
             });
+        let previous_rows = self.main_window.playlist.clone();
+        let mut used_previous_rows = vec![false; previous_rows.len()];
         self.main_window.playlist = entries
             .iter()
-            .map(|label| MainWindowPlaylistRow {
-                label: label.clone(),
-                is_selected: false,
+            .enumerate()
+            .map(|(index, label)| {
+                let source_state = Self::reconciled_playlist_source_state(
+                    &previous_rows,
+                    &mut used_previous_rows,
+                    index,
+                    label,
+                )
+                .map(|state| self.refreshed_playlist_source_state_for_entry(label, state))
+                .unwrap_or_else(|| self.playlist_source_state_for_entry(label));
+                MainWindowPlaylistRow {
+                    label: label.clone(),
+                    is_selected: false,
+                    source_state,
+                }
             })
             .collect();
         self.main_window.active_playlist_index = active_playlist_index;
@@ -318,9 +597,19 @@ impl SorotteGuiShellAppState {
             return false;
         }
         let current_entries = self.current_shared_playlist_entries();
+        let current_sources = self
+            .main_window
+            .playlist
+            .iter()
+            .map(|row| row.source_state.clone())
+            .collect::<Vec<_>>();
         let Some(previous_entries) = self.playlist_undo_snapshot.clone() else {
             return self.record_action_error("No shared playlist change is available to undo.");
         };
+        let previous_sources = self
+            .playlist_source_undo_snapshot
+            .clone()
+            .filter(|sources| sources.len() == previous_entries.len());
         if previous_entries == current_entries {
             return self.record_action_error("No shared playlist change is available to undo.");
         }
@@ -338,7 +627,14 @@ impl SorotteGuiShellAppState {
             )
         };
         self.playlist_undo_snapshot = Some(current_entries);
+        self.playlist_source_undo_snapshot = Some(current_sources);
         self.apply_shared_playlist_entries(previous_entries, target_index, true);
+        if let Some(previous_sources) = previous_sources {
+            for (row, source_state) in self.main_window.playlist.iter_mut().zip(previous_sources) {
+                row.source_state = source_state;
+            }
+            self.refresh_playlist_source_states();
+        }
         self.push_system_chat_message("Shared playlist undo requested.".to_owned());
         self.push_transient_notification(
             GuiTransientNotificationLevel::Info,

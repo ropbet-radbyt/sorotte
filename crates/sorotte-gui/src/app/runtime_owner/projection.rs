@@ -174,7 +174,9 @@ impl GuiPersistedConfigRuntimeOwner {
             && !media_index_still_pending
             && self.attached_media_search_index_revision != pre_poll_media_index_revision
         {
-            self.sync_active_shared_playlist_media_and_playstate_impl(state);
+            let mut projected_state = state.clone();
+            let _ = self.retry_pending_playlist_source_resolution(handle, &mut projected_state);
+            self.sync_active_shared_playlist_media_and_playstate_impl(&projected_state);
         }
         let player_attached = self.player.is_some();
         let player_runtime_available = self.player_runtime_available_for_actions();

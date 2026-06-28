@@ -194,6 +194,10 @@ pub(in crate::app) enum GuiShellAction {
     RemoveSelectedMainWindowUser,
     SelectMainWindowPlaylist(usize),
     ActivateMainWindowPlaylist(usize),
+    SelectMainWindowPlaylistSource {
+        index: usize,
+        provider_id: GuiMediaSourceProviderId,
+    },
     MoveMainWindowPlaylistRow {
         from_index: usize,
         to_index: usize,

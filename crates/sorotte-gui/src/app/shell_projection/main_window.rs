@@ -43,10 +43,8 @@ impl MainWindowShellState {
 
         let mut playlist = Vec::new();
         if shared_playlist_enabled {
-            playlist.push(MainWindowPlaylistRow {
-                label: "Playlist pane ready for shared entries".to_owned(),
-                is_selected: true,
-            });
+            let label = "Playlist pane ready for shared entries".to_owned();
+            playlist.push(MainWindowPlaylistRow::inferred(label, true));
         }
 
         Self {

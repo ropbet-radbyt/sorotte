@@ -65,6 +65,7 @@ impl SorotteGuiShellAppState {
             validation: GuiValidationState::default(),
             last_media_dialog_directory: None,
             playlist_undo_snapshot: None,
+            playlist_source_undo_snapshot: None,
             playlist_shuffle_nonce: 0,
             media_index_status: Default::default(),
             player_setup_issue: None,
@@ -80,6 +81,7 @@ impl SorotteGuiShellAppState {
             public_servers: PublicServerBrowserShellState::from_stored_settings(&shell_settings),
             media_search: MediaSearchWorkflowShellState::from_stored_settings(&shell_settings),
         };
+        state.refresh_playlist_source_states();
         state.default_selection_from_surfaces();
         state.apply_selection_to_surfaces();
         state.refresh_validation();

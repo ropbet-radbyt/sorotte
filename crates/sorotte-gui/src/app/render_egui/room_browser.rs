@@ -462,6 +462,10 @@ impl GuiWidgetEguiRenderer {
             .children
             .iter()
             .find(|child| child.id == "main-window:control:set-ready");
+        let source_action = user_node
+            .children
+            .iter()
+            .find(|child| child.id.contains(":source"));
         let state_value = user_state.and_then(|status| status.value.as_deref());
         let is_ready = state_value.is_some_and(|value| Self::browser_status_flag(value, "ready"));
         let is_controller =
@@ -493,12 +497,21 @@ impl GuiWidgetEguiRenderer {
                 ui.horizontal_top(|ui| {
                     Self::render_participant_ready_dot(ui, is_ready);
                     ui.add_space(8.0);
-                    let action_width = if ready_action.is_some() {
+                    let ready_width = if ready_action.is_some() {
                         Self::room_ready_button_width(row_width)
                     } else {
                         0.0
                     };
-                    let action_gap = if ready_action.is_some() { 8.0 } else { 0.0 };
+                    let source_width = if source_action.is_some() {
+                        Self::room_source_button_width(row_width)
+                    } else {
+                        0.0
+                    };
+                    let action_count =
+                        usize::from(source_action.is_some()) + usize::from(ready_action.is_some());
+                    let action_gap = if action_count > 0 { 8.0 } else { 0.0 };
+                    let inter_action_gap = if action_count > 1 { 8.0 } else { 0.0 };
+                    let action_width = ready_width + source_width + inter_action_gap;
                     let text_width =
                         (Self::visible_available_width(ui) - action_width - action_gap - 8.0)
                             .max(0.0);
@@ -540,14 +553,30 @@ impl GuiWidgetEguiRenderer {
                             }
                         },
                     );
-                    if let Some(ready_action) = ready_action {
+                    if let Some(source_action) = source_action {
                         ui.add_space(action_gap);
                         ui.allocate_ui_with_layout(
-                            egui::vec2(action_width, 36.0),
+                            egui::vec2(source_width, 36.0),
                             egui::Layout::top_down(egui::Align::Min),
                             |ui| {
-                                ui.set_width(action_width);
-                                ui.set_max_width(action_width);
+                                ui.set_width(source_width);
+                                ui.set_max_width(source_width);
+                                self.render_participant_source_button(ui, source_action, state);
+                            },
+                        );
+                    }
+                    if let Some(ready_action) = ready_action {
+                        if source_action.is_none() {
+                            ui.add_space(action_gap);
+                        } else {
+                            ui.add_space(inter_action_gap);
+                        }
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(ready_width, 36.0),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                ui.set_width(ready_width);
+                                ui.set_max_width(ready_width);
                                 self.render_playback_ready_button(ui, ready_action, state);
                             },
                         );
@@ -558,6 +587,37 @@ impl GuiWidgetEguiRenderer {
 
     fn room_ready_button_width(row_width: f32) -> f32 {
         if row_width < 420.0 { 128.0 } else { 156.0 }
+    }
+
+    fn room_source_button_width(row_width: f32) -> f32 {
+        if row_width < 420.0 { 112.0 } else { 136.0 }
+    }
+
+    fn render_participant_source_button(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SorotteGuiShellAppState,
+    ) {
+        let desired_size = egui::vec2(Self::visible_available_width(ui), 32.0);
+        let response = ui
+            .push_id(&node.id, |ui| {
+                ui.add_enabled_ui(node.enabled, |ui| {
+                    let button = egui::Button::new("")
+                        .frame(false)
+                        .min_size(desired_size)
+                        .sense(egui::Sense::click());
+                    let (response, _) =
+                        egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
+                            self.render_menu_section(ui, node, state);
+                        });
+                    response
+                })
+                .inner
+            })
+            .inner;
+        let response = Self::attach_node_tooltip(response, node);
+        Self::paint_playlist_source_button(ui, &response, node);
     }
 
     fn render_participant_ready_dot(ui: &mut egui::Ui, is_ready: bool) {
