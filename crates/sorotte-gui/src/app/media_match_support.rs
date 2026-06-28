@@ -1649,9 +1649,6 @@ pub(super) fn media_match_inventory_exact_candidate_for_targets(
             continue;
         }
         let path = Path::new(&row);
-        if !path.is_file() {
-            continue;
-        }
         let Some(file_name) = path
             .file_name()
             .and_then(|name| name.to_str())
@@ -1666,6 +1663,9 @@ pub(super) fn media_match_inventory_exact_candidate_for_targets(
         else {
             continue;
         };
+        if !path.is_file() {
+            continue;
+        }
         let root_order = normalized_roots
             .iter()
             .position(|root| media_match_path_is_under_root(&row, root))

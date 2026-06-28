@@ -163,51 +163,17 @@ impl GuiPersistedConfigRuntimeOwner {
         let roots = Self::automatic_media_search_root_keys(&search_roots);
         let retry_interval = Self::automatic_media_search_retry_interval(state);
         if let Some(path) = self.quick_resolve_main_window_user_media_target(state, &target)? {
-            if Path::new(&target).is_absolute() || browser_is_url(&target) {
+            if Path::new(&target).is_absolute()
+                || browser_is_url(&target)
+                || search_roots.is_empty()
+            {
                 self.cancel_pending_attached_media_search_index_build_impl();
                 self.attached_media_search_next_retry_at = None;
-            } else if search_roots.is_empty() {
-                if !self.attached_media_search_refresh_pending() {
-                    self.cancel_pending_attached_media_search_index_build_impl();
-                    self.attached_media_search_next_retry_at = None;
-                }
-            } else {
-                self.ensure_loaded_attached_media_search_index(
-                    &search_roots,
-                    &roots,
-                    retry_interval,
-                );
-                let _ = self.poll_attached_media_search_index_build(retry_interval);
-                let _ = self.queue_attached_media_search_refresh_if_needed(
-                    &search_roots,
-                    &roots,
-                    retry_interval,
-                    Self::automatic_media_search_timeout(state),
-                );
-                if !self.attached_media_search_refresh_pending() {
-                    self.cancel_pending_attached_media_search_index_build_impl();
-                    self.attached_media_search_next_retry_at = None;
-                }
             }
             self.unresolved_attached_media_target = None;
             return Ok(GuiUserMediaTargetResolution::Resolved {
                 path,
                 source: GuiUserMediaTargetResolutionSource::QuickLocal,
-            });
-        }
-
-        if let Some(path) = self.media_match_cached_exact_inventory_candidate_for_target(
-            state,
-            &target,
-            &search_roots,
-        ) {
-            self.unresolved_attached_media_target = None;
-            if !self.attached_media_search_refresh_pending() {
-                self.attached_media_search_next_retry_at = None;
-            }
-            return Ok(GuiUserMediaTargetResolution::Resolved {
-                path,
-                source: GuiUserMediaTargetResolutionSource::MediaMatchExactInventory,
             });
         }
 
@@ -233,12 +199,6 @@ impl GuiPersistedConfigRuntimeOwner {
                     .find_map(|candidate| self.cached_missing_media_target_path(index, candidate))
             })
         {
-            let _ = self.queue_attached_media_search_refresh_if_needed(
-                &search_roots,
-                &roots,
-                retry_interval,
-                Self::automatic_media_search_timeout(state),
-            );
             self.unresolved_attached_media_target = None;
             if !self.attached_media_search_refresh_pending() {
                 self.attached_media_search_next_retry_at = None;
@@ -246,6 +206,20 @@ impl GuiPersistedConfigRuntimeOwner {
             return Ok(GuiUserMediaTargetResolution::Resolved {
                 path: found_path,
                 source: GuiUserMediaTargetResolutionSource::MediaSearchIndex,
+            });
+        }
+        if let Some(path) = self.media_match_cached_exact_inventory_candidate_for_target(
+            state,
+            &target,
+            &search_roots,
+        ) {
+            self.unresolved_attached_media_target = None;
+            if !self.attached_media_search_refresh_pending() {
+                self.attached_media_search_next_retry_at = None;
+            }
+            return Ok(GuiUserMediaTargetResolution::Resolved {
+                path,
+                source: GuiUserMediaTargetResolutionSource::MediaMatchExactInventory,
             });
         }
         self.unresolved_attached_media_target = Some(target);

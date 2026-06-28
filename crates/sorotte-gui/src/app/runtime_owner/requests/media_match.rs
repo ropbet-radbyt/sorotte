@@ -46,6 +46,13 @@ enum GuiMediaMatchExactPlaylistPlan {
 }
 
 impl GuiPersistedConfigRuntimeOwner {
+    fn media_match_resolution_enabled(projected_state: &SorotteGuiShellAppState) -> bool {
+        projected_state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::MediaMatching)
+            && projected_state.media_match.settings.fingerprinting_enabled
+    }
+
     fn usable_media_match_peer_file_name(file_name: Option<String>) -> Option<String> {
         file_name
             .map(|target| target.trim().to_owned())
@@ -996,7 +1003,7 @@ impl GuiPersistedConfigRuntimeOwner {
         projected_state: &SorotteGuiShellAppState,
         target: &str,
     ) -> Option<String> {
-        if !projected_state.media_match.settings.fingerprinting_enabled {
+        if !Self::media_match_resolution_enabled(projected_state) {
             return None;
         }
         let root = self.media_match_root_for_request(projected_state)?;
@@ -1037,7 +1044,7 @@ impl GuiPersistedConfigRuntimeOwner {
         target: &str,
         search_roots: &[PathBuf],
     ) -> Option<String> {
-        if !projected_state.media_match.settings.fingerprinting_enabled {
+        if !Self::media_match_resolution_enabled(projected_state) {
             return None;
         }
         let root = self.media_match_root_for_request(projected_state)?;
@@ -1051,7 +1058,7 @@ impl GuiPersistedConfigRuntimeOwner {
         target: &str,
         current_path: &str,
     ) -> Option<String> {
-        if !projected_state.media_match.settings.fingerprinting_enabled {
+        if !Self::media_match_resolution_enabled(projected_state) {
             return None;
         }
         let root = self.media_match_root_for_request(projected_state)?;
@@ -1166,9 +1173,6 @@ impl GuiPersistedConfigRuntimeOwner {
                     } else {
                         root_index.root_path.join(relative_path.replace('\\', "/"))
                     };
-                    if !candidate.is_file() {
-                        continue;
-                    }
                     let mut key = candidate.to_string_lossy().replace('\\', "/");
                     if cfg!(windows) {
                         key = key.to_ascii_lowercase();

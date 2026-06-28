@@ -631,11 +631,11 @@ fn gui_persisted_config_runtime_owner_opens_stale_cached_local_media_before_refr
             .as_ref()
             .and_then(|file| file.path.as_deref()),
         Some(selected_media_path.as_str()),
-        "a stale but valid local index hit should open immediately while the refresh continues"
+        "a stale but valid local index hit should open immediately"
     );
     assert!(
-        owner.pending_attached_media_resolution.is_some(),
-        "stale cache refresh should continue in the background after opening the cached local match"
+        owner.pending_attached_media_resolution.is_none(),
+        "a valid cache hit should not start a full media-search refresh on the playback path"
     );
 
     let _ = std::fs::remove_dir_all(&root);
@@ -834,6 +834,7 @@ fn gui_persisted_config_runtime_owner_uses_media_match_inventory_for_exact_playl
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
+        media_matching_plugin_enabled: Some(true),
         media_match_fingerprinting_enabled: Some(true),
         ..StoredClientSettingsMvp::default()
     });
@@ -872,8 +873,132 @@ fn gui_persisted_config_runtime_owner_uses_media_match_inventory_for_exact_playl
         "exact Media Match inventory resolution should not start a media-search build"
     );
     assert!(
-        owner.attached_media_search_index.is_none(),
-        "exact Media Match inventory resolution should not need the media-search cache"
+        owner
+            .attached_media_search_index
+            .as_ref()
+            .is_some_and(|index| !index.roots_requiring_refresh.is_empty()),
+        "exact Media Match inventory resolution may initialize the filename cache, but should leave refresh work deferred"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_does_not_use_media_match_inventory_when_plugin_disabled() {
+    let root = test_temp_root("media-match-inventory-plugin-disabled");
+    let config_path = root.join("sorotte.ini");
+    let media_root = root.join("library");
+    let nested_directory = media_root.join("season-1");
+    std::fs::create_dir_all(&nested_directory)
+        .expect("Media Match disabled fixture directory should be created");
+    let selected_media_path = nested_directory.join("episode2.mkv");
+    std::fs::write(&selected_media_path, b"test")
+        .expect("Media Match disabled fixture should be written");
+
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
+        media_matching_plugin_enabled: Some(false),
+        media_match_fingerprinting_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.apply_shared_playlist_entries(vec!["episode2.mkv".to_owned()], Some(0), false);
+
+    let extraction_settings =
+        sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3();
+    crate::app::media_match_support::rebuild_persisted_media_match_index_with_extraction_settings_and_cancel(
+        &root,
+        std::slice::from_ref(&media_root),
+        None,
+        &state.media_match.settings,
+        &extraction_settings,
+        None,
+        |_| {},
+    )
+    .expect("Media Match inventory should be persisted without fingerprint extraction");
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    owner.active_shared_playlist_index = Some(0);
+
+    let outcome = owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
+
+    assert_eq!(outcome, SelectedPlaylistMediaSyncOutcome::NoChange);
+    assert!(
+        owner.player_local_file.is_none(),
+        "disabled Media Matching must not resolve playlist media from the inventory cache"
+    );
+    assert!(
+        owner.pending_attached_media_resolution.is_some(),
+        "with Media Matching disabled, the normal filename index remains the only local fallback"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_prefers_media_search_casing_over_media_match_inventory() {
+    let root = test_temp_root("media-search-casing-over-media-match-inventory");
+    let config_path = root.join("sorotte.ini");
+    let media_root = root.join("Library");
+    let nested_directory = media_root.join("Season-1");
+    std::fs::create_dir_all(&nested_directory)
+        .expect("Media Match casing fixture directory should be created");
+    let selected_media_path = nested_directory.join("Episode2.mkv");
+    std::fs::write(&selected_media_path, b"test")
+        .expect("Media Match casing fixture should be written");
+    let built_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system time should be after unix epoch")
+        .as_millis() as u64;
+    write_persisted_media_search_root_index(
+        &root,
+        &media_root,
+        built_at,
+        &[("episode2.mkv", &["Season-1\\Episode2.mkv"])],
+    );
+
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
+        media_matching_plugin_enabled: Some(true),
+        media_match_fingerprinting_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.apply_shared_playlist_entries(vec!["Episode2.mkv".to_owned()], Some(0), false);
+
+    let extraction_settings =
+        sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3();
+    crate::app::media_match_support::rebuild_persisted_media_match_index_with_extraction_settings_and_cancel(
+        &root,
+        std::slice::from_ref(&media_root),
+        None,
+        &state.media_match.settings,
+        &extraction_settings,
+        None,
+        |_| {},
+    )
+    .expect("Media Match inventory should be persisted without fingerprint extraction");
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    owner.active_shared_playlist_index = Some(0);
+
+    let outcome = owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
+    let selected_media_path = selected_media_path.to_string_lossy().into_owned();
+
+    assert_eq!(outcome, SelectedPlaylistMediaSyncOutcome::OpenedNewMedia);
+    assert_eq!(
+        owner
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.as_deref()),
+        Some(selected_media_path.as_str()),
+        "the filename index should preserve filesystem casing before Media Match inventory is considered"
+    );
+    assert!(
+        owner.pending_attached_media_resolution.is_none(),
+        "a valid filename-index hit should not trigger a full media-search refresh"
     );
 
     let _ = std::fs::remove_dir_all(&root);
@@ -1070,7 +1195,7 @@ fn gui_persisted_config_runtime_owner_warm_starts_shared_playlist_resolution_fro
 }
 
 #[test]
-fn gui_persisted_config_runtime_owner_resolves_from_stale_persisted_cache_and_refreshes_in_background()
+fn gui_persisted_config_runtime_owner_resolves_from_stale_persisted_cache_without_background_refresh()
  {
     #[derive(Debug, Default)]
     struct RecordingPlayerState {
@@ -1155,30 +1280,10 @@ fn gui_persisted_config_runtime_owner_resolves_from_stale_persisted_cache_and_re
         vec![selected_media_path.to_string_lossy().into_owned()]
     );
 
-    let refresh_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while std::time::Instant::now() < refresh_deadline {
-        if owner.pending_attached_media_resolution.is_none()
-            && owner
-                .attached_media_search_index
-                .as_ref()
-                .and_then(|index| {
-                    index
-                        .root_indexes_by_key
-                        .get(
-                            &crate::app::media_search_cache::normalized_media_search_root_key(
-                                &root,
-                            ),
-                        )
-                        .map(|root_index| root_index.built_at_unix_ms)
-                })
-                .is_some_and(|built_at| built_at > stale_built_at)
-        {
-            break;
-        }
-        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-
+    assert!(
+        owner.pending_attached_media_resolution.is_none(),
+        "a stale cache hit should not start a full media-search refresh on the playback path"
+    );
     assert!(
         owner
             .attached_media_search_index
@@ -1189,8 +1294,8 @@ fn gui_persisted_config_runtime_owner_resolves_from_stale_persisted_cache_and_re
                     .get(&crate::app::media_search_cache::normalized_media_search_root_key(&root))
                     .map(|root_index| root_index.built_at_unix_ms)
             })
-            .is_some_and(|built_at| built_at > stale_built_at),
-        "stale persisted cache entries should refresh in the background after the immediate warm-start hit"
+            .is_some_and(|built_at| built_at == stale_built_at),
+        "valid stale persisted cache entries should remain warm-start data until a miss requires refresh"
     );
 
     let _ = std::fs::remove_dir_all(&root);
