@@ -514,7 +514,7 @@ def _wait_for_playlist_index(client, index, timeout_seconds, error_holder):
     )
 
 
-def _handle_command(client, protocol, command, error_holder):
+def _handle_command(client, protocol, protocol_lock, command, error_holder):
     if error_holder:
         raise RuntimeError(error_holder[0])
     command_name = command.get("command")
@@ -524,21 +524,24 @@ def _handle_command(client, protocol, command, error_holder):
     if command_name == "set_ready":
         if "ready" not in command:
             raise RuntimeError("python live peer set_ready command requires a ready field")
-        protocol.setReady(bool(command["ready"]), manuallyInitiated=True)
+        with protocol_lock:
+            protocol.setReady(bool(command["ready"]), manuallyInitiated=True)
         _emit_client_snapshot("ready-command-sent", client, {"ready": bool(command["ready"])})
         return
     if command_name == "set_room":
         room = command.get("room")
         if not isinstance(room, str) or not room.strip():
             raise RuntimeError("python live peer set_room command requires a room string")
-        protocol.sendRoomSetting(room)
+        with protocol_lock:
+            protocol.sendRoomSetting(room)
         _emit_client_snapshot("room-command-sent", client, {"room": room})
         return
     if command_name == "set_file":
         file_ = command.get("file")
         if not isinstance(file_, dict):
             raise RuntimeError("python live peer set_file command requires a file object")
-        protocol.sendFileSetting(file_)
+        with protocol_lock:
+            protocol.sendFileSetting(file_)
         _emit_client_snapshot("file-command-sent", client, {"file": file_})
         return
     if command_name == "request_controlled_room":
@@ -552,7 +555,8 @@ def _handle_command(client, protocol, command, error_holder):
             raise RuntimeError(
                 "python live peer request_controlled_room command requires a password string"
             )
-        protocol.requestControlledRoom(room, password)
+        with protocol_lock:
+            protocol.requestControlledRoom(room, password)
         _emit_client_snapshot(
             "controlled-room-command-sent",
             client,
@@ -670,7 +674,8 @@ def _handle_command(client, protocol, command, error_holder):
             raise RuntimeError(
                 "python live peer send_chat_message command requires a message string"
             )
-        protocol.sendChatMessage(message)
+        with protocol_lock:
+            protocol.sendChatMessage(message)
         _emit_client_snapshot("chat-command-sent", client, {"message": message})
         return
     if command_name == "wait_for_chat_message":
@@ -729,7 +734,8 @@ def _handle_command(client, protocol, command, error_holder):
             raise RuntimeError(
                 "python live peer set_playlist command requires a files string list"
             )
-        client.playlist.changePlaylist(files, user=None, resetIndex=True)
+        with protocol_lock:
+            client.playlist.changePlaylist(files, user=None, resetIndex=True)
         _emit_client_snapshot("playlist-command-sent", client, {"files": files})
         return
     if command_name == "set_playlist_index":
@@ -738,7 +744,8 @@ def _handle_command(client, protocol, command, error_holder):
             raise RuntimeError(
                 "python live peer set_playlist_index command requires an integer index"
             )
-        client.playlist.changeToPlaylistIndex(index, user=None, resetPosition=False)
+        with protocol_lock:
+            client.playlist.changeToPlaylistIndex(index, user=None, resetPosition=False)
         _emit_client_snapshot("playlist-index-command-sent", client, {"index": index})
         return
     if command_name == "wait_for_playlist":
@@ -764,20 +771,21 @@ def _handle_command(client, protocol, command, error_holder):
     raise RuntimeError(f"python live peer received an unknown command: {command_name!r}")
 
 
-def _pump_server_lines(reader, protocol, ready_event, error_holder, stop_event):
+def _pump_server_lines(reader, protocol, protocol_lock, ready_event, error_holder, stop_event):
     while not stop_event.is_set():
         try:
             raw_line = reader.readline()
         except OSError as exc:
-            if not stop_event.is_set():
+            if not stop_event.is_set() and not getattr(reader, "disconnecting", False):
                 error_holder.append(str(exc))
             return
         if not raw_line:
-            if not stop_event.is_set():
+            if not stop_event.is_set() and not getattr(reader, "disconnecting", False):
                 error_holder.append("legacy server closed the live peer connection")
             return
         try:
-            protocol.lineReceived(raw_line)
+            with protocol_lock:
+                protocol.lineReceived(raw_line)
         except Exception as exc:  # pragma: no cover - probe-only diagnostic path
             error_holder.append(str(exc))
             return
@@ -952,12 +960,20 @@ def main():
         protocol = SyncClientProtocol(client)
         transport.set_sorotte_protocol(protocol)
         protocol.makeConnection(transport)
+        protocol_lock = threading.RLock()
         ready_event = threading.Event()
         stop_event = threading.Event()
         error_holder = []
         pump_thread = threading.Thread(
             target=_pump_server_lines,
-            args=(transport, protocol, ready_event, error_holder, stop_event),
+            args=(
+                transport,
+                protocol,
+                protocol_lock,
+                ready_event,
+                error_holder,
+                stop_event,
+            ),
             daemon=True,
         )
         pump_thread.start()
@@ -968,7 +984,7 @@ def main():
             if not raw_command:
                 continue
             command = json.loads(raw_command)
-            _handle_command(client, protocol, command, error_holder)
+            _handle_command(client, protocol, protocol_lock, command, error_holder)
         stop_event.set()
         transport.loseConnection()
         pump_thread.join(timeout=1.0)
