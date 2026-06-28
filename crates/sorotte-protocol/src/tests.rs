@@ -5,9 +5,10 @@ use serde_json::json;
 
 use super::{
     ChatPayload, HelloPayload, ListPayload, PingPayload, PlaystatePayload, ProtocolMessage,
-    ReadyPayload, RoomRef, SetPayload, StatePayload, decode_line, decode_message_line,
+    ReadyPayload, RoomRef, SOROTTE_PLEX_PLAYLIST_URIS_KEY, SetPayload, StatePayload,
+    canonical_playlist_files_from_change, decode_line, decode_message_line,
     decode_message_line_items, decode_message_lines, encode_line, encode_message_line,
-    extract_hello, extract_hello_from_message,
+    extract_hello, extract_hello_from_message, playlist_change_with_plex_sidecar,
 };
 
 fn fixture_dir() -> PathBuf {
@@ -176,6 +177,61 @@ fn playlist_change_message_with_null_user_roundtrips() {
     assert_eq!(
         encoded_value,
         json!({"Set":{"playlistChange":{"files":[],"user":null}}})
+    );
+}
+
+#[test]
+fn plex_playlist_sidecar_keeps_syncplay_files_baseline() {
+    let plex_uri = "plex://server-machine-id/metadata/14452?title=Episode%2011&file=%5BErai-raws%5D%20Re%20Zero%20-%2011%20%5B1080p%5D.mkv&duration=1470058&type=episode";
+    let payload =
+        playlist_change_with_plex_sidecar([plex_uri, "plain-episode.mkv"], true).with_user("alice");
+
+    assert_eq!(
+        payload.files,
+        vec![
+            "[Erai-raws] Re Zero - 11 [1080p].mkv".to_owned(),
+            "plain-episode.mkv".to_owned()
+        ]
+    );
+    assert_eq!(
+        payload.extra.get(SOROTTE_PLEX_PLAYLIST_URIS_KEY),
+        Some(&json!([plex_uri, null]))
+    );
+    assert_eq!(
+        canonical_playlist_files_from_change(&payload),
+        vec![plex_uri.to_owned(), "plain-episode.mkv".to_owned()]
+    );
+
+    let encoded = encode_message_line(&ProtocolMessage::set(
+        SetPayload::new().with_playlist_change(payload),
+    ))
+    .expect("playlist sidecar message should encode");
+    let encoded_value = decode_line(&encoded).expect("encoded playlist sidecar should decode");
+    assert_eq!(
+        encoded_value,
+        json!({
+            "Set": {
+                "playlistChange": {
+                    "files": ["[Erai-raws] Re Zero - 11 [1080p].mkv", "plain-episode.mkv"],
+                    "user": "alice",
+                    "sorottePlexPlaylistUris": [plex_uri, null]
+                }
+            }
+        })
+    );
+}
+
+#[test]
+fn plex_playlist_sidecar_can_be_omitted_for_legacy_recipients() {
+    let plex_uri =
+        "plex://server-machine-id/metadata/99?title=Movie&file=Folder%5CMovie%20Name.mkv";
+    let payload = playlist_change_with_plex_sidecar([plex_uri], false);
+
+    assert_eq!(payload.files, vec!["Movie Name.mkv".to_owned()]);
+    assert!(!payload.extra.contains_key(SOROTTE_PLEX_PLAYLIST_URIS_KEY));
+    assert_eq!(
+        canonical_playlist_files_from_change(&payload),
+        vec!["Movie Name.mkv".to_owned()]
     );
 }
 

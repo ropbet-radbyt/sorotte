@@ -29,7 +29,7 @@ use super::super::media_match_support::{
     clear_persisted_media_match_cache_at_root, import_managed_media_match_tool_with_progress,
     install_or_update_managed_media_match_tools_with_progress, managed_media_match_bin_dir,
     media_match_cached_probable_candidate_for_remote_signature,
-    media_match_tool_paths_for_settings,
+    media_match_inventory_exact_candidate_for_targets, media_match_tool_paths_for_settings,
     rebuild_persisted_media_match_candidates_with_progress_and_cancel,
     rebuild_persisted_media_match_index_with_extraction_settings_and_cancel,
     rebuild_persisted_media_match_remote_candidates_with_progress_and_cancel,
@@ -43,9 +43,10 @@ use super::super::runtime_stack::{
 };
 use super::super::shell_state::{
     GuiConfigStorageRuntimeSnapshot, GuiConfigurationRuntimeSnapshot, GuiMediaMatchToolHealth,
-    GuiShellAction, GuiStreamHelperHealth, GuiStreamTargetKind, GuiTransientNotificationLevel,
-    MainWindowRuntimeSnapshot, SorotteGuiShellAppState,
-    apply_media_match_settings_to_stored_settings, browser_stream_target_kind,
+    GuiMediaSourceProviderId, GuiPluginSelection, GuiShellAction, GuiStreamHelperHealth,
+    GuiStreamTargetKind, GuiTransientNotificationLevel, MainWindowRuntimeSnapshot,
+    SorotteGuiShellAppState, apply_media_match_settings_to_stored_settings,
+    browser_stream_target_kind,
 };
 use super::super::startup::resolve_sorotte_gui_config_path_legacy_compatible;
 use super::super::startup_support::env_trimmed;
@@ -55,9 +56,162 @@ use super::super::stream_support::{
     install_or_update_managed_stream_helper_with_progress, managed_stream_helper_bin_dir,
 };
 use super::super::support::normalized_editable_text;
-use super::{GuiPersistedConfigRuntimeOwner, GuiUserMediaTargetResolution};
+use super::{
+    GuiMediaMatchBackgroundCancelDisposition, GuiPersistedConfigRuntimeOwner,
+    GuiUserMediaTargetResolution,
+};
 
 impl GuiPersistedConfigRuntimeOwner {
+    fn plugin_enablement_config_path_for_request(
+        &mut self,
+        projected_state: &SorotteGuiShellAppState,
+    ) -> Option<PathBuf> {
+        if let Some(config_path) = self.config_path.clone() {
+            return Some(config_path);
+        }
+        let config_path = projected_state
+            .config_storage
+            .config_path
+            .as_deref()
+            .map(PathBuf::from)
+            .or_else(resolve_sorotte_gui_config_path_legacy_compatible)?;
+        self.config_path = Some(config_path.clone());
+        Some(config_path)
+    }
+
+    fn stop_disabled_plugin_runtime_work(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        plugin: GuiPluginSelection,
+    ) {
+        match plugin {
+            GuiPluginSelection::StreamSupport => {
+                self.startup_stream_helper_probe_completed = true;
+                self.startup_stream_helper_probe_rx = None;
+                self.pending_stream_retry_target = None;
+                self.managed_stream_helper_refresh_required = false;
+                self.clear_stream_helper_remediation_progress(handle, projected_state);
+            }
+            GuiPluginSelection::MediaMatching => {
+                self.request_media_match_background_worker_cancel(
+                    handle,
+                    projected_state,
+                    GuiMediaMatchBackgroundCancelDisposition::KeepCheckpoint,
+                    "canceling background work: Media Matching plugin disabled",
+                );
+                self.last_published_local_file = None;
+                self.last_published_media_match_signature = None;
+                self.local_shared_playlist_media_match_signature_path = None;
+                self.media_match_remote_lookup_rx = None;
+                self.media_match_remote_lookup_trigger_key = None;
+                self.media_match_remote_lookup_result = None;
+                self.media_match_wire_sync_token = None;
+                self.clear_pending_playlist_source_resolution_for_provider(
+                    &GuiMediaSourceProviderId::media_matching(),
+                );
+                self.clear_media_match_remediation_progress(handle, projected_state);
+                let _ = self.maybe_sync_media_match_wire_decisions(handle, projected_state);
+            }
+            GuiPluginSelection::Plex => {
+                self.plex_auth_session = None;
+                self.plex_auth_start_rx = None;
+                self.plex_auth_poll_rx = None;
+                self.plex_auth_poll_due_at = None;
+                self.startup_plex_server_refresh_rx = None;
+                self.plex_server_refresh_rx = None;
+                self.plex_server_refresh_context = None;
+                self.plex_sync_engine = None;
+                self.plex_sync_rx = None;
+                self.plex_sync_next_tick_due_at = None;
+                self.plex_playlist_search_rx = None;
+                self.plex_playlist_resolve_rx = None;
+                self.plex_stream_resolve_rx = None;
+                self.plex_stream_resolve_trigger_key = None;
+                self.plex_stream_resolve_result = None;
+                self.clear_pending_playlist_source_resolution_for_provider(
+                    &GuiMediaSourceProviderId::plex_stream(),
+                );
+            }
+        }
+    }
+
+    pub(in crate::app::runtime_owner) fn push_plugin_disabled_notification(
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        plugin: GuiPluginSelection,
+    ) {
+        Self::push_actions_and_project(
+            handle,
+            projected_state,
+            vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: format!("{} plugin is disabled.", plugin.label()),
+            }],
+        );
+    }
+
+    fn handle_set_plugin_enabled_request(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        plugin: GuiPluginSelection,
+        enabled: bool,
+    ) -> bool {
+        projected_state
+            .plugin_enablement
+            .set_enabled_for(plugin, enabled);
+        projected_state
+            .plugin_enablement
+            .apply_to_stored_settings(&mut projected_state.configuration.settings);
+        let Some(config_path) = self.plugin_enablement_config_path_for_request(projected_state)
+        else {
+            Self::push_runtime_error_notification(
+                handle,
+                projected_state,
+                format!(
+                    "Could not persist {} plugin setting: no writable GUI config path is available.",
+                    plugin.label()
+                ),
+            );
+            return false;
+        };
+        if let Err(error) = upsert_sorotte_ini_stored_client_settings_mvp_at_path(
+            &config_path,
+            &projected_state.configuration.settings,
+        ) {
+            Self::push_runtime_error_notification(
+                handle,
+                projected_state,
+                format!(
+                    "Could not persist {} plugin setting: {error}",
+                    plugin.label()
+                ),
+            );
+            return false;
+        }
+
+        if !enabled {
+            self.stop_disabled_plugin_runtime_work(handle, projected_state, plugin);
+        }
+
+        let settings = projected_state.configuration.settings.clone();
+        let mut actions = vec![
+            GuiShellAction::SetPluginEnabled { plugin, enabled },
+            GuiShellAction::ApplyGuiConfigurationRuntimeSnapshot(GuiConfigurationRuntimeSnapshot {
+                draft_settings: settings.clone(),
+                saved_settings: settings,
+            }),
+        ];
+        if enabled && plugin == GuiPluginSelection::MediaMatching {
+            actions.push(GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(
+                self.refresh_media_match_runtime_snapshot(&projected_state.media_match.settings),
+            ));
+        }
+        Self::push_actions_and_project(handle, projected_state, actions);
+        true
+    }
+
     pub(super) fn handle_runtime_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
@@ -176,6 +330,14 @@ impl GuiPersistedConfigRuntimeOwner {
             }
             GuiRuntimeRequest::RetryPlayerLaunch => {
                 return self.handle_retry_player_launch_request(handle, projected_state);
+            }
+            GuiRuntimeRequest::SetPluginEnabled { plugin, enabled } => {
+                return self.handle_set_plugin_enabled_request(
+                    handle,
+                    projected_state,
+                    plugin,
+                    enabled,
+                );
             }
             GuiRuntimeRequest::InstallStreamHelper => {
                 return self.handle_install_stream_helper_request(handle, projected_state);
@@ -298,8 +460,25 @@ impl GuiPersistedConfigRuntimeOwner {
             GuiRuntimeRequest::TogglePlexSync(enabled) => {
                 return self.handle_toggle_plex_sync_request(handle, projected_state, enabled);
             }
+            GuiRuntimeRequest::TogglePlexStreaming(enabled) => {
+                return self.handle_toggle_plex_streaming_request(handle, projected_state, enabled);
+            }
             GuiRuntimeRequest::DisconnectPlex => {
                 return self.handle_disconnect_plex_request(handle, projected_state);
+            }
+            GuiRuntimeRequest::SearchSelectedPlexServerMedia { query } => {
+                return self.handle_search_selected_plex_server_media_request(
+                    handle,
+                    projected_state,
+                    query,
+                );
+            }
+            GuiRuntimeRequest::ResolvePlexPlaylistItem { rating_key } => {
+                return self.handle_resolve_plex_playlist_item_request(
+                    handle,
+                    projected_state,
+                    rating_key,
+                );
             }
             GuiRuntimeRequest::UndoSeek => {
                 return self.handle_undo_seek_request(handle, projected_state);
@@ -390,6 +569,14 @@ impl GuiPersistedConfigRuntimeOwner {
                     projected_state,
                     files,
                     selected_index,
+                );
+            }
+            GuiRuntimeRequest::ResolvePlaylistSource { index, provider_id } => {
+                return self.handle_resolve_playlist_source_request(
+                    handle,
+                    projected_state,
+                    index,
+                    provider_id,
                 );
             }
             GuiRuntimeRequest::SendChatMessage(message) => {

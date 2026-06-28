@@ -103,6 +103,30 @@ fn upsert_sorotte_ini_stored_client_settings_mvp_with_plex_identity_clear(
             &serialized,
         );
     }
+    if let Some(value) = settings.stream_support_plugin_enabled {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "plugins",
+            "streamSupportEnabled",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(value) = settings.media_matching_plugin_enabled {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "plugins",
+            "mediaMatchingEnabled",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(value) = settings.plex_plugin_enabled {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "plugins",
+            "plexEnabled",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
     if let Some(value) = settings.media_match_fingerprinting_enabled {
         upsert_ini_value_legacy_compatible(
             &mut lines,
@@ -148,6 +172,14 @@ fn upsert_sorotte_ini_stored_client_settings_mvp_with_plex_identity_clear(
             &mut lines,
             "plex",
             "syncEnabled",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(value) = settings.plex_streaming_enabled {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "plex",
+            "streamingEnabled",
             format_ini_bool_legacy_compatible(value),
         );
     }

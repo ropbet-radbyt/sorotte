@@ -323,7 +323,7 @@ impl ClientSession {
             }
 
             if !skip_playlist_change_apply {
-                let playlist_change_files = playlist_change.files;
+                let playlist_change_files = canonical_playlist_files_from_change(&playlist_change);
                 let playlist_change_user = playlist_change.user;
                 if let Some(room_name) =
                     self.resolve_room_for_playlist_update(playlist_change_user.as_deref())

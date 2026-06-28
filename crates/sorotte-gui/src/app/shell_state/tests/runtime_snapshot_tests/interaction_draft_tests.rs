@@ -233,6 +233,7 @@ fn gui_shell_app_state_applies_gui_interaction_runtime_snapshots() {
                 }),
                 playlist_text_edit_session: None,
                 playlist_url_edit_session: None,
+                plex_playlist_search: None,
                 media_url_edit_session: None,
             }
         ))
@@ -316,6 +317,7 @@ fn gui_shell_app_state_preserves_local_playlist_selection_across_stale_interacti
                 text_edit_session: None,
                 playlist_text_edit_session: None,
                 playlist_url_edit_session: None,
+                plex_playlist_search: None,
                 media_url_edit_session: None,
             }
         ))
@@ -367,6 +369,7 @@ fn gui_shell_app_state_normalizes_disabled_menu_selection_in_gui_interaction_run
                 text_edit_session: None,
                 playlist_text_edit_session: None,
                 playlist_url_edit_session: None,
+                plex_playlist_search: None,
                 media_url_edit_session: None,
             }
         ))
@@ -409,6 +412,7 @@ fn gui_shell_app_state_rejects_invalid_gui_interaction_runtime_snapshots() {
                 text_edit_session: None,
                 playlist_text_edit_session: None,
                 playlist_url_edit_session: None,
+                plex_playlist_search: None,
                 media_url_edit_session: None,
             }
         ))

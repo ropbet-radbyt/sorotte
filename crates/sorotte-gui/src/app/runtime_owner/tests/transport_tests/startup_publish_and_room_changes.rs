@@ -325,6 +325,71 @@ fn gui_persisted_config_runtime_owner_does_not_publish_placeholder_local_file_ov
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_publishes_opened_local_path_before_player_metadata() {
+    struct OpenOnlyPlayer;
+
+    impl PlayerAdapter for OpenOnlyPlayer {
+        fn name(&self) -> &'static str {
+            "open-only"
+        }
+
+        fn open_file(&mut self, _path: &str) -> Result<(), sorotte_player_api::PlayerError> {
+            Ok(())
+        }
+    }
+
+    let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(OpenOnlyPlayer)));
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    assert!(
+        session_transport
+            .drain_outbound_protocol_lines()
+            .iter()
+            .any(|line| line.contains("\"Hello\""))
+    );
+    session_transport.push_inbound_protocol_line(
+        r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+    );
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let _ = session_transport.drain_outbound_protocol_lines();
+
+    handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
+        paths: vec!["C:/Media/episode1.mkv".to_owned()],
+        load_into_shared_playlist: false,
+        playlist_insert_slot: None,
+    });
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert!(
+        !owner.player_local_file_placeholder,
+        "concrete local file paths should not wait for later player metadata before publishing"
+    );
+    let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    assert!(
+        outbound_protocol_lines.iter().any(|line| {
+            let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
+                return false;
+            };
+            let Some(file) = message.get("Set").and_then(|set| set.get("file")) else {
+                return false;
+            };
+            file.get("name").and_then(serde_json::Value::as_str) == Some("episode1.mkv")
+        }),
+        "opened local paths should publish a room file update immediately; outbound_protocol_lines={outbound_protocol_lines:?}"
+    );
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_publishes_cached_media_match_without_health_probe() {
     let root = test_temp_root("cached-media-match-publish-without-health");
     let config_path = root.join("settings.ini");

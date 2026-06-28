@@ -20,9 +20,10 @@ use sorotte_core::{DomainError, SyncDomain};
 use sorotte_protocol::{
     ChatPayload, ControllerAuthPayload, DEFAULT_MAX_PROTOCOL_LINE_BYTES, HelloPayload,
     IgnoringOnTheFlyPayload, ListPayload, ListUserEntry, NewControlledRoomPayload, PingPayload,
-    PlaylistChangePayload, PlaylistIndexPayload, PlaystatePayload, ProtocolError, ProtocolMessage,
-    ReadyPayload, RoomRef, SetPayload, StatePayload, TlsPayload, UserSetPayload, decode_line,
-    decode_message_line_items, encode_message_line,
+    PlaylistIndexPayload, PlaystatePayload, ProtocolError, ProtocolMessage, ReadyPayload, RoomRef,
+    SOROTTE_PLEX_PLAYLIST_URIS_FEATURE, SetPayload, StatePayload, TlsPayload, UserSetPayload,
+    canonical_playlist_files_from_change, decode_line, decode_message_line_items,
+    encode_message_line, playlist_change_with_plex_sidecar,
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},

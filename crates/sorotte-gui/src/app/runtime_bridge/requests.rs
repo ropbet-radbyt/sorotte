@@ -54,7 +54,15 @@ pub(in crate::app) enum GuiRuntimeRequest {
         files: Vec<String>,
         selected_index: Option<usize>,
     },
+    ResolvePlaylistSource {
+        index: usize,
+        provider_id: GuiMediaSourceProviderId,
+    },
     RetryPlayerLaunch,
+    SetPluginEnabled {
+        plugin: GuiPluginSelection,
+        enabled: bool,
+    },
     InstallStreamHelper,
     IntegrateStreamHelperDownloader(String),
     IntegrateStreamHelperJsRuntime(String),
@@ -82,7 +90,14 @@ pub(in crate::app) enum GuiRuntimeRequest {
         uri: String,
     },
     TogglePlexSync(bool),
+    TogglePlexStreaming(bool),
     DisconnectPlex,
+    SearchSelectedPlexServerMedia {
+        query: String,
+    },
+    ResolvePlexPlaylistItem {
+        rating_key: String,
+    },
     SendChatMessage(String),
     SeekOffset(f64),
     SeekToPosition(f64),

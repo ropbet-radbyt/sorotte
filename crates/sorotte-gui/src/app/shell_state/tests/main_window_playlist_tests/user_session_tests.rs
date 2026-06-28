@@ -124,10 +124,7 @@ fn gui_shell_app_state_announces_playback_readiness_and_autoplay_events() {
         ..StoredClientSettingsMvp::default()
     });
     state.main_window.playback.can_toggle_pause = true;
-    state.main_window.playlist = vec![MainWindowPlaylistRow {
-        label: "episode1.mkv".to_owned(),
-        is_selected: false,
-    }];
+    state.main_window.playlist = vec![MainWindowPlaylistRow::inferred("episode1.mkv", false)];
 
     assert!(state.apply(GuiShellAction::AnnouncePlaybackPaused));
     assert!(state.main_window.playback_paused);
@@ -179,10 +176,7 @@ fn gui_shell_app_state_announces_playback_readiness_and_autoplay_events() {
 fn gui_shell_app_state_rejects_invalid_playback_readiness_and_autoplay_events() {
     let mut state =
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
-    state.main_window.playlist = vec![MainWindowPlaylistRow {
-        label: "episode1.mkv".to_owned(),
-        is_selected: false,
-    }];
+    state.main_window.playlist = vec![MainWindowPlaylistRow::inferred("episode1.mkv", false)];
 
     assert!(!state.apply(GuiShellAction::AnnouncePlaybackPaused));
     assert_eq!(
@@ -197,10 +191,7 @@ fn gui_shell_app_state_rejects_invalid_playback_readiness_and_autoplay_events() 
         ..StoredClientSettingsMvp::default()
     });
     state.main_window.playback.can_toggle_pause = true;
-    state.main_window.playlist = vec![MainWindowPlaylistRow {
-        label: "episode1.mkv".to_owned(),
-        is_selected: false,
-    }];
+    state.main_window.playlist = vec![MainWindowPlaylistRow::inferred("episode1.mkv", false)];
 
     assert!(!state.apply(GuiShellAction::AnnouncePlaybackResumed));
     assert_eq!(

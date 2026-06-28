@@ -7,6 +7,14 @@ impl SorotteGuiShellAppState {
                 self.clear_action_error_and_refresh();
                 true
             }
+            GuiShellAction::SetPluginEnabled { plugin, enabled } => {
+                self.plugin_enablement.set_enabled_for(plugin, enabled);
+                self.plugin_enablement
+                    .apply_to_stored_settings(&mut self.configuration.settings);
+                self.refresh_playlist_source_states();
+                self.clear_action_error_and_refresh();
+                true
+            }
             GuiShellAction::InstallStreamHelper
             | GuiShellAction::IntegrateStreamHelperDownloader(_)
             | GuiShellAction::IntegrateStreamHelperJsRuntime(_)
@@ -26,6 +34,7 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::RefreshPlexServers
             | GuiShellAction::SelectPlexServer { .. }
             | GuiShellAction::TogglePlexSync(_)
+            | GuiShellAction::TogglePlexStreaming(_)
             | GuiShellAction::DisconnectPlex => {
                 self.clear_action_error_and_refresh();
                 true
@@ -36,6 +45,7 @@ impl SorotteGuiShellAppState {
                     &mut self.configuration.settings,
                     &self.media_match.settings,
                 );
+                self.refresh_playlist_source_states();
                 self.clear_action_error_and_refresh();
                 true
             }

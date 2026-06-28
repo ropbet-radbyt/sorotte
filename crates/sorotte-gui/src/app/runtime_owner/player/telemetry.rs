@@ -177,7 +177,10 @@ impl GuiPersistedConfigRuntimeOwner {
         for outcome in media_load_outcomes {
             self.handle_player_media_load_outcome(outcome);
         }
-        for update in local_file_updates {
+        for mut update in local_file_updates {
+            if let Some(override_update) = self.logical_media_override_for_loaded_target(&update) {
+                update = override_update;
+            }
             let file_changed = Self::local_file_update_replaces_current_file(
                 self.player_local_file.as_ref(),
                 &update,
@@ -193,5 +196,27 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(super) fn player_local_file_ready_for_attached_sync(&self) -> bool {
         self.player_local_file.is_some() && !self.player_local_file_placeholder
+    }
+
+    fn logical_media_override_for_loaded_target(
+        &mut self,
+        update: &LocalFileUpdate,
+    ) -> Option<LocalFileUpdate> {
+        let pending = self.pending_logical_media_override.as_ref()?;
+        let loaded_target = pending.loaded_target_secret.as_str();
+        let current_matches_logical = self.player_local_file.as_ref().is_some_and(|current| {
+            Self::local_file_identity_matches(current, &pending.logical_file)
+        });
+        let update_is_url =
+            update.path.as_deref().is_some_and(browser_is_url) || browser_is_url(&update.name);
+        let matches_path = update
+            .path
+            .as_deref()
+            .is_some_and(|path| path == loaded_target);
+        let matches_name = update.name == loaded_target;
+        if !(matches_path || matches_name || (current_matches_logical && update_is_url)) {
+            return None;
+        }
+        Some(pending.logical_file.clone())
     }
 }

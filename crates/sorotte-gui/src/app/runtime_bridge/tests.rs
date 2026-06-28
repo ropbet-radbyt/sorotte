@@ -139,10 +139,7 @@ fn gui_preview_runtime_bridge_maps_pending_operations_to_preview_actions() {
     assert!(state.pending_operation.is_none());
 
     state.main_window.playback.can_toggle_pause = true;
-    state.main_window.playlist = vec![MainWindowPlaylistRow {
-        label: "episode1.mkv".to_owned(),
-        is_selected: false,
-    }];
+    state.main_window.playlist = vec![MainWindowPlaylistRow::inferred("episode1.mkv", false)];
     assert!(state.apply(GuiShellAction::BeginPlaybackPauseToggle));
     assert_eq!(
         runtime.actions_for_pending_completion(&state),

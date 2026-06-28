@@ -3,6 +3,7 @@ use sorotte_client_app::app_boundary::commands::controlled_room_base_name_legacy
 use super::render_egui::GuiWidgetEguiRenderer;
 use super::shell_state::{
     GuiConfigStorageChangeTarget, GuiConfigurationTab, GuiPendingOperationKind,
+    GuiPlaylistDefaultSourceState, GuiPlaylistSourceState, GuiPlexPlaylistSearchResult,
     GuiPlexServerReachability, GuiPlexServerRow, GuiPluginSelection, GuiShellModal, GuiShellView,
     GuiStreamHelperHealth, GuiTransientNotificationLevel, SorotteGuiShellAppState,
     playlist_entries_from_multiline_text,

@@ -393,16 +393,34 @@ impl SorotteGuiShellAppState {
                 .any(|user| user.room_name == room.room_name);
         }
 
+        let previous_playlist = self.main_window.playlist.clone();
+        let mut used_previous_rows = vec![false; previous_playlist.len()];
         let mut normalized_playlist = Vec::with_capacity(snapshot.playlist.len());
-        for entry in snapshot.playlist {
+        for (index, entry) in snapshot.playlist.into_iter().enumerate() {
             let Some(label) = normalized_editable_text(&entry) else {
                 return self.record_action_error(
                     "Main-window runtime snapshots cannot contain empty playlist entries.",
                 );
             };
+            let source_state = snapshot
+                .playlist_source_states
+                .get(index)
+                .cloned()
+                .map(|state| self.refreshed_playlist_source_state_for_entry(&label, state))
+                .or_else(|| {
+                    Self::reconciled_playlist_source_state(
+                        &previous_playlist,
+                        &mut used_previous_rows,
+                        index,
+                        &label,
+                    )
+                    .map(|state| self.refreshed_playlist_source_state_for_entry(&label, state))
+                })
+                .unwrap_or_else(|| self.playlist_source_state_for_entry(&label));
             normalized_playlist.push(MainWindowPlaylistRow {
                 label,
                 is_selected: false,
+                source_state,
             });
         }
         if snapshot
@@ -459,6 +477,9 @@ impl SorotteGuiShellAppState {
             rooms: normalized_rooms,
             users: normalized_users,
             playlist: normalized_playlist,
+            playlist_default_source: self.refreshed_playlist_source_default_state(
+                self.main_window.playlist_default_source.clone(),
+            ),
             active_playlist_index: snapshot.active_playlist_index,
             chat: normalized_chat,
             playback: MainWindowPlaybackControls {

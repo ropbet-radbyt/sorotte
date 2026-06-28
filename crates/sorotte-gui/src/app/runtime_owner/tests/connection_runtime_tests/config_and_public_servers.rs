@@ -88,10 +88,8 @@ fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
     let mut toggle_state =
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
     toggle_state.main_window.playback.can_toggle_pause = true;
-    toggle_state.main_window.playlist = vec![MainWindowPlaylistRow {
-        label: "episode1.mkv".to_owned(),
-        is_selected: false,
-    }];
+    toggle_state.main_window.playlist =
+        vec![MainWindowPlaylistRow::inferred("episode1.mkv", false)];
     toggle_state.commands.can_toggle_pause = true;
     assert!(toggle_state.apply(GuiShellAction::BeginPlaybackPauseToggle));
     handle.push_request(GuiRuntimeRequest::CompletePendingOperation(

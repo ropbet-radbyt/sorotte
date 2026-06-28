@@ -14,7 +14,17 @@ impl SorotteGuiShellAppState {
                     "plugins:list:stream-support",
                     "Stream Support",
                     GuiWidgetKind::ListItem,
-                    Some(self.stream_helper.health.label().to_owned()),
+                    Some(
+                        if self
+                            .plugin_enablement
+                            .enabled_for(GuiPluginSelection::StreamSupport)
+                        {
+                            self.stream_helper.health.label()
+                        } else {
+                            "disabled"
+                        }
+                        .to_owned(),
+                    ),
                     true,
                     stream_support_selected,
                 ),
@@ -30,7 +40,14 @@ impl SorotteGuiShellAppState {
                     "plugins:list:plex",
                     "Plex",
                     GuiWidgetKind::ListItem,
-                    Some(self.plex.status.clone()),
+                    Some(
+                        if self.plugin_enablement.enabled_for(GuiPluginSelection::Plex) {
+                            self.plex.status.as_str()
+                        } else {
+                            "disabled"
+                        }
+                        .to_owned(),
+                    ),
                     true,
                     plex_selected,
                 ),
@@ -86,6 +103,7 @@ impl SorotteGuiShellAppState {
                         false,
                     ),
                     self.plex_sync_action_node(),
+                    self.plex_streaming_action_node(),
                 ],
             ),
         ];
@@ -248,6 +266,21 @@ impl SorotteGuiShellAppState {
     fn media_matching_plugin_status_rows(&self) -> Vec<GuiWidgetNode> {
         let mut rows = vec![
             GuiWidgetNode::leaf(
+                "plugins:media-matching:enabled",
+                "Plugin Enabled",
+                GuiWidgetKind::Checkbox,
+                Some(
+                    bool_label(
+                        self.plugin_enablement
+                            .enabled_for(GuiPluginSelection::MediaMatching),
+                    )
+                    .to_owned(),
+                ),
+                true,
+                false,
+            )
+            .with_tooltip("Disables Media Matching without deleting tools, caches, or settings."),
+            GuiWidgetNode::leaf(
                 "plugins:media-matching:title",
                 "Title",
                 GuiWidgetKind::Status,
@@ -351,6 +384,9 @@ impl SorotteGuiShellAppState {
         let background_warmup_enabled = self.media_match.settings.background_warmup_enabled;
         let wire_sharing_enabled = self.media_match.settings.wire_sharing_enabled;
         let runtime_tolerance_enabled = self.media_match.settings.runtime_tolerance_enabled;
+        let plugin_enabled = self
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::MediaMatching);
         let strong_policy = self.media_match.settings.autoplay_policy
             == sorotte_media_match::MediaMatchAutoplayPolicy::AllowStrongSameMedia;
         vec![
@@ -359,7 +395,7 @@ impl SorotteGuiShellAppState {
                 "Enable Media Matching",
                 GuiWidgetKind::Checkbox,
                 Some(bool_label(fingerprinting_enabled).to_owned()),
-                self.pending_operation.is_none(),
+                plugin_enabled && self.pending_operation.is_none(),
                 false,
             )
             .with_tooltip("Turns local sampled-fast media matching on or off."),
@@ -368,7 +404,7 @@ impl SorotteGuiShellAppState {
                 "Background Library Indexing",
                 GuiWidgetKind::Checkbox,
                 Some(bool_label(background_warmup_enabled).to_owned()),
-                self.pending_operation.is_none(),
+                plugin_enabled && self.pending_operation.is_none(),
                 false,
             )
             .with_tooltip(
@@ -379,7 +415,7 @@ impl SorotteGuiShellAppState {
                 "Share Room Match Signatures",
                 GuiWidgetKind::Checkbox,
                 Some(bool_label(wire_sharing_enabled).to_owned()),
-                self.pending_operation.is_none(),
+                plugin_enabled && self.pending_operation.is_none(),
                 false,
             )
             .with_tooltip(
@@ -390,7 +426,7 @@ impl SorotteGuiShellAppState {
                 "Allow Small Duration Tolerance",
                 GuiWidgetKind::Checkbox,
                 Some(bool_label(runtime_tolerance_enabled).to_owned()),
-                self.pending_operation.is_none(),
+                plugin_enabled && self.pending_operation.is_none(),
                 false,
             )
             .with_tooltip(
@@ -401,7 +437,7 @@ impl SorotteGuiShellAppState {
                 "Diagnostics Only",
                 GuiWidgetKind::Button,
                 Some(self.media_match_autoplay_policy_summary()),
-                self.pending_operation.is_none(),
+                plugin_enabled && self.pending_operation.is_none(),
                 !strong_policy,
             )
             .with_tooltip("Media Matching can report matches but will not autoplay from them."),
@@ -410,7 +446,7 @@ impl SorotteGuiShellAppState {
                 "Allow Verified Strong Matches",
                 GuiWidgetKind::Button,
                 Some(self.media_match_autoplay_policy_summary()),
-                self.pending_operation.is_none(),
+                plugin_enabled && self.pending_operation.is_none(),
                 strong_policy,
             )
             .with_tooltip(
@@ -455,6 +491,12 @@ impl SorotteGuiShellAppState {
     }
 
     fn media_matching_plugin_action_enabled(&self, action: &str) -> bool {
+        if !self
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::MediaMatching)
+        {
+            return action == "cancel-index" && self.media_matching_background_active();
+        }
         if action == "cancel-index" {
             return self.media_matching_background_active();
         }
@@ -479,6 +521,18 @@ impl SorotteGuiShellAppState {
 
     fn plex_plugin_status_rows(&self) -> Vec<GuiWidgetNode> {
         let mut rows = vec![
+            GuiWidgetNode::leaf(
+                "plugins:plex:enabled",
+                "Plugin Enabled",
+                GuiWidgetKind::Checkbox,
+                Some(
+                    bool_label(self.plugin_enablement.enabled_for(GuiPluginSelection::Plex))
+                        .to_owned(),
+                ),
+                true,
+                false,
+            )
+            .with_tooltip("Disables Plex integration without disconnecting the account."),
             GuiWidgetNode::leaf(
                 "plugins:plex:title",
                 "Title",
@@ -533,6 +587,21 @@ impl SorotteGuiShellAppState {
                 false,
             ));
         }
+        rows.push(GuiWidgetNode::leaf(
+            "plugins:plex:status:streaming",
+            "Streaming",
+            GuiWidgetKind::Status,
+            Some(
+                if self.plex.streaming_enabled {
+                    "enabled"
+                } else {
+                    "off"
+                }
+                .to_owned(),
+            ),
+            true,
+            false,
+        ));
         if let Some(last_report) = self.plex.last_report.as_ref() {
             rows.push(GuiWidgetNode::leaf(
                 "plugins:plex:status:last-report",
@@ -564,9 +633,14 @@ impl SorotteGuiShellAppState {
             ));
         }
         if let Some(error) = self.plex.last_error.as_ref() {
+            let (id, label) = if self.plex_status_is_error() {
+                ("plugins:plex:status:error", "Last Error")
+            } else {
+                ("plugins:plex:status:last-issue", "Last Sync Issue")
+            };
             rows.push(GuiWidgetNode::leaf(
-                "plugins:plex:status:error",
-                "Last Error",
+                id,
+                label,
                 GuiWidgetKind::Status,
                 Some(error.clone()),
                 true,
@@ -577,7 +651,9 @@ impl SorotteGuiShellAppState {
     }
 
     fn plex_status_title(&self) -> String {
-        if self.plex.authenticating {
+        if !self.plugin_enablement.enabled_for(GuiPluginSelection::Plex) {
+            "Plex disabled".to_owned()
+        } else if self.plex.authenticating {
             "Plex login pending".to_owned()
         } else if !self.plex.authenticated {
             "Connect Plex".to_owned()
@@ -599,8 +675,15 @@ impl SorotteGuiShellAppState {
     }
 
     fn plex_status_summary(&self) -> String {
-        if let Some(error) = self.plex.last_error.as_deref() {
-            return error.to_owned();
+        if !self.plugin_enablement.enabled_for(GuiPluginSelection::Plex) {
+            return "Plex integration is off. Account, selected server, cache, and sync settings are kept.".to_owned();
+        }
+        if self.plex_status_is_error() {
+            return self
+                .plex
+                .last_error
+                .clone()
+                .unwrap_or_else(|| "Plex sync encountered an error.".to_owned());
         }
         if !self.plex.authenticated && !self.plex.authenticating {
             return "Connect your Plex account to report watch progress.".to_owned();
@@ -662,7 +745,9 @@ impl SorotteGuiShellAppState {
     }
 
     fn plex_status_health(&self) -> String {
-        if self.plex.last_error.is_some() {
+        if !self.plugin_enablement.enabled_for(GuiPluginSelection::Plex) {
+            "disabled".to_owned()
+        } else if self.plex_status_is_error() {
             "error".to_owned()
         } else if self.plex.enabled {
             "enabled".to_owned()
@@ -681,6 +766,10 @@ impl SorotteGuiShellAppState {
         } else {
             "disconnected".to_owned()
         }
+    }
+
+    fn plex_status_is_error(&self) -> bool {
+        self.plex.status.eq_ignore_ascii_case("error")
     }
 
     fn plex_account_action_node(&self) -> GuiWidgetNode {
@@ -733,6 +822,25 @@ impl SorotteGuiShellAppState {
         )
     }
 
+    fn plex_streaming_action_node(&self) -> GuiWidgetNode {
+        GuiWidgetNode::leaf(
+            if self.plex.streaming_enabled {
+                "plugins:plex:disable-streaming"
+            } else {
+                "plugins:plex:enable-streaming"
+            },
+            if self.plex.streaming_enabled {
+                "Turn Streaming Off"
+            } else {
+                "Turn Streaming On"
+            },
+            GuiWidgetKind::Button,
+            None,
+            self.plex_plugin_action_enabled("toggle-streaming"),
+            false,
+        )
+    }
+
     fn selected_plex_server(&self) -> Option<&GuiPlexServerRow> {
         self.plex.servers.iter().find(|server| server.selected)
     }
@@ -763,6 +871,9 @@ impl SorotteGuiShellAppState {
     }
 
     fn plex_plugin_action_enabled(&self, action: &str) -> bool {
+        if !self.plugin_enablement.enabled_for(GuiPluginSelection::Plex) {
+            return false;
+        }
         if self.pending_operation.is_some() {
             return false;
         }
@@ -782,8 +893,17 @@ impl SorotteGuiShellAppState {
                             | Some(GuiPlexServerReachability::Unreachable)
                     )
             }
+            "toggle-streaming" => {
+                if self.plex.streaming_enabled {
+                    return true;
+                }
+                self.plex.authenticated
+            }
             "disconnect" => {
-                self.plex.authenticated || self.plex.authenticating || self.plex.enabled
+                self.plex.authenticated
+                    || self.plex.authenticating
+                    || self.plex.enabled
+                    || self.plex.streaming_enabled
             }
             _ => false,
         }
@@ -872,6 +992,21 @@ impl SorotteGuiShellAppState {
 
     fn stream_support_plugin_status_rows(&self) -> Vec<GuiWidgetNode> {
         let mut rows = vec![
+            GuiWidgetNode::leaf(
+                "plugins:stream-support:enabled",
+                "Plugin Enabled",
+                GuiWidgetKind::Checkbox,
+                Some(
+                    bool_label(
+                        self.plugin_enablement
+                            .enabled_for(GuiPluginSelection::StreamSupport),
+                    )
+                    .to_owned(),
+                ),
+                true,
+                false,
+            )
+            .with_tooltip("Disables stream helper use without deleting installed helper tools."),
             GuiWidgetNode::leaf(
                 "plugins:stream-support:title",
                 "Title",
@@ -974,6 +1109,12 @@ impl SorotteGuiShellAppState {
     }
 
     fn stream_support_plugin_alert_widget_tree(&self) -> Option<GuiWidgetNode> {
+        if !self
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::StreamSupport)
+        {
+            return None;
+        }
         if self.stream_helper.health == GuiStreamHelperHealth::Healthy
             && !self.stream_helper_remediation.active
         {
@@ -1060,6 +1201,12 @@ impl SorotteGuiShellAppState {
     }
 
     fn stream_support_plugin_action_enabled(&self, action: &str) -> bool {
+        if !self
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::StreamSupport)
+        {
+            return false;
+        }
         match action {
             "install" => {
                 self.pending_operation.is_none()

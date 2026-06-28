@@ -2,6 +2,9 @@
 setting	public-server	Primary	syncplay.pl:8999
 setting	chat-input-enabled	false
 setting	chat-output-enabled	false
+setting	plex-selected-server	semantic-machine	https://plex.semantic.invalid:32400	semantic-token
+setting	plex-sync-enabled	true
+setting	plex-streaming-enabled	true
 assert-selected	configuration-root	true
 enter-text	config:Connection:Host	false	syncplay.example
 enter-text	config:Connection:Port	false	8999
@@ -74,6 +77,27 @@ assert-value	config:Connection:Room History Count	2
 assert-value	config:Media Search:Directory Count	2
 assert-value	menus:dialog:tls	yes
 assert-value	shell:update-indicator:title	Update
+activate	plugins-root
+assert-selected	plugins-root	true
+assert-value	shell:active-view	plugins
+activate	plugins:list:plex
+assert-value	plugins:plex:enabled	yes
+assert-value	plugins:plex:status:streaming	enabled
+assert-enabled	plugins:plex:disable-sync	true
+assert-enabled	plugins:plex:disable-streaming	true
+activate	plugins:plex:enabled
+assert-value	plugins:plex:enabled	no
+assert-value	plugins:list:plex	disabled
+assert-value	plugins:plex:health	disabled
+assert-value	plugins:plex:status:streaming	enabled
+assert-enabled	plugins:plex:disable-sync	false
+assert-enabled	plugins:plex:disable-streaming	false
+activate	plugins:plex:enabled
+assert-value	plugins:plex:enabled	yes
+assert-enabled	plugins:plex:disable-sync	true
+assert-enabled	plugins:plex:disable-streaming	true
+activate	configuration-root
+assert-selected	configuration-root	true
 enter-text	config:Connection:Port	false	70000
 assert-value	shell:validation:status	1 issue(s)
 assert-label	shell:validation:issue:0	Connection / Port

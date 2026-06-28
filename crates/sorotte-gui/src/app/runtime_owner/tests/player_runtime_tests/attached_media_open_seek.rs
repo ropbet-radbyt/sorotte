@@ -161,10 +161,17 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
         plex_sync_rx: None,
         plex_sync_next_tick_due_at: None,
         plex_runtime_snapshot: Default::default(),
+        plex_playlist_search_rx: None,
+        plex_playlist_resolve_rx: None,
+        plex_stream_resolve_rx: None,
+        plex_stream_resolve_trigger_key: None,
+        plex_stream_resolve_result: None,
+        pending_playlist_source_resolution: None,
         pending_stream_retry_target: None,
         managed_stream_helper_refresh_required: false,
         pending_stream_feedback: std::collections::VecDeque::new(),
         pending_stream_load_context: None,
+        pending_logical_media_override: None,
     };
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
@@ -198,6 +205,11 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
                     false,
                 )],
                 playlist: vec!["episode1.mkv".to_owned(), "episode2.mkv".to_owned()],
+                playlist_source_states: expected_playlist_source_states_for_entries(
+                    &state,
+                    &["episode1.mkv", "episode2.mkv"],
+                    Some("Added from the local filesystem."),
+                ),
                 active_playlist_index: Some(0),
                 chat: runtime_chat_pane_ready_rows(),
                 can_toggle_pause: false,
@@ -243,6 +255,11 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
                     false,
                 )],
                 playlist: vec!["episode1.mkv".to_owned(), "episode2.mkv".to_owned()],
+                playlist_source_states: expected_playlist_source_states_for_entries(
+                    &state,
+                    &["episode1.mkv", "episode2.mkv"],
+                    Some("Added from the local filesystem."),
+                ),
                 active_playlist_index: Some(0),
                 chat: runtime_chat_pane_ready_rows(),
                 can_toggle_pause: true,

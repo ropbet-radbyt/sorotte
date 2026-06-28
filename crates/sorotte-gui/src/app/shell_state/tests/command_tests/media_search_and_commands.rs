@@ -161,10 +161,7 @@ fn gui_shell_app_state_handles_save_and_playback_toggle_command_actions() {
         ..StoredClientSettingsMvp::default()
     });
     state.main_window.playback.can_toggle_pause = true;
-    state.main_window.playlist = vec![MainWindowPlaylistRow {
-        label: "episode1.mkv".to_owned(),
-        is_selected: false,
-    }];
+    state.main_window.playlist = vec![MainWindowPlaylistRow::inferred("episode1.mkv", false)];
     state.refresh_validation();
 
     assert!(state.apply(GuiShellAction::BeginConfigurationSave));
@@ -237,10 +234,7 @@ fn gui_shell_app_state_rejects_invalid_save_and_playback_toggle_command_actions(
 
     let mut state =
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
-    state.main_window.playlist = vec![MainWindowPlaylistRow {
-        label: "episode1.mkv".to_owned(),
-        is_selected: false,
-    }];
+    state.main_window.playlist = vec![MainWindowPlaylistRow::inferred("episode1.mkv", false)];
 
     assert!(!state.apply(GuiShellAction::CompleteConfigurationSave(
         StoredClientSettingsMvp::default(),

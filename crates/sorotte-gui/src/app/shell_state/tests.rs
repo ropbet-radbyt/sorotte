@@ -6,7 +6,9 @@ use super::{
     GuiDialogControlKind, GuiDraftRuntimeSnapshot, GuiErrorRuntimeSnapshot,
     GuiFeedbackRuntimeSnapshot, GuiFocusedConfigurationControlRuntimeSnapshot,
     GuiInteractionRuntimeSnapshot, GuiMainWindowUserEditSessionRuntimeSnapshot,
-    GuiPendingOperationKind, GuiPluginSelection, GuiPublicServerEditSessionRuntimeSnapshot,
+    GuiMediaSourceProviderId, GuiPendingOperationKind, GuiPlaylistDefaultSourceId,
+    GuiPlaylistSourceStatus, GuiPlexPlaylistSearchResult, GuiPlexRuntimeSnapshot,
+    GuiPluginSelection, GuiPublicServerEditSessionRuntimeSnapshot,
     GuiSavedConfigurationRuntimeSnapshot, GuiSelectionState, GuiShellAction, GuiShellModal,
     GuiShellView, GuiStreamTargetKind, GuiTextEditSessionRuntimeSnapshot, GuiTransientNotification,
     GuiTransientNotificationLevel, GuiValidationIssue, GuiWidgetKind, MainWindowPlaylistRow,
@@ -25,6 +27,7 @@ use crate::app::{
 };
 use sorotte_client_app::app_boundary::state::{AutoplayThresholdOverride, StoredClientSettingsMvp};
 use sorotte_client_core::{PrivacyMode, UnpauseActionMode};
+use sorotte_plex::PlexMediaType;
 
 mod command_tests;
 mod main_window_playlist_tests;
@@ -78,6 +81,13 @@ fn browser_stream_target_kind_classifies_direct_and_extractor_urls() {
     assert_eq!(
         browser_stream_target_kind("https://cdn.example.com/shorts/trailer.mp4", None),
         GuiStreamTargetKind::DirectMediaUrl
+    );
+    assert_eq!(
+        browser_stream_target_kind(
+            "plex://machine-1/metadata/123?title=Episode%201&file=Episode%201.mkv",
+            None,
+        ),
+        GuiStreamTargetKind::PlexUri
     );
 
     let trusted_domains = vec!["example.org".to_owned()];

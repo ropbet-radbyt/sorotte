@@ -15,7 +15,7 @@ For detailed contributor workflow, test placement, and compatibility guidance, u
 - `powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 50000`: run Windows UI smoke coverage against the existing `target/debug/sorotte-gui.exe`.
 
 ## Coding Style & Naming Conventions
-Use Rust `1.95.0` with edition `2024`. Follow `rustfmt` defaults: 4-space indentation, trailing commas where rustfmt adds them, and imports organized by the formatter. Use `snake_case` for modules, functions, and test names, `CamelCase` for types, and `SCREAMING_SNAKE_CASE` for constants. Crate names stay `kebab-case`. Prefer small, test-backed vertical slices over large refactors.
+Use Rust `1.96.0` with edition `2024`. Follow `rustfmt` defaults: 4-space indentation, trailing commas where rustfmt adds them, and imports organized by the formatter. Use `snake_case` for modules, functions, and test names, `CamelCase` for types, and `SCREAMING_SNAKE_CASE` for constants. Crate names stay `kebab-case`. Prefer small, test-backed vertical slices over large refactors.
 
 ## Testing Guidelines
 Every behavior change should add coverage at the lowest sensible layer. Session/protocol changes belong in `sorotte-protocol`, `sorotte-client-core`, or `sorotte-server`. Config and startup changes belong in `sorotte-client-app` or `sorotte-cli`. GUI workflow changes should extend `crates/sorotte-gui/src/semantic_scenarios/*-flow.txt` plus semantic smoke; Windows rendering, accessibility, or startup changes should also run native smoke.

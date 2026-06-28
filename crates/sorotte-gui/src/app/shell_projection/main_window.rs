@@ -41,12 +41,11 @@ impl MainWindowShellState {
         let shared_playlist_enabled = settings.shared_playlist_enabled.unwrap_or(false);
         let controlled_room_active = room_name.starts_with('+');
 
+        let playlist_default_source = GuiPlaylistDefaultSourceState::default();
         let mut playlist = Vec::new();
         if shared_playlist_enabled {
-            playlist.push(MainWindowPlaylistRow {
-                label: "Playlist pane ready for shared entries".to_owned(),
-                is_selected: true,
-            });
+            let label = "Playlist pane ready for shared entries".to_owned();
+            playlist.push(MainWindowPlaylistRow::inferred(label, true));
         }
 
         Self {
@@ -79,6 +78,7 @@ impl MainWindowShellState {
                 is_selected: true,
             }],
             playlist,
+            playlist_default_source,
             active_playlist_index: None,
             chat: if legacy_chat_output_enabled(settings) {
                 vec![MainWindowChatRow {

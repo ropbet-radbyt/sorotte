@@ -1,10 +1,10 @@
 use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
 
 use super::shell_state::{
-    MainWindowChatRow, MainWindowPlaylistRow, MainWindowRoomRow, MainWindowRuntimeSnapshot,
-    MainWindowShellState, MainWindowUserRow, MediaSearchWorkflowRuntimeFlags,
-    MediaSearchWorkflowShellState, MenuDialogShellState, PublicServerBrowserRuntimeFlags,
-    PublicServerBrowserShellState, SorotteGuiShellAppState,
+    MainWindowChatRow, MainWindowRoomRow, MainWindowRuntimeSnapshot, MainWindowShellState,
+    MainWindowUserRow, MediaSearchWorkflowRuntimeFlags, MediaSearchWorkflowShellState,
+    MenuDialogShellState, PublicServerBrowserRuntimeFlags, PublicServerBrowserShellState,
+    SorotteGuiShellAppState,
 };
 
 impl SorotteGuiShellAppState {
@@ -82,14 +82,39 @@ impl SorotteGuiShellAppState {
                 })
                 .collect();
         }
-        if current_snapshot.playlist != previous_baseline.playlist {
+        if current_snapshot.playlist != previous_baseline.playlist
+            || current_snapshot.playlist_source_states != previous_baseline.playlist_source_states
+        {
             self.remember_shared_playlist_undo_snapshot_if_changed(&current_snapshot.playlist);
+            let previous_rows = self.main_window.playlist.clone();
+            let mut used_previous_rows = vec![false; previous_rows.len()];
             self.main_window.playlist = current_snapshot
                 .playlist
                 .iter()
-                .map(|label| MainWindowPlaylistRow {
-                    label: label.clone(),
-                    is_selected: false,
+                .enumerate()
+                .map(|(index, label)| {
+                    let source_state = current_snapshot
+                        .playlist_source_states
+                        .get(index)
+                        .cloned()
+                        .map(|state| self.refreshed_playlist_source_state_for_entry(label, state))
+                        .or_else(|| {
+                            Self::reconciled_playlist_source_state(
+                                &previous_rows,
+                                &mut used_previous_rows,
+                                index,
+                                label,
+                            )
+                            .map(|state| {
+                                self.refreshed_playlist_source_state_for_entry(label, state)
+                            })
+                        })
+                        .unwrap_or_else(|| self.playlist_source_state_for_entry(label));
+                    super::shell_state::MainWindowPlaylistRow {
+                        label: label.clone(),
+                        is_selected: false,
+                        source_state,
+                    }
                 })
                 .collect();
         }

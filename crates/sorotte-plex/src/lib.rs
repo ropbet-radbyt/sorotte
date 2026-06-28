@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeMap,
-    fs,
+    fmt, fs,
     path::Path,
     sync::OnceLock,
     time::{Duration, SystemTime},
@@ -22,20 +22,65 @@ static RUSTLS_PROVIDER_INIT: OnceLock<()> = OnceLock::new();
 
 pub type PlexResult<T> = Result<T, PlexError>;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum PlexError {
-    #[error("failed Plex HTTP request: {0}")]
-    Http(#[from] reqwest::Error),
-    #[error("failed to parse Plex response: {0}")]
-    Json(#[from] serde_json::Error),
-    #[error("failed to read or write Plex cache: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("Plex returned an invalid response: {0}")]
+    Http(String),
+    Json(serde_json::Error),
+    Io(std::io::Error),
     InvalidResponse(String),
-    #[error("Plex server is not configured")]
     MissingServer,
-    #[error("Plex token is not configured")]
     MissingToken,
+}
+
+impl fmt::Display for PlexError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Http(message) => write!(
+                f,
+                "failed Plex HTTP request: {}",
+                redact_plex_token(message)
+            ),
+            Self::Json(error) => write!(f, "failed to parse Plex response: {error}"),
+            Self::Io(error) => write!(f, "failed to read or write Plex cache: {error}"),
+            Self::InvalidResponse(message) => write!(
+                f,
+                "Plex returned an invalid response: {}",
+                redact_plex_token(message)
+            ),
+            Self::MissingServer => write!(f, "Plex server is not configured"),
+            Self::MissingToken => write!(f, "Plex token is not configured"),
+        }
+    }
+}
+
+impl std::error::Error for PlexError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Json(error) => Some(error),
+            Self::Io(error) => Some(error),
+            Self::Http(_) | Self::InvalidResponse(_) | Self::MissingServer | Self::MissingToken => {
+                None
+            }
+        }
+    }
+}
+
+impl From<reqwest::Error> for PlexError {
+    fn from(value: reqwest::Error) -> Self {
+        Self::Http(redact_plex_token(&value.to_string()))
+    }
+}
+
+impl From<serde_json::Error> for PlexError {
+    fn from(value: serde_json::Error) -> Self {
+        Self::Json(value)
+    }
+}
+
+impl From<std::io::Error> for PlexError {
+    fn from(value: std::io::Error) -> Self {
+        Self::Io(value)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +100,7 @@ pub struct PlexAuthPollResult {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PlexClientConfig {
     pub enabled: bool,
+    pub streaming_enabled: bool,
     pub user_token: Option<String>,
     pub selected_server_id: Option<String>,
     pub selected_server_url: Option<String>,
@@ -171,6 +217,31 @@ impl PlexMediaType {
     pub fn is_video_watch_type(self) -> bool {
         matches!(self, Self::Movie | Self::Episode)
     }
+
+    fn as_playlist_uri_type(self) -> Option<&'static str> {
+        match self {
+            Self::Movie => Some("movie"),
+            Self::Episode => Some("episode"),
+            Self::Other => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlexPlaylistUri {
+    pub machine_identifier: String,
+    pub rating_key: String,
+    pub title: Option<String>,
+    pub file_name: Option<String>,
+    pub duration_millis: Option<u64>,
+    pub size_bytes: Option<u64>,
+    pub media_type: Option<PlexMediaType>,
+}
+
+impl fmt::Display for PlexPlaylistUri {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&format_plex_playlist_uri(self))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,6 +256,8 @@ pub struct PlexMatchedItem {
 pub struct PlexMediaSearchResult {
     pub rating_key: String,
     pub title: String,
+    pub parent_title: Option<String>,
+    pub grandparent_title: Option<String>,
     pub media_type: PlexMediaType,
     pub duration_millis: Option<u64>,
     pub file_paths: Vec<String>,
@@ -199,6 +272,58 @@ impl PlexMediaSearchResult {
             duration_millis: self.duration_millis,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlexPlayablePart {
+    pub id: String,
+    pub key: String,
+    pub file_name: Option<String>,
+    pub duration_millis: Option<u64>,
+    pub size_bytes: Option<u64>,
+    pub container: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlexMediaMetadata {
+    pub rating_key: String,
+    pub title: String,
+    pub media_type: PlexMediaType,
+    pub duration_millis: Option<u64>,
+    pub parts: Vec<PlexPlayablePart>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct SecretPlexPlaybackUrl(String);
+
+impl SecretPlexPlaybackUrl {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+impl fmt::Debug for SecretPlexPlaybackUrl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("SecretPlexPlaybackUrl")
+            .field(&redact_plex_token(&self.0))
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlexStreamTarget {
+    pub playlist_uri: PlexPlaylistUri,
+    pub matched_item: PlexMatchedItem,
+    pub logical_file: LocalFileUpdate,
+    pub playback_url: SecretPlexPlaybackUrl,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -561,6 +686,84 @@ impl PlexHttpClient {
         Ok(output)
     }
 
+    pub fn search_selected_server_media(
+        &self,
+        config: &PlexClientConfig,
+        query: &str,
+        limit: usize,
+    ) -> PlexResult<Vec<PlexMediaSearchResult>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let (server_url, token) = configured_server_url_and_token(config)?;
+        let sections = self.fetch_library_sections(&server_url, &token)?;
+        let mut output = Vec::new();
+        let query = query.trim();
+        for section in sections {
+            for media_type in library_section_media_type_filters(&section.library_type) {
+                let remaining = limit.saturating_sub(output.len()).max(1);
+                let results = if query.is_empty() {
+                    self.fetch_recent_library_section_media(
+                        &server_url,
+                        &token,
+                        &section.key,
+                        media_type,
+                        remaining,
+                    )?
+                } else {
+                    self.fetch_library_section_media_by_query(
+                        &server_url,
+                        &token,
+                        &section.key,
+                        media_type,
+                        query,
+                        remaining,
+                    )?
+                };
+                merge_media_search_results(&mut output, results);
+                output.retain(|result| result.media_type.is_video_watch_type());
+                if output.len() >= limit {
+                    output.truncate(limit);
+                    return Ok(output);
+                }
+            }
+        }
+        output.truncate(limit);
+        Ok(output)
+    }
+
+    pub fn playlist_uri_for_selected_server_rating_key(
+        &self,
+        config: &PlexClientConfig,
+        rating_key: &str,
+    ) -> PlexResult<PlexPlaylistUri> {
+        let (server_url, token) = configured_server_url_and_token(config)?;
+        let machine_identifier =
+            selected_server_machine_identifier_with_transport(config, self, &server_url, &token)?;
+        let metadata = self.metadata_by_rating_key(&server_url, &token, rating_key)?;
+        playlist_uri_for_metadata(&machine_identifier, &metadata, None)
+    }
+
+    pub fn server_machine_identifier(&self, server_url: &str, token: &str) -> PlexResult<String> {
+        if token.trim().is_empty() {
+            return Err(PlexError::MissingToken);
+        }
+        let response = self
+            .client
+            .get(server_url.trim_end_matches('/'))
+            .headers(self.plex_headers(Some(token)))
+            .send()?;
+        let status = response.status();
+        let body = response.text()?;
+        if !status.is_success() {
+            return Err(PlexError::InvalidResponse(format!(
+                "server identity lookup returned HTTP {status}"
+            )));
+        }
+        let json: Value = serde_json::from_str(&body)?;
+        parse_server_machine_identifier_response(&json)
+    }
+
     fn fetch_library_sections(
         &self,
         server_url: &str,
@@ -615,6 +818,161 @@ impl PlexHttpClient {
         }
         let json: Value = serde_json::from_str(&body)?;
         Ok(parse_search_response(&json))
+    }
+
+    fn fetch_library_section_media_by_query(
+        &self,
+        server_url: &str,
+        token: &str,
+        section_key: &str,
+        media_type: &str,
+        query: &str,
+        limit: usize,
+    ) -> PlexResult<Vec<PlexMediaSearchResult>> {
+        let mut output = Vec::new();
+        for query_filter in library_section_text_query_filters(media_type) {
+            let results = self.fetch_library_section_media(
+                server_url,
+                token,
+                section_key,
+                &[
+                    ("type".to_owned(), media_type.to_owned()),
+                    ("includeGuids".to_owned(), "1".to_owned()),
+                    (query_filter.to_owned(), query.to_owned()),
+                    ("X-Plex-Container-Start".to_owned(), "0".to_owned()),
+                    ("X-Plex-Container-Size".to_owned(), limit.max(1).to_string()),
+                ],
+                "library text lookup",
+            )?;
+            merge_media_search_results(
+                &mut output,
+                filter_media_search_results_by_query(results, query),
+            );
+            if output.len() >= limit {
+                output.truncate(limit);
+                return Ok(output);
+            }
+        }
+        output.truncate(limit);
+        Ok(output)
+    }
+
+    fn fetch_recent_library_section_media(
+        &self,
+        server_url: &str,
+        token: &str,
+        section_key: &str,
+        media_type: &str,
+        limit: usize,
+    ) -> PlexResult<Vec<PlexMediaSearchResult>> {
+        self.fetch_library_section_media(
+            server_url,
+            token,
+            section_key,
+            &[
+                ("type".to_owned(), media_type.to_owned()),
+                ("includeGuids".to_owned(), "1".to_owned()),
+                ("sort".to_owned(), "addedAt:desc".to_owned()),
+                ("X-Plex-Container-Start".to_owned(), "0".to_owned()),
+                ("X-Plex-Container-Size".to_owned(), limit.max(1).to_string()),
+            ],
+            "library recent lookup",
+        )
+    }
+
+    fn fetch_library_section_media(
+        &self,
+        server_url: &str,
+        token: &str,
+        section_key: &str,
+        query: &[(String, String)],
+        label: &str,
+    ) -> PlexResult<Vec<PlexMediaSearchResult>> {
+        let url = format!(
+            "{}/library/sections/{}/all",
+            server_url.trim_end_matches('/'),
+            percent_encode_path_segment(section_key)
+        );
+        let response = self
+            .client
+            .get(url)
+            .headers(self.plex_headers(Some(token)))
+            .query(query)
+            .send()?;
+        let status = response.status();
+        let body = response.text()?;
+        if !status.is_success() {
+            return Err(PlexError::InvalidResponse(format!(
+                "{label} returned HTTP {status}"
+            )));
+        }
+        let json: Value = serde_json::from_str(&body)?;
+        Ok(parse_search_response(&json))
+    }
+
+    pub fn metadata_by_rating_key(
+        &self,
+        server_url: &str,
+        token: &str,
+        rating_key: &str,
+    ) -> PlexResult<PlexMediaMetadata> {
+        if token.trim().is_empty() {
+            return Err(PlexError::MissingToken);
+        }
+        if rating_key.trim().is_empty() {
+            return Err(PlexError::InvalidResponse(
+                "metadata lookup requires a rating key".to_owned(),
+            ));
+        }
+        let url = format!(
+            "{}/library/metadata/{}",
+            server_url.trim_end_matches('/'),
+            percent_encode_path_segment(rating_key)
+        );
+        let response = self
+            .client
+            .get(url)
+            .headers(self.plex_headers(Some(token)))
+            .send()?;
+        let status = response.status();
+        let body = response.text()?;
+        if !status.is_success() {
+            return Err(PlexError::InvalidResponse(format!(
+                "metadata lookup returned HTTP {status}"
+            )));
+        }
+        let json: Value = serde_json::from_str(&body)?;
+        parse_metadata_response(&json, rating_key)
+    }
+
+    pub fn build_part_stream_url(
+        &self,
+        server_url: &str,
+        token: &str,
+        part: &PlexPlayablePart,
+    ) -> PlexResult<SecretPlexPlaybackUrl> {
+        if token.trim().is_empty() {
+            return Err(PlexError::MissingToken);
+        }
+        if part.key.trim().is_empty() {
+            return Err(PlexError::InvalidResponse(
+                "metadata part did not include a stream key".to_owned(),
+            ));
+        }
+        let base = server_url.trim_end_matches('/');
+        let part_key = part.key.trim();
+        let mut url = if part_key.starts_with("http://") || part_key.starts_with("https://") {
+            part_key.to_owned()
+        } else if part_key.starts_with('/') {
+            format!("{base}{part_key}")
+        } else {
+            format!("{base}/{part_key}")
+        };
+        let delimiter = if url.contains('?') { '&' } else { '?' };
+        url.push(delimiter);
+        url.push_str("X-Plex-Token=");
+        url.push_str(&percent_encode_query_value(token));
+        Ok(SecretPlexPlaybackUrl::new(url))
     }
 
     fn plex_headers(&self, token: Option<&str>) -> reqwest::header::HeaderMap {
@@ -742,6 +1100,40 @@ impl PlexSyncTransport for PlexHttpClient {
     }
 }
 
+impl PlexMetadataTransport for PlexHttpClient {
+    fn metadata_by_rating_key(
+        &self,
+        server_url: &str,
+        token: &str,
+        rating_key: &str,
+    ) -> PlexResult<PlexMediaMetadata> {
+        PlexHttpClient::metadata_by_rating_key(self, server_url, token, rating_key)
+    }
+
+    fn build_part_stream_url(
+        &self,
+        server_url: &str,
+        token: &str,
+        part: &PlexPlayablePart,
+    ) -> PlexResult<SecretPlexPlaybackUrl> {
+        PlexHttpClient::build_part_stream_url(self, server_url, token, part)
+    }
+
+    fn server_machine_identifier(&self, server_url: &str, token: &str) -> PlexResult<String> {
+        PlexHttpClient::server_machine_identifier(self, server_url, token)
+    }
+}
+
+pub trait PlexServerDiscoveryTransport {
+    fn discover_servers(&self, user_token: &str) -> PlexResult<Vec<PlexServerConnection>>;
+}
+
+impl PlexServerDiscoveryTransport for PlexHttpClient {
+    fn discover_servers(&self, user_token: &str) -> PlexResult<Vec<PlexServerConnection>> {
+        PlexHttpClient::discover_servers(self, user_token)
+    }
+}
+
 pub trait PlexSyncTransport {
     fn search_media(
         &self,
@@ -763,6 +1155,266 @@ pub trait PlexSyncTransport {
         token: &str,
         report: &PlexTimelineReport,
     ) -> PlexResult<()>;
+}
+
+pub trait PlexMetadataTransport {
+    fn metadata_by_rating_key(
+        &self,
+        server_url: &str,
+        token: &str,
+        rating_key: &str,
+    ) -> PlexResult<PlexMediaMetadata>;
+
+    fn build_part_stream_url(
+        &self,
+        server_url: &str,
+        token: &str,
+        part: &PlexPlayablePart,
+    ) -> PlexResult<SecretPlexPlaybackUrl>;
+
+    fn server_machine_identifier(&self, server_url: &str, token: &str) -> PlexResult<String>;
+}
+
+#[derive(Debug, Clone)]
+pub struct PlexMediaResolver<T> {
+    config: PlexClientConfig,
+    transport: T,
+    cache: PlexMatchCache,
+    unmatched_keys: BTreeMap<String, SystemTime>,
+}
+
+impl<T> PlexMediaResolver<T>
+where
+    T: PlexSyncTransport + PlexMetadataTransport + PlexServerDiscoveryTransport,
+{
+    pub fn new(config: PlexClientConfig, transport: T, cache: PlexMatchCache) -> Self {
+        Self {
+            config,
+            transport,
+            cache,
+            unmatched_keys: BTreeMap::new(),
+        }
+    }
+
+    pub fn config(&self) -> &PlexClientConfig {
+        &self.config
+    }
+
+    pub fn set_config(&mut self, config: PlexClientConfig) {
+        if self.config != config {
+            self.cache = PlexMatchCache::default();
+            self.unmatched_keys.clear();
+            self.config = config;
+        }
+    }
+
+    pub fn cache(&self) -> &PlexMatchCache {
+        &self.cache
+    }
+
+    pub fn cache_mut(&mut self) -> &mut PlexMatchCache {
+        &mut self.cache
+    }
+
+    pub fn into_parts(self) -> (PlexClientConfig, T, PlexMatchCache) {
+        (self.config, self.transport, self.cache)
+    }
+
+    pub fn resolve_match_for_local_file(
+        &mut self,
+        file: &LocalFileUpdate,
+        now: SystemTime,
+    ) -> PlexResult<Option<PlexMatchedItem>> {
+        let (server_url, token) = configured_server_url_and_token(&self.config)?;
+        let Some(file_key) = server_scoped_cache_key_for_file(&self.config, file) else {
+            return Ok(None);
+        };
+        resolve_media_match_for_file(
+            &self.transport,
+            &mut self.cache,
+            &mut self.unmatched_keys,
+            PlexMatchServerRef {
+                url: &server_url,
+                token: &token,
+            },
+            file,
+            &file_key,
+            now,
+        )
+    }
+
+    pub fn resolve_match_for_playlist_uri(
+        &self,
+        uri: &PlexPlaylistUri,
+    ) -> PlexResult<PlexMatchedItem> {
+        let (server_url, token) = self.server_url_and_token_for_playlist_uri(uri)?;
+        let metadata =
+            self.transport
+                .metadata_by_rating_key(&server_url, &token, &uri.rating_key)?;
+        if !metadata.media_type.is_video_watch_type() {
+            return Err(PlexError::InvalidResponse(format!(
+                "Plex metadata {} is not playable video media",
+                metadata.rating_key
+            )));
+        }
+        Ok(PlexMatchedItem {
+            rating_key: metadata.rating_key,
+            title: metadata.title,
+            media_type: metadata.media_type,
+            duration_millis: metadata.duration_millis.or(uri.duration_millis),
+        })
+    }
+
+    pub fn resolve_stream_target(
+        &mut self,
+        target: &str,
+        now: SystemTime,
+    ) -> PlexResult<Option<PlexStreamTarget>> {
+        if !self.config.streaming_enabled {
+            return Ok(None);
+        }
+        if is_plex_playlist_uri(target) {
+            let playlist_uri = parse_plex_playlist_uri(target)?;
+            let (server_url, token) = self.server_url_and_token_for_playlist_uri(&playlist_uri)?;
+            return self.resolve_stream_target_for_playlist_uri(&server_url, &token, playlist_uri);
+        }
+
+        let (server_url, token) = configured_server_url_and_token(&self.config)?;
+        let mut file =
+            LocalFileUpdate::new(path_file_name(target).unwrap_or_else(|| target.into()));
+        if target.trim().contains('/')
+            || target.trim().contains('\\')
+            || Path::new(target).is_absolute()
+        {
+            file = file.with_path(target.to_owned());
+        }
+        let Some(matched_item) = self.resolve_match_for_local_file(&file, now)? else {
+            return Ok(None);
+        };
+        let metadata =
+            self.transport
+                .metadata_by_rating_key(&server_url, &token, &matched_item.rating_key)?;
+        if !metadata.media_type.is_video_watch_type() {
+            return Err(PlexError::InvalidResponse(format!(
+                "Plex metadata {} is not playable video media",
+                metadata.rating_key
+            )));
+        }
+        let machine_identifier = selected_server_machine_identifier_with_transport(
+            &self.config,
+            &self.transport,
+            &server_url,
+            &token,
+        )?;
+        let playlist_uri = playlist_uri_for_metadata(
+            &machine_identifier,
+            &metadata,
+            matched_item.duration_millis,
+        )?;
+        self.stream_target_from_metadata(&server_url, &token, playlist_uri, matched_item, metadata)
+            .map(Some)
+    }
+
+    fn resolve_stream_target_for_playlist_uri(
+        &self,
+        server_url: &str,
+        token: &str,
+        playlist_uri: PlexPlaylistUri,
+    ) -> PlexResult<Option<PlexStreamTarget>> {
+        let metadata =
+            self.transport
+                .metadata_by_rating_key(server_url, token, &playlist_uri.rating_key)?;
+        if !metadata.media_type.is_video_watch_type() {
+            return Err(PlexError::InvalidResponse(format!(
+                "Plex metadata {} is not playable video media",
+                metadata.rating_key
+            )));
+        }
+        let matched_item = PlexMatchedItem {
+            rating_key: metadata.rating_key.clone(),
+            title: metadata.title.clone(),
+            media_type: metadata.media_type,
+            duration_millis: metadata.duration_millis.or(playlist_uri.duration_millis),
+        };
+        self.stream_target_from_metadata(server_url, token, playlist_uri, matched_item, metadata)
+            .map(Some)
+    }
+
+    fn stream_target_from_metadata(
+        &self,
+        server_url: &str,
+        token: &str,
+        mut playlist_uri: PlexPlaylistUri,
+        matched_item: PlexMatchedItem,
+        metadata: PlexMediaMetadata,
+    ) -> PlexResult<PlexStreamTarget> {
+        let part = choose_playable_part(
+            &metadata,
+            matched_item
+                .duration_millis
+                .or(playlist_uri.duration_millis)
+                .or(metadata.duration_millis),
+        )?;
+        if playlist_uri.title.is_none() {
+            playlist_uri.title = Some(metadata.title.clone());
+        }
+        if playlist_uri.file_name.is_none() {
+            playlist_uri.file_name = part.file_name.clone();
+        }
+        if playlist_uri.duration_millis.is_none() {
+            playlist_uri.duration_millis = part.duration_millis.or(metadata.duration_millis);
+        }
+        if playlist_uri.size_bytes.is_none() {
+            playlist_uri.size_bytes = part.size_bytes;
+        }
+        if playlist_uri.media_type.is_none() {
+            playlist_uri.media_type = Some(metadata.media_type);
+        }
+        let logical_name = playlist_uri
+            .file_name
+            .clone()
+            .or_else(|| playlist_uri.title.clone())
+            .unwrap_or_else(|| metadata.title.clone());
+        let mut logical_file =
+            LocalFileUpdate::new(logical_name).with_path(format_plex_playlist_uri(&playlist_uri));
+        if let Some(duration_millis) = playlist_uri.duration_millis {
+            logical_file = logical_file.with_duration_seconds(duration_millis as f64 / 1000.0);
+        }
+        if let Some(size_bytes) = playlist_uri.size_bytes {
+            logical_file = logical_file.with_size_bytes(size_bytes);
+        }
+        let playback_url = self
+            .transport
+            .build_part_stream_url(server_url, token, &part)?;
+        Ok(PlexStreamTarget {
+            playlist_uri,
+            matched_item,
+            logical_file,
+            playback_url,
+        })
+    }
+
+    fn server_url_and_token_for_playlist_uri(
+        &self,
+        uri: &PlexPlaylistUri,
+    ) -> PlexResult<(String, String)> {
+        if selected_server_matches_machine_identifier(&self.config, &uri.machine_identifier) {
+            return configured_server_url_and_token(&self.config);
+        }
+
+        let user_token = config_user_token(&self.config)?;
+        let servers = self.transport.discover_servers(user_token)?;
+        servers
+            .into_iter()
+            .find(|server| server.machine_identifier == uri.machine_identifier)
+            .map(|server| (server.uri, server.access_token))
+            .ok_or_else(|| {
+                PlexError::InvalidResponse(format!(
+                    "Plex playlist URI targets server '{}' but that server was not found in the receiver's accessible Plex servers",
+                    uri.machine_identifier
+                ))
+            })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -914,53 +1566,22 @@ where
         file_key: &str,
         now: SystemTime,
     ) -> PlexResult<Option<PlexMatchedItem>> {
-        if let Some(cached) = self.cache.entries.get(file_key).cloned() {
-            let item: PlexMatchedItem = cached.into();
+        let resolved = resolve_media_match_for_file(
+            &self.transport,
+            &mut self.cache,
+            &mut self.unmatched_keys,
+            PlexMatchServerRef {
+                url: server_url,
+                token,
+            },
+            &event.file,
+            file_key,
+            now,
+        )?;
+        if let Some(item) = resolved.as_ref() {
             self.status.current_item = Some(item.clone());
-            return Ok(Some(item));
         }
-        if self
-            .unmatched_keys
-            .get(file_key)
-            .and_then(|last_attempt| now.duration_since(*last_attempt).ok())
-            .is_some_and(|elapsed| elapsed < MATCH_RETRY_INTERVAL)
-        {
-            return Ok(None);
-        }
-        if let Some(file_name) = media_file_name_for_file(&event.file)
-            && let Ok(results) = self
-                .transport
-                .search_media_by_file_name(server_url, token, &file_name)
-            && let Some(item) = choose_file_path_media_match(&event.file, &results)
-        {
-            self.cache
-                .entries
-                .insert(file_key.to_owned(), PlexCachedMatch::from(item.clone()));
-            self.unmatched_keys.remove(file_key);
-            self.status.current_item = Some(item.clone());
-            return Ok(Some(item));
-        }
-        let query = media_search_query_for_file(&event.file);
-        if query.is_empty() {
-            self.unmatched_keys.insert(file_key.to_owned(), now);
-            return Ok(None);
-        }
-        let results = self.transport.search_media(server_url, token, &query)?;
-        let matched = choose_best_media_match(&event.file, &results);
-        match matched {
-            Some(item) => {
-                self.cache
-                    .entries
-                    .insert(file_key.to_owned(), PlexCachedMatch::from(item.clone()));
-                self.unmatched_keys.remove(file_key);
-                self.status.current_item = Some(item.clone());
-                Ok(Some(item))
-            }
-            None => {
-                self.unmatched_keys.insert(file_key.to_owned(), now);
-                Ok(None)
-            }
-        }
+        Ok(resolved)
     }
 
     fn should_report(&self, signature: &ReportSignature) -> bool {
@@ -1035,6 +1656,465 @@ impl ReportSignature {
             duration_millis: report.duration_millis,
             reported_at,
         }
+    }
+}
+
+fn configured_server_url_and_token(config: &PlexClientConfig) -> PlexResult<(String, String)> {
+    let server_url = config
+        .selected_server_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or(PlexError::MissingServer)?
+        .to_owned();
+    let token = config
+        .selected_server_token_or_user_token()
+        .ok_or(PlexError::MissingToken)?
+        .to_owned();
+    Ok((server_url, token))
+}
+
+fn configured_selected_server_machine_identifier(config: &PlexClientConfig) -> Option<&str> {
+    config
+        .selected_server_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn selected_server_machine_identifier_with_transport<T>(
+    config: &PlexClientConfig,
+    transport: &T,
+    server_url: &str,
+    token: &str,
+) -> PlexResult<String>
+where
+    T: PlexMetadataTransport,
+{
+    configured_selected_server_machine_identifier(config)
+        .map(ToOwned::to_owned)
+        .map(Ok)
+        .unwrap_or_else(|| transport.server_machine_identifier(server_url, token))
+}
+
+fn selected_server_matches_machine_identifier(
+    config: &PlexClientConfig,
+    machine_identifier: &str,
+) -> bool {
+    config
+        .selected_server_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some_and(|selected| selected == machine_identifier)
+}
+
+fn config_user_token(config: &PlexClientConfig) -> PlexResult<&str> {
+    config
+        .user_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or(PlexError::MissingToken)
+}
+
+struct PlexMatchServerRef<'a> {
+    url: &'a str,
+    token: &'a str,
+}
+
+fn resolve_media_match_for_file<T>(
+    transport: &T,
+    cache: &mut PlexMatchCache,
+    unmatched_keys: &mut BTreeMap<String, SystemTime>,
+    server: PlexMatchServerRef<'_>,
+    file: &LocalFileUpdate,
+    file_key: &str,
+    now: SystemTime,
+) -> PlexResult<Option<PlexMatchedItem>>
+where
+    T: PlexSyncTransport,
+{
+    if let Some(cached) = cache.entries.get(file_key).cloned() {
+        return Ok(Some(cached.into()));
+    }
+    if unmatched_keys
+        .get(file_key)
+        .and_then(|last_attempt| now.duration_since(*last_attempt).ok())
+        .is_some_and(|elapsed| elapsed < MATCH_RETRY_INTERVAL)
+    {
+        return Ok(None);
+    }
+    if let Some(file_name) = media_file_name_for_file(file)
+        && let Ok(results) =
+            transport.search_media_by_file_name(server.url, server.token, &file_name)
+        && let Some(item) = choose_file_path_media_match(file, &results)
+    {
+        cache
+            .entries
+            .insert(file_key.to_owned(), PlexCachedMatch::from(item.clone()));
+        unmatched_keys.remove(file_key);
+        return Ok(Some(item));
+    }
+    let query = media_search_query_for_file(file);
+    if query.is_empty() {
+        unmatched_keys.insert(file_key.to_owned(), now);
+        return Ok(None);
+    }
+    let results = transport.search_media(server.url, server.token, &query)?;
+    let matched = choose_best_media_match(file, &results);
+    match matched {
+        Some(item) => {
+            cache
+                .entries
+                .insert(file_key.to_owned(), PlexCachedMatch::from(item.clone()));
+            unmatched_keys.remove(file_key);
+            Ok(Some(item))
+        }
+        None => {
+            unmatched_keys.insert(file_key.to_owned(), now);
+            Ok(None)
+        }
+    }
+}
+
+pub fn is_plex_playlist_uri(value: &str) -> bool {
+    value
+        .trim_start()
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("plex://"))
+}
+
+pub fn parse_plex_playlist_uri(value: &str) -> PlexResult<PlexPlaylistUri> {
+    let value = value.trim();
+    if !is_plex_playlist_uri(value) {
+        return Err(PlexError::InvalidResponse(
+            "Plex playlist URI must use the plex:// scheme".to_owned(),
+        ));
+    }
+    if redact_plex_token(value) != value {
+        return Err(PlexError::InvalidResponse(
+            "Plex playlist URI must not include a token".to_owned(),
+        ));
+    }
+
+    let rest = &value[7..];
+    let (authority_and_path, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let (machine_identifier, path) = authority_and_path
+        .split_once('/')
+        .unwrap_or((authority_and_path, ""));
+    let machine_identifier = percent_decode_lossy(machine_identifier).trim().to_owned();
+    if machine_identifier.is_empty() {
+        return Err(PlexError::InvalidResponse(
+            "Plex playlist URI is missing a machine identifier".to_owned(),
+        ));
+    }
+    let path = path.trim_matches('/');
+    if path.eq_ignore_ascii_case("metadata") {
+        return Err(PlexError::InvalidResponse(
+            "Plex playlist URI is missing a rating key".to_owned(),
+        ));
+    }
+    let Some(rating_key) = path.strip_prefix("metadata/") else {
+        return Err(PlexError::InvalidResponse(
+            "Plex playlist URI must contain /metadata/{ratingKey}".to_owned(),
+        ));
+    };
+    let rating_key = percent_decode_lossy(rating_key.trim_matches('/'))
+        .trim()
+        .to_owned();
+    if rating_key.is_empty() {
+        return Err(PlexError::InvalidResponse(
+            "Plex playlist URI is missing a rating key".to_owned(),
+        ));
+    }
+
+    let mut parsed = PlexPlaylistUri {
+        machine_identifier,
+        rating_key,
+        title: None,
+        file_name: None,
+        duration_millis: None,
+        size_bytes: None,
+        media_type: None,
+    };
+    for (key, raw_value) in parse_query_pairs_lossy(query) {
+        let key = key.trim().to_ascii_lowercase();
+        if key.contains("token") {
+            return Err(PlexError::InvalidResponse(
+                "Plex playlist URI must not include a token".to_owned(),
+            ));
+        }
+        match key.as_str() {
+            "title" => {
+                parsed.title = non_empty_string(raw_value);
+            }
+            "file" => {
+                parsed.file_name = non_empty_string(
+                    raw_value.and_then(|value| path_file_name(&value).or(Some(value))),
+                );
+            }
+            "duration" => {
+                parsed.duration_millis = raw_value
+                    .as_deref()
+                    .and_then(|value| value.trim().parse::<u64>().ok());
+            }
+            "size" => {
+                parsed.size_bytes = raw_value
+                    .as_deref()
+                    .and_then(|value| value.trim().parse::<u64>().ok());
+            }
+            "type" => {
+                parsed.media_type = raw_value
+                    .as_deref()
+                    .and_then(plex_playlist_media_type_from_value);
+            }
+            _ => {}
+        }
+    }
+    Ok(parsed)
+}
+
+pub fn format_plex_playlist_uri(value: &PlexPlaylistUri) -> String {
+    let mut output = format!(
+        "plex://{}/metadata/{}",
+        percent_encode_path_segment(&value.machine_identifier),
+        percent_encode_path_segment(&value.rating_key)
+    );
+    let mut query: Vec<(&str, String)> = Vec::new();
+    if let Some(title) = value
+        .title
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        query.push(("title", title.to_owned()));
+    }
+    if let Some(file_name) = value
+        .file_name
+        .as_deref()
+        .and_then(path_file_name)
+        .filter(|value| !value.trim().is_empty())
+    {
+        query.push(("file", file_name));
+    } else if let Some(file_name) = value
+        .file_name
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        query.push(("file", file_name.to_owned()));
+    }
+    let duration = value.duration_millis.map(|value| value.to_string());
+    if let Some(duration) = duration.as_deref() {
+        query.push(("duration", duration.to_owned()));
+    }
+    let size = value.size_bytes.map(|value| value.to_string());
+    if let Some(size) = size.as_deref() {
+        query.push(("size", size.to_owned()));
+    }
+    if let Some(media_type) = value
+        .media_type
+        .and_then(PlexMediaType::as_playlist_uri_type)
+    {
+        query.push(("type", media_type.to_owned()));
+    }
+    if !query.is_empty() {
+        output.push('?');
+        output.push_str(
+            &query
+                .into_iter()
+                .map(|(key, item)| format!("{key}={}", percent_encode_query_value(&item)))
+                .collect::<Vec<_>>()
+                .join("&"),
+        );
+    }
+    output
+}
+
+pub fn playlist_uri_for_metadata(
+    machine_identifier: &str,
+    metadata: &PlexMediaMetadata,
+    duration_hint_millis: Option<u64>,
+) -> PlexResult<PlexPlaylistUri> {
+    let preferred_part = choose_playable_part(metadata, duration_hint_millis)?;
+    Ok(PlexPlaylistUri {
+        machine_identifier: machine_identifier.to_owned(),
+        rating_key: metadata.rating_key.clone(),
+        title: Some(metadata.title.clone()),
+        file_name: preferred_part.file_name.clone(),
+        duration_millis: preferred_part.duration_millis.or(metadata.duration_millis),
+        size_bytes: preferred_part.size_bytes,
+        media_type: Some(metadata.media_type),
+    })
+}
+
+fn choose_playable_part(
+    metadata: &PlexMediaMetadata,
+    duration_hint_millis: Option<u64>,
+) -> PlexResult<PlexPlayablePart> {
+    if !metadata.media_type.is_video_watch_type() {
+        return Err(PlexError::InvalidResponse(format!(
+            "Plex metadata {} is not playable video media",
+            metadata.rating_key
+        )));
+    }
+    let parts = metadata
+        .parts
+        .iter()
+        .filter(|part| !part.key.trim().is_empty())
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        return Err(PlexError::InvalidResponse(format!(
+            "Plex metadata {} did not include a playable part",
+            metadata.rating_key
+        )));
+    }
+    let scored = parts
+        .into_iter()
+        .map(|part| {
+            let score = match (duration_hint_millis, part.duration_millis) {
+                (Some(hint), Some(duration)) => duration.abs_diff(hint),
+                (Some(_), None) => u64::MAX,
+                (None, _) => 0,
+            };
+            (score, part)
+        })
+        .collect::<Vec<_>>();
+    let Some((best_score, best_part)) = scored.iter().min_by_key(|(score, _)| *score) else {
+        return Err(PlexError::InvalidResponse(
+            "Plex metadata did not include a playable part".to_owned(),
+        ));
+    };
+    let equal_best = scored
+        .iter()
+        .filter(|(score, _)| score == best_score)
+        .collect::<Vec<_>>();
+    if equal_best.len() > 1 {
+        return Err(PlexError::InvalidResponse(format!(
+            "Plex metadata {} contains ambiguous playable parts",
+            metadata.rating_key
+        )));
+    }
+    Ok((*best_part).clone())
+}
+
+fn parse_metadata_response(
+    json: &Value,
+    requested_rating_key: &str,
+) -> PlexResult<PlexMediaMetadata> {
+    let metadata_items = collect_metadata_items(json);
+    let selected = metadata_items
+        .iter()
+        .copied()
+        .find(|item| {
+            json_string(item, &["ratingKey", "key"])
+                .as_deref()
+                .is_some_and(|value| value == requested_rating_key)
+        })
+        .or_else(|| metadata_items.first().copied())
+        .ok_or_else(|| {
+            PlexError::InvalidResponse(format!(
+                "metadata lookup for {requested_rating_key} returned no metadata"
+            ))
+        })?;
+    parse_metadata_item(selected)
+}
+
+fn collect_metadata_items(json: &Value) -> Vec<&Value> {
+    let mut output = media_container_items_any(json, &["Metadata", "metadata"]);
+    if output.is_empty() {
+        collect_metadata_items_recursive(json, &mut output);
+    }
+    output
+}
+
+fn collect_metadata_items_recursive<'a>(value: &'a Value, output: &mut Vec<&'a Value>) {
+    match value {
+        Value::Object(map) => {
+            if map
+                .get("ratingKey")
+                .or_else(|| map.get("key"))
+                .and_then(value_as_string)
+                .is_some()
+                && map.get("type").and_then(Value::as_str).is_some()
+            {
+                output.push(value);
+            }
+            for child in map.values() {
+                collect_metadata_items_recursive(child, output);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_metadata_items_recursive(item, output);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn parse_metadata_item(item: &Value) -> PlexResult<PlexMediaMetadata> {
+    let rating_key = json_string(item, &["ratingKey", "key"])
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            PlexError::InvalidResponse("metadata did not include ratingKey".to_owned())
+        })?;
+    let title = json_string(item, &["title", "grandparentTitle"])
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "Untitled".to_owned());
+    let media_type = item
+        .get("type")
+        .and_then(Value::as_str)
+        .map(PlexMediaType::from_plex_type)
+        .unwrap_or(PlexMediaType::Other);
+    let duration_millis = item.get("duration").and_then(value_as_u64);
+    let mut parts = Vec::new();
+    collect_playable_parts(item, &mut parts);
+    parts.sort_by(|left, right| {
+        left.key
+            .cmp(&right.key)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    parts.dedup_by(|left, right| left.key == right.key && left.id == right.id);
+    Ok(PlexMediaMetadata {
+        rating_key,
+        title,
+        media_type,
+        duration_millis,
+        parts,
+    })
+}
+
+fn collect_playable_parts(value: &Value, output: &mut Vec<PlexPlayablePart>) {
+    match value {
+        Value::Object(map) => {
+            if let Some(key) = map
+                .get("key")
+                .and_then(value_as_string)
+                .filter(|value| value.starts_with("/library/parts/") || map.contains_key("file"))
+            {
+                let id = json_string(value, &["id"]).unwrap_or_else(|| key.clone());
+                output.push(PlexPlayablePart {
+                    id,
+                    key,
+                    file_name: map
+                        .get("file")
+                        .and_then(value_as_string)
+                        .and_then(|value| path_file_name(&value)),
+                    duration_millis: map.get("duration").and_then(value_as_u64),
+                    size_bytes: map.get("size").and_then(value_as_u64),
+                    container: map.get("container").and_then(value_as_string),
+                });
+            }
+            for child in map.values() {
+                collect_playable_parts(child, output);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_playable_parts(item, output);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1289,6 +2369,25 @@ fn parse_server_resources_response(json: &Value) -> Vec<PlexServerConnection> {
         .collect()
 }
 
+fn parse_server_machine_identifier_response(json: &Value) -> PlexResult<String> {
+    let container = json.get("MediaContainer").unwrap_or(json);
+    json_string(
+        container,
+        &[
+            "machineIdentifier",
+            "MachineIdentifier",
+            "clientIdentifier",
+            "ClientIdentifier",
+        ],
+    )
+    .filter(|value| !value.trim().is_empty())
+    .ok_or_else(|| {
+        PlexError::InvalidResponse(
+            "server identity response did not include a machine identifier".to_owned(),
+        )
+    })
+}
+
 fn merge_server_connections(
     servers: &mut Vec<PlexServerConnection>,
     additional: Vec<PlexServerConnection>,
@@ -1485,6 +2584,92 @@ fn library_section_media_type_filters(library_type: &str) -> Vec<&'static str> {
     }
 }
 
+fn library_section_text_query_filters(media_type: &str) -> Vec<&'static str> {
+    let mut filters = vec!["title"];
+    if media_type == "4" {
+        filters.push("show.title");
+    }
+    filters.push("file");
+    filters
+}
+
+fn filter_media_search_results_by_query(
+    results: Vec<PlexMediaSearchResult>,
+    query: &str,
+) -> Vec<PlexMediaSearchResult> {
+    results
+        .into_iter()
+        .filter(|result| media_search_result_matches_query(result, query))
+        .collect()
+}
+
+fn media_search_result_matches_query(result: &PlexMediaSearchResult, query: &str) -> bool {
+    let query = query.trim();
+    if query.is_empty() {
+        return true;
+    }
+
+    let raw_query = query.to_lowercase();
+    let query_terms = normalized_search_terms(query);
+    if query_terms.is_empty() {
+        return true;
+    }
+
+    if text_matches_search_query(&result.title, &raw_query, &query_terms) {
+        return true;
+    }
+    if result
+        .parent_title
+        .as_deref()
+        .is_some_and(|value| text_matches_search_query(value, &raw_query, &query_terms))
+    {
+        return true;
+    }
+    if result
+        .grandparent_title
+        .as_deref()
+        .is_some_and(|value| text_matches_search_query(value, &raw_query, &query_terms))
+    {
+        return true;
+    }
+
+    result
+        .file_paths
+        .iter()
+        .any(|value| text_matches_search_query(value, &raw_query, &query_terms))
+}
+
+fn text_matches_search_query(value: &str, raw_query: &str, query_terms: &[String]) -> bool {
+    value.to_lowercase().contains(raw_query) || {
+        let normalized = normalized_search_text(value);
+        query_terms.iter().all(|term| normalized.contains(term))
+    }
+}
+
+fn normalized_search_terms(value: &str) -> Vec<String> {
+    normalized_search_text(value)
+        .split_whitespace()
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn normalized_search_text(value: &str) -> String {
+    let mut output = String::new();
+    let mut last_was_space = true;
+    for ch in value.chars() {
+        for lower in ch.to_lowercase() {
+            if lower.is_alphanumeric() {
+                output.push(lower);
+                last_was_space = false;
+            } else if !last_was_space {
+                output.push(' ');
+                last_was_space = true;
+            }
+        }
+    }
+    output.trim().to_owned()
+}
+
 fn merge_media_search_results(
     output: &mut Vec<PlexMediaSearchResult>,
     results: Vec<PlexMediaSearchResult>,
@@ -1494,6 +2679,12 @@ fn merge_media_search_results(
             .iter_mut()
             .find(|existing| existing.rating_key == result.rating_key)
         {
+            if existing.parent_title.is_none() {
+                existing.parent_title = result.parent_title.take();
+            }
+            if existing.grandparent_title.is_none() {
+                existing.grandparent_title = result.grandparent_title.take();
+            }
             existing.file_paths.append(&mut result.file_paths);
             existing.file_paths.sort();
             existing.file_paths.dedup();
@@ -1531,6 +2722,8 @@ fn collect_search_results(value: &Value, output: &mut Vec<PlexMediaSearchResult>
                 output.push(PlexMediaSearchResult {
                     rating_key,
                     title,
+                    parent_title: json_string(value, &["parentTitle"]),
+                    grandparent_title: json_string(value, &["grandparentTitle"]),
                     media_type: PlexMediaType::from_plex_type(type_name),
                     duration_millis: map.get("duration").and_then(value_as_u64),
                     file_paths,
@@ -1650,6 +2843,129 @@ fn percent_encode_fragment_value(value: &str) -> String {
 
 fn percent_encode_path_segment(value: &str) -> String {
     percent_encode_fragment_value(value)
+}
+
+fn percent_encode_query_value(value: &str) -> String {
+    percent_encode_fragment_value(value)
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn percent_decode_lossy(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && let (Some(high), Some(low)) =
+                (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
+        {
+            decoded.push((high << 4) | low);
+            index += 3;
+            continue;
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+fn parse_query_pairs_lossy(query: &str) -> Vec<(String, Option<String>)> {
+    query
+        .split('&')
+        .filter(|part| !part.trim().is_empty())
+        .map(|part| {
+            let (key, value) = part.split_once('=').unwrap_or((part, ""));
+            (
+                percent_decode_lossy(key),
+                (!value.is_empty()).then(|| percent_decode_lossy(value)),
+            )
+        })
+        .collect()
+}
+
+fn non_empty_string(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+fn plex_playlist_media_type_from_value(value: &str) -> Option<PlexMediaType> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "movie" => Some(PlexMediaType::Movie),
+        "episode" => Some(PlexMediaType::Episode),
+        _ => None,
+    }
+}
+
+pub fn redact_plex_token(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut remaining = value;
+    loop {
+        let Some((match_start, pattern_len, header_style)) = find_plex_token_pattern(remaining)
+        else {
+            output.push_str(remaining);
+            break;
+        };
+        output.push_str(&remaining[..match_start + pattern_len]);
+        let mut value_start = match_start + pattern_len;
+        if header_style {
+            while remaining
+                .as_bytes()
+                .get(value_start)
+                .is_some_and(u8::is_ascii_whitespace)
+            {
+                output.push(remaining.as_bytes()[value_start] as char);
+                value_start += 1;
+            }
+        }
+        output.push_str("<redacted>");
+        let value_end = plex_token_value_end(&remaining[value_start..]) + value_start;
+        remaining = &remaining[value_end..];
+    }
+    output
+}
+
+fn find_plex_token_pattern(value: &str) -> Option<(usize, usize, bool)> {
+    let lower = value.to_ascii_lowercase();
+    [
+        ("x-plex-token=", false),
+        ("x-plex-token%3d", false),
+        ("x%2dplex%2dtoken=", false),
+        ("x%2dplex%2dtoken%3d", false),
+        ("x-plex-token:", true),
+        ("x-plex-token%3a", true),
+        ("x%2dplex%2dtoken:", true),
+        ("x%2dplex%2dtoken%3a", true),
+    ]
+    .into_iter()
+    .filter_map(|(pattern, header_style)| {
+        lower
+            .find(pattern)
+            .map(|index| (index, pattern.len(), header_style))
+    })
+    .min_by_key(|(index, _, _)| *index)
+}
+
+fn plex_token_value_end(value: &str) -> usize {
+    value
+        .char_indices()
+        .find_map(|(index, ch)| {
+            matches!(
+                ch,
+                '&' | '"' | '\'' | ')' | '(' | '[' | ']' | '{' | '}' | '\r' | '\n' | ' ' | '\t'
+            )
+            .then_some(index)
+        })
+        .unwrap_or(value.len())
 }
 
 fn insert_header_value(
@@ -1834,6 +3150,15 @@ mod tests {
         search_results: Rc<RefCell<Vec<PlexMediaSearchResult>>>,
         file_searches: Rc<RefCell<Vec<String>>>,
         file_search_results: Rc<RefCell<Vec<PlexMediaSearchResult>>>,
+        discoveries: Rc<RefCell<Vec<String>>>,
+        discovered_servers: Rc<RefCell<Vec<PlexServerConnection>>>,
+        metadata_lookups: Rc<RefCell<Vec<String>>>,
+        metadata_results: Rc<RefCell<BTreeMap<String, PlexMediaMetadata>>>,
+        machine_identifier_lookups: Rc<RefCell<Vec<String>>>,
+        machine_identifier_result: Rc<RefCell<String>>,
+        stream_parts: Rc<RefCell<Vec<String>>>,
+        stream_urls: Rc<RefCell<Vec<String>>>,
+        stream_tokens: Rc<RefCell<Vec<String>>>,
         reports: Rc<RefCell<Vec<PlexTimelineReport>>>,
     }
 
@@ -1869,10 +3194,68 @@ mod tests {
         }
     }
 
+    impl PlexMetadataTransport for FakeTransport {
+        fn metadata_by_rating_key(
+            &self,
+            server_url: &str,
+            token: &str,
+            rating_key: &str,
+        ) -> PlexResult<PlexMediaMetadata> {
+            self.metadata_lookups
+                .borrow_mut()
+                .push(format!("{server_url}|{token}|{rating_key}"));
+            self.metadata_results
+                .borrow()
+                .get(rating_key)
+                .cloned()
+                .ok_or_else(|| {
+                    PlexError::InvalidResponse(format!(
+                        "metadata test fixture missing rating key {rating_key}"
+                    ))
+                })
+        }
+
+        fn build_part_stream_url(
+            &self,
+            server_url: &str,
+            token: &str,
+            part: &PlexPlayablePart,
+        ) -> PlexResult<SecretPlexPlaybackUrl> {
+            self.stream_parts.borrow_mut().push(part.key.clone());
+            self.stream_urls.borrow_mut().push(server_url.to_owned());
+            self.stream_tokens.borrow_mut().push(token.to_owned());
+            Ok(SecretPlexPlaybackUrl::new(format!(
+                "{server_url}{}?X-Plex-Token={token}",
+                part.key
+            )))
+        }
+
+        fn server_machine_identifier(&self, server_url: &str, token: &str) -> PlexResult<String> {
+            self.machine_identifier_lookups
+                .borrow_mut()
+                .push(format!("{server_url}|{token}"));
+            let machine_identifier = self.machine_identifier_result.borrow().clone();
+            if machine_identifier.trim().is_empty() {
+                return Err(PlexError::InvalidResponse(
+                    "metadata test fixture missing machine identifier".to_owned(),
+                ));
+            }
+            Ok(machine_identifier)
+        }
+    }
+
+    impl PlexServerDiscoveryTransport for FakeTransport {
+        fn discover_servers(&self, user_token: &str) -> PlexResult<Vec<PlexServerConnection>> {
+            self.discoveries.borrow_mut().push(user_token.to_owned());
+            Ok(self.discovered_servers.borrow().clone())
+        }
+    }
+
     fn configured_engine(transport: FakeTransport) -> PlexSyncEngine<FakeTransport> {
         PlexSyncEngine::new(
             PlexClientConfig {
                 enabled: true,
+                selected_server_id: Some("abc123machine".to_owned()),
                 selected_server_url: Some("http://plex.local:32400".to_owned()),
                 selected_server_token: Some("server-token".to_owned()),
                 ..PlexClientConfig::default()
@@ -1886,6 +3269,408 @@ mod tests {
         LocalFileUpdate::new("Example.Movie.2024.mkv")
             .with_duration_seconds(7200.0)
             .with_path("C:/Media/Example.Movie.2024.mkv")
+    }
+
+    fn example_metadata() -> PlexMediaMetadata {
+        PlexMediaMetadata {
+            rating_key: "456".to_owned(),
+            title: "Example".to_owned(),
+            media_type: PlexMediaType::Movie,
+            duration_millis: Some(7_200_000),
+            parts: vec![PlexPlayablePart {
+                id: "part-1".to_owned(),
+                key: "/library/parts/1/file.mkv".to_owned(),
+                file_name: Some("Example.mkv".to_owned()),
+                duration_millis: Some(7_200_000),
+                size_bytes: Some(123_456),
+                container: Some("mkv".to_owned()),
+            }],
+        }
+    }
+
+    fn serve_plex_json_responses(responses: Vec<String>) -> (String, mpsc::Receiver<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("Plex test listener should bind");
+        let address = listener
+            .local_addr()
+            .expect("Plex test listener should expose its address");
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            for body in responses {
+                let (mut stream, _) = listener.accept().expect("Plex test server should accept");
+                let mut buffer = [0_u8; 8192];
+                let read = stream
+                    .read(&mut buffer)
+                    .expect("Plex test server should read request");
+                let request = String::from_utf8_lossy(&buffer[..read]).into_owned();
+                tx.send(request)
+                    .expect("Plex test server should send captured request");
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("Plex test server should write response");
+            }
+        });
+        (format!("http://{address}"), rx)
+    }
+
+    #[test]
+    fn plex_error_display_redacts_tokens() {
+        let http_error = PlexError::Http(
+            "GET /library/parts/1/file.mkv?X-Plex-Token=secret-token failed".to_owned(),
+        )
+        .to_string();
+        assert!(http_error.contains("X-Plex-Token=<redacted>"));
+        assert!(!http_error.contains("secret-token"));
+
+        let invalid_response = PlexError::InvalidResponse(
+            "unexpected response with x-plex-token: other-secret".to_owned(),
+        )
+        .to_string();
+        assert!(invalid_response.contains("x-plex-token: <redacted>"));
+        assert!(!invalid_response.contains("other-secret"));
+    }
+
+    #[test]
+    fn plex_playlist_uri_round_trip() {
+        let uri = PlexPlaylistUri {
+            machine_identifier: "abc123machine".to_owned(),
+            rating_key: "456".to_owned(),
+            title: Some("Example Movie".to_owned()),
+            file_name: Some("Example Movie.mkv".to_owned()),
+            duration_millis: Some(7_200_000),
+            size_bytes: Some(123_456_789),
+            media_type: Some(PlexMediaType::Movie),
+        };
+
+        let formatted = format_plex_playlist_uri(&uri);
+        let parsed = parse_plex_playlist_uri(&formatted).expect("URI should parse");
+
+        assert_eq!(
+            formatted,
+            "plex://abc123machine/metadata/456?title=Example%20Movie&file=Example%20Movie.mkv&duration=7200000&size=123456789&type=movie"
+        );
+        assert_eq!(parsed, uri);
+    }
+
+    #[test]
+    fn plex_playlist_uri_valid_episode_uri() {
+        let parsed =
+            parse_plex_playlist_uri("plex://machine/metadata/episode-7?title=Pilot&type=episode")
+                .expect("episode URI should parse");
+
+        assert_eq!(parsed.machine_identifier, "machine");
+        assert_eq!(parsed.rating_key, "episode-7");
+        assert_eq!(parsed.media_type, Some(PlexMediaType::Episode));
+    }
+
+    #[test]
+    fn plex_playlist_uri_rejects_missing_machine_identifier() {
+        let error = parse_plex_playlist_uri("plex:///metadata/456")
+            .expect_err("machine id is required")
+            .to_string();
+
+        assert!(error.contains("machine identifier"));
+    }
+
+    #[test]
+    fn plex_playlist_uri_rejects_missing_rating_key() {
+        let error = parse_plex_playlist_uri("plex://machine/metadata/")
+            .expect_err("rating key is required")
+            .to_string();
+
+        assert!(error.contains("rating key"));
+    }
+
+    #[test]
+    fn plex_playlist_uri_decodes_title_and_file_and_ignores_unknown_keys() {
+        let parsed = parse_plex_playlist_uri(
+            "plex://machine/metadata/456?title=Example%20Movie&file=Example%20Movie.mkv&ignored=value",
+        )
+        .expect("encoded hints should parse");
+
+        assert_eq!(parsed.title.as_deref(), Some("Example Movie"));
+        assert_eq!(parsed.file_name.as_deref(), Some("Example Movie.mkv"));
+    }
+
+    #[test]
+    fn plex_playlist_uri_rejects_tokens() {
+        let error = parse_plex_playlist_uri("plex://machine/metadata/456?X-Plex-Token=secret")
+            .expect_err("token query should be rejected")
+            .to_string();
+
+        assert!(error.contains("token"));
+        assert!(!error.contains("secret"));
+    }
+
+    #[test]
+    fn parse_metadata_extracts_video_part_key() {
+        let json: Value = serde_json::json!({
+            "MediaContainer": {
+                "Metadata": [{
+                    "ratingKey": "456",
+                    "type": "movie",
+                    "title": "Example",
+                    "duration": 7200000,
+                    "Media": [{
+                        "container": "mkv",
+                        "Part": [{
+                            "id": "99",
+                            "key": "/library/parts/99/file.mkv",
+                            "file": "E:/Movies/Example.mkv",
+                            "duration": 7200000,
+                            "size": 123456
+                        }]
+                    }]
+                }]
+            }
+        });
+
+        let metadata = parse_metadata_response(&json, "456").expect("metadata should parse");
+
+        assert_eq!(metadata.rating_key, "456");
+        assert_eq!(metadata.media_type, PlexMediaType::Movie);
+        assert_eq!(metadata.parts.len(), 1);
+        assert_eq!(metadata.parts[0].key, "/library/parts/99/file.mkv");
+        assert_eq!(metadata.parts[0].file_name.as_deref(), Some("Example.mkv"));
+    }
+
+    #[test]
+    fn metadata_resolution_rejects_audio_or_other_type() {
+        let metadata = PlexMediaMetadata {
+            rating_key: "track-1".to_owned(),
+            title: "Song".to_owned(),
+            media_type: PlexMediaType::Other,
+            duration_millis: Some(180_000),
+            parts: vec![PlexPlayablePart {
+                id: "audio".to_owned(),
+                key: "/library/parts/audio.mp3".to_owned(),
+                file_name: Some("song.mp3".to_owned()),
+                duration_millis: Some(180_000),
+                size_bytes: Some(1000),
+                container: Some("mp3".to_owned()),
+            }],
+        };
+
+        let error = choose_playable_part(&metadata, Some(180_000))
+            .expect_err("non-video metadata should be rejected")
+            .to_string();
+
+        assert!(error.contains("not playable video"));
+    }
+
+    #[test]
+    fn stream_url_appends_token_but_debug_redacts_it() {
+        let client = PlexHttpClient::new("stream-url-test").expect("Plex client should construct");
+        let url = client
+            .build_part_stream_url(
+                "http://plex.local:32400",
+                "secret-token",
+                &PlexPlayablePart {
+                    id: "1".to_owned(),
+                    key: "/library/parts/1/file.mkv".to_owned(),
+                    file_name: Some("Example.mkv".to_owned()),
+                    duration_millis: None,
+                    size_bytes: None,
+                    container: None,
+                },
+            )
+            .expect("stream URL should build");
+
+        assert!(url.as_str().contains("X-Plex-Token=secret-token"));
+        let debug = format!("{url:?}");
+        assert!(debug.contains("X-Plex-Token=<redacted>"));
+        assert!(!debug.contains("secret-token"));
+    }
+
+    #[test]
+    fn resolve_stream_target_by_plex_uri() {
+        let transport = FakeTransport::default();
+        transport
+            .metadata_results
+            .borrow_mut()
+            .insert("456".to_owned(), example_metadata());
+        let mut resolver = PlexMediaResolver::new(
+            PlexClientConfig {
+                streaming_enabled: true,
+                selected_server_id: Some("abc123machine".to_owned()),
+                selected_server_url: Some("http://plex.local:32400".to_owned()),
+                selected_server_token: Some("server-token".to_owned()),
+                ..PlexClientConfig::default()
+            },
+            transport.clone(),
+            PlexMatchCache::default(),
+        );
+
+        let target = resolver
+            .resolve_stream_target(
+                "plex://abc123machine/metadata/456?title=Example&file=Example.mkv&duration=7200000&type=movie",
+                SystemTime::UNIX_EPOCH,
+            )
+            .expect("stream target should resolve")
+            .expect("Plex URI should resolve to stream target");
+
+        assert_eq!(target.matched_item.rating_key, "456");
+        assert_eq!(target.logical_file.name, "Example.mkv");
+        assert_eq!(
+            target.logical_file.path.as_deref(),
+            Some(
+                "plex://abc123machine/metadata/456?title=Example&file=Example.mkv&duration=7200000&size=123456&type=movie"
+            )
+        );
+        assert_eq!(
+            transport.stream_parts.borrow().as_slice(),
+            &["/library/parts/1/file.mkv"]
+        );
+        assert!(target.playback_url.as_str().contains("server-token"));
+    }
+
+    #[test]
+    fn resolve_stream_target_uses_accessible_server_matching_playlist_uri() {
+        let transport = FakeTransport::default();
+        transport
+            .metadata_results
+            .borrow_mut()
+            .insert("456".to_owned(), example_metadata());
+        transport
+            .discovered_servers
+            .borrow_mut()
+            .extend([PlexServerConnection {
+                name: "Shared Server".to_owned(),
+                machine_identifier: "abc123machine".to_owned(),
+                uri: "http://shared.plex:32400".to_owned(),
+                access_token: "shared-server-token".to_owned(),
+                owned: false,
+                has_local_connection: false,
+                connection_kind: PlexServerConnectionKind::Remote,
+            }]);
+        let mut resolver = PlexMediaResolver::new(
+            PlexClientConfig {
+                streaming_enabled: true,
+                user_token: Some("user-token".to_owned()),
+                selected_server_id: Some("other-machine".to_owned()),
+                selected_server_url: Some("http://plex.local:32400".to_owned()),
+                selected_server_token: Some("server-token".to_owned()),
+                ..PlexClientConfig::default()
+            },
+            transport,
+            PlexMatchCache::default(),
+        );
+
+        let target = resolver
+            .resolve_stream_target(
+                "plex://abc123machine/metadata/456?title=Example&file=Example.mkv",
+                SystemTime::UNIX_EPOCH,
+            )
+            .expect("server mismatch should resolve through accessible shared server")
+            .expect("Plex URI should resolve to stream target");
+
+        let (_, transport, _) = resolver.into_parts();
+
+        assert_eq!(target.matched_item.rating_key, "456");
+        assert_eq!(transport.discoveries.borrow().as_slice(), &["user-token"]);
+        assert_eq!(
+            transport.metadata_lookups.borrow().as_slice(),
+            &["http://shared.plex:32400|shared-server-token|456"]
+        );
+        assert_eq!(
+            transport.stream_urls.borrow().as_slice(),
+            &["http://shared.plex:32400"]
+        );
+        assert_eq!(
+            transport.stream_tokens.borrow().as_slice(),
+            &["shared-server-token"]
+        );
+        assert!(target.playback_url.as_str().contains("shared-server-token"));
+        assert!(
+            !target
+                .playback_url
+                .as_str()
+                .contains("X-Plex-Token=server-token")
+        );
+    }
+
+    #[test]
+    fn resolve_stream_target_for_playlist_uri_does_not_require_selected_server() {
+        let transport = FakeTransport::default();
+        transport
+            .metadata_results
+            .borrow_mut()
+            .insert("456".to_owned(), example_metadata());
+        transport
+            .discovered_servers
+            .borrow_mut()
+            .extend([PlexServerConnection {
+                name: "Shared Server".to_owned(),
+                machine_identifier: "abc123machine".to_owned(),
+                uri: "http://shared.plex:32400".to_owned(),
+                access_token: "shared-server-token".to_owned(),
+                owned: false,
+                has_local_connection: false,
+                connection_kind: PlexServerConnectionKind::Remote,
+            }]);
+        let mut resolver = PlexMediaResolver::new(
+            PlexClientConfig {
+                streaming_enabled: true,
+                user_token: Some("user-token".to_owned()),
+                ..PlexClientConfig::default()
+            },
+            transport,
+            PlexMatchCache::default(),
+        );
+
+        let target = resolver
+            .resolve_stream_target(
+                "plex://abc123machine/metadata/456?title=Example&file=Example.mkv",
+                SystemTime::UNIX_EPOCH,
+            )
+            .expect("Plex URI should resolve by accessible shared server")
+            .expect("Plex URI should resolve to stream target");
+        let (_, transport, _) = resolver.into_parts();
+
+        assert_eq!(target.matched_item.rating_key, "456");
+        assert_eq!(transport.discoveries.borrow().as_slice(), &["user-token"]);
+        assert_eq!(
+            transport.stream_tokens.borrow().as_slice(),
+            &["shared-server-token"]
+        );
+    }
+
+    #[test]
+    fn ambiguous_part_selection_fails_closed() {
+        let metadata = PlexMediaMetadata {
+            rating_key: "456".to_owned(),
+            title: "Example".to_owned(),
+            media_type: PlexMediaType::Movie,
+            duration_millis: Some(7_200_000),
+            parts: vec![
+                PlexPlayablePart {
+                    id: "a".to_owned(),
+                    key: "/library/parts/a.mkv".to_owned(),
+                    file_name: Some("a.mkv".to_owned()),
+                    duration_millis: Some(7_200_000),
+                    size_bytes: None,
+                    container: Some("mkv".to_owned()),
+                },
+                PlexPlayablePart {
+                    id: "b".to_owned(),
+                    key: "/library/parts/b.mkv".to_owned(),
+                    file_name: Some("b.mkv".to_owned()),
+                    duration_millis: Some(7_200_000),
+                    size_bytes: None,
+                    container: Some("mkv".to_owned()),
+                },
+            ],
+        };
+
+        let error = choose_playable_part(&metadata, Some(7_200_000))
+            .expect_err("equal candidates should be ambiguous")
+            .to_string();
+
+        assert!(error.contains("ambiguous"));
     }
 
     #[test]
@@ -2291,6 +4076,8 @@ mod tests {
                         "ratingKey": "1",
                         "type": "movie",
                         "title": "Movie",
+                        "parentTitle": "Movies",
+                        "grandparentTitle": "Library",
                         "duration": 60000,
                         "Media": [{ "Part": [{ "file": "E:/Movies/Movie.mkv" }] }]
                     },
@@ -2304,7 +4091,356 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].rating_key, "1");
         assert_eq!(results[0].media_type, PlexMediaType::Movie);
+        assert_eq!(results[0].parent_title.as_deref(), Some("Movies"));
+        assert_eq!(results[0].grandparent_title.as_deref(), Some("Library"));
         assert_eq!(results[0].file_paths, vec!["E:/Movies/Movie.mkv"]);
+    }
+
+    #[test]
+    fn selected_server_media_search_uses_video_sections_and_title_query() {
+        let (server_url, rx) = serve_plex_json_responses(vec![
+            serde_json::json!({
+                "MediaContainer": {
+                    "Directory": [
+                        { "key": "1", "type": "show", "title": "Anime" },
+                        { "key": "2", "type": "artist", "title": "Music" }
+                    ]
+                }
+            })
+            .to_string(),
+            serde_json::json!({
+                "MediaContainer": {
+                    "Metadata": [{
+                        "ratingKey": "14452",
+                        "type": "episode",
+                        "title": "Episode 11",
+                        "parentTitle": "Season 4",
+                        "grandparentTitle": "Re:Zero",
+                        "duration": 1470058,
+                        "Media": [{
+                            "Part": [{
+                                "file": "E:/Anime/Re Zero/Episode 11.mkv",
+                                "size": 458900243
+                            }]
+                        }]
+                    }]
+                }
+            })
+            .to_string(),
+        ]);
+        let client = PlexHttpClient::new("search-test").expect("Plex client should construct");
+        let config = PlexClientConfig {
+            selected_server_url: Some(server_url),
+            selected_server_token: Some("server-token".to_owned()),
+            ..PlexClientConfig::default()
+        };
+
+        let results = client
+            .search_selected_server_media(&config, "zero", 1)
+            .expect("selected server search should succeed");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].rating_key, "14452");
+        assert_eq!(results[0].title, "Episode 11");
+        assert_eq!(results[0].parent_title.as_deref(), Some("Season 4"));
+        assert_eq!(results[0].grandparent_title.as_deref(), Some("Re:Zero"));
+        let sections_request = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("sections request should be captured");
+        let title_request = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("title request should be captured");
+        assert!(sections_request.starts_with("GET /library/sections HTTP/1.1"));
+        assert!(
+            sections_request
+                .to_ascii_lowercase()
+                .contains("x-plex-token: server-token")
+        );
+        assert!(title_request.starts_with("GET /library/sections/1/all?"));
+        assert!(title_request.contains("type=4"));
+        assert!(title_request.contains("title=zero"));
+        assert!(!title_request.contains("X-Plex-Token="));
+    }
+
+    #[test]
+    fn selected_server_media_search_matches_episode_show_title_when_episode_title_misses() {
+        let (server_url, rx) = serve_plex_json_responses(vec![
+            serde_json::json!({
+                "MediaContainer": {
+                    "Directory": [
+                        { "key": "1", "type": "show", "title": "Anime" }
+                    ]
+                }
+            })
+            .to_string(),
+            serde_json::json!({
+                "MediaContainer": {
+                    "Metadata": []
+                }
+            })
+            .to_string(),
+            serde_json::json!({
+                "MediaContainer": {
+                    "Metadata": [{
+                        "ratingKey": "12961",
+                        "type": "episode",
+                        "title": "She's a Killer Queen",
+                        "parentTitle": "Season 1",
+                        "grandparentTitle": "Needy Girl Overdose",
+                        "duration": 1439000,
+                        "Media": [{
+                            "Part": [{
+                                "file": "E:/Anime/Needy Girl Overdose/01.mkv"
+                            }]
+                        }]
+                    }]
+                }
+            })
+            .to_string(),
+        ]);
+        let client =
+            PlexHttpClient::new("show-title-search-test").expect("Plex client should construct");
+        let config = PlexClientConfig {
+            selected_server_url: Some(server_url),
+            selected_server_token: Some("server-token".to_owned()),
+            ..PlexClientConfig::default()
+        };
+
+        let results = client
+            .search_selected_server_media(&config, "Needy", 1)
+            .expect("selected server search should succeed");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].rating_key, "12961");
+        assert_eq!(
+            results[0].grandparent_title.as_deref(),
+            Some("Needy Girl Overdose")
+        );
+        let _sections_request = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("sections request should be captured");
+        let title_request = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("title request should be captured");
+        let show_title_request = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("show title request should be captured");
+        assert!(title_request.contains("title=Needy"));
+        assert!(show_title_request.contains("show.title=Needy"));
+        assert!(!show_title_request.contains("X-Plex-Token="));
+    }
+
+    #[test]
+    fn selected_server_media_search_matches_file_name_when_titles_miss() {
+        let (server_url, rx) = serve_plex_json_responses(vec![
+            serde_json::json!({
+                "MediaContainer": {
+                    "Directory": [
+                        { "key": "1", "type": "show", "title": "Anime" }
+                    ]
+                }
+            })
+            .to_string(),
+            serde_json::json!({
+                "MediaContainer": {
+                    "Metadata": []
+                }
+            })
+            .to_string(),
+            serde_json::json!({
+                "MediaContainer": {
+                    "Metadata": []
+                }
+            })
+            .to_string(),
+            serde_json::json!({
+                "MediaContainer": {
+                    "Metadata": [{
+                        "ratingKey": "12962",
+                        "type": "episode",
+                        "title": "Just the Two of Us",
+                        "parentTitle": "Season 1",
+                        "grandparentTitle": "Unrelated Label",
+                        "duration": 1439000,
+                        "Media": [{
+                            "Part": [{
+                                "file": "E:/Anime/Needy Girl Overdose/02.mkv"
+                            }]
+                        }]
+                    }]
+                }
+            })
+            .to_string(),
+        ]);
+        let client =
+            PlexHttpClient::new("file-name-search-test").expect("Plex client should construct");
+        let config = PlexClientConfig {
+            selected_server_url: Some(server_url),
+            selected_server_token: Some("server-token".to_owned()),
+            ..PlexClientConfig::default()
+        };
+
+        let results = client
+            .search_selected_server_media(&config, "Needy", 1)
+            .expect("selected server search should succeed");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].rating_key, "12962");
+        let _sections_request = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("sections request should be captured");
+        let _title_request = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("title request should be captured");
+        let _show_title_request = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("show title request should be captured");
+        let file_request = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("file request should be captured");
+        assert!(file_request.contains("file=Needy"));
+        assert!(!file_request.contains("X-Plex-Token="));
+    }
+
+    #[test]
+    fn selected_server_media_search_empty_query_uses_recent_paging() {
+        let (server_url, rx) = serve_plex_json_responses(vec![
+            serde_json::json!({
+                "MediaContainer": {
+                    "Directory": [
+                        { "key": "movies", "type": "movie" },
+                        { "key": "shows", "type": "show" }
+                    ]
+                }
+            })
+            .to_string(),
+            serde_json::json!({
+                "MediaContainer": {
+                    "Metadata": [{
+                        "ratingKey": "movie-1",
+                        "type": "movie",
+                        "title": "Recent Movie",
+                        "duration": 60000
+                    }]
+                }
+            })
+            .to_string(),
+            serde_json::json!({
+                "MediaContainer": {
+                    "Metadata": [{
+                        "ratingKey": "episode-1",
+                        "type": "episode",
+                        "title": "Recent Episode",
+                        "duration": 90000
+                    }]
+                }
+            })
+            .to_string(),
+        ]);
+        let client = PlexHttpClient::new("recent-test").expect("Plex client should construct");
+        let config = PlexClientConfig {
+            selected_server_url: Some(server_url),
+            selected_server_token: Some("server-token".to_owned()),
+            ..PlexClientConfig::default()
+        };
+
+        let results = client
+            .search_selected_server_media(&config, "", 2)
+            .expect("recent selected server search should succeed");
+
+        assert_eq!(
+            results
+                .iter()
+                .map(|result| result.rating_key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["movie-1", "episode-1"]
+        );
+        let _sections_request = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("sections request should be captured");
+        let movie_request = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("movie recent request should be captured");
+        let show_request = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("show recent request should be captured");
+        assert!(movie_request.contains("sort=addedAt%3Adesc"));
+        assert!(movie_request.contains("type=1"));
+        assert!(show_request.contains("sort=addedAt%3Adesc"));
+        assert!(show_request.contains("type=4"));
+    }
+
+    #[test]
+    fn playlist_uri_for_selected_server_rating_key_fetches_missing_machine_identifier() {
+        let (server_url, rx) = serve_plex_json_responses(vec![
+            serde_json::json!({
+                "MediaContainer": {
+                    "machineIdentifier": "machine-from-root"
+                }
+            })
+            .to_string(),
+            serde_json::json!({
+                "MediaContainer": {
+                    "Metadata": [{
+                        "ratingKey": "14452",
+                        "type": "episode",
+                        "title": "Episode 11",
+                        "duration": 1470058,
+                        "Media": [{
+                            "Part": [{
+                                "id": "part-1",
+                                "key": "/library/parts/1/file.mkv",
+                                "file": "E:/Anime/Episode 11.mkv",
+                                "duration": 1470058,
+                                "size": 458900243
+                            }]
+                        }]
+                    }]
+                }
+            })
+            .to_string(),
+        ]);
+        let client = PlexHttpClient::new("uri-test").expect("Plex client should construct");
+        let config = PlexClientConfig {
+            selected_server_url: Some(server_url),
+            selected_server_token: Some("server-token".to_owned()),
+            ..PlexClientConfig::default()
+        };
+
+        let uri = client
+            .playlist_uri_for_selected_server_rating_key(&config, "14452")
+            .expect("playlist URI should resolve");
+
+        assert_eq!(uri.machine_identifier, "machine-from-root");
+        assert_eq!(uri.file_name.as_deref(), Some("Episode 11.mkv"));
+        let formatted = format_plex_playlist_uri(&uri);
+        assert!(formatted.starts_with("plex://machine-from-root/metadata/14452?"));
+        assert!(!formatted.contains("token"));
+        let root_request = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("root request should be captured");
+        let metadata_request = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("metadata request should be captured");
+        assert!(root_request.starts_with("GET / HTTP/1.1"));
+        assert!(metadata_request.starts_with("GET /library/metadata/14452 HTTP/1.1"));
+    }
+
+    #[test]
+    fn playlist_uri_for_metadata_rejects_unplayable_metadata() {
+        let metadata = PlexMediaMetadata {
+            rating_key: "14452".to_owned(),
+            title: "Episode 11".to_owned(),
+            media_type: PlexMediaType::Episode,
+            duration_millis: Some(1470058),
+            parts: Vec::new(),
+        };
+
+        let error = playlist_uri_for_metadata("machine", &metadata, None)
+            .expect_err("metadata without parts should fail")
+            .to_string();
+
+        assert!(error.contains("playable part"));
     }
 
     #[test]
@@ -2318,6 +4454,8 @@ mod tests {
         let results = vec![PlexMediaSearchResult {
             rating_key: "episode-5".to_owned(),
             title: "Episode 5".to_owned(),
+            parent_title: None,
+            grandparent_title: None,
             media_type: PlexMediaType::Episode,
             duration_millis: None,
             file_paths: vec![
@@ -2343,6 +4481,8 @@ mod tests {
         let results = vec![PlexMediaSearchResult {
             rating_key: "12706".to_owned(),
             title: "Another Peaceful Day".to_owned(),
+            parent_title: None,
+            grandparent_title: None,
             media_type: PlexMediaType::Episode,
             duration_millis: None,
             file_paths: vec![
@@ -2366,6 +4506,8 @@ mod tests {
             .push(PlexMediaSearchResult {
                 rating_key: "episode-5".to_owned(),
                 title: "Episode 5".to_owned(),
+                parent_title: None,
+                grandparent_title: None,
                 media_type: PlexMediaType::Episode,
                 duration_millis: None,
                 file_paths: vec![
@@ -2427,6 +4569,8 @@ mod tests {
             .push(PlexMediaSearchResult {
                 rating_key: "123".to_owned(),
                 title: "Example Movie 2024".to_owned(),
+                parent_title: None,
+                grandparent_title: None,
                 media_type: PlexMediaType::Movie,
                 duration_millis: Some(7_200_000),
                 file_paths: vec!["C:/Media/Example.Movie.2024.mkv".to_owned()],
@@ -2461,6 +4605,8 @@ mod tests {
             PlexMediaSearchResult {
                 rating_key: "wrong".to_owned(),
                 title: "Example Movie".to_owned(),
+                parent_title: None,
+                grandparent_title: None,
                 media_type: PlexMediaType::Movie,
                 duration_millis: Some(3_600_000),
                 file_paths: Vec::new(),
@@ -2468,6 +4614,8 @@ mod tests {
             PlexMediaSearchResult {
                 rating_key: "right".to_owned(),
                 title: "Example Movie 2024".to_owned(),
+                parent_title: None,
+                grandparent_title: None,
                 media_type: PlexMediaType::Movie,
                 duration_millis: Some(7_200_000),
                 file_paths: Vec::new(),
@@ -2486,6 +4634,8 @@ mod tests {
             PlexMediaSearchResult {
                 rating_key: "1".to_owned(),
                 title: "Pilot".to_owned(),
+                parent_title: None,
+                grandparent_title: None,
                 media_type: PlexMediaType::Episode,
                 duration_millis: Some(1_800_000),
                 file_paths: Vec::new(),
@@ -2493,6 +4643,8 @@ mod tests {
             PlexMediaSearchResult {
                 rating_key: "2".to_owned(),
                 title: "Pilot".to_owned(),
+                parent_title: None,
+                grandparent_title: None,
                 media_type: PlexMediaType::Episode,
                 duration_millis: Some(1_800_000),
                 file_paths: Vec::new(),
@@ -2562,6 +4714,8 @@ mod tests {
             .push(PlexMediaSearchResult {
                 rating_key: "123".to_owned(),
                 title: "Example Movie 2024".to_owned(),
+                parent_title: None,
+                grandparent_title: None,
                 media_type: PlexMediaType::Movie,
                 duration_millis: Some(7_200_000),
                 file_paths: Vec::new(),
@@ -2598,6 +4752,8 @@ mod tests {
             .push(PlexMediaSearchResult {
                 rating_key: "123".to_owned(),
                 title: "Example Movie 2024".to_owned(),
+                parent_title: None,
+                grandparent_title: None,
                 media_type: PlexMediaType::Movie,
                 duration_millis: Some(7_200_000),
                 file_paths: Vec::new(),

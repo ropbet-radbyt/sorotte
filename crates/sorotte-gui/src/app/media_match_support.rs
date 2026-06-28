@@ -1569,6 +1569,121 @@ fn media_match_path_is_under_root(normalized_path: &str, normalized_root: &str) 
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct MediaMatchInventoryExactTarget {
+    key: String,
+    file_name: String,
+    has_path_context: bool,
+}
+
+fn media_match_inventory_exact_target(target: &str) -> Option<MediaMatchInventoryExactTarget> {
+    let target = target.trim();
+    if target.is_empty() {
+        return None;
+    }
+    let target_path = Path::new(target);
+    let file_name = target_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())?
+        .to_ascii_lowercase();
+    let has_path_context = target.contains('/')
+        || target.contains('\\')
+        || target_path.is_absolute()
+        || target_path.components().count() > 1;
+    Some(MediaMatchInventoryExactTarget {
+        key: normalize_media_path(target_path),
+        file_name,
+        has_path_context,
+    })
+}
+
+fn media_match_inventory_exact_target_rank(
+    normalized_path: &str,
+    file_name: &str,
+    target: &MediaMatchInventoryExactTarget,
+) -> Option<usize> {
+    if target.has_path_context {
+        if normalized_path == target.key {
+            return Some(0);
+        }
+        return normalized_path
+            .strip_suffix(&target.key)
+            .filter(|prefix| prefix.ends_with('/'))
+            .map(|_| 1);
+    }
+    (file_name == target.file_name).then_some(2)
+}
+
+pub(super) fn media_match_inventory_exact_candidate_for_targets(
+    root: &Path,
+    search_roots: &[PathBuf],
+    targets: &[String],
+) -> Option<String> {
+    let targets = targets
+        .iter()
+        .filter_map(|target| media_match_inventory_exact_target(target))
+        .collect::<Vec<_>>();
+    if targets.is_empty() || search_roots.is_empty() {
+        return None;
+    }
+
+    let normalized_roots = search_roots
+        .iter()
+        .map(normalize_media_path)
+        .collect::<Vec<_>>();
+    let connection = open_media_match_sqlite_index(root).ok()?;
+    let mut statement = connection
+        .prepare("SELECT normalized_path FROM media_files_v3")
+        .ok()?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .ok()?;
+    let mut best_match: Option<(usize, usize, usize, String, String)> = None;
+
+    for row in rows.flatten() {
+        if !normalized_roots
+            .iter()
+            .any(|root| media_match_path_is_under_root(&row, root))
+        {
+            continue;
+        }
+        let path = Path::new(&row);
+        let Some(file_name) = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.to_ascii_lowercase())
+        else {
+            continue;
+        };
+        let Some(target_rank) = targets
+            .iter()
+            .filter_map(|target| media_match_inventory_exact_target_rank(&row, &file_name, target))
+            .min()
+        else {
+            continue;
+        };
+        if !path.is_file() {
+            continue;
+        }
+        let root_order = normalized_roots
+            .iter()
+            .position(|root| media_match_path_is_under_root(&row, root))
+            .unwrap_or(usize::MAX);
+        let depth = path.components().count();
+        let rank = (target_rank, root_order, depth, row.clone(), row);
+        if best_match
+            .as_ref()
+            .is_none_or(|best_rank| rank < *best_rank)
+        {
+            best_match = Some(rank);
+        }
+    }
+
+    best_match.map(|(_, _, _, _, path)| path)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct MediaMatchRebuildCandidateSelection {
     paths: Vec<PathBuf>,
     discovered_files: usize,

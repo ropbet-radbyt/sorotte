@@ -440,4 +440,63 @@ impl SorotteGuiShellAppState {
 
         (player_setup_panel, summary_column)
     }
+
+    pub(super) fn playlist_source_button_node(&self, index: usize) -> Option<GuiWidgetNode> {
+        let row = self.main_window.playlist.get(index)?;
+        let mut source_button = GuiWidgetNode::branch(
+            format!("main-window:playlist:{index}:source"),
+            row.source_state.current_label.clone(),
+            GuiWidgetKind::Button,
+            row.source_state
+                .options
+                .iter()
+                .map(|option| {
+                    let mut option_node = GuiWidgetNode::leaf(
+                        format!(
+                            "main-window:playlist:{index}:source:{}",
+                            option.provider_id.as_str()
+                        ),
+                        option.label.clone(),
+                        GuiWidgetKind::Button,
+                        Some(option.status.label().to_owned()),
+                        option.enabled,
+                        option.selected,
+                    );
+                    if let Some(detail) = option.detail.as_ref() {
+                        option_node = option_node.with_tooltip(detail.clone());
+                    }
+                    option_node
+                })
+                .collect(),
+        )
+        .with_tooltip(playlist_source_tooltip(&row.source_state));
+        source_button.value = Some(row.source_state.status.label().to_owned());
+        Some(source_button)
+    }
+}
+
+fn playlist_source_tooltip(source_state: &GuiPlaylistSourceState) -> String {
+    let mut lines = vec![
+        format!("Current source: {}", source_state.current_label),
+        format!(
+            "Selected provider: {}",
+            source_state.current_provider_id.as_str()
+        ),
+        format!("Status: {}", source_state.status.label()),
+    ];
+    if let Some(detail) = source_state.detail.as_deref() {
+        lines.push(detail.to_owned());
+    }
+    if !source_state.resolution_steps.is_empty() {
+        lines.push("Resolution steps:".to_owned());
+        lines.extend(source_state.resolution_steps.iter().map(|step| {
+            let mut line = format!("- {}: {}", step.label, step.status.label());
+            if let Some(detail) = step.detail.as_deref() {
+                line.push_str(" - ");
+                line.push_str(detail);
+            }
+            line
+        }));
+    }
+    lines.join("\n")
 }

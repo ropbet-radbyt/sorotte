@@ -20,6 +20,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.runtime_pump_generation = self.runtime_pump_generation.wrapping_add(1);
         self.poll_managed_mpv_process();
         let mut projected_state = state.clone();
+        let mut media_resolution_completed = false;
         self.pump_due_session_transport_reconnect(handle, &mut projected_state);
         self.sync_detached_session_runtime_state_or_notify(handle, &mut projected_state);
         self.pump_session_transport_driver(handle, &mut projected_state);
@@ -41,7 +42,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.sync_detached_session_runtime_state_or_notify(handle, &mut projected_state);
         self.pump_media_match_tool_worker(handle, &mut projected_state);
         self.pump_media_match_background_worker(handle, &mut projected_state);
-        self.pump_media_match_remote_lookup_worker();
+        media_resolution_completed |= self.pump_media_match_remote_lookup_worker();
         let _ = self.maybe_sync_media_match_wire_decisions(handle, &mut projected_state);
         if !self.startup_saved_connect_attempted {
             self.startup_saved_connect_attempted = true;
@@ -78,18 +79,24 @@ impl GuiPersistedConfigRuntimeOwner {
             self.sync_detached_session_runtime_state_or_notify(handle, &mut projected_state);
             self.pump_media_match_tool_worker(handle, &mut projected_state);
             self.pump_media_match_background_worker(handle, &mut projected_state);
-            self.pump_media_match_remote_lookup_worker();
+            media_resolution_completed |= self.pump_media_match_remote_lookup_worker();
             let _ = self.maybe_sync_media_match_wire_decisions(handle, &mut projected_state);
         }
         self.ensure_configured_player_attached_for_active_session();
-        self.sync_player_runtime_state(handle, &projected_state);
         self.maybe_queue_media_match_exact_playlist_signature(handle, &mut projected_state);
-        self.pump_media_match_remote_lookup_worker();
+        media_resolution_completed |= self.pump_media_match_remote_lookup_worker();
         let _ = self.maybe_sync_media_match_wire_decisions(handle, &mut projected_state);
         self.maybe_queue_media_match_background_warmup(handle, &mut projected_state);
+        media_resolution_completed |= self.pump_plex_stream_resolution_worker();
+        if media_resolution_completed {
+            let _ = self.retry_pending_playlist_source_resolution(handle, &mut projected_state);
+            self.sync_active_shared_playlist_media_and_playstate_impl(&projected_state);
+        }
+        self.sync_player_runtime_state(handle, &projected_state);
         self.pump_startup_plex_server_refresh(handle, &mut projected_state);
         self.pump_plex_server_refresh(handle, &mut projected_state);
         self.pump_plex_auth_poll(handle, &mut projected_state);
+        self.pump_plex_playlist_workers(handle, &mut projected_state);
         self.sync_plex_watch_state(handle, &mut projected_state);
         self.run_deferred_startup_remote_actions(handle, &mut projected_state);
         self.pump_background_update_check(handle, &mut projected_state);
@@ -253,6 +260,14 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) {
+        if !projected_state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::StreamSupport)
+        {
+            self.startup_stream_helper_probe_completed = true;
+            self.startup_stream_helper_probe_rx = None;
+            return;
+        }
         if self.startup_stream_helper_probe_completed {
             return;
         }

@@ -145,6 +145,38 @@ fn client_runtime_set_playlist_index_is_omitted_for_untrusted_url_target() {
 }
 
 #[test]
+fn playlist_target_switch_allows_plex_uri_without_trusted_domain() {
+    let mut session = ClientSession::default();
+    session
+        .apply_hello_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json(
+            r#"{"Set":{"playlistChange":{"files":["plex://abc123machine/metadata/456?title=Example&file=Example.mkv&duration=7200000&type=movie"],"user":"alice"}}}"#,
+        )
+        .expect("playlist change should apply");
+    session
+        .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+        .expect("playlist index should apply");
+    session.behavior_config_mut().only_switch_to_trusted_domains = true;
+    session.behavior_config_mut().trusted_domains.clear();
+
+    let player = RecordingPlayer::default();
+    let control = QueuedRuntimeControl::default();
+    let mut runtime = ClientRuntime::new(session, player, control);
+
+    assert!(
+        runtime
+            .run_set_playlist_index(0)
+            .expect("set playlist index should not fail"),
+        "plex:// playlist targets should not be blocked by web trusted-domain policy"
+    );
+    assert_eq!(runtime.control().outbound_messages().len(), 2);
+}
+
+#[test]
 fn client_runtime_set_playlist_index_allows_default_trusted_youtube_domain() {
     let mut session = ClientSession::default();
     session

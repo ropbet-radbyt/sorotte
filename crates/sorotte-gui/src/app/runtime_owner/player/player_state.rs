@@ -1,5 +1,7 @@
 use super::*;
 
+use sorotte_plex::{is_plex_playlist_uri, parse_plex_playlist_uri};
+
 impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn normalized_current_player_match_key(path: &str) -> String {
         let mut key = path.trim().replace('\\', "/");
@@ -40,19 +42,29 @@ impl GuiPersistedConfigRuntimeOwner {
         &self,
         state: &SorotteGuiShellAppState,
     ) -> Option<String> {
+        self.current_shared_playlist_index_and_target(state)
+            .map(|(_, target)| target)
+    }
+
+    pub(in crate::app::runtime_owner) fn current_shared_playlist_index_and_target(
+        &self,
+        state: &SorotteGuiShellAppState,
+    ) -> Option<(usize, String)> {
         self.session
             .as_ref()
             .and_then(|session| session.current_room_playlist_index())
-            .and_then(|index| Self::playlist_target_for_index(state, index))
-            .or_else(|| {
-                state
-                    .main_window
-                    .active_playlist_index
-                    .and_then(|index| Self::playlist_target_for_index(state, index))
+            .and_then(|index| {
+                Self::playlist_target_for_index(state, index).map(|target| (index, target))
             })
             .or_else(|| {
-                self.active_shared_playlist_index
-                    .and_then(|index| Self::playlist_target_for_index(state, index))
+                state.main_window.active_playlist_index.and_then(|index| {
+                    Self::playlist_target_for_index(state, index).map(|target| (index, target))
+                })
+            })
+            .or_else(|| {
+                self.active_shared_playlist_index.and_then(|index| {
+                    Self::playlist_target_for_index(state, index).map(|target| (index, target))
+                })
             })
     }
 
@@ -63,6 +75,29 @@ impl GuiPersistedConfigRuntimeOwner {
         let Some(local_file) = self.player_local_file.as_ref() else {
             return false;
         };
+
+        if is_plex_playlist_uri(target) {
+            if let Some(path) = local_file.path.as_deref()
+                && Self::plex_playlist_target_identity_matches(path, target)
+            {
+                return true;
+            }
+            if self
+                .pending_logical_media_override
+                .as_ref()
+                .is_some_and(|pending| {
+                    Self::plex_playlist_target_identity_matches(&pending.requested_target, target)
+                        || pending.logical_file.path.as_deref().is_some_and(|path| {
+                            Self::plex_playlist_target_identity_matches(path, target)
+                        })
+                })
+            {
+                return true;
+            }
+            if Self::plex_playlist_target_matches_local_file_hints(local_file, target) {
+                return true;
+            }
+        }
 
         if let Some(path) = local_file.path.as_deref()
             && Self::normalized_current_player_match_key(path)
@@ -96,7 +131,77 @@ impl GuiPersistedConfigRuntimeOwner {
         })
     }
 
-    fn local_file_identity_matches(current: &LocalFileUpdate, next: &LocalFileUpdate) -> bool {
+    fn plex_playlist_target_identity_matches(left: &str, right: &str) -> bool {
+        if !is_plex_playlist_uri(left) || !is_plex_playlist_uri(right) {
+            return false;
+        }
+        let Ok(left) = parse_plex_playlist_uri(left) else {
+            return false;
+        };
+        let Ok(right) = parse_plex_playlist_uri(right) else {
+            return false;
+        };
+        left.machine_identifier
+            .eq_ignore_ascii_case(&right.machine_identifier)
+            && left.rating_key == right.rating_key
+    }
+
+    fn plex_playlist_target_matches_local_file_hints(
+        local_file: &LocalFileUpdate,
+        target: &str,
+    ) -> bool {
+        let Ok(target) = parse_plex_playlist_uri(target) else {
+            return false;
+        };
+        let Some(target_size_bytes) = target.size_bytes else {
+            return false;
+        };
+        let Some(target_file_name) = target
+            .file_name
+            .as_deref()
+            .and_then(|file_name| Path::new(file_name).file_name())
+            .and_then(|name| name.to_str())
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        else {
+            return false;
+        };
+        let local_file_name = local_file
+            .path
+            .as_deref()
+            .filter(|path| !browser_is_url(path) && !is_plex_playlist_uri(path))
+            .and_then(|path| Path::new(path).file_name())
+            .and_then(|name| name.to_str())
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| local_file.name.trim());
+        if local_file_name.is_empty() {
+            return false;
+        }
+        let name_matches = if cfg!(windows) {
+            local_file_name.eq_ignore_ascii_case(target_file_name)
+        } else {
+            local_file_name == target_file_name
+        };
+        if !name_matches {
+            return false;
+        }
+        let local_size_bytes = local_file.size_bytes.or_else(|| {
+            local_file
+                .path
+                .as_deref()
+                .filter(|path| !browser_is_url(path) && !is_plex_playlist_uri(path))
+                .and_then(|path| std::fs::metadata(path).ok())
+                .filter(|metadata| metadata.is_file())
+                .map(|metadata| metadata.len())
+        });
+        local_size_bytes == Some(target_size_bytes)
+    }
+
+    pub(super) fn local_file_identity_matches(
+        current: &LocalFileUpdate,
+        next: &LocalFileUpdate,
+    ) -> bool {
         let current_path = current
             .path
             .as_deref()

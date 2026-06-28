@@ -13,6 +13,7 @@ sorotte-core = { path = "../sorotte-core" }
 sorotte-media-match = { path = "../sorotte-media-match" }
 sorotte-protocol = { path = "../sorotte-protocol" }
 sorotte-player-api = { path = "../sorotte-player-api" }
+sorotte-plex = { path = "../sorotte-plex" }
 md-5.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

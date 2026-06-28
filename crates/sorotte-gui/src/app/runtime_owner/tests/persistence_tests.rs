@@ -86,6 +86,284 @@ fn gui_persisted_config_runtime_owner_plex_cache_uses_sorotte_cache_directory() 
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_disables_plex_without_clearing_credentials_or_subsettings() {
+    let root = test_temp_root("plugin-disable-plex-preserves-settings");
+    let config_path = root.join("sorotte.ini");
+    let saved_settings = StoredClientSettingsMvp {
+        plex_user_token: Some("user-token".to_owned()),
+        plex_selected_server_id: Some("machine-id".to_owned()),
+        plex_selected_server_url: Some("https://plex.example.invalid:32400".to_owned()),
+        plex_selected_server_token: Some("server-token".to_owned()),
+        plex_sync_enabled: Some(true),
+        plex_streaming_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    };
+    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &saved_settings)
+        .expect("initial Plex settings should be persisted");
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+    let (_auth_start_tx, auth_start_rx) = mpsc::channel();
+    let (_sync_tx, sync_rx) = mpsc::channel();
+    let (_search_tx, search_rx) = mpsc::channel();
+    let (_resolve_tx, resolve_rx) = mpsc::channel();
+    let (_stream_tx, stream_rx) = mpsc::channel();
+    owner.plex_auth_start_rx = Some(auth_start_rx);
+    owner.plex_auth_poll_due_at = Some(std::time::Instant::now());
+    owner.plex_sync_rx = Some(sync_rx);
+    owner.plex_sync_next_tick_due_at = Some(std::time::Instant::now());
+    owner.plex_playlist_search_rx = Some(search_rx);
+    owner.plex_playlist_resolve_rx = Some(resolve_rx);
+    owner.plex_stream_resolve_rx = Some(stream_rx);
+    owner.plex_stream_resolve_trigger_key = Some("stale-stream".to_owned());
+
+    handle.push_request(GuiRuntimeRequest::SetPluginEnabled {
+        plugin: GuiPluginSelection::Plex,
+        enabled: false,
+    });
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert!(owner.plex_auth_start_rx.is_none());
+    assert!(owner.plex_auth_poll_due_at.is_none());
+    assert!(owner.plex_sync_rx.is_none());
+    assert!(owner.plex_sync_next_tick_due_at.is_none());
+    assert!(owner.plex_playlist_search_rx.is_none());
+    assert!(owner.plex_playlist_resolve_rx.is_none());
+    assert!(owner.plex_stream_resolve_rx.is_none());
+    assert!(owner.plex_stream_resolve_trigger_key.is_none());
+    assert!(
+        !state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::Plex)
+    );
+    assert!(state.plex.enabled);
+    assert!(state.plex.streaming_enabled);
+
+    let settings = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
+        .expect("Plex plugin setting config should be readable")
+        .expect("Plex plugin setting config should exist");
+    assert_eq!(settings.plex_plugin_enabled, Some(false));
+    assert_eq!(settings.plex_user_token.as_deref(), Some("user-token"));
+    assert_eq!(
+        settings.plex_selected_server_id.as_deref(),
+        Some("machine-id")
+    );
+    assert_eq!(
+        settings.plex_selected_server_url.as_deref(),
+        Some("https://plex.example.invalid:32400")
+    );
+    assert_eq!(
+        settings.plex_selected_server_token.as_deref(),
+        Some("server-token")
+    );
+    assert_eq!(settings.plex_sync_enabled, Some(true));
+    assert_eq!(settings.plex_streaming_enabled, Some(true));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_disables_media_matching_and_cancels_background_work() {
+    let root = test_temp_root("plugin-disable-media-match-cancels");
+    let config_path = root.join("sorotte.ini");
+    let saved_settings = StoredClientSettingsMvp {
+        media_match_fingerprinting_enabled: Some(true),
+        media_match_background_warmup_enabled: Some(true),
+        media_match_wire_sharing_enabled: Some(true),
+        media_match_runtime_tolerance_enabled: Some(true),
+        media_match_autoplay_policy: Some("AllowExact".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    };
+    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &saved_settings)
+        .expect("initial Media Matching settings should be persisted");
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+    let (_worker_tx, worker_rx) = mpsc::channel();
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    owner.media_match_background_worker_rx = Some(worker_rx);
+    owner.media_match_background_worker_cancel = Some(Arc::clone(&cancel_flag));
+    owner.media_match_background_trigger_key = Some("background warmup".to_owned());
+    owner.media_match_wire_sync_token = Some("wire-token".to_owned());
+
+    handle.push_request(GuiRuntimeRequest::SetPluginEnabled {
+        plugin: GuiPluginSelection::MediaMatching,
+        enabled: false,
+    });
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert!(
+        cancel_flag.load(Ordering::Relaxed),
+        "disabling Media Matching should cancel the active background worker"
+    );
+    assert_eq!(
+        owner.media_match_background_cancel_disposition,
+        Some(GuiMediaMatchBackgroundCancelDisposition::KeepCheckpoint)
+    );
+    assert_eq!(
+        owner.media_match_runtime_snapshot.remote_status.as_deref(),
+        Some("disabled: plugin off")
+    );
+    assert!(
+        !state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::MediaMatching)
+    );
+    assert!(state.media_match.settings.fingerprinting_enabled);
+    assert!(state.media_match.settings.background_warmup_enabled);
+
+    let settings = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
+        .expect("Media Matching plugin setting config should be readable")
+        .expect("Media Matching plugin setting config should exist");
+    assert_eq!(settings.media_matching_plugin_enabled, Some(false));
+    assert_eq!(settings.media_match_fingerprinting_enabled, Some(true));
+    assert_eq!(settings.media_match_background_warmup_enabled, Some(true));
+    assert_eq!(settings.media_match_wire_sharing_enabled, Some(true));
+    assert_eq!(settings.media_match_runtime_tolerance_enabled, Some(true));
+    assert_eq!(
+        settings.media_match_autoplay_policy.as_deref(),
+        Some("AllowExact")
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_reenables_media_matching_and_refreshes_snapshot() {
+    let root = test_temp_root("plugin-reenable-media-match-refreshes");
+    let config_path = root.join("sorotte.ini");
+    let saved_settings = StoredClientSettingsMvp {
+        media_matching_plugin_enabled: Some(false),
+        media_match_fingerprinting_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    };
+    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &saved_settings)
+        .expect("initial Media Matching plugin setting should be persisted");
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
+    owner.media_match_runtime_snapshot.remote_status = Some("disabled: plugin off".to_owned());
+    owner.media_match_runtime_snapshot.install_location = Some("stale default root".to_owned());
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+
+    handle.push_request(GuiRuntimeRequest::SetPluginEnabled {
+        plugin: GuiPluginSelection::MediaMatching,
+        enabled: true,
+    });
+    let actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert!(
+        actions
+            .iter()
+            .any(|action| matches!(action, GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(_))),
+        "reenabling Media Matching should publish a fresh runtime snapshot"
+    );
+    assert!(
+        state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::MediaMatching)
+    );
+    assert_eq!(
+        owner.media_match_runtime_snapshot.remote_status.as_deref(),
+        Some("unavailable: no current file")
+    );
+    let expected_install_location = root
+        .join("tools")
+        .join("media-match")
+        .join("bin")
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(
+        owner
+            .media_match_runtime_snapshot
+            .install_location
+            .as_deref(),
+        Some(expected_install_location.as_str())
+    );
+    assert_eq!(
+        state.media_match.install_location.as_deref(),
+        Some(expected_install_location.as_str())
+    );
+    let settings = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
+        .expect("Media Matching plugin setting config should be readable")
+        .expect("Media Matching plugin setting config should exist");
+    assert_eq!(settings.media_matching_plugin_enabled, Some(true));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_disables_stream_support_without_deleting_helper_details() {
+    let root = test_temp_root("plugin-disable-stream-support-clears-work");
+    let config_path = root.join("sorotte.ini");
+    let saved_settings = StoredClientSettingsMvp {
+        trusted_domains: Some(vec!["example.invalid".to_owned()]),
+        ..StoredClientSettingsMvp::default()
+    };
+    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &saved_settings)
+        .expect("initial Stream Support settings should be persisted");
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+    let (_probe_tx, probe_rx) = mpsc::channel();
+    owner.startup_stream_helper_probe_completed = false;
+    owner.startup_stream_helper_probe_rx = Some(probe_rx);
+    owner.pending_stream_retry_target = Some("https://video.example.invalid/watch".to_owned());
+    owner.managed_stream_helper_refresh_required = true;
+    owner.stream_helper_runtime_snapshot.install_location =
+        Some("C:/tools/sorotte-stream-helper".to_owned());
+    owner.stream_helper_runtime_snapshot.downloader_status = Some("yt-dlp ready".to_owned());
+    owner.stream_helper_runtime_snapshot.js_runtime_status = Some("node ready".to_owned());
+
+    handle.push_request(GuiRuntimeRequest::SetPluginEnabled {
+        plugin: GuiPluginSelection::StreamSupport,
+        enabled: false,
+    });
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert!(owner.startup_stream_helper_probe_completed);
+    assert!(owner.startup_stream_helper_probe_rx.is_none());
+    assert!(owner.pending_stream_retry_target.is_none());
+    assert!(!owner.managed_stream_helper_refresh_required);
+    assert_eq!(
+        owner
+            .stream_helper_runtime_snapshot
+            .install_location
+            .as_deref(),
+        Some("C:/tools/sorotte-stream-helper")
+    );
+    assert_eq!(
+        owner
+            .stream_helper_runtime_snapshot
+            .downloader_status
+            .as_deref(),
+        Some("yt-dlp ready")
+    );
+    assert_eq!(
+        owner
+            .stream_helper_runtime_snapshot
+            .js_runtime_status
+            .as_deref(),
+        Some("node ready")
+    );
+    assert!(
+        !state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::StreamSupport)
+    );
+
+    let settings = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
+        .expect("Stream Support plugin setting config should be readable")
+        .expect("Stream Support plugin setting config should exist");
+    assert_eq!(settings.stream_support_plugin_enabled, Some(false));
+    assert_eq!(
+        settings.trusted_domains,
+        Some(vec!["example.invalid".to_owned()])
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_persists_media_match_settings() {
     let root = test_temp_root("media-match-settings-owner");
     let config_path = root.join("sorotte.ini");

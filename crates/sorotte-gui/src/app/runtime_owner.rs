@@ -35,7 +35,8 @@ use sorotte_player_api::{LocalFileUpdate, PlayerAdapter};
 use sorotte_player_mpv::MpvAdapter;
 use sorotte_plex::{
     PlexAuthPollResult, PlexAuthSession, PlexClientConfig, PlexHttpClient, PlexMatchCache,
-    PlexServerConnection, PlexSyncEngine, PlexSyncState, PlexSyncStatus, PlexWatchEvent,
+    PlexServerConnection, PlexStreamTarget, PlexSyncEngine, PlexSyncState, PlexSyncStatus,
+    PlexWatchEvent, SecretPlexPlaybackUrl, format_plex_playlist_uri,
     plex_server_connection_kind_from_uri,
 };
 
@@ -60,8 +61,9 @@ use super::runtime_stack::{
 };
 use super::shell_state::{
     GuiCommandAvailabilityState, GuiConfigurationRuntimeSnapshot,
-    GuiMediaMatchRemediationRuntimeSnapshot, GuiMediaMatchRuntimeSnapshot, GuiPlexRuntimeSnapshot,
-    GuiPlexServerReachability, GuiPlexServerRow, GuiShellAction,
+    GuiMediaMatchRemediationRuntimeSnapshot, GuiMediaMatchRuntimeSnapshot, GuiMediaMatchState,
+    GuiMediaSourceProviderId, GuiPlexPlaylistSearchResult, GuiPlexRuntimeSnapshot,
+    GuiPlexServerReachability, GuiPlexServerRow, GuiPluginSelection, GuiShellAction,
     GuiStreamHelperRemediationRuntimeSnapshot, GuiStreamHelperRuntimeSnapshot,
     GuiTransientNotificationLevel, SorotteGuiShellAppState,
 };
@@ -168,10 +170,17 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) plex_sync_rx: Option<mpsc::Receiver<GuiPlexSyncWorkerResult>>,
     pub(super) plex_sync_next_tick_due_at: Option<Instant>,
     pub(super) plex_runtime_snapshot: GuiPlexRuntimeSnapshot,
+    pub(super) plex_playlist_search_rx: Option<mpsc::Receiver<GuiPlexPlaylistSearchWorkerResult>>,
+    pub(super) plex_playlist_resolve_rx: Option<mpsc::Receiver<GuiPlexPlaylistResolveWorkerResult>>,
+    pub(super) plex_stream_resolve_rx: Option<mpsc::Receiver<GuiPlexStreamResolveWorkerResult>>,
+    pub(super) plex_stream_resolve_trigger_key: Option<String>,
+    pub(super) plex_stream_resolve_result: Option<GuiPlexStreamResolveWorkerResult>,
+    pub(super) pending_playlist_source_resolution: Option<GuiPendingPlaylistSourceResolution>,
     pub(super) pending_stream_retry_target: Option<String>,
     pub(super) managed_stream_helper_refresh_required: bool,
     pub(super) pending_stream_feedback: VecDeque<Vec<GuiShellAction>>,
     pub(super) pending_stream_load_context: Option<GuiPendingStreamLoadContext>,
+    pub(super) pending_logical_media_override: Option<GuiPendingLogicalMediaOverride>,
 }
 
 pub(super) const ATTACHED_PLAYER_PAUSE_COMMAND_SUPPRESSION: Duration = Duration::from_secs(5);
@@ -197,6 +206,36 @@ pub(super) struct GuiPlexSyncWorkerResult {
     pub(super) engine: PlexSyncEngine<PlexHttpClient>,
     pub(super) status: PlexSyncStatus,
     pub(super) cache_save_error: Option<String>,
+}
+
+pub(super) struct GuiPlexPlaylistSearchWorkerResult {
+    pub(super) query: String,
+    pub(super) result: Result<Vec<GuiPlexPlaylistSearchResult>, String>,
+}
+
+pub(super) struct GuiPlexPlaylistResolveWorkerResult {
+    pub(super) rating_key: String,
+    pub(super) result: Result<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct GuiPlexStreamResolveOutcome {
+    pub(super) stream_target: Option<PlexStreamTarget>,
+    pub(super) cache: PlexMatchCache,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct GuiPlexStreamResolveWorkerResult {
+    pub(super) trigger_key: String,
+    pub(super) target: String,
+    pub(super) result: Result<GuiPlexStreamResolveOutcome, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct GuiPendingPlaylistSourceResolution {
+    pub(super) index: usize,
+    pub(super) target: String,
+    pub(super) provider_id: GuiMediaSourceProviderId,
 }
 
 #[derive(Debug)]
@@ -278,14 +317,25 @@ pub(super) enum GuiAttachedMediaSearchBuildStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum GuiUserMediaTargetResolution {
-    Resolved(String),
+    Resolved {
+        path: String,
+        source: GuiUserMediaTargetResolutionSource,
+    },
     Pending,
     Missing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GuiUserMediaTargetResolutionSource {
+    QuickLocal,
+    MediaMatchExactInventory,
+    MediaSearchIndex,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct GuiAutomaticMediaResolutionTrigger {
     pub(super) target: String,
+    pub(super) source_provider: String,
     pub(super) roots: Vec<String>,
     pub(super) media_match_remote_targets: String,
     pub(super) current_player_path: Option<String>,
@@ -304,6 +354,25 @@ pub(super) struct GuiPendingAttachedMediaResolution {
 pub(super) struct GuiPendingStreamLoadContext {
     pub(super) requested_target: String,
     pub(super) user_initiated: bool,
+}
+
+#[derive(Clone, PartialEq)]
+pub(super) struct GuiPendingLogicalMediaOverride {
+    pub(super) requested_target: String,
+    pub(super) loaded_target_secret: SecretPlexPlaybackUrl,
+    pub(super) logical_file: LocalFileUpdate,
+    pub(super) user_initiated: bool,
+}
+
+impl std::fmt::Debug for GuiPendingLogicalMediaOverride {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GuiPendingLogicalMediaOverride")
+            .field("requested_target", &self.requested_target)
+            .field("loaded_target_secret", &self.loaded_target_secret)
+            .field("logical_file", &self.logical_file)
+            .field("user_initiated", &self.user_initiated)
+            .finish()
+    }
 }
 
 impl Drop for GuiPendingAttachedMediaResolution {

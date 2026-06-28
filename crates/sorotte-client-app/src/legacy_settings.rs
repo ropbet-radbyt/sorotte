@@ -24,7 +24,11 @@ pub struct StoredClientSettingsMvp {
     pub per_player_arguments: Option<BTreeMap<String, Vec<String>>>,
     pub media_search_directories: Option<Vec<String>>,
     pub public_servers: Option<Vec<(String, String)>>,
+    pub stream_support_plugin_enabled: Option<bool>,
+    pub media_matching_plugin_enabled: Option<bool>,
+    pub plex_plugin_enabled: Option<bool>,
     pub plex_sync_enabled: Option<bool>,
+    pub plex_streaming_enabled: Option<bool>,
     pub plex_user_token: Option<String>,
     pub plex_selected_server_id: Option<String>,
     pub plex_selected_server_url: Option<String>,
@@ -113,7 +117,17 @@ impl fmt::Debug for StoredClientSettingsMvp {
             .field("per_player_arguments", &self.per_player_arguments)
             .field("media_search_directories", &self.media_search_directories)
             .field("public_servers", &self.public_servers)
+            .field(
+                "stream_support_plugin_enabled",
+                &self.stream_support_plugin_enabled,
+            )
+            .field(
+                "media_matching_plugin_enabled",
+                &self.media_matching_plugin_enabled,
+            )
+            .field("plex_plugin_enabled", &self.plex_plugin_enabled)
             .field("plex_sync_enabled", &self.plex_sync_enabled)
+            .field("plex_streaming_enabled", &self.plex_streaming_enabled)
             .field(
                 "plex_user_token",
                 &redacted_secret_debug(&self.plex_user_token),

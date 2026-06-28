@@ -21,6 +21,35 @@ impl GuiSessionTransportDriver for RecordingLivenessTransportDriver {
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_clears_pending_disconnect_on_transport_cleanup() {
+    let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.pending_operation = Some(crate::app::GuiPendingOperationState {
+        kind: GuiPendingOperationKind::DisconnectSession,
+    });
+
+    owner.handle_session_transport_failure(
+        &handle,
+        &mut state,
+        "Session transport TCP received an invalid protocol line: invalid JSON payload".to_owned(),
+    );
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert!(owner.session.is_none());
+    assert!(
+        state.pending_operation.is_none(),
+        "transport cleanup must complete a pending disconnect operation instead of leaving the UI stuck"
+    );
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_reconnects_after_clean_tcp_server_close() {
     use std::{
         io::{BufReader, Write},
@@ -38,6 +67,8 @@ fn gui_persisted_config_runtime_owner_reconnects_after_clean_tcp_server_close() 
     let (first_server_ready_tx, first_server_ready_rx) = mpsc::channel();
     let (release_first_tx, release_first_rx) = mpsc::channel();
     let (reconnect_hello_tx, reconnect_hello_rx) = mpsc::channel();
+    let (second_server_ready_tx, second_server_ready_rx) = mpsc::channel();
+    let (release_second_tx, release_second_rx) = mpsc::channel();
     let server_thread = std::thread::spawn(move || {
         let (mut first_stream, _) = listener
             .accept()
@@ -94,6 +125,15 @@ fn gui_persisted_config_runtime_owner_reconnects_after_clean_tcp_server_close() 
         second_stream
             .write_all(b"\n")
             .expect("reconnect test session transport server should terminate the reconnect hello");
+        second_stream
+            .flush()
+            .expect("reconnect test session transport server should flush the reconnect hello");
+        second_server_ready_tx.send(()).expect(
+            "reconnect test session transport server should signal reconnect hello readiness",
+        );
+        release_second_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("reconnect test session transport server should be released after reconnect");
     });
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
@@ -151,6 +191,9 @@ fn gui_persisted_config_runtime_owner_reconnects_after_clean_tcp_server_close() 
     };
     assert!(reconnect_hello.contains("\"Hello\""));
     assert!(reconnect_hello.contains("\"alice\""));
+    second_server_ready_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("reconnect test session transport server should signal the reconnect hello");
 
     pump_and_apply_runtime_owner_actions_until(
         &mut owner,
@@ -177,6 +220,9 @@ fn gui_persisted_config_runtime_owner_reconnects_after_clean_tcp_server_close() 
             .iter()
             .any(|notification| notification.message == "Session reconnected.")
     );
+    release_second_tx
+        .send(())
+        .expect("reconnect test session transport server should be releasable after reconnect");
 
     server_thread
         .join()

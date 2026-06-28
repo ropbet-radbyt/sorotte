@@ -111,6 +111,14 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::BeginSharedPlaylistUrlEdit
             | GuiShellAction::UpdateSharedPlaylistUrlEdit(_)
             | GuiShellAction::CancelSharedPlaylistUrlEdit
+            | GuiShellAction::BeginPlexPlaylistSearch
+            | GuiShellAction::UpdatePlexPlaylistSearchQuery(_)
+            | GuiShellAction::SubmitPlexPlaylistSearch { .. }
+            | GuiShellAction::CompletePlexPlaylistSearch { .. }
+            | GuiShellAction::SelectPlexPlaylistSearchResult(_)
+            | GuiShellAction::AddSelectedPlexPlaylistSearchResult
+            | GuiShellAction::CompletePlexPlaylistItemResolve { .. }
+            | GuiShellAction::CancelPlexPlaylistSearch
             | GuiShellAction::BeginMediaUrlEdit
             | GuiShellAction::UpdateMediaUrlEdit(_)
             | GuiShellAction::CancelMediaUrlEdit
@@ -164,6 +172,8 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::RemoveSelectedMainWindowUser
             | GuiShellAction::SelectMainWindowPlaylist(_)
             | GuiShellAction::ActivateMainWindowPlaylist(_)
+            | GuiShellAction::SelectMainWindowPlaylistSource { .. }
+            | GuiShellAction::SelectMainWindowPlaylistDefaultSource { .. }
             | GuiShellAction::MoveMainWindowPlaylistRow { .. }
             | GuiShellAction::MoveSelectedMainWindowPlaylistUp
             | GuiShellAction::MoveSelectedMainWindowPlaylistDown
@@ -198,6 +208,7 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::CompleteMissingMediaSearch(_) => self.apply_service_action(action),
             GuiShellAction::RetryPlayerLaunch
             | GuiShellAction::InstallStreamHelper
+            | GuiShellAction::SetPluginEnabled { .. }
             | GuiShellAction::IntegrateStreamHelperDownloader(_)
             | GuiShellAction::IntegrateStreamHelperJsRuntime(_)
             | GuiShellAction::RecheckStreamHelper
@@ -221,6 +232,7 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::RefreshPlexServers
             | GuiShellAction::SelectPlexServer { .. }
             | GuiShellAction::TogglePlexSync(_)
+            | GuiShellAction::TogglePlexStreaming(_)
             | GuiShellAction::DisconnectPlex
             | GuiShellAction::ToggleMainWindowPlaybackButtons
             | GuiShellAction::ToggleMainWindowAutoplayControls

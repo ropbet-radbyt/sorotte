@@ -352,6 +352,145 @@ impl PlaylistChangePayload {
     }
 }
 
+pub const SOROTTE_PLEX_PLAYLIST_URIS_FEATURE: &str = "sorottePlexPlaylistUris";
+pub const SOROTTE_PLEX_PLAYLIST_URIS_KEY: &str = SOROTTE_PLEX_PLAYLIST_URIS_FEATURE;
+
+pub fn is_sorotte_plex_playlist_uri(value: &str) -> bool {
+    value
+        .as_bytes()
+        .get(.."plex://".len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"plex://"))
+}
+
+pub fn syncplay_playlist_file_name(entry: &str) -> String {
+    plex_playlist_display_name(entry).unwrap_or_else(|| entry.to_owned())
+}
+
+pub fn canonical_playlist_files_from_change(payload: &PlaylistChangePayload) -> Vec<String> {
+    let Some(sidecar_uris) = payload
+        .extra
+        .get(SOROTTE_PLEX_PLAYLIST_URIS_KEY)
+        .and_then(Value::as_array)
+    else {
+        return payload.files.clone();
+    };
+
+    payload
+        .files
+        .iter()
+        .enumerate()
+        .map(|(index, file)| {
+            sidecar_uris
+                .get(index)
+                .and_then(Value::as_str)
+                .filter(|uri| is_sorotte_plex_playlist_uri(uri))
+                .map(str::to_owned)
+                .unwrap_or_else(|| file.clone())
+        })
+        .collect()
+}
+
+pub fn playlist_change_with_plex_sidecar(
+    files: impl IntoIterator<Item = impl Into<String>>,
+    include_plex_sidecar: bool,
+) -> PlaylistChangePayload {
+    let canonical_files: Vec<String> = files.into_iter().map(Into::into).collect();
+    let (syncplay_files, plex_sidecar) = split_playlist_files_for_syncplay(&canonical_files);
+    let mut payload = PlaylistChangePayload::new(syncplay_files);
+    if include_plex_sidecar && let Some(plex_sidecar) = plex_sidecar {
+        payload
+            .extra
+            .insert(SOROTTE_PLEX_PLAYLIST_URIS_KEY.to_owned(), plex_sidecar);
+    }
+    payload
+}
+
+pub fn split_playlist_files_for_syncplay(files: &[String]) -> (Vec<String>, Option<Value>) {
+    let mut syncplay_files = Vec::with_capacity(files.len());
+    let mut plex_sidecar = Vec::with_capacity(files.len());
+    let mut has_plex_uri = false;
+
+    for file in files {
+        if is_sorotte_plex_playlist_uri(file) {
+            has_plex_uri = true;
+            syncplay_files.push(syncplay_playlist_file_name(file));
+            plex_sidecar.push(Value::String(file.clone()));
+        } else {
+            syncplay_files.push(file.clone());
+            plex_sidecar.push(Value::Null);
+        }
+    }
+
+    (
+        syncplay_files,
+        has_plex_uri.then_some(Value::Array(plex_sidecar)),
+    )
+}
+
+fn plex_playlist_display_name(uri: &str) -> Option<String> {
+    if !is_sorotte_plex_playlist_uri(uri) {
+        return None;
+    }
+    plex_query_value(uri, "file")
+        .map(|file| {
+            file.rsplit(['/', '\\'])
+                .next()
+                .unwrap_or(file.as_str())
+                .to_owned()
+        })
+        .or_else(|| plex_query_value(uri, "title"))
+}
+
+fn plex_query_value(uri: &str, key: &str) -> Option<String> {
+    let query = uri.split_once('?')?.1;
+    query.split('&').find_map(|entry| {
+        let (entry_key, entry_value) = entry.split_once('=').unwrap_or((entry, ""));
+        (entry_key == key)
+            .then(|| percent_decode_query_value(entry_value))
+            .filter(|value| !value.is_empty())
+    })
+}
+
+fn percent_decode_query_value(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => {
+                decoded.push(b' ');
+                index += 1;
+            }
+            b'%' if index + 2 < bytes.len() => {
+                if let (Some(high), Some(low)) =
+                    (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
+                {
+                    decoded.push((high << 4) | low);
+                    index += 3;
+                } else {
+                    decoded.push(bytes[index]);
+                    index += 1;
+                }
+            }
+            byte => {
+                decoded.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8(decoded)
+        .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned())
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 impl Serialize for PlaylistChangePayload {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where

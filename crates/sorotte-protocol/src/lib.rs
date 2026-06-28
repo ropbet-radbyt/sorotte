@@ -28,7 +28,11 @@ pub use message::ProtocolMessage;
 pub use room::RoomRef;
 pub use set::{
     ControllerAuthPayload, FilePayload, NewControlledRoomPayload, PlaylistChangePayload,
-    PlaylistIndexPayload, ReadyPayload, SetPayload, UserSetPayload,
+    PlaylistIndexPayload, ReadyPayload, SOROTTE_PLEX_PLAYLIST_URIS_FEATURE,
+    SOROTTE_PLEX_PLAYLIST_URIS_KEY, SetPayload, UserSetPayload,
+    canonical_playlist_files_from_change, is_sorotte_plex_playlist_uri,
+    playlist_change_with_plex_sidecar, split_playlist_files_for_syncplay,
+    syncplay_playlist_file_name,
 };
 pub use state::{IgnoringOnTheFlyPayload, PingPayload, PlaystatePayload, StatePayload};
 

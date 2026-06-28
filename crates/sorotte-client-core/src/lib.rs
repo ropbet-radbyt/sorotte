@@ -11,9 +11,10 @@ use sorotte_player_api::{
 };
 use sorotte_protocol::{
     ChatPayload, ControllerAuthPayload, FilePayload, IgnoringOnTheFlyPayload, ListPayload,
-    PingPayload, PlaylistChangePayload, PlaylistIndexPayload, PlaystatePayload, ProtocolError,
-    ProtocolMessage, ReadyPayload, RoomRef, SetPayload, StatePayload, decode_message_line,
-    decode_message_line_items, encode_message_line, extract_hello_from_message,
+    PingPayload, PlaylistIndexPayload, PlaystatePayload, ProtocolError, ProtocolMessage,
+    ReadyPayload, RoomRef, SetPayload, StatePayload, canonical_playlist_files_from_change,
+    decode_message_line, decode_message_line_items, encode_message_line,
+    extract_hello_from_message, playlist_change_with_plex_sidecar,
 };
 
 const SEEK_THRESHOLD_SECONDS: f64 = 1.0;

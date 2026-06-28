@@ -268,7 +268,16 @@ impl GuiPersistedConfigRuntimeOwner {
         self.clear_session_attached_player_sync_state();
         self.reset_session_transport_reconnect_state();
 
-        let actions = self.sessionless_projection_actions(projected_state);
+        let mut actions = self.sessionless_projection_actions(projected_state);
+        if matches!(
+            projected_state
+                .pending_operation
+                .as_ref()
+                .map(|pending| pending.kind),
+            Some(crate::app::GuiPendingOperationKind::DisconnectSession)
+        ) {
+            actions.push(GuiShellAction::CompleteSessionDisconnect);
+        }
         Self::push_actions_and_project(handle, projected_state, actions);
     }
 
@@ -439,6 +448,13 @@ impl GuiPersistedConfigRuntimeOwner {
         let actions = self.augment_runtime_actions_for_room_transitions(projected_state, actions);
         self.emit_gui_actions_to_attached_player(&actions);
         Self::push_actions_and_project(handle, projected_state, actions);
+        self.sync_active_shared_playlist_media_and_playstate_impl(projected_state);
+    }
+
+    pub(super) fn sync_active_shared_playlist_media_and_playstate_impl(
+        &mut self,
+        projected_state: &SorotteGuiShellAppState,
+    ) {
         let selected_media_sync =
             self.sync_selected_shared_playlist_media_to_attached_player_impl(projected_state);
         let selection_handoff_ready = selected_media_sync.selection_handoff_ready(

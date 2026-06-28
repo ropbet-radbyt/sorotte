@@ -12,6 +12,24 @@ impl GuiWidgetEguiRenderer {
         if node.id == "main-window:browser:hide-empty" {
             return Some(GuiShellAction::ToggleMainWindowHideEmptyRooms);
         }
+        if node.id == "plugins:stream-support:enabled" {
+            return Some(GuiShellAction::SetPluginEnabled {
+                plugin: GuiPluginSelection::StreamSupport,
+                enabled: value,
+            });
+        }
+        if node.id == "plugins:media-matching:enabled" {
+            return Some(GuiShellAction::SetPluginEnabled {
+                plugin: GuiPluginSelection::MediaMatching,
+                enabled: value,
+            });
+        }
+        if node.id == "plugins:plex:enabled" {
+            return Some(GuiShellAction::SetPluginEnabled {
+                plugin: GuiPluginSelection::Plex,
+                enabled: value,
+            });
+        }
         if node.id == "plugins:media-matching:setting:fingerprinting" {
             return Some(GuiShellAction::SetMediaMatchFingerprintingEnabled(value));
         }
@@ -103,6 +121,21 @@ impl GuiWidgetEguiRenderer {
                     value.to_owned(),
                 )]
             });
+        }
+
+        if node.id == "main-window:playlist-plex-search:query" {
+            let mut actions = Vec::new();
+            if changed {
+                actions.push(GuiShellAction::UpdatePlexPlaylistSearchQuery(
+                    value.to_owned(),
+                ));
+            }
+            if submitted {
+                actions.push(GuiShellAction::SubmitPlexPlaylistSearch {
+                    query: value.to_owned(),
+                });
+            }
+            return (!actions.is_empty()).then_some(actions);
         }
 
         if node.id == "main-window:media-url-edit:text" {

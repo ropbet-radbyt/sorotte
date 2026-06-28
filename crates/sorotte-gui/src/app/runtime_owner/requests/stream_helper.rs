@@ -79,6 +79,17 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) -> bool {
+        if !projected_state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::StreamSupport)
+        {
+            Self::push_plugin_disabled_notification(
+                handle,
+                projected_state,
+                GuiPluginSelection::StreamSupport,
+            );
+            return true;
+        }
         let Some(root) = self.legacy_gui_qsettings_root() else {
             Self::push_runtime_error_notification(
                 handle,
@@ -152,6 +163,17 @@ impl GuiPersistedConfigRuntimeOwner {
         projected_state: &mut SorotteGuiShellAppState,
         source_path: String,
     ) -> bool {
+        if !projected_state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::StreamSupport)
+        {
+            Self::push_plugin_disabled_notification(
+                handle,
+                projected_state,
+                GuiPluginSelection::StreamSupport,
+            );
+            return true;
+        }
         let Some(root) = self.legacy_gui_qsettings_root() else {
             Self::push_runtime_error_notification(
                 handle,
@@ -191,6 +213,17 @@ impl GuiPersistedConfigRuntimeOwner {
         projected_state: &mut SorotteGuiShellAppState,
         source_path: String,
     ) -> bool {
+        if !projected_state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::StreamSupport)
+        {
+            Self::push_plugin_disabled_notification(
+                handle,
+                projected_state,
+                GuiPluginSelection::StreamSupport,
+            );
+            return true;
+        }
         let Some(root) = self.legacy_gui_qsettings_root() else {
             Self::push_runtime_error_notification(
                 handle,
@@ -229,6 +262,17 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) -> bool {
+        if !projected_state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::StreamSupport)
+        {
+            Self::push_plugin_disabled_notification(
+                handle,
+                projected_state,
+                GuiPluginSelection::StreamSupport,
+            );
+            return true;
+        }
         let snapshot = self.recheck_stream_helper_runtime_snapshot(projected_state);
         let mut actions = vec![GuiShellAction::ApplyGuiStreamHelperRuntimeSnapshot(
             snapshot.clone(),
@@ -256,6 +300,17 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) -> bool {
+        if !projected_state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::StreamSupport)
+        {
+            Self::push_plugin_disabled_notification(
+                handle,
+                projected_state,
+                GuiPluginSelection::StreamSupport,
+            );
+            return true;
+        }
         let Some(target) = self
             .pending_stream_retry_target
             .clone()

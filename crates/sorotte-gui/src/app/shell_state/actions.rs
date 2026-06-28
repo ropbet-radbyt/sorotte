@@ -29,6 +29,10 @@ pub(in crate::app) enum GuiShellAction {
     TrustTlsCertificatePrompt,
     RejectTlsCertificatePrompt,
     TriggerSelectedMenuAction,
+    SetPluginEnabled {
+        plugin: GuiPluginSelection,
+        enabled: bool,
+    },
     AnnounceTlsCertificatePromptRequired,
     AnnounceUpdateNoticeAvailable,
     AnnounceAboutDialogRequested,
@@ -113,6 +117,23 @@ pub(in crate::app) enum GuiShellAction {
     BeginSharedPlaylistUrlEdit,
     UpdateSharedPlaylistUrlEdit(String),
     CancelSharedPlaylistUrlEdit,
+    BeginPlexPlaylistSearch,
+    UpdatePlexPlaylistSearchQuery(String),
+    SubmitPlexPlaylistSearch {
+        query: String,
+    },
+    CompletePlexPlaylistSearch {
+        query: String,
+        results: Vec<GuiPlexPlaylistSearchResult>,
+        error: Option<String>,
+    },
+    SelectPlexPlaylistSearchResult(usize),
+    AddSelectedPlexPlaylistSearchResult,
+    CompletePlexPlaylistItemResolve {
+        rating_key: String,
+        error: Option<String>,
+    },
+    CancelPlexPlaylistSearch,
     BeginMediaUrlEdit,
     UpdateMediaUrlEdit(String),
     CancelMediaUrlEdit,
@@ -173,6 +194,13 @@ pub(in crate::app) enum GuiShellAction {
     RemoveSelectedMainWindowUser,
     SelectMainWindowPlaylist(usize),
     ActivateMainWindowPlaylist(usize),
+    SelectMainWindowPlaylistSource {
+        index: usize,
+        provider_id: GuiMediaSourceProviderId,
+    },
+    SelectMainWindowPlaylistDefaultSource {
+        source_id: GuiPlaylistDefaultSourceId,
+    },
     MoveMainWindowPlaylistRow {
         from_index: usize,
         to_index: usize,
@@ -248,6 +276,7 @@ pub(in crate::app) enum GuiShellAction {
         uri: String,
     },
     TogglePlexSync(bool),
+    TogglePlexStreaming(bool),
     DisconnectPlex,
     ToggleMainWindowPlaybackButtons,
     ToggleMainWindowAutoplayControls,

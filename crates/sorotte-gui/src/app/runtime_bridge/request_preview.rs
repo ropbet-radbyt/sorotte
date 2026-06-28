@@ -36,6 +36,16 @@ impl GuiRuntimeRequest {
                 level: GuiTransientNotificationLevel::Info,
                 message: "Retrying mpv launch with the current player settings.".to_owned(),
             }],
+            Self::SetPluginEnabled { plugin, enabled } => {
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: format!(
+                        "{} plugin {}.",
+                        plugin.label(),
+                        if *enabled { "enabled" } else { "disabled" }
+                    ),
+                }]
+            }
             Self::InstallStreamHelper => vec![GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Info,
                 message: "Installing stream helper support for extractor-backed URLs.".to_owned(),
@@ -131,10 +141,42 @@ impl GuiRuntimeRequest {
                     "Disabling Plex watch sync.".to_owned()
                 },
             }],
+            Self::TogglePlexStreaming(enabled) => {
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: if *enabled {
+                        "Enabling Plex streaming.".to_owned()
+                    } else {
+                        "Disabling Plex streaming.".to_owned()
+                    },
+                }]
+            }
             Self::DisconnectPlex => vec![GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Info,
                 message: "Disconnecting Plex.".to_owned(),
             }],
+            Self::SearchSelectedPlexServerMedia { query } => {
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: if query.trim().is_empty() {
+                        "Loading recent Plex media.".to_owned()
+                    } else {
+                        "Searching selected Plex server.".to_owned()
+                    },
+                }]
+            }
+            Self::ResolvePlexPlaylistItem { .. } => {
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: "Adding Plex media to the shared playlist.".to_owned(),
+                }]
+            }
+            Self::ResolvePlaylistSource { .. } => {
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: "Resolving playlist source for this client.".to_owned(),
+                }]
+            }
             Self::SendChatMessage(_message) => Vec::new(),
             Self::SeekToPosition(target_position_seconds) => {
                 let message = format!("Seek requested: target {target_position_seconds} seconds.");
@@ -217,6 +259,16 @@ impl GuiRuntimeRequest {
                 level: GuiTransientNotificationLevel::Info,
                 message: "Retrying mpv launch with the current player settings.".to_owned(),
             }],
+            Self::SetPluginEnabled { plugin, enabled } => {
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: format!(
+                        "{} plugin {}.",
+                        plugin.label(),
+                        if *enabled { "enabled" } else { "disabled" }
+                    ),
+                }]
+            }
             Self::InstallStreamHelper => vec![GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Info,
                 message: "Installing stream helper support for extractor-backed URLs.".to_owned(),
@@ -312,10 +364,36 @@ impl GuiRuntimeRequest {
                     "Disabling Plex watch sync.".to_owned()
                 },
             }],
+            Self::TogglePlexStreaming(enabled) => {
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: if *enabled {
+                        "Enabling Plex streaming.".to_owned()
+                    } else {
+                        "Disabling Plex streaming.".to_owned()
+                    },
+                }]
+            }
             Self::DisconnectPlex => vec![GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Info,
                 message: "Disconnecting Plex.".to_owned(),
             }],
+            Self::SearchSelectedPlexServerMedia { query } => {
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: if query.trim().is_empty() {
+                        "Loading recent Plex media.".to_owned()
+                    } else {
+                        "Searching selected Plex server.".to_owned()
+                    },
+                }]
+            }
+            Self::ResolvePlexPlaylistItem { .. } => {
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: "Adding Plex media to the shared playlist.".to_owned(),
+                }]
+            }
             Self::UndoSeek => vec![
                 GuiShellAction::PushTransientNotification {
                     level: GuiTransientNotificationLevel::Info,
@@ -350,6 +428,7 @@ impl GuiRuntimeRequest {
             | Self::ShuffleRemainingPlaylist
             | Self::ShuffleEntirePlaylist
             | Self::ReplacePlaylist { .. }
+            | Self::ResolvePlaylistSource { .. }
             | Self::SetRoom(_)
             | Self::ReturnToDefaultRoom
             | Self::SendChatMessage(_)

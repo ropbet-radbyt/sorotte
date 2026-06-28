@@ -1,5 +1,9 @@
 use super::*;
 
+use sorotte_plex::{PlexStreamTarget, redact_plex_token};
+
+const MPV_FORCE_MEDIA_TITLE_OPTION: &str = "force-media-title";
+
 impl GuiPersistedConfigRuntimeOwner {
     fn stream_helper_issue_notification_level(
         health: GuiStreamHelperHealth,
@@ -15,6 +19,43 @@ impl GuiPersistedConfigRuntimeOwner {
                 GuiTransientNotificationLevel::Warning
             }
         }
+    }
+
+    fn normalized_forced_media_title(title: &str) -> Option<String> {
+        let normalized = title
+            .chars()
+            .map(|ch| if ch.is_control() { ' ' } else { ch })
+            .collect::<String>();
+        let trimmed = normalized.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_owned())
+    }
+
+    fn media_title_for_opened_path(path: &str) -> String {
+        let placeholder = Self::placeholder_local_file_for_path(path);
+        Self::normalized_forced_media_title(&redact_plex_token(&placeholder.name))
+            .unwrap_or_else(|| "Media".to_owned())
+    }
+
+    fn media_title_for_plex_stream(stream_target: &PlexStreamTarget) -> String {
+        [
+            stream_target.playlist_uri.title.as_deref(),
+            Some(stream_target.matched_item.title.as_str()),
+            Some(stream_target.logical_file.name.as_str()),
+        ]
+        .into_iter()
+        .flatten()
+        .find_map(Self::normalized_forced_media_title)
+        .unwrap_or_else(|| "Plex Stream".to_owned())
+    }
+
+    fn set_attached_player_forced_media_title(&mut self, title: &str) {
+        let Some(title) = Self::normalized_forced_media_title(title) else {
+            return;
+        };
+        let Some(player) = self.player.as_mut() else {
+            return;
+        };
+        let _ = player.set_option_string(MPV_FORCE_MEDIA_TITLE_OPTION, &title);
     }
 
     fn room_stream_target_kind(
@@ -60,6 +101,7 @@ impl GuiPersistedConfigRuntimeOwner {
     }
 
     pub(super) fn queue_stream_warning(&mut self, message: String) {
+        let message = redact_plex_token(&message);
         self.queue_stream_feedback_actions(vec![
             GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Warning,
@@ -70,6 +112,7 @@ impl GuiPersistedConfigRuntimeOwner {
     }
 
     pub(super) fn queue_stream_error(&mut self, message: String) {
+        let message = redact_plex_token(&message);
         self.queue_stream_feedback_actions(vec![
             GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Error,
@@ -154,6 +197,17 @@ impl GuiPersistedConfigRuntimeOwner {
                 false
             }
             GuiStreamTargetKind::ExtractorPageUrl => {
+                if !state
+                    .plugin_enablement
+                    .enabled_for(GuiPluginSelection::StreamSupport)
+                {
+                    self.refresh_stream_helper_runtime_snapshot_for_target(None);
+                    self.queue_stream_warning(
+                        "Automatic room URL open is unavailable locally: Stream Support is disabled."
+                            .to_owned(),
+                    );
+                    return false;
+                }
                 let snapshot = self.refresh_stream_helper_runtime_snapshot_for_target(Some(target));
                 if snapshot.health == GuiStreamHelperHealth::Healthy {
                     if let Err(error) =
@@ -173,11 +227,31 @@ impl GuiPersistedConfigRuntimeOwner {
                     false
                 }
             }
-            GuiStreamTargetKind::LocalPath | GuiStreamTargetKind::DirectMediaUrl => {
+            GuiStreamTargetKind::LocalPath
+            | GuiStreamTargetKind::DirectMediaUrl
+            | GuiStreamTargetKind::PlexUri => {
                 self.refresh_stream_helper_runtime_snapshot_for_target(None);
                 true
             }
         }
+    }
+
+    fn pending_logical_media_override_matches_loaded_target(&self, target: &str) -> bool {
+        self.pending_logical_media_override
+            .as_ref()
+            .is_some_and(|pending| pending.loaded_target_secret.as_str() == target)
+    }
+
+    fn take_pending_logical_media_failure_context(
+        &mut self,
+        target: &str,
+    ) -> Option<(String, bool)> {
+        if !self.pending_logical_media_override_matches_loaded_target(target) {
+            return None;
+        }
+        self.pending_logical_media_override
+            .take()
+            .map(|pending| (pending.requested_target, pending.user_initiated))
     }
 
     pub(super) fn handle_player_media_load_outcome(&mut self, outcome: PlayerMediaLoadOutcome) {
@@ -198,19 +272,29 @@ impl GuiPersistedConfigRuntimeOwner {
         self.last_published_media_match_signature = None;
         let user_initiated =
             self.take_pending_stream_load_user_initiated_for_target(&outcome.requested_target);
+        let logical_failure_context =
+            self.take_pending_logical_media_failure_context(&outcome.requested_target);
+        let requested_target = logical_failure_context
+            .as_ref()
+            .map(|(target, _)| target.as_str())
+            .unwrap_or(outcome.requested_target.as_str());
+        let user_initiated = user_initiated
+            || logical_failure_context
+                .as_ref()
+                .is_some_and(|(_, user)| *user);
         let failure_message = outcome
             .failure
             .as_ref()
-            .map(|failure| failure.message.clone())
+            .map(|failure| redact_plex_token(&failure.message))
             .unwrap_or_else(|| "The attached player reported a media load failure.".to_owned());
 
-        if browser_stream_target_kind(&outcome.requested_target, None)
+        if browser_stream_target_kind(requested_target, None)
             == GuiStreamTargetKind::ExtractorPageUrl
         {
-            let snapshot = self
-                .refresh_stream_helper_runtime_snapshot_for_target(Some(&outcome.requested_target));
+            let snapshot =
+                self.refresh_stream_helper_runtime_snapshot_for_target(Some(requested_target));
             if snapshot.health != GuiStreamHelperHealth::Healthy {
-                self.pending_stream_retry_target = Some(outcome.requested_target.clone());
+                self.pending_stream_retry_target = Some(requested_target.to_owned());
                 let combined_message = snapshot.message.as_ref().map_or_else(
                     || failure_message.clone(),
                     |summary| {
@@ -232,7 +316,7 @@ impl GuiPersistedConfigRuntimeOwner {
             self.refresh_stream_helper_runtime_snapshot_for_target(None);
         }
 
-        let message = if browser_is_url(&outcome.requested_target) {
+        let message = if browser_is_url(requested_target) {
             format!("Loading media URL through the attached player failed: {failure_message}")
         } else {
             format!("Loading media through the attached player failed: {failure_message}")
@@ -253,16 +337,23 @@ impl GuiPersistedConfigRuntimeOwner {
         }
 
         let selected_path = paths[0].clone();
+        self.pending_logical_media_override = None;
         let (player_name, open_result) = {
             let player = self.player.as_mut()?;
             (player.name(), player.open_file(&selected_path))
         };
         Some(match open_result {
             Ok(()) => {
+                self.set_attached_player_forced_media_title(&Self::media_title_for_opened_path(
+                    &selected_path,
+                ));
                 self.player_local_file =
                     Some(Self::placeholder_local_file_for_path(&selected_path));
-                self.player_local_file_placeholder = true;
+                self.player_local_file_placeholder = browser_is_url(&selected_path);
                 self.player_position_seconds = Some(0.0);
+                self.player_paused_for_cache = None;
+                self.player_cache_buffering_percent = None;
+                self.pending_attached_cache_unpause = false;
                 self.refresh_player_state_impl();
                 let preserve_ready_for_auto_advanced_playlist_item =
                     self.playlist_auto_advance_eof_latched
@@ -297,7 +388,72 @@ impl GuiPersistedConfigRuntimeOwner {
             Err(error) => {
                 self.clear_pending_stream_load_context_for_target(&selected_path);
                 Err(format!(
-                    "Opening media through the attached {player_name} player failed: {error}"
+                    "Opening media through the attached {player_name} player failed: {}",
+                    redact_plex_token(&error.to_string())
+                ))
+            }
+        })
+    }
+
+    pub(in crate::app::runtime_owner) fn open_plex_stream_target_through_attached_player_result_impl(
+        &mut self,
+        requested_target: &str,
+        stream_target: PlexStreamTarget,
+        user_initiated: bool,
+    ) -> Option<Result<String, String>> {
+        self.player.as_ref()?;
+
+        let loaded_target_secret = stream_target.playback_url.clone();
+        let logical_file = stream_target.logical_file.clone();
+        let logical_name = logical_file.name.clone();
+        let media_title = Self::media_title_for_plex_stream(&stream_target);
+        let (player_name, open_result) = {
+            let player = self.player.as_mut()?;
+            (
+                player.name(),
+                player.open_file(loaded_target_secret.as_str()),
+            )
+        };
+        Some(match open_result {
+            Ok(()) => {
+                self.set_attached_player_forced_media_title(&media_title);
+                self.pending_stream_load_context = None;
+                if user_initiated {
+                    self.pending_stream_retry_target = None;
+                }
+                self.pending_logical_media_override =
+                    Some(super::super::GuiPendingLogicalMediaOverride {
+                        requested_target: requested_target.to_owned(),
+                        loaded_target_secret,
+                        logical_file: logical_file.clone(),
+                        user_initiated,
+                    });
+                self.player_local_file = Some(logical_file);
+                self.player_local_file_placeholder = false;
+                self.player_position_seconds = Some(0.0);
+                self.player_paused_for_cache = None;
+                self.player_cache_buffering_percent = None;
+                self.pending_attached_cache_unpause = false;
+                self.refresh_player_state_impl();
+                let preserve_ready_for_auto_advanced_playlist_item =
+                    self.playlist_auto_advance_eof_latched
+                        && self.session.as_ref().is_some_and(|session| {
+                            session.has_pending_playlist_index_reset_intent()
+                        });
+                if !preserve_ready_for_auto_advanced_playlist_item
+                    && let Some(session) = self.session.as_mut()
+                {
+                    let _ = session.mark_local_media_opened_not_ready();
+                }
+                Ok(format!(
+                    "Started loading Plex media stream through the attached {player_name} player: {logical_name}."
+                ))
+            }
+            Err(error) => {
+                self.pending_logical_media_override = None;
+                Err(format!(
+                    "Opening Plex media stream through the attached {player_name} player failed: {}",
+                    redact_plex_token(&error.to_string())
                 ))
             }
         })

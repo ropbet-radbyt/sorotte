@@ -31,6 +31,54 @@ fn queued_runtime_control_set_playlist_and_index_emit_protocol_messages() {
 }
 
 #[test]
+fn plex_playlist_sidecar_outbound_keeps_syncplay_files_baseline() {
+    let plex_uri =
+        "plex://server/metadata/14452?title=Episode%2011&file=Episode%2011%20%5B1080p%5D.mkv";
+    let mut control = QueuedRuntimeControl::default();
+    control.set_playlist(vec![plex_uri.to_owned()]);
+
+    let ProtocolMessage::Set(change_message) = &control.outbound_messages()[0] else {
+        panic!("expected queued control playlist change to emit Set message");
+    };
+    let playlist_change = change_message
+        .set
+        .playlist_change
+        .as_ref()
+        .expect("Set message should contain playlistChange payload");
+
+    assert_eq!(
+        playlist_change.files,
+        vec!["Episode 11 [1080p].mkv".to_owned()]
+    );
+    assert_eq!(
+        playlist_change.extra.get("sorottePlexPlaylistUris"),
+        Some(&json!([plex_uri]))
+    );
+}
+
+#[test]
+fn plex_playlist_sidecar_inbound_restores_canonical_playlist_uri() {
+    let mut session = ClientSession::default();
+    session
+        .apply_hello_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+    let plex_uri =
+        "plex://server/metadata/14452?title=Episode%2011&file=Episode%2011%20%5B1080p%5D.mkv";
+    session
+        .apply_message_json(&format!(
+            r#"{{"Set":{{"playlistChange":{{"files":["Episode 11 [1080p].mkv"],"user":"alice","sorottePlexPlaylistUris":["{plex_uri}"]}}}}}}"#
+        ))
+        .expect("playlist sidecar should apply");
+
+    let playlist = session
+        .current_room_playlist()
+        .expect("playlist should be available");
+    assert_eq!(playlist.files, vec![plex_uri.to_owned()]);
+}
+
+#[test]
 fn playlist_reorder_index_echo_does_not_queue_reset_when_active_target_is_unchanged() {
     let mut session = ClientSession::default();
     session

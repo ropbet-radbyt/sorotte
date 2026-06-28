@@ -194,6 +194,42 @@ fn apply_external_semantic_setting_line(
             }
             settings.shared_playlist_enabled = Some(parse_external_setting_bool(value)?);
         }
+        "plex-selected-server" => {
+            let machine_identifier = fields.next().ok_or_else(|| {
+                "setting plex-selected-server requires a machine identifier".to_owned()
+            })?;
+            let uri = fields
+                .next()
+                .ok_or_else(|| "setting plex-selected-server requires a URI".to_owned())?;
+            let token = fields
+                .next()
+                .ok_or_else(|| "setting plex-selected-server requires a token".to_owned())?;
+            if fields.next().is_some() {
+                return Err("setting plex-selected-server accepts exactly three values".to_owned());
+            }
+            settings.plex_user_token = Some(token.to_owned());
+            settings.plex_selected_server_id = Some(machine_identifier.to_owned());
+            settings.plex_selected_server_url = Some(uri.to_owned());
+            settings.plex_selected_server_token = Some(token.to_owned());
+        }
+        "plex-sync-enabled" => {
+            let value = fields
+                .next()
+                .ok_or_else(|| "setting plex-sync-enabled requires a value".to_owned())?;
+            if fields.next().is_some() {
+                return Err("setting plex-sync-enabled accepts exactly one value".to_owned());
+            }
+            settings.plex_sync_enabled = Some(parse_external_setting_bool(value)?);
+        }
+        "plex-streaming-enabled" => {
+            let value = fields
+                .next()
+                .ok_or_else(|| "setting plex-streaming-enabled requires a value".to_owned())?;
+            if fields.next().is_some() {
+                return Err("setting plex-streaming-enabled accepts exactly one value".to_owned());
+            }
+            settings.plex_streaming_enabled = Some(parse_external_setting_bool(value)?);
+        }
         "public-server" => {
             let label = fields
                 .next()

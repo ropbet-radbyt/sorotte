@@ -8,6 +8,7 @@ use super::{GuiResponsiveColumnsPlan, GuiResponsiveColumnsPlanEntry, GuiWidgetEg
 enum GuiCompactActionIcon {
     AddFile,
     AddUrl,
+    AddPlex,
     PlaylistOptions,
 }
 
@@ -531,6 +532,7 @@ impl GuiWidgetEguiRenderer {
         match node.id.as_str() {
             "main-window:playlist:add-files" => Some(GuiCompactActionIcon::AddFile),
             "main-window:playlist:add-url" => Some(GuiCompactActionIcon::AddUrl),
+            "main-window:playlist:add-plex" => Some(GuiCompactActionIcon::AddPlex),
             "main-window:playlist:more-menu" => Some(GuiCompactActionIcon::PlaylistOptions),
             _ => None,
         }
@@ -685,6 +687,23 @@ impl GuiWidgetEguiRenderer {
                     color,
                 );
             }
+            GuiCompactActionIcon::AddPlex => {
+                let disc_center = egui::pos2(rect.center().x - 2.0, rect.center().y);
+                ui.painter().circle_stroke(disc_center, 8.0, stroke);
+                ui.painter().circle_stroke(disc_center, 2.4, stroke);
+                ui.painter().line_segment(
+                    [
+                        egui::pos2(disc_center.x + 8.0, disc_center.y),
+                        egui::pos2(rect.right() - 3.0, disc_center.y),
+                    ],
+                    stroke,
+                );
+                Self::paint_small_plus(
+                    ui,
+                    egui::pos2(rect.right() - 2.5, rect.bottom() - 4.0),
+                    color,
+                );
+            }
             GuiCompactActionIcon::PlaylistOptions => {
                 for row in 0..3 {
                     let y = rect.top() + 4.0 + (row as f32 * 6.0);
@@ -744,6 +763,13 @@ impl GuiWidgetEguiRenderer {
         node: &GuiWidgetNode,
     ) -> Option<(egui::Color32, egui::Color32, egui::Color32)> {
         let palette = Self::palette_for_ui(ui);
+        if node
+            .id
+            .strip_prefix("main-window:playlist-plex-search:result:")
+            .is_some_and(|suffix| suffix.ends_with(":add"))
+        {
+            return Some((palette.primary, palette.primary_hover, palette.primary_text));
+        }
         match node.id.as_str() {
             "config-command:connect"
             | "config-command:save"
@@ -754,6 +780,7 @@ impl GuiWidgetEguiRenderer {
             | "main-window:room-actions:create-controlled-room"
             | "main-window:room-actions:identify-controller"
             | "main-window:playlist-url-edit:commit"
+            | "main-window:playlist-plex-search:submit"
             | "main-window:media-url-edit:commit"
             | "main-window:chat:send"
             | "plugins:plex:connect"

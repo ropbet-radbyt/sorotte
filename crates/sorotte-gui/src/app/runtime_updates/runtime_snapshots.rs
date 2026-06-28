@@ -438,6 +438,7 @@ impl SorotteGuiShellAppState {
             .background_status
             .and_then(|value| normalized_editable_text(&value));
         self.media_match.open_install_location_available = snapshot.open_install_location_available;
+        self.refresh_playlist_source_states();
         self.clear_action_error_and_refresh();
         true
     }
@@ -502,6 +503,7 @@ impl SorotteGuiShellAppState {
                 .record_action_error("GUI Plex runtime snapshots cannot contain empty status.");
         }
         self.plex.enabled = snapshot.enabled;
+        self.plex.streaming_enabled = snapshot.streaming_enabled;
         self.plex.authenticated = snapshot.authenticated;
         self.plex.authenticating = snapshot.authenticating;
         self.plex.auth_code = snapshot
@@ -542,6 +544,7 @@ impl SorotteGuiShellAppState {
         self.plex.last_error = snapshot
             .last_error
             .and_then(|value| normalized_editable_text(&value));
+        self.refresh_playlist_source_states();
         self.clear_action_error_and_refresh();
         true
     }
@@ -771,6 +774,7 @@ impl SorotteGuiShellAppState {
         self.text_edit_session = text_edit_session;
         self.playlist_text_edit_session = playlist_text_edit_session;
         self.playlist_url_edit_session = playlist_url_edit_session;
+        self.plex_playlist_search = snapshot.plex_playlist_search;
         self.media_url_edit_session = media_url_edit_session;
         self.normalize_selection();
         self.normalize_selected_menu_action_after_runtime_update();

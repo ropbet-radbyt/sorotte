@@ -13,6 +13,9 @@ impl ClientSession {
         &self,
         file_name: &str,
     ) -> bool {
+        if Self::is_plex_uri(file_name) {
+            return true;
+        }
         if !Self::is_url(file_name) {
             return true;
         }
