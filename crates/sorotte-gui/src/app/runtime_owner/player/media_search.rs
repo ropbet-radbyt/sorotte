@@ -738,7 +738,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     self.media_match_cached_room_candidate_for_target(state, plan.target())
                 {
                     plan.push_media_match_candidate(path);
-                } else if self.media_match_remote_lookup_rx.is_some() {
+                } else if self.media_match_remote_lookup_pending_for_target(state, plan.target()) {
                     plan.record_pending_media_match();
                 }
             }
@@ -747,7 +747,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     self.media_match_cached_room_candidate_for_target(state, plan.target())
                 {
                     plan.push_media_match_candidate(path);
-                } else if self.media_match_remote_lookup_rx.is_some() {
+                } else if self.media_match_remote_lookup_pending_for_target(state, plan.target()) {
                     plan.record_pending_media_match();
                 }
             }
@@ -1051,7 +1051,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     Some(detail),
                 )],
             );
-        } else if self.media_match_remote_lookup_rx.is_some() {
+        } else if self.media_match_remote_lookup_pending_for_target(projected_state, target) {
             self.publish_playlist_source_state(
                 handle,
                 projected_state,

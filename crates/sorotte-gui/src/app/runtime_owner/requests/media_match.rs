@@ -34,6 +34,15 @@ struct GuiMediaMatchRemoteTarget {
     media_match_signature: serde_json::Value,
 }
 
+#[derive(Debug)]
+struct GuiMediaMatchRemoteLookupRequest {
+    root: PathBuf,
+    search_roots: Vec<PathBuf>,
+    candidate_paths: Option<Vec<PathBuf>>,
+    remote: GuiMediaMatchRemoteTarget,
+    trigger_key: String,
+}
+
 fn media_match_sampled_fast_extraction_settings() -> MediaExtractionSettings {
     MediaExtractionSettings::sampled_fast_audio_index_v3()
 }
@@ -773,7 +782,9 @@ impl GuiPersistedConfigRuntimeOwner {
         &self,
         projected_state: &SorotteGuiShellAppState,
     ) -> Vec<GuiMediaMatchRemoteTarget> {
-        let playlist_target = self.current_shared_playlist_target(projected_state);
+        let playlist_target = self
+            .current_shared_playlist_target(projected_state)
+            .and_then(|target| normalized_editable_text(&target));
         self.session
             .as_ref()
             .map(|session| session.current_room_media_match_peer_file_states())
@@ -782,8 +793,9 @@ impl GuiPersistedConfigRuntimeOwner {
             .filter(|peer| peer.has_file)
             .filter_map(|peer| {
                 let media_match_signature = peer.media_match_signature?;
-                let target_file_name = Self::usable_media_match_peer_file_name(peer.file_name)
-                    .or_else(|| playlist_target.clone())?;
+                let target_file_name = playlist_target
+                    .clone()
+                    .or_else(|| Self::usable_media_match_peer_file_name(peer.file_name))?;
                 Some(GuiMediaMatchRemoteTarget {
                     target_file_name,
                     media_match_signature,
@@ -925,7 +937,8 @@ impl GuiPersistedConfigRuntimeOwner {
             return;
         }
         if self.media_match_remote_lookup_rx.is_some() {
-            return;
+            self.media_match_remote_lookup_rx = None;
+            self.media_match_remote_lookup_trigger_key = None;
         }
 
         let worker_trigger_key = trigger_key.clone();
@@ -998,11 +1011,11 @@ impl GuiPersistedConfigRuntimeOwner {
         }
     }
 
-    pub(in crate::app::runtime_owner) fn media_match_cached_room_candidate_for_target(
+    fn media_match_remote_lookup_request_for_target(
         &mut self,
         projected_state: &SorotteGuiShellAppState,
         target: &str,
-    ) -> Option<String> {
+    ) -> Option<GuiMediaMatchRemoteLookupRequest> {
         if !Self::media_match_resolution_enabled(projected_state) {
             return None;
         }
@@ -1021,21 +1034,53 @@ impl GuiPersistedConfigRuntimeOwner {
             &remote,
             &projected_state.media_match.settings,
         );
-        if let Some(candidate_path) = self.cached_media_match_remote_lookup_result(&trigger_key) {
+        Some(GuiMediaMatchRemoteLookupRequest {
+            root,
+            search_roots,
+            candidate_paths,
+            remote,
+            trigger_key,
+        })
+    }
+
+    pub(in crate::app::runtime_owner) fn media_match_cached_room_candidate_for_target(
+        &mut self,
+        projected_state: &SorotteGuiShellAppState,
+        target: &str,
+    ) -> Option<String> {
+        let lookup = self.media_match_remote_lookup_request_for_target(projected_state, target)?;
+        if let Some(candidate_path) =
+            self.cached_media_match_remote_lookup_result(&lookup.trigger_key)
+        {
             if candidate_path.is_some() {
                 self.cancel_attached_media_search_after_media_match_resolution();
             }
             return candidate_path;
         }
         self.queue_media_match_remote_lookup_worker(
-            trigger_key,
-            root,
-            search_roots,
-            candidate_paths,
-            remote.clone(),
+            lookup.trigger_key,
+            lookup.root,
+            lookup.search_roots,
+            lookup.candidate_paths,
+            lookup.remote,
             projected_state.media_match.settings.clone(),
         );
         None
+    }
+
+    pub(in crate::app::runtime_owner) fn media_match_remote_lookup_pending_for_target(
+        &mut self,
+        projected_state: &SorotteGuiShellAppState,
+        target: &str,
+    ) -> bool {
+        let Some(lookup) =
+            self.media_match_remote_lookup_request_for_target(projected_state, target)
+        else {
+            return false;
+        };
+        self.media_match_remote_lookup_rx.is_some()
+            && self.media_match_remote_lookup_trigger_key.as_deref()
+                == Some(lookup.trigger_key.as_str())
     }
 
     pub(in crate::app::runtime_owner) fn media_match_cached_exact_inventory_candidate_for_target(

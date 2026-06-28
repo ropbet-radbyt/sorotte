@@ -1406,6 +1406,138 @@ fn gui_persisted_config_runtime_owner_queues_media_match_remote_lookup_while_med
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_manual_media_match_replaces_stale_playlist_lookup() {
+    #[derive(Debug, Clone)]
+    struct MediaMatchPeerSessionRuntimeAdapter {
+        peer_files: Vec<sorotte_client_core::ClientMediaMatchPeerFileState>,
+    }
+
+    impl GuiSessionRuntimeAdapter for MediaMatchPeerSessionRuntimeAdapter {
+        fn current_room_media_match_peer_file_states(
+            &self,
+        ) -> Vec<sorotte_client_core::ClientMediaMatchPeerFileState> {
+            self.peer_files.clone()
+        }
+
+        fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn connect_public_server(
+            &mut self,
+            _selected_server: Option<(String, String)>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn refresh_public_servers(
+            &mut self,
+            _current_servers: Vec<(String, String)>,
+            _language: Option<&str>,
+        ) -> Result<Vec<(String, String)>, String> {
+            Ok(Vec::new())
+        }
+
+        fn search_missing_media(
+            &mut self,
+            _directories: Vec<String>,
+        ) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+    }
+
+    let root = test_temp_root("media-match-manual-selected-target-replaces-stale");
+    let config_path = root.join("sorotte.ini");
+    let media_root = root.join("library");
+    std::fs::create_dir_all(&media_root)
+        .expect("Media Match manual selection fixture directory should be created");
+    let item_a = "Item A.mkv";
+    let item_b = "Item B.mkv";
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
+        .with_session_runtime(Box::new(MediaMatchPeerSessionRuntimeAdapter {
+            peer_files: vec![sorotte_client_core::ClientMediaMatchPeerFileState {
+                username: "remote".to_owned(),
+                has_file: true,
+                file_name: Some(item_a.to_owned()),
+                file_size: None,
+                file_duration: None,
+                media_match_signature: Some(serde_json::json!({
+                    "algorithm": "test",
+                    "records": [],
+                })),
+            }],
+        }));
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    owner.active_shared_playlist_index = Some(1);
+    let (_stale_tx, stale_rx) = mpsc::channel();
+    owner.media_match_remote_lookup_rx = Some(stale_rx);
+    owner.media_match_remote_lookup_trigger_key = Some(format!("target={item_a}"));
+
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
+        media_matching_plugin_enabled: Some(true),
+        media_match_fingerprinting_enabled: Some(true),
+        media_match_wire_sharing_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.apply_shared_playlist_entries(vec![item_a.to_owned(), item_b.to_owned()], Some(1), false);
+    state.main_window.active_playlist_index = Some(1);
+    let token = owner.media_match_remote_resolution_token_for_state(&state);
+    assert!(
+        token.contains(item_b),
+        "remote Media Match token should track the active shared playlist item: {token}"
+    );
+    assert!(
+        !token.contains(item_a),
+        "stale peer filename should not keep the remote Media Match token on item A: {token}"
+    );
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+
+    assert!(owner.handle_resolve_playlist_source_request(
+        &handle,
+        &mut state,
+        1,
+        GuiMediaSourceProviderId::media_matching(),
+    ));
+    for action in handle.drain_actions() {
+        assert!(state.apply(action));
+    }
+
+    let trigger_key = owner
+        .media_match_remote_lookup_trigger_key
+        .clone()
+        .expect("manual Media Match selection should queue a lookup for item B");
+    assert!(
+        trigger_key.contains("target=Item B.mkv"),
+        "queued lookup should target item B, got {trigger_key}"
+    );
+    assert!(
+        !trigger_key.contains("target=Item A.mkv"),
+        "queued lookup should not keep waiting on item A, got {trigger_key}"
+    );
+    assert_eq!(
+        state.main_window.playlist[1].source_state.status,
+        GuiPlaylistSourceStatus::Pending
+    );
+    assert_eq!(
+        state.main_window.playlist[1]
+            .source_state
+            .current_provider_id,
+        GuiMediaSourceProviderId::media_matching()
+    );
+    assert!(
+        owner
+            .pending_playlist_source_resolution
+            .as_ref()
+            .is_some_and(|pending| pending.index == 1 && pending.target == item_b)
+    );
+
+    wait_for_media_match_remote_lookup(&mut owner);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_warm_starts_shared_playlist_resolution_from_persisted_cache()
 {
     #[derive(Debug, Default)]

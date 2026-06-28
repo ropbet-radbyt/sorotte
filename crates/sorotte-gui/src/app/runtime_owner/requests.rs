@@ -196,19 +196,19 @@ impl GuiPersistedConfigRuntimeOwner {
         }
 
         let settings = projected_state.configuration.settings.clone();
-        Self::push_actions_and_project(
-            handle,
-            projected_state,
-            vec![
-                GuiShellAction::SetPluginEnabled { plugin, enabled },
-                GuiShellAction::ApplyGuiConfigurationRuntimeSnapshot(
-                    GuiConfigurationRuntimeSnapshot {
-                        draft_settings: settings.clone(),
-                        saved_settings: settings,
-                    },
-                ),
-            ],
-        );
+        let mut actions = vec![
+            GuiShellAction::SetPluginEnabled { plugin, enabled },
+            GuiShellAction::ApplyGuiConfigurationRuntimeSnapshot(GuiConfigurationRuntimeSnapshot {
+                draft_settings: settings.clone(),
+                saved_settings: settings,
+            }),
+        ];
+        if enabled && plugin == GuiPluginSelection::MediaMatching {
+            actions.push(GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(
+                self.refresh_media_match_runtime_snapshot(&projected_state.media_match.settings),
+            ));
+        }
+        Self::push_actions_and_project(handle, projected_state, actions);
         true
     }
 

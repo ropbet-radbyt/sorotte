@@ -229,6 +229,69 @@ fn gui_persisted_config_runtime_owner_disables_media_matching_and_cancels_backgr
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_reenables_media_matching_and_refreshes_snapshot() {
+    let root = test_temp_root("plugin-reenable-media-match-refreshes");
+    let config_path = root.join("sorotte.ini");
+    let saved_settings = StoredClientSettingsMvp {
+        media_matching_plugin_enabled: Some(false),
+        media_match_fingerprinting_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    };
+    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &saved_settings)
+        .expect("initial Media Matching plugin setting should be persisted");
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
+    owner.media_match_runtime_snapshot.remote_status = Some("disabled: plugin off".to_owned());
+    owner.media_match_runtime_snapshot.install_location = Some("stale default root".to_owned());
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+
+    handle.push_request(GuiRuntimeRequest::SetPluginEnabled {
+        plugin: GuiPluginSelection::MediaMatching,
+        enabled: true,
+    });
+    let actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert!(
+        actions
+            .iter()
+            .any(|action| matches!(action, GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(_))),
+        "reenabling Media Matching should publish a fresh runtime snapshot"
+    );
+    assert!(
+        state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::MediaMatching)
+    );
+    assert_eq!(
+        owner.media_match_runtime_snapshot.remote_status.as_deref(),
+        Some("unavailable: no current file")
+    );
+    let expected_install_location = root
+        .join("tools")
+        .join("media-match")
+        .join("bin")
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(
+        owner
+            .media_match_runtime_snapshot
+            .install_location
+            .as_deref(),
+        Some(expected_install_location.as_str())
+    );
+    assert_eq!(
+        state.media_match.install_location.as_deref(),
+        Some(expected_install_location.as_str())
+    );
+    let settings = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
+        .expect("Media Matching plugin setting config should be readable")
+        .expect("Media Matching plugin setting config should exist");
+    assert_eq!(settings.media_matching_plugin_enabled, Some(true));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_disables_stream_support_without_deleting_helper_details() {
     let root = test_temp_root("plugin-disable-stream-support-clears-work");
     let config_path = root.join("sorotte.ini");
