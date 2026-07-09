@@ -455,7 +455,8 @@ impl GuiPlexState {
     pub(super) fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
         let authenticated = settings
             .plex_user_token
-            .as_deref()
+            .as_ref()
+            .map(|token| token.expose_secret())
             .is_some_and(|token| !token.trim().is_empty());
         let selected_server_id = settings.plex_selected_server_id.clone();
         let selected_server_url = settings.plex_selected_server_url.clone();

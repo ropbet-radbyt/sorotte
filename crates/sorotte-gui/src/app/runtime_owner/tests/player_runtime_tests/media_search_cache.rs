@@ -778,10 +778,10 @@ fn gui_persisted_config_runtime_owner_honors_selected_plex_source_when_local_med
         media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
         plex_plugin_enabled: Some(true),
         plex_streaming_enabled: Some(true),
-        plex_user_token: Some("user-token".to_owned()),
+        plex_user_token: Some("user-token".into()),
         plex_selected_server_id: Some("machine-1".to_owned()),
         plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
-        plex_selected_server_token: Some("server-token".to_owned()),
+        plex_selected_server_token: Some("server-token".into()),
         ..StoredClientSettingsMvp::default()
     });
     state.apply_shared_playlist_entries(
@@ -1067,10 +1067,10 @@ fn gui_persisted_config_runtime_owner_retries_selected_plex_source_when_worker_f
         shared_playlist_enabled: Some(true),
         plex_plugin_enabled: Some(true),
         plex_streaming_enabled: Some(true),
-        plex_user_token: Some("user-token".to_owned()),
+        plex_user_token: Some("user-token".into()),
         plex_selected_server_id: Some("machine-1".to_owned()),
         plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
-        plex_selected_server_token: Some("server-token".to_owned()),
+        plex_selected_server_token: Some("server-token".into()),
         ..StoredClientSettingsMvp::default()
     });
     state.apply_shared_playlist_entries(vec![local_entry.to_owned()], Some(0), false);
@@ -1087,7 +1087,10 @@ fn gui_persisted_config_runtime_owner_retries_selected_plex_source_when_worker_f
         Some("http://127.0.0.1:32400")
     );
     assert_eq!(
-        plex_settings.plex_selected_server_token.as_deref(),
+        plex_settings
+            .plex_selected_server_token
+            .as_ref()
+            .map(|token| token.expose_secret()),
         Some("server-token")
     );
     let handle = GuiQueuedRuntimeBridgeHandle::default();

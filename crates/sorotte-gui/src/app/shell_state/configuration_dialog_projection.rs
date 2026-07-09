@@ -21,7 +21,8 @@ impl FirstRunConfigurationDialogState {
                 room: settings.room.clone(),
                 server_password_set: settings
                     .server_password
-                    .as_deref()
+                    .as_ref()
+                    .map(|password| password.expose_secret())
                     .map(str::trim)
                     .is_some_and(|value| !value.is_empty()),
                 player_path: settings.player_path.clone(),

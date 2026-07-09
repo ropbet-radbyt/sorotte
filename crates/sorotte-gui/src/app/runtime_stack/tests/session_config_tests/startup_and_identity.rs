@@ -7,7 +7,7 @@ fn gui_client_core_chat_session_runtime_adapter_startup_hello_includes_hashed_pa
         stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {
             username: Some("bob".to_owned()),
             room: Some("room2".to_owned()),
-            server_password: Some("secret-pass".to_owned()),
+            server_password: Some("secret-pass".into()),
             shared_playlist_enabled: Some(false),
             ..StoredClientSettingsMvp::default()
         });

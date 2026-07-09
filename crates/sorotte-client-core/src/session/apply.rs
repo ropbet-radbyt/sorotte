@@ -289,6 +289,7 @@ impl ClientSession {
             && let (Some(room_name), Some(password)) =
                 (new_controlled_room.room_name, new_controlled_room.password)
         {
+            let password = password.into_exposed_secret();
             let normalized_password = Self::normalize_control_password_legacy_compatible(&password);
             self.autoplay_enabled = false;
             self.stop_autoplay_countdown();

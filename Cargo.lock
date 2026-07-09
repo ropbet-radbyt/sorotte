@@ -3375,6 +3375,7 @@ dependencies = [
  "anyhow",
  "serde_json",
  "sorotte-client-core",
+ "sorotte-secret",
 ]
 
 [[package]]
@@ -3479,6 +3480,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sorotte-player-api",
+ "sorotte-secret",
  "thiserror 2.0.18",
 ]
 
@@ -3488,8 +3490,13 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "sorotte-secret",
  "thiserror 2.0.18",
 ]
+
+[[package]]
+name = "sorotte-secret"
+version = "0.1.0"
 
 [[package]]
 name = "sorotte-server"

@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/sorotte-secret",
     "crates/sorotte-protocol",
     "crates/sorotte-core",
     "crates/sorotte-server",

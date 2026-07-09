@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sorotte_secret::SecretValue;
 
 mod chat;
 mod codec;

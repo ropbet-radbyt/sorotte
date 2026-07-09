@@ -167,7 +167,8 @@ impl GuiPersistedConfigRuntimeOwner {
         if !self.startup_plex_server_refresh_attempted
             && settings
                 .plex_user_token
-                .as_deref()
+                .as_ref()
+                .map(|token| token.expose_secret())
                 .is_some_and(|token| !token.trim().is_empty())
         {
             self.startup_plex_server_refresh_attempted = true;
@@ -1180,7 +1181,8 @@ impl GuiPersistedConfigRuntimeOwner {
         let selected_server_url = settings.plex_selected_server_url.clone();
         let authenticated = settings
             .plex_user_token
-            .as_deref()
+            .as_ref()
+            .map(|token| token.expose_secret())
             .is_some_and(|token| !token.trim().is_empty());
         let authenticating = self.plex_auth_session.is_some()
             || self.plex_auth_start_rx.is_some()
@@ -1396,12 +1398,11 @@ fn refresh_plex_servers_and_reachability(
 ) -> Result<GuiPlexServerRefreshOutcome, String> {
     let token = settings
         .plex_user_token
-        .as_deref()
-        .filter(|token| !token.trim().is_empty())
-        .ok_or_else(|| "Plex login is required before servers can be refreshed.".to_owned())?
-        .to_owned();
+        .as_ref()
+        .filter(|token| !token.expose_secret().trim().is_empty())
+        .ok_or_else(|| "Plex login is required before servers can be refreshed.".to_owned())?;
     let servers = client
-        .discover_servers(&token)
+        .discover_servers(token.expose_secret())
         .map_err(|error| error.to_string())?;
     let mut reachability = HashMap::new();
     for server in &servers {
@@ -1427,8 +1428,8 @@ fn refresh_plex_servers_and_reachability(
             access_token: settings
                 .plex_selected_server_token
                 .clone()
-                .filter(|token| !token.trim().is_empty())
-                .unwrap_or(token),
+                .filter(|token| !token.expose_secret().trim().is_empty())
+                .unwrap_or_else(|| token.clone()),
             owned: true,
             has_local_connection: plex_server_connection_kind_from_uri(uri)
                 == PlexServerConnectionKind::Local,
@@ -1551,14 +1552,14 @@ mod tests {
             plex_selected_server_url: Some(
                 "https://172-18-0-6.raptor-machine.plex.direct:32400".to_owned(),
             ),
-            plex_selected_server_token: Some("old-token".to_owned()),
+            plex_selected_server_token: Some("old-token".into()),
             ..StoredClientSettingsMvp::default()
         };
         let servers = vec![PlexServerConnection {
             name: "Raptor".to_owned(),
             machine_identifier: "raptor-machine".to_owned(),
             uri: "https://125-209-152-187.raptor-machine.plex.direct:32400".to_owned(),
-            access_token: "new-token".to_owned(),
+            access_token: "new-token".into(),
             owned: true,
             has_local_connection: false,
             connection_kind: PlexServerConnectionKind::Remote,
@@ -1574,7 +1575,10 @@ mod tests {
             Some("https://125-209-152-187.raptor-machine.plex.direct:32400")
         );
         assert_eq!(
-            settings.plex_selected_server_token.as_deref(),
+            settings
+                .plex_selected_server_token
+                .as_ref()
+                .map(|token| token.expose_secret()),
             Some("new-token")
         );
     }
@@ -1587,10 +1591,10 @@ mod tests {
             GuiPlexServerReachability::Checking,
         );
         let settings = StoredClientSettingsMvp {
-            plex_user_token: Some("user-token".to_owned()),
+            plex_user_token: Some("user-token".into()),
             plex_selected_server_id: Some("raptor-machine".to_owned()),
             plex_selected_server_url: Some("https://raptor.example:32400".to_owned()),
-            plex_selected_server_token: Some("server-token".to_owned()),
+            plex_selected_server_token: Some("server-token".into()),
             ..StoredClientSettingsMvp::default()
         };
 
@@ -1616,7 +1620,7 @@ mod tests {
             name: "Other Plex".to_owned(),
             machine_identifier: "other-machine".to_owned(),
             uri: "https://other.example:32400".to_owned(),
-            access_token: "other-token".to_owned(),
+            access_token: "other-token".into(),
             owned: true,
             has_local_connection: false,
             connection_kind: PlexServerConnectionKind::Remote,
@@ -1626,10 +1630,10 @@ mod tests {
             GuiPlexServerReachability::Reachable,
         );
         let settings = StoredClientSettingsMvp {
-            plex_user_token: Some("user-token".to_owned()),
+            plex_user_token: Some("user-token".into()),
             plex_selected_server_id: Some("saved-machine".to_owned()),
             plex_selected_server_url: Some("https://saved.example:32400".to_owned()),
-            plex_selected_server_token: Some("saved-token".to_owned()),
+            plex_selected_server_token: Some("saved-token".into()),
             ..StoredClientSettingsMvp::default()
         };
 
@@ -1673,7 +1677,7 @@ mod tests {
             name: "Raptor".to_owned(),
             machine_identifier: "raptor-machine".to_owned(),
             uri: "https://raptor.example:32400".to_owned(),
-            access_token: "server-token".to_owned(),
+            access_token: "server-token".into(),
             owned: true,
             has_local_connection: false,
             connection_kind: PlexServerConnectionKind::Remote,
@@ -1691,7 +1695,7 @@ mod tests {
 
         let handle = GuiQueuedRuntimeBridgeHandle::default();
         let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
-            plex_user_token: Some("user-token".to_owned()),
+            plex_user_token: Some("user-token".into()),
             ..StoredClientSettingsMvp::default()
         });
 

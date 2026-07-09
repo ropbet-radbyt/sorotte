@@ -74,10 +74,10 @@ fn gui_persisted_config_runtime_owner_publishes_cached_plex_uri_for_shared_local
     let plex_config = PlexClientConfig {
         enabled: true,
         streaming_enabled: true,
-        user_token: Some("user-token".to_owned()),
+        user_token: Some("user-token".into()),
         selected_server_id: Some("machine-1".to_owned()),
         selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
-        selected_server_token: Some("server-token".to_owned()),
+        selected_server_token: Some("server-token".into()),
     };
     let local_file = sorotte_player_api::LocalFileUpdate::new("episode1.mkv")
         .with_path(media_path_text.clone())
@@ -111,10 +111,10 @@ fn gui_persisted_config_runtime_owner_publishes_cached_plex_uri_for_shared_local
         shared_playlist_enabled: Some(true),
         plex_sync_enabled: Some(true),
         plex_streaming_enabled: Some(true),
-        plex_user_token: Some("user-token".to_owned()),
+        plex_user_token: Some("user-token".into()),
         plex_selected_server_id: Some("machine-1".to_owned()),
         plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
-        plex_selected_server_token: Some("server-token".to_owned()),
+        plex_selected_server_token: Some("server-token".into()),
         ..StoredClientSettingsMvp::default()
     });
 
@@ -169,10 +169,10 @@ fn gui_persisted_config_runtime_owner_keeps_uncached_plex_local_add_on_fast_path
         shared_playlist_enabled: Some(true),
         plex_sync_enabled: Some(true),
         plex_streaming_enabled: Some(true),
-        plex_user_token: Some("user-token".to_owned()),
+        plex_user_token: Some("user-token".into()),
         plex_selected_server_id: Some("machine-1".to_owned()),
         plex_selected_server_url: Some("not-a-valid-url".to_owned()),
-        plex_selected_server_token: Some("server-token".to_owned()),
+        plex_selected_server_token: Some("server-token".into()),
         ..StoredClientSettingsMvp::default()
     });
 
@@ -503,10 +503,10 @@ fn gui_persisted_config_runtime_owner_applies_playlist_default_source_to_local_m
         shared_playlist_enabled: Some(true),
         plex_plugin_enabled: Some(true),
         plex_streaming_enabled: Some(true),
-        plex_user_token: Some("user-token".to_owned()),
+        plex_user_token: Some("user-token".into()),
         plex_selected_server_id: Some("machine-1".to_owned()),
         plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
-        plex_selected_server_token: Some("server-token".to_owned()),
+        plex_selected_server_token: Some("server-token".into()),
         ..StoredClientSettingsMvp::default()
     });
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);

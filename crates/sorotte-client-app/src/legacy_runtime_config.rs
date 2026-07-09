@@ -180,8 +180,10 @@ pub fn stored_client_settings_runtime_snapshot_legacy_compatible(
     resolved.server_password = resolved
         .server_password
         .take()
+        .map(|password| password.into_exposed_secret())
         .map(|password| password.trim().to_owned())
-        .filter(|password| !password.is_empty());
+        .filter(|password| !password.is_empty())
+        .map(Into::into);
     resolved.username = resolved
         .username
         .take()
@@ -241,7 +243,10 @@ pub fn stored_client_settings_config_plan_legacy_compatible(
         plan.port = resolved_settings.port;
     }
     if !env_presence.server_password {
-        plan.server_password = resolved_settings.server_password.clone();
+        plan.server_password = resolved_settings
+            .server_password
+            .as_ref()
+            .map(|password| password.expose_secret().to_owned());
     }
     if !env_presence.username {
         plan.username = resolved_settings.username.clone();

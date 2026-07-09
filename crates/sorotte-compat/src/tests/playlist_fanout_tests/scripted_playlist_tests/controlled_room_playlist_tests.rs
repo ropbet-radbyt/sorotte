@@ -29,7 +29,13 @@ fn scripted_server_runtime_controlled_room_permissions_scenario_validates_auth_a
                 new_controlled_room.room_name.as_deref(),
                 Some("+room1:CB39A19549E8")
             );
-            assert_eq!(new_controlled_room.password.as_deref(), Some("AB-123-456"));
+            assert_eq!(
+                new_controlled_room
+                    .password
+                    .as_ref()
+                    .map(|password| password.expose_secret()),
+                Some("AB-123-456")
+            );
         }
         other => panic!("expected set response at step 3, got {}", other.kind()),
     }

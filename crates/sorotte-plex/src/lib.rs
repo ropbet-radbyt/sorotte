@@ -10,6 +10,7 @@ use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sorotte_player_api::LocalFileUpdate;
+use sorotte_secret::SecretValue;
 
 const DEFAULT_PLEX_TV_BASE_URL: &str = "https://plex.tv";
 const DEFAULT_PLEX_AUTH_APP_URL: &str = "https://app.plex.tv/auth";
@@ -93,7 +94,7 @@ pub struct PlexAuthSession {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlexAuthPollResult {
-    pub auth_token: Option<String>,
+    pub auth_token: Option<SecretValue>,
     pub expires_at: Option<String>,
 }
 
@@ -101,17 +102,18 @@ pub struct PlexAuthPollResult {
 pub struct PlexClientConfig {
     pub enabled: bool,
     pub streaming_enabled: bool,
-    pub user_token: Option<String>,
+    pub user_token: Option<SecretValue>,
     pub selected_server_id: Option<String>,
     pub selected_server_url: Option<String>,
-    pub selected_server_token: Option<String>,
+    pub selected_server_token: Option<SecretValue>,
 }
 
 impl PlexClientConfig {
     pub fn selected_server_token_or_user_token(&self) -> Option<&str> {
         self.selected_server_token
-            .as_deref()
-            .or(self.user_token.as_deref())
+            .as_ref()
+            .or(self.user_token.as_ref())
+            .map(SecretValue::expose_secret)
             .filter(|token| !token.trim().is_empty())
     }
 
@@ -150,7 +152,7 @@ pub struct PlexServerConnection {
     pub name: String,
     pub machine_identifier: String,
     pub uri: String,
-    pub access_token: String,
+    pub access_token: SecretValue,
     pub owned: bool,
     pub has_local_connection: bool,
     pub connection_kind: PlexServerConnectionKind,
@@ -558,7 +560,7 @@ impl PlexHttpClient {
                 .get("authToken")
                 .and_then(Value::as_str)
                 .filter(|value| !value.trim().is_empty())
-                .map(ToOwned::to_owned),
+                .map(SecretValue::from),
             expires_at: json
                 .get("expiresAt")
                 .and_then(Value::as_str)
@@ -639,13 +641,13 @@ impl PlexHttpClient {
     }
 
     pub fn verify_server_connection(&self, server: &PlexServerConnection) -> PlexResult<()> {
-        if server.access_token.trim().is_empty() {
+        if server.access_token.expose_secret().trim().is_empty() {
             return Err(PlexError::MissingToken);
         }
         let response = self
             .client
             .get(server.uri.trim_end_matches('/'))
-            .headers(self.plex_headers(Some(&server.access_token)))
+            .headers(self.plex_headers(Some(server.access_token.expose_secret())))
             .send()?;
         if !response.status().is_success() {
             return Err(PlexError::InvalidResponse(format!(
@@ -1407,7 +1409,7 @@ where
         servers
             .into_iter()
             .find(|server| server.machine_identifier == uri.machine_identifier)
-            .map(|server| (server.uri, server.access_token))
+            .map(|server| (server.uri, server.access_token.into_exposed_secret()))
             .ok_or_else(|| {
                 PlexError::InvalidResponse(format!(
                     "Plex playlist URI targets server '{}' but that server was not found in the receiver's accessible Plex servers",
@@ -1712,7 +1714,8 @@ fn selected_server_matches_machine_identifier(
 fn config_user_token(config: &PlexClientConfig) -> PlexResult<&str> {
     config
         .user_token
-        .as_deref()
+        .as_ref()
+        .map(SecretValue::expose_secret)
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or(PlexError::MissingToken)
@@ -2358,7 +2361,7 @@ fn parse_server_resources_response(json: &Value) -> Vec<PlexServerConnection> {
                         name: name.clone(),
                         machine_identifier: machine_identifier.clone(),
                         uri,
-                        access_token: access_token.clone(),
+                        access_token: access_token.into(),
                         owned,
                         has_local_connection,
                         connection_kind,
@@ -3144,6 +3147,49 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn plex_auth_poll_result_debug_redacts_auth_token() {
+        let result = PlexAuthPollResult {
+            auth_token: Some("poll-result-secret".into()),
+            expires_at: None,
+        };
+
+        let debug = format!("{result:?}");
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("poll-result-secret"));
+    }
+
+    #[test]
+    fn plex_client_config_debug_redacts_all_tokens() {
+        let config = PlexClientConfig {
+            user_token: Some("user-token-secret".into()),
+            selected_server_token: Some("server-token-secret".into()),
+            ..PlexClientConfig::default()
+        };
+
+        let debug = format!("{config:?}");
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("user-token-secret"));
+        assert!(!debug.contains("server-token-secret"));
+    }
+
+    #[test]
+    fn plex_server_connection_debug_redacts_access_token() {
+        let server = PlexServerConnection {
+            name: "Test Server".to_owned(),
+            machine_identifier: "test-server".to_owned(),
+            uri: "https://plex.invalid".to_owned(),
+            access_token: "access-token-secret".into(),
+            owned: true,
+            has_local_connection: false,
+            connection_kind: PlexServerConnectionKind::Remote,
+        };
+
+        let debug = format!("{server:?}");
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("access-token-secret"));
+    }
+
     #[derive(Clone, Default)]
     struct FakeTransport {
         searches: Rc<RefCell<Vec<String>>>,
@@ -3257,7 +3303,7 @@ mod tests {
                 enabled: true,
                 selected_server_id: Some("abc123machine".to_owned()),
                 selected_server_url: Some("http://plex.local:32400".to_owned()),
-                selected_server_token: Some("server-token".to_owned()),
+                selected_server_token: Some("server-token".into()),
                 ..PlexClientConfig::default()
             },
             transport,
@@ -3498,7 +3544,7 @@ mod tests {
                 streaming_enabled: true,
                 selected_server_id: Some("abc123machine".to_owned()),
                 selected_server_url: Some("http://plex.local:32400".to_owned()),
-                selected_server_token: Some("server-token".to_owned()),
+                selected_server_token: Some("server-token".into()),
                 ..PlexClientConfig::default()
             },
             transport.clone(),
@@ -3542,7 +3588,7 @@ mod tests {
                 name: "Shared Server".to_owned(),
                 machine_identifier: "abc123machine".to_owned(),
                 uri: "http://shared.plex:32400".to_owned(),
-                access_token: "shared-server-token".to_owned(),
+                access_token: "shared-server-token".into(),
                 owned: false,
                 has_local_connection: false,
                 connection_kind: PlexServerConnectionKind::Remote,
@@ -3550,10 +3596,10 @@ mod tests {
         let mut resolver = PlexMediaResolver::new(
             PlexClientConfig {
                 streaming_enabled: true,
-                user_token: Some("user-token".to_owned()),
+                user_token: Some("user-token".into()),
                 selected_server_id: Some("other-machine".to_owned()),
                 selected_server_url: Some("http://plex.local:32400".to_owned()),
-                selected_server_token: Some("server-token".to_owned()),
+                selected_server_token: Some("server-token".into()),
                 ..PlexClientConfig::default()
             },
             transport,
@@ -3607,7 +3653,7 @@ mod tests {
                 name: "Shared Server".to_owned(),
                 machine_identifier: "abc123machine".to_owned(),
                 uri: "http://shared.plex:32400".to_owned(),
-                access_token: "shared-server-token".to_owned(),
+                access_token: "shared-server-token".into(),
                 owned: false,
                 has_local_connection: false,
                 connection_kind: PlexServerConnectionKind::Remote,
@@ -3615,7 +3661,7 @@ mod tests {
         let mut resolver = PlexMediaResolver::new(
             PlexClientConfig {
                 streaming_enabled: true,
-                user_token: Some("user-token".to_owned()),
+                user_token: Some("user-token".into()),
                 ..PlexClientConfig::default()
             },
             transport,
@@ -3776,7 +3822,7 @@ mod tests {
         assert_eq!(servers[0].name, "Home Plex");
         assert_eq!(servers[0].machine_identifier, "machine-1");
         assert_eq!(servers[0].uri, "https://remote.plex.example");
-        assert_eq!(servers[0].access_token, "server-token");
+        assert_eq!(servers[0].access_token.expose_secret(), "server-token");
         assert!(servers[0].owned);
         assert!(servers[0].has_local_connection);
         assert_eq!(servers[0].connection_kind, PlexServerConnectionKind::Remote);
@@ -3812,7 +3858,7 @@ mod tests {
         assert_eq!(servers[0].name, "Friend Plex");
         assert_eq!(servers[0].machine_identifier, "shared-machine");
         assert_eq!(servers[0].uri, "https://shared.plex.direct:32400");
-        assert_eq!(servers[0].access_token, "shared-token");
+        assert_eq!(servers[0].access_token.expose_secret(), "shared-token");
         assert!(!servers[0].owned);
         assert!(!servers[0].has_local_connection);
         assert_eq!(servers[0].connection_kind, PlexServerConnectionKind::Remote);
@@ -3897,12 +3943,12 @@ mod tests {
 
         assert_eq!(servers.len(), 2);
         assert_eq!(servers[0].name, "Raptor");
-        assert_eq!(servers[0].access_token, "raptor-token");
+        assert_eq!(servers[0].access_token.expose_secret(), "raptor-token");
         assert!(servers[0].owned);
         assert!(!servers[0].has_local_connection);
         assert_eq!(servers[0].connection_kind, PlexServerConnectionKind::Remote);
         assert_eq!(servers[1].name, "zzzzzzzzzzzzzzzzzzzzzz");
-        assert_eq!(servers[1].access_token, "shared-token");
+        assert_eq!(servers[1].access_token.expose_secret(), "shared-token");
         assert!(!servers[1].owned);
         assert!(!servers[1].has_local_connection);
         assert_eq!(servers[1].connection_kind, PlexServerConnectionKind::Remote);
@@ -3914,7 +3960,7 @@ mod tests {
             name: "Raptor".to_owned(),
             machine_identifier: "raptor-machine".to_owned(),
             uri: "https://172-18-0-6.raptor-machine.plex.direct:32400".to_owned(),
-            access_token: "raptor-token".to_owned(),
+            access_token: "raptor-token".into(),
             owned: true,
             has_local_connection: true,
             connection_kind: PlexServerConnectionKind::Local,
@@ -3926,7 +3972,7 @@ mod tests {
                     name: "Raptor".to_owned(),
                     machine_identifier: "raptor-machine".to_owned(),
                     uri: "https://45-56-91-134.raptor-machine.plex.direct:8443".to_owned(),
-                    access_token: "raptor-token".to_owned(),
+                    access_token: "raptor-token".into(),
                     owned: true,
                     has_local_connection: false,
                     connection_kind: PlexServerConnectionKind::Relay,
@@ -3935,7 +3981,7 @@ mod tests {
                     name: "Raptor".to_owned(),
                     machine_identifier: "raptor-machine".to_owned(),
                     uri: "https://125-209-152-187.raptor-machine.plex.direct:32400".to_owned(),
-                    access_token: "raptor-token".to_owned(),
+                    access_token: "raptor-token".into(),
                     owned: true,
                     has_local_connection: false,
                     connection_kind: PlexServerConnectionKind::Remote,
@@ -3944,7 +3990,7 @@ mod tests {
                     name: "Tower".to_owned(),
                     machine_identifier: "tower-machine".to_owned(),
                     uri: "https://180-181-237-20.tower-machine.plex.direct:32400".to_owned(),
-                    access_token: "tower-token".to_owned(),
+                    access_token: "tower-token".into(),
                     owned: false,
                     has_local_connection: false,
                     connection_kind: PlexServerConnectionKind::Remote,
@@ -3988,7 +4034,7 @@ mod tests {
             name: "Raptor".to_owned(),
             machine_identifier: "raptor-machine".to_owned(),
             uri: format!("http://{address}"),
-            access_token: "server-token".to_owned(),
+            access_token: "server-token".into(),
             owned: true,
             has_local_connection: true,
             connection_kind: PlexServerConnectionKind::Local,
@@ -4131,7 +4177,7 @@ mod tests {
         let client = PlexHttpClient::new("search-test").expect("Plex client should construct");
         let config = PlexClientConfig {
             selected_server_url: Some(server_url),
-            selected_server_token: Some("server-token".to_owned()),
+            selected_server_token: Some("server-token".into()),
             ..PlexClientConfig::default()
         };
 
@@ -4202,7 +4248,7 @@ mod tests {
             PlexHttpClient::new("show-title-search-test").expect("Plex client should construct");
         let config = PlexClientConfig {
             selected_server_url: Some(server_url),
-            selected_server_token: Some("server-token".to_owned()),
+            selected_server_token: Some("server-token".into()),
             ..PlexClientConfig::default()
         };
 
@@ -4276,7 +4322,7 @@ mod tests {
             PlexHttpClient::new("file-name-search-test").expect("Plex client should construct");
         let config = PlexClientConfig {
             selected_server_url: Some(server_url),
-            selected_server_token: Some("server-token".to_owned()),
+            selected_server_token: Some("server-token".into()),
             ..PlexClientConfig::default()
         };
 
@@ -4340,7 +4386,7 @@ mod tests {
         let client = PlexHttpClient::new("recent-test").expect("Plex client should construct");
         let config = PlexClientConfig {
             selected_server_url: Some(server_url),
-            selected_server_token: Some("server-token".to_owned()),
+            selected_server_token: Some("server-token".into()),
             ..PlexClientConfig::default()
         };
 
@@ -4403,7 +4449,7 @@ mod tests {
         let client = PlexHttpClient::new("uri-test").expect("Plex client should construct");
         let config = PlexClientConfig {
             selected_server_url: Some(server_url),
-            selected_server_token: Some("server-token".to_owned()),
+            selected_server_token: Some("server-token".into()),
             ..PlexClientConfig::default()
         };
 

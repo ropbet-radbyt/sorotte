@@ -261,7 +261,8 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         if let Some(server_password) = runtime_settings
             .settings
             .server_password
-            .as_deref()
+            .as_ref()
+            .map(|password| password.expose_secret())
             .filter(|value| !value.is_empty())
         {
             hello.extra.insert(

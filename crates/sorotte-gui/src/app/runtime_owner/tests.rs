@@ -236,9 +236,9 @@ fn runtime_owner_searches_and_resolves_plex_playlist_picker_items() {
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         shared_playlist_enabled: Some(true),
-        plex_user_token: Some("user-token".to_owned()),
+        plex_user_token: Some("user-token".into()),
         plex_selected_server_url: Some(server_url),
-        plex_selected_server_token: Some("server-token".to_owned()),
+        plex_selected_server_token: Some("server-token".into()),
         ..StoredClientSettingsMvp::default()
     });
     state.main_window.playback.can_manage_playlist = true;

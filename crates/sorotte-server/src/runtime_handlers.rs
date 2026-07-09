@@ -732,7 +732,10 @@ impl ServerRuntime {
                         continue;
                     };
                     let auth_room = controller_auth.room.unwrap_or_else(|| session.room.clone());
-                    let auth_password = controller_auth.password.unwrap_or_default();
+                    let auth_password = controller_auth
+                        .password
+                        .map(|password| password.into_exposed_secret())
+                        .unwrap_or_default();
                     match self
                         .room_password_provider
                         .check(&auth_room, &auth_password)

@@ -1,6 +1,7 @@
 use std::{collections::BTreeMap, fmt};
 
 use sorotte_client_core::{PrivacyMode, UnpauseActionMode};
+use sorotte_secret::SecretValue;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AutoplayThresholdOverride {
@@ -16,7 +17,7 @@ pub struct StoredClientSettingsMvp {
     pub last_checked_for_updates: Option<String>,
     pub host: Option<String>,
     pub port: Option<u16>,
-    pub server_password: Option<String>,
+    pub server_password: Option<SecretValue>,
     pub username: Option<String>,
     pub room: Option<String>,
     pub room_list: Option<Vec<String>>,
@@ -29,10 +30,10 @@ pub struct StoredClientSettingsMvp {
     pub plex_plugin_enabled: Option<bool>,
     pub plex_sync_enabled: Option<bool>,
     pub plex_streaming_enabled: Option<bool>,
-    pub plex_user_token: Option<String>,
+    pub plex_user_token: Option<SecretValue>,
     pub plex_selected_server_id: Option<String>,
     pub plex_selected_server_url: Option<String>,
-    pub plex_selected_server_token: Option<String>,
+    pub plex_selected_server_token: Option<SecretValue>,
     pub media_match_fingerprinting_enabled: Option<bool>,
     pub media_match_background_warmup_enabled: Option<bool>,
     pub media_match_wire_sharing_enabled: Option<bool>,
@@ -128,15 +129,12 @@ impl fmt::Debug for StoredClientSettingsMvp {
             .field("plex_plugin_enabled", &self.plex_plugin_enabled)
             .field("plex_sync_enabled", &self.plex_sync_enabled)
             .field("plex_streaming_enabled", &self.plex_streaming_enabled)
-            .field(
-                "plex_user_token",
-                &redacted_secret_debug(&self.plex_user_token),
-            )
+            .field("plex_user_token", &self.plex_user_token)
             .field("plex_selected_server_id", &self.plex_selected_server_id)
             .field("plex_selected_server_url", &self.plex_selected_server_url)
             .field(
                 "plex_selected_server_token",
-                &redacted_secret_debug(&self.plex_selected_server_token),
+                &self.plex_selected_server_token,
             )
             .field(
                 "media_match_fingerprinting_enabled",
@@ -258,13 +256,6 @@ impl fmt::Debug for StoredClientSettingsMvp {
     }
 }
 
-fn redacted_secret_debug(value: &Option<String>) -> Option<&'static str> {
-    value
-        .as_deref()
-        .filter(|secret| !secret.is_empty())
-        .map(|_| "<redacted>")
-}
-
 pub fn privacy_mode_legacy_name_compatible(mode: PrivacyMode) -> &'static str {
     match mode {
         PrivacyMode::SendRaw => "SendRaw",
@@ -325,11 +316,28 @@ mod tests {
     use sorotte_client_core::{PrivacyMode, UnpauseActionMode};
 
     use super::{
-        AutoplayThresholdOverride, autoplay_threshold_override_legacy_value_compatible,
+        AutoplayThresholdOverride, StoredClientSettingsMvp,
+        autoplay_threshold_override_legacy_value_compatible,
         parse_autoplay_min_users_override_legacy_compatible,
         parse_unpause_action_mode_legacy_compatible, privacy_mode_legacy_name_compatible,
         unpause_action_mode_legacy_name_compatible,
     };
+
+    #[test]
+    fn stored_client_settings_debug_redacts_all_credentials() {
+        let settings = StoredClientSettingsMvp {
+            server_password: Some("server-password-secret".into()),
+            plex_user_token: Some("plex-user-token-secret".into()),
+            plex_selected_server_token: Some("plex-server-token-secret".into()),
+            ..StoredClientSettingsMvp::default()
+        };
+
+        let debug = format!("{settings:?}");
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("server-password-secret"));
+        assert!(!debug.contains("plex-user-token-secret"));
+        assert!(!debug.contains("plex-server-token-secret"));
+    }
 
     #[test]
     fn legacy_name_helpers_match_expected_python_labels() {

@@ -173,7 +173,7 @@ fn configuration_surface_maps_existing_stored_settings_into_sections() {
         force_gui_prompt: Some(true),
         host: Some("syncplay.example".to_owned()),
         port: Some(8995),
-        server_password: Some("secret".to_owned()),
+        server_password: Some("secret".into()),
         username: Some(TEST_USERNAME.to_owned()),
         room: Some("room-a".to_owned()),
         room_list: Some(vec!["room-a".to_owned(), "room-b".to_owned()]),

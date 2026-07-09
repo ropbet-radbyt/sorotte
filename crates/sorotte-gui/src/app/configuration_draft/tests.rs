@@ -45,7 +45,13 @@ fn configuration_draft_applies_edits_and_round_trips_to_stored_settings() {
     let saved = draft.to_stored_settings();
     assert_eq!(saved.host.as_deref(), Some("syncplay.example"));
     assert_eq!(saved.port, Some(8995));
-    assert_eq!(saved.server_password.as_deref(), Some("secret"));
+    assert_eq!(
+        saved
+            .server_password
+            .as_ref()
+            .map(|password| password.expose_secret()),
+        Some("secret")
+    );
     assert_eq!(
         saved.player_path.as_deref(),
         Some("C:/Program Files/mpv/mpv.exe")

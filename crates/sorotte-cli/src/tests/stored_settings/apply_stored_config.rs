@@ -47,7 +47,7 @@ fn apply_stored_client_settings_mvp_if_env_absent_preserves_env_precedence() {
             last_checked_for_updates: Some("2026-02-23 11:22:33.444".to_owned()),
             host: Some("stored.example".to_owned()),
             port: Some(4321),
-            server_password: Some("stored-secret".to_owned()),
+            server_password: Some("stored-secret".into()),
             username: Some("stored-user".to_owned()),
             room: Some("stored-room".to_owned()),
             room_list: None,
@@ -222,7 +222,7 @@ fn apply_stored_client_settings_mvp_if_env_absent_applies_server_password() {
     apply_stored_client_settings_mvp_if_env_absent(
         &mut config,
         &StoredClientSettingsMvp {
-            server_password: Some("stored-secret".to_owned()),
+            server_password: Some("stored-secret".into()),
             ..StoredClientSettingsMvp::default()
         },
     );

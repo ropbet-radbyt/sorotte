@@ -61,7 +61,7 @@ pub fn parse_sorotte_ini_stored_client_settings_mvp(contents: &str) -> StoredCli
                         settings.port = Some(port);
                     }
                 }
-                "password" if !value.is_empty() => settings.server_password = Some(value),
+                "password" if !value.is_empty() => settings.server_password = Some(value.into()),
                 _ => {}
             },
             Some("client_settings") => match key.as_str() {
@@ -428,7 +428,7 @@ pub fn parse_sorotte_ini_stored_client_settings_mvp(contents: &str) -> StoredCli
                     }
                 }
                 "usertoken" if !value.is_empty() => {
-                    settings.plex_user_token = Some(value);
+                    settings.plex_user_token = Some(value.into());
                 }
                 "selectedserverid" if !value.is_empty() => {
                     settings.plex_selected_server_id = Some(value);
@@ -437,7 +437,7 @@ pub fn parse_sorotte_ini_stored_client_settings_mvp(contents: &str) -> StoredCli
                     settings.plex_selected_server_url = Some(value);
                 }
                 "selectedservertoken" if !value.is_empty() => {
-                    settings.plex_selected_server_token = Some(value);
+                    settings.plex_selected_server_token = Some(value.into());
                 }
                 _ => {}
             },

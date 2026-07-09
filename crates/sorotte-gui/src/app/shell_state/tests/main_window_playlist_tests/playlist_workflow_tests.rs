@@ -58,9 +58,9 @@ fn gui_shell_app_state_moves_and_removes_playlist_rows() {
 fn gui_shell_app_state_tracks_plex_playlist_picker_lifecycle() {
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         shared_playlist_enabled: Some(true),
-        plex_user_token: Some("user-token".to_owned()),
+        plex_user_token: Some("user-token".into()),
         plex_selected_server_url: Some("https://plex.example".to_owned()),
-        plex_selected_server_token: Some("server-token".to_owned()),
+        plex_selected_server_token: Some("server-token".into()),
         ..StoredClientSettingsMvp::default()
     });
     state.main_window.playback.can_manage_playlist = true;
@@ -447,7 +447,7 @@ fn gui_shell_app_state_playlist_source_override_recovers_after_plex_runtime_unav
         shared_playlist_enabled: Some(true),
         plex_plugin_enabled: Some(true),
         plex_streaming_enabled: Some(true),
-        plex_user_token: Some("user-token".to_owned()),
+        plex_user_token: Some("user-token".into()),
         plex_selected_server_id: Some("machine-1".to_owned()),
         plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
         ..StoredClientSettingsMvp::default()

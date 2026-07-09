@@ -4,11 +4,12 @@ use std::path::PathBuf;
 use serde_json::json;
 
 use super::{
-    ChatPayload, HelloPayload, ListPayload, PingPayload, PlaystatePayload, ProtocolMessage,
-    ReadyPayload, RoomRef, SOROTTE_PLEX_PLAYLIST_URIS_KEY, SetPayload, StatePayload,
-    canonical_playlist_files_from_change, decode_line, decode_message_line,
-    decode_message_line_items, decode_message_lines, encode_line, encode_message_line,
-    extract_hello, extract_hello_from_message, playlist_change_with_plex_sidecar,
+    ChatPayload, ControllerAuthPayload, HelloPayload, ListPayload, NewControlledRoomPayload,
+    PingPayload, PlaystatePayload, ProtocolMessage, ReadyPayload, RoomRef,
+    SOROTTE_PLEX_PLAYLIST_URIS_KEY, SetPayload, StatePayload, canonical_playlist_files_from_change,
+    decode_line, decode_message_line, decode_message_line_items, decode_message_lines, encode_line,
+    encode_message_line, extract_hello, extract_hello_from_message,
+    playlist_change_with_plex_sidecar,
 };
 
 fn fixture_dir() -> PathBuf {
@@ -316,7 +317,13 @@ fn set_fixtures_decode_controller_playlist_and_file_variants() {
                 .controller_auth
                 .expect("controllerAuth payload should be present");
             assert_eq!(controller_auth.room.as_deref(), Some("room1"));
-            assert_eq!(controller_auth.password.as_deref(), Some("secret"));
+            assert_eq!(
+                controller_auth
+                    .password
+                    .as_ref()
+                    .map(|password| password.expose_secret()),
+                Some("secret")
+            );
             assert_eq!(controller_auth.user.as_deref(), Some("alice"));
             assert_eq!(controller_auth.success, Some(true));
         }
@@ -333,7 +340,12 @@ fn set_fixtures_decode_controller_playlist_and_file_variants() {
                 .new_controlled_room
                 .expect("newControlledRoom payload should be present");
             assert_eq!(room.room_name.as_deref(), Some("managed-room"));
-            assert_eq!(room.password.as_deref(), Some("roompass"));
+            assert_eq!(
+                room.password
+                    .as_ref()
+                    .map(|password| password.expose_secret()),
+                Some("roompass")
+            );
         }
         other => panic!("expected Set message, found {}", other.kind()),
     }
@@ -394,6 +406,21 @@ fn set_fixtures_decode_controller_playlist_and_file_variants() {
         }
         other => panic!("expected Set message, found {}", other.kind()),
     }
+}
+
+#[test]
+fn credential_payload_debug_is_redacted() {
+    let controller_auth = ControllerAuthPayload::new().with_password("controller-secret-value");
+    let new_controlled_room =
+        NewControlledRoomPayload::new().with_password("new-room-secret-value");
+
+    let controller_debug = format!("{controller_auth:?}");
+    assert!(controller_debug.contains("<redacted>"));
+    assert!(!controller_debug.contains("controller-secret-value"));
+
+    let new_room_debug = format!("{new_controlled_room:?}");
+    assert!(new_room_debug.contains("<redacted>"));
+    assert!(!new_room_debug.contains("new-room-secret-value"));
 }
 
 #[test]

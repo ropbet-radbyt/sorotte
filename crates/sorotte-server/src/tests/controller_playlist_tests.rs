@@ -229,7 +229,13 @@ fn controller_auth_on_uncontrolled_room_returns_new_controlled_room_to_sender() 
                 .new_controlled_room
                 .as_ref()
                 .expect("newControlledRoom payload should be present");
-            assert_eq!(new_room.password.as_deref(), Some("AB-123-456"));
+            assert_eq!(
+                new_room
+                    .password
+                    .as_ref()
+                    .map(|password| password.expose_secret()),
+                Some("AB-123-456")
+            );
             assert_eq!(
                 new_room.room_name.as_deref(),
                 Some(expected_room_name.as_str())

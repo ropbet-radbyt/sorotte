@@ -214,8 +214,13 @@ impl UserSetPayload {
 pub struct ControllerAuthPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub room: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub password: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_optional_secret",
+        deserialize_with = "deserialize_optional_secret"
+    )]
+    pub password: Option<SecretValue>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -234,7 +239,7 @@ impl ControllerAuthPayload {
         self
     }
 
-    pub fn with_password(mut self, password: impl Into<String>) -> Self {
+    pub fn with_password(mut self, password: impl Into<SecretValue>) -> Self {
         self.password = Some(password.into());
         self
     }
@@ -252,8 +257,13 @@ impl ControllerAuthPayload {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct NewControlledRoomPayload {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub password: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_optional_secret",
+        deserialize_with = "deserialize_optional_secret"
+    )]
+    pub password: Option<SecretValue>,
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "roomName")]
     pub room_name: Option<String>,
     #[serde(flatten)]
@@ -265,7 +275,7 @@ impl NewControlledRoomPayload {
         Self::default()
     }
 
-    pub fn with_password(mut self, password: impl Into<String>) -> Self {
+    pub fn with_password(mut self, password: impl Into<SecretValue>) -> Self {
         self.password = Some(password.into());
         self
     }
@@ -274,6 +284,26 @@ impl NewControlledRoomPayload {
         self.room_name = Some(room_name.into());
         self
     }
+}
+
+fn serialize_optional_secret<S>(
+    value: &Option<SecretValue>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    value
+        .as_ref()
+        .map(SecretValue::expose_secret)
+        .serialize(serializer)
+}
+
+fn deserialize_optional_secret<'de, D>(deserializer: D) -> Result<Option<SecretValue>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(|value| value.map(SecretValue::from))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

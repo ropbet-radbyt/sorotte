@@ -203,7 +203,13 @@ async fn connected_client_session_reidentifies_controller_when_password_is_confi
             .controller_auth
             .expect("controller auth message should include controllerAuth payload");
         assert_eq!(controller_auth.room.as_deref(), Some("+room:ABCDEF123456"));
-        assert_eq!(controller_auth.password.as_deref(), Some("AB-123-456"));
+        assert_eq!(
+            controller_auth
+                .password
+                .as_ref()
+                .map(|password| password.expose_secret()),
+            Some("AB-123-456")
+        );
     });
 
     let config = ClientLoopConfig {

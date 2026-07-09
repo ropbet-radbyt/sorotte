@@ -93,23 +93,32 @@ fn cli_plex_config_uses_stored_settings_unless_env_overrides() {
     let config = cli_plex_config_from_env_and_stored_settings(Some(&StoredClientSettingsMvp {
         plex_sync_enabled: Some(true),
         plex_streaming_enabled: Some(true),
-        plex_user_token: Some("stored-user-token".to_owned()),
+        plex_user_token: Some("stored-user-token".into()),
         plex_selected_server_id: Some("stored-machine".to_owned()),
         plex_selected_server_url: Some("http://stored-plex:32400".to_owned()),
-        plex_selected_server_token: Some("stored-server-token".to_owned()),
+        plex_selected_server_token: Some("stored-server-token".into()),
         ..StoredClientSettingsMvp::default()
     }));
 
     assert!(config.enabled);
     assert!(config.streaming_enabled);
-    assert_eq!(config.user_token.as_deref(), Some("stored-user-token"));
+    assert_eq!(
+        config
+            .user_token
+            .as_ref()
+            .map(|token| token.expose_secret()),
+        Some("stored-user-token")
+    );
     assert_eq!(config.selected_server_id.as_deref(), Some("stored-machine"));
     assert_eq!(
         config.selected_server_url.as_deref(),
         Some("http://env-plex:32400")
     );
     assert_eq!(
-        config.selected_server_token.as_deref(),
+        config
+            .selected_server_token
+            .as_ref()
+            .map(|token| token.expose_secret()),
         Some("stored-server-token")
     );
 

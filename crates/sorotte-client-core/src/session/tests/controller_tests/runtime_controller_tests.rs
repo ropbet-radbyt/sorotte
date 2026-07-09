@@ -15,7 +15,13 @@ fn queued_runtime_control_request_controller_auth_emits_protocol_message() {
         .as_ref()
         .expect("Set message should contain controllerAuth payload");
     assert_eq!(controller_auth.room.as_deref(), Some("+room:ABCDEF123456"));
-    assert_eq!(controller_auth.password.as_deref(), Some("AB-123-456"));
+    assert_eq!(
+        controller_auth
+            .password
+            .as_ref()
+            .map(|password| password.expose_secret()),
+        Some("AB-123-456")
+    );
     assert!(controller_auth.user.is_none());
     assert!(controller_auth.success.is_none());
 }
@@ -54,7 +60,13 @@ fn client_runtime_controller_reidentify_dispatches_controller_auth_message() {
         .as_ref()
         .expect("queued message should include controllerAuth payload");
     assert_eq!(controller_auth.room.as_deref(), Some("+room:ABCDEF123456"));
-    assert_eq!(controller_auth.password.as_deref(), Some("AB-123-456"));
+    assert_eq!(
+        controller_auth
+            .password
+            .as_ref()
+            .map(|password| password.expose_secret()),
+        Some("AB-123-456")
+    );
     assert!(controller_auth.user.is_none());
     assert!(controller_auth.success.is_none());
 }
@@ -135,7 +147,13 @@ fn client_runtime_new_controlled_room_dispatches_room_then_controller_auth() {
         .as_ref()
         .expect("third outbound message should include controllerAuth payload");
     assert_eq!(controller_auth.room.as_deref(), Some("+room:ABCDEF123456"));
-    assert_eq!(controller_auth.password.as_deref(), Some("AB-123-456"));
+    assert_eq!(
+        controller_auth
+            .password
+            .as_ref()
+            .map(|password| password.expose_secret()),
+        Some("AB-123-456")
+    );
 }
 
 #[test]
@@ -230,7 +248,13 @@ fn client_runtime_request_controller_auth_dispatches_protocol_message_with_norma
         controller_auth.room.as_deref(),
         Some(" +room:ABCDEF123456 ")
     );
-    assert_eq!(controller_auth.password.as_deref(), Some("AB123-456"));
+    assert_eq!(
+        controller_auth
+            .password
+            .as_ref()
+            .map(|password| password.expose_secret()),
+        Some("AB123-456")
+    );
     assert_eq!(
         control.controller_auth_notifications(),
         &[ControllerAuthTransitionNotification::Attempting {
@@ -292,7 +316,13 @@ fn client_runtime_request_controller_auth_without_password_dispatches_empty_pass
         controller_auth.room.as_deref(),
         Some(" +room:ABCDEF123456 ")
     );
-    assert_eq!(controller_auth.password.as_deref(), Some(""));
+    assert_eq!(
+        controller_auth
+            .password
+            .as_ref()
+            .map(|password| password.expose_secret()),
+        Some("")
+    );
     assert_eq!(
         control.controller_auth_notifications(),
         &[ControllerAuthTransitionNotification::Attempting {
@@ -329,7 +359,13 @@ fn client_runtime_request_controller_auth_dispatches_for_whitespace_only_room() 
         .as_ref()
         .expect("Set message should contain controllerAuth payload");
     assert_eq!(controller_auth.room.as_deref(), Some(" "));
-    assert_eq!(controller_auth.password.as_deref(), Some("AB-123-456"));
+    assert_eq!(
+        controller_auth
+            .password
+            .as_ref()
+            .map(|password| password.expose_secret()),
+        Some("AB-123-456")
+    );
     assert_eq!(
         control.controller_auth_notifications(),
         &[ControllerAuthTransitionNotification::Attempting {
@@ -398,7 +434,13 @@ fn client_runtime_set_room_reidentifies_controlled_room_with_stored_password() {
         .as_ref()
         .expect("Set message should contain controllerAuth payload");
     assert_eq!(controller_auth.room.as_deref(), Some("+room:ABCDEF123456"));
-    assert_eq!(controller_auth.password.as_deref(), Some("AB-123-456"));
+    assert_eq!(
+        controller_auth
+            .password
+            .as_ref()
+            .map(|password| password.expose_secret()),
+        Some("AB-123-456")
+    );
     assert_eq!(
         control.controller_auth_notifications(),
         &[ControllerAuthTransitionNotification::Attempting {
@@ -456,7 +498,13 @@ fn client_runtime_set_room_with_inline_controlled_room_password_canonicalizes_an
         .as_ref()
         .expect("Set message should contain controllerAuth payload");
     assert_eq!(controller_auth.room.as_deref(), Some("+room:ABCDEF123456"));
-    assert_eq!(controller_auth.password.as_deref(), Some("AB-123-456"));
+    assert_eq!(
+        controller_auth
+            .password
+            .as_ref()
+            .map(|password| password.expose_secret()),
+        Some("AB-123-456")
+    );
     assert_eq!(
         control.controller_auth_notifications(),
         &[ControllerAuthTransitionNotification::Attempting {

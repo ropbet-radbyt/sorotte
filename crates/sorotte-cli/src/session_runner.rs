@@ -111,10 +111,10 @@ pub(super) fn cli_plex_config_from_env_and_stored_settings(
     let mut config = PlexClientConfig {
         enabled: env_flag_enabled("SOROTTE_CLIENT_PLEX_SYNC"),
         streaming_enabled: env_flag_enabled("SOROTTE_CLIENT_PLEX_STREAMING"),
-        user_token: env_trimmed("SOROTTE_CLIENT_PLEX_TOKEN"),
+        user_token: env_trimmed("SOROTTE_CLIENT_PLEX_TOKEN").map(Into::into),
         selected_server_id: env_trimmed("SOROTTE_CLIENT_PLEX_SERVER_ID"),
         selected_server_url: env_trimmed("SOROTTE_CLIENT_PLEX_SERVER_URL"),
-        selected_server_token: env_trimmed("SOROTTE_CLIENT_PLEX_SERVER_TOKEN"),
+        selected_server_token: env_trimmed("SOROTTE_CLIENT_PLEX_SERVER_TOKEN").map(Into::into),
     };
 
     let Some(settings) = stored_settings else {
