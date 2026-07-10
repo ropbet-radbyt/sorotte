@@ -61,6 +61,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         {
             let mut session_update = ClientSessionUpdate::new(&mut session);
             Self::apply_runtime_settings_to_session(&mut session_update, &runtime_settings, &room);
+            session_update.mark_connecting();
         }
 
         Ok(Self {
@@ -327,11 +328,11 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     pub(super) fn shared_playlist_server_supported(&self) -> bool {
-        self.runtime.session().server_shared_playlists_supported() != Some(false)
+        self.runtime.session().server_shared_playlists_supported()
     }
 
     pub(super) fn managed_rooms_server_supported(&self) -> bool {
-        self.runtime.session().server_managed_rooms_supported() == Some(true)
+        self.runtime.session().server_managed_rooms_supported()
     }
 
     pub(super) fn reset_session_for_reconnect(&mut self) {
@@ -354,6 +355,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             );
         }
         self.runtime = ClientApplication::new(session, GuiNoopClientRuntimePlayer);
+        self.runtime.session_mut().mark_reconnecting(0);
         self.pending_startup_protocol_lines.clear();
         self.pending_startup_protocol_lines
             .push_back(Self::hello_json(&username, &room, &self.runtime_settings));
@@ -367,6 +369,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     pub(super) fn prepare_transport_reconnect(&mut self) {
+        self.runtime.session_mut().mark_reconnecting(0);
         let username = self.current_username_for_next_hello();
         self.username = username.clone();
         self.baseline_room = self
@@ -568,7 +571,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn queue_periodic_state_sync_heartbeat_if_due(&mut self) {
-        if self.runtime.session().server_chat_supported().is_none() {
+        if !self.runtime.session().is_active() {
             self.next_state_sync_heartbeat_at = None;
             return;
         }
@@ -590,7 +593,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
 
     fn autoplay_runtime_flags(&self) -> (bool, bool, bool, bool) {
         let session = self.runtime.session();
-        let readiness_supported = session.server_readiness_supported().unwrap_or(false);
+        let readiness_supported = session.server_readiness_supported();
         let local_can_control = session.local_can_control().unwrap_or(false);
         let is_playing_music = session.is_playing_music();
         let recently_advanced = session.recently_advanced(system_time_seconds());
@@ -656,6 +659,9 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     pub(in crate::app) fn flush_outbound_protocol_lines(&mut self) -> Result<Vec<String>, String> {
+        if !self.pending_startup_protocol_lines.is_empty() && !self.runtime.session().is_active() {
+            self.runtime.session_mut().mark_awaiting_hello();
+        }
         let mut lines: Vec<_> = self.pending_startup_protocol_lines.drain(..).collect();
         lines.extend(
             self.runtime

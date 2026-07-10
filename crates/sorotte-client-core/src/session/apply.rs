@@ -8,61 +8,54 @@ impl ClientSession {
         }
 
         let server_version = hello.effective_version().to_owned();
-        self.model.capabilities.readiness = Some(
-            Self::feature_bool(hello.features.as_ref(), "readiness").unwrap_or_else(|| {
-                Self::meets_min_version_legacy_compatible(
-                    &server_version,
-                    LEGACY_USER_READY_MIN_VERSION,
-                )
-            }),
-        );
-        self.model.capabilities.set_others_readiness = Some(
-            Self::feature_bool(hello.features.as_ref(), "setOthersReadiness").unwrap_or_else(
+        let capabilities = ServerCapabilities {
+            readiness: Self::feature_bool(hello.features.as_ref(), "readiness").unwrap_or_else(
                 || {
+                    Self::meets_min_version_legacy_compatible(
+                        &server_version,
+                        LEGACY_USER_READY_MIN_VERSION,
+                    )
+                },
+            ),
+            remote_readiness: Self::feature_bool(hello.features.as_ref(), "setOthersReadiness")
+                .unwrap_or_else(|| {
                     Self::meets_min_version_legacy_compatible(
                         &server_version,
                         LEGACY_SET_OTHERS_READINESS_MIN_VERSION,
                     )
-                },
-            ),
-        );
-        self.model.capabilities.managed_rooms = Some(
-            Self::feature_bool(hello.features.as_ref(), "managedRooms").unwrap_or_else(|| {
-                Self::meets_min_version_legacy_compatible(
-                    &server_version,
-                    LEGACY_MANAGED_ROOMS_MIN_VERSION,
-                )
-            }),
-        );
-        self.model.capabilities.shared_playlists = Some(
-            Self::feature_bool(hello.features.as_ref(), "sharedPlaylists").unwrap_or_else(|| {
-                Self::meets_min_version_legacy_compatible(
-                    &server_version,
-                    LEGACY_SHARED_PLAYLIST_MIN_VERSION,
-                )
-            }),
-        );
-        self.model.capabilities.media_match =
-            Some(Self::feature_bool(hello.features.as_ref(), "mediaMatch").unwrap_or(false));
-        self.model.capabilities.chat = Some(
-            Self::feature_bool(hello.features.as_ref(), "chat").unwrap_or_else(|| {
+                }),
+            managed_rooms: Self::feature_bool(hello.features.as_ref(), "managedRooms")
+                .unwrap_or_else(|| {
+                    Self::meets_min_version_legacy_compatible(
+                        &server_version,
+                        LEGACY_MANAGED_ROOMS_MIN_VERSION,
+                    )
+                }),
+            shared_playlists: Self::feature_bool(hello.features.as_ref(), "sharedPlaylists")
+                .unwrap_or_else(|| {
+                    Self::meets_min_version_legacy_compatible(
+                        &server_version,
+                        LEGACY_SHARED_PLAYLIST_MIN_VERSION,
+                    )
+                }),
+            media_match: Self::feature_bool(hello.features.as_ref(), "mediaMatch").unwrap_or(false),
+            chat: Self::feature_bool(hello.features.as_ref(), "chat").unwrap_or_else(|| {
                 Self::meets_min_version_legacy_compatible(&server_version, LEGACY_CHAT_MIN_VERSION)
             }),
-        );
-        self.model.capabilities.persistent_rooms =
-            Some(Self::feature_bool(hello.features.as_ref(), "persistentRooms").unwrap_or(false));
-        self.model.capabilities.max_username_length = Some(
-            Self::feature_usize(hello.features.as_ref(), "maxUsernameLength")
+            plex_playlist_uris: Self::feature_bool(
+                hello.features.as_ref(),
+                SOROTTE_PLEX_PLAYLIST_URIS_FEATURE,
+            )
+            .unwrap_or(false),
+            persistent_rooms: Self::feature_bool(hello.features.as_ref(), "persistentRooms")
+                .unwrap_or(false),
+            max_username_length: Self::feature_usize(hello.features.as_ref(), "maxUsernameLength")
                 .unwrap_or(LEGACY_FALLBACK_MAX_USERNAME_LENGTH),
-        );
-        self.model.capabilities.max_room_name_length = Some(
-            Self::feature_usize(hello.features.as_ref(), "maxRoomNameLength")
+            max_room_name_length: Self::feature_usize(hello.features.as_ref(), "maxRoomNameLength")
                 .unwrap_or(LEGACY_FALLBACK_MAX_ROOM_NAME_LENGTH),
-        );
-        self.model.capabilities.max_filename_length = Some(
-            Self::feature_usize(hello.features.as_ref(), "maxFilenameLength")
+            max_filename_length: Self::feature_usize(hello.features.as_ref(), "maxFilenameLength")
                 .unwrap_or(LEGACY_FALLBACK_MAX_FILENAME_LENGTH),
-        );
+        };
         if self.chat_config.apply_server_max_chat_message_length {
             self.chat_config.max_chat_message_length =
                 Self::feature_usize(hello.features.as_ref(), "maxChatMessageLength")
@@ -118,6 +111,8 @@ impl ClientSession {
         if let Some(restored_controller) = self.model.reconnect.controller_restore_snapshot.take() {
             self.set_user_controller(&username, restored_controller);
         }
+
+        self.model.connection.phase = ConnectionPhase::Active(capabilities);
     }
 
     pub(super) fn apply_set(&mut self, set_payload: SetPayload, now_seconds: Option<f64>) {

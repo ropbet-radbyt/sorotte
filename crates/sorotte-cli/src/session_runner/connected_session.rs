@@ -248,7 +248,7 @@ where
     runtime
         .session_mut()
         .apply_protocol_message(hello_message.clone())?;
-    runtime.session_mut().clear_server_feature_support_state();
+    runtime.session_mut().mark_awaiting_hello();
 
     let hello_line = encode_message_line(&hello_message)?;
     let stream: Box<dyn ConnectedSessionAsyncStream> =

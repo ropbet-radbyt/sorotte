@@ -44,8 +44,24 @@ impl<'a> ClientSessionUpdate<'a> {
         self.session.apply_message_json_at(json_line, now_seconds)
     }
 
-    pub fn clear_server_feature_support_state(&mut self) {
-        self.session.clear_server_feature_support_state();
+    pub fn mark_connecting(&mut self) {
+        self.session.mark_connecting();
+    }
+
+    pub fn mark_awaiting_hello(&mut self) {
+        self.session.mark_awaiting_hello();
+    }
+
+    pub fn mark_reconnecting(&mut self, attempt: u32) {
+        self.session.mark_reconnecting(attempt);
+    }
+
+    pub fn mark_closing(&mut self) {
+        self.session.mark_closing();
+    }
+
+    pub fn mark_disconnected(&mut self) {
+        self.session.mark_disconnected();
     }
 
     pub fn reset_sync_state_for_reconnect(&mut self) {

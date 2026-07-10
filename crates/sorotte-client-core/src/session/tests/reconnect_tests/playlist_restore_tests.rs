@@ -24,6 +24,11 @@ fn reconnect_playlist_restore_emits_actions_on_empty_server_playlist_snapshot() 
     );
 
     session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sharedPlaylists":true}}}"#,
+        )
+        .expect("reconnect hello should apply");
+    session
         .apply_message_json(r#"{"Set":{"playlistChange":{"files":[]}}}"#)
         .expect("empty server playlist snapshot should apply");
 
@@ -134,6 +139,11 @@ fn client_runtime_reconnect_playlist_restore_dispatches_protocol_messages() {
         .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"alice"}}}"#)
         .expect("local playlist index should apply");
     session.reset_sync_state_for_reconnect();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sharedPlaylists":true}}}"#,
+        )
+        .expect("reconnect hello should apply");
     session
         .apply_message_json(r#"{"Set":{"playlistChange":{"files":[]}}}"#)
         .expect("empty reconnect playlist snapshot should apply");
@@ -384,6 +394,11 @@ fn client_runtime_reconnect_playlist_restore_uses_latest_local_playlist_before_e
 
     let (mut session, player, _control) = runtime.into_parts();
     session.reset_sync_state_for_reconnect();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sharedPlaylists":true}}}"#,
+        )
+        .expect("reconnect hello should apply");
     session
         .apply_message_json(r#"{"Set":{"playlistChange":{"files":[]}}}"#)
         .expect("empty reconnect playlist snapshot should apply");

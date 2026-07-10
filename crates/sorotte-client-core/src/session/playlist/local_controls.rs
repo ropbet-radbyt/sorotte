@@ -5,7 +5,7 @@ impl ClientSession {
         &self,
         message: String,
     ) -> Vec<ClientRuntimeAction> {
-        if self.model.capabilities.chat != Some(true) {
+        if !self.server_chat_supported() {
             return Vec::new();
         }
         if self.chat_config.max_chat_message_length == 0 {
@@ -23,9 +23,7 @@ impl ClientSession {
         &self,
         manually_initiated: bool,
     ) -> Vec<ClientRuntimeAction> {
-        if self.model.connection.username.is_none()
-            || self.model.capabilities.readiness != Some(true)
-        {
+        if self.model.connection.username.is_none() || !self.server_readiness_supported() {
             return Vec::new();
         }
         vec![ClientRuntimeAction::SetReady {
@@ -44,7 +42,7 @@ impl ClientSession {
             return Vec::new();
         }
         if username.is_empty() {
-            if self.model.capabilities.readiness != Some(true) {
+            if !self.server_readiness_supported() {
                 return Vec::new();
             }
             return vec![ClientRuntimeAction::SetReady {
@@ -52,9 +50,7 @@ impl ClientSession {
                 manually_initiated,
             }];
         }
-        if self.model.capabilities.readiness != Some(true)
-            || self.model.capabilities.set_others_readiness != Some(true)
-        {
+        if !self.server_readiness_supported() || !self.server_set_others_readiness_supported() {
             return Vec::new();
         }
         if self.local_can_control() != Some(true) {
@@ -75,7 +71,7 @@ impl ClientSession {
         if self.model.connection.username.is_none() {
             return Vec::new();
         }
-        if self.model.capabilities.managed_rooms != Some(true) {
+        if !self.server_managed_rooms_supported() {
             return Vec::new();
         }
         if room.is_empty() {
@@ -95,7 +91,7 @@ impl ClientSession {
         &mut self,
         room: String,
     ) -> Vec<ClientRuntimeAction> {
-        if self.model.capabilities.chat.is_none() {
+        if !self.is_active() {
             return Vec::new();
         }
         let (room, inline_password) =
@@ -123,7 +119,7 @@ impl ClientSession {
         let controller_password = inline_password
             .filter(|password| !password.is_empty())
             .or_else(|| self.model.controller.room_passwords.get(&room).cloned());
-        if self.model.capabilities.managed_rooms == Some(true)
+        if self.server_managed_rooms_supported()
             && let Some(password) = controller_password
         {
             self.model.controller.last_auth_password_attempt = Some(password.clone());
@@ -169,7 +165,7 @@ impl ClientSession {
     }
 
     pub fn runtime_actions_for_local_user_list_request(&self) -> Vec<ClientRuntimeAction> {
-        if self.model.connection.username.is_none() || self.model.capabilities.chat.is_none() {
+        if self.model.connection.username.is_none() || !self.is_active() {
             return Vec::new();
         }
         vec![ClientRuntimeAction::RequestUserList]

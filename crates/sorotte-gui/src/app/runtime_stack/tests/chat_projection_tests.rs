@@ -19,6 +19,10 @@ fn gui_client_core_chat_session_runtime_adapter_bridges_chat_protocol_and_notifi
     assert!(startup_lines[0].contains("\"alice\""));
     assert!(startup_lines[0].contains("\"room1\""));
     assert!(startup_lines[0].contains("\"chat\":true"));
+    assert_eq!(
+        adapter.runtime.session().connection_phase(),
+        &ConnectionPhase::AwaitingHello
+    );
     assert!(
         GuiSessionRuntimeAdapter::send_chat_message(&mut adapter, "hello room".to_owned(),)
             .is_err(),
@@ -55,6 +59,32 @@ fn gui_client_core_chat_session_runtime_adapter_bridges_chat_protocol_and_notifi
         }]
     );
     assert!(GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state).is_empty());
+}
+
+#[test]
+fn gui_session_treats_chat_disabled_as_active_after_hello() {
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+    let _ = adapter
+        .flush_outbound_protocol_lines()
+        .expect("startup protocol lines should encode");
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":false}}}"#,
+        )
+        .expect("inbound server hello should apply");
+
+    assert!(matches!(
+        adapter.runtime.session().connection_phase(),
+        ConnectionPhase::Active(capabilities) if !capabilities.chat
+    ));
+    assert_eq!(
+        GuiSessionRuntimeAdapter::send_chat_message(&mut adapter, "blocked".to_owned())
+            .expect_err("disabled chat should reject the message"),
+        "Client-core session runtime cannot send chat because the server disabled chat."
+    );
+    GuiSessionRuntimeAdapter::set_room(&mut adapter, "room2".to_owned())
+        .expect("an active session may change rooms even when chat is disabled");
 }
 
 #[test]

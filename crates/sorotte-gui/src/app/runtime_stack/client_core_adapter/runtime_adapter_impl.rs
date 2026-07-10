@@ -14,23 +14,20 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         if !legacy_chat_input_enabled(&settings) || state.pending_operation.is_some() {
             return command_availability;
         }
-        match self.runtime.session().server_chat_supported() {
-            Some(true) => {
-                command_availability.can_send_chat_message = true;
-                command_availability.chat_unavailable_reason = None;
-            }
-            None => {
-                command_availability.can_send_chat_message = false;
-                command_availability.chat_unavailable_reason = Some(
-                    "Chat input is unavailable until the server Hello confirms chat support."
-                        .to_owned(),
-                );
-            }
-            Some(false) => {
-                command_availability.can_send_chat_message = false;
-                command_availability.chat_unavailable_reason =
-                    Some("Chat input is unavailable because the server disabled chat.".to_owned());
-            }
+        let session = self.runtime.session();
+        if !session.is_active() {
+            command_availability.can_send_chat_message = false;
+            command_availability.chat_unavailable_reason = Some(
+                "Chat input is unavailable until the server Hello confirms chat support."
+                    .to_owned(),
+            );
+        } else if session.server_chat_supported() {
+            command_availability.can_send_chat_message = true;
+            command_availability.chat_unavailable_reason = None;
+        } else {
+            command_availability.can_send_chat_message = false;
+            command_availability.chat_unavailable_reason =
+                Some("Chat input is unavailable because the server disabled chat.".to_owned());
         }
         command_availability
     }
@@ -58,7 +55,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
                 Ok(())
             }
             Ok(false) => {
-                if self.runtime.session().server_chat_supported().is_none() {
+                if !self.runtime.session().is_active() {
                     Err(
                         "Client-core session runtime cannot change rooms until the server Hello completes."
                             .to_owned(),
@@ -87,7 +84,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
                 Ok(())
             }
             Ok(false) => {
-                if self.runtime.session().server_chat_supported().is_none() {
+                if !self.runtime.session().is_active() {
                     Err(
                         "Client-core session runtime cannot change rooms until the server Hello completes."
                             .to_owned(),
@@ -108,20 +105,25 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     fn send_chat_message(&mut self, message: String) -> Result<(), String> {
         match self.dispatch_application_command(ClientCommand::SendChat(message)) {
             Ok(true) => Ok(()),
-            Ok(false) => match self.runtime.session().server_chat_supported() {
-                None => Err(
+            Ok(false) => {
+                let session = self.runtime.session();
+                if !session.is_active() {
+                    Err(
                     "Client-core session runtime cannot send chat until the server Hello enables chat."
                         .to_owned(),
-                ),
-                Some(false) => Err(
+                    )
+                } else if !session.server_chat_supported() {
+                    Err(
                     "Client-core session runtime cannot send chat because the server disabled chat."
                         .to_owned(),
-                ),
-                Some(true) => Err(
-                    "Client-core session runtime did not queue an outbound chat message."
-                        .to_owned(),
-                ),
-            },
+                    )
+                } else {
+                    Err(
+                        "Client-core session runtime did not queue an outbound chat message."
+                            .to_owned(),
+                    )
+                }
+            }
             Err(error) => Err(format!(
                 "Client-core session runtime chat dispatch failed: {error}"
             )),
@@ -129,23 +131,20 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn attached_player_chat_input_ready(&self) -> bool {
-        self.runtime.session().server_chat_supported() == Some(true)
+        self.runtime.session().server_chat_supported()
     }
 
     fn attached_player_chat_input_unavailable_message(&self) -> String {
-        match self.runtime.session().server_chat_supported() {
-            None => {
-                "Chat input from the attached player cannot be sent until the server Hello enables chat."
-                    .to_owned()
-            }
-            Some(false) => {
-                "Chat input from the attached player cannot be sent because the server disabled chat."
-                    .to_owned()
-            }
-            Some(true) => {
-                "Chat input from the attached player could not be sent because the session runtime is not ready."
-                    .to_owned()
-            }
+        let session = self.runtime.session();
+        if !session.is_active() {
+            "Chat input from the attached player cannot be sent until the server Hello enables chat."
+                .to_owned()
+        } else if !session.server_chat_supported() {
+            "Chat input from the attached player cannot be sent because the server disabled chat."
+                .to_owned()
+        } else {
+            "Chat input from the attached player could not be sent because the session runtime is not ready."
+                .to_owned()
         }
     }
 
@@ -156,20 +155,25 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             manually_initiated: true,
         }) {
             Ok(true) => Ok(()),
-            Ok(false) => match self.runtime.session().server_readiness_supported() {
-                None => Err(
+            Ok(false) => {
+                let session = self.runtime.session();
+                if !session.is_active() {
+                    Err(
                     "Client-core session runtime cannot change readiness until the server Hello enables readiness."
                         .to_owned(),
-                ),
-                Some(false) => Err(
+                    )
+                } else if !session.server_readiness_supported() {
+                    Err(
                     "Client-core session runtime cannot change readiness because the server disabled readiness."
                         .to_owned(),
-                ),
-                Some(true) => Err(
-                    "Client-core session runtime did not queue an outbound readiness change."
-                        .to_owned(),
-                ),
-            },
+                    )
+                } else {
+                    Err(
+                        "Client-core session runtime did not queue an outbound readiness change."
+                            .to_owned(),
+                    )
+                }
+            }
             Err(error) => Err(format!(
                 "Client-core session runtime readiness dispatch failed: {error}"
             )),
@@ -193,29 +197,30 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             manually_initiated: true,
         }) {
             Ok(true) => Ok(()),
-            Ok(false) => match self.runtime.session().server_set_others_readiness_supported() {
-                None => Err(
+            Ok(false) => {
+                let session = self.runtime.session();
+                if !session.is_active() {
+                    Err(
                     "Client-core session runtime cannot change other users' readiness until the server Hello enables remote readiness changes."
                         .to_owned(),
-                ),
-                Some(false) => Err(
+                    )
+                } else if !session.server_set_others_readiness_supported() {
+                    Err(
                     "Client-core session runtime cannot change other users' readiness because the server disabled remote readiness changes."
                         .to_owned(),
-                ),
-                Some(true) => {
-                    if self.runtime.session().local_can_control() != Some(true) {
-                        Err(
+                    )
+                } else if session.local_can_control() != Some(true) {
+                    Err(
                             "Client-core session runtime cannot change other users' readiness because the local user cannot control the current room."
                                 .to_owned(),
                         )
-                    } else {
-                        Err(
+                } else {
+                    Err(
                             "Client-core session runtime did not queue an outbound remote readiness change."
                                 .to_owned(),
                         )
-                    }
                 }
-            },
+            }
             Err(error) => Err(format!(
                 "Client-core session runtime readiness dispatch failed: {error}"
             )),
@@ -228,22 +233,12 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         {
             Ok(true) => Ok(()),
             Ok(false) => {
-                if self.runtime.session().username().is_none() {
+                if !self.runtime.session().is_active() {
                     Err(
                         "Client-core session runtime cannot request controller access until the server Hello is received."
                             .to_owned(),
                     )
-                } else if self
-                    .runtime
-                    .session()
-                    .server_managed_rooms_supported()
-                    .is_none()
-                {
-                    Err(
-                        "Client-core session runtime cannot request controller access until the server Hello enables controlled-room support."
-                            .to_owned(),
-                    )
-                } else if self.runtime.session().server_managed_rooms_supported() == Some(false) {
+                } else if !self.runtime.session().server_managed_rooms_supported() {
                     Err(
                         "Client-core session runtime cannot request controller access because the server disabled controlled-room support."
                             .to_owned(),
@@ -601,7 +596,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn server_handshake_completed(&self) -> bool {
-        self.runtime.session().server_chat_supported().is_some()
+        self.runtime.session().is_active()
     }
 
     fn current_room_playstate(&self) -> Option<GuiSessionRoomPlaystate> {
@@ -640,7 +635,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             .and_then(|index| usize::try_from(index).ok())
     }
 
-    fn server_media_match_supported(&self) -> Option<bool> {
+    fn server_media_match_supported(&self) -> bool {
         self.runtime.session().server_media_match_supported()
     }
 
@@ -744,11 +739,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             return Ok(GuiLocalPlayerUnpauseDecision::NotApplicable);
         }
 
-        let readiness_supported = self
-            .runtime
-            .session()
-            .server_readiness_supported()
-            .unwrap_or(false);
+        let readiness_supported = self.runtime.session().server_readiness_supported();
         if !readiness_supported {
             return Ok(GuiLocalPlayerUnpauseDecision::NotApplicable);
         }
@@ -785,11 +776,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             return Ok(());
         }
 
-        let readiness_supported = self
-            .runtime
-            .session()
-            .server_readiness_supported()
-            .unwrap_or(false);
+        let readiness_supported = self.runtime.session().server_readiness_supported();
         if !readiness_supported {
             return Ok(());
         }

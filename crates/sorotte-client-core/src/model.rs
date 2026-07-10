@@ -3,7 +3,6 @@ use super::*;
 #[derive(Debug, Default)]
 pub struct ClientModel {
     pub(crate) connection: ConnectionState,
-    pub(crate) capabilities: ServerCapabilities,
     pub(crate) room: RoomState,
     pub(crate) playback: PlaybackSyncState,
     pub(crate) playlist: PlaylistState,
@@ -15,20 +14,35 @@ pub struct ClientModel {
 #[derive(Debug, Default)]
 pub struct ConnectionState {
     pub(crate) username: Option<String>,
+    pub(crate) phase: ConnectionPhase,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ConnectionPhase {
+    #[default]
+    Disconnected,
+    Connecting,
+    AwaitingHello,
+    Active(ServerCapabilities),
+    Reconnecting {
+        attempt: u32,
+    },
+    Closing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerCapabilities {
-    pub(crate) readiness: Option<bool>,
-    pub(crate) set_others_readiness: Option<bool>,
-    pub(crate) managed_rooms: Option<bool>,
-    pub(crate) shared_playlists: Option<bool>,
-    pub(crate) media_match: Option<bool>,
-    pub(crate) chat: Option<bool>,
-    pub(crate) persistent_rooms: Option<bool>,
-    pub(crate) max_username_length: Option<usize>,
-    pub(crate) max_room_name_length: Option<usize>,
-    pub(crate) max_filename_length: Option<usize>,
+    pub chat: bool,
+    pub readiness: bool,
+    pub remote_readiness: bool,
+    pub shared_playlists: bool,
+    pub managed_rooms: bool,
+    pub media_match: bool,
+    pub plex_playlist_uris: bool,
+    pub persistent_rooms: bool,
+    pub max_username_length: usize,
+    pub max_room_name_length: usize,
+    pub max_filename_length: usize,
 }
 
 #[derive(Debug, Default)]

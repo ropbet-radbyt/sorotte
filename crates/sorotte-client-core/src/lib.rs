@@ -12,9 +12,9 @@ use sorotte_player_api::{
 use sorotte_protocol::{
     ChatPayload, ControllerAuthPayload, FilePayload, IgnoringOnTheFlyPayload, ListPayload,
     PingPayload, PlaylistIndexPayload, PlaystatePayload, ProtocolError, ProtocolMessage,
-    ReadyPayload, RoomRef, SetPayload, StatePayload, canonical_playlist_files_from_change,
-    decode_message_line, decode_message_line_items, encode_message_line,
-    extract_hello_from_message, playlist_change_with_plex_sidecar,
+    ReadyPayload, RoomRef, SOROTTE_PLEX_PLAYLIST_URIS_FEATURE, SetPayload, StatePayload,
+    canonical_playlist_files_from_change, decode_message_line, decode_message_line_items,
+    encode_message_line, extract_hello_from_message, playlist_change_with_plex_sidecar,
 };
 
 const SEEK_THRESHOLD_SECONDS: f64 = 1.0;
@@ -100,8 +100,8 @@ pub use self::control::{
     ClientEffect, ClientEffectError, ClientEffectSink, ClientRuntimeAction, QueuedRuntimeControl,
 };
 pub use self::model::{
-    ClientEvent, ClientModel, ConnectionState, ControllerState, PlaybackSyncState, PlaylistState,
-    ReadinessState, ReconnectState, RoomState, ServerCapabilities,
+    ClientEvent, ClientModel, ConnectionPhase, ConnectionState, ControllerState, PlaybackSyncState,
+    PlaylistState, ReadinessState, ReconnectState, RoomState, ServerCapabilities,
 };
 pub use self::notifications::{
     AutoplayCountdownNotification, ChatNotification, ControlledRoomCreationNotification,

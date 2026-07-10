@@ -14,11 +14,12 @@ impl ClientSession {
     }
 
     pub fn plan_reconnect_retry(&mut self, retries: u32) -> ReconnectRetryDecision {
-        self.reset_sync_state_for_reconnect();
+        self.reset_sync_state_for_reconnect_with_attempt(retries);
 
         if retries > self.model.reconnect.policy.max_retries {
             self.model.reconnect.in_progress = false;
             self.model.reconnect.connected_intent = false;
+            self.mark_disconnected();
             return ReconnectRetryDecision {
                 should_retry: false,
                 delay_seconds: None,
@@ -379,10 +380,13 @@ impl ClientSession {
     pub fn runtime_actions_for_reconnect_playlist_restore_if_needed(
         &mut self,
     ) -> Vec<ClientRuntimeAction> {
+        if !self.is_active() {
+            return Vec::new();
+        }
         let Some(restore_intent) = self.model.reconnect.playlist_restore_intent.take() else {
             return Vec::new();
         };
-        if self.model.capabilities.shared_playlists == Some(false) {
+        if !self.server_shared_playlists_supported() {
             return Vec::new();
         }
 
@@ -403,7 +407,7 @@ impl ClientSession {
     pub fn runtime_actions_for_controller_reidentify_if_needed(
         &mut self,
     ) -> Vec<ClientRuntimeAction> {
-        if self.model.capabilities.managed_rooms != Some(true) {
+        if !self.server_managed_rooms_supported() {
             self.model.controller.controlled_room_switch_intent = None;
             self.model.controller.reidentify_intent = None;
             return Vec::new();

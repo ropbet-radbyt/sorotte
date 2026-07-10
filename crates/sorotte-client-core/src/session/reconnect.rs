@@ -2,6 +2,10 @@ use super::*;
 
 impl ClientSession {
     pub fn reset_sync_state_for_reconnect(&mut self) {
+        self.reset_sync_state_for_reconnect_with_attempt(0);
+    }
+
+    pub(super) fn reset_sync_state_for_reconnect_with_attempt(&mut self, attempt: u32) {
         let (ready_snapshot, file_snapshot, controller_snapshot) = self
             .model
             .connection
@@ -85,7 +89,7 @@ impl ClientSession {
         self.model.playback.last_advanced_at_seconds = None;
         self.model.playback.client_ignoring_on_the_fly = 0;
         self.model.playback.server_ignoring_on_the_fly = 0;
-        self.clear_server_feature_support_state();
+        self.mark_reconnecting(attempt);
         self.model.playback.last_rewound_at_seconds = None;
 
         if let (Some(username), Some(room_name)) = (

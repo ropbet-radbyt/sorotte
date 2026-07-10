@@ -1,4 +1,5 @@
 use serde_json::Value;
+pub use sorotte_client_core::ConnectionPhase;
 use sorotte_client_core::{
     AutoplayCountdownNotification, ChatNotification, ClientEffect, ClientEffectError,
     ClientPlayerIo, ClientRuntime, ClientSession, ClientSessionUpdate,
@@ -35,22 +36,6 @@ struct ClientPlexWorkerResult {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ClientApplicationSettings {
     pub autoplay_enabled: Option<bool>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum ClientConnectionState {
-    #[default]
-    Disconnected,
-    Connecting {
-        endpoint: String,
-    },
-    Connected {
-        endpoint: String,
-    },
-    Reconnecting {
-        endpoint: String,
-        attempt: u32,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -120,7 +105,7 @@ impl ClientCommand {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientEvent {
-    ConnectionChanged(ClientConnectionState),
+    ConnectionChanged(ConnectionPhase),
     RoomChanged {
         previous: Option<String>,
         current: Option<String>,
@@ -155,6 +140,7 @@ impl ClientEvent {
 
 #[derive(Debug, Clone, PartialEq)]
 struct ApplicationSnapshot {
+    connection_phase: ConnectionPhase,
     room: Option<String>,
     paused: Option<bool>,
     position_seconds: Option<f64>,
@@ -167,7 +153,6 @@ where
     P: PlayerAdapter,
 {
     runtime: ClientRuntime<P, QueuedRuntimeControl>,
-    connection: ClientConnectionState,
     endpoint: Option<String>,
     plex: Option<ClientPlexService>,
 }
@@ -191,7 +176,6 @@ where
     pub fn from_runtime(runtime: ClientRuntime<P, QueuedRuntimeControl>) -> Self {
         Self {
             runtime,
-            connection: ClientConnectionState::Disconnected,
             endpoint: None,
             plex: None,
         }
@@ -201,8 +185,12 @@ where
         self.runtime
     }
 
-    pub fn connection(&self) -> &ClientConnectionState {
-        &self.connection
+    pub fn connection_phase(&self) -> &ConnectionPhase {
+        self.runtime.session().connection_phase()
+    }
+
+    pub fn endpoint(&self) -> Option<&str> {
+        self.endpoint.as_deref()
     }
 
     pub fn plex_service_enabled(&self) -> bool {
@@ -406,6 +394,7 @@ where
         let session = self.runtime.session();
         let username = session.username().map(ToOwned::to_owned);
         ApplicationSnapshot {
+            connection_phase: session.connection_phase().clone(),
             room: session.room().map(ToOwned::to_owned),
             paused: session.local_paused(),
             position_seconds: session.local_position_seconds(),
@@ -419,6 +408,11 @@ where
     fn domain_events_since(&self, before: &ApplicationSnapshot) -> Vec<ClientEvent> {
         let after = self.snapshot();
         let mut events = Vec::new();
+        if before.connection_phase != after.connection_phase {
+            events.push(ClientEvent::ConnectionChanged(
+                after.connection_phase.clone(),
+            ));
+        }
         if before.room != after.room {
             events.push(ClientEvent::RoomChanged {
                 previous: before.room.clone(),
@@ -440,34 +434,46 @@ where
         events
     }
 
-    fn set_connection(&mut self, state: ClientConnectionState) -> Vec<ClientEvent> {
-        if self.connection == state {
+    fn set_connection_phase(&mut self, phase: ConnectionPhase) -> Vec<ClientEvent> {
+        if self.connection_phase() == &phase {
             return Vec::new();
         }
-        self.connection = state.clone();
-        vec![ClientEvent::ConnectionChanged(state)]
+        let mut session = self.runtime.session_mut();
+        match phase {
+            ConnectionPhase::Disconnected => session.mark_disconnected(),
+            ConnectionPhase::Connecting => session.mark_connecting(),
+            ConnectionPhase::AwaitingHello => session.mark_awaiting_hello(),
+            ConnectionPhase::Reconnecting { attempt } => session.mark_reconnecting(attempt),
+            ConnectionPhase::Closing => session.mark_closing(),
+            ConnectionPhase::Active(_) => {
+                unreachable!("Active is entered only by applying a server Hello")
+            }
+        }
+        vec![ClientEvent::ConnectionChanged(
+            self.connection_phase().clone(),
+        )]
     }
 
     pub fn dispatch(&mut self, command: ClientCommand) -> Vec<ClientEvent> {
         let before = self.snapshot();
         let (operation, result) = match command {
             ClientCommand::Connect { endpoint } => {
-                self.endpoint = Some(endpoint.clone());
-                return self.set_connection(ClientConnectionState::Connecting { endpoint });
+                self.endpoint = Some(endpoint);
+                return self.set_connection_phase(ConnectionPhase::Connecting);
             }
             ClientCommand::TransportConnected => {
-                let endpoint = self.endpoint.clone().unwrap_or_default();
-                return self.set_connection(ClientConnectionState::Connected { endpoint });
+                return self.set_connection_phase(ConnectionPhase::AwaitingHello);
             }
             ClientCommand::Reconnect { attempt } => {
-                let endpoint = self.endpoint.clone().unwrap_or_default();
-                return self
-                    .set_connection(ClientConnectionState::Reconnecting { endpoint, attempt });
+                return self.set_connection_phase(ConnectionPhase::Reconnecting { attempt });
             }
-            ClientCommand::Disconnect { now_seconds } => (
-                "disconnect",
-                self.runtime.run_disconnect(now_seconds).map(|()| true),
-            ),
+            ClientCommand::Disconnect { now_seconds } => {
+                self.runtime.session_mut().mark_closing();
+                (
+                    "disconnect",
+                    self.runtime.run_disconnect(now_seconds).map(|()| true),
+                )
+            }
             ClientCommand::ReceiveProtocolLine {
                 line,
                 received_at_seconds,
@@ -589,15 +595,7 @@ where
 
         match result {
             Ok(changed) => {
-                if operation == "disconnect" {
-                    self.connection = ClientConnectionState::Disconnected;
-                }
                 let mut events = self.domain_events_since(&before);
-                if operation == "disconnect" {
-                    events.push(ClientEvent::ConnectionChanged(
-                        ClientConnectionState::Disconnected,
-                    ));
-                }
                 events.push(ClientEvent::CommandCompleted {
                     command: operation,
                     changed,
@@ -1191,18 +1189,13 @@ mod tests {
             application.dispatch(ClientCommand::Connect {
                 endpoint: "sync.example:8999".to_owned(),
             }),
-            vec![ClientEvent::ConnectionChanged(
-                ClientConnectionState::Connecting {
-                    endpoint: "sync.example:8999".to_owned(),
-                },
-            )],
+            vec![ClientEvent::ConnectionChanged(ConnectionPhase::Connecting)],
         );
+        assert_eq!(application.endpoint(), Some("sync.example:8999"));
         assert_eq!(
             application.dispatch(ClientCommand::TransportConnected),
             vec![ClientEvent::ConnectionChanged(
-                ClientConnectionState::Connected {
-                    endpoint: "sync.example:8999".to_owned(),
-                },
+                ConnectionPhase::AwaitingHello,
             )],
         );
     }
@@ -1262,6 +1255,15 @@ mod tests {
             event,
             ClientEvent::RoomChanged { current, .. } if current.as_deref() == Some("room-a")
         )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ClientEvent::ConnectionChanged(ConnectionPhase::Active(capabilities))
+                if !capabilities.chat
+        )));
+        assert!(matches!(
+            application.connection_phase(),
+            ConnectionPhase::Active(_)
+        ));
     }
 
     #[test]

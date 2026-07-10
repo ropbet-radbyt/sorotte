@@ -298,7 +298,7 @@ impl ClientSession {
     }
 
     pub fn runtime_actions_for_local_media_opened_not_ready(&mut self) -> Vec<ClientRuntimeAction> {
-        if self.model.capabilities.readiness != Some(true) {
+        if !self.server_readiness_supported() {
             return Vec::new();
         }
         let Some(username) = self.model.connection.username.clone() else {
@@ -528,57 +528,94 @@ impl ClientSession {
         self.model.playback.last_paused_on_leave_at_seconds
     }
 
-    pub fn server_readiness_supported(&self) -> Option<bool> {
-        self.model.capabilities.readiness
+    pub fn connection_phase(&self) -> &ConnectionPhase {
+        &self.model.connection.phase
     }
 
-    pub fn server_set_others_readiness_supported(&self) -> Option<bool> {
-        self.model.capabilities.set_others_readiness
+    pub fn is_active(&self) -> bool {
+        matches!(self.connection_phase(), ConnectionPhase::Active(_))
     }
 
-    pub fn server_managed_rooms_supported(&self) -> Option<bool> {
-        self.model.capabilities.managed_rooms
+    pub fn server_capabilities(&self) -> Option<&ServerCapabilities> {
+        match self.connection_phase() {
+            ConnectionPhase::Active(capabilities) => Some(capabilities),
+            _ => None,
+        }
     }
 
-    pub fn server_shared_playlists_supported(&self) -> Option<bool> {
-        self.model.capabilities.shared_playlists
+    pub fn mark_connecting(&mut self) {
+        self.model.connection.phase = ConnectionPhase::Connecting;
     }
 
-    pub fn server_media_match_supported(&self) -> Option<bool> {
-        self.model.capabilities.media_match
+    pub fn mark_awaiting_hello(&mut self) {
+        self.model.connection.phase = ConnectionPhase::AwaitingHello;
     }
 
-    pub fn server_chat_supported(&self) -> Option<bool> {
-        self.model.capabilities.chat
+    pub fn mark_reconnecting(&mut self, attempt: u32) {
+        self.model.connection.phase = ConnectionPhase::Reconnecting { attempt };
     }
 
-    pub fn server_persistent_rooms_supported(&self) -> Option<bool> {
-        self.model.capabilities.persistent_rooms
+    pub fn mark_closing(&mut self) {
+        self.model.connection.phase = ConnectionPhase::Closing;
+    }
+
+    pub fn mark_disconnected(&mut self) {
+        self.model.connection.phase = ConnectionPhase::Disconnected;
+    }
+
+    pub fn server_readiness_supported(&self) -> bool {
+        self.server_capabilities()
+            .is_some_and(|capabilities| capabilities.readiness)
+    }
+
+    pub fn server_set_others_readiness_supported(&self) -> bool {
+        self.server_capabilities()
+            .is_some_and(|capabilities| capabilities.remote_readiness)
+    }
+
+    pub fn server_managed_rooms_supported(&self) -> bool {
+        self.server_capabilities()
+            .is_some_and(|capabilities| capabilities.managed_rooms)
+    }
+
+    pub fn server_shared_playlists_supported(&self) -> bool {
+        self.server_capabilities()
+            .is_some_and(|capabilities| capabilities.shared_playlists)
+    }
+
+    pub fn server_media_match_supported(&self) -> bool {
+        self.server_capabilities()
+            .is_some_and(|capabilities| capabilities.media_match)
+    }
+
+    pub fn server_chat_supported(&self) -> bool {
+        self.server_capabilities()
+            .is_some_and(|capabilities| capabilities.chat)
+    }
+
+    pub fn server_plex_playlist_uris_supported(&self) -> bool {
+        self.server_capabilities()
+            .is_some_and(|capabilities| capabilities.plex_playlist_uris)
+    }
+
+    pub fn server_persistent_rooms_supported(&self) -> bool {
+        self.server_capabilities()
+            .is_some_and(|capabilities| capabilities.persistent_rooms)
     }
 
     pub fn server_max_username_length(&self) -> Option<usize> {
-        self.model.capabilities.max_username_length
+        self.server_capabilities()
+            .map(|capabilities| capabilities.max_username_length)
     }
 
     pub fn server_max_room_name_length(&self) -> Option<usize> {
-        self.model.capabilities.max_room_name_length
+        self.server_capabilities()
+            .map(|capabilities| capabilities.max_room_name_length)
     }
 
     pub fn server_max_filename_length(&self) -> Option<usize> {
-        self.model.capabilities.max_filename_length
-    }
-
-    pub fn clear_server_feature_support_state(&mut self) {
-        self.model.capabilities.readiness = None;
-        self.model.capabilities.set_others_readiness = None;
-        self.model.capabilities.managed_rooms = None;
-        self.model.capabilities.shared_playlists = None;
-        self.model.capabilities.media_match = None;
-        self.model.capabilities.chat = None;
-        self.model.capabilities.persistent_rooms = None;
-        self.model.capabilities.max_username_length = None;
-        self.model.capabilities.max_room_name_length = None;
-        self.model.capabilities.max_filename_length = None;
+        self.server_capabilities()
+            .map(|capabilities| capabilities.max_filename_length)
     }
 
     pub fn local_can_control(&self) -> Option<bool> {

@@ -288,6 +288,12 @@ fn flush_reconnect_notifications_to_sink_dispatches_playlist_restore_notificatio
     runtime.session_mut().reset_sync_state_for_reconnect();
     runtime
         .session_mut()
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sharedPlaylists":true}}}"#,
+        )
+        .expect("reconnect hello should apply");
+    runtime
+        .session_mut()
         .apply_message_json(r#"{"Set":{"playlistChange":{"files":[]}}}"#)
         .expect("empty reconnect playlist snapshot should apply");
 

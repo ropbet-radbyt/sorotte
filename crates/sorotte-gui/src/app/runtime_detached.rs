@@ -96,12 +96,9 @@ impl GuiPersistedConfigRuntimeOwner {
         {
             return None;
         }
-        if self
-            .session
-            .as_ref()
-            .and_then(|session| session.server_media_match_supported())
-            != Some(true)
-        {
+        if !self.session.as_ref().is_some_and(|session| {
+            session.server_handshake_completed() && session.server_media_match_supported()
+        }) {
             return None;
         }
         if !self.media_match_wire_signature_allowed_for_local_file(state, local_file) {

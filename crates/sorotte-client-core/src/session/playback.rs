@@ -319,7 +319,7 @@ impl ClientSession {
     }
 
     pub fn handle_disconnect(&mut self, now_seconds: f64) -> Vec<ClientRuntimeAction> {
-        self.clear_server_feature_support_state();
+        self.mark_disconnected();
         if !self.behavior_config.pause_on_leave {
             return Vec::new();
         }

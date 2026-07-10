@@ -6,10 +6,13 @@ pub(crate) fn derive_runtime_loop_inputs(
     now_seconds: f64,
 ) -> RuntimeLoopInputs {
     let session = runtime.session();
-    let readiness_supported = config
-        .readiness_supported_override
-        .or_else(|| session.server_readiness_supported())
-        .unwrap_or(true);
+    let readiness_supported = config.readiness_supported_override.unwrap_or_else(|| {
+        if session.is_active() {
+            session.server_readiness_supported()
+        } else {
+            true
+        }
+    });
     let local_can_control = config
         .local_can_control_override
         .or_else(|| session.local_can_control())

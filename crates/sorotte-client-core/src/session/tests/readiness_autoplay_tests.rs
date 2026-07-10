@@ -8,8 +8,8 @@ fn handle_disconnect_clears_readiness_support_until_next_hello() {
                 r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"readiness":true,"setOthersReadiness":true}}}"#,
             )
             .expect("hello should apply");
-    assert_eq!(session.server_readiness_supported(), Some(true));
-    assert_eq!(session.server_set_others_readiness_supported(), Some(true));
+    assert!(session.server_readiness_supported());
+    assert!(session.server_set_others_readiness_supported());
     assert_eq!(
         session.runtime_actions_for_local_ready_toggle(true),
         vec![ClientRuntimeAction::SetReady {
@@ -27,8 +27,9 @@ fn handle_disconnect_clears_readiness_support_until_next_hello() {
     );
 
     let _ = session.handle_disconnect(200.0);
-    assert_eq!(session.server_readiness_supported(), None);
-    assert_eq!(session.server_set_others_readiness_supported(), None);
+    assert_eq!(session.connection_phase(), &ConnectionPhase::Disconnected);
+    assert!(!session.server_readiness_supported());
+    assert!(!session.server_set_others_readiness_supported());
     assert!(
         session
             .runtime_actions_for_local_ready_toggle(true)

@@ -1,6 +1,26 @@
 use super::*;
 
 #[test]
+fn connection_phase_transitions_are_explicit_before_hello() {
+    let mut session = ClientSession::default();
+    assert_eq!(session.connection_phase(), &ConnectionPhase::Disconnected);
+
+    session.mark_connecting();
+    assert_eq!(session.connection_phase(), &ConnectionPhase::Connecting);
+    session.mark_awaiting_hello();
+    assert_eq!(session.connection_phase(), &ConnectionPhase::AwaitingHello);
+    session.mark_reconnecting(3);
+    assert_eq!(
+        session.connection_phase(),
+        &ConnectionPhase::Reconnecting { attempt: 3 }
+    );
+    session.mark_closing();
+    assert_eq!(session.connection_phase(), &ConnectionPhase::Closing);
+    session.mark_disconnected();
+    assert_eq!(session.connection_phase(), &ConnectionPhase::Disconnected);
+}
+
+#[test]
 fn hello_populates_session_state() {
     let mut session = ClientSession::default();
     session
@@ -11,6 +31,37 @@ fn hello_populates_session_state() {
 
     assert_eq!(session.model.connection.username.as_deref(), Some("alice"));
     assert_eq!(session.model.room.name.as_deref(), Some("room1"));
+    assert!(matches!(
+        session.connection_phase(),
+        ConnectionPhase::Active(_)
+    ));
+}
+
+#[test]
+fn active_connection_owns_concrete_server_capabilities() {
+    let mut session = ClientSession::default();
+    session
+        .apply_hello_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":false,"readiness":true,"setOthersReadiness":false,"sharedPlaylists":true,"managedRooms":false,"mediaMatch":true,"sorottePlexPlaylistUris":true,"persistentRooms":true,"maxUsernameLength":12,"maxRoomNameLength":40,"maxFilenameLength":180}}}"#,
+        )
+        .expect("hello should apply");
+
+    assert_eq!(
+        session.connection_phase(),
+        &ConnectionPhase::Active(ServerCapabilities {
+            chat: false,
+            readiness: true,
+            remote_readiness: false,
+            shared_playlists: true,
+            managed_rooms: false,
+            media_match: true,
+            plex_playlist_uris: true,
+            persistent_rooms: true,
+            max_username_length: 12,
+            max_room_name_length: 40,
+            max_filename_length: 180,
+        })
+    );
 }
 
 #[test]
@@ -22,7 +73,7 @@ fn hello_records_server_readiness_support_flag() {
             )
             .expect("hello should apply");
 
-    assert_eq!(session.server_readiness_supported(), Some(true));
+    assert!(session.server_readiness_supported());
 }
 
 #[test]
@@ -34,7 +85,7 @@ fn hello_records_server_chat_support_flag() {
             )
             .expect("hello should apply");
 
-    assert_eq!(session.server_chat_supported(), Some(false));
+    assert!(!session.server_chat_supported());
 }
 
 #[test]
@@ -46,7 +97,7 @@ fn hello_records_persistent_rooms_and_server_limits() {
             )
             .expect("hello should apply");
 
-    assert_eq!(session.server_persistent_rooms_supported(), Some(true));
+    assert!(session.server_persistent_rooms_supported());
     assert_eq!(session.server_max_username_length(), Some(12));
     assert_eq!(session.server_max_room_name_length(), Some(40));
     assert_eq!(session.server_max_filename_length(), Some(180));
@@ -61,7 +112,7 @@ fn hello_without_limit_features_uses_python_compatible_fallbacks() {
         )
         .expect("hello should apply");
 
-    assert_eq!(session.server_persistent_rooms_supported(), Some(false));
+    assert!(!session.server_persistent_rooms_supported());
     assert_eq!(
         session.server_max_username_length(),
         Some(LEGACY_FALLBACK_MAX_USERNAME_LENGTH)
@@ -85,7 +136,7 @@ fn hello_records_server_shared_playlist_support_flag() {
             )
             .expect("hello should apply");
 
-    assert_eq!(session.server_shared_playlists_supported(), Some(false));
+    assert!(!session.server_shared_playlists_supported());
 }
 
 #[test]
@@ -96,7 +147,7 @@ fn hello_records_server_media_match_support_flag() {
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"mediaMatch":true}}}"#,
         )
         .expect("hello should apply");
-    assert_eq!(supported_session.server_media_match_supported(), Some(true));
+    assert!(supported_session.server_media_match_supported());
 
     let mut legacy_session = ClientSession::default();
     legacy_session
@@ -104,7 +155,7 @@ fn hello_records_server_media_match_support_flag() {
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
         )
         .expect("hello should apply");
-    assert_eq!(legacy_session.server_media_match_supported(), Some(false));
+    assert!(!legacy_session.server_media_match_supported());
 }
 
 #[test]
@@ -116,7 +167,7 @@ fn hello_records_server_managed_rooms_support_flag() {
             )
             .expect("hello should apply");
 
-    assert_eq!(session.server_managed_rooms_supported(), Some(false));
+    assert!(!session.server_managed_rooms_supported());
 }
 
 #[test]
@@ -127,10 +178,7 @@ fn hello_without_features_uses_legacy_version_gate_for_shared_playlist_support()
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.3.255"}}"#,
         )
         .expect("hello should apply");
-    assert_eq!(
-        old_server_session.server_shared_playlists_supported(),
-        Some(false)
-    );
+    assert!(!old_server_session.server_shared_playlists_supported());
 
     let mut new_server_session = ClientSession::default();
     new_server_session
@@ -138,10 +186,7 @@ fn hello_without_features_uses_legacy_version_gate_for_shared_playlist_support()
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.4.0"}}"#,
         )
         .expect("hello should apply");
-    assert_eq!(
-        new_server_session.server_shared_playlists_supported(),
-        Some(true)
-    );
+    assert!(new_server_session.server_shared_playlists_supported());
 }
 
 #[test]
@@ -152,10 +197,7 @@ fn hello_without_features_uses_legacy_version_gate_for_managed_rooms_support() {
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
         )
         .expect("hello should apply");
-    assert_eq!(
-        old_server_session.server_managed_rooms_supported(),
-        Some(false)
-    );
+    assert!(!old_server_session.server_managed_rooms_supported());
 
     let mut new_server_session = ClientSession::default();
     new_server_session
@@ -163,10 +205,7 @@ fn hello_without_features_uses_legacy_version_gate_for_managed_rooms_support() {
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.3.0"}}"#,
         )
         .expect("hello should apply");
-    assert_eq!(
-        new_server_session.server_managed_rooms_supported(),
-        Some(true)
-    );
+    assert!(new_server_session.server_managed_rooms_supported());
 }
 
 #[test]
@@ -177,7 +216,7 @@ fn hello_without_features_uses_legacy_version_gate_for_readiness_support() {
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
         )
         .expect("hello should apply");
-    assert_eq!(old_server_session.server_readiness_supported(), Some(false));
+    assert!(!old_server_session.server_readiness_supported());
 
     let mut new_server_session = ClientSession::default();
     new_server_session
@@ -185,7 +224,7 @@ fn hello_without_features_uses_legacy_version_gate_for_readiness_support() {
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.3.0"}}"#,
         )
         .expect("hello should apply");
-    assert_eq!(new_server_session.server_readiness_supported(), Some(true));
+    assert!(new_server_session.server_readiness_supported());
 }
 
 #[test]
@@ -196,7 +235,7 @@ fn hello_without_features_uses_legacy_version_gate_for_chat_support() {
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
         )
         .expect("hello should apply");
-    assert_eq!(old_server_session.server_chat_supported(), Some(false));
+    assert!(!old_server_session.server_chat_supported());
 
     let mut feature_list_session = ClientSession::default();
     feature_list_session
@@ -204,7 +243,7 @@ fn hello_without_features_uses_legacy_version_gate_for_chat_support() {
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
         )
         .expect("hello should apply");
-    assert_eq!(feature_list_session.server_chat_supported(), Some(true));
+    assert!(feature_list_session.server_chat_supported());
 }
 
 #[test]
@@ -215,10 +254,7 @@ fn hello_without_features_uses_legacy_version_gate_for_set_others_readiness_supp
                 r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.1","features":{"readiness":true}}}"#,
             )
             .expect("hello should apply");
-    assert_eq!(
-        old_server_session.server_set_others_readiness_supported(),
-        Some(false)
-    );
+    assert!(!old_server_session.server_set_others_readiness_supported());
 
     let mut new_server_session = ClientSession::default();
     new_server_session
@@ -226,10 +262,7 @@ fn hello_without_features_uses_legacy_version_gate_for_set_others_readiness_supp
                 r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"readiness":true}}}"#,
             )
             .expect("hello should apply");
-    assert_eq!(
-        new_server_session.server_set_others_readiness_supported(),
-        Some(true)
-    );
+    assert!(new_server_session.server_set_others_readiness_supported());
 }
 
 #[test]

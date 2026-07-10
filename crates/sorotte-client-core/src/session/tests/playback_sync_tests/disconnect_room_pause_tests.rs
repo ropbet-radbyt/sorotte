@@ -29,7 +29,7 @@ fn handle_disconnect_clears_managed_rooms_support_until_next_hello() {
                 r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"managedRooms":true}}}"#,
             )
             .expect("hello should apply");
-    assert_eq!(session.server_managed_rooms_supported(), Some(true));
+    assert!(session.server_managed_rooms_supported());
     assert!(
         !session
             .runtime_actions_for_local_controller_auth_request(
@@ -41,7 +41,8 @@ fn handle_disconnect_clears_managed_rooms_support_until_next_hello() {
 
     let _ = session.handle_disconnect(200.0);
 
-    assert_eq!(session.server_managed_rooms_supported(), None);
+    assert_eq!(session.connection_phase(), &ConnectionPhase::Disconnected);
+    assert!(!session.server_managed_rooms_supported());
     assert!(
         session
             .runtime_actions_for_local_controller_auth_request(

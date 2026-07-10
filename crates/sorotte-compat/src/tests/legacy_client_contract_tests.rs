@@ -390,7 +390,7 @@ fn legacy_client_chat_send_contract_matches_client_core_behavior() {
             rust_messages, legacy_result.sent_messages,
             "outbound chat mismatch for case: {case:?}",
         );
-        if session.server_chat_supported() == Some(false) {
+        if session.is_active() && !session.server_chat_supported() {
             assert!(
                 !legacy_result.error_messages.is_empty(),
                 "legacy client should emit a not-supported error when chat is disabled: {case:?}"

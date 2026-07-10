@@ -8,10 +8,11 @@ fn handle_disconnect_clears_chat_support_until_next_hello() {
                 r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
             )
             .expect("hello should apply");
-    assert_eq!(session.server_chat_supported(), Some(true));
+    assert!(session.server_chat_supported());
 
     let _ = session.handle_disconnect(200.0);
-    assert_eq!(session.server_chat_supported(), None);
+    assert_eq!(session.connection_phase(), &ConnectionPhase::Disconnected);
+    assert!(!session.server_chat_supported());
 }
 
 #[test]

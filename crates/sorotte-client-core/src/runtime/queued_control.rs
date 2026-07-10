@@ -156,7 +156,7 @@ where
         &mut self,
         dont_slow_down_with_me: bool,
     ) -> bool {
-        if self.session.server_chat_supported().is_none() {
+        if !self.session.is_active() {
             return false;
         }
 

@@ -9,7 +9,7 @@ where
         &mut self,
         message: impl Into<String>,
     ) -> Result<bool, PlayerError> {
-        if self.session.server_chat_supported().is_none() {
+        if !self.session.is_active() {
             return Ok(false);
         }
         let actions = self

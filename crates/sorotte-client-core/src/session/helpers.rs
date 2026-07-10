@@ -59,10 +59,10 @@ impl ClientSession {
     }
 
     pub(super) fn shared_playlist_runtime_commands_allowed_legacy_compatible(&self) -> bool {
-        self.model.capabilities.chat.is_some()
+        self.is_active()
             && self.model.connection.username.is_some()
             && self.model.room.name.is_some()
-            && self.model.capabilities.shared_playlists != Some(false)
+            && self.server_shared_playlists_supported()
     }
 
     pub(super) fn apply_local_ready_state_optimistically(&mut self, ready: bool) {
@@ -86,9 +86,7 @@ impl ClientSession {
             return Vec::new();
         }
 
-        if self.model.connection.username.is_none()
-            || self.model.capabilities.readiness != Some(true)
-        {
+        if self.model.connection.username.is_none() || !self.server_readiness_supported() {
             self.model.playback.local_paused = Some(paused);
             return vec![ClientRuntimeAction::SetPaused(paused)];
         }

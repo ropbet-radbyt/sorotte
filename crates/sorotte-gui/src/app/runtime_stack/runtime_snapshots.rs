@@ -13,7 +13,7 @@ use super::GuiClientCoreChatSessionRuntimeAdapter;
 impl GuiClientCoreChatSessionRuntimeAdapter {
     fn room_control_status_for_runtime_snapshot(&self, controlled_room_active: bool) -> String {
         let session = self.runtime.session();
-        if session.server_chat_supported().is_none() {
+        if !session.is_active() {
             return MainWindowShellState::room_control_status_waiting_for_server();
         }
         if !controlled_room_active {
@@ -219,14 +219,8 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         if let Some(paused) = session.local_paused() {
             snapshot.playback_paused = paused;
         }
-        if session.server_chat_supported().is_none() {
-            snapshot.can_set_ready = false;
-        } else if let Some(server_readiness_supported) = session.server_readiness_supported() {
-            snapshot.can_set_ready = server_readiness_supported;
-        }
-        snapshot.can_set_others_ready = session
-            .server_set_others_readiness_supported()
-            .unwrap_or(false)
+        snapshot.can_set_ready = session.is_active() && session.server_readiness_supported();
+        snapshot.can_set_others_ready = session.server_set_others_readiness_supported()
             && session.local_can_control().unwrap_or(false);
         (snapshot != MainWindowRuntimeSnapshot::from_shell_state(&state.main_window))
             .then_some(snapshot)
@@ -281,7 +275,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             && session_room_name.is_some_and(|room_name| room_name.starts_with('+'));
         let config_chat_enabled = legacy_chat_enabled(&settings);
         let desired_show_chat_enabled =
-            config_chat_enabled && self.runtime.session().server_chat_supported() == Some(true);
+            config_chat_enabled && self.runtime.session().server_chat_supported();
 
         let current_show_chat_enabled = state
             .menus

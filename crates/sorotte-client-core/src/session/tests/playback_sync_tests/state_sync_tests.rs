@@ -215,11 +215,11 @@ fn ping_only_state_response_echoes_forced_state_ack_without_local_telemetry() {
 }
 
 #[test]
-fn client_runtime_state_sync_heartbeat_emits_ping_only_without_local_playback_state() {
+fn client_runtime_state_sync_heartbeat_emits_when_active_even_if_chat_is_disabled() {
     let mut session = ClientSession::default();
     session
         .apply_message_json(
-            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255","features":{"chat":false}}}"#,
         )
         .expect("hello should apply");
 
@@ -229,7 +229,7 @@ fn client_runtime_state_sync_heartbeat_emits_ping_only_without_local_playback_st
 
     assert!(
         runtime.run_state_sync_heartbeat_legacy_ping_compatible(false),
-        "heartbeat should queue a ping-only state after hello even without local playback telemetry"
+        "an active session should heartbeat independently of the chat capability"
     );
     assert_eq!(
         runtime.control().outbound_messages().len(),

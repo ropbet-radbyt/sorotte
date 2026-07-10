@@ -10,7 +10,7 @@ use crate::app::{
     MenuDialogRuntimeSnapshot, SorotteGuiShellAppState,
 };
 use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
-use sorotte_client_core::ReconnectTransitionNotification;
+use sorotte_client_core::{ConnectionPhase, ReconnectTransitionNotification};
 
 mod chat_projection_tests;
 mod controller_autoplay_tests;
