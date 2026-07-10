@@ -102,6 +102,10 @@ impl MpvJsonIpcClient {
         Ok(Self::new(Box::new(transport)))
     }
 
+    pub(crate) fn is_healthy(&self) -> bool {
+        self.healthy
+    }
+
     #[cfg(all(test, windows))]
     pub(crate) fn connect_with_command_timeout(
         path: &Path,

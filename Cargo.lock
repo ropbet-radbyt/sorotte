@@ -3393,6 +3393,7 @@ dependencies = [
  "sorotte-player-api",
  "sorotte-plex",
  "sorotte-protocol",
+ "sorotte-secret",
  "thiserror 2.0.18",
  "tokio",
 ]
@@ -3520,6 +3521,7 @@ dependencies = [
  "sorotte-core",
  "sorotte-media-match",
  "sorotte-protocol",
+ "sorotte-secret",
  "thiserror 2.0.18",
  "tokio",
  "tokio-rustls",

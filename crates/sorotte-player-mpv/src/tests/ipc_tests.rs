@@ -1,5 +1,6 @@
 use super::*;
 use crate::ipc::{MPV_IPC_MAX_LINE_BYTES, MpvIpcConnectionEvent, MpvJsonIpcClient};
+use sorotte_player_api::PlayerCapabilities;
 use std::{
     sync::{
         Arc,
@@ -382,6 +383,9 @@ fn mpv_adapter_surfaces_timeout_as_player_error() {
         }
         other => panic!("unexpected error variant: {other:?}"),
     }
+
+    assert!(!adapter.is_connected());
+    assert_eq!(adapter.capabilities(), PlayerCapabilities::NONE);
 
     let events = adapter.take_ipc_connection_events();
     assert!(

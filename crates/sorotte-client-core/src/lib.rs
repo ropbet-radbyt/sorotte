@@ -16,6 +16,7 @@ use sorotte_protocol::{
     canonical_playlist_files_from_change, decode_message_line, decode_message_line_items,
     encode_message_line, playlist_change_with_plex_sidecar,
 };
+use sorotte_secret::SecretValue;
 
 const SEEK_THRESHOLD_SECONDS: f64 = 1.0;
 const DEFAULT_REWIND_THRESHOLD_SECONDS: f64 = 4.0;

@@ -22,6 +22,7 @@ sha2.workspace = true
 sorotte-core = { path = "../sorotte-core" }
 sorotte-media-match = { path = "../sorotte-media-match" }
 sorotte-protocol = { path = "../sorotte-protocol" }
+sorotte-secret = { path = "../sorotte-secret" }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "net"] }
 tokio-rustls.workspace = true

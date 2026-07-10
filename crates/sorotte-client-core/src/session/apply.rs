@@ -240,11 +240,12 @@ impl ClientSession {
                 && let (Some(room_name), Some(password)) =
                     (new_controlled_room.room_name, new_controlled_room.password)
             {
+                let password = password.expose_secret();
                 let normalized_password =
-                    Self::normalize_control_password_legacy_compatible(&password);
+                    Self::normalize_control_password_legacy_compatible(password);
                 self.model.readiness.autoplay_enabled = false;
                 self.stop_autoplay_countdown();
-                self.remember_control_password_for_room(&room_name, &password);
+                self.remember_control_password_for_room(&room_name, password);
                 self.pending_controlled_room_creation_notifications.push(
                     ControlledRoomCreationNotification::Created {
                         room: room_name.clone(),

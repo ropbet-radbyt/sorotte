@@ -28,6 +28,7 @@ use sorotte_protocol::{
     canonical_playlist_files_from_change, decode_line, decode_message_line_items,
     encode_message_line, playlist_change_with_plex_sidecar,
 };
+use sorotte_secret::SecretValue;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream},

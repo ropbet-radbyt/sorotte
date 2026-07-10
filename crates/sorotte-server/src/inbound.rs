@@ -119,7 +119,7 @@ pub(crate) struct ServerHelloCommand {
     pub(crate) room: String,
     pub(crate) version: String,
     pub(crate) capabilities: ServerClientCapabilities,
-    pub(crate) password_token: Option<String>,
+    pub(crate) password_token: Option<SecretValue>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -128,7 +128,7 @@ pub(crate) enum ServerSetCommand {
     File(Option<ServerSharedFile>),
     ControllerAuth {
         room: Option<String>,
-        password: String,
+        password: SecretValue,
     },
     Ready {
         ready: bool,
@@ -318,7 +318,7 @@ pub(crate) fn normalize_server_protocol_message(
                 .extra
                 .get("password")
                 .and_then(Value::as_str)
-                .map(str::to_owned);
+                .map(SecretValue::from);
             ServerInboundCommand::Hello(ServerHelloCommand {
                 username: hello.username,
                 room: hello.room.name,
@@ -358,10 +358,7 @@ pub(crate) fn normalize_server_protocol_message(
                             .take()
                             .map(|auth| ServerSetCommand::ControllerAuth {
                                 room: auth.room,
-                                password: auth
-                                    .password
-                                    .map(|password| password.into_exposed_secret())
-                                    .unwrap_or_default(),
+                                password: auth.password.unwrap_or_default(),
                             })
                     }
                     "ready" => set.ready.take().and_then(|ready| {
@@ -449,4 +446,29 @@ pub(crate) fn normalize_server_protocol_message(
         }
     };
     NormalizedServerInbound { command, fallbacks }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalized_credentials_remain_redacted_in_debug_output() {
+        let hello = sorotte_protocol::decode_message_line(
+            r#"{"Hello":{"username":"alice","room":{"name":"room"},"version":"1.7.5","password":"normalized-token-secret"}}"#,
+        )
+        .expect("hello should decode");
+        let controller_auth = sorotte_protocol::decode_message_line(
+            r#"{"Set":{"controllerAuth":{"room":"room","password":"normalized-controller-secret"}}}"#,
+        )
+        .expect("controller auth should decode");
+
+        let hello_debug = format!("{:?}", normalize_server_protocol_message(hello));
+        let controller_debug = format!("{:?}", normalize_server_protocol_message(controller_auth));
+
+        assert!(hello_debug.contains("<redacted>"));
+        assert!(controller_debug.contains("<redacted>"));
+        assert!(!hello_debug.contains("normalized-token-secret"));
+        assert!(!controller_debug.contains("normalized-controller-secret"));
+    }
 }

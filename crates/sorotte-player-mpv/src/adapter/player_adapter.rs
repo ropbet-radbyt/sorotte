@@ -7,7 +7,7 @@ impl PlayerAdapter for MpvAdapter {
     }
 
     fn capabilities(&self) -> PlayerCapabilities {
-        if self.ipc_client.is_some() || self.simulation_mode {
+        if self.is_connected() || self.simulation_mode {
             PlayerCapabilities::ALL
         } else {
             PlayerCapabilities::NONE

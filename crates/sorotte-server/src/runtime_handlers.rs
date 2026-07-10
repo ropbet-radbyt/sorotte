@@ -358,7 +358,7 @@ impl ServerRuntime {
             return Err(ServerRuntimeError::InvalidHello);
         }
         if let Some(required_password_token) = self.server_password_token.as_deref() {
-            let Some(server_password_token) = hello.password_token.as_deref() else {
+            let Some(server_password_token) = hello.password_token.as_ref() else {
                 self.pending_transport_actions
                     .push(DirectedTransportAction::new(
                         client_id,
@@ -370,7 +370,7 @@ impl ServerRuntime {
                 )]);
             };
             if !server_password_token_matches_legacy_compatible(
-                server_password_token,
+                server_password_token.expose_secret(),
                 required_password_token,
             ) {
                 self.pending_transport_actions
@@ -748,10 +748,8 @@ impl ServerRuntime {
                         continue;
                     };
                     let auth_room = auth_room.unwrap_or_else(|| session.room.clone());
-                    match self
-                        .room_password_provider
-                        .check(&auth_room, &auth_password)
-                    {
+                    let auth_password = auth_password.expose_secret();
+                    match self.room_password_provider.check(&auth_room, auth_password) {
                         Ok(success) => {
                             if success {
                                 self.add_room_controller(&session.username, &auth_room);
@@ -771,9 +769,9 @@ impl ServerRuntime {
                         Err(RoomPasswordCheckError::NotControlledRoom) => {
                             let new_room_name = self
                                 .room_password_provider
-                                .controlled_room_name_for(&auth_room, &auth_password);
+                                .controlled_room_name_for(&auth_room, auth_password);
                             let new_room_message =
-                                new_controlled_room_message(&new_room_name, &auth_password);
+                                new_controlled_room_message(&new_room_name, auth_password);
                             outbound_messages
                                 .push(DirectedProtocolMessage::new(client_id, new_room_message));
                         }

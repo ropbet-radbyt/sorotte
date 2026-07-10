@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc::{self, Receiver, SyncSender, TrySendError},
     },
@@ -70,8 +70,14 @@ pub enum ServerPersistenceEvent {
 
 enum PersistenceWorkerCommand {
     Apply(ServerPersistenceEffect),
+    Wake,
     Flush(mpsc::Sender<()>),
     Shutdown,
+}
+
+enum PersistenceEnqueueError {
+    Full(ServerPersistenceEffect),
+    Disconnected(ServerPersistenceEffect),
 }
 
 #[derive(Clone)]
@@ -159,8 +165,23 @@ impl PersistenceWorkerService {
         degraded_worker_count: Arc<AtomicUsize>,
         run: impl FnOnce(Receiver<PersistenceWorkerCommand>, PersistenceEventReporter) + Send + 'static,
     ) -> Self {
-        let (commands, receiver) =
-            mpsc::sync_channel::<PersistenceWorkerCommand>(PERSISTENCE_COMMAND_QUEUE_CAPACITY);
+        Self::spawn_with_capacity(
+            worker,
+            events,
+            degraded_worker_count,
+            PERSISTENCE_COMMAND_QUEUE_CAPACITY,
+            run,
+        )
+    }
+
+    fn spawn_with_capacity(
+        worker: ServerPersistenceWorkerKind,
+        events: broadcast::Sender<ServerPersistenceEvent>,
+        degraded_worker_count: Arc<AtomicUsize>,
+        queue_capacity: usize,
+        run: impl FnOnce(Receiver<PersistenceWorkerCommand>, PersistenceEventReporter) + Send + 'static,
+    ) -> Self {
+        let (commands, receiver) = mpsc::sync_channel::<PersistenceWorkerCommand>(queue_capacity);
         let reporter = PersistenceEventReporter {
             worker,
             events,
@@ -180,21 +201,40 @@ impl PersistenceWorkerService {
         }
     }
 
-    fn enqueue(&self, effect: ServerPersistenceEffect) {
+    fn try_enqueue(&self, effect: ServerPersistenceEffect) -> Result<(), PersistenceEnqueueError> {
         match self
             .commands
             .try_send(PersistenceWorkerCommand::Apply(effect))
         {
-            Ok(()) => {}
-            Err(TrySendError::Full(PersistenceWorkerCommand::Apply(effect))) => self
-                .reporter
-                .failed(effect, "persistence command queue is full"),
-            Err(TrySendError::Disconnected(PersistenceWorkerCommand::Apply(effect))) => self
-                .reporter
-                .failed(effect, "persistence worker is disconnected"),
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(PersistenceWorkerCommand::Apply(effect))) => {
+                Err(PersistenceEnqueueError::Full(effect))
+            }
+            Err(TrySendError::Disconnected(PersistenceWorkerCommand::Apply(effect))) => {
+                Err(PersistenceEnqueueError::Disconnected(effect))
+            }
             Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
                 unreachable!("enqueue only sends apply commands")
             }
+        }
+    }
+
+    fn enqueue(&self, effect: ServerPersistenceEffect) {
+        match self.try_enqueue(effect) {
+            Ok(()) => {}
+            Err(PersistenceEnqueueError::Full(effect)) => self
+                .reporter
+                .failed(effect, "persistence command queue is full"),
+            Err(PersistenceEnqueueError::Disconnected(effect)) => self
+                .reporter
+                .failed(effect, "persistence worker is disconnected"),
+        }
+    }
+
+    fn wake(&self) -> bool {
+        match self.commands.try_send(PersistenceWorkerCommand::Wake) {
+            Ok(()) | Err(TrySendError::Full(_)) => true,
+            Err(TrySendError::Disconnected(_)) => false,
         }
     }
 
@@ -216,8 +256,13 @@ impl Drop for PersistenceWorkerService {
     }
 }
 
+type CoalescedRoomEffects = Arc<Mutex<BTreeMap<String, ServerPersistenceEffect>>>;
+
 #[derive(Debug)]
-pub(crate) struct RoomPersistenceService(PersistenceWorkerService);
+pub(crate) struct RoomPersistenceService {
+    worker: PersistenceWorkerService,
+    coalesced_effects: CoalescedRoomEffects,
+}
 
 impl RoomPersistenceService {
     pub(crate) fn start(
@@ -225,21 +270,97 @@ impl RoomPersistenceService {
         events: broadcast::Sender<ServerPersistenceEvent>,
         degraded_worker_count: Arc<AtomicUsize>,
     ) -> Result<Self, RoomPersistenceError> {
+        Self::start_with_queue_capacity(
+            store,
+            events,
+            degraded_worker_count,
+            PERSISTENCE_COMMAND_QUEUE_CAPACITY,
+        )
+    }
+
+    fn start_with_queue_capacity(
+        store: RoomPersistenceStore,
+        events: broadcast::Sender<ServerPersistenceEvent>,
+        degraded_worker_count: Arc<AtomicUsize>,
+        queue_capacity: usize,
+    ) -> Result<Self, RoomPersistenceError> {
         let connection = store.connection("connect persistence worker")?;
-        Ok(Self(PersistenceWorkerService::spawn(
+        let coalesced_effects = Arc::new(Mutex::new(BTreeMap::new()));
+        let worker_coalesced_effects = Arc::clone(&coalesced_effects);
+        let worker = PersistenceWorkerService::spawn_with_capacity(
             ServerPersistenceWorkerKind::Rooms,
             events,
             degraded_worker_count,
-            move |commands, reporter| run_room_worker(commands, reporter, store, connection),
-        )))
+            queue_capacity,
+            move |commands, reporter| {
+                run_room_worker(
+                    commands,
+                    reporter,
+                    store,
+                    connection,
+                    worker_coalesced_effects,
+                )
+            },
+        );
+        Ok(Self {
+            worker,
+            coalesced_effects,
+        })
     }
 
     pub(crate) fn enqueue(&self, effect: ServerPersistenceEffect) {
-        self.0.enqueue(effect);
+        match self.worker.try_enqueue(effect) {
+            Ok(()) => {}
+            Err(PersistenceEnqueueError::Full(effect)) => {
+                self.coalesce(effect);
+            }
+            Err(PersistenceEnqueueError::Disconnected(effect)) => self
+                .worker
+                .reporter
+                .failed(effect, "persistence worker is disconnected"),
+        }
     }
 
     pub(crate) fn flush(&self) -> bool {
-        self.0.flush()
+        self.worker.flush()
+    }
+
+    fn coalesce(&self, effect: ServerPersistenceEffect) {
+        let Some((room_name, version)) = room_effect_key_and_version(&effect) else {
+            self.worker
+                .reporter
+                .failed(effect, "stats effect was routed to the room worker");
+            return;
+        };
+        let room_name = room_name.to_owned();
+        let mut effects = self
+            .coalesced_effects
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let should_replace = effects
+            .get(&room_name)
+            .and_then(room_effect_key_and_version)
+            .is_none_or(|(_, pending_version)| pending_version < version);
+        if should_replace {
+            effects.insert(room_name, effect);
+        } else {
+            drop(effects);
+            self.worker.reporter.ignored_stale(effect);
+            return;
+        }
+        drop(effects);
+
+        if !self.worker.wake() {
+            let mut effects = self
+                .coalesced_effects
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for effect in std::mem::take(&mut *effects).into_values() {
+                self.worker
+                    .reporter
+                    .failed(effect, "persistence worker is disconnected");
+            }
+        }
     }
 }
 
@@ -275,17 +396,83 @@ fn run_room_worker(
     reporter: PersistenceEventReporter,
     store: RoomPersistenceStore,
     connection: Connection,
+    coalesced_effects: CoalescedRoomEffects,
 ) {
     let mut latest_versions = BTreeMap::<String, u64>::new();
     while let Ok(command) = commands.recv() {
         match command {
             PersistenceWorkerCommand::Apply(effect) => {
                 apply_room_effect(&reporter, &store, &connection, &mut latest_versions, effect);
+                drain_coalesced_room_effects(
+                    &reporter,
+                    &store,
+                    &connection,
+                    &mut latest_versions,
+                    &coalesced_effects,
+                );
             }
+            PersistenceWorkerCommand::Wake => drain_coalesced_room_effects(
+                &reporter,
+                &store,
+                &connection,
+                &mut latest_versions,
+                &coalesced_effects,
+            ),
             PersistenceWorkerCommand::Flush(acknowledge) => {
+                drain_coalesced_room_effects(
+                    &reporter,
+                    &store,
+                    &connection,
+                    &mut latest_versions,
+                    &coalesced_effects,
+                );
                 let _ = acknowledge.send(());
             }
-            PersistenceWorkerCommand::Shutdown => break,
+            PersistenceWorkerCommand::Shutdown => {
+                drain_coalesced_room_effects(
+                    &reporter,
+                    &store,
+                    &connection,
+                    &mut latest_versions,
+                    &coalesced_effects,
+                );
+                break;
+            }
+        }
+    }
+}
+
+fn room_effect_key_and_version(effect: &ServerPersistenceEffect) -> Option<(&str, u64)> {
+    match effect {
+        ServerPersistenceEffect::SaveRoom {
+            room_name, version, ..
+        }
+        | ServerPersistenceEffect::DeleteRoom { room_name, version } => {
+            Some((room_name.as_str(), *version))
+        }
+        ServerPersistenceEffect::RecordStatsSnapshot { .. } => None,
+    }
+}
+
+fn drain_coalesced_room_effects(
+    reporter: &PersistenceEventReporter,
+    store: &RoomPersistenceStore,
+    connection: &Connection,
+    latest_versions: &mut BTreeMap<String, u64>,
+    coalesced_effects: &CoalescedRoomEffects,
+) {
+    loop {
+        let effects = {
+            let mut effects = coalesced_effects
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::mem::take(&mut *effects)
+        };
+        if effects.is_empty() {
+            return;
+        }
+        for effect in effects.into_values() {
+            apply_room_effect(reporter, store, connection, latest_versions, effect);
         }
     }
 }
@@ -348,6 +535,7 @@ fn run_stats_worker(
             PersistenceWorkerCommand::Apply(effect) => {
                 apply_stats_effect(&reporter, &store, &mut connection, effect);
             }
+            PersistenceWorkerCommand::Wake => {}
             PersistenceWorkerCommand::Flush(acknowledge) => {
                 let _ = acknowledge.send(());
             }
@@ -523,6 +711,66 @@ mod tests {
 
         drop(service);
         drop(connection);
+        fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
+    }
+
+    #[test]
+    fn room_worker_flushes_latest_mutation_after_queue_saturation() {
+        let db_path = temporary_sqlite_path("room-worker-overflow");
+        let _ = fs::remove_file(&db_path);
+        let store = RoomPersistenceStore::open(&db_path)
+            .expect("room persistence schema should initialize");
+        let (events, _) = broadcast::channel(16);
+        let service = RoomPersistenceService::start_with_queue_capacity(
+            store,
+            events,
+            Arc::new(AtomicUsize::new(0)),
+            1,
+        )
+        .expect("room persistence worker should start");
+        let external = Connection::open(&db_path).expect("external sqlite connection should open");
+        external
+            .execute_batch("BEGIN EXCLUSIVE")
+            .expect("external connection should lock sqlite writes");
+
+        service.enqueue(ServerPersistenceEffect::SaveRoom {
+            room_name: "room".to_owned(),
+            files: vec!["first.mkv".to_owned()],
+            playlist_index: Some(0),
+            position: 10.0,
+            version: 1,
+        });
+        service.enqueue(ServerPersistenceEffect::SaveRoom {
+            room_name: "room".to_owned(),
+            files: vec!["second.mkv".to_owned()],
+            playlist_index: Some(0),
+            position: 20.0,
+            version: 2,
+        });
+        service.enqueue(ServerPersistenceEffect::DeleteRoom {
+            room_name: "room".to_owned(),
+            version: 3,
+        });
+
+        external
+            .execute_batch("ROLLBACK")
+            .expect("external sqlite lock should release");
+        assert!(
+            service.flush(),
+            "flush should include the coalesced room mutation"
+        );
+
+        let persisted_count: i64 = external
+            .query_row(
+                "SELECT COUNT(*) FROM persistent_rooms WHERE name = 'room'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("persisted rooms should be queryable");
+        assert_eq!(persisted_count, 0, "the latest delete must not be dropped");
+
+        drop(service);
+        drop(external);
         fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
     }
 }

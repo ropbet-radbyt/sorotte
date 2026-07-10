@@ -85,7 +85,9 @@ impl MpvAdapter {
     }
 
     pub fn is_connected(&self) -> bool {
-        self.ipc_client.is_some()
+        self.ipc_client
+            .as_ref()
+            .is_some_and(MpvJsonIpcClient::is_healthy)
     }
 
     pub(crate) fn simulated() -> Self {

@@ -250,8 +250,11 @@ pub fn stored_client_settings_config_plan_legacy_compatible(
         .host
         .as_deref()
         .and_then(|host| parse_host_and_optional_port_from_host_arg_legacy_compatible(host).1);
-    if !env_presence.port && (resolved_settings.port.is_some() || embedded_stored_port.is_some()) {
-        plan.port = Some(config.connection.port.get());
+    if !env_presence.port {
+        plan.port = settings
+            .port
+            .or(embedded_stored_port)
+            .or(resolved_settings.port);
     }
     if !env_presence.server_password {
         plan.server_password = config
@@ -565,5 +568,23 @@ mod tests {
             plan.controlled_room_password_override.as_deref(),
             Some("AB-123")
         );
+    }
+
+    #[test]
+    fn stored_client_settings_config_plan_uses_public_server_port_with_explicit_host() {
+        let plan = stored_client_settings_config_plan_legacy_compatible(
+            &StoredClientSettingsMvp {
+                host: Some("stored.example".to_owned()),
+                public_servers: Some(vec![(
+                    "Public".to_owned(),
+                    "fallback.example:8123".to_owned(),
+                )]),
+                ..StoredClientSettingsMvp::default()
+            },
+            &StoredClientSettingsEnvPresence::default(),
+        );
+
+        assert_eq!(plan.host.as_deref(), Some("stored.example"));
+        assert_eq!(plan.port, Some(8123));
     }
 }
