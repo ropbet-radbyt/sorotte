@@ -51,6 +51,7 @@ pub struct ServerActorHandle {
     commands: Sender<ServerCommand>,
     persistence_events: broadcast::Sender<ServerPersistenceEvent>,
     persistence_degraded_worker_count: Arc<AtomicUsize>,
+    outbound_backpressure_metrics: ServerOutboundBackpressureMetrics,
     join_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
@@ -66,6 +67,7 @@ impl ServerActorHandle {
             commands,
             persistence_events,
             persistence_degraded_worker_count,
+            outbound_backpressure_metrics: ServerOutboundBackpressureMetrics::default(),
             join_handle: Arc::new(Mutex::new(Some(join_handle))),
         }
     }
@@ -78,6 +80,14 @@ impl ServerActorHandle {
         self.persistence_degraded_worker_count
             .load(Ordering::Acquire)
             > 0
+    }
+
+    pub fn outbound_backpressure_snapshot(&self) -> ServerOutboundBackpressureSnapshot {
+        self.outbound_backpressure_metrics.snapshot()
+    }
+
+    pub(crate) fn outbound_backpressure_metrics(&self) -> ServerOutboundBackpressureMetrics {
+        self.outbound_backpressure_metrics.clone()
     }
 
     pub(crate) async fn handle_line(

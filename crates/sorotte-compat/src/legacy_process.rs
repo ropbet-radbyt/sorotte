@@ -166,6 +166,7 @@ pub(crate) fn collect_legacy_server_step_outputs(
                 outputs.push(DirectedOutboundLine {
                     client_id: client_id.clone(),
                     line,
+                    delivery: ServerOutboundDelivery::Reliable,
                 });
             }
         }

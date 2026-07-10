@@ -15,7 +15,9 @@ use sorotte_protocol::{
     HelloPayload, ProtocolError, ProtocolMessage, decode_message_line, encode_message_line,
     extract_hello_from_message,
 };
-use sorotte_server::{DirectedOutboundLine, ServerRuntime, ServerRuntimeError};
+use sorotte_server::{
+    DirectedOutboundLine, ServerOutboundDelivery, ServerRuntime, ServerRuntimeError,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PythonHandshakeTranscript {

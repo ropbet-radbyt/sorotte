@@ -24,6 +24,11 @@ fn state_playstate_updates_are_broadcast_to_room_members_with_metadata() {
             r#"{"State":{"playstate":{"position":12.5,"paused":false,"doSeek":false}}}"#,
         )
         .expect("state playstate update should fan out");
+    assert!(
+        directed_lines
+            .iter()
+            .all(|line| { line.delivery == ServerOutboundDelivery::Reliable })
+    );
     let directed_messages = decode_directed_lines(&directed_lines);
 
     assert_eq!(directed_messages.len(), 2);
@@ -612,6 +617,12 @@ fn server_runtime_tick_uses_supplied_absolute_time() {
     let dispatch = runtime
         .collect_dispatch_at(100.0 + super::INITIAL_SERVER_STATE_DELAY_SECONDS)
         .expect("absolute-time tick should collect due state");
+    assert!(
+        dispatch
+            .outbound_lines
+            .iter()
+            .all(|line| { line.delivery == ServerOutboundDelivery::CoalesciblePeriodicState })
+    );
     let messages = decode_directed_lines(&dispatch.outbound_lines);
 
     assert_eq!(messages.len(), 1);

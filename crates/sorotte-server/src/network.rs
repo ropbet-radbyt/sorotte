@@ -1,7 +1,241 @@
 use super::*;
-use std::net::SocketAddr;
+use std::{
+    net::SocketAddr,
+    sync::{
+        Mutex as StdMutex,
+        atomic::{AtomicBool, Ordering},
+    },
+};
+use tokio::sync::mpsc::error::TrySendError;
 
 type AcceptedClient = io::Result<(TcpStream, SocketAddr)>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ClientOutboundEvent {
+    ReliableLine(String),
+    PeriodicStateLine(String),
+    TransportAction(ServerTransportAction),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PeriodicStateUpdate {
+    generation: u64,
+    line: String,
+}
+
+#[derive(Debug, Default)]
+struct PeriodicStateQueueState {
+    latest_sent_generation: u64,
+    latest_delivered_generation: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClientEventSendOutcome {
+    Sent,
+    Coalesced,
+    Closed,
+    Overloaded,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ClientEventSender {
+    // Protocol control lines are bounded and reliable until an explicit
+    // overload disconnect. Rare transport actions use their own reliable lane,
+    // while periodic state uses a single replaceable watch slot.
+    reliable_lines: Sender<String>,
+    transport_actions: UnboundedSender<ServerTransportAction>,
+    periodic_state: watch::Sender<Option<PeriodicStateUpdate>>,
+    periodic_state_queue: Arc<StdMutex<PeriodicStateQueueState>>,
+    overload_close: watch::Sender<Option<usize>>,
+    overload_signalled: Arc<AtomicBool>,
+    metrics: ServerOutboundBackpressureMetrics,
+}
+
+pub(crate) struct ClientEventReceiver {
+    reliable_lines: Receiver<String>,
+    transport_actions: tokio::sync::mpsc::UnboundedReceiver<ServerTransportAction>,
+    periodic_state: watch::Receiver<Option<PeriodicStateUpdate>>,
+    periodic_state_queue: Arc<StdMutex<PeriodicStateQueueState>>,
+    overload_close: watch::Receiver<Option<usize>>,
+    metrics: ServerOutboundBackpressureMetrics,
+}
+
+pub(crate) type SharedClientEventSenders = Arc<Mutex<BTreeMap<String, ClientEventSender>>>;
+
+pub(crate) fn client_event_queue(
+    metrics: ServerOutboundBackpressureMetrics,
+) -> (ClientEventSender, ClientEventReceiver) {
+    let (reliable_tx, reliable_rx) = channel(CLIENT_OUTBOUND_QUEUE_CAPACITY);
+    let (transport_tx, transport_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (periodic_tx, periodic_rx) = watch::channel(None);
+    let (overload_tx, overload_rx) = watch::channel(None);
+    let periodic_state_queue = Arc::new(StdMutex::new(PeriodicStateQueueState::default()));
+    (
+        ClientEventSender {
+            reliable_lines: reliable_tx,
+            transport_actions: transport_tx,
+            periodic_state: periodic_tx,
+            periodic_state_queue: periodic_state_queue.clone(),
+            overload_close: overload_tx,
+            overload_signalled: Arc::new(AtomicBool::new(false)),
+            metrics: metrics.clone(),
+        },
+        ClientEventReceiver {
+            reliable_lines: reliable_rx,
+            transport_actions: transport_rx,
+            periodic_state: periodic_rx,
+            periodic_state_queue,
+            overload_close: overload_rx,
+            metrics,
+        },
+    )
+}
+
+impl ClientEventSender {
+    async fn send(&self, event: ClientOutboundEvent) -> ClientEventSendOutcome {
+        if self.overload_signalled.load(Ordering::Acquire) {
+            self.metrics.dropped();
+            return ClientEventSendOutcome::Overloaded;
+        }
+        match event {
+            ClientOutboundEvent::ReliableLine(line) => self.send_reliable_line(line).await,
+            ClientOutboundEvent::PeriodicStateLine(line) => self.send_periodic_state(line),
+            ClientOutboundEvent::TransportAction(action) => self.send_transport_action(action),
+        }
+    }
+
+    async fn send_reliable_line(&self, line: String) -> ClientEventSendOutcome {
+        match self.reliable_lines.try_send(line) {
+            Ok(()) => {
+                self.metrics.enqueued();
+                ClientEventSendOutcome::Sent
+            }
+            Err(TrySendError::Closed(_line)) => {
+                self.metrics.closed();
+                self.metrics.dropped();
+                ClientEventSendOutcome::Closed
+            }
+            Err(TrySendError::Full(line)) => {
+                self.metrics.full();
+                let grace = std::time::Duration::from_millis(CLIENT_OUTBOUND_OVERLOAD_GRACE_MILLIS);
+                match time::timeout(grace, self.reliable_lines.send(line)).await {
+                    Ok(Ok(())) => {
+                        self.metrics.enqueued();
+                        ClientEventSendOutcome::Sent
+                    }
+                    Ok(Err(_closed)) => {
+                        self.metrics.closed();
+                        self.metrics.dropped();
+                        ClientEventSendOutcome::Closed
+                    }
+                    Err(_) => {
+                        self.metrics.dropped();
+                        self.signal_overload();
+                        ClientEventSendOutcome::Overloaded
+                    }
+                }
+            }
+        }
+    }
+
+    fn send_periodic_state(&self, line: String) -> ClientEventSendOutcome {
+        let mut queue = self
+            .periodic_state_queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let generation = queue.latest_sent_generation.saturating_add(1);
+        let was_pending = queue.latest_sent_generation > queue.latest_delivered_generation;
+        let update = PeriodicStateUpdate { generation, line };
+        if self.periodic_state.send(Some(update)).is_err() {
+            self.metrics.closed();
+            self.metrics.dropped();
+            return ClientEventSendOutcome::Closed;
+        }
+        queue.latest_sent_generation = generation;
+        if was_pending {
+            self.metrics.coalesced();
+            ClientEventSendOutcome::Coalesced
+        } else {
+            self.metrics.enqueued();
+            ClientEventSendOutcome::Sent
+        }
+    }
+
+    fn send_transport_action(&self, action: ServerTransportAction) -> ClientEventSendOutcome {
+        match self.transport_actions.send(action) {
+            Ok(()) => {
+                self.metrics.enqueued();
+                ClientEventSendOutcome::Sent
+            }
+            Err(_) => {
+                self.metrics.closed();
+                self.metrics.dropped();
+                ClientEventSendOutcome::Closed
+            }
+        }
+    }
+
+    fn signal_overload(&self) {
+        if !self.overload_signalled.swap(true, Ordering::AcqRel) {
+            self.metrics.overload_disconnect();
+            let queue_depth =
+                CLIENT_OUTBOUND_QUEUE_CAPACITY.saturating_sub(self.reliable_lines.capacity());
+            let _ = self.overload_close.send(Some(queue_depth));
+        }
+    }
+}
+
+impl ClientEventReceiver {
+    fn periodic_state_delivered(&self, generation: u64) {
+        let mut queue = self
+            .periodic_state_queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let was_pending = queue.latest_sent_generation > queue.latest_delivered_generation;
+        queue.latest_delivered_generation = queue.latest_delivered_generation.max(generation);
+        let is_pending = queue.latest_sent_generation > queue.latest_delivered_generation;
+        if was_pending && !is_pending {
+            self.metrics.dequeued();
+        }
+    }
+
+    fn close_and_record_discarded(&mut self) {
+        self.reliable_lines.close();
+        self.transport_actions.close();
+        let mut discarded = self.reliable_lines.len() + self.transport_actions.len();
+        let mut periodic_queue = self
+            .periodic_state_queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if periodic_queue.latest_sent_generation > periodic_queue.latest_delivered_generation {
+            discarded += 1;
+            periodic_queue.latest_delivered_generation = periodic_queue.latest_sent_generation;
+        }
+        self.metrics.discarded(discarded);
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn receive_reliable_line_for_test(&mut self) -> Option<String> {
+        let line = self.reliable_lines.recv().await;
+        if line.is_some() {
+            self.metrics.dequeued();
+        }
+        line
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn receive_periodic_state_for_test(&mut self) -> Option<String> {
+        self.periodic_state.changed().await.ok()?;
+        let update = self.periodic_state.borrow_and_update().clone()?;
+        self.periodic_state_delivered(update.generation);
+        Some(update.line)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn overload_queue_depth_for_test(&self) -> Option<usize> {
+        *self.overload_close.borrow()
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ServerNetworkClientSessionTimeouts {
@@ -37,12 +271,13 @@ pub(crate) async fn dispatch_outbound_lines_to_clients(
     outbound_lines: Vec<DirectedOutboundLine>,
 ) {
     for line in outbound_lines {
-        dispatch_client_event(
-            client_event_senders,
-            &line.client_id,
-            ClientOutboundEvent::Line(line.line),
-        )
-        .await;
+        let event = match line.delivery {
+            ServerOutboundDelivery::Reliable => ClientOutboundEvent::ReliableLine(line.line),
+            ServerOutboundDelivery::CoalesciblePeriodicState => {
+                ClientOutboundEvent::PeriodicStateLine(line.line)
+            }
+        };
+        dispatch_client_event(client_event_senders, &line.client_id, event).await;
     }
 }
 
@@ -55,11 +290,15 @@ async fn dispatch_client_event(
         let senders = client_event_senders.lock().await;
         senders.get(client_id).cloned()
     };
-    if let Some(event_sender) = event_sender
-        && event_sender.try_send(event).is_err()
-    {
-        let mut senders = client_event_senders.lock().await;
-        senders.remove(client_id);
+    let Some(event_sender) = event_sender else {
+        return;
+    };
+    match event_sender.send(event).await {
+        ClientEventSendOutcome::Sent | ClientEventSendOutcome::Coalesced => {}
+        ClientEventSendOutcome::Closed | ClientEventSendOutcome::Overloaded => {
+            let mut senders = client_event_senders.lock().await;
+            senders.remove(client_id);
+        }
     }
 }
 
@@ -362,8 +601,7 @@ pub(crate) async fn run_server_network_client_session_with_timeouts(
     transport_action_sink: Option<UnboundedSender<DirectedTransportAction>>,
     timeouts: ServerNetworkClientSessionTimeouts,
 ) -> Result<(), ServerNetworkError> {
-    let (event_tx, mut event_rx): (Sender<ClientOutboundEvent>, Receiver<ClientOutboundEvent>) =
-        channel(CLIENT_OUTBOUND_QUEUE_CAPACITY);
+    let (event_tx, mut event_rx) = client_event_queue(runtime.outbound_backpressure_metrics());
     {
         let mut senders = client_event_senders.lock().await;
         senders.insert(client_id.clone(), event_tx);
@@ -448,25 +686,30 @@ pub(crate) async fn run_server_network_client_session_with_timeouts(
                     break;
                 }
             }
-            outbound_event = event_rx.recv() => {
-                let Some(outbound_event) = outbound_event else {
+            outbound_line = event_rx.reliable_lines.recv() => {
+                let Some(outbound_line) = outbound_line else {
                     break;
                 };
-                match outbound_event {
-                    ClientOutboundEvent::Line(outbound_line) => {
-                        if let Err(source) =
-                            transport
-                                .write_line_with_timeout(&outbound_line, timeouts.write)
-                                .await
-                        {
-                            session_error = Some(ServerNetworkError::Io(source));
-                            break;
-                        }
-                    }
-                    ClientOutboundEvent::TransportAction(ServerTransportAction::Close) => {
+                event_rx.metrics.dequeued();
+                if let Err(source) =
+                    transport
+                        .write_line_with_timeout(&outbound_line, timeouts.write)
+                        .await
+                {
+                    session_error = Some(ServerNetworkError::Io(source));
+                    break;
+                }
+            }
+            transport_action = event_rx.transport_actions.recv() => {
+                let Some(transport_action) = transport_action else {
+                    break;
+                };
+                event_rx.metrics.dequeued();
+                match transport_action {
+                    ServerTransportAction::Close => {
                         break;
                     }
-                    ClientOutboundEvent::TransportAction(ServerTransportAction::StartTls) => {
+                    ServerTransportAction::StartTls => {
                         let action = DirectedTransportAction::new(
                             &client_id,
                             ServerTransportAction::StartTls,
@@ -486,6 +729,37 @@ pub(crate) async fn run_server_network_client_session_with_timeouts(
                     }
                 }
             }
+            periodic_state_changed = event_rx.periodic_state.changed() => {
+                if periodic_state_changed.is_err() {
+                    break;
+                }
+                let update = event_rx.periodic_state.borrow_and_update().clone();
+                let Some(update) = update else {
+                    continue;
+                };
+                event_rx.periodic_state_delivered(update.generation);
+                if let Err(source) =
+                    transport
+                        .write_line_with_timeout(&update.line, timeouts.write)
+                        .await
+                {
+                    session_error = Some(ServerNetworkError::Io(source));
+                    break;
+                }
+            }
+            overload_changed = event_rx.overload_close.changed() => {
+                if overload_changed.is_err() {
+                    break;
+                }
+                let Some(queue_depth) = *event_rx.overload_close.borrow_and_update() else {
+                    continue;
+                };
+                session_error = Some(ServerNetworkError::OutboundOverload {
+                    client_id: client_id.clone(),
+                    queue_depth,
+                });
+                break;
+            }
         }
     }
 
@@ -493,6 +767,7 @@ pub(crate) async fn run_server_network_client_session_with_timeouts(
         let mut senders = client_event_senders.lock().await;
         senders.remove(&client_id);
     }
+    event_rx.close_and_record_discarded();
     if let Err(source) = transport.shutdown().await
         && session_error.is_none()
     {
@@ -575,6 +850,7 @@ pub(crate) async fn stalled_transport_direct_response_write_for_test(
         vec![DirectedOutboundLine {
             client_id: "client-1".to_owned(),
             line: r#"{"Chat":"direct"}"#.to_owned(),
+            delivery: ServerOutboundDelivery::Reliable,
         }],
         write_timeout,
     )

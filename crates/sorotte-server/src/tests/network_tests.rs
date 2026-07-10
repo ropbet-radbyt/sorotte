@@ -337,33 +337,158 @@ async fn server_actor_remains_responsive_while_room_persistence_waits_on_sqlite(
     fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
 }
 
-#[tokio::test]
-async fn server_network_closes_or_drops_slow_client_when_outbound_queue_full() {
-    let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
-    let (event_tx, _event_rx) = mpsc::channel(crate::CLIENT_OUTBOUND_QUEUE_CAPACITY);
-    for index in 0..crate::CLIENT_OUTBOUND_QUEUE_CAPACITY {
-        event_tx
-            .try_send(crate::ClientOutboundEvent::Line(format!("queued-{index}")))
-            .expect("test queue should accept initial fill");
+fn test_outbound_line(
+    line: impl Into<String>,
+    delivery: ServerOutboundDelivery,
+) -> DirectedOutboundLine {
+    DirectedOutboundLine {
+        client_id: "client-1".to_owned(),
+        line: line.into(),
+        delivery,
     }
+}
+
+async fn fill_reliable_outbound_queue(
+    client_event_senders: &crate::network::SharedClientEventSenders,
+) {
+    let lines = (0..crate::CLIENT_OUTBOUND_QUEUE_CAPACITY).map(|index| {
+        test_outbound_line(format!("queued-{index}"), ServerOutboundDelivery::Reliable)
+    });
+    crate::network::dispatch_outbound_lines_to_clients(client_event_senders, lines.collect()).await;
+}
+
+#[tokio::test]
+async fn server_network_transient_full_queue_keeps_live_client_registered() {
+    let metrics = crate::ServerOutboundBackpressureMetrics::default();
+    let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    let (event_tx, mut event_rx) = crate::network::client_event_queue(metrics.clone());
     {
         let mut senders = client_event_senders.lock().await;
         senders.insert("client-1".to_owned(), event_tx);
     }
+    fill_reliable_outbound_queue(&client_event_senders).await;
+
+    let dispatch_senders = client_event_senders.clone();
+    let overflow_dispatch = tokio::spawn(async move {
+        crate::network::dispatch_outbound_lines_to_clients(
+            &dispatch_senders,
+            vec![test_outbound_line(
+                r#"{"Chat":"retained"}"#,
+                ServerOutboundDelivery::Reliable,
+            )],
+        )
+        .await;
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(
+        event_rx.receive_reliable_line_for_test().await.is_some(),
+        "draining one queued line should release reliable capacity"
+    );
+    overflow_dispatch
+        .await
+        .expect("overflow dispatch task should join");
+
+    assert!(client_event_senders.lock().await.contains_key("client-1"));
+    let snapshot = metrics.snapshot();
+    assert_eq!(snapshot.full_queue_events, 1);
+    assert_eq!(snapshot.overload_disconnects, 0);
+    assert_eq!(snapshot.dropped_messages, 0);
+}
+
+#[tokio::test]
+async fn server_network_sustained_full_queue_signals_explicit_overload_close() {
+    let metrics = crate::ServerOutboundBackpressureMetrics::default();
+    let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    let (event_tx, event_rx) = crate::network::client_event_queue(metrics.clone());
+    {
+        let mut senders = client_event_senders.lock().await;
+        senders.insert("client-1".to_owned(), event_tx);
+    }
+    fill_reliable_outbound_queue(&client_event_senders).await;
 
     crate::network::dispatch_outbound_lines_to_clients(
         &client_event_senders,
-        vec![DirectedOutboundLine {
-            client_id: "client-1".to_owned(),
-            line: r#"{"Chat":"overflow"}"#.to_owned(),
-        }],
+        vec![test_outbound_line(
+            r#"{"Chat":"overload"}"#,
+            ServerOutboundDelivery::Reliable,
+        )],
     )
     .await;
 
     assert!(
         !client_event_senders.lock().await.contains_key("client-1"),
-        "a full outbound queue should close/drop the slow client sender"
+        "an overloaded sender should be removed only after close is signalled"
     );
+    assert_eq!(
+        event_rx.overload_queue_depth_for_test(),
+        Some(crate::CLIENT_OUTBOUND_QUEUE_CAPACITY)
+    );
+    let snapshot = metrics.snapshot();
+    assert_eq!(snapshot.full_queue_events, 1);
+    assert_eq!(snapshot.overload_disconnects, 1);
+    assert_eq!(snapshot.closed_channel_events, 0);
+    assert_eq!(snapshot.dropped_messages, 1);
+}
+
+#[tokio::test]
+async fn server_network_closed_queue_is_not_reported_as_overload() {
+    let metrics = crate::ServerOutboundBackpressureMetrics::default();
+    let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    let (event_tx, event_rx) = crate::network::client_event_queue(metrics.clone());
+    drop(event_rx);
+    client_event_senders
+        .lock()
+        .await
+        .insert("client-1".to_owned(), event_tx);
+
+    crate::network::dispatch_outbound_lines_to_clients(
+        &client_event_senders,
+        vec![test_outbound_line(
+            r#"{"Chat":"closed"}"#,
+            ServerOutboundDelivery::Reliable,
+        )],
+    )
+    .await;
+
+    let snapshot = metrics.snapshot();
+    assert_eq!(snapshot.closed_channel_events, 1);
+    assert_eq!(snapshot.full_queue_events, 0);
+    assert_eq!(snapshot.overload_disconnects, 0);
+    assert_eq!(snapshot.dropped_messages, 1);
+}
+
+#[tokio::test]
+async fn server_network_periodic_state_updates_coalesce_to_latest() {
+    let runtime = ServerActorHandle::spawn(ServerRuntime::new());
+    let metrics = runtime.outbound_backpressure_metrics();
+    let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    let (event_tx, mut event_rx) = crate::network::client_event_queue(metrics.clone());
+    client_event_senders
+        .lock()
+        .await
+        .insert("client-1".to_owned(), event_tx);
+
+    crate::network::dispatch_outbound_lines_to_clients(
+        &client_event_senders,
+        vec![
+            test_outbound_line("state-1", ServerOutboundDelivery::CoalesciblePeriodicState),
+            test_outbound_line("state-2", ServerOutboundDelivery::CoalesciblePeriodicState),
+        ],
+    )
+    .await;
+
+    assert_eq!(
+        event_rx.receive_periodic_state_for_test().await.as_deref(),
+        Some("state-2")
+    );
+    let snapshot = runtime.outbound_backpressure_snapshot();
+    assert_eq!(snapshot.coalesced_state_updates, 1);
+    assert_eq!(snapshot.queue_depth, 0);
+    assert_eq!(snapshot.dropped_messages, 0);
+    runtime
+        .shutdown()
+        .await
+        .expect("server actor should shut down cleanly");
 }
 
 #[tokio::test]

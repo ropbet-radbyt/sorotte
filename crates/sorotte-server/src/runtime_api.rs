@@ -356,9 +356,15 @@ impl ServerRuntime {
         let outbound_lines = outbound_messages
             .into_iter()
             .map(|message| {
+                let delivery = if matches!(&message.message, ProtocolMessage::State(_)) {
+                    ServerOutboundDelivery::CoalesciblePeriodicState
+                } else {
+                    ServerOutboundDelivery::Reliable
+                };
                 Ok(DirectedOutboundLine {
                     client_id: message.client_id,
                     line: encode_message_line(&message.message)?,
+                    delivery,
                 })
             })
             .collect::<Result<Vec<_>, ServerRuntimeError>>()?;

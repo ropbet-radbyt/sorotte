@@ -86,6 +86,7 @@ impl ServerRuntime {
                 Ok(DirectedOutboundLine {
                     client_id: message.client_id,
                     line: encode_message_line(&message.message)?,
+                    delivery: ServerOutboundDelivery::Reliable,
                 })
             })
             .collect()
@@ -187,6 +188,7 @@ impl ServerRuntime {
                 Ok(DirectedOutboundLine {
                     client_id: message.client_id,
                     line: encode_message_line(&message.message)?,
+                    delivery: ServerOutboundDelivery::Reliable,
                 })
             })
             .collect()
@@ -228,6 +230,7 @@ impl ServerRuntime {
                 outbound_lines.push(DirectedOutboundLine {
                     client_id: client_id.to_owned(),
                     line: error_line,
+                    delivery: ServerOutboundDelivery::Reliable,
                 });
                 return Ok(ServerRuntimeDispatch {
                     outbound_lines,

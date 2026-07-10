@@ -83,6 +83,9 @@ const SERVER_NETWORK_TICK_INTERVAL_SECONDS: f64 = 0.25;
 const MAX_PROTOCOL_LINE_BYTES: usize = DEFAULT_MAX_PROTOCOL_LINE_BYTES * 8;
 const PROTOCOL_LINE_TOO_LONG_ERROR: &str = "Protocol line too long";
 const CLIENT_OUTBOUND_QUEUE_CAPACITY: usize = 256;
+// A reliable line gets a short chance to enter a temporarily full queue. If
+// capacity does not recover, the client is explicitly closed and cleaned up.
+const CLIENT_OUTBOUND_OVERLOAD_GRACE_MILLIS: u64 = 100;
 const ACCEPTED_CLIENT_QUEUE_CAPACITY: usize = 1024;
 const SERVER_PERSISTENCE_EVENT_CAPACITY: usize = 256;
 const TLS_HANDSHAKE_TIMEOUT_SECONDS: f64 = IO_TIMEOUT_SECONDS;
@@ -99,6 +102,7 @@ const LEGACY_SERVER_HELLO_ERROR: &str = "Not enough Hello arguments";
 mod actor;
 mod app;
 mod auth;
+mod backpressure;
 mod compat;
 mod messages;
 mod network;
@@ -111,6 +115,7 @@ mod tls;
 
 pub use actor::{ServerActorError, ServerActorHandle};
 pub use app::ServerApp;
+pub use backpressure::ServerOutboundBackpressureSnapshot;
 pub use network::{
     run_server_network_loop_until_shutdown, run_server_network_loops_until_shutdown,
 };
@@ -122,6 +127,7 @@ pub use persistence_actor::{
 pub(crate) use auth::{
     RoomPasswordCheckError, RoomPasswordProvider, generate_server_salt_legacy_compatible,
 };
+pub(crate) use backpressure::ServerOutboundBackpressureMetrics;
 pub(crate) use compat::*;
 pub(crate) use messages::*;
 #[cfg(test)]
@@ -172,6 +178,13 @@ pub enum ServerNetworkError {
     Actor(#[from] ServerActorError),
     #[error(transparent)]
     Io(#[from] io::Error),
+    #[error(
+        "client '{client_id}' disconnected after sustained outbound overload at queue depth {queue_depth}"
+    )]
+    OutboundOverload {
+        client_id: String,
+        queue_depth: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -193,6 +206,13 @@ impl DirectedProtocolMessage {
 pub struct DirectedOutboundLine {
     pub client_id: String,
     pub line: String,
+    pub delivery: ServerOutboundDelivery,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerOutboundDelivery {
+    Reliable,
+    CoalesciblePeriodicState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -221,15 +241,6 @@ impl DirectedTransportAction {
         }
     }
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ClientOutboundEvent {
-    Line(String),
-    TransportAction(ServerTransportAction),
-}
-
-type ClientEventSender = Sender<ClientOutboundEvent>;
-type SharedClientEventSenders = Arc<Mutex<BTreeMap<String, ClientEventSender>>>;
 
 #[derive(Debug)]
 pub struct ServerRuntime {
