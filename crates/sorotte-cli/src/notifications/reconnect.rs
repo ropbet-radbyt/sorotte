@@ -51,12 +51,14 @@ fn emit_reconnect_transition_notification_to_player_legacy_compatible(
 pub(crate) fn flush_reconnect_notifications_legacy_compatible(
     runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
 ) -> anyhow::Result<()> {
-    for notification in runtime.drain_reconnect_notifications() {
+    while let Some(notification) = runtime.pending_reconnect_notification().cloned() {
         emit_reconnect_transition_notification_to_player_legacy_compatible(
             runtime.player_mut(),
             &notification,
         );
         emit_reconnect_transition_notification(&notification)?;
+        let acknowledged = runtime.acknowledge_reconnect_notification();
+        debug_assert!(acknowledged.is_some());
     }
     Ok(())
 }

@@ -105,12 +105,14 @@ pub(crate) fn flush_autoplay_notifications_legacy_compatible<F>(
 where
     F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
 {
-    for notification in runtime.drain_autoplay_notifications() {
+    while let Some(notification) = runtime.pending_autoplay_notification().cloned() {
         emit_autoplay_countdown_notification_to_player_legacy_compatible(
             runtime.player_mut(),
             &notification,
         );
         notify(&notification)?;
+        let acknowledged = runtime.acknowledge_autoplay_notification();
+        debug_assert!(acknowledged.is_some());
     }
     Ok(())
 }

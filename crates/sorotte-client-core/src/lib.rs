@@ -83,6 +83,7 @@ pub fn legacy_server_password_token(password: &str) -> String {
 mod config;
 mod control;
 mod notifications;
+mod outbox;
 mod ping;
 mod runtime;
 mod session;

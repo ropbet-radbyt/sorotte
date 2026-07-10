@@ -64,12 +64,14 @@ fn emit_controller_auth_transition_notification_to_player_legacy_compatible(
 pub(crate) fn flush_controller_auth_notifications_legacy_compatible(
     runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
 ) -> anyhow::Result<()> {
-    for notification in runtime.drain_controller_auth_notifications() {
+    while let Some(notification) = runtime.pending_controller_auth_notification().cloned() {
         emit_controller_auth_transition_notification_to_player_legacy_compatible(
             runtime.player_mut(),
             &notification,
         );
         emit_controller_auth_transition_notification(&notification)?;
+        let acknowledged = runtime.acknowledge_controller_auth_notification();
+        debug_assert!(acknowledged.is_some());
     }
     Ok(())
 }

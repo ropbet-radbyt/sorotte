@@ -27,9 +27,11 @@ fn emit_chat_notification_to_player_legacy_compatible(
 pub(crate) fn flush_chat_notifications_legacy_compatible(
     runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
 ) -> anyhow::Result<()> {
-    for notification in runtime.drain_chat_notifications() {
+    while let Some(notification) = runtime.pending_chat_notification().cloned() {
         emit_chat_notification_to_player_legacy_compatible(runtime.player_mut(), &notification);
         emit_chat_notification(&notification)?;
+        let acknowledged = runtime.acknowledge_chat_notification();
+        debug_assert!(acknowledged.is_some());
     }
     Ok(())
 }

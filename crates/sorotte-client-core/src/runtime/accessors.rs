@@ -11,7 +11,7 @@ where
             player,
             control,
             ping_metrics_legacy_compatible: ClientPingMetricsLegacyCompatible::default(),
-            pending_player_playback_telemetry_updates: Vec::new(),
+            pending_player_playback_telemetry_updates: EffectOutbox::default(),
             last_local_file_update: None,
         }
     }

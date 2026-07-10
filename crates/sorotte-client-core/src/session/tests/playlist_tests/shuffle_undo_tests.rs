@@ -104,7 +104,7 @@ fn client_runtime_shuffle_entire_playlist_resets_index_to_zero() {
     );
 
     let ProtocolMessage::Set(last_set) = outbound_messages
-        .last()
+        .back()
         .expect("shuffle entire should emit at least one Set message")
     else {
         panic!("last outbound message should be Set.playlistIndex");

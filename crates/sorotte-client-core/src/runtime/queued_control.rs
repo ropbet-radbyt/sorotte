@@ -1,5 +1,34 @@
 use super::*;
 
+macro_rules! runtime_notification_outbox_methods {
+    (
+        $pending:ident,
+        $acknowledge:ident,
+        $flush_to_sink:ident,
+        $control_front:ident,
+        $control_acknowledge:ident,
+        $control_flush:ident,
+        $notification:ty
+    ) => {
+        pub fn $pending(&self) -> Option<&$notification> {
+            self.control.$control_front()
+        }
+
+        pub fn $acknowledge(&mut self) -> Option<$notification> {
+            self.control.$control_acknowledge()
+        }
+
+        /// Delivers pending notifications in FIFO order, acknowledging each
+        /// notification only after the sink reports success.
+        pub fn $flush_to_sink<F, E>(&mut self, notify: F) -> Result<(), E>
+        where
+            F: FnMut(&$notification) -> Result<(), E>,
+        {
+            self.control.$control_flush(notify)
+        }
+    };
+}
+
 impl<P> ClientRuntime<P, QueuedRuntimeControl>
 where
     P: PlayerAdapter,
@@ -79,7 +108,7 @@ where
             );
             self.control
                 .outbound_messages
-                .push(ProtocolMessage::state(outbound_state));
+                .push_back(ProtocolMessage::state(outbound_state));
             return true;
         };
 
@@ -95,7 +124,7 @@ where
             );
         self.control
             .outbound_messages
-            .push(ProtocolMessage::state(outbound_state));
+            .push_back(ProtocolMessage::state(outbound_state));
         true
     }
 
@@ -160,16 +189,30 @@ where
 
         self.control
             .outbound_messages
-            .push(ProtocolMessage::state(outbound_state));
+            .push_back(ProtocolMessage::state(outbound_state));
         true
     }
 
+    /// Transfers ownership of every queued protocol message to the caller.
+    /// Fallible transports must use [`Self::flush_queued_protocol_lines_to_transport`]
+    /// or the pending-line acknowledgement API instead.
     pub fn flush_queued_protocol_messages(&mut self) -> Vec<ProtocolMessage> {
         self.control.drain_outbound_messages()
     }
 
+    /// Transfers an encoded batch to an infallible in-memory owner.
+    /// Fallible transports must use [`Self::flush_queued_protocol_lines_to_transport`]
+    /// or [`Self::pending_protocol_line`] plus [`Self::acknowledge_protocol_line`].
     pub fn flush_queued_protocol_lines(&mut self) -> Result<Vec<String>, ProtocolError> {
         self.control.drain_outbound_message_lines()
+    }
+
+    pub fn pending_protocol_line(&self) -> Result<Option<String>, ProtocolError> {
+        self.control.front_outbound_message_line()
+    }
+
+    pub fn acknowledge_protocol_line(&mut self) -> Option<ProtocolMessage> {
+        self.control.acknowledge_outbound_message()
     }
 
     pub fn drain_reconnect_requests(&mut self) -> Vec<f64> {
@@ -180,53 +223,67 @@ where
         self.control.take_stop_reconnect_requested()
     }
 
+    /// Best-effort ownership transfer for an infallible consumer.
+    /// Fallible consumers must use [`Self::drain_autoplay_notifications_to_sink`].
     pub fn drain_autoplay_notifications(&mut self) -> Vec<AutoplayCountdownNotification> {
         self.control.drain_autoplay_notifications()
     }
 
+    /// Best-effort ownership transfer for an infallible consumer.
+    /// Fallible consumers must use [`Self::drain_chat_notifications_to_sink`].
     pub fn drain_chat_notifications(&mut self) -> Vec<ChatNotification> {
         self.control.drain_chat_notifications()
     }
 
+    /// Best-effort ownership transfer for an infallible consumer.
+    /// Fallible consumers must use
+    /// [`Self::drain_controlled_room_creation_notifications_to_sink`].
     pub fn drain_controlled_room_creation_notifications(
         &mut self,
     ) -> Vec<ControlledRoomCreationNotification> {
         self.control.drain_controlled_room_creation_notifications()
     }
 
+    /// Best-effort ownership transfer for an infallible consumer.
+    /// Fallible consumers must use [`Self::drain_controller_auth_notifications_to_sink`].
     pub fn drain_controller_auth_notifications(
         &mut self,
     ) -> Vec<ControllerAuthTransitionNotification> {
         self.control.drain_controller_auth_notifications()
     }
 
+    /// Best-effort ownership transfer for an infallible consumer.
+    /// Fallible consumers must use [`Self::drain_user_change_notifications_to_sink`].
     pub fn drain_user_change_notifications(&mut self) -> Vec<UserChangeNotification> {
         self.control.drain_user_change_notifications()
     }
 
+    /// Best-effort ownership transfer for an infallible consumer.
+    /// Fallible consumers must use [`Self::drain_reconnect_notifications_to_sink`].
     pub fn drain_reconnect_notifications(&mut self) -> Vec<ReconnectTransitionNotification> {
         self.control.drain_reconnect_notifications()
     }
 
+    /// Transfers the latest coalesced telemetry snapshot to an infallible consumer.
+    /// Fallible consumers must use
+    /// [`Self::drain_player_playback_telemetry_updates_to_sink`].
     pub fn drain_player_playback_telemetry_updates(
         &mut self,
     ) -> Vec<PlayerPlaybackTelemetryUpdate> {
         self.sync_player_playback_telemetry_into_session_and_buffer();
-        std::mem::take(&mut self.pending_player_playback_telemetry_updates)
+        self.pending_player_playback_telemetry_updates.drain()
     }
 
+    /// Reliably delivers protocol lines in FIFO order. A line is acknowledged
+    /// only after `send_line` succeeds; on failure, that line and its tail stay queued.
     pub fn flush_queued_protocol_lines_to_transport<F>(
         &mut self,
-        mut send_line: F,
+        send_line: F,
     ) -> Result<(), ProtocolError>
     where
         F: FnMut(&str) -> Result<(), ProtocolError>,
     {
-        let lines = self.flush_queued_protocol_lines()?;
-        for line in &lines {
-            send_line(line)?;
-        }
-        Ok(())
+        self.control.flush_outbound_message_lines(send_line)
     }
 
     pub fn drain_reconnect_intents<FS, FT>(
@@ -245,82 +302,70 @@ where
         }
     }
 
-    pub fn drain_autoplay_notifications_to_sink<F, E>(&mut self, mut notify: F) -> Result<(), E>
-    where
-        F: FnMut(&AutoplayCountdownNotification) -> Result<(), E>,
-    {
-        for notification in self.drain_autoplay_notifications() {
-            notify(&notification)?;
-        }
-        Ok(())
-    }
-
-    pub fn drain_controller_auth_notifications_to_sink<F, E>(
-        &mut self,
-        mut notify: F,
-    ) -> Result<(), E>
-    where
-        F: FnMut(&ControllerAuthTransitionNotification) -> Result<(), E>,
-    {
-        for notification in self.drain_controller_auth_notifications() {
-            notify(&notification)?;
-        }
-        Ok(())
-    }
-
-    pub fn drain_controlled_room_creation_notifications_to_sink<F, E>(
-        &mut self,
-        mut notify: F,
-    ) -> Result<(), E>
-    where
-        F: FnMut(&ControlledRoomCreationNotification) -> Result<(), E>,
-    {
-        for notification in self.drain_controlled_room_creation_notifications() {
-            notify(&notification)?;
-        }
-        Ok(())
-    }
-
-    pub fn drain_chat_notifications_to_sink<F, E>(&mut self, mut notify: F) -> Result<(), E>
-    where
-        F: FnMut(&ChatNotification) -> Result<(), E>,
-    {
-        for notification in self.drain_chat_notifications() {
-            notify(&notification)?;
-        }
-        Ok(())
-    }
-
-    pub fn drain_user_change_notifications_to_sink<F, E>(&mut self, mut notify: F) -> Result<(), E>
-    where
-        F: FnMut(&UserChangeNotification) -> Result<(), E>,
-    {
-        for notification in self.drain_user_change_notifications() {
-            notify(&notification)?;
-        }
-        Ok(())
-    }
-
-    pub fn drain_reconnect_notifications_to_sink<F, E>(&mut self, mut notify: F) -> Result<(), E>
-    where
-        F: FnMut(&ReconnectTransitionNotification) -> Result<(), E>,
-    {
-        for notification in self.drain_reconnect_notifications() {
-            notify(&notification)?;
-        }
-        Ok(())
-    }
+    runtime_notification_outbox_methods!(
+        pending_autoplay_notification,
+        acknowledge_autoplay_notification,
+        drain_autoplay_notifications_to_sink,
+        front_autoplay_notification,
+        acknowledge_autoplay_notification,
+        flush_autoplay_notifications,
+        AutoplayCountdownNotification
+    );
+    runtime_notification_outbox_methods!(
+        pending_controller_auth_notification,
+        acknowledge_controller_auth_notification,
+        drain_controller_auth_notifications_to_sink,
+        front_controller_auth_notification,
+        acknowledge_controller_auth_notification,
+        flush_controller_auth_notifications,
+        ControllerAuthTransitionNotification
+    );
+    runtime_notification_outbox_methods!(
+        pending_controlled_room_creation_notification,
+        acknowledge_controlled_room_creation_notification,
+        drain_controlled_room_creation_notifications_to_sink,
+        front_controlled_room_creation_notification,
+        acknowledge_controlled_room_creation_notification,
+        flush_controlled_room_creation_notifications,
+        ControlledRoomCreationNotification
+    );
+    runtime_notification_outbox_methods!(
+        pending_chat_notification,
+        acknowledge_chat_notification,
+        drain_chat_notifications_to_sink,
+        front_chat_notification,
+        acknowledge_chat_notification,
+        flush_chat_notifications,
+        ChatNotification
+    );
+    runtime_notification_outbox_methods!(
+        pending_user_change_notification,
+        acknowledge_user_change_notification,
+        drain_user_change_notifications_to_sink,
+        front_user_change_notification,
+        acknowledge_user_change_notification,
+        flush_user_change_notifications,
+        UserChangeNotification
+    );
+    runtime_notification_outbox_methods!(
+        pending_reconnect_notification,
+        acknowledge_reconnect_notification,
+        drain_reconnect_notifications_to_sink,
+        front_reconnect_notification,
+        acknowledge_reconnect_notification,
+        flush_reconnect_notifications,
+        ReconnectTransitionNotification
+    );
 
     pub fn drain_player_playback_telemetry_updates_to_sink<F, E>(
         &mut self,
-        mut notify: F,
+        notify: F,
     ) -> Result<(), E>
     where
         F: FnMut(&PlayerPlaybackTelemetryUpdate) -> Result<(), E>,
     {
-        for update in self.drain_player_playback_telemetry_updates() {
-            notify(&update)?;
-        }
-        Ok(())
+        self.sync_player_playback_telemetry_into_session_and_buffer();
+        self.pending_player_playback_telemetry_updates
+            .try_flush(notify)
     }
 }

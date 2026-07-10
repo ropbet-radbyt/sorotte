@@ -1,4 +1,26 @@
 use super::*;
+use std::collections::VecDeque;
+
+use crate::outbox::EffectOutbox;
+
+macro_rules! notification_outbox_methods {
+    ($front:ident, $acknowledge:ident, $flush:ident, $field:ident, $notification:ty) => {
+        pub(crate) fn $front(&self) -> Option<&$notification> {
+            self.$field.front()
+        }
+
+        pub(crate) fn $acknowledge(&mut self) -> Option<$notification> {
+            self.$field.acknowledge_front()
+        }
+
+        pub(crate) fn $flush<E>(
+            &mut self,
+            notify: impl FnMut(&$notification) -> Result<(), E>,
+        ) -> Result<(), E> {
+            self.$field.try_flush(notify)
+        }
+    };
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientRuntimeAction {
@@ -79,15 +101,15 @@ pub trait ClientRuntimeControl {
 
 #[derive(Debug, Default)]
 pub struct QueuedRuntimeControl {
-    pub(crate) outbound_messages: Vec<ProtocolMessage>,
+    pub(crate) outbound_messages: EffectOutbox<ProtocolMessage>,
     reconnect_delays: Vec<f64>,
     stop_reconnect_calls: usize,
-    chat_notifications: Vec<ChatNotification>,
-    controlled_room_creation_notifications: Vec<ControlledRoomCreationNotification>,
-    controller_auth_notifications: Vec<ControllerAuthTransitionNotification>,
-    user_change_notifications: Vec<UserChangeNotification>,
-    reconnect_notifications: Vec<ReconnectTransitionNotification>,
-    autoplay_notifications: Vec<AutoplayCountdownNotification>,
+    chat_notifications: EffectOutbox<ChatNotification>,
+    controlled_room_creation_notifications: EffectOutbox<ControlledRoomCreationNotification>,
+    controller_auth_notifications: EffectOutbox<ControllerAuthTransitionNotification>,
+    user_change_notifications: EffectOutbox<UserChangeNotification>,
+    reconnect_notifications: EffectOutbox<ReconnectTransitionNotification>,
+    autoplay_notifications: EffectOutbox<AutoplayCountdownNotification>,
 }
 
 impl QueuedRuntimeControl {
@@ -114,8 +136,8 @@ impl QueuedRuntimeControl {
         })
     }
 
-    pub fn outbound_messages(&self) -> &[ProtocolMessage] {
-        &self.outbound_messages
+    pub fn outbound_messages(&self) -> &VecDeque<ProtocolMessage> {
+        self.outbound_messages.pending()
     }
 
     pub fn reconnect_delays(&self) -> &[f64] {
@@ -126,40 +148,69 @@ impl QueuedRuntimeControl {
         self.stop_reconnect_calls
     }
 
-    pub fn autoplay_notifications(&self) -> &[AutoplayCountdownNotification] {
-        &self.autoplay_notifications
+    pub fn autoplay_notifications(&self) -> &VecDeque<AutoplayCountdownNotification> {
+        self.autoplay_notifications.pending()
     }
 
-    pub fn chat_notifications(&self) -> &[ChatNotification] {
-        &self.chat_notifications
+    pub fn chat_notifications(&self) -> &VecDeque<ChatNotification> {
+        self.chat_notifications.pending()
     }
 
-    pub fn controlled_room_creation_notifications(&self) -> &[ControlledRoomCreationNotification] {
-        &self.controlled_room_creation_notifications
+    pub fn controlled_room_creation_notifications(
+        &self,
+    ) -> &VecDeque<ControlledRoomCreationNotification> {
+        self.controlled_room_creation_notifications.pending()
     }
 
-    pub fn controller_auth_notifications(&self) -> &[ControllerAuthTransitionNotification] {
-        &self.controller_auth_notifications
+    pub fn controller_auth_notifications(&self) -> &VecDeque<ControllerAuthTransitionNotification> {
+        self.controller_auth_notifications.pending()
     }
 
-    pub fn user_change_notifications(&self) -> &[UserChangeNotification] {
-        &self.user_change_notifications
+    pub fn user_change_notifications(&self) -> &VecDeque<UserChangeNotification> {
+        self.user_change_notifications.pending()
     }
 
-    pub fn reconnect_notifications(&self) -> &[ReconnectTransitionNotification] {
-        &self.reconnect_notifications
+    pub fn reconnect_notifications(&self) -> &VecDeque<ReconnectTransitionNotification> {
+        self.reconnect_notifications.pending()
     }
 
     pub fn drain_outbound_messages(&mut self) -> Vec<ProtocolMessage> {
-        std::mem::take(&mut self.outbound_messages)
+        self.outbound_messages.drain()
     }
 
     pub fn drain_outbound_message_lines(&mut self) -> Result<Vec<String>, ProtocolError> {
-        let messages = self.drain_outbound_messages();
-        messages
+        let lines = self
+            .outbound_messages
+            .pending()
             .iter()
             .map(encode_message_line)
-            .collect::<Result<Vec<_>, _>>()
+            .collect::<Result<Vec<_>, _>>()?;
+        self.outbound_messages.clear();
+        Ok(lines)
+    }
+
+    pub(crate) fn front_outbound_message_line(&self) -> Result<Option<String>, ProtocolError> {
+        self.outbound_messages
+            .front()
+            .map(encode_message_line)
+            .transpose()
+    }
+
+    pub(crate) fn acknowledge_outbound_message(&mut self) -> Option<ProtocolMessage> {
+        self.outbound_messages.acknowledge_front()
+    }
+
+    pub(crate) fn flush_outbound_message_lines<F>(
+        &mut self,
+        mut send_line: F,
+    ) -> Result<(), ProtocolError>
+    where
+        F: FnMut(&str) -> Result<(), ProtocolError>,
+    {
+        self.outbound_messages.try_flush(|message| {
+            let line = encode_message_line(message)?;
+            send_line(&line)
+        })
     }
 
     pub fn drain_reconnect_delays(&mut self) -> Vec<f64> {
@@ -173,50 +224,94 @@ impl QueuedRuntimeControl {
     }
 
     pub fn drain_autoplay_notifications(&mut self) -> Vec<AutoplayCountdownNotification> {
-        std::mem::take(&mut self.autoplay_notifications)
+        self.autoplay_notifications.drain()
     }
 
     pub fn drain_chat_notifications(&mut self) -> Vec<ChatNotification> {
-        std::mem::take(&mut self.chat_notifications)
+        self.chat_notifications.drain()
     }
 
     pub fn drain_controlled_room_creation_notifications(
         &mut self,
     ) -> Vec<ControlledRoomCreationNotification> {
-        std::mem::take(&mut self.controlled_room_creation_notifications)
+        self.controlled_room_creation_notifications.drain()
     }
 
     pub fn drain_controller_auth_notifications(
         &mut self,
     ) -> Vec<ControllerAuthTransitionNotification> {
-        std::mem::take(&mut self.controller_auth_notifications)
+        self.controller_auth_notifications.drain()
     }
 
     pub fn drain_user_change_notifications(&mut self) -> Vec<UserChangeNotification> {
-        std::mem::take(&mut self.user_change_notifications)
+        self.user_change_notifications.drain()
     }
 
     pub fn drain_reconnect_notifications(&mut self) -> Vec<ReconnectTransitionNotification> {
-        std::mem::take(&mut self.reconnect_notifications)
+        self.reconnect_notifications.drain()
     }
+
+    notification_outbox_methods!(
+        front_autoplay_notification,
+        acknowledge_autoplay_notification,
+        flush_autoplay_notifications,
+        autoplay_notifications,
+        AutoplayCountdownNotification
+    );
+    notification_outbox_methods!(
+        front_chat_notification,
+        acknowledge_chat_notification,
+        flush_chat_notifications,
+        chat_notifications,
+        ChatNotification
+    );
+    notification_outbox_methods!(
+        front_controlled_room_creation_notification,
+        acknowledge_controlled_room_creation_notification,
+        flush_controlled_room_creation_notifications,
+        controlled_room_creation_notifications,
+        ControlledRoomCreationNotification
+    );
+    notification_outbox_methods!(
+        front_controller_auth_notification,
+        acknowledge_controller_auth_notification,
+        flush_controller_auth_notifications,
+        controller_auth_notifications,
+        ControllerAuthTransitionNotification
+    );
+    notification_outbox_methods!(
+        front_user_change_notification,
+        acknowledge_user_change_notification,
+        flush_user_change_notifications,
+        user_change_notifications,
+        UserChangeNotification
+    );
+    notification_outbox_methods!(
+        front_reconnect_notification,
+        acknowledge_reconnect_notification,
+        flush_reconnect_notifications,
+        reconnect_notifications,
+        ReconnectTransitionNotification
+    );
 }
 
 impl ClientRuntimeControl for QueuedRuntimeControl {
     fn request_user_list(&mut self) {
-        self.outbound_messages.push(ProtocolMessage::list_request());
+        self.outbound_messages
+            .push_back(ProtocolMessage::list_request());
     }
 
     fn set_room(&mut self, room: String) {
         let set_payload = SetPayload::new().with_room(RoomRef::new(room));
         self.outbound_messages
-            .push(ProtocolMessage::set(set_payload));
+            .push_back(ProtocolMessage::set(set_payload));
     }
 
     fn set_ready(&mut self, ready: bool, manually_initiated: bool) {
         let ready_payload = ReadyPayload::new(ready).with_manually_initiated(manually_initiated);
         let set_payload = SetPayload::new().with_ready(ready_payload);
         self.outbound_messages
-            .push(ProtocolMessage::set(set_payload));
+            .push_back(ProtocolMessage::set(set_payload));
     }
 
     fn set_ready_for_user(&mut self, ready: bool, manually_initiated: bool, username: String) {
@@ -225,7 +320,7 @@ impl ClientRuntimeControl for QueuedRuntimeControl {
             .with_username(username);
         let set_payload = SetPayload::new().with_ready(ready_payload);
         self.outbound_messages
-            .push(ProtocolMessage::set(set_payload));
+            .push_back(ProtocolMessage::set(set_payload));
     }
 
     fn set_file(&mut self, file_payload: Value) {
@@ -234,24 +329,25 @@ impl ClientRuntimeControl for QueuedRuntimeControl {
         };
         let set_payload = SetPayload::new().with_file(file_payload);
         self.outbound_messages
-            .push(ProtocolMessage::set(set_payload));
+            .push_back(ProtocolMessage::set(set_payload));
     }
 
     fn set_playlist(&mut self, files: Vec<String>) {
         let set_payload =
             SetPayload::new().with_playlist_change(playlist_change_with_plex_sidecar(files, true));
         self.outbound_messages
-            .push(ProtocolMessage::set(set_payload));
+            .push_back(ProtocolMessage::set(set_payload));
     }
 
     fn set_playlist_index(&mut self, index: i64) {
         let set_payload = SetPayload::new().with_playlist_index(PlaylistIndexPayload::new(index));
         self.outbound_messages
-            .push(ProtocolMessage::set(set_payload));
+            .push_back(ProtocolMessage::set(set_payload));
     }
 
     fn send_state(&mut self, state: StatePayload) {
-        self.outbound_messages.push(ProtocolMessage::state(state));
+        self.outbound_messages
+            .push_back(ProtocolMessage::state(state));
     }
 
     fn request_controller_auth(&mut self, room: String, password: String) {
@@ -260,16 +356,16 @@ impl ClientRuntimeControl for QueuedRuntimeControl {
             .with_password(password);
         let set_payload = SetPayload::new().with_controller_auth(payload);
         self.outbound_messages
-            .push(ProtocolMessage::set(set_payload));
+            .push_back(ProtocolMessage::set(set_payload));
     }
 
     fn send_chat(&mut self, message: String) {
         self.outbound_messages
-            .push(ProtocolMessage::chat_text(message));
+            .push_back(ProtocolMessage::chat_text(message));
     }
 
     fn notify_chat(&mut self, notification: ChatNotification) {
-        self.chat_notifications.push(notification);
+        self.chat_notifications.push_back(notification);
     }
 
     fn notify_controlled_room_creation(
@@ -277,18 +373,18 @@ impl ClientRuntimeControl for QueuedRuntimeControl {
         notification: ControlledRoomCreationNotification,
     ) {
         self.controlled_room_creation_notifications
-            .push(notification);
+            .push_back(notification);
     }
 
     fn notify_controller_auth_transition(
         &mut self,
         notification: ControllerAuthTransitionNotification,
     ) {
-        self.controller_auth_notifications.push(notification);
+        self.controller_auth_notifications.push_back(notification);
     }
 
     fn notify_user_change(&mut self, notification: UserChangeNotification) {
-        self.user_change_notifications.push(notification);
+        self.user_change_notifications.push_back(notification);
     }
 
     fn schedule_reconnect(&mut self, delay_seconds: f64) {
@@ -300,10 +396,10 @@ impl ClientRuntimeControl for QueuedRuntimeControl {
     }
 
     fn notify_reconnect_transition(&mut self, notification: ReconnectTransitionNotification) {
-        self.reconnect_notifications.push(notification);
+        self.reconnect_notifications.push_back(notification);
     }
 
     fn notify_autoplay_countdown(&mut self, notification: AutoplayCountdownNotification) {
-        self.autoplay_notifications.push(notification);
+        self.autoplay_notifications.push_back(notification);
     }
 }

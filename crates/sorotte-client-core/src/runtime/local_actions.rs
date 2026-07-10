@@ -308,7 +308,20 @@ where
     pub(crate) fn sync_player_playback_telemetry_into_session_and_buffer(&mut self) {
         while let Some(update) = self.player.take_playback_telemetry_update() {
             self.session.apply_player_playback_telemetry_update(&update);
-            self.pending_player_playback_telemetry_updates.push(update);
+            // Telemetry is a coalescible state effect: keep one pending snapshot
+            // and let newer fields supersede older values before delivery.
+            if let Some(pending) = self.pending_player_playback_telemetry_updates.back_mut() {
+                pending.paused = update.paused.or(pending.paused);
+                pending.position_seconds = update.position_seconds.or(pending.position_seconds);
+                pending.playback_rate = update.playback_rate.or(pending.playback_rate);
+                pending.paused_for_cache = update.paused_for_cache.or(pending.paused_for_cache);
+                pending.cache_buffering_percent = update
+                    .cache_buffering_percent
+                    .or(pending.cache_buffering_percent);
+            } else {
+                self.pending_player_playback_telemetry_updates
+                    .push_back(update);
+            }
         }
     }
 }

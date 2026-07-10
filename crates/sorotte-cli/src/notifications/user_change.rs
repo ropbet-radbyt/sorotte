@@ -62,12 +62,14 @@ fn emit_user_change_notification_to_player_legacy_compatible(
 pub(crate) fn flush_user_change_notifications_legacy_compatible(
     runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
 ) -> anyhow::Result<()> {
-    for notification in runtime.drain_user_change_notifications() {
+    while let Some(notification) = runtime.pending_user_change_notification().cloned() {
         emit_user_change_notification_to_player_legacy_compatible(
             runtime.player_mut(),
             &notification,
         );
         emit_user_change_notification(&notification)?;
+        let acknowledged = runtime.acknowledge_user_change_notification();
+        debug_assert!(acknowledged.is_some());
     }
     Ok(())
 }

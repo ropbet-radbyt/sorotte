@@ -571,6 +571,53 @@ fn client_runtime_flush_queued_protocol_lines_to_transport_uses_sender_callback(
 }
 
 #[test]
+fn client_runtime_protocol_transport_failure_preserves_failed_message_and_tail() {
+    let mut control = QueuedRuntimeControl::default();
+    control.send_chat("first".to_owned());
+    control.send_chat("second".to_owned());
+    control.send_chat("third".to_owned());
+    let mut runtime = ClientRuntime::new(
+        ClientSession::default(),
+        RecordingPlayer::default(),
+        control,
+    );
+    let mut first_attempt = Vec::new();
+
+    let error = runtime
+        .flush_queued_protocol_lines_to_transport(|line| {
+            first_attempt.push(line.to_owned());
+            if first_attempt.len() == 2 {
+                Err(ProtocolError::ServerError {
+                    message: "transport failed".to_owned(),
+                })
+            } else {
+                Ok(())
+            }
+        })
+        .expect_err("second transport send should fail");
+
+    assert!(matches!(
+        error,
+        ProtocolError::ServerError { message } if message == "transport failed"
+    ));
+    assert_eq!(first_attempt.len(), 2);
+    assert_eq!(runtime.control().outbound_messages().len(), 2);
+
+    let mut retry = Vec::new();
+    runtime
+        .flush_queued_protocol_lines_to_transport(|line| {
+            retry.push(line.to_owned());
+            Ok(())
+        })
+        .expect("failed message and tail should be retryable");
+
+    assert_eq!(retry.len(), 2);
+    assert!(retry[0].contains("second"));
+    assert!(retry[1].contains("third"));
+    assert!(runtime.control().outbound_messages().is_empty());
+}
+
+#[test]
 fn client_runtime_drain_user_change_notifications_to_sink_dispatches_callback() {
     let mut session = ClientSession::default();
     session
@@ -609,6 +656,41 @@ fn client_runtime_drain_user_change_notifications_to_sink_dispatches_callback() 
 }
 
 #[test]
+fn client_runtime_notification_sink_failure_preserves_failed_notification_and_tail() {
+    let notifications = ["first", "second", "third"].map(|message| ChatNotification::Message {
+        username: Some("alice".to_owned()),
+        message: message.to_owned(),
+    });
+    let mut control = QueuedRuntimeControl::default();
+    for notification in notifications.clone() {
+        control.notify_chat(notification);
+    }
+    let mut runtime = ClientRuntime::new(
+        ClientSession::default(),
+        RecordingPlayer::default(),
+        control,
+    );
+    let mut attempted = Vec::new();
+
+    let result = runtime.drain_chat_notifications_to_sink(|notification| {
+        attempted.push(notification.clone());
+        if attempted.len() == 2 {
+            Err("notification sink failed")
+        } else {
+            Ok(())
+        }
+    });
+
+    assert_eq!(result, Err("notification sink failed"));
+    assert_eq!(attempted, notifications[..2]);
+    assert_eq!(
+        runtime.drain_chat_notifications(),
+        notifications[1..].to_vec(),
+        "the failed notification and unattempted tail must remain queued"
+    );
+}
+
+#[test]
 fn client_runtime_drain_player_playback_telemetry_updates_to_sink_dispatches_callback() {
     let session = ClientSession::default();
     let player = RecordingPlayer {
@@ -642,6 +724,66 @@ fn client_runtime_drain_player_playback_telemetry_updates_to_sink_dispatches_cal
         }]
     );
     assert!(runtime.drain_player_playback_telemetry_updates().is_empty());
+}
+
+#[test]
+fn client_runtime_coalesces_pending_playback_telemetry_to_latest_values() {
+    let player = RecordingPlayer {
+        pending_playback_telemetry_update: Some(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(true)
+                .with_position_seconds(10.0),
+        ),
+        ..RecordingPlayer::default()
+    };
+    let mut runtime = ClientRuntime::new(
+        ClientSession::default(),
+        player,
+        QueuedRuntimeControl::default(),
+    );
+    runtime.sync_player_playback_telemetry_into_session_and_buffer();
+    runtime.player_mut().pending_playback_telemetry_update = Some(
+        PlayerPlaybackTelemetryUpdate::default()
+            .with_position_seconds(20.0)
+            .with_playback_rate(1.25),
+    );
+    runtime.sync_player_playback_telemetry_into_session_and_buffer();
+
+    assert_eq!(
+        runtime.drain_player_playback_telemetry_updates(),
+        vec![PlayerPlaybackTelemetryUpdate {
+            paused: Some(true),
+            position_seconds: Some(20.0),
+            playback_rate: Some(1.25),
+            paused_for_cache: None,
+            cache_buffering_percent: None,
+        }]
+    );
+}
+
+#[test]
+fn client_runtime_playback_telemetry_sink_failure_preserves_latest_update() {
+    let update = PlayerPlaybackTelemetryUpdate::default()
+        .with_paused(true)
+        .with_position_seconds(12.5);
+    let player = RecordingPlayer {
+        pending_playback_telemetry_update: Some(update.clone()),
+        ..RecordingPlayer::default()
+    };
+    let mut runtime = ClientRuntime::new(
+        ClientSession::default(),
+        player,
+        QueuedRuntimeControl::default(),
+    );
+
+    let result = runtime
+        .drain_player_playback_telemetry_updates_to_sink(|_| Err::<(), _>("telemetry sink failed"));
+
+    assert_eq!(result, Err("telemetry sink failed"));
+    assert_eq!(
+        runtime.drain_player_playback_telemetry_updates(),
+        vec![update]
+    );
 }
 
 #[test]
