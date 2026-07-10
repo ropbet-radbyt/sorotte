@@ -1,6 +1,10 @@
 use super::*;
 
 impl ClientSession {
+    pub fn drain_compatibility_fallbacks(&mut self) -> Vec<ClientCompatibilityFallback> {
+        std::mem::take(&mut self.pending_compatibility_fallbacks)
+    }
+
     pub fn username(&self) -> Option<&str> {
         self.model.connection.username.as_deref()
     }
@@ -69,7 +73,7 @@ impl ClientSession {
             .room
             .users
             .get(username)
-            .map(|user| user.has_file)
+            .map(|user| user.file.is_some())
     }
 
     pub fn user_file_name(&self, username: &str) -> Option<&str> {
@@ -77,23 +81,36 @@ impl ClientSession {
             .room
             .users
             .get(username)
-            .and_then(|user| user.file_name.as_deref())
+            .and_then(|user| user.file.as_ref())
+            .and_then(|file| file.name.as_deref())
     }
 
-    pub fn user_file_size(&self, username: &str) -> Option<&Value> {
+    pub fn user_file_size(&self, username: &str) -> Option<&FileSize> {
         self.model
             .room
             .users
             .get(username)
-            .and_then(|user| user.file_size.as_ref())
+            .and_then(|user| user.file.as_ref())
+            .and_then(|file| file.size.as_ref())
     }
 
-    pub fn user_file_duration(&self, username: &str) -> Option<&Value> {
+    pub fn user_file_duration(&self, username: &str) -> Option<f64> {
         self.model
             .room
             .users
             .get(username)
-            .and_then(|user| user.file_duration.as_ref())
+            .and_then(|user| user.file.as_ref())
+            .and_then(|file| file.duration)
+            .map(FileDuration::as_seconds)
+    }
+
+    pub fn user_file_duration_wire(&self, username: &str) -> Option<FileDuration> {
+        self.model
+            .room
+            .users
+            .get(username)
+            .and_then(|user| user.file.as_ref())
+            .and_then(|file| file.duration)
     }
 
     pub fn user_controller(&self, username: &str) -> Option<bool> {
@@ -104,12 +121,12 @@ impl ClientSession {
             .map(|user| user.controller)
     }
 
-    pub fn user_features(&self, username: &str) -> Option<&Value> {
+    pub fn user_capabilities(&self, username: &str) -> Option<&PeerCapabilities> {
         self.model
             .room
             .users
             .get(username)
-            .and_then(|user| user.features.as_ref())
+            .and_then(|user| user.capabilities.as_ref())
     }
 
     pub fn file_differences_for_user(&self, username: &str) -> Option<FileDifferenceSummary> {
@@ -277,17 +294,8 @@ impl ClientSession {
         };
 
         if let Some(username) = self.model.connection.username.clone() {
-            let sanitized_value = Self::value_from_file_payload(&sanitized_payload);
-            let (has_file, file_name, file_size, file_duration, media_match_signature) =
-                Self::list_payload_file_info(Some(&sanitized_value));
-            self.set_user_file_info(
-                &username,
-                has_file,
-                file_name,
-                file_size,
-                file_duration,
-                media_match_signature,
-            );
+            let file = Self::shared_file_from_file_payload(&sanitized_payload);
+            self.set_user_file(&username, file);
         }
 
         let mut actions = vec![ClientRuntimeAction::SetFile {
@@ -697,15 +705,11 @@ impl ClientSession {
             .as_ref()
             .and_then(|view| view.room.as_deref())
             != Some(room_name.as_str());
-        let file_changed = match previous_user_view.as_ref() {
-            Some(previous_user_view) => {
-                previous_user_view.has_file != current_user_view.has_file
-                    || previous_user_view.file_name != current_user_view.file_name
-                    || previous_user_view.file_size != current_user_view.file_size
-                    || previous_user_view.file_duration != current_user_view.file_duration
-            }
-            None => current_user_view.has_file,
-        };
+        let file_changed = previous_user_view
+            .as_ref()
+            .map_or(current_user_view.file.is_some(), |previous_user_view| {
+                previous_user_view.file != current_user_view.file
+            });
 
         if !room_changed && !file_changed {
             return;
@@ -720,14 +724,14 @@ impl ClientSession {
             username,
         );
         let hide_from_osd = !show_on_osd;
-        if current_user_view.has_file {
+        if let Some(file) = current_user_view.file {
             let include_room_addendum = self.model.room.name.as_deref() != Some(room_name.as_str());
             self.pending_user_change_notifications
                 .push(UserChangeNotification::Playing {
                     username: username.to_owned(),
                     room: room_name,
-                    file_name: current_user_view.file_name,
-                    file_duration: current_user_view.file_duration,
+                    file_name: file.name,
+                    file_duration: file.duration.map(FileDuration::as_seconds),
                     include_room_addendum,
                     hide_from_osd,
                 });
@@ -796,15 +800,16 @@ impl ClientSession {
         &self.model.room.media_match_peer_tiers
     }
 
-    pub fn user_media_match_signature(&self, username: &str) -> Option<&Value> {
+    pub fn user_media_match_signature(&self, username: &str) -> Option<&MediaMatchWireSignature> {
         self.model
             .room
             .users
             .get(username)
-            .and_then(|user_view| user_view.media_match_signature.as_ref())
+            .and_then(|user_view| user_view.file.as_ref())
+            .and_then(|file| file.media_match.as_ref())
     }
 
-    pub fn current_room_media_match_signatures(&self) -> Vec<(String, Value)> {
+    pub fn current_room_media_match_signatures(&self) -> Vec<(String, MediaMatchWireSignature)> {
         self.current_room_media_match_peer_file_states()
             .into_iter()
             .filter_map(|state| {
@@ -829,11 +834,18 @@ impl ClientSession {
                 }
                 Some(ClientMediaMatchPeerFileState {
                     username: username.clone(),
-                    has_file: user_view.has_file,
-                    file_name: user_view.file_name.clone(),
-                    file_size: user_view.file_size.clone(),
-                    file_duration: user_view.file_duration.clone(),
-                    media_match_signature: user_view.media_match_signature.clone(),
+                    has_file: user_view.file.is_some(),
+                    file_name: user_view.file.as_ref().and_then(|file| file.name.clone()),
+                    file_size: user_view.file.as_ref().and_then(|file| file.size.clone()),
+                    file_duration: user_view
+                        .file
+                        .as_ref()
+                        .and_then(|file| file.duration)
+                        .map(FileDuration::as_seconds),
+                    media_match_signature: user_view
+                        .file
+                        .as_ref()
+                        .and_then(|file| file.media_match.clone()),
                 })
             })
             .collect()

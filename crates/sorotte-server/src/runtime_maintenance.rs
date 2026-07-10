@@ -533,7 +533,7 @@ impl ServerRuntime {
             if controlled_room && !self.user_is_room_controller(&session.username, room_name) {
                 continue;
             }
-            if !session.file.as_ref().is_some_and(legacy_json_value_truthy) {
+            if session.file.is_none() {
                 continue;
             }
             let Some(position) = self
@@ -787,7 +787,7 @@ impl ServerRuntime {
             .filter(|(_, session)| {
                 session.room == room_name
                     && client_version_meets_minimum(&session.version, LEGACY_CHAT_MIN_VERSION)
-                    && !client_supports_feature(session.features.as_ref(), "setOthersReadiness")
+                    && !session.capabilities.remote_readiness
             })
             .map(|(client_id, _)| client_id.clone())
             .collect()
@@ -815,7 +815,7 @@ impl ServerRuntime {
         self.sessions
             .iter()
             .filter(|(_, session)| {
-                features_include_ui_mode(session.features.as_ref())
+                session.capabilities.ui_mode_advertised
                     && (!self.isolate_rooms
                         || room_name.is_some_and(|room_name| session.room == room_name))
             })
@@ -883,14 +883,11 @@ impl ServerRuntime {
         &self,
         client_id: &str,
         source_client_id: &str,
-        mut file: Value,
+        file: &ServerSharedFile,
     ) -> Value {
-        if (!self.client_session_supports_media_match(client_id) || client_id == source_client_id)
-            && let Some(file_object) = file.as_object_mut()
-        {
-            file_object.remove("mediaMatch");
-        }
-        file
+        file.to_wire_value(
+            self.client_session_supports_media_match(client_id) && client_id != source_client_id,
+        )
     }
 
     pub(crate) fn playlist_change_message_for_client(
@@ -914,13 +911,13 @@ impl ServerRuntime {
     fn client_session_supports_media_match(&self, client_id: &str) -> bool {
         self.sessions
             .get(client_id)
-            .is_some_and(|session| client_supports_media_match(session.features.as_ref()))
+            .is_some_and(|session| session.capabilities.media_match)
     }
 
     fn client_session_supports_sorotte_plex_playlist_uris(&self, client_id: &str) -> bool {
-        self.sessions.get(client_id).is_some_and(|session| {
-            client_supports_sorotte_plex_playlist_uris(session.features.as_ref())
-        })
+        self.sessions
+            .get(client_id)
+            .is_some_and(|session| session.capabilities.plex_playlist_uris)
     }
 
     fn sanitize_list_rooms_snapshot_for_client(
@@ -966,11 +963,11 @@ impl ServerRuntime {
         } else {
             self.list_rooms_snapshot()
         };
-        if client_is_gui_user(
-            self.sessions
-                .get(client_id)
-                .and_then(|session| session.features.as_ref()),
-        ) {
+        if self
+            .sessions
+            .get(client_id)
+            .is_some_and(|session| session.capabilities.is_gui_user())
+        {
             self.add_empty_room_dummy_entries(&mut rooms);
         }
         self.sanitize_list_rooms_snapshot_for_client(client_id, &mut rooms);
@@ -983,14 +980,18 @@ impl ServerRuntime {
             let ready = self.user_ready(&session.username, &session.room);
             let mut entry = ListUserEntry::new()
                 .with_position(0.0)
-                .with_file(session.file.clone().unwrap_or_else(|| json!({})))
+                .with_file(
+                    session
+                        .file
+                        .as_ref()
+                        .map(|file| file.to_wire_value(true))
+                        .unwrap_or_else(|| json!({})),
+                )
                 .with_controller(self.user_is_room_controller(&session.username, &session.room));
             if let Some(ready) = ready {
                 entry = entry.with_is_ready(ready);
             }
-            if let Some(features) = &session.features {
-                entry = entry.with_features(features.clone());
-            }
+            entry = entry.with_features(session.capabilities.to_wire_value());
             rooms
                 .entry(session.room.clone())
                 .or_insert_with(BTreeMap::new)

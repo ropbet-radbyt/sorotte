@@ -4,12 +4,8 @@ use super::*;
 pub struct ClientUserView {
     pub room: Option<String>,
     pub ready: Option<bool>,
-    pub has_file: bool,
-    pub file_name: Option<String>,
-    pub file_size: Option<Value>,
-    pub file_duration: Option<Value>,
-    pub media_match_signature: Option<Value>,
-    pub features: Option<Value>,
+    pub file: Option<SharedFile>,
+    pub capabilities: Option<PeerCapabilities>,
     pub controller: bool,
 }
 
@@ -18,9 +14,9 @@ pub struct ClientMediaMatchPeerFileState {
     pub username: String,
     pub has_file: bool,
     pub file_name: Option<String>,
-    pub file_size: Option<Value>,
-    pub file_duration: Option<Value>,
-    pub media_match_signature: Option<Value>,
+    pub file_size: Option<FileSize>,
+    pub file_duration: Option<f64>,
+    pub media_match_signature: Option<MediaMatchWireSignature>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

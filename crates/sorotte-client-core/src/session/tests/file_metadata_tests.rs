@@ -1,4 +1,5 @@
 use super::*;
+use crate::FileSize;
 
 #[test]
 fn is_playing_music_uses_current_user_file_extension() {
@@ -445,10 +446,10 @@ fn local_file_publish_runtime_actions_apply_privacy_and_update_local_user_file_v
     assert_eq!(session.user_has_file("alice"), Some(true));
     assert_eq!(session.user_file_name("alice"), Some("a9858cb4803c"));
     assert_eq!(
-        session.user_file_size("alice"),
-        Some(&json!("15e2b0d3c338"))
+        session.user_file_size("alice").map(FileSize::to_json_value),
+        Some(json!("15e2b0d3c338"))
     );
-    assert_eq!(session.user_file_duration("alice"), Some(&json!(95.5)));
+    assert_eq!(session.user_file_duration("alice"), Some(95.5));
 }
 
 #[test]
@@ -519,8 +520,11 @@ fn client_runtime_publish_local_file_dispatches_sanitized_set_file_message() {
         session.user_file_name("alice"),
         Some(PRIVACY_HIDDEN_FILENAME)
     );
-    assert_eq!(session.user_file_size("alice"), Some(&json!(0)));
-    assert_eq!(session.user_file_duration("alice"), Some(&json!(95.5)));
+    assert_eq!(
+        session.user_file_size("alice").map(FileSize::to_json_value),
+        Some(json!(0))
+    );
+    assert_eq!(session.user_file_duration("alice"), Some(95.5));
 
     assert_eq!(control.outbound_messages().len(), 2);
     let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
@@ -581,8 +585,11 @@ fn client_runtime_publish_pending_local_file_update_dispatches_sanitized_set_fil
     assert_eq!(player.paused, None);
     assert_eq!(session.user_has_file("alice"), Some(true));
     assert_eq!(session.user_file_name("alice"), Some("a9858cb4803c"));
-    assert_eq!(session.user_file_size("alice"), Some(&json!(0)));
-    assert_eq!(session.user_file_duration("alice"), Some(&json!(95.5)));
+    assert_eq!(
+        session.user_file_size("alice").map(FileSize::to_json_value),
+        Some(json!(0))
+    );
+    assert_eq!(session.user_file_duration("alice"), Some(95.5));
 
     assert_eq!(control.outbound_messages().len(), 2);
     let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
@@ -634,10 +641,10 @@ fn client_runtime_publish_pending_local_file_update_without_metadata_uses_legacy
     assert_eq!(session.user_has_file("alice"), Some(true));
     assert_eq!(session.user_file_name("alice"), Some("movie.mkv"));
     assert_eq!(
-        session.user_file_size("alice"),
-        Some(&json!(ClientSession::hash_filesize_for_compare("0")))
+        session.user_file_size("alice").map(FileSize::to_json_value),
+        Some(json!(ClientSession::hash_filesize_for_compare("0")))
     );
-    assert_eq!(session.user_file_duration("alice"), Some(&json!(0.0)));
+    assert_eq!(session.user_file_duration("alice"), Some(0.0));
 
     assert_eq!(control.outbound_messages().len(), 2);
     let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {

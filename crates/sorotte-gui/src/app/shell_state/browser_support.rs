@@ -1,4 +1,4 @@
-use serde_json::Value;
+use sorotte_client_core::FileSize;
 use sorotte_plex::is_plex_playlist_uri;
 
 use super::super::support::normalized_editable_text;
@@ -258,23 +258,19 @@ pub(in crate::app) fn browser_format_time(seconds: f64) -> String {
     }
 }
 
-pub(in crate::app) fn browser_number_from_value(value: &Value) -> Option<f64> {
-    value
-        .as_f64()
-        .or_else(|| value.as_i64().map(|number| number as f64))
-        .or_else(|| value.as_u64().map(|number| number as f64))
-        .or_else(|| value.as_str().and_then(|text| text.parse::<f64>().ok()))
-}
-
-pub(in crate::app) fn browser_format_duration_label(value: Option<&Value>) -> String {
-    let Some(seconds) = value.and_then(browser_number_from_value) else {
+pub(in crate::app) fn browser_format_duration_label(value: Option<f64>) -> String {
+    let Some(seconds) = value else {
         return String::new();
     };
     format!("({})", browser_format_time(seconds))
 }
 
-pub(in crate::app) fn browser_format_size_label(value: Option<&Value>) -> String {
-    let Some(bytes) = value.and_then(browser_number_from_value) else {
+pub(in crate::app) fn browser_format_size_label(value: Option<&FileSize>) -> String {
+    let Some(bytes) = value.and_then(|value| {
+        value
+            .as_f64()
+            .or_else(|| value.display_value().parse::<f64>().ok())
+    }) else {
         return String::new();
     };
     if bytes <= 0.0 {

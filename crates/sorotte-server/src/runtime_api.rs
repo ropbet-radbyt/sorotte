@@ -53,6 +53,7 @@ impl ServerRuntime {
             persistence_events,
             persistence_degraded_worker_count: Arc::new(AtomicUsize::new(0)),
             permanent_rooms: BTreeSet::new(),
+            pending_compatibility_fallbacks: Vec::new(),
         }
     }
 
@@ -259,6 +260,10 @@ impl ServerRuntime {
 
     pub fn session(&self, client_id: &str) -> Option<&ServerSession> {
         self.sessions.get(client_id)
+    }
+
+    pub fn drain_compatibility_fallbacks(&mut self) -> Vec<ServerCompatibilityFallback> {
+        std::mem::take(&mut self.pending_compatibility_fallbacks)
     }
 
     pub fn tls_cert_path(&self) -> Option<PathBuf> {

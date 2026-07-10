@@ -299,6 +299,93 @@ fn set_features_updates_list_snapshot_features() {
         rooms["room1"]["alice"].features.as_ref(),
         Some(&json!({"uiMode":"GUI","chat":false}))
     );
+    let capabilities = &runtime
+        .session("client-1")
+        .expect("session should remain registered")
+        .capabilities;
+    assert_eq!(capabilities.ui_mode.as_deref(), Some("GUI"));
+    assert!(!capabilities.chat);
+}
+
+#[test]
+fn set_features_normalizes_empty_objects_and_rejects_invalid_updates() {
+    let mut runtime = ServerRuntime::default();
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255","features":{"chat":true}}}"#,
+        )
+        .expect("alice hello should establish session");
+    let _ = runtime.drain_compatibility_fallbacks();
+
+    runtime
+        .handle_line("client-1", r#"{"Set":{"features":{}}}"#)
+        .expect("empty feature object should be accepted");
+    assert!(
+        !runtime
+            .session("client-1")
+            .expect("session should remain registered")
+            .capabilities
+            .chat,
+        "an explicit empty feature object disables advertised capabilities"
+    );
+
+    runtime
+        .handle_line("client-1", r#"{"Set":{"features":[]}}"#)
+        .expect("invalid feature update should use a compatibility fallback");
+    assert!(
+        !runtime
+            .session("client-1")
+            .expect("session should remain registered")
+            .capabilities
+            .chat,
+        "an invalid feature update must not replace the previous capabilities"
+    );
+    assert!(
+        runtime
+            .drain_compatibility_fallbacks()
+            .iter()
+            .any(|fallback| matches!(
+                fallback,
+                crate::ServerCompatibilityFallback::IgnoredInvalidFeatures { .. }
+            ))
+    );
+}
+
+#[test]
+fn invalid_file_extensions_are_dropped_at_the_server_boundary() {
+    let mut runtime = ServerRuntime::default();
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{}}}"#,
+        )
+        .expect("hello should establish session");
+    let _ = runtime.drain_compatibility_fallbacks();
+
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Set":{"file":{"name":"movie.mkv","size":{"nested":true},"mediaMatch":{"schema":3,"profiles":[]},"futureField":{"opaque":true}}}}"#,
+        )
+        .expect("known file fields should still apply");
+
+    let session = runtime
+        .session("client-1")
+        .expect("session should remain registered");
+    let file = session.file.as_ref().expect("file name should be retained");
+    assert_eq!(file.name.as_deref(), Some("movie.mkv"));
+    assert_eq!(file.size, None);
+    assert_eq!(file.media_match, None);
+    let fallbacks = runtime.drain_compatibility_fallbacks();
+    assert!(fallbacks.iter().any(|fallback| matches!(
+        fallback,
+        crate::ServerCompatibilityFallback::IgnoredInvalidFileSize { .. }
+    )));
+    assert!(fallbacks.iter().any(|fallback| matches!(
+        fallback,
+        crate::ServerCompatibilityFallback::IgnoredInvalidMediaMatch { .. }
+    )));
 }
 
 #[test]

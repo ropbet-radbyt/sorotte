@@ -626,9 +626,13 @@ impl ClientSession {
 
     pub fn apply_hello_json(&mut self, json_line: &str) -> Result<(), ProtocolError> {
         let message = decode_message_line(json_line)?;
-        let hello = extract_hello_from_message(message)?;
-        self.apply_hello(hello);
-        Ok(())
+        if !matches!(message, ProtocolMessage::Hello(_)) {
+            return Err(ProtocolError::UnexpectedMessageKind {
+                expected: "Hello",
+                found: message.kind(),
+            });
+        }
+        self.apply_protocol_message(message)
     }
 
     pub fn apply_protocol_message(
@@ -651,24 +655,22 @@ impl ClientSession {
         message: ProtocolMessage,
         now_seconds: Option<f64>,
     ) -> Result<(), ProtocolError> {
-        match message {
-            ProtocolMessage::Hello(hello_message) => self.apply_hello(hello_message.hello),
-            ProtocolMessage::Set(set_message) => self.apply_set(set_message.set, now_seconds),
-            ProtocolMessage::List(list_message) => self.apply_list(list_message.list),
-            ProtocolMessage::State(state_message) => {
-                self.apply_state_at(state_message.state, now_seconds)
+        let normalized = normalize_client_protocol_message(message);
+        self.pending_compatibility_fallbacks
+            .extend(normalized.fallbacks);
+        match normalized.command {
+            ClientInboundCommand::Hello(hello) => self.apply_hello(hello),
+            ClientInboundCommand::Set(commands) => self.apply_set(commands, now_seconds),
+            ClientInboundCommand::List(rooms) => self.apply_list(rooms),
+            ClientInboundCommand::State(state) => self.apply_state_at(state, now_seconds),
+            ClientInboundCommand::Chat(notification) => self.apply_chat(notification),
+            ClientInboundCommand::ServerError(message) => {
+                return Err(ProtocolError::ServerError { message });
             }
-            ProtocolMessage::Chat(chat_message) => self.apply_chat(chat_message.chat),
-            ProtocolMessage::Error(error_message) => {
-                return Err(ProtocolError::ServerError {
-                    message: error_message.error.message,
-                });
+            ClientInboundCommand::UnexpectedTls(start_tls) => {
+                return Err(ProtocolError::UnexpectedTlsMessage { start_tls });
             }
-            ProtocolMessage::Tls(tls_message) => {
-                return Err(ProtocolError::UnexpectedTlsMessage {
-                    start_tls: tls_message.tls.start_tls,
-                });
-            }
+            ClientInboundCommand::Ignore => {}
         }
         Ok(())
     }

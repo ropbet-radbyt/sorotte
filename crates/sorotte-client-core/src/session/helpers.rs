@@ -4,7 +4,7 @@ impl ClientSession {
     pub(super) fn merge_room_playstate(
         &mut self,
         room_name: String,
-        playstate: PlaystatePayload,
+        playstate: ClientPlaystate,
         updated_at_seconds: f64,
     ) {
         let room_key = room_name.clone();
@@ -23,7 +23,7 @@ impl ClientSession {
             .insert(room_key, updated_at_seconds);
     }
 
-    pub(super) fn apply_inbound_ignore_counters(&mut self, state_payload: &StatePayload) {
+    pub(super) fn apply_inbound_ignore_counters(&mut self, state_payload: &ClientStateUpdate) {
         let Some(ignore) = state_payload.ignoring_on_the_fly.as_ref() else {
             return;
         };
@@ -319,29 +319,8 @@ impl ClientSession {
     }
 
     pub(super) fn user_ready_with_file(user_view: &ClientUserView) -> Option<bool> {
-        if !user_view.has_file {
-            return None;
-        }
+        user_view.file.as_ref()?;
         user_view.ready
-    }
-
-    pub(super) fn legacy_json_value_truthy(value: &Value) -> bool {
-        match value {
-            Value::Null => false,
-            Value::Bool(flag) => *flag,
-            Value::Number(number) => {
-                if let Some(signed) = number.as_i64() {
-                    signed != 0
-                } else if let Some(unsigned) = number.as_u64() {
-                    unsigned != 0
-                } else {
-                    number.as_f64().is_some_and(|float| float != 0.0)
-                }
-            }
-            Value::String(text) => !text.is_empty(),
-            Value::Array(items) => !items.is_empty(),
-            Value::Object(entries) => !entries.is_empty(),
-        }
     }
 
     pub(super) fn all_users_in_current_room_ready(&self) -> bool {
@@ -404,8 +383,9 @@ impl ClientSession {
                 return true;
             }
             if user_view
-                .file_name
-                .as_deref()
+                .file
+                .as_ref()
+                .and_then(|file| file.name.as_deref())
                 .is_some_and(|other_file_name| {
                     Self::same_filename_legacy_like(local_file_name, other_file_name)
                 })
@@ -537,39 +517,15 @@ impl ClientSession {
         }
     }
 
-    pub(super) fn set_user_file_info(
-        &mut self,
-        username: &str,
-        has_file: bool,
-        file_name: Option<String>,
-        file_size: Option<Value>,
-        file_duration: Option<Value>,
-        media_match_signature: Option<Value>,
-    ) {
+    pub(super) fn set_user_file(&mut self, username: &str, file: Option<SharedFile>) {
         let user_view = self
             .model
             .room
             .users
             .entry(username.to_owned())
             .or_default();
-        let next_file_name = if has_file { file_name } else { None };
-        let next_file_size = if has_file { file_size } else { None };
-        let next_file_duration = if has_file { file_duration } else { None };
-        let next_media_match_signature = if has_file {
-            media_match_signature
-        } else {
-            None
-        };
-        let file_changed = user_view.has_file != has_file
-            || user_view.file_name != next_file_name
-            || user_view.file_size != next_file_size
-            || user_view.file_duration != next_file_duration
-            || user_view.media_match_signature != next_media_match_signature;
-        user_view.has_file = has_file;
-        user_view.file_name = next_file_name;
-        user_view.file_size = next_file_size;
-        user_view.file_duration = next_file_duration;
-        user_view.media_match_signature = next_media_match_signature;
+        let file_changed = user_view.file != file;
+        user_view.file = file;
         if file_changed {
             if self.model.connection.username.as_deref() == Some(username) {
                 self.model.room.media_match_peer_tiers.clear();
@@ -589,14 +545,18 @@ impl ClientSession {
         user_view.controller = controller;
     }
 
-    pub(super) fn set_user_features(&mut self, username: &str, features: Option<Value>) {
+    pub(super) fn set_user_capabilities(
+        &mut self,
+        username: &str,
+        capabilities: Option<PeerCapabilities>,
+    ) {
         let user_view = self
             .model
             .room
             .users
             .entry(username.to_owned())
             .or_default();
-        user_view.features = features;
+        user_view.capabilities = capabilities;
     }
 
     pub(super) fn remove_user(&mut self, username: &str) {

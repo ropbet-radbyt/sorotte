@@ -5,7 +5,7 @@ use md5::Md5;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use sorotte_core::SyncDomain;
-use sorotte_media_match::{MEDIA_MATCH_FILE_PAYLOAD_KEY, MediaMatchTier};
+use sorotte_media_match::{MEDIA_MATCH_FILE_PAYLOAD_KEY, MediaMatchTier, MediaMatchWireSignature};
 use sorotte_player_api::{
     LocalFileUpdate, PlayerAdapter, PlayerError, PlayerPlaybackTelemetryUpdate,
 };
@@ -14,7 +14,7 @@ use sorotte_protocol::{
     PingPayload, PlaylistIndexPayload, PlaystatePayload, ProtocolError, ProtocolMessage,
     ReadyPayload, RoomRef, SOROTTE_PLEX_PLAYLIST_URIS_FEATURE, SetPayload, StatePayload,
     canonical_playlist_files_from_change, decode_message_line, decode_message_line_items,
-    encode_message_line, extract_hello_from_message, playlist_change_with_plex_sidecar,
+    encode_message_line, playlist_change_with_plex_sidecar,
 };
 
 const SEEK_THRESHOLD_SECONDS: f64 = 1.0;
@@ -82,6 +82,7 @@ pub fn legacy_server_password_token(password: &str) -> String {
 
 mod config;
 mod control;
+mod inbound;
 mod model;
 mod notifications;
 mod outbox;
@@ -98,6 +99,13 @@ pub use self::config::{
 };
 pub use self::control::{
     ClientEffect, ClientEffectError, ClientEffectSink, ClientRuntimeAction, QueuedRuntimeControl,
+};
+pub use self::inbound::{
+    ClientCompatibilityFallback, FileDuration, FileSize, PeerCapabilities, SharedFile,
+};
+pub(crate) use self::inbound::{
+    ClientHello, ClientInboundCommand, ClientListUser, ClientPlaystate, ClientSetCommand,
+    ClientStateUpdate, normalize_client_protocol_message, normalize_client_state_payload,
 };
 pub use self::model::{
     ClientEvent, ClientModel, ConnectionPhase, ConnectionState, ControllerState, PlaybackSyncState,

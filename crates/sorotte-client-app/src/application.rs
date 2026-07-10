@@ -3,8 +3,8 @@ pub use sorotte_client_core::ConnectionPhase;
 use sorotte_client_core::{
     AutoplayCountdownNotification, ChatNotification, ClientEffect, ClientEffectError,
     ClientPlayerIo, ClientRuntime, ClientSession, ClientSessionUpdate,
-    ControlledRoomCreationNotification, ControllerAuthTransitionNotification, PrivacyMode,
-    QueuedRuntimeControl, ReconnectStateRestoreCorrectionMetrics,
+    ControlledRoomCreationNotification, ControllerAuthTransitionNotification, FileSize,
+    PrivacyMode, QueuedRuntimeControl, ReconnectStateRestoreCorrectionMetrics,
     ReconnectStateRestoreCorrectionStateSnapshot, ReconnectTransitionNotification,
     RoomPlaystateView, UserChangeNotification,
 };
@@ -344,8 +344,8 @@ where
         }
         let mut session_file =
             sorotte_player_api::LocalFileUpdate::new(session.user_file_name(username)?.to_owned());
-        session_file.duration_seconds = session.user_file_duration(username).and_then(value_as_f64);
-        session_file.size_bytes = session.user_file_size(username).and_then(value_as_u64);
+        session_file.duration_seconds = session.user_file_duration(username);
+        session_file.size_bytes = session.user_file_size(username).and_then(FileSize::as_u64);
         let mut file = self
             .runtime
             .last_local_file_update()
@@ -1136,19 +1136,6 @@ fn plex_cache_save_error_if_changed(
             .err()
             .map(|error| format!("failed to save Plex match cache: {error}"))
     })
-}
-
-fn value_as_f64(value: &Value) -> Option<f64> {
-    value
-        .as_f64()
-        .or_else(|| value.as_str().and_then(|value| value.parse::<f64>().ok()))
-        .filter(|value| value.is_finite())
-}
-
-fn value_as_u64(value: &Value) -> Option<u64> {
-    value
-        .as_u64()
-        .or_else(|| value.as_str().and_then(|value| value.parse::<u64>().ok()))
 }
 
 fn protocol_player_error(error: ProtocolError) -> PlayerError {

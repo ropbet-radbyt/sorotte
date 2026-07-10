@@ -30,7 +30,7 @@ use sorotte_client_core::{
     ReadinessAutoplayConfig, RoomPlaylistView, RoomPlaystateView, SYNCPLAY_COMPAT_VERSION_LEGACY,
     SYNCPLAY_WIRE_VERSION_LEGACY, SessionBehaviorConfig, legacy_server_password_token,
 };
-use sorotte_media_match::MediaMatchTier;
+use sorotte_media_match::{MediaMatchTier, MediaMatchWireSignature};
 use sorotte_player_api::PlayerPlaybackTelemetryUpdate;
 use sorotte_protocol::{
     HelloPayload, ListPayload, ProtocolMessage, decode_message_line_items, encode_message_line,

@@ -710,7 +710,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         Ok(())
     }
 
-    fn current_room_media_match_signatures(&self) -> Vec<(String, Value)> {
+    fn current_room_media_match_signatures(&self) -> Vec<(String, MediaMatchWireSignature)> {
         self.runtime.session().current_room_media_match_signatures()
     }
 

@@ -9,6 +9,7 @@ pub struct ClientSession {
     pending_controlled_room_creation_notifications: Vec<ControlledRoomCreationNotification>,
     pending_controller_auth_notifications: Vec<ControllerAuthTransitionNotification>,
     pending_user_change_notifications: Vec<UserChangeNotification>,
+    pending_compatibility_fallbacks: Vec<ClientCompatibilityFallback>,
 }
 
 #[derive(Debug, Clone)]

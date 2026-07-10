@@ -3518,6 +3518,7 @@ dependencies = [
  "sha1",
  "sha2",
  "sorotte-core",
+ "sorotte-media-match",
  "sorotte-protocol",
  "thiserror 2.0.18",
  "tokio",

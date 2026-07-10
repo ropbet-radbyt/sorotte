@@ -54,8 +54,9 @@ where
         inbound_state: StatePayload,
         dont_slow_down_with_me: bool,
     ) -> bool {
+        let inbound_state = normalize_client_state_payload(inbound_state);
         self.ping_metrics_legacy_compatible
-            .observe_inbound_state(&inbound_state);
+            .observe_normalized_inbound_state(&inbound_state);
         let local_state_change_global_playstate = self
             .adjusted_inbound_playstate_for_local_state_change_legacy_ping_compatible(
                 &inbound_state,
@@ -78,7 +79,7 @@ where
         dont_slow_down_with_me: bool,
     ) -> bool {
         self.run_state_sync_reconcile_with_inbound_state_with_local_state_change_override(
-            inbound_state,
+            normalize_client_state_payload(inbound_state),
             client_latency_calculation,
             client_rtt,
             dont_slow_down_with_me,
@@ -88,7 +89,7 @@ where
 
     pub(crate) fn run_state_sync_reconcile_with_inbound_state_with_local_state_change_override(
         &mut self,
-        inbound_state: StatePayload,
+        inbound_state: ClientStateUpdate,
         client_latency_calculation: f64,
         client_rtt: f64,
         dont_slow_down_with_me: bool,
@@ -114,7 +115,7 @@ where
 
         let outbound_state = self
             .session
-            .reconcile_state_and_build_response_with_local_state_change_override(
+            .reconcile_normalized_state_and_build_response_with_local_state_change_override(
                 inbound_state,
                 local_position,
                 local_paused,
@@ -130,7 +131,7 @@ where
 
     pub(crate) fn adjusted_inbound_playstate_for_local_state_change_legacy_ping_compatible(
         &self,
-        inbound_state: &StatePayload,
+        inbound_state: &ClientStateUpdate,
     ) -> Option<RoomPlaystateView> {
         let playstate = inbound_state.playstate.as_ref()?;
         let mut position = playstate.position;

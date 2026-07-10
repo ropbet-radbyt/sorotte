@@ -21,10 +21,10 @@ use sha1::{Digest, Sha1};
 use sha2::Sha256;
 use sorotte_core::{DomainError, SyncDomain};
 use sorotte_protocol::{
-    ChatPayload, ControllerAuthPayload, DEFAULT_MAX_PROTOCOL_LINE_BYTES, HelloPayload,
+    ChatPayload, ControllerAuthPayload, DEFAULT_MAX_PROTOCOL_LINE_BYTES, FilePayload, HelloPayload,
     IgnoringOnTheFlyPayload, ListPayload, ListUserEntry, NewControlledRoomPayload, PingPayload,
     PlaylistIndexPayload, PlaystatePayload, ProtocolError, ProtocolMessage, ReadyPayload, RoomRef,
-    SOROTTE_PLEX_PLAYLIST_URIS_FEATURE, SetPayload, StatePayload, TlsPayload, UserSetPayload,
+    SOROTTE_PLEX_PLAYLIST_URIS_FEATURE, SetPayload, StatePayload, UserSetPayload,
     canonical_playlist_files_from_change, decode_line, decode_message_line_items,
     encode_message_line, playlist_change_with_plex_sidecar,
 };
@@ -104,6 +104,7 @@ mod app;
 mod auth;
 mod backpressure;
 mod compat;
+mod inbound;
 mod messages;
 mod network;
 mod persistence;
@@ -116,6 +117,7 @@ mod tls;
 pub use actor::{ServerActorError, ServerActorHandle};
 pub use app::ServerApp;
 pub use backpressure::ServerOutboundBackpressureSnapshot;
+pub use inbound::{ServerClientCapabilities, ServerCompatibilityFallback};
 pub use network::{
     run_server_network_loop_until_shutdown, run_server_network_loops_until_shutdown,
 };
@@ -129,6 +131,10 @@ pub(crate) use auth::{
 };
 pub(crate) use backpressure::ServerOutboundBackpressureMetrics;
 pub(crate) use compat::*;
+pub(crate) use inbound::{
+    ServerHelloCommand, ServerInboundCommand, ServerSetCommand, ServerSharedFile,
+    ServerStateCommand, normalize_server_protocol_message,
+};
 pub(crate) use messages::*;
 #[cfg(test)]
 pub(crate) use network::read_network_line_from_stream;
@@ -144,8 +150,8 @@ pub struct ServerSession {
     pub username: String,
     pub room: String,
     pub version: String,
-    pub features: Option<Value>,
-    pub file: Option<Value>,
+    pub capabilities: ServerClientCapabilities,
+    pub(crate) file: Option<ServerSharedFile>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -281,6 +287,7 @@ pub struct ServerRuntime {
     persistence_events: broadcast::Sender<ServerPersistenceEvent>,
     persistence_degraded_worker_count: Arc<AtomicUsize>,
     permanent_rooms: BTreeSet<String>,
+    pending_compatibility_fallbacks: Vec<ServerCompatibilityFallback>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

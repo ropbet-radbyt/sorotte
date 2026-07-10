@@ -1,5 +1,3 @@
-use super::*;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutoplayCountdownNotification {
     pub ready_user_count: usize,
@@ -64,7 +62,7 @@ pub enum ControlledRoomCreationNotification {
     Created { room: String, password: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum UserChangeNotification {
     Joined {
         username: String,
@@ -75,7 +73,7 @@ pub enum UserChangeNotification {
         username: String,
         room: String,
         file_name: Option<String>,
-        file_duration: Option<Value>,
+        file_duration: Option<f64>,
         include_room_addendum: bool,
         hide_from_osd: bool,
     },

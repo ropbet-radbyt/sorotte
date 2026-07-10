@@ -1,4 +1,5 @@
 use super::*;
+use crate::FileSize;
 
 #[test]
 fn connection_phase_transitions_are_explicit_before_hello() {
@@ -410,16 +411,27 @@ fn list_set_and_state_messages_reconcile_client_view() {
     assert_eq!(session.user_room("bob"), Some("room2"));
     assert_eq!(session.user_ready("bob"), Some(true));
     assert_eq!(session.user_file_name("bob"), Some("bob.mp4"));
-    assert_eq!(session.user_file_size("bob"), Some(&json!("15e2b0d3c338")));
-    assert_eq!(session.user_file_duration("bob"), Some(&json!(95.5)));
     assert_eq!(
-        session.user_media_match_signature("bob"),
-        Some(&json!({
-            "schema": "sorotte.mediaMatch.v3",
-            "profiles": [{"profile": "audio-constellation-v3"}]
-        }))
+        session.user_file_size("bob").map(FileSize::to_json_value),
+        Some(json!("15e2b0d3c338"))
     );
-    assert_eq!(session.user_features("bob"), Some(&json!({"uiMode":"GUI"})));
+    assert_eq!(session.user_file_duration("bob"), Some(95.5));
+    assert_eq!(session.user_media_match_signature("bob"), None);
+    assert_eq!(
+        session
+            .user_capabilities("bob")
+            .and_then(|capabilities| capabilities.ui_mode.as_deref()),
+        Some("GUI")
+    );
+    assert!(
+        session
+            .drain_compatibility_fallbacks()
+            .iter()
+            .any(|fallback| matches!(
+                fallback,
+                crate::ClientCompatibilityFallback::IgnoredInvalidMediaMatch { .. }
+            ))
+    );
     assert_eq!(session.user_controller("bob"), Some(true));
 
     session
@@ -432,10 +444,11 @@ fn list_set_and_state_messages_reconcile_client_view() {
             r#"{"Set":{"features":{"username":"bob","features":{"chat":true,"readiness":true}}}}"#,
         )
         .expect("set features update should apply");
-    assert_eq!(
-        session.user_features("bob"),
-        Some(&json!({"chat":true,"readiness":true}))
-    );
+    let bob_capabilities = session
+        .user_capabilities("bob")
+        .expect("typed peer capabilities should apply");
+    assert!(bob_capabilities.chat);
+    assert!(bob_capabilities.readiness);
 
     session
             .apply_message_json(
@@ -450,8 +463,10 @@ fn list_set_and_state_messages_reconcile_client_view() {
     assert_eq!(session.user_file_duration("bob"), None);
     assert_eq!(session.user_media_match_signature("bob"), None);
     assert_eq!(
-        session.user_features("bob"),
-        Some(&json!({"uiMode":"desktop"}))
+        session
+            .user_capabilities("bob")
+            .and_then(|capabilities| capabilities.ui_mode.as_deref()),
+        Some("desktop")
     );
     assert_eq!(session.user_controller("bob"), Some(true));
 
@@ -467,6 +482,48 @@ fn list_set_and_state_messages_reconcile_client_view() {
     assert_eq!(playstate.paused, Some(false));
     assert_eq!(playstate.do_seek, Some(true));
     assert_eq!(playstate.set_by.as_deref(), Some("alice"));
+}
+
+#[test]
+fn set_commands_apply_in_wire_order_after_normalization() {
+    let mut session = ClientSession::default();
+    session
+        .apply_hello_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"initial"},"version":"1.7.5","features":{}}}"#,
+        )
+        .expect("hello should apply");
+
+    session
+        .apply_message_json(
+            r#"{"Set":{"user":{"alice":{"room":{"name":"from-user"}}},"room":{"name":"from-room"}}}"#,
+        )
+        .expect("ordered Set should apply");
+
+    assert_eq!(session.room(), Some("from-room"));
+    assert_eq!(session.user_room("alice"), Some("from-room"));
+}
+
+#[test]
+fn invalid_file_extensions_become_typed_compatibility_fallbacks() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Set":{"user":{"bob":{"file":{"name":"movie.mkv","size":{"nested":true},"mediaMatch":{"schema":"unsupported","profiles":[]}}}}}}"#,
+        )
+        .expect("compatible fields should still apply");
+
+    assert_eq!(session.user_file_name("bob"), Some("movie.mkv"));
+    assert_eq!(session.user_file_size("bob"), None);
+    assert_eq!(session.user_media_match_signature("bob"), None);
+    let fallbacks = session.drain_compatibility_fallbacks();
+    assert!(fallbacks.iter().any(|fallback| matches!(
+        fallback,
+        crate::ClientCompatibilityFallback::IgnoredInvalidFileSize { .. }
+    )));
+    assert!(fallbacks.iter().any(|fallback| matches!(
+        fallback,
+        crate::ClientCompatibilityFallback::IgnoredInvalidMediaMatch { .. }
+    )));
 }
 
 #[test]
@@ -504,8 +561,11 @@ fn set_user_falsy_file_payload_does_not_clear_existing_file() {
             .expect("initial user file should apply");
     assert_eq!(session.user_has_file("bob"), Some(true));
     assert_eq!(session.user_file_name("bob"), Some("bob.mp4"));
-    assert_eq!(session.user_file_size("bob"), Some(&json!(123456789)));
-    assert_eq!(session.user_file_duration("bob"), Some(&json!(95.5)));
+    assert_eq!(
+        session.user_file_size("bob").map(FileSize::to_json_value),
+        Some(json!(123456789))
+    );
+    assert_eq!(session.user_file_duration("bob"), Some(95.5));
 
     session
         .apply_message_json(
@@ -514,8 +574,11 @@ fn set_user_falsy_file_payload_does_not_clear_existing_file() {
         .expect("falsy file payload should be accepted");
     assert_eq!(session.user_has_file("bob"), Some(true));
     assert_eq!(session.user_file_name("bob"), Some("bob.mp4"));
-    assert_eq!(session.user_file_size("bob"), Some(&json!(123456789)));
-    assert_eq!(session.user_file_duration("bob"), Some(&json!(95.5)));
+    assert_eq!(
+        session.user_file_size("bob").map(FileSize::to_json_value),
+        Some(json!(123456789))
+    );
+    assert_eq!(session.user_file_duration("bob"), Some(95.5));
 }
 
 #[test]
@@ -533,8 +596,11 @@ fn list_snapshot_file_payload_can_clear_existing_file_state() {
             .expect("initial user file should apply");
     assert_eq!(session.user_has_file("bob"), Some(true));
     assert_eq!(session.user_file_name("bob"), Some("bob.mp4"));
-    assert_eq!(session.user_file_size("bob"), Some(&json!(123456789)));
-    assert_eq!(session.user_file_duration("bob"), Some(&json!(95.5)));
+    assert_eq!(
+        session.user_file_size("bob").map(FileSize::to_json_value),
+        Some(json!(123456789))
+    );
+    assert_eq!(session.user_file_duration("bob"), Some(95.5));
 
     session
             .apply_message_json(
@@ -564,32 +630,29 @@ fn list_snapshot_file_payload_tracks_mixed_raw_and_hashed_metadata() {
     assert_eq!(session.user_has_file("alice"), Some(true));
     assert_eq!(session.user_file_name("alice"), Some("**Hidden filename**"));
     assert_eq!(
-        session.user_file_size("alice"),
-        Some(&json!("15e2b0d3c338"))
+        session.user_file_size("alice").map(FileSize::to_json_value),
+        Some(json!("15e2b0d3c338"))
     );
-    assert_eq!(session.user_file_duration("alice"), Some(&json!(95)));
+    assert_eq!(session.user_file_duration("alice"), Some(95.0));
 
     assert_eq!(session.user_has_file("bob"), Some(true));
     assert_eq!(session.user_file_name("bob"), Some("movie.mkv"));
-    assert_eq!(session.user_file_size("bob"), Some(&json!(123456789)));
-    assert_eq!(session.user_file_duration("bob"), Some(&json!(95.5)));
     assert_eq!(
-        session.user_media_match_signature("bob"),
-        Some(&json!({
+        session.user_file_size("bob").map(FileSize::to_json_value),
+        Some(json!(123456789))
+    );
+    assert_eq!(session.user_file_duration("bob"), Some(95.5));
+    let signature = session
+        .user_media_match_signature("bob")
+        .expect("valid media signature should be normalized");
+    assert_eq!(
+        serde_json::to_value(signature).expect("signature should serialize"),
+        json!({
             "schema": "sorotte.mediaMatch.v3",
-            "profiles": [{"profile": "audio-constellation-v3", "algorithmVersion": 3}]
-        }))
+            "profiles": [{"profile": "audio-constellation-v3", "algorithmVersion": 3, "durationMs": null, "audio": null}]
+        })
     );
-    assert_eq!(
-        session.current_room_media_match_signatures(),
-        vec![(
-            "bob".to_owned(),
-            json!({
-                "schema": "sorotte.mediaMatch.v3",
-                "profiles": [{"profile": "audio-constellation-v3", "algorithmVersion": 3}]
-            })
-        )]
-    );
+    assert_eq!(session.current_room_media_match_signatures().len(), 1);
 }
 
 #[test]
@@ -605,10 +668,11 @@ fn top_level_set_features_defaults_to_local_user_when_username_is_omitted() {
         .apply_message_json(r#"{"Set":{"features":{"chat":true,"managedRooms":true}}}"#)
         .expect("top-level local feature update should apply");
 
-    assert_eq!(
-        session.user_features("alice"),
-        Some(&json!({"chat":true,"managedRooms":true}))
-    );
+    let capabilities = session
+        .user_capabilities("alice")
+        .expect("typed local capabilities should apply");
+    assert!(capabilities.chat);
+    assert!(capabilities.managed_rooms);
 }
 
 #[test]

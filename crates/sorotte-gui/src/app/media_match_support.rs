@@ -28,10 +28,9 @@ use sorotte_media_match::{
     delete_media_match_v3_file_and_fingerprints, delete_media_match_v3_fingerprints_and_anchors,
     fingerprint_media_file_cancellable_with_report, load_media_match_v3_cache_for_settings,
     load_media_match_v3_record_for_path, media_extraction_settings_hash,
-    media_match_v3_anchor_candidate_paths_with_stats, media_match_wire_signature_from_value,
-    media_match_wire_value_from_records, normalize_media_path, open_media_match_v3_index,
-    rank_media_match_candidates, refresh_anchor_stats_v3, save_media_match_v3_record,
-    summarize_record_v3_diagnostics,
+    media_match_v3_anchor_candidate_paths_with_stats, media_match_wire_value_from_records,
+    normalize_media_path, open_media_match_v3_index, rank_media_match_candidates,
+    refresh_anchor_stats_v3, save_media_match_v3_record, summarize_record_v3_diagnostics,
 };
 
 #[cfg(test)]
@@ -108,7 +107,7 @@ pub(super) struct MediaMatchRemoteCandidateRebuildRequest<'a> {
     pub(super) search_roots: &'a [PathBuf],
     pub(super) candidates: Option<Vec<PathBuf>>,
     pub(super) target_file_name: &'a str,
-    pub(super) media_match_signature: &'a serde_json::Value,
+    pub(super) media_match_signature: &'a sorotte_media_match::MediaMatchWireSignature,
     pub(super) settings: &'a MediaMatchSettings,
     pub(super) tools: &'a MediaMatchToolPaths,
     pub(super) extraction_settings: &'a MediaExtractionSettings,
@@ -1027,7 +1026,7 @@ pub(super) fn rebuild_persisted_media_match_remote_candidates_with_progress_and_
 where
     F: FnMut(MediaMatchToolProgress),
 {
-    let signature = media_match_wire_signature_from_value(request.media_match_signature)?;
+    let signature = request.media_match_signature;
     progress(MediaMatchToolProgress::new(
         "Scanning media-search roots",
         Some(format!("{} roots", request.search_roots.len())),
@@ -1064,7 +1063,7 @@ where
     let mut best_match = best_remote_candidate_match(
         &selected.paths,
         &existing_cache,
-        &signature,
+        signature,
         request.settings,
         request.extraction_settings,
     );
@@ -1126,7 +1125,7 @@ where
                 }
                 let decision = sorotte_media_match::decide_media_match_against_wire_signature(
                     &record,
-                    &signature,
+                    signature,
                     request.settings,
                 );
                 if best_match
@@ -1159,7 +1158,7 @@ where
         best_match = best_remote_candidate_match(
             &selected.paths,
             &next_cache,
-            &signature,
+            signature,
             request.settings,
             request.extraction_settings,
         );
@@ -2296,11 +2295,10 @@ pub(super) fn media_match_cached_probable_candidate_for_remote_signature(
     search_roots: &[PathBuf],
     candidates: Option<&[PathBuf]>,
     target_file_name: &str,
-    media_match_signature: &serde_json::Value,
+    media_match_signature: &sorotte_media_match::MediaMatchWireSignature,
     settings: &MediaMatchSettings,
     extraction_settings: &MediaExtractionSettings,
 ) -> Option<MediaMatchRemoteCandidateMatch> {
-    let signature = media_match_wire_signature_from_value(media_match_signature).ok()?;
     let candidates = candidates
         .map(<[PathBuf]>::to_vec)
         .unwrap_or_else(|| collect_media_match_candidates(search_roots));
@@ -2309,7 +2307,7 @@ pub(super) fn media_match_cached_probable_candidate_for_remote_signature(
     best_remote_candidate_match(
         &selected.paths,
         &cache,
-        &signature,
+        media_match_signature,
         settings,
         extraction_settings,
     )

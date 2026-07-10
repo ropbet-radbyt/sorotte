@@ -14,11 +14,7 @@ impl ClientSession {
             .and_then(|username| self.model.room.users.get(username))
             .map(|user_view| {
                 let ready_snapshot = user_view.ready;
-                let file_snapshot = if user_view.has_file {
-                    Self::file_payload_from_user_view(user_view)
-                } else {
-                    None
-                };
+                let file_snapshot = user_view.file.clone();
                 let controller_snapshot = Some(user_view.controller);
                 (ready_snapshot, file_snapshot, controller_snapshot)
             })
@@ -109,8 +105,8 @@ impl ClientSession {
         client_latency_calculation: f64,
         client_rtt: f64,
     ) -> StatePayload {
-        self.reconcile_state_and_build_response_with_local_state_change_override(
-            inbound_state,
+        self.reconcile_normalized_state_and_build_response_with_local_state_change_override(
+            normalize_client_state_payload(inbound_state),
             local_position,
             local_paused,
             client_latency_calculation,
@@ -121,7 +117,7 @@ impl ClientSession {
 
     pub(crate) fn reconcile_ping_only_state_response(
         &mut self,
-        inbound_state: StatePayload,
+        inbound_state: ClientStateUpdate,
         client_latency_calculation: f64,
         client_rtt: f64,
     ) -> StatePayload {
@@ -132,7 +128,7 @@ impl ClientSession {
             .as_ref()
             .is_some_and(|playstate| playstate.position.is_some() && playstate.paused.is_some());
         if has_playstate_update && self.model.playback.client_ignoring_on_the_fly == 0 {
-            self.apply_state(inbound_state.clone());
+            self.apply_state_at(inbound_state.clone(), None);
         }
 
         let mut ping = PingPayload::new()
@@ -165,9 +161,29 @@ impl ClientSession {
         response
     }
 
+    #[cfg(test)]
     pub(crate) fn reconcile_state_and_build_response_with_local_state_change_override(
         &mut self,
         inbound_state: StatePayload,
+        local_position: f64,
+        local_paused: bool,
+        client_latency_calculation: f64,
+        client_rtt: f64,
+        local_state_change_global_playstate: Option<RoomPlaystateView>,
+    ) -> StatePayload {
+        self.reconcile_normalized_state_and_build_response_with_local_state_change_override(
+            normalize_client_state_payload(inbound_state),
+            local_position,
+            local_paused,
+            client_latency_calculation,
+            client_rtt,
+            local_state_change_global_playstate,
+        )
+    }
+
+    pub(crate) fn reconcile_normalized_state_and_build_response_with_local_state_change_override(
+        &mut self,
+        inbound_state: ClientStateUpdate,
         local_position: f64,
         local_paused: bool,
         client_latency_calculation: f64,
@@ -181,7 +197,7 @@ impl ClientSession {
             .as_ref()
             .is_some_and(|playstate| playstate.position.is_some() && playstate.paused.is_some());
         if has_playstate_update && self.model.playback.client_ignoring_on_the_fly == 0 {
-            self.apply_state(inbound_state.clone());
+            self.apply_state_at(inbound_state.clone(), None);
         }
 
         let mut response = StatePayload::new();

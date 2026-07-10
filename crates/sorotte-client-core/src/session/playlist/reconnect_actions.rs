@@ -124,8 +124,10 @@ impl ClientSession {
             });
         }
 
-        if let Some(file_payload) = self.model.reconnect.file_restore_intent.take() {
-            actions.push(ClientRuntimeAction::SetFile { file: file_payload });
+        if let Some(file) = self.model.reconnect.file_restore_intent.take() {
+            actions.push(ClientRuntimeAction::SetFile {
+                file: Self::file_payload_from_shared_file(&file),
+            });
             actions.push(ClientRuntimeAction::RequestUserList);
         }
 
