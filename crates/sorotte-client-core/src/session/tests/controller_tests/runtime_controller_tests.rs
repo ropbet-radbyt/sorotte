@@ -475,7 +475,11 @@ fn client_runtime_set_room_with_inline_controlled_room_password_canonicalizes_an
 
     let (session, _, control) = runtime.into_parts();
     assert_eq!(
-        session.controlled_room_passwords.get("+room:ABCDEF123456"),
+        session
+            .model
+            .controller
+            .room_passwords
+            .get("+room:ABCDEF123456"),
         Some(&"AB-123-456".to_owned()),
         "inline controlled-room password should be cached for future reidentify flows"
     );
@@ -527,8 +531,9 @@ fn client_runtime_noncontroller_pause_toggle_suppresses_ready_flip_while_recentl
                 r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.7.5"}}"#,
             )
             .expect("hello should apply");
-    session.local_paused = Some(true);
-    session.last_rewound_at_seconds = Some(unix_wall_clock_time_seconds_legacy_compatible());
+    session.model.playback.local_paused = Some(true);
+    session.model.playback.last_rewound_at_seconds =
+        Some(unix_wall_clock_time_seconds_legacy_compatible());
     session
             .apply_message_json(
                 r#"{"State":{"playstate":{"position":5.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
@@ -575,7 +580,7 @@ fn client_runtime_drain_controller_auth_notifications_to_sink_dispatches_callbac
         .run_controller_reidentify_if_needed()
         .expect("controller reidentify should dispatch");
     runtime
-            .session_mut()
+            .session_mut_for_test()
             .apply_message_json(
                 r#"{"Set":{"controllerAuth":{"user":"alice","room":"+room:ABCDEF123456","success":true}}}"#,
             )

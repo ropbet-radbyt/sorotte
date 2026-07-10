@@ -19,16 +19,43 @@ fn reconnect_state_restore_correction_state_snapshot_reports_effective_policy_an
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_retry_adaptive_cycle_budget_min_attempts = 2;
-    session.reconnect_state_restore_validation_pending = true;
-    session.reconnect_state_restore_validation_retry_attempts = 2;
-    session.reconnect_state_restore_validation_retry_cooldown_ticks = 4;
-    session.reconnect_state_restore_validation_mismatch_notified = true;
-    session.reconnect_state_restore_validation_mismatch_seen_in_cycle = true;
-    session.reconnect_state_restore_correction_consecutive_mismatch_cycles = 3;
-    session.reconnect_state_restore_correction_consecutive_retry_exhaustions = 4;
-    session.reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining = 2;
-    session.reconnect_state_restore_correction_recovery_suppressed_this_cycle = true;
-    session.reconnect_state_restore_correction_recovery_reenabled_this_cycle = false;
+    session.model.reconnect.state_restore_validation_pending = true;
+    session
+        .model
+        .reconnect
+        .state_restore_validation_retry_attempts = 2;
+    session
+        .model
+        .reconnect
+        .state_restore_validation_retry_cooldown_ticks = 4;
+    session
+        .model
+        .reconnect
+        .state_restore_validation_mismatch_notified = true;
+    session
+        .model
+        .reconnect
+        .state_restore_validation_mismatch_seen_in_cycle = true;
+    session
+        .model
+        .reconnect
+        .state_restore_correction_consecutive_mismatch_cycles = 3;
+    session
+        .model
+        .reconnect
+        .state_restore_correction_consecutive_retry_exhaustions = 4;
+    session
+        .model
+        .reconnect
+        .state_restore_correction_recovery_cooldown_reconnect_cycles_remaining = 2;
+    session
+        .model
+        .reconnect
+        .state_restore_correction_recovery_suppressed_this_cycle = true;
+    session
+        .model
+        .reconnect
+        .state_restore_correction_recovery_reenabled_this_cycle = false;
 
     let snapshot = session.reconnect_state_restore_correction_state_snapshot();
     assert!(snapshot.validation_pending);
@@ -65,7 +92,7 @@ fn reconnect_state_restore_correction_state_snapshot_reports_effective_policy_an
 fn client_runtime_reconnect_state_restore_validation_metrics_and_state_snapshot_track_retry_and_recovery_progress()
  {
     let mut session = ClientSession::default();
-    session.room = Some("room1".to_owned());
+    session.model.room.name = Some("room1".to_owned());
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_retry_max_attempts = 0;
@@ -75,7 +102,7 @@ fn client_runtime_reconnect_state_restore_validation_metrics_and_state_snapshot_
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles = 1;
-    session.room_playstates.insert(
+    session.model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(120.0),
@@ -83,9 +110,9 @@ fn client_runtime_reconnect_state_restore_validation_metrics_and_state_snapshot_
             ..RoomPlaystateView::default()
         },
     );
-    session.local_paused = Some(true);
-    session.local_position = Some(117.5);
-    session.reconnect_state_restore_validation_pending = true;
+    session.model.playback.local_paused = Some(true);
+    session.model.playback.local_position = Some(117.5);
+    session.model.reconnect.state_restore_validation_pending = true;
     session.begin_reconnect_state_restore_validation_cycle();
 
     let player = RecordingPlayer {
@@ -122,7 +149,7 @@ fn client_runtime_reconnect_state_restore_validation_metrics_and_state_snapshot_
     );
     assert_eq!(snapshot_after_exhaustion.consecutive_retry_exhaustions, 1);
 
-    runtime.session_mut().room_playstates.insert(
+    runtime.session_mut_for_test().model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(130.0),
@@ -130,13 +157,15 @@ fn client_runtime_reconnect_state_restore_validation_metrics_and_state_snapshot_
             ..RoomPlaystateView::default()
         },
     );
-    runtime.session_mut().local_paused = Some(true);
-    runtime.session_mut().local_position = Some(125.0);
+    runtime.session_mut_for_test().model.playback.local_paused = Some(true);
+    runtime.session_mut_for_test().model.playback.local_position = Some(125.0);
     runtime
-        .session_mut()
-        .reconnect_state_restore_validation_pending = true;
+        .session_mut_for_test()
+        .model
+        .reconnect
+        .state_restore_validation_pending = true;
     runtime
-        .session_mut()
+        .session_mut_for_test()
         .begin_reconnect_state_restore_validation_cycle();
     runtime
         .run_reconnect_state_restore_validation_if_needed()
@@ -157,8 +186,8 @@ fn client_runtime_reconnect_state_restore_validation_metrics_and_state_snapshot_
             ]
         );
 
-    runtime.player_mut().fail_set_position = false;
-    runtime.session_mut().room_playstates.insert(
+    runtime.player_mut_for_test().fail_set_position = false;
+    runtime.session_mut_for_test().model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(140.0),
@@ -166,13 +195,15 @@ fn client_runtime_reconnect_state_restore_validation_metrics_and_state_snapshot_
             ..RoomPlaystateView::default()
         },
     );
-    runtime.session_mut().local_paused = Some(true);
-    runtime.session_mut().local_position = Some(135.0);
+    runtime.session_mut_for_test().model.playback.local_paused = Some(true);
+    runtime.session_mut_for_test().model.playback.local_position = Some(135.0);
     runtime
-        .session_mut()
-        .reconnect_state_restore_validation_pending = true;
+        .session_mut_for_test()
+        .model
+        .reconnect
+        .state_restore_validation_pending = true;
     runtime
-        .session_mut()
+        .session_mut_for_test()
         .begin_reconnect_state_restore_validation_cycle();
     runtime
         .run_reconnect_state_restore_validation_if_needed()

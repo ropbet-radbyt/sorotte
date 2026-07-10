@@ -141,6 +141,7 @@ struct RecordingPlayer {
     playback_rate: Option<f64>,
     fail_set_paused: bool,
     fail_set_position: bool,
+    player_effects: Vec<ClientEffect>,
     pending_local_file_update: Option<LocalFileUpdate>,
     pending_playback_telemetry_update: Option<PlayerPlaybackTelemetryUpdate>,
     pending_chat_requests: std::collections::VecDeque<String>,
@@ -152,6 +153,8 @@ impl PlayerAdapter for RecordingPlayer {
     }
 
     fn set_paused(&mut self, paused: bool) -> Result<(), PlayerError> {
+        self.player_effects
+            .push(ClientEffect::SetPlayerPaused(paused));
         if self.fail_set_paused {
             return Err(PlayerError::Unsupported("set_paused_failed"));
         }
@@ -160,6 +163,8 @@ impl PlayerAdapter for RecordingPlayer {
     }
 
     fn set_position(&mut self, position_seconds: f64) -> Result<(), PlayerError> {
+        self.player_effects
+            .push(ClientEffect::SetPlayerPosition(position_seconds));
         if self.fail_set_position {
             return Err(PlayerError::Unsupported("set_position_failed"));
         }
@@ -168,6 +173,8 @@ impl PlayerAdapter for RecordingPlayer {
     }
 
     fn set_playback_rate(&mut self, rate: f64) -> Result<(), PlayerError> {
+        self.player_effects
+            .push(ClientEffect::SetPlayerPlaybackRate(rate));
         self.playback_rate = Some(rate);
         Ok(())
     }
@@ -208,6 +215,15 @@ struct RecordingRuntimeControl {
 impl ClientEffectSink for RecordingRuntimeControl {
     fn emit(&mut self, effect: ClientEffect) -> Result<(), ClientEffectError> {
         match effect {
+            ClientEffect::SetPlayerPaused(_) => {
+                return Err(ClientEffectError::Unsupported("set_player_paused"));
+            }
+            ClientEffect::SetPlayerPosition(_) => {
+                return Err(ClientEffectError::Unsupported("set_player_position"));
+            }
+            ClientEffect::SetPlayerPlaybackRate(_) => {
+                return Err(ClientEffectError::Unsupported("set_player_playback_rate"));
+            }
             ClientEffect::RequestUserList => {}
             ClientEffect::SetRoom(room) => self.room_updates.push(room),
             ClientEffect::SetReady {

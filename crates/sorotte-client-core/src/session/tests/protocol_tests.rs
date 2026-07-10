@@ -9,8 +9,8 @@ fn hello_populates_session_state() {
         )
         .expect("valid hello should parse");
 
-    assert_eq!(session.username.as_deref(), Some("alice"));
-    assert_eq!(session.room.as_deref(), Some("room1"));
+    assert_eq!(session.model.connection.username.as_deref(), Some("alice"));
+    assert_eq!(session.model.room.name.as_deref(), Some("room1"));
 }
 
 #[test]
@@ -343,8 +343,8 @@ fn apply_protocol_message_applies_chat_without_mutating_identity_state() {
     session
         .apply_protocol_message(message)
         .expect("chat protocol message should apply");
-    assert!(session.username.is_none());
-    assert!(session.room.is_none());
+    assert!(session.model.connection.username.is_none());
+    assert!(session.model.room.name.is_none());
     assert_eq!(
         session.runtime_actions_for_chat_notifications_if_needed(),
         vec![ClientRuntimeAction::NotifyChat(ChatNotification::Message {

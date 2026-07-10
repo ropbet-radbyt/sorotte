@@ -7,6 +7,8 @@ mod lifecycle_actions;
 mod local_actions;
 mod queued_control;
 
+pub use accessors::{ClientPlayerIo, ClientSessionUpdate};
+
 #[derive(Debug)]
 pub struct ClientRuntime<P, C> {
     session: ClientSession,

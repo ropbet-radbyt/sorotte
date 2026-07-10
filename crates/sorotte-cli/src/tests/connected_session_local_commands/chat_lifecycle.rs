@@ -352,7 +352,8 @@ async fn connected_client_session_truncates_chat_message_to_session_max_length()
         controlled_room_password_override: None,
     };
     let mut runtime = create_client_runtime(&config);
-    let chat_config = runtime.session_mut().chat_config_mut();
+    let mut session_update = runtime.session_mut();
+    let chat_config = session_update.chat_config_mut();
     chat_config.max_chat_message_length = 5;
     chat_config.apply_server_max_chat_message_length = false;
     let stream = TcpStream::connect(addr)

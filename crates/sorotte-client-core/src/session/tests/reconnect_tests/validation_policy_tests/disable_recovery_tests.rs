@@ -4,7 +4,7 @@ use super::*;
 fn client_runtime_reconnect_disable_after_n_mismatches_notifications_follow_sequence_without_noop_duplicates()
  {
     let mut session = ClientSession::default();
-    session.room = Some("room1".to_owned());
+    session.model.room.name = Some("room1".to_owned());
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_policy_mode_override =
@@ -15,7 +15,7 @@ fn client_runtime_reconnect_disable_after_n_mismatches_notifications_follow_sequ
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles = 1;
-    session.room_playstates.insert(
+    session.model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(120.0),
@@ -23,9 +23,9 @@ fn client_runtime_reconnect_disable_after_n_mismatches_notifications_follow_sequ
             ..RoomPlaystateView::default()
         },
     );
-    session.reconnect_state_restore_validation_pending = true;
-    session.local_paused = Some(true);
-    session.local_position = Some(117.5);
+    session.model.reconnect.state_restore_validation_pending = true;
+    session.model.playback.local_paused = Some(true);
+    session.model.playback.local_position = Some(117.5);
 
     let player = RecordingPlayer::default();
     let control = QueuedRuntimeControl::default();
@@ -49,7 +49,11 @@ fn client_runtime_reconnect_disable_after_n_mismatches_notifications_follow_sequ
     );
     assert_eq!(runtime.player().position, Some(120.0));
     assert!(
-        !runtime.session().reconnect_state_restore_validation_pending,
+        !runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending,
         "first cycle should complete validation after correction"
     );
 
@@ -61,7 +65,7 @@ fn client_runtime_reconnect_disable_after_n_mismatches_notifications_follow_sequ
         "no-op tick after first cycle should not duplicate mismatch notifications"
     );
 
-    runtime.session_mut().room_playstates.insert(
+    runtime.session_mut_for_test().model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(130.0),
@@ -69,13 +73,15 @@ fn client_runtime_reconnect_disable_after_n_mismatches_notifications_follow_sequ
             ..RoomPlaystateView::default()
         },
     );
-    runtime.session_mut().local_paused = Some(true);
-    runtime.session_mut().local_position = Some(125.0);
+    runtime.session_mut_for_test().model.playback.local_paused = Some(true);
+    runtime.session_mut_for_test().model.playback.local_position = Some(125.0);
     runtime
-        .session_mut()
-        .reconnect_state_restore_validation_pending = true;
+        .session_mut_for_test()
+        .model
+        .reconnect
+        .state_restore_validation_pending = true;
     runtime
-        .session_mut()
+        .session_mut_for_test()
         .begin_reconnect_state_restore_validation_cycle();
 
     runtime
@@ -95,13 +101,19 @@ fn client_runtime_reconnect_disable_after_n_mismatches_notifications_follow_sequ
         "disable threshold cycle should not issue a corrective seek"
     );
     assert!(
-        !runtime.session().reconnect_state_restore_validation_pending,
+        !runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending,
         "threshold cycle should clear pending validation"
     );
     assert_eq!(
         runtime
             .session()
-            .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining,
+            .model
+            .reconnect
+            .state_restore_correction_recovery_cooldown_reconnect_cycles_remaining,
         1,
         "disable threshold cycle should activate recovery cooldown"
     );
@@ -114,7 +126,7 @@ fn client_runtime_reconnect_disable_after_n_mismatches_notifications_follow_sequ
         "no-op tick after disable notification should not duplicate notifications"
     );
 
-    runtime.session_mut().room_playstates.insert(
+    runtime.session_mut_for_test().model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(140.0),
@@ -122,13 +134,15 @@ fn client_runtime_reconnect_disable_after_n_mismatches_notifications_follow_sequ
             ..RoomPlaystateView::default()
         },
     );
-    runtime.session_mut().local_paused = Some(true);
-    runtime.session_mut().local_position = Some(135.0);
+    runtime.session_mut_for_test().model.playback.local_paused = Some(true);
+    runtime.session_mut_for_test().model.playback.local_position = Some(135.0);
     runtime
-        .session_mut()
-        .reconnect_state_restore_validation_pending = true;
+        .session_mut_for_test()
+        .model
+        .reconnect
+        .state_restore_validation_pending = true;
     runtime
-        .session_mut()
+        .session_mut_for_test()
         .begin_reconnect_state_restore_validation_cycle();
 
     runtime
@@ -156,7 +170,11 @@ fn client_runtime_reconnect_disable_after_n_mismatches_notifications_follow_sequ
         "suppressed recovery cycle should not issue a corrective seek"
     );
     assert!(
-        !runtime.session().reconnect_state_restore_validation_pending,
+        !runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending,
         "suppressed recovery cycle should clear pending validation"
     );
 
@@ -168,7 +186,7 @@ fn client_runtime_reconnect_disable_after_n_mismatches_notifications_follow_sequ
         "no-op tick after suppressed recovery cycle should not duplicate suppression notifications"
     );
 
-    runtime.session_mut().room_playstates.insert(
+    runtime.session_mut_for_test().model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(150.0),
@@ -176,13 +194,15 @@ fn client_runtime_reconnect_disable_after_n_mismatches_notifications_follow_sequ
             ..RoomPlaystateView::default()
         },
     );
-    runtime.session_mut().local_paused = Some(true);
-    runtime.session_mut().local_position = Some(145.0);
+    runtime.session_mut_for_test().model.playback.local_paused = Some(true);
+    runtime.session_mut_for_test().model.playback.local_position = Some(145.0);
     runtime
-        .session_mut()
-        .reconnect_state_restore_validation_pending = true;
+        .session_mut_for_test()
+        .model
+        .reconnect
+        .state_restore_validation_pending = true;
     runtime
-        .session_mut()
+        .session_mut_for_test()
         .begin_reconnect_state_restore_validation_cycle();
 
     runtime
@@ -204,7 +224,11 @@ fn client_runtime_reconnect_disable_after_n_mismatches_notifications_follow_sequ
         );
     assert_eq!(runtime.player().position, Some(150.0));
     assert!(
-        !runtime.session().reconnect_state_restore_validation_pending,
+        !runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending,
         "re-enabled correction cycle should clear pending validation"
     );
 
@@ -221,7 +245,7 @@ fn client_runtime_reconnect_disable_after_n_mismatches_notifications_follow_sequ
 fn client_runtime_reconnect_state_restore_validation_recovery_cooldown_suppresses_cycle_after_retry_exhaustion_then_reenables()
  {
     let mut session = ClientSession::default();
-    session.room = Some("room1".to_owned());
+    session.model.room.name = Some("room1".to_owned());
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_retry_max_attempts = 0;
@@ -231,7 +255,7 @@ fn client_runtime_reconnect_state_restore_validation_recovery_cooldown_suppresse
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles = 1;
-    session.room_playstates.insert(
+    session.model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(120.0),
@@ -239,9 +263,9 @@ fn client_runtime_reconnect_state_restore_validation_recovery_cooldown_suppresse
             ..RoomPlaystateView::default()
         },
     );
-    session.reconnect_state_restore_validation_pending = true;
-    session.local_paused = Some(true);
-    session.local_position = Some(117.5);
+    session.model.reconnect.state_restore_validation_pending = true;
+    session.model.playback.local_paused = Some(true);
+    session.model.playback.local_position = Some(117.5);
 
     let player = RecordingPlayer {
         fail_set_position: true,
@@ -272,11 +296,13 @@ fn client_runtime_reconnect_state_restore_validation_recovery_cooldown_suppresse
     assert_eq!(
         runtime
             .session()
-            .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining,
+            .model
+            .reconnect
+            .state_restore_correction_recovery_cooldown_reconnect_cycles_remaining,
         1
     );
 
-    runtime.session_mut().room_playstates.insert(
+    runtime.session_mut_for_test().model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(130.0),
@@ -284,13 +310,15 @@ fn client_runtime_reconnect_state_restore_validation_recovery_cooldown_suppresse
             ..RoomPlaystateView::default()
         },
     );
-    runtime.session_mut().local_paused = Some(true);
-    runtime.session_mut().local_position = Some(125.0);
+    runtime.session_mut_for_test().model.playback.local_paused = Some(true);
+    runtime.session_mut_for_test().model.playback.local_position = Some(125.0);
     runtime
-        .session_mut()
-        .reconnect_state_restore_validation_pending = true;
+        .session_mut_for_test()
+        .model
+        .reconnect
+        .state_restore_validation_pending = true;
     runtime
-        .session_mut()
+        .session_mut_for_test()
         .begin_reconnect_state_restore_validation_cycle();
 
     runtime
@@ -313,16 +341,24 @@ fn client_runtime_reconnect_state_restore_validation_recovery_cooldown_suppresse
             "suppressed recovery cycle should emit mismatch visibility but skip corrective actions"
         );
     assert_eq!(runtime.player().position, None);
-    assert!(!runtime.session().reconnect_state_restore_validation_pending);
+    assert!(
+        !runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending
+    );
     assert_eq!(
         runtime
             .session()
-            .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining,
+            .model
+            .reconnect
+            .state_restore_correction_recovery_cooldown_reconnect_cycles_remaining,
         0
     );
 
-    runtime.player_mut().fail_set_position = false;
-    runtime.session_mut().room_playstates.insert(
+    runtime.player_mut_for_test().fail_set_position = false;
+    runtime.session_mut_for_test().model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(140.0),
@@ -330,20 +366,28 @@ fn client_runtime_reconnect_state_restore_validation_recovery_cooldown_suppresse
             ..RoomPlaystateView::default()
         },
     );
-    runtime.session_mut().local_paused = Some(true);
-    runtime.session_mut().local_position = Some(135.0);
+    runtime.session_mut_for_test().model.playback.local_paused = Some(true);
+    runtime.session_mut_for_test().model.playback.local_position = Some(135.0);
     runtime
-        .session_mut()
-        .reconnect_state_restore_validation_pending = true;
+        .session_mut_for_test()
+        .model
+        .reconnect
+        .state_restore_validation_pending = true;
     runtime
-        .session_mut()
+        .session_mut_for_test()
         .begin_reconnect_state_restore_validation_cycle();
 
     runtime
         .run_reconnect_state_restore_validation_if_needed()
         .expect("correction should re-enable after recovery cooldown cycle completes");
     assert_eq!(runtime.player().position, Some(140.0));
-    assert!(!runtime.session().reconnect_state_restore_validation_pending);
+    assert!(
+        !runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending
+    );
     assert_eq!(
             runtime.drain_reconnect_notifications(),
             vec![
@@ -363,7 +407,7 @@ fn client_runtime_reconnect_state_restore_validation_recovery_cooldown_suppresse
 fn client_runtime_reconnect_state_restore_validation_disable_after_n_mismatches_stops_correction_on_threshold()
  {
     let mut session = ClientSession::default();
-    session.room = Some("room1".to_owned());
+    session.model.room.name = Some("room1".to_owned());
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_policy_mode_override =
@@ -371,7 +415,7 @@ fn client_runtime_reconnect_state_restore_validation_disable_after_n_mismatches_
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_disable_after_mismatch_cycles = 2;
-    session.room_playstates.insert(
+    session.model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(120.0),
@@ -379,7 +423,7 @@ fn client_runtime_reconnect_state_restore_validation_disable_after_n_mismatches_
             ..RoomPlaystateView::default()
         },
     );
-    session.reconnect_state_restore_validation_pending = true;
+    session.model.reconnect.state_restore_validation_pending = true;
 
     let player = RecordingPlayer {
         pending_playback_telemetry_update: Some(
@@ -411,11 +455,13 @@ fn client_runtime_reconnect_state_restore_validation_disable_after_n_mismatches_
     assert_eq!(
         runtime
             .session()
-            .reconnect_state_restore_correction_consecutive_mismatch_cycles,
+            .model
+            .reconnect
+            .state_restore_correction_consecutive_mismatch_cycles,
         1
     );
 
-    runtime.session_mut().room_playstates.insert(
+    runtime.session_mut_for_test().model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(130.0),
@@ -424,9 +470,13 @@ fn client_runtime_reconnect_state_restore_validation_disable_after_n_mismatches_
         },
     );
     runtime
-        .session_mut()
-        .reconnect_state_restore_validation_pending = true;
-    runtime.player_mut().pending_playback_telemetry_update = Some(
+        .session_mut_for_test()
+        .model
+        .reconnect
+        .state_restore_validation_pending = true;
+    runtime
+        .player_mut_for_test()
+        .pending_playback_telemetry_update = Some(
         PlayerPlaybackTelemetryUpdate::default()
             .with_paused(true)
             .with_position_seconds(125.0),
@@ -452,11 +502,19 @@ fn client_runtime_reconnect_state_restore_validation_disable_after_n_mismatches_
         Some(120.0),
         "no corrective seek should be issued once disable-after-N-mismatches threshold is reached"
     );
-    assert!(!runtime.session().reconnect_state_restore_validation_pending);
+    assert!(
+        !runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending
+    );
     assert_eq!(
         runtime
             .session()
-            .reconnect_state_restore_correction_consecutive_mismatch_cycles,
+            .model
+            .reconnect
+            .state_restore_correction_consecutive_mismatch_cycles,
         2
     );
 }
@@ -465,7 +523,7 @@ fn client_runtime_reconnect_state_restore_validation_disable_after_n_mismatches_
 fn client_runtime_reconnect_state_restore_validation_disable_after_n_mismatches_decays_counter_after_successful_correction_when_configured()
  {
     let mut session = ClientSession::default();
-    session.room = Some("room1".to_owned());
+    session.model.room.name = Some("room1".to_owned());
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_policy_mode_override =
@@ -476,7 +534,7 @@ fn client_runtime_reconnect_state_restore_validation_disable_after_n_mismatches_
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_disable_after_mismatch_decay_on_success = 1;
-    session.room_playstates.insert(
+    session.model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(120.0),
@@ -484,9 +542,9 @@ fn client_runtime_reconnect_state_restore_validation_disable_after_n_mismatches_
             ..RoomPlaystateView::default()
         },
     );
-    session.local_paused = Some(true);
-    session.local_position = Some(117.5);
-    session.reconnect_state_restore_validation_pending = true;
+    session.model.playback.local_paused = Some(true);
+    session.model.playback.local_position = Some(117.5);
+    session.model.reconnect.state_restore_validation_pending = true;
 
     let player = RecordingPlayer::default();
     let control = QueuedRuntimeControl::default();
@@ -500,7 +558,13 @@ fn client_runtime_reconnect_state_restore_validation_disable_after_n_mismatches_
         Some(120.0),
         "first reconnect mismatch should still auto-correct"
     );
-    assert!(!runtime.session().reconnect_state_restore_validation_pending);
+    assert!(
+        !runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending
+    );
     assert_eq!(
         runtime.drain_reconnect_notifications(),
         vec![
@@ -516,12 +580,14 @@ fn client_runtime_reconnect_state_restore_validation_disable_after_n_mismatches_
     assert_eq!(
         runtime
             .session()
-            .reconnect_state_restore_correction_consecutive_mismatch_cycles,
+            .model
+            .reconnect
+            .state_restore_correction_consecutive_mismatch_cycles,
         0,
         "configured decay-on-success should recover the repeated-mismatch counter after successful correction"
     );
 
-    runtime.session_mut().room_playstates.insert(
+    runtime.session_mut_for_test().model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(130.0),
@@ -529,11 +595,13 @@ fn client_runtime_reconnect_state_restore_validation_disable_after_n_mismatches_
             ..RoomPlaystateView::default()
         },
     );
-    runtime.session_mut().local_paused = Some(true);
-    runtime.session_mut().local_position = Some(125.0);
+    runtime.session_mut_for_test().model.playback.local_paused = Some(true);
+    runtime.session_mut_for_test().model.playback.local_position = Some(125.0);
     runtime
-        .session_mut()
-        .reconnect_state_restore_validation_pending = true;
+        .session_mut_for_test()
+        .model
+        .reconnect
+        .state_restore_validation_pending = true;
 
     runtime
         .run_reconnect_state_restore_validation_if_needed()
@@ -545,7 +613,13 @@ fn client_runtime_reconnect_state_restore_validation_disable_after_n_mismatches_
         Some(130.0),
         "decay-on-success should prevent threshold accumulation across successful correction cycles"
     );
-    assert!(!runtime.session().reconnect_state_restore_validation_pending);
+    assert!(
+        !runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending
+    );
     assert_eq!(
         runtime.drain_reconnect_notifications(),
         vec![
@@ -561,7 +635,9 @@ fn client_runtime_reconnect_state_restore_validation_disable_after_n_mismatches_
     assert_eq!(
         runtime
             .session()
-            .reconnect_state_restore_correction_consecutive_mismatch_cycles,
+            .model
+            .reconnect
+            .state_restore_correction_consecutive_mismatch_cycles,
         0
     );
 }
@@ -570,7 +646,7 @@ fn client_runtime_reconnect_state_restore_validation_disable_after_n_mismatches_
 fn client_runtime_reconnect_state_restore_validation_disable_after_n_mismatches_recovery_cooldown_reenables_correction()
  {
     let mut session = ClientSession::default();
-    session.room = Some("room1".to_owned());
+    session.model.room.name = Some("room1".to_owned());
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_policy_mode_override =
@@ -581,7 +657,7 @@ fn client_runtime_reconnect_state_restore_validation_disable_after_n_mismatches_
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles = 1;
-    session.room_playstates.insert(
+    session.model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(120.0),
@@ -589,9 +665,9 @@ fn client_runtime_reconnect_state_restore_validation_disable_after_n_mismatches_
             ..RoomPlaystateView::default()
         },
     );
-    session.reconnect_state_restore_validation_pending = true;
-    session.local_paused = Some(true);
-    session.local_position = Some(117.5);
+    session.model.reconnect.state_restore_validation_pending = true;
+    session.model.playback.local_paused = Some(true);
+    session.model.playback.local_position = Some(117.5);
 
     let player = RecordingPlayer::default();
     let control = QueuedRuntimeControl::default();
@@ -604,7 +680,9 @@ fn client_runtime_reconnect_state_restore_validation_disable_after_n_mismatches_
     assert_eq!(
         runtime
             .session()
-            .reconnect_state_restore_correction_consecutive_mismatch_cycles,
+            .model
+            .reconnect
+            .state_restore_correction_consecutive_mismatch_cycles,
         1
     );
     assert_eq!(
@@ -620,7 +698,7 @@ fn client_runtime_reconnect_state_restore_validation_disable_after_n_mismatches_
         ]
     );
 
-    runtime.session_mut().room_playstates.insert(
+    runtime.session_mut_for_test().model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(130.0),
@@ -628,13 +706,15 @@ fn client_runtime_reconnect_state_restore_validation_disable_after_n_mismatches_
             ..RoomPlaystateView::default()
         },
     );
-    runtime.session_mut().local_paused = Some(true);
-    runtime.session_mut().local_position = Some(125.0);
+    runtime.session_mut_for_test().model.playback.local_paused = Some(true);
+    runtime.session_mut_for_test().model.playback.local_position = Some(125.0);
     runtime
-        .session_mut()
-        .reconnect_state_restore_validation_pending = true;
+        .session_mut_for_test()
+        .model
+        .reconnect
+        .state_restore_validation_pending = true;
     runtime
-        .session_mut()
+        .session_mut_for_test()
         .begin_reconnect_state_restore_validation_cycle();
 
     runtime
@@ -650,19 +730,23 @@ fn client_runtime_reconnect_state_restore_validation_disable_after_n_mismatches_
     assert_eq!(
         runtime
             .session()
-            .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining,
+            .model
+            .reconnect
+            .state_restore_correction_recovery_cooldown_reconnect_cycles_remaining,
         1
     );
     assert_eq!(
         runtime
             .session()
-            .reconnect_state_restore_correction_consecutive_mismatch_cycles,
+            .model
+            .reconnect
+            .state_restore_correction_consecutive_mismatch_cycles,
         0,
         "disable path should reset mismatch-cycle counter when recovery cooldown is activated"
     );
     assert_eq!(runtime.player().position, Some(120.0));
 
-    runtime.session_mut().room_playstates.insert(
+    runtime.session_mut_for_test().model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(140.0),
@@ -670,13 +754,15 @@ fn client_runtime_reconnect_state_restore_validation_disable_after_n_mismatches_
             ..RoomPlaystateView::default()
         },
     );
-    runtime.session_mut().local_paused = Some(true);
-    runtime.session_mut().local_position = Some(135.0);
+    runtime.session_mut_for_test().model.playback.local_paused = Some(true);
+    runtime.session_mut_for_test().model.playback.local_position = Some(135.0);
     runtime
-        .session_mut()
-        .reconnect_state_restore_validation_pending = true;
+        .session_mut_for_test()
+        .model
+        .reconnect
+        .state_restore_validation_pending = true;
     runtime
-        .session_mut()
+        .session_mut_for_test()
         .begin_reconnect_state_restore_validation_cycle();
 
     runtime
@@ -701,17 +787,21 @@ fn client_runtime_reconnect_state_restore_validation_disable_after_n_mismatches_
     assert_eq!(
         runtime
             .session()
-            .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining,
+            .model
+            .reconnect
+            .state_restore_correction_recovery_cooldown_reconnect_cycles_remaining,
         0
     );
     assert_eq!(
         runtime
             .session()
-            .reconnect_state_restore_correction_consecutive_mismatch_cycles,
+            .model
+            .reconnect
+            .state_restore_correction_consecutive_mismatch_cycles,
         0
     );
 
-    runtime.session_mut().room_playstates.insert(
+    runtime.session_mut_for_test().model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(150.0),
@@ -719,20 +809,28 @@ fn client_runtime_reconnect_state_restore_validation_disable_after_n_mismatches_
             ..RoomPlaystateView::default()
         },
     );
-    runtime.session_mut().local_paused = Some(true);
-    runtime.session_mut().local_position = Some(145.0);
+    runtime.session_mut_for_test().model.playback.local_paused = Some(true);
+    runtime.session_mut_for_test().model.playback.local_position = Some(145.0);
     runtime
-        .session_mut()
-        .reconnect_state_restore_validation_pending = true;
+        .session_mut_for_test()
+        .model
+        .reconnect
+        .state_restore_validation_pending = true;
     runtime
-        .session_mut()
+        .session_mut_for_test()
         .begin_reconnect_state_restore_validation_cycle();
 
     runtime
         .run_reconnect_state_restore_validation_if_needed()
         .expect("correction should re-enable after recovery cooldown cycle");
     assert_eq!(runtime.player().position, Some(150.0));
-    assert!(!runtime.session().reconnect_state_restore_validation_pending);
+    assert!(
+        !runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending
+    );
     assert_eq!(
             runtime.drain_reconnect_notifications(),
             vec![

@@ -82,6 +82,7 @@ pub fn legacy_server_password_token(password: &str) -> String {
 
 mod config;
 mod control;
+mod model;
 mod notifications;
 mod outbox;
 mod ping;
@@ -98,6 +99,10 @@ pub use self::config::{
 pub use self::control::{
     ClientEffect, ClientEffectError, ClientEffectSink, ClientRuntimeAction, QueuedRuntimeControl,
 };
+pub use self::model::{
+    ClientEvent, ClientModel, ConnectionState, ControllerState, PlaybackSyncState, PlaylistState,
+    ReadinessState, ReconnectState, RoomState, ServerCapabilities,
+};
 pub use self::notifications::{
     AutoplayCountdownNotification, ChatNotification, ControlledRoomCreationNotification,
     ControllerAuthTransitionNotification, FileDifferenceSummary, ReconnectPlaylistRestoreIntent,
@@ -105,7 +110,7 @@ pub use self::notifications::{
 };
 pub use self::ping::ClientPingMetricsLegacyCompatible;
 pub(crate) use self::ping::unix_wall_clock_time_seconds_legacy_compatible;
-pub use self::runtime::ClientRuntime;
+pub use self::runtime::{ClientPlayerIo, ClientRuntime, ClientSessionUpdate};
 pub use self::session::ClientSession;
 pub(crate) use self::session::ClientSessionLocalActionSnapshot;
 pub use self::views::{

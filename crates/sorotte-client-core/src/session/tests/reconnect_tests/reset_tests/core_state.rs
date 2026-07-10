@@ -39,7 +39,7 @@ fn reset_sync_state_for_reconnect_clears_sync_runtime_state() {
     );
     assert_eq!(session.local_paused_for_cache(), Some(true));
     assert_eq!(session.local_cache_buffering_percent(), Some(42.5));
-    assert!(session.pending_cache_room_playstate_resync);
+    assert!(session.model.playback.pending_cache_room_playstate_resync);
 
     session
         .apply_message_json_at(
@@ -56,12 +56,12 @@ fn reset_sync_state_for_reconnect_clears_sync_runtime_state() {
     assert!(session.current_room_playstate().is_none());
     let post_reset = session.evaluate_desync_correction(4.0, 0.0, false, false, true);
     assert_eq!(post_reset, DesyncCorrectionAction::None);
-    assert_eq!(session.username.as_deref(), Some("alice"));
-    assert_eq!(session.room.as_deref(), Some("room1"));
+    assert_eq!(session.model.connection.username.as_deref(), Some("alice"));
+    assert_eq!(session.model.room.name.as_deref(), Some("room1"));
     assert!(!session.recently_advanced(11.0));
     assert_eq!(session.local_paused_for_cache(), None);
     assert_eq!(session.local_cache_buffering_percent(), None);
-    assert!(!session.pending_cache_room_playstate_resync);
+    assert!(!session.model.playback.pending_cache_room_playstate_resync);
 }
 
 #[test]
@@ -76,18 +76,18 @@ fn reset_sync_state_for_reconnect_resets_desync_transient_state_before_post_reco
         "initial behind detection should only start the fastforward timer pre-reconnect"
     );
     assert_eq!(
-        session.behind_first_detected_at_seconds,
+        session.model.playback.behind_first_detected_at_seconds,
         Some(0.0),
         "precondition: reconnect reset test should prime fastforward detection timer"
     );
 
     session.reset_sync_state_for_reconnect();
     assert_eq!(
-        session.behind_first_detected_at_seconds, None,
+        session.model.playback.behind_first_detected_at_seconds, None,
         "reconnect reset should clear fastforward detection timer state"
     );
     assert!(
-        !session.speed_changed,
+        !session.model.playback.speed_changed,
         "reconnect reset should clear slowdown state"
     );
 
@@ -104,7 +104,7 @@ fn reset_sync_state_for_reconnect_resets_desync_transient_state_before_post_reco
         "post-reconnect behind detection should restart fresh instead of using stale pre-reconnect timer state"
     );
     assert_eq!(
-        session.behind_first_detected_at_seconds,
+        session.model.playback.behind_first_detected_at_seconds,
         Some(4.0),
         "post-reconnect fastforward timer should start from the new evaluation time"
     );
@@ -122,17 +122,17 @@ fn reset_sync_state_for_reconnect_resets_desync_transient_state_before_post_reco
         "post-reconnect desync evaluation should be able to re-enter slowdown from a cleared state"
     );
     assert!(
-        session.speed_changed,
+        session.model.playback.speed_changed,
         "slowdown action should set speed_changed again after reconnect reset"
     );
 
     session.reset_sync_state_for_reconnect();
     assert_eq!(
-        session.behind_first_detected_at_seconds, None,
+        session.model.playback.behind_first_detected_at_seconds, None,
         "second reconnect reset should clear any restarted fastforward timer state"
     );
     assert!(
-        !session.speed_changed,
+        !session.model.playback.speed_changed,
         "second reconnect reset should clear the re-primed slowdown state"
     );
 

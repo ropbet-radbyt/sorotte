@@ -33,8 +33,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         if let Some(file_name) = self
             .runtime
             .session()
-            .username
-            .as_deref()
+            .username()
             .and_then(|username| self.runtime.session().user_file_name(username))
         {
             let trimmed = file_name.trim();

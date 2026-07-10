@@ -80,10 +80,9 @@ where
         state,
         runtime.session().file_differences_for_current_room(),
     ) {
-        emit_file_difference_notification_to_player_legacy_compatible(
-            runtime.player_mut(),
-            &summary,
-        );
+        runtime.with_player_io(|player| {
+            emit_file_difference_notification_to_player_legacy_compatible(player, &summary);
+        });
         notify(summary.as_str())?;
     }
 

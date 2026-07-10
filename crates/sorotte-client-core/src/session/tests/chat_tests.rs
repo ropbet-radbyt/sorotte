@@ -208,7 +208,7 @@ fn client_runtime_chat_notifications_preserve_mixed_payload_order_across_batches
     assert!(runtime.drain_chat_notifications().is_empty());
 
     runtime
-        .session_mut()
+        .session_mut_for_test()
         .apply_message_json(r#"{"Chat":{"username":"carol","message":"third batch message"}}"#)
         .expect("later object chat should apply");
     runtime
@@ -224,7 +224,7 @@ fn client_runtime_chat_notifications_preserve_mixed_payload_order_across_batches
     );
     assert!(
         runtime
-            .session_mut()
+            .session_mut_for_test()
             .runtime_actions_for_chat_notifications_if_needed()
             .is_empty(),
         "chat notification actions should be fully drained after dispatch"
@@ -252,13 +252,13 @@ fn client_runtime_interleaved_user_change_and_chat_notifications_preserve_order_
     let mut runtime = ClientRuntime::new(session, player, control);
 
     runtime
-        .session_mut()
+        .session_mut_for_test()
         .apply_message_json(
             r#"{"Set":{"user":{"bob":{"room":{"name":"room2"},"controller":true}}}}"#,
         )
         .expect("bob room switch should apply");
     runtime
-        .session_mut()
+        .session_mut_for_test()
         .apply_message_json(r#"{"Chat":{"username":"bob","message":"moved to room2"}}"#)
         .expect("bob chat after room switch should apply");
 
@@ -294,11 +294,11 @@ fn client_runtime_interleaved_user_change_and_chat_notifications_preserve_order_
     assert!(runtime.drain_chat_notifications().is_empty());
 
     runtime
-        .session_mut()
+        .session_mut_for_test()
         .apply_message_json(r#"{"Chat":{"username":"bob","message":"still in room2"}}"#)
         .expect("second bob chat should apply");
     runtime
-        .session_mut()
+        .session_mut_for_test()
         .apply_message_json(
             r#"{"Set":{"user":{"bob":{"room":{"name":"room1"},"controller":true}}}}"#,
         )
@@ -430,7 +430,7 @@ fn client_runtime_send_chat_message_does_not_emit_local_chat_notification_before
     );
 
     runtime
-        .session_mut()
+        .session_mut_for_test()
         .apply_message_json(r#"{"Chat":{"username":"alice","message":"hello room"}}"#)
         .expect("server echo chat should apply");
     runtime
@@ -511,7 +511,7 @@ fn client_runtime_send_chat_message_is_omitted_after_disconnect_until_next_hello
     );
 
     runtime
-            .session_mut()
+            .session_mut_for_test()
             .apply_hello_json(
                 r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
             )

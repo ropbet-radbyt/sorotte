@@ -274,7 +274,9 @@ fn client_runtime_state_sync_heartbeat_reports_room_position_when_dont_slow_down
         .expect("room state should apply");
     let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
     session
-        .room_playstate_updated_at_seconds
+        .model
+        .room
+        .playstate_updated_at_seconds
         .insert("room1".to_owned(), now_seconds - 2.0);
 
     let player = RecordingPlayer {
@@ -340,7 +342,7 @@ fn client_runtime_desync_correction_legacy_ping_forward_delay_compensates_border
         .run_desync_correction_if_needed(0.0, false, false, false)
         .expect("initial behind detection should not fail");
     baseline_runtime
-        .player_mut()
+        .player_mut_for_test()
         .pending_playback_telemetry_update = Some(local_unpaused_telemetry(0.2));
     baseline_runtime
         .run_desync_correction_if_needed(4.0, false, false, false)
@@ -359,7 +361,7 @@ fn client_runtime_desync_correction_legacy_ping_forward_delay_compensates_border
         .run_desync_correction_if_needed(0.0, false, false, false)
         .expect("initial behind detection with forward delay should not fail");
     compensated_runtime
-        .player_mut()
+        .player_mut_for_test()
         .pending_playback_telemetry_update = Some(local_unpaused_telemetry(0.2));
     compensated_runtime
         .run_desync_correction_if_needed(4.0, false, false, false)

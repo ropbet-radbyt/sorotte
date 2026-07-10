@@ -3,14 +3,14 @@ use super::*;
 #[test]
 fn client_runtime_reconnect_state_restore_validation_honors_retry_budget() {
     let mut session = ClientSession::default();
-    session.room = Some("room1".to_owned());
+    session.model.room.name = Some("room1".to_owned());
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_retry_max_attempts = 1;
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_retry_cooldown_ticks = 0;
-    session.room_playstates.insert(
+    session.model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(120.0),
@@ -18,7 +18,7 @@ fn client_runtime_reconnect_state_restore_validation_honors_retry_budget() {
             ..RoomPlaystateView::default()
         },
     );
-    session.reconnect_state_restore_validation_pending = true;
+    session.model.reconnect.state_restore_validation_pending = true;
 
     let player = RecordingPlayer {
         fail_set_position: true,
@@ -35,11 +35,19 @@ fn client_runtime_reconnect_state_restore_validation_honors_retry_budget() {
     runtime
         .run_reconnect_state_restore_validation_if_needed()
         .expect("first correction failure should schedule retry within configured budget");
-    assert!(runtime.session().reconnect_state_restore_validation_pending);
+    assert!(
+        runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending
+    );
     assert_eq!(
         runtime
             .session()
-            .reconnect_state_restore_validation_retry_attempts,
+            .model
+            .reconnect
+            .state_restore_validation_retry_attempts,
         1
     );
     assert_eq!(
@@ -65,7 +73,11 @@ fn client_runtime_reconnect_state_restore_validation_honors_retry_budget() {
         .expect("second failure should give up after configured retry budget");
 
     assert!(
-        !runtime.session().reconnect_state_restore_validation_pending,
+        !runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending,
         "retry budget should clear pending validation after a repeated correction failure"
     );
     assert_eq!(
@@ -88,14 +100,14 @@ fn client_runtime_reconnect_state_restore_validation_honors_retry_budget() {
 #[test]
 fn client_runtime_reconnect_state_restore_validation_honors_custom_retry_cooldown() {
     let mut session = ClientSession::default();
-    session.room = Some("room1".to_owned());
+    session.model.room.name = Some("room1".to_owned());
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_retry_max_attempts = 2;
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_retry_cooldown_ticks = 2;
-    session.room_playstates.insert(
+    session.model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(120.0),
@@ -103,7 +115,7 @@ fn client_runtime_reconnect_state_restore_validation_honors_custom_retry_cooldow
             ..RoomPlaystateView::default()
         },
     );
-    session.reconnect_state_restore_validation_pending = true;
+    session.model.reconnect.state_restore_validation_pending = true;
 
     let player = RecordingPlayer {
         fail_set_position: true,
@@ -123,10 +135,12 @@ fn client_runtime_reconnect_state_restore_validation_honors_custom_retry_cooldow
     assert_eq!(
         runtime
             .session()
-            .reconnect_state_restore_validation_retry_cooldown_ticks,
+            .model
+            .reconnect
+            .state_restore_validation_retry_cooldown_ticks,
         2
     );
-    runtime.player_mut().fail_set_position = false;
+    runtime.player_mut_for_test().fail_set_position = false;
 
     runtime
         .run_reconnect_state_restore_validation_if_needed()
@@ -135,7 +149,9 @@ fn client_runtime_reconnect_state_restore_validation_honors_custom_retry_cooldow
     assert_eq!(
         runtime
             .session()
-            .reconnect_state_restore_validation_retry_cooldown_ticks,
+            .model
+            .reconnect
+            .state_restore_validation_retry_cooldown_ticks,
         1
     );
 
@@ -146,7 +162,9 @@ fn client_runtime_reconnect_state_restore_validation_honors_custom_retry_cooldow
     assert_eq!(
         runtime
             .session()
-            .reconnect_state_restore_validation_retry_cooldown_ticks,
+            .model
+            .reconnect
+            .state_restore_validation_retry_cooldown_ticks,
         0
     );
 
@@ -154,13 +172,19 @@ fn client_runtime_reconnect_state_restore_validation_honors_custom_retry_cooldow
         .run_reconnect_state_restore_validation_if_needed()
         .expect("retry should run after configured cooldown expires");
     assert_eq!(runtime.player().position, Some(120.0));
-    assert!(!runtime.session().reconnect_state_restore_validation_pending);
+    assert!(
+        !runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending
+    );
 }
 
 #[test]
 fn client_runtime_reconnect_state_restore_validation_honors_exponential_retry_backoff_cap() {
     let mut session = ClientSession::default();
-    session.room = Some("room1".to_owned());
+    session.model.room.name = Some("room1".to_owned());
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_retry_max_attempts = 3;
@@ -173,7 +197,7 @@ fn client_runtime_reconnect_state_restore_validation_honors_exponential_retry_ba
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_retry_max_cooldown_ticks = 2;
-    session.room_playstates.insert(
+    session.model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(120.0),
@@ -181,7 +205,7 @@ fn client_runtime_reconnect_state_restore_validation_honors_exponential_retry_ba
             ..RoomPlaystateView::default()
         },
     );
-    session.reconnect_state_restore_validation_pending = true;
+    session.model.reconnect.state_restore_validation_pending = true;
 
     let player = RecordingPlayer {
         fail_set_position: true,
@@ -218,7 +242,9 @@ fn client_runtime_reconnect_state_restore_validation_honors_exponential_retry_ba
     assert_eq!(
         runtime
             .session()
-            .reconnect_state_restore_validation_retry_cooldown_ticks,
+            .model
+            .reconnect
+            .state_restore_validation_retry_cooldown_ticks,
         1
     );
 
@@ -229,7 +255,9 @@ fn client_runtime_reconnect_state_restore_validation_honors_exponential_retry_ba
     assert_eq!(
         runtime
             .session()
-            .reconnect_state_restore_validation_retry_cooldown_ticks,
+            .model
+            .reconnect
+            .state_restore_validation_retry_cooldown_ticks,
         0
     );
 
@@ -249,7 +277,9 @@ fn client_runtime_reconnect_state_restore_validation_honors_exponential_retry_ba
     assert_eq!(
         runtime
             .session()
-            .reconnect_state_restore_validation_retry_cooldown_ticks,
+            .model
+            .reconnect
+            .state_restore_validation_retry_cooldown_ticks,
         2
     );
 
@@ -263,7 +293,9 @@ fn client_runtime_reconnect_state_restore_validation_honors_exponential_retry_ba
     assert_eq!(
         runtime
             .session()
-            .reconnect_state_restore_validation_retry_cooldown_ticks,
+            .model
+            .reconnect
+            .state_restore_validation_retry_cooldown_ticks,
         0
     );
 
@@ -284,7 +316,9 @@ fn client_runtime_reconnect_state_restore_validation_honors_exponential_retry_ba
     assert_eq!(
         runtime
             .session()
-            .reconnect_state_restore_validation_retry_cooldown_ticks,
+            .model
+            .reconnect
+            .state_restore_validation_retry_cooldown_ticks,
         2
     );
 }

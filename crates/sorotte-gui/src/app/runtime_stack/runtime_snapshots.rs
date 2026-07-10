@@ -68,7 +68,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         let trusted_domains = settings.trusted_domains.unwrap_or_default();
         let only_switch_to_trusted_domains =
             settings.only_switch_to_trusted_domains.unwrap_or(true);
-        let local_username = session.username.as_deref();
+        let local_username = session.username();
         let mut users = Vec::new();
         for room_name in session.room_names() {
             for username in session.usernames_in_room(&room_name) {
@@ -173,8 +173,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         snapshot.show_playback_buttons = state.main_window.show_playback_buttons;
         snapshot.show_autoplay_controls = state.main_window.show_autoplay_controls;
         if let Some(room_name) = session
-            .room
-            .as_deref()
+            .room()
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
@@ -272,8 +271,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         let session_room_name = self
             .runtime
             .session()
-            .room
-            .as_deref()
+            .room()
             .map(str::trim)
             .filter(|value| !value.is_empty());
         let managed_rooms_server_supported = self.managed_rooms_server_supported();

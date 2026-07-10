@@ -5,7 +5,7 @@ impl ClientSession {
         &self,
         message: String,
     ) -> Vec<ClientRuntimeAction> {
-        if self.server_chat_supported != Some(true) {
+        if self.model.capabilities.chat != Some(true) {
             return Vec::new();
         }
         if self.chat_config.max_chat_message_length == 0 {
@@ -23,7 +23,9 @@ impl ClientSession {
         &self,
         manually_initiated: bool,
     ) -> Vec<ClientRuntimeAction> {
-        if self.username.is_none() || self.server_readiness_supported != Some(true) {
+        if self.model.connection.username.is_none()
+            || self.model.capabilities.readiness != Some(true)
+        {
             return Vec::new();
         }
         vec![ClientRuntimeAction::SetReady {
@@ -38,11 +40,11 @@ impl ClientSession {
         ready: bool,
         manually_initiated: bool,
     ) -> Vec<ClientRuntimeAction> {
-        if self.username.is_none() {
+        if self.model.connection.username.is_none() {
             return Vec::new();
         }
         if username.is_empty() {
-            if self.server_readiness_supported != Some(true) {
+            if self.model.capabilities.readiness != Some(true) {
                 return Vec::new();
             }
             return vec![ClientRuntimeAction::SetReady {
@@ -50,8 +52,8 @@ impl ClientSession {
                 manually_initiated,
             }];
         }
-        if self.server_readiness_supported != Some(true)
-            || self.server_set_others_readiness_supported != Some(true)
+        if self.model.capabilities.readiness != Some(true)
+            || self.model.capabilities.set_others_readiness != Some(true)
         {
             return Vec::new();
         }
@@ -70,17 +72,17 @@ impl ClientSession {
         room: String,
         password: String,
     ) -> Vec<ClientRuntimeAction> {
-        if self.username.is_none() {
+        if self.model.connection.username.is_none() {
             return Vec::new();
         }
-        if self.server_managed_rooms_supported != Some(true) {
+        if self.model.capabilities.managed_rooms != Some(true) {
             return Vec::new();
         }
         if room.is_empty() {
             return Vec::new();
         }
         let password = Self::normalize_control_password_legacy_compatible(&password);
-        self.last_controller_auth_password_attempt = Some(password.clone());
+        self.model.controller.last_auth_password_attempt = Some(password.clone());
         vec![
             ClientRuntimeAction::NotifyControllerAuthTransition(
                 ControllerAuthTransitionNotification::Attempting { room: room.clone() },
@@ -93,7 +95,7 @@ impl ClientSession {
         &mut self,
         room: String,
     ) -> Vec<ClientRuntimeAction> {
-        if self.server_chat_supported.is_none() {
+        if self.model.capabilities.chat.is_none() {
             return Vec::new();
         }
         let (room, inline_password) =
@@ -105,11 +107,13 @@ impl ClientSession {
             self.remember_control_password_for_room(&room, password);
         }
         let tracked_room = self
+            .model
+            .controller
             .pending_local_room_switch_target
             .as_deref()
-            .or(self.room.as_deref());
+            .or(self.model.room.name.as_deref());
         if tracked_room != Some(room.as_str()) {
-            self.pending_local_room_switch_target = Some(room.clone());
+            self.model.controller.pending_local_room_switch_target = Some(room.clone());
             self.reset_playlist_index_transition_tracking();
         }
         let mut actions = vec![
@@ -118,11 +122,11 @@ impl ClientSession {
         ];
         let controller_password = inline_password
             .filter(|password| !password.is_empty())
-            .or_else(|| self.controlled_room_passwords.get(&room).cloned());
-        if self.server_managed_rooms_supported == Some(true)
+            .or_else(|| self.model.controller.room_passwords.get(&room).cloned());
+        if self.model.capabilities.managed_rooms == Some(true)
             && let Some(password) = controller_password
         {
-            self.last_controller_auth_password_attempt = Some(password.clone());
+            self.model.controller.last_auth_password_attempt = Some(password.clone());
             actions.push(ClientRuntimeAction::NotifyControllerAuthTransition(
                 ControllerAuthTransitionNotification::Attempting { room: room.clone() },
             ));
@@ -132,7 +136,7 @@ impl ClientSession {
     }
 
     pub fn local_room_command_target_with_legacy_fallback(&self, default_room: &str) -> String {
-        let Some(username) = self.username.as_deref() else {
+        let Some(username) = self.model.connection.username.as_deref() else {
             return default_room.to_owned();
         };
         if let Some(room_name) = self
@@ -165,7 +169,7 @@ impl ClientSession {
     }
 
     pub fn runtime_actions_for_local_user_list_request(&self) -> Vec<ClientRuntimeAction> {
-        if self.username.is_none() || self.server_chat_supported.is_none() {
+        if self.model.connection.username.is_none() || self.model.capabilities.chat.is_none() {
             return Vec::new();
         }
         vec![ClientRuntimeAction::RequestUserList]

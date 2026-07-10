@@ -70,6 +70,9 @@ pub enum ClientRuntimeAction {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientEffect {
+    SetPlayerPaused(bool),
+    SetPlayerPosition(f64),
+    SetPlayerPlaybackRate(f64),
     RequestUserList,
     SetRoom(String),
     SetReady {
@@ -299,6 +302,15 @@ impl QueuedRuntimeControl {
 impl ClientEffectSink for QueuedRuntimeControl {
     fn emit(&mut self, effect: ClientEffect) -> Result<(), ClientEffectError> {
         match effect {
+            ClientEffect::SetPlayerPaused(_) => {
+                return Err(ClientEffectError::Unsupported("set_player_paused"));
+            }
+            ClientEffect::SetPlayerPosition(_) => {
+                return Err(ClientEffectError::Unsupported("set_player_position"));
+            }
+            ClientEffect::SetPlayerPlaybackRate(_) => {
+                return Err(ClientEffectError::Unsupported("set_player_playback_rate"));
+            }
             ClientEffect::RequestUserList => self
                 .outbound_messages
                 .push_back(ProtocolMessage::list_request()),

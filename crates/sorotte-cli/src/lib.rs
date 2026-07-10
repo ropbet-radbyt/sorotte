@@ -361,8 +361,8 @@ pub async fn run_sorotte_cli_from_env() -> anyhow::Result<()> {
 
     println!(
         "sorotte-cli bootstrap complete for user {} in room {}",
-        client.username.as_deref().unwrap_or("unknown"),
-        client.room.as_deref().unwrap_or("unknown")
+        client.username().unwrap_or("unknown"),
+        client.room().unwrap_or("unknown")
     );
     Ok(())
 }

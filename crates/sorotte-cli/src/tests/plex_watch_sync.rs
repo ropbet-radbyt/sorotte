@@ -188,11 +188,13 @@ async fn connected_session_reports_plex_timeline_from_player_telemetry() {
     let mut config = test_client_loop_config_with_addr(addr);
     config.max_connected_runtime_seconds = 0.4;
     let mut runtime = create_client_runtime(&config);
-    runtime.player_mut().queue_local_file_update(
-        LocalFileUpdate::new("Movie Name.mkv")
-            .with_duration_seconds(95.5)
-            .with_path("C:/media/Movie Name.mkv"),
-    );
+    runtime.with_player_io(|player| {
+        player.queue_local_file_update(
+            LocalFileUpdate::new("Movie Name.mkv")
+                .with_duration_seconds(95.5)
+                .with_path("C:/media/Movie Name.mkv"),
+        );
+    });
     runtime
         .session_mut()
         .apply_player_playback_telemetry_update(

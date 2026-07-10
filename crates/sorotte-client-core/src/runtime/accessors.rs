@@ -1,6 +1,146 @@
 use super::*;
 use crate::control::client_effect_player_error;
 
+pub struct ClientSessionUpdate<'a> {
+    session: &'a mut ClientSession,
+}
+
+impl<'a> ClientSessionUpdate<'a> {
+    pub fn new(session: &'a mut ClientSession) -> Self {
+        Self { session }
+    }
+
+    pub fn apply_player_playback_telemetry_update(
+        &mut self,
+        update: &PlayerPlaybackTelemetryUpdate,
+    ) {
+        self.session.apply_player_playback_telemetry_update(update);
+    }
+
+    pub fn apply_protocol_message(
+        &mut self,
+        message: ProtocolMessage,
+    ) -> Result<(), ProtocolError> {
+        self.session.apply_protocol_message(message)
+    }
+
+    pub fn apply_protocol_message_at(
+        &mut self,
+        message: ProtocolMessage,
+        now_seconds: f64,
+    ) -> Result<(), ProtocolError> {
+        self.session.apply_protocol_message_at(message, now_seconds)
+    }
+
+    pub fn apply_message_json(&mut self, json_line: &str) -> Result<(), ProtocolError> {
+        self.session.apply_message_json(json_line)
+    }
+
+    pub fn apply_message_json_at(
+        &mut self,
+        json_line: &str,
+        now_seconds: f64,
+    ) -> Result<(), ProtocolError> {
+        self.session.apply_message_json_at(json_line, now_seconds)
+    }
+
+    pub fn clear_server_feature_support_state(&mut self) {
+        self.session.clear_server_feature_support_state();
+    }
+
+    pub fn reset_sync_state_for_reconnect(&mut self) {
+        self.session.reset_sync_state_for_reconnect();
+    }
+
+    pub fn reconnect_policy_mut(&mut self) -> &mut ReconnectPolicyConfig {
+        self.session.reconnect_policy_mut()
+    }
+
+    pub fn behavior_config_mut(&mut self) -> &mut SessionBehaviorConfig {
+        self.session.behavior_config_mut()
+    }
+
+    pub fn desync_config_mut(&mut self) -> &mut DesyncCorrectionConfig {
+        self.session.desync_config_mut()
+    }
+
+    pub fn readiness_autoplay_config_mut(&mut self) -> &mut ReadinessAutoplayConfig {
+        self.session.readiness_autoplay_config_mut()
+    }
+
+    pub fn chat_config_mut(&mut self) -> &mut ChatConfig {
+        self.session.chat_config_mut()
+    }
+
+    pub fn begin_local_playlist_index_reset_intent(
+        &mut self,
+        pause_before_sync: bool,
+        now_seconds: f64,
+    ) {
+        self.session
+            .begin_local_playlist_index_reset_intent(pause_before_sync, now_seconds);
+    }
+
+    pub fn take_pending_playlist_index_reset_intent(&mut self) -> Option<bool> {
+        self.session.take_pending_playlist_index_reset_intent()
+    }
+
+    pub fn runtime_actions_for_desync_correction_against_room_playstate(
+        &mut self,
+        room_playstate: RoomPlaystateView,
+        now_seconds: f64,
+        local_position: f64,
+        local_can_control: bool,
+        dont_slow_down_with_me: bool,
+        speed_supported: bool,
+    ) -> Vec<ClientRuntimeAction> {
+        self.session
+            .runtime_actions_for_desync_correction_against_room_playstate(
+                room_playstate,
+                now_seconds,
+                local_position,
+                local_can_control,
+                dont_slow_down_with_me,
+                speed_supported,
+            )
+    }
+
+    pub fn set_autoplay_enabled(&mut self, enabled: bool) {
+        self.session.set_autoplay_enabled(enabled);
+    }
+
+    pub fn set_media_match_peer_tiers(&mut self, tiers: BTreeMap<String, MediaMatchTier>) {
+        self.session.set_media_match_peer_tiers(tiers);
+    }
+
+    pub fn remember_control_password_for_room(&mut self, room_name: &str, password: &str) {
+        self.session
+            .remember_control_password_for_room(room_name, password);
+    }
+}
+
+pub struct ClientPlayerIo<'a, P> {
+    player: &'a mut P,
+}
+
+impl<P: PlayerAdapter> ClientPlayerIo<'_, P> {
+    pub fn open_file(&mut self, path: &str) -> Result<(), PlayerError> {
+        self.player.open_file(path)
+    }
+
+    pub fn set_paused(&mut self, paused: bool) -> Result<(), PlayerError> {
+        self.player.set_paused(paused)
+    }
+
+    pub fn set_position(&mut self, position_seconds: f64) -> Result<(), PlayerError> {
+        self.player.set_position(position_seconds)
+    }
+
+    pub fn set_playback_rate(&mut self, rate: f64) -> Result<(), PlayerError> {
+        self.player.set_playback_rate(rate)
+    }
+}
+
 impl<P, C> ClientRuntime<P, C>
 where
     P: PlayerAdapter,
@@ -58,12 +198,48 @@ where
         }
     }
 
+    pub(crate) fn run_model_event(&mut self, event: ClientEvent) -> Result<(), PlayerError> {
+        let mut effects = std::collections::VecDeque::from(self.session.model.apply(event));
+        let mut first_error = None;
+        while let Some(effect) = effects.pop_front() {
+            let result = self.execute_client_effect(effect.clone());
+            let feedback = match result {
+                Ok(()) => ClientEvent::EffectSucceeded(effect),
+                Err(error) => {
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                    ClientEvent::EffectFailed(effect)
+                }
+            };
+            effects.extend(self.session.model.apply(feedback));
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+
+    fn execute_client_effect(&mut self, effect: ClientEffect) -> Result<(), PlayerError> {
+        match effect {
+            ClientEffect::SetPlayerPaused(paused) => self.player.set_paused(paused),
+            ClientEffect::SetPlayerPosition(position) => self.player.set_position(position),
+            ClientEffect::SetPlayerPlaybackRate(rate) => self.player.set_playback_rate(rate),
+            control_effect => self
+                .control
+                .emit(control_effect)
+                .map_err(client_effect_player_error),
+        }
+    }
+
     pub fn session(&self) -> &ClientSession {
         &self.session
     }
 
-    pub fn session_mut(&mut self) -> &mut ClientSession {
+    #[cfg(test)]
+    pub(crate) fn session_mut_for_test(&mut self) -> &mut ClientSession {
         &mut self.session
+    }
+
+    pub fn session_mut(&mut self) -> ClientSessionUpdate<'_> {
+        ClientSessionUpdate::new(&mut self.session)
     }
 
     pub fn reconnect_state_restore_correction_metrics(
@@ -83,16 +259,27 @@ where
         &self.control
     }
 
-    pub fn control_mut(&mut self) -> &mut C {
-        &mut self.control
+    pub fn emit_effect(&mut self, effect: ClientEffect) -> Result<(), ClientEffectError> {
+        self.control.emit(effect)
     }
 
     pub fn player(&self) -> &P {
         &self.player
     }
 
-    pub fn player_mut(&mut self) -> &mut P {
+    #[cfg(test)]
+    pub(crate) fn player_mut_for_test(&mut self) -> &mut P {
         &mut self.player
+    }
+
+    pub fn player_mut(&mut self) -> ClientPlayerIo<'_, P> {
+        ClientPlayerIo {
+            player: &mut self.player,
+        }
+    }
+
+    pub fn with_player_io<R>(&mut self, io: impl FnOnce(&mut P) -> R) -> R {
+        io(&mut self.player)
     }
 
     pub fn last_local_file_update(&self) -> Option<&LocalFileUpdate> {

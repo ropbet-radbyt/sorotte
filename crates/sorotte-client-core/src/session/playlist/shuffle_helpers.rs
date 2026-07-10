@@ -11,13 +11,17 @@ impl ClientSession {
             return;
         }
         if self
-            .playlist_undo_snapshots
+            .model
+            .playlist
+            .undo_snapshots
             .get(room_name)
             .is_some_and(|snapshot| snapshot == current_files)
         {
             return;
         }
-        self.playlist_undo_snapshots
+        self.model
+            .playlist
+            .undo_snapshots
             .insert(room_name.to_owned(), current_files.to_vec());
     }
 
@@ -72,12 +76,12 @@ impl ClientSession {
             &b"entire"[..]
         });
         hasher.update((current_index as u64).to_le_bytes());
-        hasher.update(self.playlist_shuffle_nonce.to_le_bytes());
+        hasher.update(self.model.playlist.shuffle_nonce.to_le_bytes());
         for file_name in files {
             hasher.update(file_name.as_bytes());
             hasher.update([0]);
         }
-        self.playlist_shuffle_nonce = self.playlist_shuffle_nonce.wrapping_add(1);
+        self.model.playlist.shuffle_nonce = self.model.playlist.shuffle_nonce.wrapping_add(1);
 
         let digest = hasher.finalize();
         let mut seed_bytes = [0u8; 8];

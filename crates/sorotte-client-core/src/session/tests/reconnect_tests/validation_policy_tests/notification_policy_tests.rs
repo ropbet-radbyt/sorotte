@@ -4,7 +4,7 @@ use super::*;
 fn client_runtime_reconnect_warn_only_on_exhaustion_retry_and_recovery_notifications_follow_policy_specific_sequence()
  {
     let mut session = ClientSession::default();
-    session.room = Some("room1".to_owned());
+    session.model.room.name = Some("room1".to_owned());
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_policy_mode_override =
@@ -18,7 +18,7 @@ fn client_runtime_reconnect_warn_only_on_exhaustion_retry_and_recovery_notificat
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles = 1;
-    session.room_playstates.insert(
+    session.model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(120.0),
@@ -26,9 +26,9 @@ fn client_runtime_reconnect_warn_only_on_exhaustion_retry_and_recovery_notificat
             ..RoomPlaystateView::default()
         },
     );
-    session.reconnect_state_restore_validation_pending = true;
-    session.local_paused = Some(true);
-    session.local_position = Some(117.5);
+    session.model.reconnect.state_restore_validation_pending = true;
+    session.model.playback.local_paused = Some(true);
+    session.model.playback.local_position = Some(117.5);
 
     let player = RecordingPlayer {
         fail_set_position: true,
@@ -43,7 +43,11 @@ fn client_runtime_reconnect_warn_only_on_exhaustion_retry_and_recovery_notificat
             "warn-only-on-exhaustion should attempt correction but suppress early notifications",
         );
     assert!(
-        runtime.session().reconnect_state_restore_validation_pending,
+        runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending,
         "first failure should leave validation pending for retry"
     );
     assert!(
@@ -73,7 +77,11 @@ fn client_runtime_reconnect_warn_only_on_exhaustion_retry_and_recovery_notificat
         "warn-only-on-exhaustion should emit only retries-exhausted on give-up"
     );
     assert!(
-        !runtime.session().reconnect_state_restore_validation_pending,
+        !runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending,
         "retry exhaustion should clear pending validation"
     );
 
@@ -85,7 +93,7 @@ fn client_runtime_reconnect_warn_only_on_exhaustion_retry_and_recovery_notificat
         "post-exhaustion no-op ticks should not duplicate exhaustion warnings"
     );
 
-    runtime.session_mut().room_playstates.insert(
+    runtime.session_mut_for_test().model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(130.0),
@@ -93,13 +101,15 @@ fn client_runtime_reconnect_warn_only_on_exhaustion_retry_and_recovery_notificat
             ..RoomPlaystateView::default()
         },
     );
-    runtime.session_mut().local_paused = Some(true);
-    runtime.session_mut().local_position = Some(125.0);
+    runtime.session_mut_for_test().model.playback.local_paused = Some(true);
+    runtime.session_mut_for_test().model.playback.local_position = Some(125.0);
     runtime
-        .session_mut()
-        .reconnect_state_restore_validation_pending = true;
+        .session_mut_for_test()
+        .model
+        .reconnect
+        .state_restore_validation_pending = true;
     runtime
-        .session_mut()
+        .session_mut_for_test()
         .begin_reconnect_state_restore_validation_cycle();
 
     runtime
@@ -115,7 +125,13 @@ fn client_runtime_reconnect_warn_only_on_exhaustion_retry_and_recovery_notificat
             "warn-only-on-exhaustion should suppress mismatch visibility during recovery cooldown and emit only suppression notice"
         );
     assert_eq!(runtime.player().position, None);
-    assert!(!runtime.session().reconnect_state_restore_validation_pending);
+    assert!(
+        !runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending
+    );
 
     runtime
         .run_reconnect_state_restore_validation_if_needed()
@@ -125,8 +141,8 @@ fn client_runtime_reconnect_warn_only_on_exhaustion_retry_and_recovery_notificat
         "post-suppression no-op ticks should not duplicate suppression notices"
     );
 
-    runtime.player_mut().fail_set_position = false;
-    runtime.session_mut().room_playstates.insert(
+    runtime.player_mut_for_test().fail_set_position = false;
+    runtime.session_mut_for_test().model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(140.0),
@@ -134,13 +150,15 @@ fn client_runtime_reconnect_warn_only_on_exhaustion_retry_and_recovery_notificat
             ..RoomPlaystateView::default()
         },
     );
-    runtime.session_mut().local_paused = Some(true);
-    runtime.session_mut().local_position = Some(135.0);
+    runtime.session_mut_for_test().model.playback.local_paused = Some(true);
+    runtime.session_mut_for_test().model.playback.local_position = Some(135.0);
     runtime
-        .session_mut()
-        .reconnect_state_restore_validation_pending = true;
+        .session_mut_for_test()
+        .model
+        .reconnect
+        .state_restore_validation_pending = true;
     runtime
-        .session_mut()
+        .session_mut_for_test()
         .begin_reconnect_state_restore_validation_cycle();
 
     runtime
@@ -154,7 +172,13 @@ fn client_runtime_reconnect_warn_only_on_exhaustion_retry_and_recovery_notificat
             "warn-only-on-exhaustion should emit only reenabled notification (no mismatch detail) on the recovery re-enable cycle"
         );
     assert_eq!(runtime.player().position, Some(140.0));
-    assert!(!runtime.session().reconnect_state_restore_validation_pending);
+    assert!(
+        !runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending
+    );
 
     runtime
         .run_reconnect_state_restore_validation_if_needed()
@@ -169,7 +193,7 @@ fn client_runtime_reconnect_warn_only_on_exhaustion_retry_and_recovery_notificat
 fn client_runtime_reconnect_notify_only_policy_keeps_retry_and_recovery_notifications_suppressed_across_cycles()
  {
     let mut session = ClientSession::default();
-    session.room = Some("room1".to_owned());
+    session.model.room.name = Some("room1".to_owned());
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_policy_mode_override =
@@ -183,7 +207,7 @@ fn client_runtime_reconnect_notify_only_policy_keeps_retry_and_recovery_notifica
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles = 1;
-    session.room_playstates.insert(
+    session.model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(120.0),
@@ -191,9 +215,9 @@ fn client_runtime_reconnect_notify_only_policy_keeps_retry_and_recovery_notifica
             ..RoomPlaystateView::default()
         },
     );
-    session.reconnect_state_restore_validation_pending = true;
-    session.local_paused = Some(true);
-    session.local_position = Some(117.5);
+    session.model.reconnect.state_restore_validation_pending = true;
+    session.model.playback.local_paused = Some(true);
+    session.model.playback.local_position = Some(117.5);
 
     let player = RecordingPlayer {
         fail_set_position: true,
@@ -219,13 +243,19 @@ fn client_runtime_reconnect_notify_only_policy_keeps_retry_and_recovery_notifica
         "notify-only policy should emit only mismatch details (no retry scheduling)"
     );
     assert!(
-        !runtime.session().reconnect_state_restore_validation_pending,
+        !runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending,
         "notify-only validation should complete in one tick"
     );
     assert_eq!(
         runtime
             .session()
-            .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining,
+            .model
+            .reconnect
+            .state_restore_correction_recovery_cooldown_reconnect_cycles_remaining,
         0,
         "notify-only policy should not activate recovery cooldown state"
     );
@@ -243,7 +273,7 @@ fn client_runtime_reconnect_notify_only_policy_keeps_retry_and_recovery_notifica
         "no-op validation ticks should not synthesize retry/recovery notifications in notify-only mode"
     );
 
-    runtime.session_mut().room_playstates.insert(
+    runtime.session_mut_for_test().model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(130.0),
@@ -251,13 +281,15 @@ fn client_runtime_reconnect_notify_only_policy_keeps_retry_and_recovery_notifica
             ..RoomPlaystateView::default()
         },
     );
-    runtime.session_mut().local_paused = Some(true);
-    runtime.session_mut().local_position = Some(125.0);
+    runtime.session_mut_for_test().model.playback.local_paused = Some(true);
+    runtime.session_mut_for_test().model.playback.local_position = Some(125.0);
     runtime
-        .session_mut()
-        .reconnect_state_restore_validation_pending = true;
+        .session_mut_for_test()
+        .model
+        .reconnect
+        .state_restore_validation_pending = true;
     runtime
-        .session_mut()
+        .session_mut_for_test()
         .begin_reconnect_state_restore_validation_cycle();
 
     runtime
@@ -277,13 +309,19 @@ fn client_runtime_reconnect_notify_only_policy_keeps_retry_and_recovery_notifica
         "notify-only policy should remain mismatch-only on later reconnect validation cycles"
     );
     assert!(
-        !runtime.session().reconnect_state_restore_validation_pending,
+        !runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending,
         "notify-only validation should clear pending state on later cycles too"
     );
     assert_eq!(
         runtime
             .session()
-            .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining,
+            .model
+            .reconnect
+            .state_restore_correction_recovery_cooldown_reconnect_cycles_remaining,
         0,
         "notify-only policy should keep recovery cooldown disabled across cycles"
     );
@@ -305,11 +343,11 @@ fn client_runtime_reconnect_notify_only_policy_keeps_retry_and_recovery_notifica
 #[test]
 fn client_runtime_reconnect_state_restore_validation_notify_only_mode_skips_correction() {
     let mut session = ClientSession::default();
-    session.room = Some("room1".to_owned());
+    session.model.room.name = Some("room1".to_owned());
     session
         .behavior_config_mut()
         .reconnect_state_restore_auto_correct = false;
-    session.room_playstates.insert(
+    session.model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(120.0),
@@ -317,7 +355,7 @@ fn client_runtime_reconnect_state_restore_validation_notify_only_mode_skips_corr
             ..RoomPlaystateView::default()
         },
     );
-    session.reconnect_state_restore_validation_pending = true;
+    session.model.reconnect.state_restore_validation_pending = true;
 
     let player = RecordingPlayer {
         pending_playback_telemetry_update: Some(
@@ -349,18 +387,18 @@ fn client_runtime_reconnect_state_restore_validation_notify_only_mode_skips_corr
     assert_eq!(runtime.player().paused, None);
     assert_eq!(runtime.player().position, None);
     assert_eq!(
-        runtime.session().local_paused,
+        runtime.session().model.playback.local_paused,
         Some(true),
         "notify-only mode should leave telemetry-refreshed local state unchanged"
     );
-    assert_eq!(runtime.session().local_position, Some(117.5));
+    assert_eq!(runtime.session().model.playback.local_position, Some(117.5));
 }
 
 #[test]
 fn client_runtime_reconnect_state_restore_validation_warn_only_on_exhaustion_suppresses_early_notifications()
  {
     let mut session = ClientSession::default();
-    session.room = Some("room1".to_owned());
+    session.model.room.name = Some("room1".to_owned());
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_policy_mode_override =
@@ -371,7 +409,7 @@ fn client_runtime_reconnect_state_restore_validation_warn_only_on_exhaustion_sup
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_retry_cooldown_ticks = 0;
-    session.room_playstates.insert(
+    session.model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(120.0),
@@ -379,7 +417,7 @@ fn client_runtime_reconnect_state_restore_validation_warn_only_on_exhaustion_sup
             ..RoomPlaystateView::default()
         },
     );
-    session.reconnect_state_restore_validation_pending = true;
+    session.model.reconnect.state_restore_validation_pending = true;
 
     let player = RecordingPlayer {
         fail_set_position: true,
@@ -397,11 +435,19 @@ fn client_runtime_reconnect_state_restore_validation_warn_only_on_exhaustion_sup
         .run_reconnect_state_restore_validation_if_needed()
         .expect("warn-only-on-exhaustion policy should still attempt correction");
 
-    assert!(runtime.session().reconnect_state_restore_validation_pending);
+    assert!(
+        runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending
+    );
     assert_eq!(
         runtime
             .session()
-            .reconnect_state_restore_validation_retry_attempts,
+            .model
+            .reconnect
+            .state_restore_validation_retry_attempts,
         1
     );
     assert!(
@@ -413,7 +459,13 @@ fn client_runtime_reconnect_state_restore_validation_warn_only_on_exhaustion_sup
         .run_reconnect_state_restore_validation_if_needed()
         .expect("second failure should exhaust retry budget and emit a single warning");
 
-    assert!(!runtime.session().reconnect_state_restore_validation_pending);
+    assert!(
+        !runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending
+    );
     assert_eq!(
         runtime.drain_reconnect_notifications(),
         vec![

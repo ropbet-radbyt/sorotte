@@ -212,7 +212,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         match self.runtime.run_request_controller_auth(room, password) {
             Ok(true) => Ok(()),
             Ok(false) => {
-                if self.runtime.session().username.is_none() {
+                if self.runtime.session().username().is_none() {
                     Err(
                         "Client-core session runtime cannot request controller access until the server Hello is received."
                             .to_owned(),
@@ -581,7 +581,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn local_username(&self) -> Option<&str> {
-        self.runtime.session().username.as_deref()
+        self.runtime.session().username()
     }
 
     fn server_handshake_completed(&self) -> bool {

@@ -106,10 +106,9 @@ where
     F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
 {
     while let Some(notification) = runtime.pending_autoplay_notification().cloned() {
-        emit_autoplay_countdown_notification_to_player_legacy_compatible(
-            runtime.player_mut(),
-            &notification,
-        );
+        runtime.with_player_io(|player| {
+            emit_autoplay_countdown_notification_to_player_legacy_compatible(player, &notification);
+        });
         notify(&notification)?;
         let acknowledged = runtime.acknowledge_autoplay_notification();
         debug_assert!(acknowledged.is_some());

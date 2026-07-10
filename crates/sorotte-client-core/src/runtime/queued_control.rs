@@ -38,7 +38,7 @@ where
         now_seconds: f64,
         dont_slow_down_with_me: bool,
     ) -> Option<f64> {
-        let local_position = self.session.local_position?;
+        let local_position = self.session.model.playback.local_position?;
         if !dont_slow_down_with_me {
             return Some(local_position);
         }
@@ -99,7 +99,7 @@ where
 
         let (Some(local_position), Some(local_paused)) = (
             self.outbound_state_sync_position_seconds(now_seconds, dont_slow_down_with_me),
-            self.session.local_paused,
+            self.session.model.playback.local_paused,
         ) else {
             let outbound_state = self.session.reconcile_ping_only_state_response(
                 inbound_state,
@@ -170,7 +170,7 @@ where
 
         let outbound_state = if let (Some(local_position), Some(local_paused)) = (
             self.outbound_state_sync_position_seconds(now_seconds, dont_slow_down_with_me),
-            self.session.local_paused,
+            self.session.model.playback.local_paused,
         ) {
             self.session.reconcile_state_and_build_response(
                 StatePayload::new(),

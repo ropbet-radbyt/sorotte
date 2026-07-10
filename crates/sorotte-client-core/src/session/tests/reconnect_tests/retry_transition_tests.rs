@@ -124,7 +124,7 @@ fn reconnect_transition_connected_notification_emits_after_reconnect_hello() {
 fn client_runtime_reconnect_retry_and_recovery_notifications_preserve_sequence_without_noop_duplicates()
  {
     let mut session = ClientSession::default();
-    session.room = Some("room1".to_owned());
+    session.model.room.name = Some("room1".to_owned());
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_retry_max_attempts = 1;
@@ -134,7 +134,7 @@ fn client_runtime_reconnect_retry_and_recovery_notifications_preserve_sequence_w
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles = 1;
-    session.room_playstates.insert(
+    session.model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(120.0),
@@ -142,9 +142,9 @@ fn client_runtime_reconnect_retry_and_recovery_notifications_preserve_sequence_w
             ..RoomPlaystateView::default()
         },
     );
-    session.reconnect_state_restore_validation_pending = true;
-    session.local_paused = Some(true);
-    session.local_position = Some(117.5);
+    session.model.reconnect.state_restore_validation_pending = true;
+    session.model.playback.local_paused = Some(true);
+    session.model.playback.local_position = Some(117.5);
 
     let player = RecordingPlayer {
         fail_set_position: true,
@@ -197,13 +197,19 @@ fn client_runtime_reconnect_retry_and_recovery_notifications_preserve_sequence_w
         "retry exhaustion should emit only give-up notification without repeating mismatch details"
     );
     assert!(
-        !runtime.session().reconnect_state_restore_validation_pending,
+        !runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending,
         "retry exhaustion should clear pending validation"
     );
     assert_eq!(
         runtime
             .session()
-            .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining,
+            .model
+            .reconnect
+            .state_restore_correction_recovery_cooldown_reconnect_cycles_remaining,
         1
     );
 
@@ -215,7 +221,7 @@ fn client_runtime_reconnect_retry_and_recovery_notifications_preserve_sequence_w
         "no-op validation tick after exhaustion should not duplicate reconnect notifications"
     );
 
-    runtime.session_mut().room_playstates.insert(
+    runtime.session_mut_for_test().model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(130.0),
@@ -223,13 +229,15 @@ fn client_runtime_reconnect_retry_and_recovery_notifications_preserve_sequence_w
             ..RoomPlaystateView::default()
         },
     );
-    runtime.session_mut().local_paused = Some(true);
-    runtime.session_mut().local_position = Some(125.0);
+    runtime.session_mut_for_test().model.playback.local_paused = Some(true);
+    runtime.session_mut_for_test().model.playback.local_position = Some(125.0);
     runtime
-        .session_mut()
-        .reconnect_state_restore_validation_pending = true;
+        .session_mut_for_test()
+        .model
+        .reconnect
+        .state_restore_validation_pending = true;
     runtime
-        .session_mut()
+        .session_mut_for_test()
         .begin_reconnect_state_restore_validation_cycle();
 
     runtime
@@ -252,7 +260,11 @@ fn client_runtime_reconnect_retry_and_recovery_notifications_preserve_sequence_w
             "suppressed recovery cycle should emit mismatch then suppression notification"
         );
     assert!(
-        !runtime.session().reconnect_state_restore_validation_pending,
+        !runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending,
         "suppressed cycle should clear pending validation"
     );
 
@@ -264,8 +276,8 @@ fn client_runtime_reconnect_retry_and_recovery_notifications_preserve_sequence_w
         "no-op validation tick after suppressed cycle should not duplicate suppression notifications"
     );
 
-    runtime.player_mut().fail_set_position = false;
-    runtime.session_mut().room_playstates.insert(
+    runtime.player_mut_for_test().fail_set_position = false;
+    runtime.session_mut_for_test().model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(140.0),
@@ -273,13 +285,15 @@ fn client_runtime_reconnect_retry_and_recovery_notifications_preserve_sequence_w
             ..RoomPlaystateView::default()
         },
     );
-    runtime.session_mut().local_paused = Some(true);
-    runtime.session_mut().local_position = Some(135.0);
+    runtime.session_mut_for_test().model.playback.local_paused = Some(true);
+    runtime.session_mut_for_test().model.playback.local_position = Some(135.0);
     runtime
-        .session_mut()
-        .reconnect_state_restore_validation_pending = true;
+        .session_mut_for_test()
+        .model
+        .reconnect
+        .state_restore_validation_pending = true;
     runtime
-        .session_mut()
+        .session_mut_for_test()
         .begin_reconnect_state_restore_validation_cycle();
 
     runtime
@@ -345,7 +359,10 @@ fn client_runtime_flush_helpers_expose_protocol_and_reconnect_intents() {
     assert_eq!(runtime.drain_reconnect_requests(), vec![0.1]);
     assert!(runtime.drain_reconnect_requests().is_empty());
 
-    runtime.session_mut().reconnect_policy_mut().max_retries = 0;
+    runtime
+        .session_mut_for_test()
+        .reconnect_policy_mut()
+        .max_retries = 0;
     runtime
         .run_reconnect_retry(1)
         .expect("terminal reconnect retry should dispatch");
@@ -367,7 +384,10 @@ fn client_runtime_drain_reconnect_intents_dispatches_scheduler_callbacks() {
     runtime
         .run_reconnect_retry(0)
         .expect("retry dispatch should queue reconnect delay");
-    runtime.session_mut().reconnect_policy_mut().max_retries = 0;
+    runtime
+        .session_mut_for_test()
+        .reconnect_policy_mut()
+        .max_retries = 0;
     runtime
         .run_reconnect_retry(1)
         .expect("terminal retry should queue stop intent");
@@ -401,7 +421,7 @@ fn client_runtime_run_reconnect_transition_dispatches_connected_notification() {
         .run_reconnect_retry(0)
         .expect("reconnect retry should dispatch");
     runtime
-        .session_mut()
+        .session_mut_for_test()
         .apply_message_json(
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
         )
@@ -433,7 +453,7 @@ fn client_runtime_drain_reconnect_notifications_to_sink_dispatches_callback() {
         .run_reconnect_retry(0)
         .expect("reconnect retry should dispatch");
     runtime
-        .session_mut()
+        .session_mut_for_test()
         .apply_message_json(
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
         )

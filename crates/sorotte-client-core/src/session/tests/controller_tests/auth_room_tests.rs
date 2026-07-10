@@ -278,7 +278,10 @@ fn new_controlled_room_message_queues_room_switch_and_auth_request() {
             )
             .expect("new controlled room message should apply");
 
-    assert_eq!(session.room.as_deref(), Some("+room:ABCDEF123456"));
+    assert_eq!(
+        session.model.room.name.as_deref(),
+        Some("+room:ABCDEF123456")
+    );
     assert_eq!(session.user_room("alice"), Some("+room:ABCDEF123456"));
     assert_eq!(session.user_controller("alice"), Some(false));
     assert_eq!(session.local_can_control(), Some(false));

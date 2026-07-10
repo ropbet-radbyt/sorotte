@@ -44,7 +44,10 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         };
         let hello_json = Self::hello_json(&username, &room, &runtime_settings);
         let mut session = ClientSession::default();
-        Self::apply_runtime_settings_to_session(&mut session, &runtime_settings, &room);
+        {
+            let mut session_update = ClientSessionUpdate::new(&mut session);
+            Self::apply_runtime_settings_to_session(&mut session_update, &runtime_settings, &room);
+        }
 
         Ok(Self {
             username,
@@ -73,15 +76,20 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         runtime_settings: &StoredClientSettingsRuntimeSnapshot,
     ) {
         self.runtime_settings = runtime_settings.clone();
-        self.username = self.runtime.session().username.clone().unwrap_or_else(|| {
-            self.runtime_settings
-                .settings
-                .username
-                .clone()
-                .unwrap_or_default()
-        });
+        self.username = self
+            .runtime
+            .session()
+            .username()
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                self.runtime_settings
+                    .settings
+                    .username
+                    .clone()
+                    .unwrap_or_default()
+            });
         self.baseline_room = runtime_settings.settings.room.clone().unwrap_or_default();
-        if self.runtime.session().username.is_none() {
+        if self.runtime.session().username().is_none() {
             self.pending_ready_at_start_on_server_hello = true;
             if !self.pending_startup_protocol_lines.is_empty() {
                 let username = self.current_username_for_next_hello();
@@ -96,11 +104,9 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             .dont_slow_down_with_me
             .unwrap_or(false);
         let room = self.current_room_for_runtime_settings_sync();
-        Self::apply_runtime_settings_to_session(
-            self.runtime.session_mut(),
-            &self.runtime_settings,
-            &room,
-        );
+        let runtime_settings = &self.runtime_settings;
+        let mut session_update = self.runtime.session_mut();
+        Self::apply_runtime_settings_to_session(&mut session_update, runtime_settings, &room);
         let (readiness_supported, local_can_control, is_playing_music, recently_advanced) =
             self.autoplay_runtime_flags();
         self.runtime.update_autoplay_check(
@@ -112,7 +118,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn apply_runtime_settings_to_session(
-        session: &mut ClientSession,
+        session: &mut ClientSessionUpdate<'_>,
         runtime_settings: &StoredClientSettingsRuntimeSnapshot,
         room: &str,
     ) {
@@ -276,13 +282,17 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn current_username_for_next_hello(&self) -> String {
-        self.runtime.session().username.clone().unwrap_or_else(|| {
-            self.runtime_settings
-                .settings
-                .username
-                .clone()
-                .unwrap_or_else(|| self.username.clone())
-        })
+        self.runtime
+            .session()
+            .username()
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                self.runtime_settings
+                    .settings
+                    .username
+                    .clone()
+                    .unwrap_or_else(|| self.username.clone())
+            })
     }
 
     fn current_room_for_next_hello(&self) -> String {
@@ -296,8 +306,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     fn local_username_for_authoritative_updates(&self) -> Option<&str> {
         self.runtime
             .session()
-            .username
-            .as_deref()
+            .username()
             .or_else(|| (!self.username.is_empty()).then_some(self.username.as_str()))
     }
 
@@ -326,7 +335,14 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             .unwrap_or_default();
         let room = self.current_room_for_next_hello();
         let mut session = ClientSession::default();
-        Self::apply_runtime_settings_to_session(&mut session, &self.runtime_settings, &room);
+        {
+            let mut session_update = ClientSessionUpdate::new(&mut session);
+            Self::apply_runtime_settings_to_session(
+                &mut session_update,
+                &self.runtime_settings,
+                &room,
+            );
+        }
         self.runtime = ClientRuntime::new(
             session,
             GuiNoopClientRuntimePlayer,
@@ -369,8 +385,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     fn current_room_name(&self) -> Option<&str> {
         self.runtime
             .session()
-            .room
-            .as_deref()
+            .room()
             .filter(|value| !value.is_empty())
     }
 
@@ -671,8 +686,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             }
             ProtocolMessage::Error(error_message) => {
                 self.runtime
-                    .control_mut()
-                    .emit(ClientEffect::StopReconnect)
+                    .emit_effect(ClientEffect::StopReconnect)
                     .map_err(|error| {
                         format!("Client-core stop-reconnect effect failed: {error}")
                     })?;

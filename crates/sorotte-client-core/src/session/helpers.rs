@@ -8,7 +8,7 @@ impl ClientSession {
         updated_at_seconds: f64,
     ) {
         let room_key = room_name.clone();
-        let room_playstate = self.room_playstates.entry(room_name).or_default();
+        let room_playstate = self.model.room.playstates.entry(room_name).or_default();
         if let Some(position) = playstate.position {
             room_playstate.position = Some(position);
         }
@@ -17,7 +17,9 @@ impl ClientSession {
         }
         room_playstate.do_seek = Some(playstate.do_seek.unwrap_or(false));
         room_playstate.set_by = playstate.set_by;
-        self.room_playstate_updated_at_seconds
+        self.model
+            .room
+            .playstate_updated_at_seconds
             .insert(room_key, updated_at_seconds);
     }
 
@@ -27,12 +29,12 @@ impl ClientSession {
         };
 
         if let Some(server) = ignore.server {
-            self.server_ignoring_on_the_fly = server;
-            self.client_ignoring_on_the_fly = 0;
+            self.model.playback.server_ignoring_on_the_fly = server;
+            self.model.playback.client_ignoring_on_the_fly = 0;
         } else if let Some(client) = ignore.client
-            && client == self.client_ignoring_on_the_fly
+            && client == self.model.playback.client_ignoring_on_the_fly
         {
-            self.client_ignoring_on_the_fly = 0;
+            self.model.playback.client_ignoring_on_the_fly = 0;
         }
     }
 
@@ -42,11 +44,13 @@ impl ClientSession {
     }
 
     pub(super) fn effective_local_paused_state(&self, now_seconds: f64) -> bool {
-        if self.local_paused_for_cache == Some(true) {
+        if self.model.playback.local_paused_for_cache == Some(true) {
             return true;
         }
 
-        self.local_paused
+        self.model
+            .playback
+            .local_paused
             .or_else(|| {
                 self.current_room_playstate_at(now_seconds)
                     .and_then(|playstate| playstate.paused)
@@ -55,14 +59,14 @@ impl ClientSession {
     }
 
     pub(super) fn shared_playlist_runtime_commands_allowed_legacy_compatible(&self) -> bool {
-        self.server_chat_supported.is_some()
-            && self.username.is_some()
-            && self.room.is_some()
-            && self.server_shared_playlists_supported != Some(false)
+        self.model.capabilities.chat.is_some()
+            && self.model.connection.username.is_some()
+            && self.model.room.name.is_some()
+            && self.model.capabilities.shared_playlists != Some(false)
     }
 
     pub(super) fn apply_local_ready_state_optimistically(&mut self, ready: bool) {
-        let Some(username) = self.username.clone() else {
+        let Some(username) = self.model.connection.username.clone() else {
             return;
         };
         self.set_user_ready_state(&username, Some(ready));
@@ -73,7 +77,7 @@ impl ClientSession {
         paused: bool,
         now_seconds: f64,
     ) -> Vec<ClientRuntimeAction> {
-        if self.local_paused_for_cache == Some(true) && !paused {
+        if self.model.playback.local_paused_for_cache == Some(true) && !paused {
             return Vec::new();
         }
 
@@ -82,8 +86,10 @@ impl ClientSession {
             return Vec::new();
         }
 
-        if self.username.is_none() || self.server_readiness_supported != Some(true) {
-            self.local_paused = Some(paused);
+        if self.model.connection.username.is_none()
+            || self.model.capabilities.readiness != Some(true)
+        {
+            self.model.playback.local_paused = Some(paused);
             return vec![ClientRuntimeAction::SetPaused(paused)];
         }
 
@@ -96,7 +102,7 @@ impl ClientSession {
             .unwrap_or(true);
 
         if !local_can_control {
-            self.local_paused = Some(global_paused);
+            self.model.playback.local_paused = Some(global_paused);
             let mut actions = Vec::new();
             if effective_paused != global_paused {
                 actions.push(ClientRuntimeAction::SetPaused(global_paused));
@@ -116,12 +122,12 @@ impl ClientSession {
         }
 
         if is_playing_music && recently_advanced {
-            self.local_paused = Some(paused);
+            self.model.playback.local_paused = Some(paused);
             return vec![ClientRuntimeAction::SetPaused(paused)];
         }
 
         if paused {
-            self.local_paused = Some(true);
+            self.model.playback.local_paused = Some(true);
             let mut actions = vec![ClientRuntimeAction::SetPaused(true)];
             if self.local_user_ready() {
                 self.apply_local_ready_state_optimistically(false);
@@ -135,7 +141,7 @@ impl ClientSession {
 
         let instaplay = self.instaplay_conditions_met(local_can_control, is_playing_music);
         if !instaplay {
-            self.local_paused = Some(true);
+            self.model.playback.local_paused = Some(true);
             let mut actions = vec![ClientRuntimeAction::SetPaused(true)];
             if !self.local_user_ready() {
                 self.apply_local_ready_state_optimistically(true);
@@ -147,18 +153,21 @@ impl ClientSession {
             return actions;
         }
 
-        if let Some(last_paused_on_leave_at_seconds) = self.last_paused_on_leave_at_seconds
+        if let Some(last_paused_on_leave_at_seconds) =
+            self.model.playback.last_paused_on_leave_at_seconds
             && now_seconds - last_paused_on_leave_at_seconds
                 < self
-                    .readiness_autoplay_config
+                    .model
+                    .readiness
+                    .config
                     .last_paused_diff_threshold_seconds
         {
-            self.last_paused_on_leave_at_seconds = None;
-            self.local_paused = Some(false);
+            self.model.playback.last_paused_on_leave_at_seconds = None;
+            self.model.playback.local_paused = Some(false);
             return vec![ClientRuntimeAction::SetPaused(false)];
         }
 
-        self.local_paused = Some(false);
+        self.model.playback.local_paused = Some(false);
         let mut actions = vec![ClientRuntimeAction::SetPaused(false)];
         if !self.local_user_ready() {
             self.apply_local_ready_state_optimistically(true);
@@ -200,8 +209,12 @@ impl ClientSession {
             .as_ref()
             .and_then(|playstate| playstate.position)
             .unwrap_or(0.0);
-        let player_paused = self.local_paused.unwrap_or(global_paused);
-        let player_position = self.local_position.unwrap_or(global_position);
+        let player_paused = self.model.playback.local_paused.unwrap_or(global_paused);
+        let player_position = self
+            .model
+            .playback
+            .local_position
+            .unwrap_or(global_position);
 
         let pause_change = player_paused != local_paused && global_paused != local_paused;
         let seeked = (player_position - local_position).abs() > SEEK_THRESHOLD_SECONDS
@@ -210,8 +223,8 @@ impl ClientSession {
     }
 
     pub(super) fn local_username_and_room(&self) -> Option<(&str, &str)> {
-        let local_username = self.username.as_deref()?;
-        let local_room = self.room.as_deref()?;
+        let local_username = self.model.connection.username.as_deref()?;
+        let local_room = self.model.room.name.as_deref()?;
         Some((local_username, local_room))
     }
 
@@ -220,7 +233,7 @@ impl ClientSession {
             return false;
         };
 
-        self.user_views.iter().any(|(username, user_view)| {
+        self.model.room.users.iter().any(|(username, user_view)| {
             username != local_username && user_view.room.as_deref() == Some(local_room)
         })
     }
@@ -230,7 +243,7 @@ impl ClientSession {
         playstate: &RoomPlaystateView,
     ) -> bool {
         match playstate.set_by.as_deref() {
-            Some(set_by) => self.username.as_deref() != Some(set_by),
+            Some(set_by) => self.model.connection.username.as_deref() != Some(set_by),
             None => self.current_room_has_other_users(),
         }
     }
@@ -240,20 +253,28 @@ impl ClientSession {
         room_name: Option<&str>,
     ) -> bool {
         let tracked_room = self
+            .model
+            .controller
             .pending_local_room_switch_target
             .as_deref()
-            .or(self.room.as_deref());
+            .or(self.model.room.name.as_deref());
         matches!((tracked_room, room_name), (Some(tracked_room), Some(room_name)) if tracked_room == room_name)
     }
 
     pub(super) fn update_local_room(&mut self, room_name: String) {
-        if self.room.as_deref() != Some(room_name.as_str()) {
+        if self.model.room.name.as_deref() != Some(room_name.as_str()) {
             self.reset_playlist_index_transition_tracking();
-            self.pending_local_room_switch_target = None;
-        } else if self.pending_local_room_switch_target.as_deref() == Some(room_name.as_str()) {
-            self.pending_local_room_switch_target = None;
+            self.model.controller.pending_local_room_switch_target = None;
+        } else if self
+            .model
+            .controller
+            .pending_local_room_switch_target
+            .as_deref()
+            == Some(room_name.as_str())
+        {
+            self.model.controller.pending_local_room_switch_target = None;
         }
-        self.room = Some(room_name);
+        self.model.room.name = Some(room_name);
     }
 
     pub(super) fn is_controlled_room_name(room_name: &str) -> bool {
@@ -291,9 +312,11 @@ impl ClientSession {
     }
 
     pub(super) fn local_user_ready(&self) -> bool {
-        self.username
+        self.model
+            .connection
+            .username
             .as_deref()
-            .and_then(|username| self.user_views.get(username))
+            .and_then(|username| self.model.room.users.get(username))
             .is_some_and(|user_view| user_view.ready == Some(true))
     }
 
@@ -327,9 +350,7 @@ impl ClientSession {
         if !self.local_user_ready() {
             return false;
         }
-        let require_same_filenames = self
-            .readiness_autoplay_config
-            .autoplay_require_same_filenames;
+        let require_same_filenames = self.model.readiness.config.autoplay_require_same_filenames;
         self.all_other_users_in_current_room_ready()
             && (!require_same_filenames
                 || self.all_users_in_current_room_match_filename_or_strong_media())
@@ -340,7 +361,7 @@ impl ClientSession {
             return false;
         };
 
-        self.user_views.iter().all(|(username, user_view)| {
+        self.model.room.users.iter().all(|(username, user_view)| {
             if username == local_username {
                 return true;
             }
@@ -359,7 +380,9 @@ impl ClientSession {
         // Legacy usersInRoomCount adds the current user and only counts other room users
         // where isReadyWithFile() is truthy.
         let ready_others = self
-            .user_views
+            .model
+            .room
+            .users
             .iter()
             .filter(|(username, user_view)| {
                 *username != local_username
@@ -378,7 +401,7 @@ impl ClientSession {
             return false;
         };
 
-        self.user_views.iter().all(|(username, user_view)| {
+        self.model.room.users.iter().all(|(username, user_view)| {
             if username == local_username || user_view.room.as_deref() != Some(local_room) {
                 return true;
             }
@@ -391,7 +414,7 @@ impl ClientSession {
             {
                 return true;
             }
-            self.media_match_peer_tiers.get(username) == Some(&MediaMatchTier::Strong)
+            self.model.room.media_match_peer_tiers.get(username) == Some(&MediaMatchTier::Strong)
         })
     }
 
@@ -402,7 +425,9 @@ impl ClientSession {
 
         let mut ready_count = usize::from(self.local_user_ready());
         ready_count += self
-            .user_views
+            .model
+            .room
+            .users
             .iter()
             .filter(|(username, user_view)| {
                 *username != local_username
@@ -431,26 +456,33 @@ impl ClientSession {
     }
 
     pub(super) fn start_autoplay_countdown(&mut self) {
-        if !self.autoplay_timer_running {
-            self.autoplay_time_left_seconds = self.readiness_autoplay_config.autoplay_delay_seconds;
-            self.autoplay_timer_running = true;
+        if !self.model.readiness.autoplay_timer_running {
+            self.model.readiness.autoplay_time_left_seconds =
+                self.model.readiness.config.autoplay_delay_seconds;
+            self.model.readiness.autoplay_timer_running = true;
         }
     }
 
     pub(super) fn stop_autoplay_countdown(&mut self) {
-        self.autoplay_timer_running = false;
-        self.autoplay_time_left_seconds = self.readiness_autoplay_config.autoplay_delay_seconds;
+        self.model.readiness.autoplay_timer_running = false;
+        self.model.readiness.autoplay_time_left_seconds =
+            self.model.readiness.config.autoplay_delay_seconds;
     }
 
     pub(super) fn resolve_room_for_playlist_update(&self, set_by: Option<&str>) -> Option<String> {
         set_by
             .and_then(|username| self.user_room(username).map(str::to_owned))
-            .or_else(|| self.room.clone())
+            .or_else(|| self.model.room.name.clone())
     }
 
     pub(super) fn set_user_room(&mut self, username: &str, room_name: Option<String>) {
         let (previous_room, ready) = {
-            let user_view = self.user_views.entry(username.to_owned()).or_default();
+            let user_view = self
+                .model
+                .room
+                .users
+                .entry(username.to_owned())
+                .or_default();
             let previous_room = user_view.room.clone();
             let ready = user_view.ready;
             user_view.room = room_name.clone();
@@ -460,19 +492,25 @@ impl ClientSession {
         if previous_room != room_name
             && let Some(previous_room_name) = previous_room.as_deref()
         {
-            let _ = self.domain.leave_room(username, previous_room_name);
+            let _ = self
+                .model
+                .room
+                .domain
+                .leave_room(username, previous_room_name);
         }
         if previous_room != room_name {
-            if self.username.as_deref() == Some(username) {
-                self.media_match_peer_tiers.clear();
+            if self.model.connection.username.as_deref() == Some(username) {
+                self.model.room.media_match_peer_tiers.clear();
             } else {
-                self.media_match_peer_tiers.remove(username);
+                self.model.room.media_match_peer_tiers.remove(username);
             }
         }
 
         if let Some(new_room_name) = room_name.as_deref() {
-            self.known_rooms.insert(new_room_name.to_owned());
-            self.domain
+            self.model.room.known_rooms.insert(new_room_name.to_owned());
+            self.model
+                .room
+                .domain
                 .join_room_with_ready(username, new_room_name, ready);
         }
     }
@@ -483,13 +521,20 @@ impl ClientSession {
 
     pub(super) fn set_user_ready_state(&mut self, username: &str, ready: Option<bool>) {
         let room_name = {
-            let user_view = self.user_views.entry(username.to_owned()).or_default();
+            let user_view = self
+                .model
+                .room
+                .users
+                .entry(username.to_owned())
+                .or_default();
             user_view.ready = ready;
             user_view.room.clone()
         };
 
         if let Some(room_name) = room_name {
-            self.domain
+            self.model
+                .room
+                .domain
                 .join_room_with_ready(username, &room_name, ready);
         }
     }
@@ -503,7 +548,12 @@ impl ClientSession {
         file_duration: Option<Value>,
         media_match_signature: Option<Value>,
     ) {
-        let user_view = self.user_views.entry(username.to_owned()).or_default();
+        let user_view = self
+            .model
+            .room
+            .users
+            .entry(username.to_owned())
+            .or_default();
         let next_file_name = if has_file { file_name } else { None };
         let next_file_size = if has_file { file_size } else { None };
         let next_file_duration = if has_file { file_duration } else { None };
@@ -523,30 +573,40 @@ impl ClientSession {
         user_view.file_duration = next_file_duration;
         user_view.media_match_signature = next_media_match_signature;
         if file_changed {
-            if self.username.as_deref() == Some(username) {
-                self.media_match_peer_tiers.clear();
+            if self.model.connection.username.as_deref() == Some(username) {
+                self.model.room.media_match_peer_tiers.clear();
             } else {
-                self.media_match_peer_tiers.remove(username);
+                self.model.room.media_match_peer_tiers.remove(username);
             }
         }
     }
 
     pub(super) fn set_user_controller(&mut self, username: &str, controller: bool) {
-        let user_view = self.user_views.entry(username.to_owned()).or_default();
+        let user_view = self
+            .model
+            .room
+            .users
+            .entry(username.to_owned())
+            .or_default();
         user_view.controller = controller;
     }
 
     pub(super) fn set_user_features(&mut self, username: &str, features: Option<Value>) {
-        let user_view = self.user_views.entry(username.to_owned()).or_default();
+        let user_view = self
+            .model
+            .room
+            .users
+            .entry(username.to_owned())
+            .or_default();
         user_view.features = features;
     }
 
     pub(super) fn remove_user(&mut self, username: &str) {
-        if let Some(user_view) = self.user_views.remove(username)
+        if let Some(user_view) = self.model.room.users.remove(username)
             && let Some(room_name) = user_view.room
         {
-            let _ = self.domain.leave_room(username, &room_name);
+            let _ = self.model.room.domain.leave_room(username, &room_name);
         }
-        self.media_match_peer_tiers.remove(username);
+        self.model.room.media_match_peer_tiers.remove(username);
     }
 }

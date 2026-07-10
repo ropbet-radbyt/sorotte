@@ -108,7 +108,7 @@ fn value_as_u64(value: &Value) -> Option<u64> {
 fn session_local_file_update(
     session: &sorotte_client_core::ClientSession,
 ) -> Option<LocalFileUpdate> {
-    let username = session.username.as_deref()?;
+    let username = session.username()?;
     if session.user_has_file(username) == Some(false) {
         return None;
     }
@@ -616,7 +616,7 @@ where
                     let command = plan_local_input_command_legacy_compatible(
                         command,
                         &LocalInputCommandPlanningContext {
-                            current_room: runtime.session().room.as_deref(),
+                            current_room: runtime.session().room(),
                             configured_room: &config.room,
                         },
                     );

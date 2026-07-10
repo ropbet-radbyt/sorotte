@@ -144,7 +144,9 @@ impl ClientSession {
     }
 
     pub fn current_user_file_name(&self) -> Option<&str> {
-        self.username
+        self.model
+            .connection
+            .username
             .as_deref()
             .and_then(|username| self.user_file_name(username))
     }

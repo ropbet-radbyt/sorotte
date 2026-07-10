@@ -175,11 +175,11 @@ where
         create_client_runtime_with_managed_mpv_support(config, legacy_overrides, stored_settings)?;
     if apply_legacy_explicit_mpv_ipc_startup
         && let Some(overrides) = legacy_overrides
-        && let Err(error) =
+        && let Err(error) = runtime.with_player_io(|player| {
             apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_legacy_compatible(
-                runtime.player_mut(),
-                overrides,
+                player, overrides,
             )
+        })
     {
         eprintln!("warning: failed legacy explicit-mpv-IPC startup file open: {error}");
     }

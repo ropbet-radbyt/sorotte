@@ -156,12 +156,16 @@ fn room_switch_ignores_old_room_playlist_index_until_destination_snapshot_arrive
         ]
     );
     assert_eq!(
-        session.pending_local_room_switch_target.as_deref(),
+        session
+            .model
+            .controller
+            .pending_local_room_switch_target
+            .as_deref(),
         Some("room2"),
         "room switches should mark the destination room while waiting for the server echo"
     );
     assert!(
-        !session.received_first_playlist_index,
+        !session.model.playlist.received_first_index,
         "room switches should reset playlist-index transition tracking immediately"
     );
 
@@ -174,7 +178,7 @@ fn room_switch_ignores_old_room_playlist_index_until_destination_snapshot_arrive
         "late old-room playlist traffic should not queue a reset intent"
     );
     assert!(
-        !session.received_first_playlist_index,
+        !session.model.playlist.received_first_index,
         "late old-room playlist traffic should not consume the first destination playlist index"
     );
     assert_eq!(
@@ -228,7 +232,7 @@ fn shared_playlist_runtime_actions_are_omitted_after_disconnect() {
     session
         .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"alice"}}}"#)
         .expect("playlist index should apply");
-    session.playlist_undo_snapshots.insert(
+    session.model.playlist.undo_snapshots.insert(
         "room1".to_owned(),
         vec!["episode1.mkv".to_owned(), "episode2.mkv".to_owned()],
     );

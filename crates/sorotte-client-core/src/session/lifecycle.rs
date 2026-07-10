@@ -4,18 +4,24 @@ use crate::control::client_effect_player_error;
 impl ClientSession {
     pub(crate) fn snapshot_local_action_state(&self) -> ClientSessionLocalActionSnapshot {
         ClientSessionLocalActionSnapshot {
-            user_views: self.user_views.clone(),
-            media_match_peer_tiers: self.media_match_peer_tiers.clone(),
-            local_position: self.local_position,
-            local_paused: self.local_paused,
-            local_paused_for_cache: self.local_paused_for_cache,
-            local_cache_buffering_percent: self.local_cache_buffering_percent,
-            pending_cache_room_playstate_resync: self.pending_cache_room_playstate_resync,
-            last_seek_position_before_manual_seek: self.last_seek_position_before_manual_seek,
-            last_paused_on_leave_at_seconds: self.last_paused_on_leave_at_seconds,
-            last_rewound_at_seconds: self.last_rewound_at_seconds,
-            autoplay_timer_running: self.autoplay_timer_running,
-            autoplay_time_left_seconds: self.autoplay_time_left_seconds,
+            user_views: self.model.room.users.clone(),
+            media_match_peer_tiers: self.model.room.media_match_peer_tiers.clone(),
+            local_position: self.model.playback.local_position,
+            local_paused: self.model.playback.local_paused,
+            local_paused_for_cache: self.model.playback.local_paused_for_cache,
+            local_cache_buffering_percent: self.model.playback.local_cache_buffering_percent,
+            pending_cache_room_playstate_resync: self
+                .model
+                .playback
+                .pending_cache_room_playstate_resync,
+            last_seek_position_before_manual_seek: self
+                .model
+                .playlist
+                .last_seek_position_before_manual_seek,
+            last_paused_on_leave_at_seconds: self.model.playback.last_paused_on_leave_at_seconds,
+            last_rewound_at_seconds: self.model.playback.last_rewound_at_seconds,
+            autoplay_timer_running: self.model.readiness.autoplay_timer_running,
+            autoplay_time_left_seconds: self.model.readiness.autoplay_time_left_seconds,
         }
     }
 
@@ -23,62 +29,70 @@ impl ClientSession {
         &mut self,
         snapshot: ClientSessionLocalActionSnapshot,
     ) {
-        self.user_views = snapshot.user_views;
-        self.media_match_peer_tiers = snapshot.media_match_peer_tiers;
-        self.local_position = snapshot.local_position;
-        self.local_paused = snapshot.local_paused;
-        self.local_paused_for_cache = snapshot.local_paused_for_cache;
-        self.local_cache_buffering_percent = snapshot.local_cache_buffering_percent;
-        self.pending_cache_room_playstate_resync = snapshot.pending_cache_room_playstate_resync;
-        self.last_seek_position_before_manual_seek = snapshot.last_seek_position_before_manual_seek;
-        self.last_paused_on_leave_at_seconds = snapshot.last_paused_on_leave_at_seconds;
-        self.last_rewound_at_seconds = snapshot.last_rewound_at_seconds;
-        self.autoplay_timer_running = snapshot.autoplay_timer_running;
-        self.autoplay_time_left_seconds = snapshot.autoplay_time_left_seconds;
+        self.model.room.users = snapshot.user_views;
+        self.model.room.media_match_peer_tiers = snapshot.media_match_peer_tiers;
+        self.model.playback.local_position = snapshot.local_position;
+        self.model.playback.local_paused = snapshot.local_paused;
+        self.model.playback.local_paused_for_cache = snapshot.local_paused_for_cache;
+        self.model.playback.local_cache_buffering_percent = snapshot.local_cache_buffering_percent;
+        self.model.playback.pending_cache_room_playstate_resync =
+            snapshot.pending_cache_room_playstate_resync;
+        self.model.playlist.last_seek_position_before_manual_seek =
+            snapshot.last_seek_position_before_manual_seek;
+        self.model.playback.last_paused_on_leave_at_seconds =
+            snapshot.last_paused_on_leave_at_seconds;
+        self.model.playback.last_rewound_at_seconds = snapshot.last_rewound_at_seconds;
+        self.model.readiness.autoplay_timer_running = snapshot.autoplay_timer_running;
+        self.model.readiness.autoplay_time_left_seconds = snapshot.autoplay_time_left_seconds;
     }
 
     pub fn apply_player_playback_telemetry_update(
         &mut self,
         update: &PlayerPlaybackTelemetryUpdate,
     ) {
-        let cache_pause_was_active = self.local_paused_for_cache == Some(true);
+        let cache_pause_was_active = self.model.playback.local_paused_for_cache == Some(true);
         if let Some(paused_for_cache) = update.paused_for_cache {
-            self.local_paused_for_cache = Some(paused_for_cache);
+            self.model.playback.local_paused_for_cache = Some(paused_for_cache);
             if paused_for_cache || cache_pause_was_active {
-                self.pending_cache_room_playstate_resync = true;
+                self.model.playback.pending_cache_room_playstate_resync = true;
             }
         }
         if let Some(cache_buffering_percent) = update
             .cache_buffering_percent
             .filter(|value| value.is_finite())
         {
-            self.local_cache_buffering_percent = Some(cache_buffering_percent);
+            self.model.playback.local_cache_buffering_percent = Some(cache_buffering_percent);
         }
-        let cache_pause_active = self.local_paused_for_cache == Some(true);
+        let cache_pause_active = self.model.playback.local_paused_for_cache == Some(true);
         if let Some(paused) = update.paused
             && !cache_pause_active
         {
-            self.local_paused = Some(paused);
+            self.model.playback.local_paused = Some(paused);
             if !paused {
-                self.pending_cache_room_playstate_resync = false;
+                self.model.playback.pending_cache_room_playstate_resync = false;
             }
         }
         if let Some(position_seconds) = update.position_seconds.filter(|value| value.is_finite()) {
-            self.local_position = Some(position_seconds);
+            self.model.playback.local_position = Some(position_seconds);
         }
     }
 
     pub(super) fn reset_playlist_index_transition_tracking(&mut self) {
-        self.received_first_playlist_index = false;
-        self.pending_playlist_index_reset_pause_before_sync = None;
-        self.pending_playlist_index_reset_refresh_recently_advanced = false;
-        self.suppress_next_self_playlist_index_reset = false;
-        self.playlist_active_targets_before_index_update.clear();
+        self.model.playlist.received_first_index = false;
+        self.model.playlist.pending_index_reset_pause_before_sync = None;
+        self.model
+            .playlist
+            .pending_index_reset_refresh_recently_advanced = false;
+        self.model.playlist.suppress_next_self_index_reset = false;
+        self.model
+            .playlist
+            .active_targets_before_index_update
+            .clear();
     }
 
     pub(super) fn note_recent_rewind(&mut self, now_seconds: f64) {
         if now_seconds.is_finite() {
-            self.last_rewound_at_seconds = Some(now_seconds);
+            self.model.playback.last_rewound_at_seconds = Some(now_seconds);
         }
     }
 
@@ -86,7 +100,9 @@ impl ClientSession {
         if !threshold_seconds.is_finite() || threshold_seconds <= 0.0 {
             return false;
         }
-        self.last_rewound_at_seconds
+        self.model
+            .playback
+            .last_rewound_at_seconds
             .is_some_and(|last_rewound_at_seconds| {
                 let elapsed = now_seconds - last_rewound_at_seconds;
                 elapsed >= 0.0 && elapsed < threshold_seconds
@@ -94,8 +110,10 @@ impl ClientSession {
     }
 
     pub(super) fn queue_playlist_index_reset_intent(&mut self, pause_before_sync: bool) {
-        self.pending_playlist_index_reset_pause_before_sync = Some(
-            self.pending_playlist_index_reset_pause_before_sync
+        self.model.playlist.pending_index_reset_pause_before_sync = Some(
+            self.model
+                .playlist
+                .pending_index_reset_pause_before_sync
                 .unwrap_or(false)
                 || pause_before_sync,
         );
@@ -106,11 +124,13 @@ impl ClientSession {
         pause_before_sync: bool,
         now_seconds: f64,
     ) {
-        self.received_first_playlist_index = true;
+        self.model.playlist.received_first_index = true;
         self.queue_playlist_index_reset_intent(pause_before_sync);
-        self.suppress_next_self_playlist_index_reset = true;
-        self.last_advanced_at_seconds = Some(now_seconds);
-        self.pending_playlist_index_reset_refresh_recently_advanced = true;
+        self.model.playlist.suppress_next_self_index_reset = true;
+        self.model.playback.last_advanced_at_seconds = Some(now_seconds);
+        self.model
+            .playlist
+            .pending_index_reset_refresh_recently_advanced = true;
         self.note_recent_rewind(now_seconds);
     }
 
@@ -124,32 +144,53 @@ impl ClientSession {
         &mut self,
         now_seconds: f64,
     ) -> Option<bool> {
-        let pending_reset = self.pending_playlist_index_reset_pause_before_sync.take();
+        let pending_reset = self
+            .model
+            .playlist
+            .pending_index_reset_pause_before_sync
+            .take();
         if pending_reset.is_some() {
-            if self.pending_playlist_index_reset_refresh_recently_advanced
+            if self
+                .model
+                .playlist
+                .pending_index_reset_refresh_recently_advanced
                 && now_seconds.is_finite()
             {
-                self.last_advanced_at_seconds = Some(now_seconds);
+                self.model.playback.last_advanced_at_seconds = Some(now_seconds);
             }
-            self.pending_playlist_index_reset_refresh_recently_advanced = false;
+            self.model
+                .playlist
+                .pending_index_reset_refresh_recently_advanced = false;
             self.note_recent_rewind(now_seconds);
         }
         pending_reset
     }
 
     pub fn has_pending_playlist_index_reset_intent(&self) -> bool {
-        self.pending_playlist_index_reset_pause_before_sync
+        self.model
+            .playlist
+            .pending_index_reset_pause_before_sync
             .is_some()
     }
 
     pub(super) fn clear_reconnect_state_restore_validation_state(&mut self) {
-        self.reconnect_state_restore_validation_pending = false;
-        self.reconnect_state_restore_validation_retry_attempts = 0;
-        self.reconnect_state_restore_validation_retry_cooldown_ticks = 0;
-        self.reconnect_state_restore_validation_mismatch_notified = false;
-        self.reconnect_state_restore_validation_mismatch_seen_in_cycle = false;
-        self.reconnect_state_restore_correction_recovery_suppressed_this_cycle = false;
-        self.reconnect_state_restore_correction_recovery_reenabled_this_cycle = false;
+        self.model.reconnect.state_restore_validation_pending = false;
+        self.model.reconnect.state_restore_validation_retry_attempts = 0;
+        self.model
+            .reconnect
+            .state_restore_validation_retry_cooldown_ticks = 0;
+        self.model
+            .reconnect
+            .state_restore_validation_mismatch_notified = false;
+        self.model
+            .reconnect
+            .state_restore_validation_mismatch_seen_in_cycle = false;
+        self.model
+            .reconnect
+            .state_restore_correction_recovery_suppressed_this_cycle = false;
+        self.model
+            .reconnect
+            .state_restore_correction_recovery_reenabled_this_cycle = false;
     }
 
     pub(super) fn reconnect_state_restore_correction_policy_mode(
@@ -194,7 +235,9 @@ impl ClientSession {
             .behavior_config
             .reconnect_state_restore_correction_retry_adaptive_cycle_backoff
         {
-            self.reconnect_state_restore_correction_consecutive_retry_exhaustions
+            self.model
+                .reconnect
+                .state_restore_correction_consecutive_retry_exhaustions
         } else {
             0
         };
@@ -235,18 +278,28 @@ impl ClientSession {
             .reconnect_state_restore_correction_retry_adaptive_cycle_budget_min_attempts
             .min(configured_max_attempts);
         configured_max_attempts
-            .saturating_sub(self.reconnect_state_restore_correction_consecutive_retry_exhaustions)
+            .saturating_sub(
+                self.model
+                    .reconnect
+                    .state_restore_correction_consecutive_retry_exhaustions,
+            )
             .max(min_attempts)
     }
 
     pub(super) fn note_reconnect_state_restore_correction_retry_exhaustion(&mut self) {
-        self.reconnect_state_restore_correction_consecutive_retry_exhaustions = self
-            .reconnect_state_restore_correction_consecutive_retry_exhaustions
+        self.model
+            .reconnect
+            .state_restore_correction_consecutive_retry_exhaustions = self
+            .model
+            .reconnect
+            .state_restore_correction_consecutive_retry_exhaustions
             .saturating_add(1);
     }
 
     pub(super) fn reset_reconnect_state_restore_correction_retry_exhaustions(&mut self) {
-        self.reconnect_state_restore_correction_consecutive_retry_exhaustions = 0;
+        self.model
+            .reconnect
+            .state_restore_correction_consecutive_retry_exhaustions = 0;
     }
 
     pub(super) fn activate_reconnect_state_restore_correction_recovery_cooldown_if_configured(
@@ -258,54 +311,92 @@ impl ClientSession {
         if recovery_cooldown_reconnect_cycles == 0 {
             return false;
         }
-        self.reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining =
+        self.model
+            .reconnect
+            .state_restore_correction_recovery_cooldown_reconnect_cycles_remaining =
             recovery_cooldown_reconnect_cycles;
-        self.reconnect_state_restore_correction_recovery_reenable_notification_pending = true;
-        self.reconnect_state_restore_correction_recovery_reenabled_this_cycle = false;
+        self.model
+            .reconnect
+            .state_restore_correction_recovery_reenable_notification_pending = true;
+        self.model
+            .reconnect
+            .state_restore_correction_recovery_reenabled_this_cycle = false;
         true
     }
 
     pub(super) fn begin_reconnect_state_restore_validation_cycle(&mut self) {
-        self.reconnect_state_restore_correction_metrics
+        self.model
+            .reconnect
+            .state_restore_correction_metrics
             .validation_cycles_started = self
-            .reconnect_state_restore_correction_metrics
+            .model
+            .reconnect
+            .state_restore_correction_metrics
             .validation_cycles_started
             .saturating_add(1);
-        self.reconnect_state_restore_correction_recovery_suppressed_this_cycle = false;
-        self.reconnect_state_restore_correction_recovery_reenabled_this_cycle = false;
-        if self.reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining > 0
+        self.model
+            .reconnect
+            .state_restore_correction_recovery_suppressed_this_cycle = false;
+        self.model
+            .reconnect
+            .state_restore_correction_recovery_reenabled_this_cycle = false;
+        if self
+            .model
+            .reconnect
+            .state_restore_correction_recovery_cooldown_reconnect_cycles_remaining
+            > 0
         {
-            self.reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining = self
-                .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining
+            self.model
+                .reconnect
+                .state_restore_correction_recovery_cooldown_reconnect_cycles_remaining = self
+                .model
+                .reconnect
+                .state_restore_correction_recovery_cooldown_reconnect_cycles_remaining
                 .saturating_sub(1);
-            self.reconnect_state_restore_correction_recovery_suppressed_this_cycle = true;
+            self.model
+                .reconnect
+                .state_restore_correction_recovery_suppressed_this_cycle = true;
             return;
         }
-        if self.reconnect_state_restore_correction_recovery_reenable_notification_pending {
-            self.reconnect_state_restore_correction_recovery_reenabled_this_cycle = true;
-            self.reconnect_state_restore_correction_recovery_reenable_notification_pending = false;
+        if self
+            .model
+            .reconnect
+            .state_restore_correction_recovery_reenable_notification_pending
+        {
+            self.model
+                .reconnect
+                .state_restore_correction_recovery_reenabled_this_cycle = true;
+            self.model
+                .reconnect
+                .state_restore_correction_recovery_reenable_notification_pending = false;
         }
     }
 
     pub(crate) fn defer_reconnect_state_restore_validation_after_correction_failure(
         &mut self,
     ) -> Option<ReconnectTransitionNotification> {
-        if !self.reconnect_state_restore_validation_pending {
+        if !self.model.reconnect.state_restore_validation_pending {
             return None;
         }
 
         let retry_max_attempts =
             self.reconnect_state_restore_correction_effective_retry_max_attempts();
         let correction_policy_mode = self.reconnect_state_restore_correction_policy_mode();
-        self.reconnect_state_restore_validation_retry_attempts = self
-            .reconnect_state_restore_validation_retry_attempts
+        self.model.reconnect.state_restore_validation_retry_attempts = self
+            .model
+            .reconnect
+            .state_restore_validation_retry_attempts
             .saturating_add(1);
-        let failed_attempts = self.reconnect_state_restore_validation_retry_attempts;
+        let failed_attempts = self.model.reconnect.state_restore_validation_retry_attempts;
         if failed_attempts > retry_max_attempts {
             self.note_reconnect_state_restore_correction_retry_exhaustion();
-            self.reconnect_state_restore_correction_metrics
+            self.model
+                .reconnect
+                .state_restore_correction_metrics
                 .correction_retry_exhaustions = self
-                .reconnect_state_restore_correction_metrics
+                .model
+                .reconnect
+                .state_restore_correction_metrics
                 .correction_retry_exhaustions
                 .saturating_add(1);
             self.activate_reconnect_state_restore_correction_recovery_cooldown_if_configured();
@@ -320,10 +411,16 @@ impl ClientSession {
 
         let cooldown_ticks = self
             .reconnect_state_restore_correction_retry_cooldown_for_failed_attempt(failed_attempts);
-        self.reconnect_state_restore_validation_retry_cooldown_ticks = cooldown_ticks;
-        self.reconnect_state_restore_correction_metrics
+        self.model
+            .reconnect
+            .state_restore_validation_retry_cooldown_ticks = cooldown_ticks;
+        self.model
+            .reconnect
+            .state_restore_correction_metrics
             .correction_retries_scheduled = self
-            .reconnect_state_restore_correction_metrics
+            .model
+            .reconnect
+            .state_restore_correction_metrics
             .correction_retries_scheduled
             .saturating_add(1);
         if matches!(
@@ -342,24 +439,40 @@ impl ClientSession {
     }
 
     pub(crate) fn complete_reconnect_state_restore_validation_after_success(&mut self) {
-        self.reconnect_state_restore_correction_metrics
+        self.model
+            .reconnect
+            .state_restore_correction_metrics
             .validation_cycles_completed_with_successful_correction = self
-            .reconnect_state_restore_correction_metrics
+            .model
+            .reconnect
+            .state_restore_correction_metrics
             .validation_cycles_completed_with_successful_correction
             .saturating_add(1);
-        if self.reconnect_state_restore_validation_mismatch_seen_in_cycle {
+        if self
+            .model
+            .reconnect
+            .state_restore_validation_mismatch_seen_in_cycle
+        {
             let decay = self
                 .behavior_config
                 .reconnect_state_restore_correction_disable_after_mismatch_decay_on_success;
             if decay > 0 {
-                self.reconnect_state_restore_correction_consecutive_mismatch_cycles = self
-                    .reconnect_state_restore_correction_consecutive_mismatch_cycles
+                self.model
+                    .reconnect
+                    .state_restore_correction_consecutive_mismatch_cycles = self
+                    .model
+                    .reconnect
+                    .state_restore_correction_consecutive_mismatch_cycles
                     .saturating_sub(decay);
             }
         }
         self.reset_reconnect_state_restore_correction_retry_exhaustions();
-        self.reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining = 0;
-        self.reconnect_state_restore_correction_recovery_reenable_notification_pending = false;
+        self.model
+            .reconnect
+            .state_restore_correction_recovery_cooldown_reconnect_cycles_remaining = 0;
+        self.model
+            .reconnect
+            .state_restore_correction_recovery_reenable_notification_pending = false;
         self.clear_reconnect_state_restore_validation_state();
     }
 
@@ -369,10 +482,10 @@ impl ClientSession {
     ) {
         match action {
             ClientRuntimeAction::SetPaused(paused) => {
-                self.local_paused = Some(*paused);
+                self.model.playback.local_paused = Some(*paused);
             }
             ClientRuntimeAction::SetPosition(position_seconds) if position_seconds.is_finite() => {
-                self.local_position = Some(*position_seconds);
+                self.model.playback.local_position = Some(*position_seconds);
             }
             _ => {}
         }

@@ -13,14 +13,14 @@ fn reset_sync_state_for_reconnect_prevents_stale_fastforward_after_pre_reconnect
         "precondition: pre-reconnect behind detection should only start fastforward timer"
     );
     assert_eq!(
-        session.behind_first_detected_at_seconds,
+        session.model.playback.behind_first_detected_at_seconds,
         Some(0.0),
         "precondition: pre-reconnect behind timer should be primed before reconnect reset"
     );
 
     session.reset_sync_state_for_reconnect();
     assert_eq!(
-        session.behind_first_detected_at_seconds, None,
+        session.model.playback.behind_first_detected_at_seconds, None,
         "reconnect reset should clear any pre-reconnect fastforward detection timer state"
     );
 
@@ -37,7 +37,7 @@ fn reset_sync_state_for_reconnect_prevents_stale_fastforward_after_pre_reconnect
         "post-reconnect doSeek state should suppress desync correction"
     );
     assert_eq!(
-        session.behind_first_detected_at_seconds, None,
+        session.model.playback.behind_first_detected_at_seconds, None,
         "doSeek suppression after reconnect should keep fastforward timer cleared"
     );
 
@@ -54,7 +54,7 @@ fn reset_sync_state_for_reconnect_prevents_stale_fastforward_after_pre_reconnect
         "after reconnect + doSeek clears, fastforward detection should restart fresh instead of using stale pre-reconnect timing"
     );
     assert_eq!(
-        session.behind_first_detected_at_seconds,
+        session.model.playback.behind_first_detected_at_seconds,
         Some(4.1),
         "post-reconnect fastforward timer should restart from doSeek-clear evaluation time"
     );
@@ -89,7 +89,7 @@ fn reset_sync_state_for_reconnect_clears_self_setby_fastforward_suppression_wind
         "precondition: initial behind detection should only start fastforward timer"
     );
     assert_eq!(
-        session.behind_first_detected_at_seconds,
+        session.model.playback.behind_first_detected_at_seconds,
         Some(0.0),
         "precondition: behind timer should start at first detection time"
     );
@@ -103,6 +103,8 @@ fn reset_sync_state_for_reconnect_clears_self_setby_fastforward_suppression_wind
     );
     assert!(
         session
+            .model
+            .playback
             .behind_first_detected_at_seconds
             .is_some_and(|t| t > 4.0),
         "self-attributed fastforward suppression should leave a future suppression-window timer"
@@ -110,7 +112,7 @@ fn reset_sync_state_for_reconnect_clears_self_setby_fastforward_suppression_wind
 
     session.reset_sync_state_for_reconnect();
     assert_eq!(
-        session.behind_first_detected_at_seconds, None,
+        session.model.playback.behind_first_detected_at_seconds, None,
         "reconnect reset should clear stale self-setby fastforward suppression window"
     );
 
@@ -128,7 +130,7 @@ fn reset_sync_state_for_reconnect_clears_self_setby_fastforward_suppression_wind
         "post-reconnect behind detection should restart instead of inheriting stale self-setby suppression window"
     );
     assert_eq!(
-        session.behind_first_detected_at_seconds,
+        session.model.playback.behind_first_detected_at_seconds,
         Some(4.1),
         "post-reconnect behind timer should restart from new detection time"
     );
@@ -163,7 +165,7 @@ fn reset_sync_state_for_reconnect_clears_fastforward_action_cooldown_window_befo
         "precondition: initial behind detection should only start fastforward timer"
     );
     assert_eq!(
-        session.behind_first_detected_at_seconds,
+        session.model.playback.behind_first_detected_at_seconds,
         Some(0.0),
         "precondition: behind timer should start at first detection time"
     );
@@ -177,6 +179,8 @@ fn reset_sync_state_for_reconnect_clears_fastforward_action_cooldown_window_befo
     );
     assert!(
         session
+            .model
+            .playback
             .behind_first_detected_at_seconds
             .is_some_and(|t| t > 4.0),
         "fastforward action should leave a future cooldown/suppression timer before reconnect"
@@ -184,7 +188,7 @@ fn reset_sync_state_for_reconnect_clears_fastforward_action_cooldown_window_befo
 
     session.reset_sync_state_for_reconnect();
     assert_eq!(
-        session.behind_first_detected_at_seconds, None,
+        session.model.playback.behind_first_detected_at_seconds, None,
         "reconnect reset should clear stale fastforward action cooldown window"
     );
 
@@ -202,7 +206,7 @@ fn reset_sync_state_for_reconnect_clears_fastforward_action_cooldown_window_befo
         "post-reconnect behind detection should restart instead of inheriting stale fastforward cooldown window"
     );
     assert_eq!(
-        session.behind_first_detected_at_seconds,
+        session.model.playback.behind_first_detected_at_seconds,
         Some(4.1),
         "post-reconnect behind timer should restart from new detection time"
     );

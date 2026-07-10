@@ -86,7 +86,7 @@ impl ClientSession {
         if !self.shared_playlist_runtime_commands_allowed_legacy_compatible() {
             return Vec::new();
         }
-        let Some(room_name) = self.room.clone() else {
+        let Some(room_name) = self.model.room.name.clone() else {
             return Vec::new();
         };
 
@@ -136,7 +136,7 @@ impl ClientSession {
         if !self.shared_playlist_runtime_commands_allowed_legacy_compatible() || index < 0 {
             return Vec::new();
         }
-        let Some(room_name) = self.room.clone() else {
+        let Some(room_name) = self.model.room.name.clone() else {
             return Vec::new();
         };
 
@@ -191,7 +191,7 @@ impl ClientSession {
         if !self.shared_playlist_runtime_commands_allowed_legacy_compatible() {
             return Vec::new();
         }
-        let Some(room_name) = self.room.clone() else {
+        let Some(room_name) = self.model.room.name.clone() else {
             return Vec::new();
         };
         if files.iter().any(|file| file.is_empty()) {
@@ -257,7 +257,7 @@ impl ClientSession {
         if !self.shared_playlist_runtime_commands_allowed_legacy_compatible() {
             return Vec::new();
         }
-        let Some(room_name) = self.room.clone() else {
+        let Some(room_name) = self.model.room.name.clone() else {
             return Vec::new();
         };
         let Some(playlist) = self.current_room_playlist() else {
@@ -266,7 +266,8 @@ impl ClientSession {
 
         let current_files = playlist.files.clone();
         let current_index = playlist.index.and_then(|index| usize::try_from(index).ok());
-        let Some(previous_files) = self.playlist_undo_snapshots.get(&room_name).cloned() else {
+        let Some(previous_files) = self.model.playlist.undo_snapshots.get(&room_name).cloned()
+        else {
             return Vec::new();
         };
         if previous_files == current_files {
@@ -309,7 +310,7 @@ impl ClientSession {
         if !self.shared_playlist_runtime_commands_allowed_legacy_compatible() {
             return Vec::new();
         }
-        let Some(room_name) = self.room.clone() else {
+        let Some(room_name) = self.model.room.name.clone() else {
             return Vec::new();
         };
         let Some(playlist) = self.current_room_playlist() else {
@@ -361,7 +362,7 @@ impl ClientSession {
         if !self.shared_playlist_runtime_commands_allowed_legacy_compatible() {
             return Vec::new();
         }
-        let Some(room_name) = self.room.clone() else {
+        let Some(room_name) = self.model.room.name.clone() else {
             return Vec::new();
         };
         let Some(playlist) = self.current_room_playlist() else {

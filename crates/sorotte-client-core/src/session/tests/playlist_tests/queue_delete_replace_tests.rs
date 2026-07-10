@@ -227,7 +227,7 @@ fn client_runtime_replace_playlist_preserves_existing_selection_without_redundan
     );
     assert_eq!(
         runtime
-            .session_mut()
+            .session_mut_for_test()
             .take_pending_playlist_index_reset_intent(),
         None,
         "preserving the existing selection during playlist replace should not queue a reset"

@@ -3,9 +3,11 @@ use super::*;
 impl ClientSession {
     pub fn reset_sync_state_for_reconnect(&mut self) {
         let (ready_snapshot, file_snapshot, controller_snapshot) = self
+            .model
+            .connection
             .username
             .as_deref()
-            .and_then(|username| self.user_views.get(username))
+            .and_then(|username| self.model.room.users.get(username))
             .map(|user_view| {
                 let ready_snapshot = user_view.ready;
                 let file_snapshot = if user_view.has_file {
@@ -17,70 +19,79 @@ impl ClientSession {
                 (ready_snapshot, file_snapshot, controller_snapshot)
             })
             .unwrap_or((None, None, None));
-        let preserved_ready_snapshot = self
-            .reconnect_ready_restore_snapshot
-            .take()
-            .or(self.reconnect_ready_restore_intent.take());
-        let preserved_file_snapshot = self
-            .reconnect_file_restore_snapshot
-            .take()
-            .or(self.reconnect_file_restore_intent.take());
-        let preserved_controller_snapshot = self.reconnect_controller_restore_snapshot.take();
+        let preserved_ready_snapshot = self.model.reconnect.ready_restore_snapshot.take().or(self
+            .model
+            .reconnect
+            .ready_restore_intent
+            .take());
+        let preserved_file_snapshot = self.model.reconnect.file_restore_snapshot.take().or(self
+            .model
+            .reconnect
+            .file_restore_intent
+            .take());
+        let preserved_controller_snapshot = self.model.reconnect.controller_restore_snapshot.take();
         let preserved_playlist_snapshot = self
-            .reconnect_playlist_restore_snapshot
+            .model
+            .reconnect
+            .playlist_restore_snapshot
             .take()
-            .or(self.reconnect_playlist_restore_intent.take());
+            .or(self.model.reconnect.playlist_restore_intent.take());
 
-        self.reconnect_ready_restore_snapshot = preserved_ready_snapshot.or(ready_snapshot);
-        self.reconnect_ready_restore_intent = None;
-        self.reconnect_file_restore_snapshot = preserved_file_snapshot.or(file_snapshot);
-        self.reconnect_file_restore_intent = None;
-        self.reconnect_controller_restore_snapshot =
+        self.model.reconnect.ready_restore_snapshot = preserved_ready_snapshot.or(ready_snapshot);
+        self.model.reconnect.ready_restore_intent = None;
+        self.model.reconnect.file_restore_snapshot = preserved_file_snapshot.or(file_snapshot);
+        self.model.reconnect.file_restore_intent = None;
+        self.model.reconnect.controller_restore_snapshot =
             preserved_controller_snapshot.or(controller_snapshot);
 
-        self.reconnect_playlist_restore_snapshot = preserved_playlist_snapshot.or_else(|| {
-            self.current_room_playlist()
-                .and_then(Self::playlist_restore_intent_from_room_playlist)
-        });
-        self.reconnect_playlist_restore_intent = None;
-        self.reconnect_connected_intent = false;
+        self.model.reconnect.playlist_restore_snapshot =
+            preserved_playlist_snapshot.or_else(|| {
+                self.current_room_playlist()
+                    .and_then(Self::playlist_restore_intent_from_room_playlist)
+            });
+        self.model.reconnect.playlist_restore_intent = None;
+        self.model.reconnect.connected_intent = false;
         self.clear_reconnect_state_restore_validation_state();
         self.pending_chat_notifications.clear();
         self.pending_controlled_room_creation_notifications.clear();
         self.pending_controller_auth_notifications.clear();
         self.pending_user_change_notifications.clear();
-        self.controlled_room_switch_intent = None;
-        self.pending_local_room_switch_target = None;
-        self.controller_reidentify_intent = None;
-        self.user_views.clear();
-        self.media_match_peer_tiers.clear();
-        self.known_rooms.clear();
-        self.domain = SyncDomain::default();
-        self.room_playlists.clear();
-        self.room_playstates.clear();
-        self.room_playstate_updated_at_seconds.clear();
-        self.pending_playlist = None;
-        self.playlist_undo_snapshots.clear();
-        self.playlist_shuffle_nonce = 0;
+        self.model.controller.controlled_room_switch_intent = None;
+        self.model.controller.pending_local_room_switch_target = None;
+        self.model.controller.reidentify_intent = None;
+        self.model.room.users.clear();
+        self.model.room.media_match_peer_tiers.clear();
+        self.model.room.known_rooms.clear();
+        self.model.room.domain = SyncDomain::default();
+        self.model.playlist.rooms.clear();
+        self.model.room.playstates.clear();
+        self.model.room.playstate_updated_at_seconds.clear();
+        self.model.playlist.pending = None;
+        self.model.playlist.undo_snapshots.clear();
+        self.model.playlist.shuffle_nonce = 0;
         self.reset_playlist_index_transition_tracking();
-        self.local_position = None;
-        self.local_paused = None;
-        self.local_paused_for_cache = None;
-        self.local_cache_buffering_percent = None;
-        self.pending_cache_room_playstate_resync = false;
-        self.last_seek_position_before_manual_seek = None;
-        self.autoplay_timer_running = false;
-        self.autoplay_time_left_seconds = self.readiness_autoplay_config.autoplay_delay_seconds;
-        self.speed_changed = false;
-        self.behind_first_detected_at_seconds = None;
-        self.last_paused_on_leave_at_seconds = None;
-        self.last_advanced_at_seconds = None;
-        self.client_ignoring_on_the_fly = 0;
-        self.server_ignoring_on_the_fly = 0;
+        self.model.playback.local_position = None;
+        self.model.playback.local_paused = None;
+        self.model.playback.local_paused_for_cache = None;
+        self.model.playback.local_cache_buffering_percent = None;
+        self.model.playback.pending_cache_room_playstate_resync = false;
+        self.model.playlist.last_seek_position_before_manual_seek = None;
+        self.model.readiness.autoplay_timer_running = false;
+        self.model.readiness.autoplay_time_left_seconds =
+            self.model.readiness.config.autoplay_delay_seconds;
+        self.model.playback.speed_changed = false;
+        self.model.playback.behind_first_detected_at_seconds = None;
+        self.model.playback.last_paused_on_leave_at_seconds = None;
+        self.model.playback.last_advanced_at_seconds = None;
+        self.model.playback.client_ignoring_on_the_fly = 0;
+        self.model.playback.server_ignoring_on_the_fly = 0;
         self.clear_server_feature_support_state();
-        self.last_rewound_at_seconds = None;
+        self.model.playback.last_rewound_at_seconds = None;
 
-        if let (Some(username), Some(room_name)) = (self.username.clone(), self.room.clone()) {
+        if let (Some(username), Some(room_name)) = (
+            self.model.connection.username.clone(),
+            self.model.room.name.clone(),
+        ) {
             self.set_user_room(&username, Some(room_name));
             self.set_user_ready_state(&username, Some(false));
         }
@@ -116,7 +127,7 @@ impl ClientSession {
             .playstate
             .as_ref()
             .is_some_and(|playstate| playstate.position.is_some() && playstate.paused.is_some());
-        if has_playstate_update && self.client_ignoring_on_the_fly == 0 {
+        if has_playstate_update && self.model.playback.client_ignoring_on_the_fly == 0 {
             self.apply_state(inbound_state.clone());
         }
 
@@ -133,14 +144,16 @@ impl ClientSession {
         }
 
         let mut response = StatePayload::new().with_ping(ping);
-        if self.server_ignoring_on_the_fly != 0 || self.client_ignoring_on_the_fly != 0 {
+        if self.model.playback.server_ignoring_on_the_fly != 0
+            || self.model.playback.client_ignoring_on_the_fly != 0
+        {
             let mut ignore = IgnoringOnTheFlyPayload::new();
-            if self.server_ignoring_on_the_fly != 0 {
-                ignore = ignore.with_server(self.server_ignoring_on_the_fly);
-                self.server_ignoring_on_the_fly = 0;
+            if self.model.playback.server_ignoring_on_the_fly != 0 {
+                ignore = ignore.with_server(self.model.playback.server_ignoring_on_the_fly);
+                self.model.playback.server_ignoring_on_the_fly = 0;
             }
-            if self.client_ignoring_on_the_fly != 0 {
-                ignore = ignore.with_client(self.client_ignoring_on_the_fly);
+            if self.model.playback.client_ignoring_on_the_fly != 0 {
+                ignore = ignore.with_client(self.model.playback.client_ignoring_on_the_fly);
             }
             response.ignoring_on_the_fly = Some(ignore);
         }
@@ -163,14 +176,14 @@ impl ClientSession {
             .playstate
             .as_ref()
             .is_some_and(|playstate| playstate.position.is_some() && playstate.paused.is_some());
-        if has_playstate_update && self.client_ignoring_on_the_fly == 0 {
+        if has_playstate_update && self.model.playback.client_ignoring_on_the_fly == 0 {
             self.apply_state(inbound_state.clone());
         }
 
         let mut response = StatePayload::new();
         let has_global_playstate = self.has_global_playstate();
-        let client_ignore_not_set =
-            self.client_ignoring_on_the_fly == 0 || self.server_ignoring_on_the_fly != 0;
+        let client_ignore_not_set = self.model.playback.client_ignoring_on_the_fly == 0
+            || self.model.playback.server_ignoring_on_the_fly != 0;
 
         let mut state_change = false;
         if has_global_playstate && client_ignore_not_set {
@@ -191,8 +204,8 @@ impl ClientSession {
             state_change = pause_change || seeked;
         }
 
-        self.local_position = Some(local_position);
-        self.local_paused = Some(local_paused);
+        self.model.playback.local_position = Some(local_position);
+        self.model.playback.local_paused = Some(local_paused);
 
         let mut ping = PingPayload::new()
             .with_client_latency_calculation(client_latency_calculation)
@@ -208,17 +221,23 @@ impl ClientSession {
         response.ping = Some(ping);
 
         if state_change {
-            self.client_ignoring_on_the_fly = self.client_ignoring_on_the_fly.saturating_add(1);
+            self.model.playback.client_ignoring_on_the_fly = self
+                .model
+                .playback
+                .client_ignoring_on_the_fly
+                .saturating_add(1);
         }
 
-        if self.server_ignoring_on_the_fly != 0 || self.client_ignoring_on_the_fly != 0 {
+        if self.model.playback.server_ignoring_on_the_fly != 0
+            || self.model.playback.client_ignoring_on_the_fly != 0
+        {
             let mut ignore = IgnoringOnTheFlyPayload::new();
-            if self.server_ignoring_on_the_fly != 0 {
-                ignore = ignore.with_server(self.server_ignoring_on_the_fly);
-                self.server_ignoring_on_the_fly = 0;
+            if self.model.playback.server_ignoring_on_the_fly != 0 {
+                ignore = ignore.with_server(self.model.playback.server_ignoring_on_the_fly);
+                self.model.playback.server_ignoring_on_the_fly = 0;
             }
-            if self.client_ignoring_on_the_fly != 0 {
-                ignore = ignore.with_client(self.client_ignoring_on_the_fly);
+            if self.model.playback.client_ignoring_on_the_fly != 0 {
+                ignore = ignore.with_client(self.model.playback.client_ignoring_on_the_fly);
             }
             response.ignoring_on_the_fly = Some(ignore);
         }

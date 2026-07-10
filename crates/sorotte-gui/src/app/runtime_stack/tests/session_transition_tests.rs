@@ -198,7 +198,7 @@ fn gui_client_core_chat_session_runtime_adapter_applies_valid_prefix_before_batc
         "batched unknown command should still surface a protocol error"
     );
     assert_eq!(
-        adapter.runtime.session().username.as_deref(),
+        adapter.runtime.session().username(),
         Some("alice"),
         "valid Hello before the unknown command should be applied"
     );

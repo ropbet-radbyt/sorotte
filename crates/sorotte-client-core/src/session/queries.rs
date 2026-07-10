@@ -1,16 +1,38 @@
 use super::*;
 
 impl ClientSession {
+    pub fn username(&self) -> Option<&str> {
+        self.model.connection.username.as_deref()
+    }
+
+    pub fn room(&self) -> Option<&str> {
+        self.model.room.name.as_deref()
+    }
+
+    pub fn model(&self) -> &ClientModel {
+        &self.model
+    }
+
     pub fn user_room(&self, username: &str) -> Option<&str> {
-        self.user_views
+        self.model
+            .room
+            .users
             .get(username)
             .and_then(|user| user.room.as_deref())
     }
 
     pub fn room_names(&self) -> Vec<String> {
-        let mut rooms = self.known_rooms.iter().cloned().collect::<Vec<_>>();
-        if let Some(current_room) = self
+        let mut rooms = self
+            .model
             .room
+            .known_rooms
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        if let Some(current_room) = self
+            .model
+            .room
+            .name
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -23,7 +45,9 @@ impl ClientSession {
     }
 
     pub fn usernames_in_room(&self, room_name: &str) -> Vec<String> {
-        self.user_views
+        self.model
+            .room
+            .users
             .iter()
             .filter_map(|(username, user)| {
                 (!username.trim().is_empty() && user.room.as_deref() == Some(room_name))
@@ -33,45 +57,65 @@ impl ClientSession {
     }
 
     pub fn user_ready(&self, username: &str) -> Option<bool> {
-        self.user_views.get(username).and_then(|user| user.ready)
+        self.model
+            .room
+            .users
+            .get(username)
+            .and_then(|user| user.ready)
     }
 
     pub fn user_has_file(&self, username: &str) -> Option<bool> {
-        self.user_views.get(username).map(|user| user.has_file)
+        self.model
+            .room
+            .users
+            .get(username)
+            .map(|user| user.has_file)
     }
 
     pub fn user_file_name(&self, username: &str) -> Option<&str> {
-        self.user_views
+        self.model
+            .room
+            .users
             .get(username)
             .and_then(|user| user.file_name.as_deref())
     }
 
     pub fn user_file_size(&self, username: &str) -> Option<&Value> {
-        self.user_views
+        self.model
+            .room
+            .users
             .get(username)
             .and_then(|user| user.file_size.as_ref())
     }
 
     pub fn user_file_duration(&self, username: &str) -> Option<&Value> {
-        self.user_views
+        self.model
+            .room
+            .users
             .get(username)
             .and_then(|user| user.file_duration.as_ref())
     }
 
     pub fn user_controller(&self, username: &str) -> Option<bool> {
-        self.user_views.get(username).map(|user| user.controller)
+        self.model
+            .room
+            .users
+            .get(username)
+            .map(|user| user.controller)
     }
 
     pub fn user_features(&self, username: &str) -> Option<&Value> {
-        self.user_views
+        self.model
+            .room
+            .users
             .get(username)
             .and_then(|user| user.features.as_ref())
     }
 
     pub fn file_differences_for_user(&self, username: &str) -> Option<FileDifferenceSummary> {
-        let current_username = self.username.as_deref()?;
-        let current_user = self.user_views.get(current_username)?;
-        let other_user = self.user_views.get(username)?;
+        let current_username = self.model.connection.username.as_deref()?;
+        let current_user = self.model.room.users.get(current_username)?;
+        let other_user = self.model.room.users.get(username)?;
         if current_user.room.is_none() || current_user.room != other_user.room {
             return None;
         }
@@ -79,15 +123,15 @@ impl ClientSession {
     }
 
     pub fn file_differences_for_room(&self, room_name: &str) -> Option<FileDifferenceSummary> {
-        let current_username = self.username.as_deref()?;
-        let current_user = self.user_views.get(current_username)?;
+        let current_username = self.model.connection.username.as_deref()?;
+        let current_user = self.model.room.users.get(current_username)?;
         if current_user.room.as_deref() != Some(room_name) {
             return None;
         }
 
         let mut summary = FileDifferenceSummary::default();
         let mut compared_any = false;
-        for (username, user_view) in &self.user_views {
+        for (username, user_view) in &self.model.room.users {
             if username == current_username {
                 continue;
             }
@@ -108,7 +152,7 @@ impl ClientSession {
     }
 
     pub fn file_differences_for_current_room(&self) -> Option<FileDifferenceSummary> {
-        let room_name = self.room.as_deref()?;
+        let room_name = self.model.room.name.as_deref()?;
         self.file_differences_for_room(room_name)
     }
 
@@ -147,8 +191,10 @@ impl ClientSession {
         Self::same_fileduration_legacy_compatible_with_overrides(
             left,
             right,
-            self.readiness_autoplay_config.show_duration_notification,
-            self.readiness_autoplay_config
+            self.model.readiness.config.show_duration_notification,
+            self.model
+                .readiness
+                .config
                 .different_duration_threshold_seconds,
         )
     }
@@ -230,7 +276,7 @@ impl ClientSession {
             return Vec::new();
         };
 
-        if let Some(username) = self.username.clone() {
+        if let Some(username) = self.model.connection.username.clone() {
             let sanitized_value = Self::value_from_file_payload(&sanitized_payload);
             let (has_file, file_name, file_size, file_duration, media_match_signature) =
                 Self::list_payload_file_info(Some(&sanitized_value));
@@ -252,10 +298,10 @@ impl ClientSession {
     }
 
     pub fn runtime_actions_for_local_media_opened_not_ready(&mut self) -> Vec<ClientRuntimeAction> {
-        if self.server_readiness_supported != Some(true) {
+        if self.model.capabilities.readiness != Some(true) {
             return Vec::new();
         }
-        let Some(username) = self.username.clone() else {
+        let Some(username) = self.model.connection.username.clone() else {
             return Vec::new();
         };
 
@@ -267,13 +313,15 @@ impl ClientSession {
     }
 
     pub fn room_playlist(&self, room_name: &str) -> Option<&RoomPlaylistView> {
-        self.room_playlists.get(room_name)
+        self.model.playlist.rooms.get(room_name)
     }
 
     pub fn current_room_playlist(&self) -> Option<&RoomPlaylistView> {
-        self.room
+        self.model
+            .room
+            .name
             .as_deref()
-            .and_then(|room_name| self.room_playlists.get(room_name))
+            .and_then(|room_name| self.model.playlist.rooms.get(room_name))
     }
 
     pub(super) fn playlist_target_for_room_index(
@@ -282,7 +330,9 @@ impl ClientSession {
         index: i64,
     ) -> Option<&str> {
         let index = usize::try_from(index).ok()?;
-        self.room_playlists
+        self.model
+            .playlist
+            .rooms
             .get(room_name)
             .and_then(|playlist| playlist.files.get(index))
             .map(String::as_str)
@@ -292,15 +342,17 @@ impl ClientSession {
         &mut self,
         actions: &[ClientRuntimeAction],
     ) {
-        let Some(room_name) = self.room.clone() else {
+        let Some(room_name) = self.model.room.name.clone() else {
             return;
         };
-        let Some(local_username) = self.username.clone() else {
+        let Some(local_username) = self.model.connection.username.clone() else {
             return;
         };
 
         let mut playlist = self
-            .room_playlists
+            .model
+            .playlist
+            .rooms
             .get(&room_name)
             .cloned()
             .unwrap_or_default();
@@ -330,25 +382,29 @@ impl ClientSession {
             }
         }
         if playlist_changed {
-            self.room_playlists.insert(room_name, playlist);
+            self.model.playlist.rooms.insert(room_name, playlist);
         }
     }
 
     pub fn room_playstate(&self, room_name: &str) -> Option<&RoomPlaystateView> {
-        self.room_playstates.get(room_name)
+        self.model.room.playstates.get(room_name)
     }
 
     pub fn current_room_playstate(&self) -> Option<&RoomPlaystateView> {
-        self.room
+        self.model
+            .room
+            .name
             .as_deref()
-            .and_then(|room_name| self.room_playstates.get(room_name))
+            .and_then(|room_name| self.model.room.playstates.get(room_name))
     }
 
     pub fn current_room_playstate_at(&self, now_seconds: f64) -> Option<RoomPlaystateView> {
-        let room_name = self.room.as_deref()?;
-        let mut playstate = self.room_playstates.get(room_name)?.clone();
+        let room_name = self.model.room.name.as_deref()?;
+        let mut playstate = self.model.room.playstates.get(room_name)?.clone();
         let updated_at_seconds = self
-            .room_playstate_updated_at_seconds
+            .model
+            .room
+            .playstate_updated_at_seconds
             .get(room_name)
             .copied();
         if playstate.paused == Some(false)
@@ -369,27 +425,27 @@ impl ClientSession {
     }
 
     pub fn client_ignoring_on_the_fly(&self) -> u32 {
-        self.client_ignoring_on_the_fly
+        self.model.playback.client_ignoring_on_the_fly
     }
 
     pub fn server_ignoring_on_the_fly(&self) -> u32 {
-        self.server_ignoring_on_the_fly
+        self.model.playback.server_ignoring_on_the_fly
     }
 
     pub fn desync_config(&self) -> &DesyncCorrectionConfig {
-        &self.desync_config
+        &self.model.playback.desync_config
     }
 
     pub fn desync_config_mut(&mut self) -> &mut DesyncCorrectionConfig {
-        &mut self.desync_config
+        &mut self.model.playback.desync_config
     }
 
     pub fn reconnect_policy(&self) -> &ReconnectPolicyConfig {
-        &self.reconnect_policy
+        &self.model.reconnect.policy
     }
 
     pub fn reconnect_policy_mut(&mut self) -> &mut ReconnectPolicyConfig {
-        &mut self.reconnect_policy
+        &mut self.model.reconnect.policy
     }
 
     pub fn behavior_config(&self) -> &SessionBehaviorConfig {
@@ -403,42 +459,61 @@ impl ClientSession {
     pub fn reconnect_state_restore_correction_metrics(
         &self,
     ) -> &ReconnectStateRestoreCorrectionMetrics {
-        &self.reconnect_state_restore_correction_metrics
+        &self.model.reconnect.state_restore_correction_metrics
     }
 
     pub fn reconnect_state_restore_correction_state_snapshot(
         &self,
     ) -> ReconnectStateRestoreCorrectionStateSnapshot {
         ReconnectStateRestoreCorrectionStateSnapshot {
-            validation_pending: self.reconnect_state_restore_validation_pending,
-            retry_attempts: self.reconnect_state_restore_validation_retry_attempts,
-            retry_cooldown_ticks: self.reconnect_state_restore_validation_retry_cooldown_ticks,
-            mismatch_notified_in_cycle: self.reconnect_state_restore_validation_mismatch_notified,
-            mismatch_seen_in_cycle: self.reconnect_state_restore_validation_mismatch_seen_in_cycle,
+            validation_pending: self.model.reconnect.state_restore_validation_pending,
+            retry_attempts: self.model.reconnect.state_restore_validation_retry_attempts,
+            retry_cooldown_ticks: self
+                .model
+                .reconnect
+                .state_restore_validation_retry_cooldown_ticks,
+            mismatch_notified_in_cycle: self
+                .model
+                .reconnect
+                .state_restore_validation_mismatch_notified,
+            mismatch_seen_in_cycle: self
+                .model
+                .reconnect
+                .state_restore_validation_mismatch_seen_in_cycle,
             effective_policy_mode: self.reconnect_state_restore_correction_policy_mode(),
             position_tolerance_seconds: self
                 .reconnect_state_restore_position_tolerance_seconds_effective(),
             effective_retry_max_attempts: self
                 .reconnect_state_restore_correction_effective_retry_max_attempts(),
             consecutive_mismatch_cycles: self
-                .reconnect_state_restore_correction_consecutive_mismatch_cycles,
+                .model
+                .reconnect
+                .state_restore_correction_consecutive_mismatch_cycles,
             consecutive_retry_exhaustions: self
-                .reconnect_state_restore_correction_consecutive_retry_exhaustions,
+                .model
+                .reconnect
+                .state_restore_correction_consecutive_retry_exhaustions,
             recovery_cooldown_reconnect_cycles_remaining: self
-                .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining,
+                .model
+                .reconnect
+                .state_restore_correction_recovery_cooldown_reconnect_cycles_remaining,
             correction_suppressed_for_recovery_cycle: self
-                .reconnect_state_restore_correction_recovery_suppressed_this_cycle,
+                .model
+                .reconnect
+                .state_restore_correction_recovery_suppressed_this_cycle,
             correction_reenabled_for_recovery_cycle: self
-                .reconnect_state_restore_correction_recovery_reenabled_this_cycle,
+                .model
+                .reconnect
+                .state_restore_correction_recovery_reenabled_this_cycle,
         }
     }
 
     pub fn readiness_autoplay_config(&self) -> &ReadinessAutoplayConfig {
-        &self.readiness_autoplay_config
+        &self.model.readiness.config
     }
 
     pub fn readiness_autoplay_config_mut(&mut self) -> &mut ReadinessAutoplayConfig {
-        &mut self.readiness_autoplay_config
+        &mut self.model.readiness.config
     }
 
     pub fn chat_config(&self) -> &ChatConfig {
@@ -450,65 +525,65 @@ impl ClientSession {
     }
 
     pub fn last_paused_on_leave_at_seconds(&self) -> Option<f64> {
-        self.last_paused_on_leave_at_seconds
+        self.model.playback.last_paused_on_leave_at_seconds
     }
 
     pub fn server_readiness_supported(&self) -> Option<bool> {
-        self.server_readiness_supported
+        self.model.capabilities.readiness
     }
 
     pub fn server_set_others_readiness_supported(&self) -> Option<bool> {
-        self.server_set_others_readiness_supported
+        self.model.capabilities.set_others_readiness
     }
 
     pub fn server_managed_rooms_supported(&self) -> Option<bool> {
-        self.server_managed_rooms_supported
+        self.model.capabilities.managed_rooms
     }
 
     pub fn server_shared_playlists_supported(&self) -> Option<bool> {
-        self.server_shared_playlists_supported
+        self.model.capabilities.shared_playlists
     }
 
     pub fn server_media_match_supported(&self) -> Option<bool> {
-        self.server_media_match_supported
+        self.model.capabilities.media_match
     }
 
     pub fn server_chat_supported(&self) -> Option<bool> {
-        self.server_chat_supported
+        self.model.capabilities.chat
     }
 
     pub fn server_persistent_rooms_supported(&self) -> Option<bool> {
-        self.server_persistent_rooms_supported
+        self.model.capabilities.persistent_rooms
     }
 
     pub fn server_max_username_length(&self) -> Option<usize> {
-        self.server_max_username_length
+        self.model.capabilities.max_username_length
     }
 
     pub fn server_max_room_name_length(&self) -> Option<usize> {
-        self.server_max_room_name_length
+        self.model.capabilities.max_room_name_length
     }
 
     pub fn server_max_filename_length(&self) -> Option<usize> {
-        self.server_max_filename_length
+        self.model.capabilities.max_filename_length
     }
 
     pub fn clear_server_feature_support_state(&mut self) {
-        self.server_readiness_supported = None;
-        self.server_set_others_readiness_supported = None;
-        self.server_managed_rooms_supported = None;
-        self.server_shared_playlists_supported = None;
-        self.server_media_match_supported = None;
-        self.server_chat_supported = None;
-        self.server_persistent_rooms_supported = None;
-        self.server_max_username_length = None;
-        self.server_max_room_name_length = None;
-        self.server_max_filename_length = None;
+        self.model.capabilities.readiness = None;
+        self.model.capabilities.set_others_readiness = None;
+        self.model.capabilities.managed_rooms = None;
+        self.model.capabilities.shared_playlists = None;
+        self.model.capabilities.media_match = None;
+        self.model.capabilities.chat = None;
+        self.model.capabilities.persistent_rooms = None;
+        self.model.capabilities.max_username_length = None;
+        self.model.capabilities.max_room_name_length = None;
+        self.model.capabilities.max_filename_length = None;
     }
 
     pub fn local_can_control(&self) -> Option<bool> {
-        let username = self.username.as_deref()?;
-        let room_name = self.room.as_deref()?;
+        let username = self.model.connection.username.as_deref()?;
+        let room_name = self.model.room.name.as_deref()?;
         if !Self::is_controlled_room_name(room_name) {
             return Some(true);
         }
@@ -525,7 +600,7 @@ impl ClientSession {
         previous_room: Option<&str>,
         username: &str,
     ) -> bool {
-        let local_room = self.room.as_deref();
+        let local_room = self.model.room.name.as_deref();
         let room_matches_local = local_room.is_some_and(|local_room| {
             current_room == Some(local_room) || previous_room == Some(local_room)
         });
@@ -555,7 +630,7 @@ impl ClientSession {
         };
 
         let previous_room = previous_user_view.room.as_deref();
-        let local_room = self.room.as_deref();
+        let local_room = self.model.room.name.as_deref();
         let show_on_osd = if local_room == previous_room {
             self.behavior_config.show_same_room_osd
         } else {
@@ -574,7 +649,7 @@ impl ClientSession {
         username: &str,
         previous_user_view: Option<ClientUserView>,
     ) {
-        let Some(current_user_view) = self.user_views.get(username).cloned() else {
+        let Some(current_user_view) = self.model.room.users.get(username).cloned() else {
             return;
         };
         let Some(room_name) = current_user_view.room.clone() else {
@@ -609,7 +684,7 @@ impl ClientSession {
         );
         let hide_from_osd = !show_on_osd;
         if current_user_view.has_file {
-            let include_room_addendum = self.room.as_deref() != Some(room_name.as_str());
+            let include_room_addendum = self.model.room.name.as_deref() != Some(room_name.as_str());
             self.pending_user_change_notifications
                 .push(UserChangeNotification::Playing {
                     username: username.to_owned(),
@@ -639,51 +714,55 @@ impl ClientSession {
             return;
         }
 
-        self.controlled_room_passwords
+        self.model
+            .controller
+            .room_passwords
             .insert(room_name.to_owned(), normalized_password);
     }
 
     pub fn autoplay_enabled(&self) -> bool {
-        self.autoplay_enabled
+        self.model.readiness.autoplay_enabled
     }
 
     pub fn local_paused(&self) -> Option<bool> {
-        self.local_paused
+        self.model.playback.local_paused
     }
 
     pub fn local_paused_for_cache(&self) -> Option<bool> {
-        self.local_paused_for_cache
+        self.model.playback.local_paused_for_cache
     }
 
     pub fn local_cache_buffering_percent(&self) -> Option<f64> {
-        self.local_cache_buffering_percent
+        self.model.playback.local_cache_buffering_percent
     }
 
     pub fn local_position_seconds(&self) -> Option<f64> {
-        self.local_position
+        self.model.playback.local_position
     }
 
     pub fn last_seek_position_before_manual_seek(&self) -> Option<f64> {
-        self.last_seek_position_before_manual_seek
+        self.model.playlist.last_seek_position_before_manual_seek
     }
 
     pub fn set_autoplay_enabled(&mut self, enabled: bool) {
-        self.autoplay_enabled = enabled;
+        self.model.readiness.autoplay_enabled = enabled;
         if !enabled {
             self.stop_autoplay_countdown();
         }
     }
 
     pub fn set_media_match_peer_tiers(&mut self, tiers: BTreeMap<String, MediaMatchTier>) {
-        self.media_match_peer_tiers = tiers;
+        self.model.room.media_match_peer_tiers = tiers;
     }
 
     pub fn media_match_peer_tiers(&self) -> &BTreeMap<String, MediaMatchTier> {
-        &self.media_match_peer_tiers
+        &self.model.room.media_match_peer_tiers
     }
 
     pub fn user_media_match_signature(&self, username: &str) -> Option<&Value> {
-        self.user_views
+        self.model
+            .room
+            .users
             .get(username)
             .and_then(|user_view| user_view.media_match_signature.as_ref())
     }
@@ -703,7 +782,9 @@ impl ClientSession {
         let Some((local_username, local_room)) = self.local_username_and_room() else {
             return Vec::new();
         };
-        self.user_views
+        self.model
+            .room
+            .users
             .iter()
             .filter_map(|(username, user_view)| {
                 if username == local_username || user_view.room.as_deref() != Some(local_room) {
@@ -722,11 +803,11 @@ impl ClientSession {
     }
 
     pub fn autoplay_timer_is_running(&self) -> bool {
-        self.autoplay_timer_running
+        self.model.readiness.autoplay_timer_running
     }
 
     pub fn autoplay_time_left_seconds(&self) -> f64 {
-        self.autoplay_time_left_seconds
+        self.model.readiness.autoplay_time_left_seconds
     }
 
     pub fn is_playing_music(&self) -> bool {

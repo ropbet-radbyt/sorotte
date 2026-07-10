@@ -7,8 +7,8 @@ fn python_trace_fanout_scenario_reconciles_client_sessions() {
     let client_1 = sessions
         .get("client-1")
         .expect("fanout trace should include client-1 session");
-    assert_eq!(client_1.username.as_deref(), Some("alice"));
-    assert_eq!(client_1.room.as_deref(), Some("room1"));
+    assert_eq!(client_1.username(), Some("alice"));
+    assert_eq!(client_1.room(), Some("room1"));
     assert_eq!(client_1.user_room("bob"), Some("room2"));
     assert_eq!(client_1.user_ready("alice"), Some(true));
     assert_eq!(client_1.user_ready("bob"), Some(false));
@@ -20,8 +20,8 @@ fn python_trace_fanout_scenario_reconciles_client_sessions() {
     let client_2 = sessions
         .get("client-2")
         .expect("fanout trace should include client-2 session");
-    assert_eq!(client_2.username.as_deref(), Some("bob"));
-    assert_eq!(client_2.room.as_deref(), Some("room2"));
+    assert_eq!(client_2.username(), Some("bob"));
+    assert_eq!(client_2.room(), Some("room2"));
     assert_eq!(client_2.user_room("alice"), Some("room1"));
     assert_eq!(client_2.user_ready("alice"), Some(true));
     let client_2_playstate = client_2
@@ -41,8 +41,8 @@ fn python_trace_cross_room_ready_list_reconciles_room_membership_and_readiness()
     let client_3 = sessions
         .get("client-3")
         .expect("cross-room trace should include client-3 session");
-    assert_eq!(client_3.username.as_deref(), Some("carol"));
-    assert_eq!(client_3.room.as_deref(), Some("room1"));
+    assert_eq!(client_3.username(), Some("carol"));
+    assert_eq!(client_3.room(), Some("room1"));
     assert_eq!(client_3.user_room("alice"), Some("room1"));
     assert_eq!(client_3.user_room("bob"), Some("room1"));
     assert_eq!(client_3.user_room("carol"), Some("room1"));
@@ -68,8 +68,8 @@ fn python_trace_controlled_room_state_forced_correction_reconciles_forced_state_
     let client_1 = sessions
         .get("client-1")
         .expect("forced-correction trace should include client-1 session");
-    assert_eq!(client_1.username.as_deref(), Some("alice"));
-    assert_eq!(client_1.room.as_deref(), Some(controlled_room));
+    assert_eq!(client_1.username(), Some("alice"));
+    assert_eq!(client_1.room(), Some(controlled_room));
     assert_eq!(client_1.user_room("alice"), Some(controlled_room));
     assert_eq!(client_1.user_room("bob"), Some(controlled_room));
     let client_1_playstate = client_1
@@ -89,8 +89,8 @@ fn python_trace_controlled_room_state_forced_correction_reconciles_forced_state_
     let client_2 = sessions
         .get("client-2")
         .expect("forced-correction trace should include client-2 session");
-    assert_eq!(client_2.username.as_deref(), Some("bob"));
-    assert_eq!(client_2.room.as_deref(), Some(controlled_room));
+    assert_eq!(client_2.username(), Some("bob"));
+    assert_eq!(client_2.room(), Some(controlled_room));
     assert_eq!(client_2.user_room("alice"), Some(controlled_room));
     assert_eq!(client_2.user_room("bob"), Some(controlled_room));
     let client_2_playstate = client_2

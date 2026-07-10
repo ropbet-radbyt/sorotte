@@ -2,10 +2,8 @@ use super::*;
 
 #[test]
 fn handle_disconnect_with_pause_on_leave_sets_pause_and_timestamp() {
-    let mut session = ClientSession {
-        local_paused: Some(false),
-        ..ClientSession::default()
-    };
+    let mut session = ClientSession::default();
+    session.model.playback.local_paused = Some(false);
 
     let actions = session.handle_disconnect(123.4);
     assert_eq!(actions, vec![ClientRuntimeAction::SetPaused(true)]);
@@ -14,10 +12,8 @@ fn handle_disconnect_with_pause_on_leave_sets_pause_and_timestamp() {
 
 #[test]
 fn handle_disconnect_respects_pause_on_leave_toggle() {
-    let mut session = ClientSession {
-        local_paused: Some(false),
-        ..ClientSession::default()
-    };
+    let mut session = ClientSession::default();
+    session.model.playback.local_paused = Some(false);
     session.behavior_config_mut().pause_on_leave = false;
 
     let actions = session.handle_disconnect(200.0);
@@ -89,7 +85,7 @@ fn client_runtime_room_pause_sync_applies_remote_pause_mismatch_from_playstate()
         "remote room playstate pause mismatch should issue player unpause"
     );
     assert_eq!(
-        runtime.session().local_paused,
+        runtime.session().model.playback.local_paused,
         Some(false),
         "room pause sync should optimistically mirror local pause state until next telemetry sample"
     );
@@ -128,7 +124,7 @@ fn client_runtime_room_pause_sync_unpauses_without_local_pause_telemetry() {
         "missing local pause telemetry should still allow the first remote unpause correction"
     );
     assert_eq!(
-        runtime.session().local_paused,
+        runtime.session().model.playback.local_paused,
         Some(false),
         "successful remote unpause correction should mirror the effective local pause state"
     );
@@ -167,7 +163,7 @@ fn client_runtime_room_pause_sync_skips_when_room_playstate_set_by_local_user() 
         "self-originated room playstate should not trigger local pause correction"
     );
     assert_eq!(
-        runtime.session().local_paused,
+        runtime.session().model.playback.local_paused,
         Some(true),
         "telemetry sync should still update local paused snapshot"
     );

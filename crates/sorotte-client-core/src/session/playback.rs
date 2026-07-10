@@ -6,6 +6,8 @@ impl ClientSession {
         target_position: f64,
     ) -> Vec<ClientRuntimeAction> {
         let previous_position = self
+            .model
+            .playback
             .local_position
             .or_else(|| {
                 self.current_room_playstate()
@@ -54,8 +56,8 @@ impl ClientSession {
             return Vec::new();
         };
 
-        self.last_seek_position_before_manual_seek = Some(previous_position);
-        self.local_position = Some(target_position);
+        self.model.playlist.last_seek_position_before_manual_seek = Some(previous_position);
+        self.model.playback.local_position = Some(target_position);
         vec![ClientRuntimeAction::SetPosition(target_position)]
     }
 
@@ -69,16 +71,19 @@ impl ClientSession {
         let baseline_position = self
             .current_room_playstate()
             .and_then(|playstate| playstate.position)
-            .or(self.local_position)
+            .or(self.model.playback.local_position)
             .unwrap_or(0.0);
         self.runtime_actions_for_local_seek(baseline_position + offset_seconds)
     }
 
     pub fn runtime_actions_for_local_seek_undo(&mut self) -> Vec<ClientRuntimeAction> {
-        let Some(target_position) = self.last_seek_position_before_manual_seek else {
+        let Some(target_position) = self.model.playlist.last_seek_position_before_manual_seek
+        else {
             return Vec::new();
         };
         let current_position = self
+            .model
+            .playback
             .local_position
             .or_else(|| {
                 self.current_room_playstate()
@@ -104,26 +109,29 @@ impl ClientSession {
         let (Some(global_position), Some(global_paused)) =
             (global_playstate.position, global_playstate.paused)
         else {
-            self.behind_first_detected_at_seconds = None;
+            self.model.playback.behind_first_detected_at_seconds = None;
             return DesyncCorrectionAction::None;
         };
 
         if global_playstate.do_seek == Some(true) {
-            self.behind_first_detected_at_seconds = None;
+            self.model.playback.behind_first_detected_at_seconds = None;
             return DesyncCorrectionAction::None;
         }
 
         let diff = local_position - global_position;
         let set_by = global_playstate.set_by.clone();
         let set_by_is_self = self
+            .model
+            .connection
             .username
             .as_deref()
             .zip(set_by.as_deref())
             .is_some_and(|(username, set_by)| username == set_by);
 
-        if self.desync_config.rewind_on_desync && diff > self.desync_config.rewind_threshold_seconds
+        if self.model.playback.desync_config.rewind_on_desync
+            && diff > self.model.playback.desync_config.rewind_threshold_seconds
         {
-            self.behind_first_detected_at_seconds = None;
+            self.model.playback.behind_first_detected_at_seconds = None;
             if set_by_is_self {
                 return DesyncCorrectionAction::None;
             }
@@ -133,52 +141,87 @@ impl ClientSession {
             };
         }
 
-        if self.desync_config.fastforward_on_desync
+        if self.model.playback.desync_config.fastforward_on_desync
             && (!local_can_control || dont_slow_down_with_me)
         {
-            if diff < -self.desync_config.fastforward_behind_threshold_seconds {
-                if let Some(first_detected_at) = self.behind_first_detected_at_seconds {
+            if diff
+                < -self
+                    .model
+                    .playback
+                    .desync_config
+                    .fastforward_behind_threshold_seconds
+            {
+                if let Some(first_detected_at) =
+                    self.model.playback.behind_first_detected_at_seconds
+                {
                     let duration_behind = now_seconds - first_detected_at;
                     if duration_behind
-                        > (self.desync_config.fastforward_threshold_seconds
-                            - self.desync_config.fastforward_behind_threshold_seconds)
-                        && diff < -self.desync_config.fastforward_threshold_seconds
+                        > (self
+                            .model
+                            .playback
+                            .desync_config
+                            .fastforward_threshold_seconds
+                            - self
+                                .model
+                                .playback
+                                .desync_config
+                                .fastforward_behind_threshold_seconds)
+                        && diff
+                            < -self
+                                .model
+                                .playback
+                                .desync_config
+                                .fastforward_threshold_seconds
                     {
-                        self.behind_first_detected_at_seconds = Some(
-                            now_seconds + self.desync_config.fastforward_reset_threshold_seconds,
+                        self.model.playback.behind_first_detected_at_seconds = Some(
+                            now_seconds
+                                + self
+                                    .model
+                                    .playback
+                                    .desync_config
+                                    .fastforward_reset_threshold_seconds,
                         );
                         if set_by_is_self {
                             return DesyncCorrectionAction::None;
                         }
                         return DesyncCorrectionAction::FastForward {
                             target_position: global_position
-                                + self.desync_config.fastforward_extra_seconds,
+                                + self.model.playback.desync_config.fastforward_extra_seconds,
                             set_by,
                         };
                     }
                 } else {
-                    self.behind_first_detected_at_seconds = Some(now_seconds);
+                    self.model.playback.behind_first_detected_at_seconds = Some(now_seconds);
                 }
             } else {
-                self.behind_first_detected_at_seconds = None;
+                self.model.playback.behind_first_detected_at_seconds = None;
             }
         } else {
-            self.behind_first_detected_at_seconds = None;
+            self.model.playback.behind_first_detected_at_seconds = None;
         }
 
-        if speed_supported && !global_paused && self.desync_config.slow_on_desync {
-            if diff > self.desync_config.slowdown_threshold_seconds && !self.speed_changed {
+        if speed_supported && !global_paused && self.model.playback.desync_config.slow_on_desync {
+            if diff > self.model.playback.desync_config.slowdown_threshold_seconds
+                && !self.model.playback.speed_changed
+            {
                 if set_by_is_self {
                     return DesyncCorrectionAction::None;
                 }
-                self.speed_changed = true;
+                self.model.playback.speed_changed = true;
                 return DesyncCorrectionAction::SlowDown {
-                    rate: self.desync_config.slowdown_rate,
+                    rate: self.model.playback.desync_config.slowdown_rate,
                     set_by,
                 };
             }
-            if self.speed_changed && diff < self.desync_config.slowdown_reset_threshold_seconds {
-                self.speed_changed = false;
+            if self.model.playback.speed_changed
+                && diff
+                    < self
+                        .model
+                        .playback
+                        .desync_config
+                        .slowdown_reset_threshold_seconds
+            {
+                self.model.playback.speed_changed = false;
                 return DesyncCorrectionAction::RestoreSpeed {
                     rate: NORMAL_PLAYBACK_RATE,
                 };
@@ -197,7 +240,7 @@ impl ClientSession {
         speed_supported: bool,
     ) -> DesyncCorrectionAction {
         let Some(global_playstate) = self.current_room_playstate().cloned() else {
-            self.behind_first_detected_at_seconds = None;
+            self.model.playback.behind_first_detected_at_seconds = None;
             return DesyncCorrectionAction::None;
         };
 
@@ -281,9 +324,9 @@ impl ClientSession {
             return Vec::new();
         }
 
-        self.last_paused_on_leave_at_seconds = Some(now_seconds);
-        let should_pause = self.local_paused != Some(true);
-        self.local_paused = Some(true);
+        self.model.playback.last_paused_on_leave_at_seconds = Some(now_seconds);
+        let should_pause = self.model.playback.local_paused != Some(true);
+        self.model.playback.local_paused = Some(true);
 
         if should_pause {
             vec![ClientRuntimeAction::SetPaused(true)]
@@ -306,19 +349,21 @@ impl ClientSession {
         }
 
         if self.local_user_ready()
-            || self.readiness_autoplay_config.unpause_action == UnpauseActionMode::Always
+            || self.model.readiness.config.unpause_action == UnpauseActionMode::Always
         {
             return true;
         }
 
         let all_other_users_ready = self.all_other_users_in_current_room_ready();
-        match self.readiness_autoplay_config.unpause_action {
+        match self.model.readiness.config.unpause_action {
             UnpauseActionMode::IfAlreadyReady => false,
             UnpauseActionMode::IfOthersReady => all_other_users_ready,
             UnpauseActionMode::IfMinUsersReady => {
                 all_other_users_ready
                     && self
-                        .readiness_autoplay_config
+                        .model
+                        .readiness
+                        .config
                         .auto_play_threshold
                         .is_some_and(|threshold| {
                             self.users_in_current_room_count_for_threshold() >= threshold
@@ -338,13 +383,13 @@ impl ClientSession {
         if !readiness_supported {
             return Vec::new();
         }
-        if self.local_paused_for_cache == Some(true) {
+        if self.model.playback.local_paused_for_cache == Some(true) {
             return Vec::new();
         }
 
         let instaplay = self.instaplay_conditions_met(local_can_control, is_playing_music);
         if !instaplay {
-            self.local_paused = Some(true);
+            self.model.playback.local_paused = Some(true);
             let mut actions = vec![ClientRuntimeAction::SetPaused(true)];
             if !self.local_user_ready() {
                 self.apply_local_ready_state_optimistically(true);
@@ -356,18 +401,21 @@ impl ClientSession {
             return actions;
         }
 
-        if let Some(last_paused_on_leave_at_seconds) = self.last_paused_on_leave_at_seconds
+        if let Some(last_paused_on_leave_at_seconds) =
+            self.model.playback.last_paused_on_leave_at_seconds
             && now_seconds - last_paused_on_leave_at_seconds
                 < self
-                    .readiness_autoplay_config
+                    .model
+                    .readiness
+                    .config
                     .last_paused_diff_threshold_seconds
         {
-            self.last_paused_on_leave_at_seconds = None;
-            self.local_paused = Some(false);
+            self.model.playback.last_paused_on_leave_at_seconds = None;
+            self.model.playback.local_paused = Some(false);
             return Vec::new();
         }
 
-        self.local_paused = Some(false);
+        self.model.playback.local_paused = Some(false);
         if self.local_user_ready() {
             return Vec::new();
         }
@@ -386,7 +434,7 @@ impl ClientSession {
         is_playing_music: bool,
         recently_advanced: bool,
     ) -> bool {
-        if self.local_paused_for_cache == Some(true) {
+        if self.model.playback.local_paused_for_cache == Some(true) {
             return false;
         }
         if self.has_pending_playlist_index_reset_intent() {
@@ -397,12 +445,14 @@ impl ClientSession {
         }
 
         let threshold_met = self
-            .readiness_autoplay_config
+            .model
+            .readiness
+            .config
             .auto_play_threshold
             .is_some_and(|threshold| self.users_in_current_room_count_for_threshold() >= threshold);
 
-        self.local_paused.unwrap_or(true)
-            && (self.autoplay_enabled || recently_advanced)
+        self.model.playback.local_paused.unwrap_or(true)
+            && (self.model.readiness.autoplay_enabled || recently_advanced)
             && local_can_control
             && readiness_supported
             && self.all_users_in_current_room_ready()
@@ -439,7 +489,7 @@ impl ClientSession {
         is_playing_music: bool,
         recently_advanced: bool,
     ) -> Vec<ClientRuntimeAction> {
-        if !self.autoplay_timer_running {
+        if !self.model.readiness.autoplay_timer_running {
             return Vec::new();
         }
 
@@ -453,17 +503,22 @@ impl ClientSession {
             return Vec::new();
         }
 
-        if self.autoplay_time_left_seconds <= 0.0 {
-            self.local_paused = Some(false);
+        if self.model.readiness.autoplay_time_left_seconds <= 0.0 {
+            self.model.playback.local_paused = Some(false);
             self.stop_autoplay_countdown();
             return vec![ClientRuntimeAction::SetPaused(false)];
         }
 
         let notification = AutoplayCountdownNotification {
             ready_user_count: self.ready_user_count_in_current_room(),
-            seconds_left: self.autoplay_time_left_seconds.max(0.0).floor() as u32,
+            seconds_left: self
+                .model
+                .readiness
+                .autoplay_time_left_seconds
+                .max(0.0)
+                .floor() as u32,
         };
-        self.autoplay_time_left_seconds -= AUTOPLAY_COUNTDOWN_STEP_SECONDS;
+        self.model.readiness.autoplay_time_left_seconds -= AUTOPLAY_COUNTDOWN_STEP_SECONDS;
         vec![ClientRuntimeAction::NotifyAutoplayCountdown(notification)]
     }
 }

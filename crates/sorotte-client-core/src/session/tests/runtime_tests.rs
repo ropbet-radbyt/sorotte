@@ -519,10 +519,8 @@ fn client_runtime_request_user_list_is_omitted_after_disconnect_until_next_hello
 
 #[test]
 fn client_runtime_run_disconnect_applies_pause_on_leave_action() {
-    let session = ClientSession {
-        local_paused: Some(false),
-        ..ClientSession::default()
-    };
+    let mut session = ClientSession::default();
+    session.model.playback.local_paused = Some(false);
     let player = RecordingPlayer::default();
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
@@ -746,7 +744,9 @@ fn client_runtime_coalesces_pending_playback_telemetry_to_latest_values() {
         QueuedRuntimeControl::default(),
     );
     runtime.sync_player_playback_telemetry_into_session_and_buffer();
-    runtime.player_mut().pending_playback_telemetry_update = Some(
+    runtime
+        .player_mut_for_test()
+        .pending_playback_telemetry_update = Some(
         PlayerPlaybackTelemetryUpdate::default()
             .with_position_seconds(20.0)
             .with_playback_rate(1.25),
@@ -793,8 +793,8 @@ fn client_runtime_playback_telemetry_sink_failure_preserves_latest_update() {
 #[test]
 fn client_runtime_drain_player_playback_telemetry_updates_refreshes_local_state() {
     let mut session = ClientSession::default();
-    session.local_paused = Some(true);
-    session.local_position = Some(1.0);
+    session.model.playback.local_paused = Some(true);
+    session.model.playback.local_position = Some(1.0);
     let player = RecordingPlayer {
         pending_playback_telemetry_update: Some(
             PlayerPlaybackTelemetryUpdate::default()
@@ -808,8 +808,8 @@ fn client_runtime_drain_player_playback_telemetry_updates_refreshes_local_state(
 
     let updates = runtime.drain_player_playback_telemetry_updates();
     assert_eq!(updates.len(), 1);
-    assert_eq!(runtime.session().local_paused, Some(false));
-    assert_eq!(runtime.session().local_position, Some(12.5));
+    assert_eq!(runtime.session().model.playback.local_paused, Some(false));
+    assert_eq!(runtime.session().model.playback.local_position, Some(12.5));
 
     assert!(
         runtime

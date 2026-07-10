@@ -229,7 +229,11 @@ fn client_runtime_reconnect_state_and_playlist_restore_precede_validation_mismat
         .run_reconnect_state_restore_if_needed()
         .expect("reconnect state restore should dispatch");
     assert!(
-        runtime.session().reconnect_state_restore_validation_pending,
+        runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending,
         "state restore dispatch should enable reconnect validation"
     );
 
@@ -237,7 +241,11 @@ fn client_runtime_reconnect_state_and_playlist_restore_precede_validation_mismat
         .run_reconnect_playlist_restore_if_needed()
         .expect("reconnect playlist restore should dispatch");
     assert!(
-        runtime.session().reconnect_state_restore_validation_pending,
+        runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending,
         "playlist restore should not clear reconnect validation pending state"
     );
 
@@ -320,7 +328,11 @@ fn client_runtime_reconnect_state_and_playlist_restore_precede_validation_mismat
         "validation mismatch should still issue corrective seek after playlist restore dispatch"
     );
     assert!(
-        !runtime.session().reconnect_state_restore_validation_pending,
+        !runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending,
         "validation pending should clear after post-restore correction"
     );
     assert_eq!(

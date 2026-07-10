@@ -3,8 +3,8 @@ use super::*;
 #[test]
 fn determine_local_state_change_uses_aged_room_position_for_seek_detection() {
     let mut session = ClientSession::default();
-    session.room = Some("room1".to_owned());
-    session.room_playstates.insert(
+    session.model.room.name = Some("room1".to_owned());
+    session.model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(0.0),
@@ -13,12 +13,12 @@ fn determine_local_state_change_uses_aged_room_position_for_seek_detection() {
             set_by: Some("bob".to_owned()),
         },
     );
-    session.room_playstate_updated_at_seconds.insert(
+    session.model.room.playstate_updated_at_seconds.insert(
         "room1".to_owned(),
         unix_wall_clock_time_seconds_legacy_compatible() - 1.15,
     );
-    session.local_position = Some(0.0);
-    session.local_paused = Some(false);
+    session.model.playback.local_position = Some(0.0);
+    session.model.playback.local_paused = Some(false);
 
     let (pause_change, seeked) = session.determine_local_state_change(false, 1.2);
 
@@ -32,8 +32,8 @@ fn determine_local_state_change_uses_aged_room_position_for_seek_detection() {
 #[test]
 fn reconcile_state_response_uses_override_room_position_for_seek_detection() {
     let mut session = ClientSession::default();
-    session.room = Some("room1".to_owned());
-    session.room_playstates.insert(
+    session.model.room.name = Some("room1".to_owned());
+    session.model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(10.0),
@@ -42,8 +42,8 @@ fn reconcile_state_response_uses_override_room_position_for_seek_detection() {
             set_by: Some("bob".to_owned()),
         },
     );
-    session.local_position = Some(10.0);
-    session.local_paused = Some(false);
+    session.model.playback.local_position = Some(10.0);
+    session.model.playback.local_paused = Some(false);
 
     let response = session.reconcile_state_and_build_response_with_local_state_change_override(
         StatePayload::new(),
@@ -177,11 +177,11 @@ fn client_runtime_room_pause_sync_seeks_before_pausing_remote_pause() {
         "remote pause sync should pause after seeking"
     );
     assert_eq!(
-        runtime.session().local_position,
+        runtime.session().model.playback.local_position,
         Some(12.5),
         "room pause sync should optimistically mirror the corrected position"
     );
-    assert_eq!(runtime.session().local_paused, Some(true));
+    assert_eq!(runtime.session().model.playback.local_paused, Some(true));
 }
 
 #[test]
@@ -199,7 +199,9 @@ fn client_runtime_room_pause_sync_applies_remote_seek_without_pause_change() {
             .expect("remote seek state should apply");
     let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
     session
-        .room_playstate_updated_at_seconds
+        .model
+        .room
+        .playstate_updated_at_seconds
         .insert("room1".to_owned(), now_seconds - 2.0);
 
     let player = RecordingPlayer {
@@ -231,11 +233,11 @@ fn client_runtime_room_pause_sync_applies_remote_seek_without_pause_change() {
         "remote doSeek without a pause mismatch should not send an extra pause action"
     );
     assert_eq!(
-        runtime.session().local_position,
+        runtime.session().model.playback.local_position,
         Some(synced_position),
         "room playstate sync should optimistically mirror the corrected seek target"
     );
-    assert_eq!(runtime.session().local_paused, Some(false));
+    assert_eq!(runtime.session().model.playback.local_paused, Some(false));
 }
 
 #[test]
@@ -277,7 +279,11 @@ fn client_runtime_room_pause_sync_resyncs_after_cache_pause_release() {
         "cache pause should defer room unpause while buffering"
     );
     assert!(
-        runtime.session().pending_cache_room_playstate_resync,
+        runtime
+            .session()
+            .model
+            .playback
+            .pending_cache_room_playstate_resync,
         "deferred cache pause should request a room playstate retry after cache release"
     );
     assert_eq!(
@@ -287,12 +293,14 @@ fn client_runtime_room_pause_sync_resyncs_after_cache_pause_release() {
     );
 
     runtime
-            .session_mut()
+            .session_mut_for_test()
             .apply_message_json(
                 r#"{"State":{"playstate":{"position":34.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
             )
             .expect("post-seek room playstate should apply");
-    runtime.player_mut().pending_playback_telemetry_update =
+    runtime
+        .player_mut_for_test()
+        .pending_playback_telemetry_update =
         Some(PlayerPlaybackTelemetryUpdate::default().with_paused_for_cache(false));
 
     runtime
@@ -313,7 +321,11 @@ fn client_runtime_room_pause_sync_resyncs_after_cache_pause_release() {
         "cache release should re-apply the room unpause even when local logical state was already playing"
     );
     assert!(
-        !runtime.session().pending_cache_room_playstate_resync,
+        !runtime
+            .session()
+            .model
+            .playback
+            .pending_cache_room_playstate_resync,
         "successful cache-release sync should clear the retry flag"
     );
     assert_eq!(
@@ -355,15 +367,60 @@ fn client_runtime_room_pause_sync_does_not_mirror_failed_seek_corrections() {
 
     assert_eq!(error, PlayerError::Unsupported("set_position_failed"));
     assert_eq!(
-        runtime.session().local_position,
+        runtime.session().model.playback.local_position,
         Some(3.0),
         "failed seek corrections should leave the last confirmed local telemetry position intact"
     );
     assert_eq!(
-        runtime.session().local_paused,
+        runtime.session().model.playback.local_paused,
         Some(false),
         "failed seek corrections should not mark the session as corrected"
     );
+}
+
+#[test]
+fn client_runtime_room_pause_sync_rolls_back_seek_when_pause_fails() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":12.5,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+        )
+        .expect("remote paused state should apply");
+
+    let player = RecordingPlayer {
+        fail_set_paused: true,
+        pending_playback_telemetry_update: Some(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(3.0)
+                .with_paused(false),
+        ),
+        ..RecordingPlayer::default()
+    };
+    let control = QueuedRuntimeControl::default();
+    let mut runtime = ClientRuntime::new(session, player, control);
+
+    let error = runtime
+        .run_room_pause_sync_if_needed()
+        .expect_err("pause failure should be surfaced after compensation");
+
+    assert_eq!(error, PlayerError::Unsupported("set_paused_failed"));
+    assert_eq!(
+        runtime.player().player_effects,
+        vec![
+            ClientEffect::SetPlayerPosition(12.5),
+            ClientEffect::SetPlayerPaused(true),
+            ClientEffect::SetPlayerPosition(3.0),
+        ],
+        "the reducer should compensate the successful seek after the pause failure"
+    );
+    assert_eq!(runtime.player().position, Some(3.0));
+    assert_eq!(runtime.session().model.playback.local_position, Some(3.0));
+    assert_eq!(runtime.session().model.playback.local_paused, Some(false));
 }
 
 #[test]
@@ -445,7 +502,7 @@ fn client_runtime_set_paused_restores_session_state_when_player_pause_fails() {
     session
         .apply_message_json(r#"{"Set":{"ready":{"isReady":true,"username":"alice"}}}"#)
         .expect("local ready should apply");
-    session.local_paused = Some(false);
+    session.model.playback.local_paused = Some(false);
 
     let player = RecordingPlayer {
         fail_set_paused: true,
@@ -496,7 +553,7 @@ fn client_runtime_noncontroller_host_unpause_does_not_clear_existing_ready_state
             r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
         )
         .expect("host unpause should apply");
-    session.local_paused = Some(true);
+    session.model.playback.local_paused = Some(true);
 
     let player = RecordingPlayer::default();
     let control = QueuedRuntimeControl::default();
@@ -556,7 +613,7 @@ fn client_runtime_noncontroller_host_unpause_does_not_set_not_ready_user_ready()
             r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
         )
         .expect("host unpause should apply");
-    session.local_paused = Some(true);
+    session.model.playback.local_paused = Some(true);
 
     let player = RecordingPlayer::default();
     let control = QueuedRuntimeControl::default();
@@ -637,7 +694,8 @@ fn client_runtime_seek_to_position_clamps_negative_targets_to_zero() {
 #[test]
 fn client_runtime_seek_to_position_suppresses_recent_rewind_stale_seek() {
     let mut session = ClientSession::default();
-    session.last_rewound_at_seconds = Some(unix_wall_clock_time_seconds_legacy_compatible());
+    session.model.playback.last_rewound_at_seconds =
+        Some(unix_wall_clock_time_seconds_legacy_compatible());
 
     let player = RecordingPlayer::default();
     let control = QueuedRuntimeControl::default();
@@ -660,8 +718,8 @@ fn client_runtime_seek_to_position_suppresses_recent_rewind_stale_seek() {
 #[test]
 fn client_runtime_seek_to_position_restores_session_state_when_player_seek_fails() {
     let mut session = ClientSession::default();
-    session.local_position = Some(2.0);
-    session.last_seek_position_before_manual_seek = Some(1.0);
+    session.model.playback.local_position = Some(2.0);
+    session.model.playlist.last_seek_position_before_manual_seek = Some(1.0);
 
     let player = RecordingPlayer {
         fail_set_position: true,
@@ -777,7 +835,7 @@ fn client_runtime_undo_seek_toggles_between_current_and_previous_positions() {
 #[test]
 fn client_runtime_toggle_pause_pre_syncs_pending_telemetry_and_preserves_drain() {
     let mut session = ClientSession::default();
-    session.local_paused = Some(true);
+    session.model.playback.local_paused = Some(true);
     let player = RecordingPlayer {
         pending_playback_telemetry_update: Some(
             PlayerPlaybackTelemetryUpdate::default().with_paused(false),
@@ -809,7 +867,7 @@ fn client_runtime_toggle_pause_pre_syncs_pending_telemetry_and_preserves_drain()
 #[test]
 fn client_runtime_seek_by_offset_pre_syncs_pending_telemetry_position() {
     let mut session = ClientSession::default();
-    session.local_position = Some(1.0);
+    session.model.playback.local_position = Some(1.0);
     let player = RecordingPlayer {
         pending_playback_telemetry_update: Some(
             PlayerPlaybackTelemetryUpdate::default().with_position_seconds(12.5),
@@ -831,7 +889,7 @@ fn client_runtime_seek_by_offset_pre_syncs_pending_telemetry_position() {
         "offset seek should use telemetry-confirmed local position as the baseline"
     );
     assert_eq!(
-        runtime.session().local_position,
+        runtime.session().model.playback.local_position,
         Some(14.5),
         "local session state should reflect the commanded seek target after applying telemetry baseline"
     );

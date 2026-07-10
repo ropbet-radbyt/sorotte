@@ -39,7 +39,7 @@ fn client_runtime_advance_playlist_index_dispatches_protocol_message() {
     );
     assert_eq!(
         runtime
-            .session_mut()
+            .session_mut_for_test()
             .take_pending_playlist_index_reset_intent(),
         Some(true),
         "playlist advance should queue a pause-and-rewind reset intent before the server echo"

@@ -13,13 +13,13 @@ fn reset_sync_state_for_reconnect_prevents_stale_desync_speed_restore_after_pre_
         "precondition: pre-reconnect desync evaluation should trigger slowdown"
     );
     assert!(
-        session.speed_changed,
+        session.model.playback.speed_changed,
         "precondition: slowdown should mark speed_changed before reconnect reset"
     );
 
     session.reset_sync_state_for_reconnect();
     assert!(
-        !session.speed_changed,
+        !session.model.playback.speed_changed,
         "reconnect reset should clear slowdown state so restore-speed is not emitted from stale state"
     );
 
@@ -36,7 +36,7 @@ fn reset_sync_state_for_reconnect_prevents_stale_desync_speed_restore_after_pre_
         "post-reconnect near-sync evaluation should not emit stale restore-speed action if slowdown state was reset"
     );
     assert!(
-        !session.speed_changed,
+        !session.model.playback.speed_changed,
         "near-sync evaluation should keep slowdown state cleared when no slowdown is active post-reconnect"
     );
 
@@ -62,13 +62,13 @@ fn reset_sync_state_for_reconnect_prevents_stale_speed_restore_when_post_reconne
         "precondition: pre-reconnect desync evaluation should trigger slowdown"
     );
     assert!(
-        session.speed_changed,
+        session.model.playback.speed_changed,
         "precondition: slowdown should mark speed_changed before reconnect reset"
     );
 
     session.reset_sync_state_for_reconnect();
     assert!(
-        !session.speed_changed,
+        !session.model.playback.speed_changed,
         "reconnect reset should clear slowdown state before post-reconnect paused/unpaused evaluations"
     );
 
@@ -86,7 +86,7 @@ fn reset_sync_state_for_reconnect_prevents_stale_speed_restore_when_post_reconne
         "paused post-reconnect near-sync evaluation should not emit stale restore-speed action"
     );
     assert!(
-        !session.speed_changed,
+        !session.model.playback.speed_changed,
         "paused post-reconnect near-sync evaluation should keep slowdown state cleared"
     );
 
@@ -97,7 +97,7 @@ fn reset_sync_state_for_reconnect_prevents_stale_speed_restore_when_post_reconne
         "paused post-reconnect desync evaluation should not emit slowdown while room is paused"
     );
     assert!(
-        !session.speed_changed,
+        !session.model.playback.speed_changed,
         "paused post-reconnect desync evaluation should not re-prime slowdown state"
     );
 
@@ -115,7 +115,7 @@ fn reset_sync_state_for_reconnect_prevents_stale_speed_restore_when_post_reconne
         "unpaused post-reconnect near-sync evaluation should still not emit stale restore-speed action"
     );
     assert!(
-        !session.speed_changed,
+        !session.model.playback.speed_changed,
         "unpaused near-sync evaluation should keep slowdown state cleared until a real slowdown trigger"
     );
 
@@ -140,13 +140,13 @@ fn reset_sync_state_for_reconnect_prevents_stale_speed_restore_when_post_reconne
         "precondition: pre-reconnect ahead-state should trigger slowdown"
     );
     assert!(
-        session.speed_changed,
+        session.model.playback.speed_changed,
         "precondition: slowdown should prime speed_changed before reconnect reset"
     );
 
     session.reset_sync_state_for_reconnect();
     assert!(
-        !session.speed_changed,
+        !session.model.playback.speed_changed,
         "reconnect reset should clear slowdown state before post-reconnect self-setBy slowdown suppression"
     );
 
@@ -164,7 +164,7 @@ fn reset_sync_state_for_reconnect_prevents_stale_speed_restore_when_post_reconne
         "post-reconnect self-attributed slowdown candidate should remain suppressed"
     );
     assert!(
-        !session.speed_changed,
+        !session.model.playback.speed_changed,
         "self-setBy slowdown suppression should not resurrect stale slowdown state"
     );
 
@@ -176,7 +176,7 @@ fn reset_sync_state_for_reconnect_prevents_stale_speed_restore_when_post_reconne
         "near-sync after self-setBy slowdown suppression should not emit stale restore-speed action"
     );
     assert!(
-        !session.speed_changed,
+        !session.model.playback.speed_changed,
         "near-sync after self-setBy slowdown suppression should keep slowdown state cleared"
     );
 
@@ -207,13 +207,13 @@ fn reset_sync_state_for_reconnect_prevents_stale_speed_restore_across_post_recon
         "precondition: pre-reconnect ahead-state should trigger slowdown"
     );
     assert!(
-        session.speed_changed,
+        session.model.playback.speed_changed,
         "precondition: slowdown should prime speed_changed before reconnect reset"
     );
 
     session.reset_sync_state_for_reconnect();
     assert!(
-        !session.speed_changed,
+        !session.model.playback.speed_changed,
         "reconnect reset should clear slowdown state before post-reconnect branch sequence"
     );
 
@@ -230,7 +230,7 @@ fn reset_sync_state_for_reconnect_prevents_stale_speed_restore_across_post_recon
         "post-reconnect doSeek state should suppress slowdown evaluation before other branches"
     );
     assert!(
-        !session.speed_changed,
+        !session.model.playback.speed_changed,
         "doSeek suppression should not resurrect stale slowdown state"
     );
 
@@ -247,7 +247,7 @@ fn reset_sync_state_for_reconnect_prevents_stale_speed_restore_across_post_recon
         "paused post-reconnect state should suppress slowdown before self-setBy slowdown branch"
     );
     assert!(
-        !session.speed_changed,
+        !session.model.playback.speed_changed,
         "paused slowdown suppression should keep slowdown state cleared"
     );
 
@@ -264,7 +264,7 @@ fn reset_sync_state_for_reconnect_prevents_stale_speed_restore_across_post_recon
         "post-reconnect self-attributed slowdown candidate should remain suppressed"
     );
     assert!(
-        !session.speed_changed,
+        !session.model.playback.speed_changed,
         "self-setBy slowdown suppression should not resurrect stale slowdown state"
     );
 
@@ -276,7 +276,7 @@ fn reset_sync_state_for_reconnect_prevents_stale_speed_restore_across_post_recon
         "near-sync after doSeek+paused+self-setBy slowdown-suppression sequence should not emit stale restore-speed action"
     );
     assert!(
-        !session.speed_changed,
+        !session.model.playback.speed_changed,
         "near-sync after branch sequence should keep slowdown state cleared"
     );
 
