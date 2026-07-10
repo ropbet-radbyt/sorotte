@@ -82,10 +82,10 @@ impl ServerRuntime {
         &mut self,
         now_seconds: f64,
     ) -> Result<(), ServerRuntimeError> {
-        let Some(stats_persistence) = self.stats_persistence.clone() else {
+        if self.stats_persistence.is_none() {
             self.stats_next_snapshot_at_seconds = None;
             return Ok(());
-        };
+        }
         if self.stats_next_snapshot_at_seconds.is_none() {
             self.initialize_stats_snapshot_schedule_at(now_seconds);
         }
@@ -93,7 +93,7 @@ impl ServerRuntime {
             return Ok(());
         };
         while next_snapshot_at_seconds <= now_seconds {
-            self.record_stats_snapshot_at(&stats_persistence, next_snapshot_at_seconds)?;
+            self.record_stats_snapshot_at(next_snapshot_at_seconds)?;
             next_snapshot_at_seconds += self.stats_snapshot_interval_seconds;
         }
         self.stats_next_snapshot_at_seconds = Some(next_snapshot_at_seconds);
@@ -102,7 +102,6 @@ impl ServerRuntime {
 
     pub(crate) fn record_stats_snapshot_at(
         &self,
-        stats_persistence: &StatsPersistenceStore,
         snapshot_at_seconds: f64,
     ) -> Result<(), ServerRuntimeError> {
         let snapshot_time = snapshot_at_seconds.floor() as i64;
@@ -112,8 +111,11 @@ impl ServerRuntime {
             .map(|session| session.version.clone())
             .collect();
         versions.sort();
-        for version in versions {
-            stats_persistence.add_version_log(snapshot_time, &version)?;
+        if let Some(stats_persistence) = self.stats_persistence.as_ref() {
+            stats_persistence.enqueue(ServerPersistenceEffect::RecordStatsSnapshot {
+                snapshot_time,
+                versions,
+            });
         }
         Ok(())
     }
@@ -351,33 +353,57 @@ impl ServerRuntime {
         self.room_is_persistent(room_name) && !self.room_playlist_state(room_name).files.is_empty()
     }
 
-    pub(crate) fn persist_room_if_needed(&self, room_name: &str) -> Result<(), ServerRuntimeError> {
+    pub(crate) fn persist_room_if_needed(
+        &mut self,
+        room_name: &str,
+    ) -> Result<(), ServerRuntimeError> {
         if !self.room_is_persistent(room_name) {
             return Ok(());
         }
-        let Some(room_persistence) = self.room_persistence.as_ref() else {
+        if self.room_persistence.is_none() {
             return Ok(());
-        };
-        let playlist = self.room_playlist_state(room_name);
+        }
+        let playlist = self.room_playlist_state(room_name).clone();
         let playback = self.room_playback_state_at(room_name, self.current_time_seconds());
-        room_persistence.save_room(
-            room_name,
-            &playlist.files,
-            playlist.index,
-            playback.position,
-        )?;
+        let version = self.next_room_persistence_version(room_name);
+        self.room_persistence
+            .as_ref()
+            .expect("room persistence presence checked above")
+            .enqueue(ServerPersistenceEffect::SaveRoom {
+                room_name: room_name.to_owned(),
+                files: playlist.files,
+                playlist_index: playlist.index,
+                position: playback.position,
+                version,
+            });
         Ok(())
     }
 
     pub(crate) fn delete_persisted_room_if_needed(
-        &self,
+        &mut self,
         room_name: &str,
     ) -> Result<(), ServerRuntimeError> {
-        let Some(room_persistence) = self.room_persistence.as_ref() else {
+        if self.room_persistence.is_none() {
             return Ok(());
-        };
-        room_persistence.delete_room(room_name)?;
+        }
+        let version = self.next_room_persistence_version(room_name);
+        self.room_persistence
+            .as_ref()
+            .expect("room persistence presence checked above")
+            .enqueue(ServerPersistenceEffect::DeleteRoom {
+                room_name: room_name.to_owned(),
+                version,
+            });
         Ok(())
+    }
+
+    fn next_room_persistence_version(&mut self, room_name: &str) -> u64 {
+        let version = self
+            .room_persistence_versions
+            .entry(room_name.to_owned())
+            .or_default();
+        *version = version.saturating_add(1);
+        *version
     }
 
     pub(crate) fn cleanup_room_if_empty(

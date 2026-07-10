@@ -1,16 +1,15 @@
 mod cli;
 
 use std::env;
-use std::sync::Arc;
 
 use anyhow::{Context, bail};
 use cli::{
     CliAction, ServerBindEndpoint, ServerBindFamily, ServerRunConfig, parse_server_cli_args,
     print_help, print_version, resolve_run_config,
 };
-use sorotte_server::{ServerApp, run_server_network_loops_until_shutdown};
+use sorotte_server::{ServerActorHandle, ServerApp, run_server_network_loops_until_shutdown};
 use tokio::net::TcpListener;
-use tokio::sync::{Mutex, watch};
+use tokio::sync::watch;
 
 fn endpoint_label(endpoint: &ServerBindEndpoint) -> &'static str {
     match endpoint.family {
@@ -91,7 +90,7 @@ async fn run_server(config: ServerRunConfig) -> anyhow::Result<()> {
     app.runtime_mut().set_tls_cert_path(config.tls_cert_path);
     app.runtime_mut().set_stats_db_path(config.stats_db_file)?;
 
-    let runtime = Arc::new(Mutex::new(std::mem::take(app.runtime_mut())));
+    let runtime = ServerActorHandle::spawn(std::mem::take(app.runtime_mut()));
     let (_shutdown_tx, shutdown_rx) = watch::channel(false);
     run_server_network_loops_until_shutdown(listeners, runtime, None, shutdown_rx).await?;
     Ok(())

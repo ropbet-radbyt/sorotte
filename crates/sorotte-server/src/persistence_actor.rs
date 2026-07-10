@@ -1,0 +1,528 @@
+use std::{
+    collections::BTreeMap,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc::{self, Receiver, SyncSender, TrySendError},
+    },
+    thread,
+};
+
+use rusqlite::Connection;
+use tokio::sync::broadcast;
+
+use crate::{
+    RoomPersistenceError, RoomPersistenceStore, StatsPersistenceError, StatsPersistenceStore,
+};
+
+const PERSISTENCE_COMMAND_QUEUE_CAPACITY: usize = 256;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerPersistenceWorkerKind {
+    Rooms,
+    Stats,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ServerPersistenceEffect {
+    SaveRoom {
+        room_name: String,
+        files: Vec<String>,
+        playlist_index: Option<i64>,
+        position: f64,
+        version: u64,
+    },
+    DeleteRoom {
+        room_name: String,
+        version: u64,
+    },
+    RecordStatsSnapshot {
+        snapshot_time: i64,
+        versions: Vec<String>,
+    },
+}
+
+/// Persistence failures put only the affected worker into degraded mode. The
+/// ordered server model and network continue running; later room snapshots can
+/// compensate for failed writes, while later stats snapshots continue normally.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ServerPersistenceEvent {
+    Applied {
+        worker: ServerPersistenceWorkerKind,
+        effect: ServerPersistenceEffect,
+    },
+    IgnoredStale {
+        worker: ServerPersistenceWorkerKind,
+        effect: ServerPersistenceEffect,
+    },
+    Failed {
+        worker: ServerPersistenceWorkerKind,
+        effect: ServerPersistenceEffect,
+        error: String,
+    },
+    Degraded {
+        worker: ServerPersistenceWorkerKind,
+    },
+    Recovered {
+        worker: ServerPersistenceWorkerKind,
+    },
+}
+
+enum PersistenceWorkerCommand {
+    Apply(ServerPersistenceEffect),
+    Flush(mpsc::Sender<()>),
+    Shutdown,
+}
+
+#[derive(Clone)]
+struct PersistenceEventReporter {
+    worker: ServerPersistenceWorkerKind,
+    events: broadcast::Sender<ServerPersistenceEvent>,
+    worker_degraded: Arc<AtomicBool>,
+    degraded_worker_count: Arc<AtomicUsize>,
+}
+
+impl PersistenceEventReporter {
+    fn applied(&self, effect: ServerPersistenceEffect) {
+        let _ = self.events.send(ServerPersistenceEvent::Applied {
+            worker: self.worker,
+            effect,
+        });
+        self.recover_if_needed();
+    }
+
+    fn ignored_stale(&self, effect: ServerPersistenceEffect) {
+        let _ = self.events.send(ServerPersistenceEvent::IgnoredStale {
+            worker: self.worker,
+            effect,
+        });
+        self.recover_if_needed();
+    }
+
+    fn failed(&self, effect: ServerPersistenceEffect, error: impl Into<String>) {
+        let error = error.into();
+        let _ = self.events.send(ServerPersistenceEvent::Failed {
+            worker: self.worker,
+            effect,
+            error: error.clone(),
+        });
+        if !self.worker_degraded.swap(true, Ordering::AcqRel) {
+            self.degraded_worker_count.fetch_add(1, Ordering::AcqRel);
+            let _ = self.events.send(ServerPersistenceEvent::Degraded {
+                worker: self.worker,
+            });
+        }
+        eprintln!(
+            "Sorotte server {:?} persistence entered degraded mode: {error}",
+            self.worker
+        );
+    }
+
+    fn recover_if_needed(&self) {
+        if self.worker_degraded.swap(false, Ordering::AcqRel) {
+            let _ = self.degraded_worker_count.fetch_update(
+                Ordering::AcqRel,
+                Ordering::Acquire,
+                |count| Some(count.saturating_sub(1)),
+            );
+            let _ = self.events.send(ServerPersistenceEvent::Recovered {
+                worker: self.worker,
+            });
+        }
+    }
+}
+
+struct PersistenceWorkerService {
+    worker: ServerPersistenceWorkerKind,
+    commands: SyncSender<PersistenceWorkerCommand>,
+    join_handle: Option<thread::JoinHandle<()>>,
+    reporter: PersistenceEventReporter,
+}
+
+impl std::fmt::Debug for PersistenceWorkerService {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PersistenceWorkerService")
+            .field("worker", &self.worker)
+            .field(
+                "degraded",
+                &self.reporter.worker_degraded.load(Ordering::Acquire),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+impl PersistenceWorkerService {
+    fn spawn(
+        worker: ServerPersistenceWorkerKind,
+        events: broadcast::Sender<ServerPersistenceEvent>,
+        degraded_worker_count: Arc<AtomicUsize>,
+        run: impl FnOnce(Receiver<PersistenceWorkerCommand>, PersistenceEventReporter) + Send + 'static,
+    ) -> Self {
+        let (commands, receiver) =
+            mpsc::sync_channel::<PersistenceWorkerCommand>(PERSISTENCE_COMMAND_QUEUE_CAPACITY);
+        let reporter = PersistenceEventReporter {
+            worker,
+            events,
+            worker_degraded: Arc::new(AtomicBool::new(false)),
+            degraded_worker_count,
+        };
+        let worker_reporter = reporter.clone();
+        let join_handle = thread::Builder::new()
+            .name(format!("sorotte-persistence-{worker:?}"))
+            .spawn(move || run(receiver, worker_reporter))
+            .expect("persistence worker thread should spawn");
+        Self {
+            worker,
+            commands,
+            join_handle: Some(join_handle),
+            reporter,
+        }
+    }
+
+    fn enqueue(&self, effect: ServerPersistenceEffect) {
+        match self
+            .commands
+            .try_send(PersistenceWorkerCommand::Apply(effect))
+        {
+            Ok(()) => {}
+            Err(TrySendError::Full(PersistenceWorkerCommand::Apply(effect))) => self
+                .reporter
+                .failed(effect, "persistence command queue is full"),
+            Err(TrySendError::Disconnected(PersistenceWorkerCommand::Apply(effect))) => self
+                .reporter
+                .failed(effect, "persistence worker is disconnected"),
+            Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
+                unreachable!("enqueue only sends apply commands")
+            }
+        }
+    }
+
+    fn flush(&self) -> bool {
+        let (acknowledge, acknowledgement) = mpsc::channel();
+        self.commands
+            .send(PersistenceWorkerCommand::Flush(acknowledge))
+            .is_ok()
+            && acknowledgement.recv().is_ok()
+    }
+}
+
+impl Drop for PersistenceWorkerService {
+    fn drop(&mut self) {
+        let _ = self.commands.send(PersistenceWorkerCommand::Shutdown);
+        if let Some(join_handle) = self.join_handle.take() {
+            let _ = join_handle.join();
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct RoomPersistenceService(PersistenceWorkerService);
+
+impl RoomPersistenceService {
+    pub(crate) fn start(
+        store: RoomPersistenceStore,
+        events: broadcast::Sender<ServerPersistenceEvent>,
+        degraded_worker_count: Arc<AtomicUsize>,
+    ) -> Result<Self, RoomPersistenceError> {
+        let connection = store.connection("connect persistence worker")?;
+        Ok(Self(PersistenceWorkerService::spawn(
+            ServerPersistenceWorkerKind::Rooms,
+            events,
+            degraded_worker_count,
+            move |commands, reporter| run_room_worker(commands, reporter, store, connection),
+        )))
+    }
+
+    pub(crate) fn enqueue(&self, effect: ServerPersistenceEffect) {
+        self.0.enqueue(effect);
+    }
+
+    pub(crate) fn flush(&self) -> bool {
+        self.0.flush()
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct StatsPersistenceService(PersistenceWorkerService);
+
+impl StatsPersistenceService {
+    pub(crate) fn start(
+        store: StatsPersistenceStore,
+        events: broadcast::Sender<ServerPersistenceEvent>,
+        degraded_worker_count: Arc<AtomicUsize>,
+    ) -> Result<Self, StatsPersistenceError> {
+        let connection = store.connection("connect persistence worker")?;
+        Ok(Self(PersistenceWorkerService::spawn(
+            ServerPersistenceWorkerKind::Stats,
+            events,
+            degraded_worker_count,
+            move |commands, reporter| run_stats_worker(commands, reporter, store, connection),
+        )))
+    }
+
+    pub(crate) fn enqueue(&self, effect: ServerPersistenceEffect) {
+        self.0.enqueue(effect);
+    }
+
+    pub(crate) fn flush(&self) -> bool {
+        self.0.flush()
+    }
+}
+
+fn run_room_worker(
+    commands: Receiver<PersistenceWorkerCommand>,
+    reporter: PersistenceEventReporter,
+    store: RoomPersistenceStore,
+    connection: Connection,
+) {
+    let mut latest_versions = BTreeMap::<String, u64>::new();
+    while let Ok(command) = commands.recv() {
+        match command {
+            PersistenceWorkerCommand::Apply(effect) => {
+                apply_room_effect(&reporter, &store, &connection, &mut latest_versions, effect);
+            }
+            PersistenceWorkerCommand::Flush(acknowledge) => {
+                let _ = acknowledge.send(());
+            }
+            PersistenceWorkerCommand::Shutdown => break,
+        }
+    }
+}
+
+fn apply_room_effect(
+    reporter: &PersistenceEventReporter,
+    store: &RoomPersistenceStore,
+    connection: &Connection,
+    latest_versions: &mut BTreeMap<String, u64>,
+    effect: ServerPersistenceEffect,
+) {
+    let (room_name, version) = match &effect {
+        ServerPersistenceEffect::SaveRoom {
+            room_name, version, ..
+        }
+        | ServerPersistenceEffect::DeleteRoom { room_name, version } => (room_name, *version),
+        ServerPersistenceEffect::RecordStatsSnapshot { .. } => {
+            reporter.failed(effect, "stats effect was routed to the room worker");
+            return;
+        }
+    };
+    if latest_versions
+        .get(room_name)
+        .is_some_and(|latest| *latest >= version)
+    {
+        reporter.ignored_stale(effect);
+        return;
+    }
+
+    let result = match &effect {
+        ServerPersistenceEffect::SaveRoom {
+            room_name,
+            files,
+            playlist_index,
+            position,
+            ..
+        } => store.save_room(connection, room_name, files, *playlist_index, *position),
+        ServerPersistenceEffect::DeleteRoom { room_name, .. } => {
+            store.delete_room(connection, room_name)
+        }
+        ServerPersistenceEffect::RecordStatsSnapshot { .. } => unreachable!(),
+    };
+    match result {
+        Ok(()) => {
+            latest_versions.insert(room_name.clone(), version);
+            reporter.applied(effect);
+        }
+        Err(error) => reporter.failed(effect, error.to_string()),
+    }
+}
+
+fn run_stats_worker(
+    commands: Receiver<PersistenceWorkerCommand>,
+    reporter: PersistenceEventReporter,
+    store: StatsPersistenceStore,
+    mut connection: Connection,
+) {
+    while let Ok(command) = commands.recv() {
+        match command {
+            PersistenceWorkerCommand::Apply(effect) => {
+                apply_stats_effect(&reporter, &store, &mut connection, effect);
+            }
+            PersistenceWorkerCommand::Flush(acknowledge) => {
+                let _ = acknowledge.send(());
+            }
+            PersistenceWorkerCommand::Shutdown => break,
+        }
+    }
+}
+
+fn apply_stats_effect(
+    reporter: &PersistenceEventReporter,
+    store: &StatsPersistenceStore,
+    connection: &mut Connection,
+    effect: ServerPersistenceEffect,
+) {
+    let result = match &effect {
+        ServerPersistenceEffect::RecordStatsSnapshot {
+            snapshot_time,
+            versions,
+        } => store.add_version_logs(connection, *snapshot_time, versions),
+        ServerPersistenceEffect::SaveRoom { .. } | ServerPersistenceEffect::DeleteRoom { .. } => {
+            reporter.failed(effect, "room effect was routed to the stats worker");
+            return;
+        }
+    };
+    match result {
+        Ok(()) => reporter.applied(effect),
+        Err(error) => reporter.failed(effect, error.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use rusqlite::Connection;
+    use tokio::sync::broadcast;
+
+    use super::{
+        RoomPersistenceService, ServerPersistenceEffect, ServerPersistenceEvent,
+        StatsPersistenceService,
+    };
+    use crate::{RoomPersistenceStore, StatsPersistenceStore};
+
+    fn temporary_sqlite_path(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "sorotte-{name}-{}-{unique}.sqlite3",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn stats_worker_surfaces_degraded_and_recovered_events() {
+        let db_path = temporary_sqlite_path("stats-worker-recovery");
+        let _ = fs::remove_file(&db_path);
+        let store = StatsPersistenceStore::open(&db_path)
+            .expect("stats persistence schema should initialize");
+        let (events, _) = broadcast::channel(16);
+        let mut event_rx = events.subscribe();
+        let degraded_worker_count = Arc::new(AtomicUsize::new(0));
+        let service = StatsPersistenceService::start(store, events, degraded_worker_count.clone())
+            .expect("stats persistence worker should start");
+        let external = Connection::open(&db_path).expect("external sqlite connection should open");
+        external
+            .execute("DROP TABLE clients_snapshots", [])
+            .expect("stats table should be removable for failure injection");
+
+        service.enqueue(ServerPersistenceEffect::RecordStatsSnapshot {
+            snapshot_time: 1,
+            versions: vec!["1.7.0".to_owned()],
+        });
+        assert!(
+            service.flush(),
+            "failed effect should still be acknowledged"
+        );
+        assert_eq!(degraded_worker_count.load(Ordering::Acquire), 1);
+        let failed_events: Vec<_> = std::iter::from_fn(|| event_rx.try_recv().ok()).collect();
+        assert!(
+            failed_events
+                .iter()
+                .any(|event| matches!(event, ServerPersistenceEvent::Failed { .. }))
+        );
+        assert!(
+            failed_events
+                .iter()
+                .any(|event| matches!(event, ServerPersistenceEvent::Degraded { .. }))
+        );
+
+        external
+            .execute(
+                "CREATE TABLE clients_snapshots (snapshot_time INTEGER, version STRING)",
+                [],
+            )
+            .expect("stats table should be restorable");
+        service.enqueue(ServerPersistenceEffect::RecordStatsSnapshot {
+            snapshot_time: 2,
+            versions: vec!["1.7.1".to_owned(), "1.7.2".to_owned()],
+        });
+        assert!(service.flush(), "recovery effect should be acknowledged");
+        assert_eq!(degraded_worker_count.load(Ordering::Acquire), 0);
+        let recovery_events: Vec<_> = std::iter::from_fn(|| event_rx.try_recv().ok()).collect();
+        assert!(
+            recovery_events
+                .iter()
+                .any(|event| matches!(event, ServerPersistenceEvent::Applied { .. }))
+        );
+        assert!(
+            recovery_events
+                .iter()
+                .any(|event| matches!(event, ServerPersistenceEvent::Recovered { .. }))
+        );
+
+        drop(service);
+        drop(external);
+        fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
+    }
+
+    #[test]
+    fn room_worker_ignores_stale_versioned_snapshots() {
+        let db_path = temporary_sqlite_path("room-worker-versioning");
+        let _ = fs::remove_file(&db_path);
+        let store = RoomPersistenceStore::open(&db_path)
+            .expect("room persistence schema should initialize");
+        let (events, _) = broadcast::channel(16);
+        let mut event_rx = events.subscribe();
+        let service = RoomPersistenceService::start(store, events, Arc::new(AtomicUsize::new(0)))
+            .expect("room persistence worker should start");
+
+        service.enqueue(ServerPersistenceEffect::SaveRoom {
+            room_name: "room".to_owned(),
+            files: vec!["new.mkv".to_owned()],
+            playlist_index: Some(0),
+            position: 20.0,
+            version: 2,
+        });
+        service.enqueue(ServerPersistenceEffect::SaveRoom {
+            room_name: "room".to_owned(),
+            files: vec!["stale.mkv".to_owned()],
+            playlist_index: Some(0),
+            position: 10.0,
+            version: 1,
+        });
+        assert!(service.flush(), "room effects should be acknowledged");
+
+        let connection = Connection::open(&db_path).expect("sqlite db should be inspectable");
+        let playlist: String = connection
+            .query_row(
+                "SELECT playlist FROM persistent_rooms WHERE name = 'room'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("persisted room should exist");
+        assert_eq!(playlist, "new.mkv");
+        let worker_events: Vec<_> = std::iter::from_fn(|| event_rx.try_recv().ok()).collect();
+        assert!(worker_events.iter().any(|event| matches!(
+            event,
+            ServerPersistenceEvent::IgnoredStale {
+                effect: ServerPersistenceEffect::SaveRoom { version: 1, .. },
+                ..
+            }
+        )));
+
+        drop(service);
+        drop(connection);
+        fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
+    }
+}

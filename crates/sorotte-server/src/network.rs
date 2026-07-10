@@ -318,11 +318,11 @@ async fn route_outbound_lines_for_client_session(
     Ok(())
 }
 
-async fn tls_acceptor_from_runtime(runtime: &Arc<Mutex<ServerRuntime>>) -> io::Result<TlsAcceptor> {
-    let tls_server_config = {
-        let runtime_guard = runtime.lock().await;
-        runtime_guard.tls_server_config()
-    };
+async fn tls_acceptor_from_runtime(runtime: &ServerActorHandle) -> io::Result<TlsAcceptor> {
+    let tls_server_config = runtime
+        .tls_server_config()
+        .await
+        .map_err(|error| io::Error::new(io::ErrorKind::BrokenPipe, error))?;
     let Some(tls_server_config) = tls_server_config else {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -335,7 +335,7 @@ async fn tls_acceptor_from_runtime(runtime: &Arc<Mutex<ServerRuntime>>) -> io::R
 async fn apply_local_transport_actions(
     transport: &mut ServerNetworkTransport,
     client_id: &str,
-    runtime: &Arc<Mutex<ServerRuntime>>,
+    runtime: &ServerActorHandle,
     transport_actions: &[DirectedTransportAction],
     tls_handshake_timeout: std::time::Duration,
 ) -> io::Result<()> {
@@ -357,7 +357,7 @@ pub(crate) async fn run_server_network_client_session_with_timeouts(
     stream: TcpStream,
     peer_ip: Option<String>,
     client_id: String,
-    runtime: Arc<Mutex<ServerRuntime>>,
+    runtime: ServerActorHandle,
     client_event_senders: SharedClientEventSenders,
     transport_action_sink: Option<UnboundedSender<DirectedTransportAction>>,
     timeouts: ServerNetworkClientSessionTimeouts,
@@ -410,25 +410,10 @@ pub(crate) async fn run_server_network_client_session_with_timeouts(
                 if inbound_line.is_empty() {
                     continue;
                 }
-                let dispatch = {
-                    let mut runtime_guard = runtime.lock().await;
-                    let dispatch = runtime_guard.handle_line_fanout_with_transport_actions_for_peer(
-                        &client_id,
-                        inbound_line,
-                        peer_ip.as_deref(),
-                    );
-                    let session_exists = runtime_guard.session(&client_id).is_some();
-                    (dispatch, session_exists)
-                };
-                let (dispatch, session_exists) = dispatch;
+                let (dispatch, session_exists) = runtime
+                    .handle_line(&client_id, inbound_line, peer_ip.as_deref())
+                    .await?;
                 session_known = session_known || session_exists;
-                let dispatch = match dispatch {
-                    Ok(dispatch) => dispatch,
-                    Err(source) => {
-                        session_error = Some(ServerNetworkError::Runtime(source));
-                        break;
-                    }
-                };
                 let close_after_dispatch =
                     transport_actions_close_client(&dispatch.transport_actions, &client_id);
                 if let Err(source) = route_outbound_lines_for_client_session(
@@ -514,17 +499,14 @@ pub(crate) async fn run_server_network_client_session_with_timeouts(
         session_error = Some(ServerNetworkError::Io(source));
     }
 
-    let disconnect_fanout = {
-        let mut runtime_guard = runtime.lock().await;
-        runtime_guard.handle_transport_disconnect_fanout(&client_id)
-    };
+    let disconnect_fanout = runtime.disconnect(&client_id).await;
     match disconnect_fanout {
         Ok(outbound_lines) => {
             dispatch_outbound_lines_to_clients(&client_event_senders, outbound_lines).await;
         }
         Err(source) => {
             if session_error.is_none() {
-                session_error = Some(ServerNetworkError::Runtime(source));
+                session_error = Some(ServerNetworkError::Actor(source));
             }
         }
     }
@@ -539,7 +521,7 @@ pub(crate) async fn run_server_network_client_session_with_pre_hello_timeout(
     stream: TcpStream,
     peer_ip: Option<String>,
     client_id: String,
-    runtime: Arc<Mutex<ServerRuntime>>,
+    runtime: ServerActorHandle,
     client_event_senders: SharedClientEventSenders,
     transport_action_sink: Option<UnboundedSender<DirectedTransportAction>>,
     pre_hello_timeout: std::time::Duration,
@@ -603,7 +585,7 @@ async fn run_server_network_client_session(
     stream: TcpStream,
     peer_ip: Option<String>,
     client_id: String,
-    runtime: Arc<Mutex<ServerRuntime>>,
+    runtime: ServerActorHandle,
     client_event_senders: SharedClientEventSenders,
     transport_action_sink: Option<UnboundedSender<DirectedTransportAction>>,
 ) -> Result<(), ServerNetworkError> {
@@ -657,7 +639,7 @@ async fn accept_server_network_clients_until_shutdown(
 
 pub async fn run_server_network_loops_until_shutdown(
     listeners: Vec<TcpListener>,
-    runtime: Arc<Mutex<ServerRuntime>>,
+    runtime: ServerActorHandle,
     transport_action_sink: Option<UnboundedSender<DirectedTransportAction>>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> Result<(), ServerNetworkError> {
@@ -697,14 +679,13 @@ pub async fn run_server_network_loops_until_shutdown(
         prune_finished_session_tasks(&mut session_tasks).await;
         tokio::select! {
             _ = tick.tick() => {
-                let dispatch = {
-                    let mut runtime_guard = runtime.lock().await;
-                    runtime_guard.collect_dispatch_at(current_unix_timestamp_seconds())
-                };
-                let dispatch = match dispatch {
+                let dispatch = match runtime
+                    .collect_dispatch(current_unix_timestamp_seconds())
+                    .await
+                {
                     Ok(dispatch) => dispatch,
                     Err(source) => {
-                        loop_error = Some(ServerNetworkError::Runtime(source));
+                        loop_error = Some(ServerNetworkError::Actor(source));
                         break;
                     }
                 };
@@ -782,7 +763,7 @@ pub async fn run_server_network_loops_until_shutdown(
 
 pub async fn run_server_network_loop_until_shutdown(
     listener: TcpListener,
-    runtime: Arc<Mutex<ServerRuntime>>,
+    runtime: ServerActorHandle,
     transport_action_sink: Option<UnboundedSender<DirectedTransportAction>>,
     shutdown_rx: watch::Receiver<bool>,
 ) -> Result<(), ServerNetworkError> {

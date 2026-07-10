@@ -12,6 +12,7 @@ impl ServerRuntime {
     }
 
     pub fn with_room_password_salt(salt: impl Into<String>) -> Self {
+        let (persistence_events, _) = broadcast::channel(SERVER_PERSISTENCE_EVENT_CAPACITY);
         Self {
             domain: SyncDomain::default(),
             sessions: BTreeMap::new(),
@@ -48,6 +49,9 @@ impl ServerRuntime {
             max_chat_message_length: DEFAULT_MAX_CHAT_MESSAGE_LENGTH,
             max_username_length: DEFAULT_MAX_USERNAME_LENGTH,
             room_persistence: None,
+            room_persistence_versions: BTreeMap::new(),
+            persistence_events,
+            persistence_degraded_worker_count: Arc::new(AtomicUsize::new(0)),
             permanent_rooms: BTreeSet::new(),
         }
     }
@@ -129,8 +133,15 @@ impl ServerRuntime {
             self.stats_next_snapshot_at_seconds = None;
             return Ok(());
         };
-        let stats_persistence = StatsPersistenceStore::open(&db_path)?;
-        self.stats_persistence = Some(stats_persistence);
+        // Reconfiguration is an explicit startup/control-plane boundary: finish
+        // the old worker before opening or loading a replacement database.
+        drop(self.stats_persistence.take());
+        let store = StatsPersistenceStore::open(&db_path)?;
+        self.stats_persistence = Some(StatsPersistenceService::start(
+            store,
+            self.persistence_events.clone(),
+            self.persistence_degraded_worker_count.clone(),
+        )?);
         self.initialize_stats_snapshot_schedule();
         Ok(())
     }
@@ -188,11 +199,20 @@ impl ServerRuntime {
     ) -> Result<(), ServerRuntimeError> {
         let Some(db_path) = db_path else {
             self.room_persistence = None;
+            self.room_persistence_versions.clear();
             return Ok(());
         };
-        let persistence = RoomPersistenceStore::open(&db_path)?;
-        let persisted_rooms = persistence.load_rooms()?;
-        self.room_persistence = Some(persistence);
+        // Flush and close the old reusable connection before loading the new
+        // snapshot, especially when reconfiguring the same database path.
+        drop(self.room_persistence.take());
+        let store = RoomPersistenceStore::open(&db_path)?;
+        let persisted_rooms = store.load_rooms()?;
+        self.room_persistence = Some(RoomPersistenceService::start(
+            store,
+            self.persistence_events.clone(),
+            self.persistence_degraded_worker_count.clone(),
+        )?);
+        self.room_persistence_versions.clear();
         self.apply_persisted_rooms_snapshot(persisted_rooms);
         self.apply_permanent_rooms_snapshot();
         Ok(())
@@ -251,6 +271,36 @@ impl ServerRuntime {
 
     pub fn set_time_now_override_seconds(&mut self, seconds: Option<f64>) {
         self.time_now_override_seconds = seconds;
+    }
+
+    pub fn subscribe_persistence_events(&self) -> broadcast::Receiver<ServerPersistenceEvent> {
+        self.persistence_events.subscribe()
+    }
+
+    pub fn persistence_is_degraded(&self) -> bool {
+        self.persistence_degraded_worker_count
+            .load(Ordering::Acquire)
+            > 0
+    }
+
+    /// Explicit durability barrier for shutdown coordination and tests. Model
+    /// transitions enqueue persistence effects without waiting on this boundary.
+    pub fn flush_persistence(&self) -> Result<(), ServerRuntimeError> {
+        if self
+            .room_persistence
+            .as_ref()
+            .is_some_and(|persistence| !persistence.flush())
+        {
+            return Err(ServerRuntimeError::PersistenceWorkerUnavailable("room"));
+        }
+        if self
+            .stats_persistence
+            .as_ref()
+            .is_some_and(|persistence| !persistence.flush())
+        {
+            return Err(ServerRuntimeError::PersistenceWorkerUnavailable("stats"));
+        }
+        Ok(())
     }
 
     pub fn drain_transport_actions(&mut self) -> Vec<DirectedTransportAction> {
