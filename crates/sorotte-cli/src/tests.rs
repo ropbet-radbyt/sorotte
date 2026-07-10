@@ -59,6 +59,7 @@ use super::{
     user_change_notification_message,
 };
 use serde_json::Value;
+use sorotte_client_app::app_boundary::application::ClientApplication;
 use sorotte_client_app::app_boundary::compatibility::{
     LegacyConfigurationGetterCompatibilityStatus, LegacyConfigurationGetterIniCompatEntry,
     LegacyConfigurationGetterStartupCompatEntry, legacy_configuration_getter_ini_compat_entries,
@@ -280,7 +281,7 @@ async fn expect_client_hello_and_send_standard_test_server_hello(
 }
 
 fn seed_stub_player_pause_position_telemetry(
-    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    runtime: &mut ClientApplication<MpvAdapter>,
     paused: bool,
     position_seconds: f64,
 ) {
@@ -301,10 +302,7 @@ fn seed_stub_player_pause_position_telemetry(
         );
 }
 
-fn seed_stub_player_playback_rate(
-    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
-    rate: f64,
-) {
+fn seed_stub_player_playback_rate(runtime: &mut ClientApplication<MpvAdapter>, rate: f64) {
     runtime
         .player_mut()
         .set_playback_rate(rate)
@@ -313,7 +311,7 @@ fn seed_stub_player_playback_rate(
 
 async fn run_connected_client_session_expect_normal_exit(
     addr: std::net::SocketAddr,
-    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    runtime: &mut ClientApplication<MpvAdapter>,
     config: &ClientLoopConfig,
 ) {
     let stream = TcpStream::connect(addr)

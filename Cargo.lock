@@ -3360,9 +3360,8 @@ dependencies = [
  "sorotte-client-core",
  "sorotte-player-api",
  "sorotte-player-mpv",
- "sorotte-plex",
  "sorotte-protocol",
- "sorotte-server",
+ "sorotte-secret",
  "tokio",
  "tokio-rustls",
  "webpki-roots 0.26.11",
@@ -3375,7 +3374,11 @@ dependencies = [
  "anyhow",
  "serde_json",
  "sorotte-client-core",
+ "sorotte-player-api",
+ "sorotte-plex",
+ "sorotte-protocol",
  "sorotte-secret",
+ "tokio",
 ]
 
 [[package]]

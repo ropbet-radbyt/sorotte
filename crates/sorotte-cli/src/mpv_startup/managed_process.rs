@@ -38,7 +38,7 @@ pub(crate) fn create_client_runtime_with_managed_mpv_support(
     legacy_overrides: Option<&LegacyClientArgOverrides>,
     stored_settings: Option<&StoredClientSettingsMvp>,
 ) -> anyhow::Result<(
-    ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    ClientApplication<MpvAdapter>,
     Option<ManagedMpvProcessGuard>,
 )> {
     let session = create_client_session(config);
@@ -48,10 +48,7 @@ pub(crate) fn create_client_runtime_with_managed_mpv_support(
         &mut player,
         stored_settings,
     )?;
-    Ok((
-        ClientRuntime::new(session, player, QueuedRuntimeControl::default()),
-        managed_guard,
-    ))
+    Ok((ClientApplication::new(session, player), managed_guard))
 }
 
 fn create_mpv_adapter_and_optional_managed_process_from_env(

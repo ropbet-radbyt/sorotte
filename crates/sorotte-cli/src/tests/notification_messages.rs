@@ -174,7 +174,8 @@ fn run_planned_local_runtime_action_legacy_compatible_suppresses_out_of_range_pl
 
     let player = MpvAdapter::default();
     let control = QueuedRuntimeControl::default();
-    let mut runtime = ClientRuntime::new(session, player, control);
+    let runtime = ClientRuntime::new(session, player, control);
+    let mut runtime = ClientApplication::from_runtime(runtime);
     let mut user_offset_seconds = 0.0;
 
     assert!(
@@ -196,7 +197,7 @@ fn run_planned_local_runtime_action_legacy_compatible_suppresses_out_of_range_pl
         "out-of-range delete should be suppressed with legacy local error"
     );
     assert_eq!(
-        runtime.control().outbound_messages().len(),
+        runtime.pending_protocol_messages().len(),
         0,
         "out-of-range playlist commands should not emit outbound protocol messages"
     );
@@ -211,12 +212,12 @@ fn run_planned_local_runtime_action_legacy_compatible_suppresses_out_of_range_pl
         "in-range select should dispatch protocol updates"
     );
     assert_eq!(
-        runtime.control().outbound_messages().len(),
+        runtime.pending_protocol_messages().len(),
         2,
         "in-range select should emit the paused-at-zero reset state and the playlist index update"
     );
     assert!(
-        runtime.control().outbound_messages().iter().any(|message| {
+        runtime.pending_protocol_messages().iter().any(|message| {
             matches!(
                 message,
                 ProtocolMessage::Set(payload)

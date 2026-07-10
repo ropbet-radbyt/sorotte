@@ -185,7 +185,7 @@ fn emit_player_playback_drift_diagnostic(message: &str) -> anyhow::Result<()> {
 }
 
 pub(crate) fn flush_player_playback_telemetry_diagnostics(
-    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    runtime: &mut ClientApplication<MpvAdapter>,
     log_telemetry: bool,
     log_drift: bool,
 ) -> anyhow::Result<()> {

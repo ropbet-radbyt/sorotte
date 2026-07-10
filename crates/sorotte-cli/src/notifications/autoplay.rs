@@ -89,7 +89,7 @@ fn emit_autoplay_countdown_notification_to_player_legacy_compatible(
 
 #[cfg(test)]
 pub(crate) fn flush_autoplay_notifications_to_sink<F>(
-    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    runtime: &mut ClientApplication<MpvAdapter>,
     notify: &mut F,
 ) -> anyhow::Result<()>
 where
@@ -99,7 +99,7 @@ where
 }
 
 pub(crate) fn flush_autoplay_notifications_legacy_compatible<F>(
-    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    runtime: &mut ClientApplication<MpvAdapter>,
     notify: &mut F,
 ) -> anyhow::Result<()>
 where

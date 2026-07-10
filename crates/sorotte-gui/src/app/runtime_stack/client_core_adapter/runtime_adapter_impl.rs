@@ -48,7 +48,10 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn set_room(&mut self, room: String) -> Result<(), String> {
-        match self.runtime.run_set_room(room) {
+        match self.dispatch_application_command(ClientCommand::SetRoom {
+            room,
+            legacy_fallback: false,
+        }) {
             Ok(true) => {
                 self.pending_room_for_next_hello =
                     self.latest_outbound_room_target_for_next_hello();
@@ -74,7 +77,10 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn set_room_with_legacy_fallback(&mut self, default_room: String) -> Result<(), String> {
-        match self.runtime.run_set_room_with_legacy_fallback(default_room) {
+        match self.dispatch_application_command(ClientCommand::SetRoom {
+            room: default_room,
+            legacy_fallback: true,
+        }) {
             Ok(true) => {
                 self.pending_room_for_next_hello =
                     self.latest_outbound_room_target_for_next_hello();
@@ -100,7 +106,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn send_chat_message(&mut self, message: String) -> Result<(), String> {
-        match self.runtime.run_send_chat_message(message) {
+        match self.dispatch_application_command(ClientCommand::SendChat(message)) {
             Ok(true) => Ok(()),
             Ok(false) => match self.runtime.session().server_chat_supported() {
                 None => Err(
@@ -144,7 +150,11 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn set_local_ready(&mut self, ready: bool) -> Result<(), String> {
-        match self.runtime.run_set_ready_for_user("", ready, true) {
+        match self.dispatch_application_command(ClientCommand::SetReady {
+            username: None,
+            ready: Some(ready),
+            manually_initiated: true,
+        }) {
             Ok(true) => Ok(()),
             Ok(false) => match self.runtime.session().server_readiness_supported() {
                 None => Err(
@@ -177,7 +187,11 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn set_user_ready(&mut self, username: String, ready: bool) -> Result<(), String> {
-        match self.runtime.run_set_ready_for_user(username, ready, true) {
+        match self.dispatch_application_command(ClientCommand::SetReady {
+            username: Some(username),
+            ready: Some(ready),
+            manually_initiated: true,
+        }) {
             Ok(true) => Ok(()),
             Ok(false) => match self.runtime.session().server_set_others_readiness_supported() {
                 None => Err(
@@ -209,7 +223,9 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn request_controller_auth(&mut self, room: String, password: String) -> Result<(), String> {
-        match self.runtime.run_request_controller_auth(room, password) {
+        match self
+            .dispatch_application_command(ClientCommand::request_controller_auth(room, password))
+        {
             Ok(true) => Ok(()),
             Ok(false) => {
                 if self.runtime.session().username().is_none() {

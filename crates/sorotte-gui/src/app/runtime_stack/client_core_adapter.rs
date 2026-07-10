@@ -11,7 +11,7 @@ pub(in crate::app) struct GuiClientCoreChatSessionRuntimeAdapter {
     pub(super) pending_ready_at_start_on_server_hello: bool,
     pub(super) request_user_list_on_first_state_without_media: bool,
     pub(super) runtime_settings: StoredClientSettingsRuntimeSnapshot,
-    pub(in crate::app) runtime: ClientRuntime<GuiNoopClientRuntimePlayer, QueuedRuntimeControl>,
+    pub(in crate::app) runtime: ClientApplication<GuiNoopClientRuntimePlayer>,
     pub(super) pending_startup_protocol_lines: VecDeque<String>,
     pub(super) next_state_sync_heartbeat_at: Option<Instant>,
     pub(super) next_autoplay_tick_at: Option<Instant>,
@@ -22,6 +22,20 @@ pub(in crate::app) struct GuiClientCoreChatSessionRuntimeAdapter {
 
 impl GuiClientCoreChatSessionRuntimeAdapter {
     const STATE_SYNC_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
+
+    fn dispatch_application_command(&mut self, command: ClientCommand) -> Result<bool, String> {
+        let events = self.runtime.dispatch(command);
+        if let Some(ClientEvent::OperationFailed { message, .. }) = events
+            .iter()
+            .find(|event| matches!(event, ClientEvent::OperationFailed { .. }))
+        {
+            return Err(message.clone());
+        }
+        Ok(events
+            .iter()
+            .find_map(ClientEvent::command_changed)
+            .unwrap_or(false))
+    }
 
     #[cfg(test)]
     pub(in crate::app) fn new(
@@ -57,11 +71,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             pending_ready_at_start_on_server_hello: false,
             request_user_list_on_first_state_without_media: true,
             runtime_settings,
-            runtime: ClientRuntime::new(
-                session,
-                GuiNoopClientRuntimePlayer,
-                QueuedRuntimeControl::default(),
-            ),
+            runtime: ClientApplication::new(session, GuiNoopClientRuntimePlayer),
             pending_startup_protocol_lines: VecDeque::from([hello_json]),
             next_state_sync_heartbeat_at: None,
             next_autoplay_tick_at: None,
@@ -343,11 +353,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                 &room,
             );
         }
-        self.runtime = ClientRuntime::new(
-            session,
-            GuiNoopClientRuntimePlayer,
-            QueuedRuntimeControl::default(),
-        );
+        self.runtime = ClientApplication::new(session, GuiNoopClientRuntimePlayer);
         self.pending_startup_protocol_lines.clear();
         self.pending_startup_protocol_lines
             .push_back(Self::hello_json(&username, &room, &self.runtime_settings));
@@ -391,8 +397,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
 
     fn latest_outbound_room_target_for_next_hello(&self) -> Option<String> {
         self.runtime
-            .control()
-            .outbound_messages()
+            .pending_protocol_messages()
             .iter()
             .rev()
             .find_map(|message| match message {

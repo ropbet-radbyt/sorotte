@@ -1,7 +1,7 @@
 use super::*;
 
 pub(crate) fn derive_runtime_loop_inputs(
-    runtime: &ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    runtime: &ClientApplication<MpvAdapter>,
     config: &ClientLoopConfig,
     now_seconds: f64,
 ) -> RuntimeLoopInputs {

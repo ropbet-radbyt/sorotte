@@ -62,7 +62,7 @@ fn emit_controller_auth_transition_notification_to_player_legacy_compatible(
 }
 
 pub(crate) fn flush_controller_auth_notifications_legacy_compatible(
-    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    runtime: &mut ClientApplication<MpvAdapter>,
 ) -> anyhow::Result<()> {
     while let Some(notification) = runtime.pending_controller_auth_notification().cloned() {
         runtime.with_player_io(|player| {
@@ -80,7 +80,7 @@ pub(crate) fn flush_controller_auth_notifications_legacy_compatible(
 
 #[cfg(test)]
 pub(crate) fn flush_controller_auth_notifications_to_sink<F>(
-    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    runtime: &mut ClientApplication<MpvAdapter>,
     notify: &mut F,
 ) -> anyhow::Result<()>
 where

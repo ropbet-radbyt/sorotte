@@ -1,12 +1,13 @@
 use serde_json::{Map, Value};
+use sorotte_client_app::app_boundary::application::ClientApplication;
 use sorotte_client_app::app_boundary::state::{
     AutoplayThresholdOverride, normalize_controlled_room_input_legacy_compatible,
     parse_autoplay_min_users_override_legacy_compatible,
     parse_unpause_action_mode_legacy_compatible,
 };
 use sorotte_client_core::{
-    ClientRuntime, ClientSession, PrivacyMode, QueuedRuntimeControl, ReadinessAutoplayConfig,
-    ReconnectStateRestoreCorrectionPolicyMode, UnpauseActionMode,
+    ClientSession, PrivacyMode, ReadinessAutoplayConfig, ReconnectStateRestoreCorrectionPolicyMode,
+    UnpauseActionMode,
 };
 use sorotte_player_mpv::MpvAdapter;
 

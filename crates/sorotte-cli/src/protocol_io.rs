@@ -1,4 +1,4 @@
-use sorotte_client_core::{ClientRuntime, QueuedRuntimeControl};
+use sorotte_client_app::app_boundary::application::ClientApplication;
 use sorotte_player_api::PlayerAdapter;
 use sorotte_protocol::DEFAULT_MAX_PROTOCOL_LINE_BYTES;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
@@ -71,7 +71,7 @@ where
 }
 
 pub(super) async fn flush_runtime_protocol_lines<P>(
-    runtime: &mut ClientRuntime<P, QueuedRuntimeControl>,
+    runtime: &mut ClientApplication<P>,
     writer: &mut (impl AsyncWrite + Unpin),
 ) -> anyhow::Result<()>
 where
@@ -88,7 +88,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sorotte_client_core::{ClientEffect, ClientEffectSink, ClientSession};
+    use sorotte_client_core::{
+        ClientEffect, ClientEffectSink, ClientRuntime, ClientSession, QueuedRuntimeControl,
+    };
     use sorotte_protocol::decode_message_line_items;
     use tokio::io::BufReader;
 
@@ -149,8 +151,8 @@ mod tests {
         control
             .emit(ClientEffect::SendChat("retry me".to_owned()))
             .expect("chat effect should be supported");
-        let mut runtime =
-            ClientRuntime::new(ClientSession::default(), ProtocolIoTestPlayer, control);
+        let runtime = ClientRuntime::new(ClientSession::default(), ProtocolIoTestPlayer, control);
+        let mut runtime = ClientApplication::from_runtime(runtime);
         let (reader, mut writer) = tokio::io::duplex(64);
         drop(reader);
 
@@ -158,7 +160,7 @@ mod tests {
             .await
             .expect_err("closed transport should reject the protocol line");
 
-        assert_eq!(runtime.control().outbound_messages().len(), 1);
+        assert_eq!(runtime.pending_protocol_message_count(), 1);
         assert!(
             runtime
                 .pending_protocol_line()

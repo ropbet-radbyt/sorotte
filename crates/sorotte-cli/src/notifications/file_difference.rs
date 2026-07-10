@@ -27,7 +27,7 @@ pub(crate) fn emit_file_difference_notification(summary: &str) -> anyhow::Result
 
 #[cfg(test)]
 pub(crate) fn flush_file_difference_notifications_to_sink<F>(
-    runtime: &ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    runtime: &ClientApplication<MpvAdapter>,
     state: &mut FileDifferenceNotificationState,
     notify: &mut F,
 ) -> anyhow::Result<()>
@@ -69,7 +69,7 @@ fn emit_file_difference_notification_to_player_legacy_compatible(
 }
 
 pub(crate) fn flush_file_difference_notifications_legacy_compatible<F>(
-    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    runtime: &mut ClientApplication<MpvAdapter>,
     state: &mut FileDifferenceNotificationState,
     notify: &mut F,
 ) -> anyhow::Result<()>

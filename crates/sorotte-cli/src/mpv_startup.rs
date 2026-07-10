@@ -4,9 +4,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::anyhow;
 use sorotte_client_app::app_boundary::{
-    commands::parse_seek_time_seconds_legacy_like, state::StoredClientSettingsMvp,
+    application::ClientApplication, commands::parse_seek_time_seconds_legacy_like,
+    state::StoredClientSettingsMvp,
 };
-use sorotte_client_core::{ClientRuntime, QueuedRuntimeControl};
 use sorotte_player_api::{PlayerAdapter, PlayerError};
 use sorotte_player_mpv::MpvAdapter;
 

@@ -18,7 +18,6 @@ sorotte-client-app = { path = "../sorotte-client-app" }
 sorotte-client-core = { path = "../sorotte-client-core" }
 sorotte-player-mpv = { path = "../sorotte-player-mpv" }
 sorotte-player-api = { path = "../sorotte-player-api" }
-sorotte-plex = { path = "../sorotte-plex" }
 sorotte-protocol = { path = "../sorotte-protocol" }
-sorotte-server = { path = "../sorotte-server" }
+sorotte-secret = { path = "../sorotte-secret" }
 webpki-roots.workspace = true

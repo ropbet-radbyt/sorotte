@@ -1,3 +1,10 @@
+pub mod application {
+    pub use crate::application::{
+        ClientApplication, ClientApplicationSettings, ClientCommand, ClientConnectionState,
+        ClientEvent, PlexClientConfig,
+    };
+}
+
 pub mod commands {
     pub use crate::legacy_local_commands::{
         LocalInputCommand, LocalInputCommandErrorKind, LocalInputCommandPlanningContext,

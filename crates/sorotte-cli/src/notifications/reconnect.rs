@@ -49,7 +49,7 @@ fn emit_reconnect_transition_notification_to_player_legacy_compatible(
 }
 
 pub(crate) fn flush_reconnect_notifications_legacy_compatible(
-    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    runtime: &mut ClientApplication<MpvAdapter>,
 ) -> anyhow::Result<()> {
     while let Some(notification) = runtime.pending_reconnect_notification().cloned() {
         runtime.with_player_io(|player| {
@@ -67,7 +67,7 @@ pub(crate) fn flush_reconnect_notifications_legacy_compatible(
 
 #[cfg(test)]
 pub(crate) fn flush_reconnect_notifications_to_sink<F>(
-    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    runtime: &mut ClientApplication<MpvAdapter>,
     notify: &mut F,
 ) -> anyhow::Result<()>
 where

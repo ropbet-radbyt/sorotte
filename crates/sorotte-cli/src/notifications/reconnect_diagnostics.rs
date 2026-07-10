@@ -6,7 +6,7 @@ pub(crate) fn emit_reconnect_correction_diagnostic(message: &str) -> anyhow::Res
 }
 
 pub(crate) fn flush_reconnect_correction_diagnostics_to_sink<F>(
-    runtime: &ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    runtime: &ClientApplication<MpvAdapter>,
     state: &mut ReconnectCorrectionDiagnosticsState,
     alert_thresholds: &ReconnectCorrectionDiagnosticsAlertThresholds,
     format: ReconnectCorrectionDiagnosticsFormat,
