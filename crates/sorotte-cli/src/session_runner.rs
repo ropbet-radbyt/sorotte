@@ -37,7 +37,7 @@ use sorotte_client_app::app_boundary::{
         connected_session_local_input_event_execution_plan_legacy_compatible,
         connected_session_runtime_step_actions_legacy_compatible,
     },
-    state::StoredClientSettingsMvp,
+    state::{ClientConfig, StoredClientSettingsMvp},
 };
 use sorotte_client_core::{
     AUTOPLAY_TICK_INTERVAL_SECONDS, AutoplayCountdownNotification, SYNCPLAY_COMPAT_VERSION_LEGACY,
@@ -117,35 +117,32 @@ pub(super) fn cli_plex_config_from_env_and_stored_settings(
     let Some(settings) = stored_settings else {
         return config;
     };
-    if env_trimmed("SOROTTE_CLIENT_PLEX_SYNC").is_none()
-        && let Some(value) = settings.plex_sync_enabled
-    {
-        config.enabled = value;
+    let plex = ClientConfig::resolve(settings).config.plex;
+    if env_trimmed("SOROTTE_CLIENT_PLEX_SYNC").is_none() {
+        config.enabled = plex.sync_enabled;
     }
-    if env_trimmed("SOROTTE_CLIENT_PLEX_STREAMING").is_none()
-        && let Some(value) = settings.plex_streaming_enabled
-    {
-        config.streaming_enabled = value;
+    if env_trimmed("SOROTTE_CLIENT_PLEX_STREAMING").is_none() {
+        config.streaming_enabled = plex.streaming_enabled;
     }
     if env_trimmed("SOROTTE_CLIENT_PLEX_TOKEN").is_none()
-        && let Some(value) = settings.plex_user_token.as_ref()
+        && let Some(value) = plex.user_token
     {
-        config.user_token = Some(value.clone());
+        config.user_token = Some(value);
     }
     if env_trimmed("SOROTTE_CLIENT_PLEX_SERVER_ID").is_none()
-        && let Some(value) = settings.plex_selected_server_id.as_ref()
+        && let Some(value) = plex.selected_server_id
     {
-        config.selected_server_id = Some(value.clone());
+        config.selected_server_id = Some(value);
     }
     if env_trimmed("SOROTTE_CLIENT_PLEX_SERVER_URL").is_none()
-        && let Some(value) = settings.plex_selected_server_url.as_ref()
+        && let Some(value) = plex.selected_server_url
     {
-        config.selected_server_url = Some(value.clone());
+        config.selected_server_url = Some(value);
     }
     if env_trimmed("SOROTTE_CLIENT_PLEX_SERVER_TOKEN").is_none()
-        && let Some(value) = settings.plex_selected_server_token.as_ref()
+        && let Some(value) = plex.selected_server_token
     {
-        config.selected_server_token = Some(value.clone());
+        config.selected_server_token = Some(value);
     }
     config
 }

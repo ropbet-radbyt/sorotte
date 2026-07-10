@@ -6,7 +6,8 @@ mod menu_dialog;
 mod public_servers;
 
 use sorotte_client_app::app_boundary::state::{
-    StoredClientSettingsMvp, stored_client_settings_runtime_snapshot_legacy_compatible,
+    ClientConfig, StoredClientSettingsMvp,
+    stored_client_settings_runtime_snapshot_legacy_compatible,
 };
 
 use super::shell_state::{
@@ -25,8 +26,6 @@ use super::shell_state::{
 };
 #[cfg(test)]
 use super::shell_state::{GuiPendingOperationState, GuiShellModal};
-use super::support::{
-    autoplay_threshold_from_settings, legacy_chat_enabled, legacy_chat_output_enabled,
-};
+use super::support::autoplay_threshold_from_settings;
 #[cfg(test)]
 use super::support::{bool_label, optional_index_text, optional_seconds_text};

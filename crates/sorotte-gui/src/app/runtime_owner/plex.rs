@@ -1177,13 +1177,10 @@ impl GuiPersistedConfigRuntimeOwner {
         settings: &StoredClientSettingsMvp,
         status: Option<&PlexSyncStatus>,
     ) -> GuiPlexRuntimeSnapshot {
-        let selected_server_id = settings.plex_selected_server_id.clone();
-        let selected_server_url = settings.plex_selected_server_url.clone();
-        let authenticated = settings
-            .plex_user_token
-            .as_ref()
-            .map(|token| token.expose_secret())
-            .is_some_and(|token| !token.trim().is_empty());
+        let plex = ClientConfig::resolve(settings).config.plex;
+        let selected_server_id = plex.selected_server_id.clone();
+        let selected_server_url = plex.selected_server_url.clone();
+        let authenticated = plex.user_token.is_some();
         let authenticating = self.plex_auth_session.is_some()
             || self.plex_auth_start_rx.is_some()
             || self.plex_auth_poll_rx.is_some();
@@ -1244,8 +1241,8 @@ impl GuiPersistedConfigRuntimeOwner {
         }
 
         GuiPlexRuntimeSnapshot {
-            enabled: settings.plex_sync_enabled.unwrap_or(false),
-            streaming_enabled: settings.plex_streaming_enabled.unwrap_or(false),
+            enabled: plex.sync_enabled,
+            streaming_enabled: plex.streaming_enabled,
             authenticated,
             authenticating,
             auth_code: self
@@ -1335,13 +1332,14 @@ impl GuiPersistedConfigRuntimeOwner {
 pub(in crate::app::runtime_owner) fn plex_config_from_settings(
     settings: &StoredClientSettingsMvp,
 ) -> PlexClientConfig {
+    let plex = ClientConfig::resolve(settings).config.plex;
     PlexClientConfig {
-        enabled: settings.plex_sync_enabled.unwrap_or(false),
-        streaming_enabled: settings.plex_streaming_enabled.unwrap_or(false),
-        user_token: settings.plex_user_token.clone(),
-        selected_server_id: settings.plex_selected_server_id.clone(),
-        selected_server_url: settings.plex_selected_server_url.clone(),
-        selected_server_token: settings.plex_selected_server_token.clone(),
+        enabled: plex.sync_enabled,
+        streaming_enabled: plex.streaming_enabled,
+        user_token: plex.user_token,
+        selected_server_id: plex.selected_server_id,
+        selected_server_url: plex.selected_server_url,
+        selected_server_token: plex.selected_server_token,
     }
 }
 

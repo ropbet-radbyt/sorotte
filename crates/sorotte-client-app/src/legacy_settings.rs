@@ -10,7 +10,7 @@ pub enum AutoplayThresholdOverride {
 }
 
 #[derive(Clone, Default, PartialEq)]
-pub struct StoredClientSettingsMvp {
+pub struct StoredClientSettingsV1 {
     pub language: Option<String>,
     pub check_for_updates_automatically: Option<bool>,
     pub update_channel: Option<String>,
@@ -98,9 +98,9 @@ pub struct StoredClientSettingsMvp {
     pub show_contact_info: Option<bool>,
 }
 
-impl fmt::Debug for StoredClientSettingsMvp {
+impl fmt::Debug for StoredClientSettingsV1 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("StoredClientSettingsMvp")
+        f.debug_struct("StoredClientSettingsV1")
             .field("language", &self.language)
             .field(
                 "check_for_updates_automatically",
@@ -255,6 +255,9 @@ impl fmt::Debug for StoredClientSettingsMvp {
             .finish()
     }
 }
+
+/// Transitional compatibility name for callers that still use the pre-versioned DTO name.
+pub type StoredClientSettingsMvp = StoredClientSettingsV1;
 
 pub fn privacy_mode_legacy_name_compatible(mode: PrivacyMode) -> &'static str {
     match mode {

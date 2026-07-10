@@ -316,12 +316,25 @@ impl GuiPersistedConfigRuntimeOwner {
             });
         let mut session = GuiClientCoreChatSessionRuntimeAdapter::new_with_control_password(
             runtime_settings
-                .settings
+                .config
+                .connection
                 .username
-                .clone()
+                .as_ref()
+                .map(|username| username.as_str().to_owned())
                 .unwrap_or_default(),
-            runtime_settings.settings.room.clone().unwrap_or_default(),
-            runtime_settings.controlled_room_password_override.clone(),
+            runtime_settings
+                .config
+                .connection
+                .room
+                .as_ref()
+                .map(|room| room.as_str().to_owned())
+                .unwrap_or_default(),
+            runtime_settings
+                .config
+                .connection
+                .controlled_room_password
+                .as_ref()
+                .map(|password| password.expose_secret().to_owned()),
         )?;
         session.apply_runtime_settings_snapshot(&runtime_settings);
         let session = Box::new(session);

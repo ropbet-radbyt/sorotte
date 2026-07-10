@@ -9,6 +9,7 @@ use super::super::support::{
     legacy_chat_enabled, nonempty_room_name_text, normalized_editable_text,
 };
 use super::GuiClientCoreChatSessionRuntimeAdapter;
+use sorotte_client_app::app_boundary::state::ClientConfig;
 
 impl GuiClientCoreChatSessionRuntimeAdapter {
     fn room_control_status_for_runtime_snapshot(&self, controlled_room_active: bool) -> String {
@@ -65,9 +66,9 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     ) -> Vec<MainWindowRuntimeUserSnapshot> {
         let session = self.runtime.session();
         let settings = state.configuration.to_stored_settings();
-        let trusted_domains = settings.trusted_domains.unwrap_or_default();
-        let only_switch_to_trusted_domains =
-            settings.only_switch_to_trusted_domains.unwrap_or(true);
+        let playback = ClientConfig::resolve(&settings).config.playback;
+        let trusted_domains = playback.trusted_domains;
+        let only_switch_to_trusted_domains = playback.only_switch_to_trusted_domains;
         let local_username = session.username();
         let mut users = Vec::new();
         for room_name in session.room_names() {

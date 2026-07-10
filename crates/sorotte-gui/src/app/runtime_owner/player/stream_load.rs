@@ -63,12 +63,12 @@ impl GuiPersistedConfigRuntimeOwner {
         target: &str,
     ) -> GuiStreamTargetKind {
         let settings = state.configuration.to_stored_settings();
-        let trusted_domains = settings.trusted_domains.unwrap_or_default();
+        let playback = ClientConfig::resolve(&settings).config.playback;
         browser_stream_target_kind(
             target,
             Some((
-                settings.only_switch_to_trusted_domains.unwrap_or(true),
-                trusted_domains.as_slice(),
+                playback.only_switch_to_trusted_domains,
+                playback.trusted_domains.as_slice(),
             )),
         )
     }

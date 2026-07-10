@@ -29,7 +29,10 @@ use sorotte_client_app::app_boundary::{
         clear_sorotte_ini_stored_client_settings_mvp_at_path,
         load_sorotte_ini_stored_client_settings_mvp_from_path,
     },
-    state::{StoredClientSettingsMvp, stored_client_settings_runtime_snapshot_legacy_compatible},
+    state::{
+        ClientConfig, StoredClientSettingsMvp,
+        stored_client_settings_runtime_snapshot_legacy_compatible,
+    },
 };
 use sorotte_player_api::{LocalFileUpdate, PlayerAdapter};
 use sorotte_player_mpv::MpvAdapter;

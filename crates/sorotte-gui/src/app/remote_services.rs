@@ -330,15 +330,6 @@ pub(crate) fn check_for_updates(
     }
 }
 
-pub(crate) fn default_update_channel_label() -> &'static str {
-    env_trimmed(SOROTTE_GUI_UPDATE_CHANNEL_ENV)
-        .as_deref()
-        .and_then(|value| UpdateChannel::from_config_value(value).ok())
-        .or_else(|| current_install_marker().and_then(|marker| marker.channel))
-        .unwrap_or(UpdateChannel::Stable)
-        .label()
-}
-
 pub(crate) fn download_and_stage_update(
     candidate: &UpdateCandidate,
     gui_config_root: Option<&Path>,

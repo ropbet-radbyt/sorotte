@@ -1,9 +1,12 @@
 use crate::legacy_settings::{AutoplayThresholdOverride, StoredClientSettingsMvp};
+use crate::runtime_config::{ClientConfig, ClientConfigIssue};
 use sorotte_client_core::{PrivacyMode, UnpauseActionMode};
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct StoredClientSettingsRuntimeSnapshot {
     pub settings: StoredClientSettingsMvp,
+    pub config: ClientConfig,
+    pub validation_issues: Vec<ClientConfigIssue>,
     pub controlled_room_password_override: Option<String>,
 }
 
@@ -171,6 +174,7 @@ pub fn normalize_controlled_room_input_legacy_compatible(room: String) -> (Strin
 pub fn stored_client_settings_runtime_snapshot_legacy_compatible(
     settings: &StoredClientSettingsMvp,
 ) -> StoredClientSettingsRuntimeSnapshot {
+    let config_resolution = ClientConfig::resolve(settings);
     let mut resolved = settings.clone();
     resolved.host = resolved
         .host
@@ -224,6 +228,8 @@ pub fn stored_client_settings_runtime_snapshot_legacy_compatible(
 
     StoredClientSettingsRuntimeSnapshot {
         settings: resolved,
+        config: config_resolution.config,
+        validation_issues: config_resolution.issues,
         controlled_room_password_override,
     }
 }
@@ -234,103 +240,140 @@ pub fn stored_client_settings_config_plan_legacy_compatible(
 ) -> StoredClientSettingsConfigPlan {
     let resolved = stored_client_settings_runtime_snapshot_legacy_compatible(settings);
     let resolved_settings = &resolved.settings;
+    let config = &resolved.config;
     let mut plan = StoredClientSettingsConfigPlan::default();
 
     if !env_presence.host {
-        plan.host = resolved_settings.host.clone();
+        plan.host = config.connection.host.clone();
     }
-    if !env_presence.port {
-        plan.port = resolved_settings.port;
+    let embedded_stored_port = settings
+        .host
+        .as_deref()
+        .and_then(|host| parse_host_and_optional_port_from_host_arg_legacy_compatible(host).1);
+    if !env_presence.port && (resolved_settings.port.is_some() || embedded_stored_port.is_some()) {
+        plan.port = Some(config.connection.port.get());
     }
     if !env_presence.server_password {
-        plan.server_password = resolved_settings
+        plan.server_password = config
+            .connection
             .server_password
             .as_ref()
             .map(|password| password.expose_secret().to_owned());
     }
     if !env_presence.username {
-        plan.username = resolved_settings.username.clone();
+        plan.username = config
+            .connection
+            .username
+            .as_ref()
+            .map(|username| username.as_str().to_owned());
     }
     if !env_presence.room {
-        plan.room = resolved_settings.room.clone();
-        plan.controlled_room_password_override = resolved.controlled_room_password_override;
+        plan.room = config
+            .connection
+            .room
+            .as_ref()
+            .map(|room| room.as_str().to_owned());
+        plan.controlled_room_password_override = config
+            .connection
+            .controlled_room_password
+            .as_ref()
+            .map(|password| password.expose_secret().to_owned());
     }
-    if !env_presence.autoplay {
-        plan.autoplay_enabled = resolved_settings.autoplay_initial_state;
+    if !env_presence.autoplay && resolved_settings.autoplay_initial_state.is_some() {
+        plan.autoplay_enabled = Some(config.readiness.autoplay_initial_state);
     }
-    if !env_presence.autoplay_require_same_filenames {
-        plan.autoplay_require_same_filenames = resolved_settings.autoplay_require_same_filenames;
+    if !env_presence.autoplay_require_same_filenames
+        && resolved_settings.autoplay_require_same_filenames.is_some()
+    {
+        plan.autoplay_require_same_filenames =
+            Some(config.readiness.autoplay_require_same_filenames);
     }
-    if !env_presence.ready_at_start {
-        plan.ready_at_start_override = resolved_settings.ready_at_start;
+    if !env_presence.ready_at_start && resolved_settings.ready_at_start.is_some() {
+        plan.ready_at_start_override = Some(config.readiness.ready_at_start);
     }
-    if !env_presence.shared_playlist_enabled {
-        plan.shared_playlists_enabled_override = resolved_settings.shared_playlist_enabled;
+    if !env_presence.shared_playlist_enabled && resolved_settings.shared_playlist_enabled.is_some()
+    {
+        plan.shared_playlists_enabled_override = Some(config.playback.shared_playlist_enabled);
     }
-    if !env_presence.pause_on_leave {
-        plan.pause_on_leave_override = resolved_settings.pause_on_leave;
+    if !env_presence.pause_on_leave && resolved_settings.pause_on_leave.is_some() {
+        plan.pause_on_leave_override = Some(config.playback.pause_on_leave);
     }
-    if !env_presence.loop_at_end_of_playlist {
-        plan.loop_at_end_of_playlist_override = resolved_settings.loop_at_end_of_playlist;
+    if !env_presence.loop_at_end_of_playlist && resolved_settings.loop_at_end_of_playlist.is_some()
+    {
+        plan.loop_at_end_of_playlist_override = Some(config.playback.loop_at_end_of_playlist);
     }
-    if !env_presence.loop_single_files {
-        plan.loop_single_files_override = resolved_settings.loop_single_files;
+    if !env_presence.loop_single_files && resolved_settings.loop_single_files.is_some() {
+        plan.loop_single_files_override = Some(config.playback.loop_single_files);
     }
-    if !env_presence.only_switch_to_trusted_domains {
+    if !env_presence.only_switch_to_trusted_domains
+        && resolved_settings.only_switch_to_trusted_domains.is_some()
+    {
         plan.only_switch_to_trusted_domains_override =
-            resolved_settings.only_switch_to_trusted_domains;
+            Some(config.playback.only_switch_to_trusted_domains);
     }
-    if !env_presence.trusted_domains {
-        plan.trusted_domains_override = resolved_settings.trusted_domains.clone();
+    if !env_presence.trusted_domains && resolved_settings.trusted_domains.is_some() {
+        plan.trusted_domains_override = Some(config.playback.trusted_domains.clone());
     }
-    if !env_presence.rewind_on_desync {
-        plan.rewind_on_desync_override = resolved_settings.rewind_on_desync;
+    if !env_presence.rewind_on_desync && resolved_settings.rewind_on_desync.is_some() {
+        plan.rewind_on_desync_override = Some(config.synchronization.rewind_on_desync);
     }
-    if !env_presence.fastforward_on_desync {
-        plan.fastforward_on_desync_override = resolved_settings.fastforward_on_desync;
+    if !env_presence.fastforward_on_desync && resolved_settings.fastforward_on_desync.is_some() {
+        plan.fastforward_on_desync_override = Some(config.synchronization.fastforward_on_desync);
     }
-    if !env_presence.slow_on_desync {
-        plan.slow_on_desync_override = resolved_settings.slow_on_desync;
+    if !env_presence.slow_on_desync && resolved_settings.slow_on_desync.is_some() {
+        plan.slow_on_desync_override = Some(config.synchronization.slow_on_desync);
     }
-    if !env_presence.dont_slow_down_with_me {
-        plan.dont_slow_down_with_me_override = resolved_settings.dont_slow_down_with_me;
+    if !env_presence.dont_slow_down_with_me && resolved_settings.dont_slow_down_with_me.is_some() {
+        plan.dont_slow_down_with_me_override = Some(config.synchronization.dont_slow_down_with_me);
     }
-    if !env_presence.rewind_threshold_seconds {
-        plan.rewind_threshold_seconds_override = resolved_settings.rewind_threshold_seconds;
+    if !env_presence.rewind_threshold_seconds
+        && resolved_settings.rewind_threshold_seconds.is_some()
+    {
+        plan.rewind_threshold_seconds_override =
+            Some(config.synchronization.rewind_threshold.get());
     }
-    if !env_presence.fastforward_threshold_seconds {
+    if !env_presence.fastforward_threshold_seconds
+        && resolved_settings.fastforward_threshold_seconds.is_some()
+    {
         plan.fastforward_threshold_seconds_override =
-            resolved_settings.fastforward_threshold_seconds;
+            Some(config.synchronization.fastforward_threshold.get());
     }
-    if !env_presence.slowdown_threshold_seconds {
-        plan.slowdown_threshold_seconds_override = resolved_settings.slowdown_threshold_seconds;
+    if !env_presence.slowdown_threshold_seconds
+        && resolved_settings.slowdown_threshold_seconds.is_some()
+    {
+        plan.slowdown_threshold_seconds_override =
+            Some(config.synchronization.slowdown_threshold.get());
     }
-    if !env_presence.unpause_action {
-        plan.unpause_action_override = resolved_settings.unpause_action.clone();
+    if !env_presence.unpause_action && resolved_settings.unpause_action.is_some() {
+        plan.unpause_action_override = Some(config.readiness.unpause_action.clone());
     }
-    if !env_presence.autoplay_min_users {
-        plan.auto_play_threshold_override = resolved_settings.autoplay_min_users.clone();
+    if !env_presence.autoplay_min_users && resolved_settings.autoplay_min_users.is_some() {
+        plan.auto_play_threshold_override = Some(config.readiness.autoplay_min_users.clone());
     }
-    if !env_presence.filename_privacy_mode {
-        plan.filename_privacy_mode = resolved_settings.filename_privacy_mode;
+    if !env_presence.filename_privacy_mode && resolved_settings.filename_privacy_mode.is_some() {
+        plan.filename_privacy_mode = Some(config.playback.filename_privacy_mode);
     }
-    if !env_presence.filesize_privacy_mode {
-        plan.filesize_privacy_mode = resolved_settings.filesize_privacy_mode;
+    if !env_presence.filesize_privacy_mode && resolved_settings.filesize_privacy_mode.is_some() {
+        plan.filesize_privacy_mode = Some(config.playback.filesize_privacy_mode);
     }
-    if !env_presence.show_duration_notification {
-        plan.show_duration_notification_override = resolved_settings.show_duration_notification;
+    if !env_presence.show_duration_notification
+        && resolved_settings.show_duration_notification.is_some()
+    {
+        plan.show_duration_notification_override =
+            Some(config.readiness.show_duration_notification);
     }
-    if !env_presence.show_same_room_osd {
-        plan.show_same_room_osd_override = resolved_settings.show_same_room_osd;
+    if !env_presence.show_same_room_osd && resolved_settings.show_same_room_osd.is_some() {
+        plan.show_same_room_osd_override = Some(config.interface.show_same_room_osd);
     }
-    if !env_presence.show_osd_warnings {
-        plan.show_osd_warnings_override = resolved_settings.show_osd_warnings;
+    if !env_presence.show_osd_warnings && resolved_settings.show_osd_warnings.is_some() {
+        plan.show_osd_warnings_override = Some(config.interface.show_osd_warnings);
     }
-    if !env_presence.show_noncontroller_osd {
-        plan.show_noncontroller_osd_override = resolved_settings.show_noncontroller_osd;
+    if !env_presence.show_noncontroller_osd && resolved_settings.show_noncontroller_osd.is_some() {
+        plan.show_noncontroller_osd_override = Some(config.interface.show_noncontroller_osd);
     }
-    if !env_presence.show_different_room_osd {
-        plan.show_different_room_osd_override = resolved_settings.show_different_room_osd;
+    if !env_presence.show_different_room_osd && resolved_settings.show_different_room_osd.is_some()
+    {
+        plan.show_different_room_osd_override = Some(config.interface.show_different_room_osd);
     }
 
     plan

@@ -18,7 +18,7 @@ use sorotte_client_app::app_boundary::{
         upsert_sorotte_ini_stored_client_settings_mvp_at_path as shared_upsert_sorotte_ini_stored_client_settings_mvp_at_path,
     },
     state::{
-        StoredClientSettingsEnvPresence, StoredClientSettingsMvp,
+        ClientConfig, StoredClientSettingsEnvPresence, StoredClientSettingsMvp,
         stored_client_settings_config_plan_legacy_compatible,
     },
 };

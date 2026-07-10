@@ -30,12 +30,9 @@ impl GuiPersistedConfigRuntimeOwner {
         let mut seen = BTreeSet::new();
 
         let settings = state.configuration.to_stored_settings();
-        for directory in settings.media_search_directories.unwrap_or_default() {
-            let trimmed = directory.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            Self::push_unique_existing_media_search_root(&mut roots, &mut seen, Path::new(trimmed));
+        let playback = ClientConfig::resolve(&settings).config.playback;
+        for directory in playback.media_search_directories {
+            Self::push_unique_existing_media_search_root(&mut roots, &mut seen, &directory);
         }
 
         if let Some(local_path) = self

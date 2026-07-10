@@ -3,12 +3,9 @@ use sorotte_client_app::app_boundary::{
         LegacyConfigurationGetterCompatibilityStatus,
         legacy_configuration_getter_startup_compat_entries,
     },
-    language::{
-        SUPPORTED_LEGACY_RUNTIME_LANGUAGE_TAGS_DISPLAY,
-        normalized_legacy_runtime_language_tag_legacy_compatible,
-    },
+    language::SUPPORTED_LEGACY_RUNTIME_LANGUAGE_TAGS_DISPLAY,
     state::{
-        StoredClientSettingsMvp, autoplay_threshold_override_legacy_value_compatible,
+        ClientConfig, StoredClientSettingsMvp, autoplay_threshold_override_legacy_value_compatible,
         privacy_mode_legacy_name_compatible, unpause_action_mode_legacy_name_compatible,
     },
     storage::SorotteClientStoragePaths,
@@ -19,9 +16,8 @@ use sorotte_plex::{PlexMediaSearchResult, PlexMediaType, PlexServerConnectionKin
 use super::GuiLaunchMode;
 use super::remote_services;
 use super::support::{
-    bool_label, legacy_chat_input_enabled, legacy_chat_output_enabled, optional_f64_text,
-    optional_i64_text, optional_port_text, optional_room_text, optional_string_list_multiline_text,
-    optional_text, player_arguments_text_for_path,
+    bool_label, optional_f64_text, optional_i64_text, optional_port_text, optional_room_text,
+    optional_string_list_multiline_text, optional_text, player_arguments_text_for_path,
 };
 use super::ui_state::GuiUpdateCheckState;
 use super::widget_tree::GuiWidgetKind;
@@ -453,16 +449,13 @@ pub(super) struct GuiPlexState {
 
 impl GuiPlexState {
     pub(super) fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
-        let authenticated = settings
-            .plex_user_token
-            .as_ref()
-            .map(|token| token.expose_secret())
-            .is_some_and(|token| !token.trim().is_empty());
-        let selected_server_id = settings.plex_selected_server_id.clone();
-        let selected_server_url = settings.plex_selected_server_url.clone();
+        let plex = ClientConfig::resolve(settings).config.plex;
+        let authenticated = plex.user_token.is_some();
+        let selected_server_id = plex.selected_server_id;
+        let selected_server_url = plex.selected_server_url;
         Self {
-            enabled: settings.plex_sync_enabled.unwrap_or(false),
-            streaming_enabled: settings.plex_streaming_enabled.unwrap_or(false),
+            enabled: plex.sync_enabled,
+            streaming_enabled: plex.streaming_enabled,
             authenticated,
             authenticating: false,
             auth_code: None,
@@ -647,10 +640,11 @@ impl Default for GuiPluginEnablementState {
 
 impl GuiPluginEnablementState {
     pub(super) fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
+        let plugins = ClientConfig::resolve(settings).config.plugins;
         Self {
-            stream_support_enabled: settings.stream_support_plugin_enabled.unwrap_or(true),
-            media_matching_enabled: settings.media_matching_plugin_enabled.unwrap_or(true),
-            plex_enabled: settings.plex_plugin_enabled.unwrap_or(true),
+            stream_support_enabled: plugins.stream_support_enabled,
+            media_matching_enabled: plugins.media_matching_enabled,
+            plex_enabled: plugins.plex_enabled,
         }
     }
 
@@ -746,21 +740,12 @@ pub(super) fn media_match_settings_from_stored_settings(
     settings: &StoredClientSettingsMvp,
 ) -> MediaMatchSettings {
     let mut media_match_settings = MediaMatchSettings::default();
-    if let Some(enabled) = settings.media_match_fingerprinting_enabled {
-        media_match_settings.fingerprinting_enabled = enabled;
-    }
-    if let Some(enabled) = settings.media_match_background_warmup_enabled {
-        media_match_settings.background_warmup_enabled = enabled;
-    }
-    if let Some(enabled) = settings.media_match_wire_sharing_enabled {
-        media_match_settings.wire_sharing_enabled = enabled;
-    }
-    if let Some(enabled) = settings.media_match_runtime_tolerance_enabled {
-        media_match_settings.runtime_tolerance_enabled = enabled;
-    }
-    media_match_settings.autoplay_policy = settings
-        .media_match_autoplay_policy
-        .as_deref()
+    let resolved = ClientConfig::resolve(settings).config.media_match;
+    media_match_settings.fingerprinting_enabled = resolved.fingerprinting_enabled;
+    media_match_settings.background_warmup_enabled = resolved.background_warmup_enabled;
+    media_match_settings.wire_sharing_enabled = resolved.wire_sharing_enabled;
+    media_match_settings.runtime_tolerance_enabled = resolved.runtime_tolerance_enabled;
+    media_match_settings.autoplay_policy = Some(resolved.autoplay_policy.as_str())
         .and_then(media_match_autoplay_policy_from_label)
         .unwrap_or_default();
     media_match_settings

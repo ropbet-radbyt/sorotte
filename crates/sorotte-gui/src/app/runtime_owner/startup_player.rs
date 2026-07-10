@@ -529,7 +529,10 @@ impl GuiPersistedConfigRuntimeOwner {
         settings: Option<&StoredClientSettingsMvp>,
     ) {
         if let Some(settings) = settings
-            && !settings.stream_support_plugin_enabled.unwrap_or(true)
+            && !ClientConfig::resolve(settings)
+                .config
+                .plugins
+                .stream_support_enabled
         {
             self.stream_helper_runtime_snapshot = GuiStreamHelperRuntimeSnapshot::default();
             return;
@@ -563,7 +566,10 @@ impl GuiPersistedConfigRuntimeOwner {
         settings: Option<&StoredClientSettingsMvp>,
     ) {
         if let Some(settings) = settings
-            && !settings.media_matching_plugin_enabled.unwrap_or(true)
+            && !ClientConfig::resolve(settings)
+                .config
+                .plugins
+                .media_matching_enabled
         {
             let state = GuiMediaMatchState::from_stored_settings(settings);
             self.media_match_runtime_snapshot = GuiMediaMatchRuntimeSnapshot::from(&state);

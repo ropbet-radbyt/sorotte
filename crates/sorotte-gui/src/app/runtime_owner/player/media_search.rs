@@ -215,12 +215,8 @@ impl GuiPersistedConfigRuntimeOwner {
         }
 
         let settings = state.configuration.to_stored_settings();
-        for directory in settings.media_search_directories.unwrap_or_default() {
-            let trimmed = directory.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let root = Path::new(trimmed);
+        let playback = ClientConfig::resolve(&settings).config.playback;
+        for root in playback.media_search_directories {
             for target_candidate in &target_candidates {
                 if let Some(path) =
                     Self::quick_existing_media_target_path(&root.join(target_candidate))
