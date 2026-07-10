@@ -121,7 +121,7 @@ impl ClientSession {
         }
 
         if let Some(file_payload) = self.reconnect_file_restore_intent.take() {
-            actions.push(ClientRuntimeAction::SetFile { file_payload });
+            actions.push(ClientRuntimeAction::SetFile { file: file_payload });
             actions.push(ClientRuntimeAction::RequestUserList);
         }
 

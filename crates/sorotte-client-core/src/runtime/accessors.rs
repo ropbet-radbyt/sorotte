@@ -1,9 +1,10 @@
 use super::*;
+use crate::control::client_effect_player_error;
 
 impl<P, C> ClientRuntime<P, C>
 where
     P: PlayerAdapter,
-    C: ClientRuntimeControl,
+    C: ClientEffectSink,
 {
     pub fn new(session: ClientSession, player: P, control: C) -> Self {
         Self {
@@ -19,12 +20,12 @@ where
     pub(crate) fn finalize_local_playlist_index_switch_if_needed(
         &mut self,
         actions: &[ClientRuntimeAction],
-    ) {
+    ) -> Result<(), PlayerError> {
         if !actions
             .iter()
             .any(|action| matches!(action, ClientRuntimeAction::SetPlaylistIndex { .. }))
         {
-            return;
+            return Ok(());
         }
 
         let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
@@ -35,10 +36,11 @@ where
                 .with_paused(true)
                 .with_position_seconds(0.0),
         );
-        self.control.send_state(
-            StatePayload::new()
-                .with_playstate(PlaystatePayload::new().with_position(0.0).with_paused(true)),
-        );
+        self.control
+            .emit(ClientEffect::SendState(StatePayload::new().with_playstate(
+                PlaystatePayload::new().with_position(0.0).with_paused(true),
+            )))
+            .map_err(client_effect_player_error)
     }
 
     pub(crate) fn dispatch_runtime_actions_with_session_rollback(

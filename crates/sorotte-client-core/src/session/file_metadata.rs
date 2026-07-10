@@ -2,6 +2,24 @@ use super::*;
 use sorotte_plex::{is_plex_playlist_uri, parse_plex_playlist_uri};
 
 impl ClientSession {
+    pub(super) fn value_from_file_payload(file: &FilePayload) -> Value {
+        let mut fields = Map::new();
+        fields.extend(file.extra.clone());
+        if let Some(name) = file.name.as_ref() {
+            fields.insert("name".to_owned(), Value::String(name.clone()));
+        }
+        if let Some(duration) = file.duration {
+            fields.insert("duration".to_owned(), Value::from(duration));
+        }
+        if let Some(size) = file.size.as_ref() {
+            fields.insert("size".to_owned(), size.clone());
+        }
+        if let Some(path) = file.path.as_ref() {
+            fields.insert("path".to_owned(), Value::String(path.clone()));
+        }
+        Value::Object(fields)
+    }
+
     pub(super) fn list_payload_has_file(file: Option<&Value>) -> bool {
         match file {
             Some(Value::Null) | None => false,
@@ -401,29 +419,26 @@ impl ClientSession {
         Self::same_filename_without_plex_uri_hints(left, right)
     }
 
-    pub(super) fn file_payload_from_user_view(user_view: &ClientUserView) -> Option<Value> {
+    pub(super) fn file_payload_from_user_view(user_view: &ClientUserView) -> Option<FilePayload> {
         if !user_view.has_file {
             return None;
         }
 
-        let mut payload = Map::new();
-        if let Some(file_name) = user_view.file_name.as_ref() {
-            payload.insert("name".to_owned(), Value::String(file_name.clone()));
-        }
-        if let Some(file_size) = user_view.file_size.as_ref() {
-            payload.insert("size".to_owned(), file_size.clone());
-        }
-        if let Some(file_duration) = user_view.file_duration.as_ref() {
-            payload.insert("duration".to_owned(), file_duration.clone());
-        }
+        let mut extra = BTreeMap::new();
         if let Some(media_match_signature) = user_view.media_match_signature.as_ref() {
-            payload.insert(
+            extra.insert(
                 MEDIA_MATCH_FILE_PAYLOAD_KEY.to_owned(),
                 media_match_signature.clone(),
             );
         }
 
-        Some(Value::Object(payload))
+        Some(FilePayload {
+            name: user_view.file_name.clone(),
+            duration: user_view.file_duration.as_ref().and_then(Value::as_f64),
+            size: user_view.file_size.clone(),
+            path: None,
+            extra,
+        })
     }
 
     pub(super) fn is_music_file_name(file_name: &str) -> bool {

@@ -217,7 +217,7 @@ fn legacy_python_privacy_file_payload_batch_matches_client_core_behavior() {
             2,
             "local file publish should emit SetFile followed by a List refresh request"
         );
-        let ClientRuntimeAction::SetFile { file_payload } = &actions[0] else {
+        let ClientRuntimeAction::SetFile { file } = &actions[0] else {
             panic!("local file publish should emit SetFile action");
         };
         assert!(
@@ -225,7 +225,8 @@ fn legacy_python_privacy_file_payload_batch_matches_client_core_behavior() {
             "local file publish should request a fresh user list after SetFile"
         );
         assert_eq!(
-            file_payload, &legacy_result,
+            serde_json::to_value(file).expect("typed file payload should serialize"),
+            legacy_result,
             "privacy file payload mismatch for modes ({filename_privacy_mode}, {filesize_privacy_mode})"
         );
     }

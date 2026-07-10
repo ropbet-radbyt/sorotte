@@ -1,9 +1,10 @@
 use super::*;
+use crate::control::client_effect_player_error;
 
 impl<P, C> ClientRuntime<P, C>
 where
     P: PlayerAdapter,
-    C: ClientRuntimeControl,
+    C: ClientEffectSink,
 {
     pub fn run_readiness_unpause_attempt(
         &mut self,
@@ -149,7 +150,9 @@ where
                         .session
                         .defer_reconnect_state_restore_validation_after_correction_failure()
                     {
-                        self.control.notify_reconnect_transition(notification);
+                        self.control
+                            .emit(ClientEffect::NotifyReconnectTransition(notification))
+                            .map_err(client_effect_player_error)?;
                     }
                     return Ok(());
                 }

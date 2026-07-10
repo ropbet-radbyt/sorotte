@@ -96,8 +96,9 @@ impl ClientSession {
         }
 
         if let Some(restored_file_payload) = self.reconnect_file_restore_snapshot.take() {
+            let restored_file_value = Self::value_from_file_payload(&restored_file_payload);
             let (has_file, file_name, file_size, file_duration, media_match_signature) =
-                Self::list_payload_file_info(Some(&restored_file_payload));
+                Self::list_payload_file_info(Some(&restored_file_value));
             self.set_user_file_info(
                 &username,
                 has_file,

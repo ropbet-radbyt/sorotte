@@ -3,7 +3,13 @@ use super::*;
 #[test]
 fn queued_runtime_control_request_controller_auth_emits_protocol_message() {
     let mut control = QueuedRuntimeControl::default();
-    control.request_controller_auth("+room:ABCDEF123456".to_owned(), "AB-123-456".to_owned());
+    control
+        .emit(ClientEffect::RequestControllerAuth(
+            ControllerAuthPayload::new()
+                .with_room("+room:ABCDEF123456")
+                .with_password("AB-123-456"),
+        ))
+        .expect("controller auth effect should be supported");
 
     assert_eq!(control.outbound_messages().len(), 1);
     let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {

@@ -95,7 +95,9 @@ pub use self::config::{
     ReconnectStateRestoreCorrectionMetrics, ReconnectStateRestoreCorrectionPolicyMode,
     ReconnectStateRestoreCorrectionStateSnapshot, SessionBehaviorConfig, UnpauseActionMode,
 };
-pub use self::control::{ClientRuntimeAction, ClientRuntimeControl, QueuedRuntimeControl};
+pub use self::control::{
+    ClientEffect, ClientEffectError, ClientEffectSink, ClientRuntimeAction, QueuedRuntimeControl,
+};
 pub use self::notifications::{
     AutoplayCountdownNotification, ChatNotification, ControlledRoomCreationNotification,
     ControllerAuthTransitionNotification, FileDifferenceSummary, ReconnectPlaylistRestoreIntent,

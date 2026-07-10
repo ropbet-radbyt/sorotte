@@ -6,9 +6,9 @@ use std::fs;
 use std::path::PathBuf;
 
 use super::{
-    AutoplayCountdownNotification, ChatConfig, ChatNotification, ClientPingMetricsLegacyCompatible,
-    ClientRuntime, ClientRuntimeAction, ClientRuntimeControl, ClientSession,
-    ControlledRoomCreationNotification, ControllerAuthTransitionNotification,
+    AutoplayCountdownNotification, ChatConfig, ChatNotification, ClientEffect, ClientEffectError,
+    ClientEffectSink, ClientPingMetricsLegacyCompatible, ClientRuntime, ClientRuntimeAction,
+    ClientSession, ControlledRoomCreationNotification, ControllerAuthTransitionNotification,
     DesyncCorrectionAction, FileDifferenceSummary, LEGACY_CHAT_MAX_MESSAGE_LENGTH,
     LEGACY_DIFFERENT_DURATION_THRESHOLD_SECONDS, LEGACY_FALLBACK_MAX_CHAT_MESSAGE_LENGTH,
     LEGACY_FALLBACK_MAX_FILENAME_LENGTH, LEGACY_FALLBACK_MAX_ROOM_NAME_LENGTH,
@@ -22,9 +22,14 @@ use sorotte_player_api::{
     LocalFileUpdate, PlayerAdapter, PlayerError, PlayerPlaybackTelemetryUpdate,
 };
 use sorotte_protocol::{
-    ChatPayload, IgnoringOnTheFlyPayload, ListPayload, PingPayload, PlaystatePayload,
-    ProtocolError, ProtocolMessage, StatePayload, decode_line, decode_message_line,
+    ChatPayload, ControllerAuthPayload, FilePayload, IgnoringOnTheFlyPayload, ListPayload,
+    PingPayload, PlaystatePayload, ProtocolError, ProtocolMessage, StatePayload, decode_line,
+    decode_message_line,
 };
+
+fn protocol_file_payload(value: Value) -> FilePayload {
+    serde_json::from_value(value).expect("test file payload should be valid")
+}
 
 fn scenario_fixture_path(name: &str) -> PathBuf {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -184,11 +189,12 @@ impl PlayerAdapter for RecordingPlayer {
 struct RecordingRuntimeControl {
     room_updates: Vec<String>,
     ready_updates: Vec<(bool, bool)>,
-    file_updates: Vec<Value>,
+    ready_for_user_updates: Vec<(bool, bool, String)>,
+    file_updates: Vec<FilePayload>,
     playlist_updates: Vec<Vec<String>>,
     playlist_index_updates: Vec<i64>,
     state_updates: Vec<StatePayload>,
-    controller_auth_requests: Vec<(String, String)>,
+    controller_auth_requests: Vec<ControllerAuthPayload>,
     chat_messages: Vec<String>,
     chat_notifications: Vec<ChatNotification>,
     controlled_room_creation_notifications: Vec<ControlledRoomCreationNotification>,
@@ -199,72 +205,50 @@ struct RecordingRuntimeControl {
     reconnect_notifications: Vec<ReconnectTransitionNotification>,
 }
 
-impl ClientRuntimeControl for RecordingRuntimeControl {
-    fn set_room(&mut self, room: String) {
-        self.room_updates.push(room);
-    }
-
-    fn set_ready(&mut self, ready: bool, manually_initiated: bool) {
-        self.ready_updates.push((ready, manually_initiated));
-    }
-
-    fn set_file(&mut self, file_payload: Value) {
-        self.file_updates.push(file_payload);
-    }
-
-    fn set_playlist(&mut self, files: Vec<String>) {
-        self.playlist_updates.push(files);
-    }
-
-    fn set_playlist_index(&mut self, index: i64) {
-        self.playlist_index_updates.push(index);
-    }
-
-    fn send_state(&mut self, state: StatePayload) {
-        self.state_updates.push(state);
-    }
-
-    fn request_controller_auth(&mut self, room: String, password: String) {
-        self.controller_auth_requests.push((room, password));
-    }
-
-    fn send_chat(&mut self, message: String) {
-        self.chat_messages.push(message);
-    }
-
-    fn notify_chat(&mut self, notification: ChatNotification) {
-        self.chat_notifications.push(notification);
-    }
-
-    fn notify_controlled_room_creation(
-        &mut self,
-        notification: ControlledRoomCreationNotification,
-    ) {
-        self.controlled_room_creation_notifications
-            .push(notification);
-    }
-
-    fn notify_controller_auth_transition(
-        &mut self,
-        notification: ControllerAuthTransitionNotification,
-    ) {
-        self.controller_auth_notifications.push(notification);
-    }
-
-    fn notify_user_change(&mut self, notification: UserChangeNotification) {
-        self.user_change_notifications.push(notification);
-    }
-
-    fn schedule_reconnect(&mut self, delay_seconds: f64) {
-        self.reconnect_schedules.push(delay_seconds);
-    }
-
-    fn stop_reconnect(&mut self) {
-        self.stop_reconnect_calls += 1;
-    }
-
-    fn notify_reconnect_transition(&mut self, notification: ReconnectTransitionNotification) {
-        self.reconnect_notifications.push(notification);
+impl ClientEffectSink for RecordingRuntimeControl {
+    fn emit(&mut self, effect: ClientEffect) -> Result<(), ClientEffectError> {
+        match effect {
+            ClientEffect::RequestUserList => {}
+            ClientEffect::SetRoom(room) => self.room_updates.push(room),
+            ClientEffect::SetReady {
+                ready,
+                manually_initiated,
+            } => self.ready_updates.push((ready, manually_initiated)),
+            ClientEffect::SetReadyForUser {
+                ready,
+                manually_initiated,
+                username,
+            } => self
+                .ready_for_user_updates
+                .push((ready, manually_initiated, username)),
+            ClientEffect::SetFile(file) => self.file_updates.push(file),
+            ClientEffect::SetPlaylist(files) => self.playlist_updates.push(files),
+            ClientEffect::SetPlaylistIndex(index) => self.playlist_index_updates.push(index),
+            ClientEffect::SendState(state) => self.state_updates.push(state),
+            ClientEffect::RequestControllerAuth(payload) => {
+                self.controller_auth_requests.push(payload);
+            }
+            ClientEffect::SendChat(message) => self.chat_messages.push(message),
+            ClientEffect::NotifyChat(notification) => self.chat_notifications.push(notification),
+            ClientEffect::NotifyControlledRoomCreation(notification) => self
+                .controlled_room_creation_notifications
+                .push(notification),
+            ClientEffect::NotifyControllerAuthTransition(notification) => {
+                self.controller_auth_notifications.push(notification);
+            }
+            ClientEffect::NotifyUserChange(notification) => {
+                self.user_change_notifications.push(notification);
+            }
+            ClientEffect::NotifyReconnectTransition(notification) => {
+                self.reconnect_notifications.push(notification);
+            }
+            ClientEffect::NotifyAutoplayCountdown(_) => {}
+            ClientEffect::ScheduleReconnect(delay_seconds) => {
+                self.reconnect_schedules.push(delay_seconds);
+            }
+            ClientEffect::StopReconnect => self.stop_reconnect_calls += 1,
+        }
+        Ok(())
     }
 }
 

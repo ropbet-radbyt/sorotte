@@ -157,7 +157,7 @@ impl ClientSession {
         file_payload: &Value,
         filename_privacy_mode: PrivacyMode,
         filesize_privacy_mode: PrivacyMode,
-    ) -> Option<Value> {
+    ) -> Option<FilePayload> {
         let Value::Object(file_map) = file_payload else {
             return None;
         };
@@ -196,7 +196,24 @@ impl ClientSession {
             }
         }
 
-        Some(Value::Object(sanitized))
+        let name = sanitized
+            .remove("name")
+            .and_then(|value| value.as_str().map(str::to_owned));
+        let duration = sanitized
+            .remove("duration")
+            .and_then(|value| value.as_f64());
+        let size = sanitized.remove("size");
+        let path = sanitized
+            .remove("path")
+            .and_then(|value| value.as_str().map(str::to_owned));
+
+        Some(FilePayload {
+            name,
+            duration,
+            size,
+            path,
+            extra: sanitized.into_iter().collect(),
+        })
     }
 
     pub fn runtime_actions_for_local_file_publish_legacy_compatible(
@@ -214,8 +231,9 @@ impl ClientSession {
         };
 
         if let Some(username) = self.username.clone() {
+            let sanitized_value = Self::value_from_file_payload(&sanitized_payload);
             let (has_file, file_name, file_size, file_duration, media_match_signature) =
-                Self::list_payload_file_info(Some(&sanitized_payload));
+                Self::list_payload_file_info(Some(&sanitized_value));
             self.set_user_file_info(
                 &username,
                 has_file,
@@ -227,7 +245,7 @@ impl ClientSession {
         }
 
         let mut actions = vec![ClientRuntimeAction::SetFile {
-            file_payload: sanitized_payload,
+            file: sanitized_payload,
         }];
         actions.push(ClientRuntimeAction::RequestUserList);
         actions

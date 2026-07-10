@@ -3390,6 +3390,7 @@ dependencies = [
  "sorotte-player-api",
  "sorotte-plex",
  "sorotte-protocol",
+ "thiserror 2.0.18",
  "tokio",
 ]
 

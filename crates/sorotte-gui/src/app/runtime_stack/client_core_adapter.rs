@@ -670,7 +670,12 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                 Ok(())
             }
             ProtocolMessage::Error(error_message) => {
-                self.runtime.control_mut().stop_reconnect();
+                self.runtime
+                    .control_mut()
+                    .emit(ClientEffect::StopReconnect)
+                    .map_err(|error| {
+                        format!("Client-core stop-reconnect effect failed: {error}")
+                    })?;
                 Err(format!(
                     "Inbound client-session message apply failed: server error: {}",
                     error_message.error.message

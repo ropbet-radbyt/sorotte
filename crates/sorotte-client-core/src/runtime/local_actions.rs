@@ -3,7 +3,7 @@ use super::*;
 impl<P, C> ClientRuntime<P, C>
 where
     P: PlayerAdapter,
-    C: ClientRuntimeControl,
+    C: ClientEffectSink,
 {
     pub fn run_send_chat_message(
         &mut self,
@@ -130,7 +130,7 @@ where
         ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)?;
         self.session
             .apply_local_playlist_runtime_actions_legacy_compatible(&actions);
-        self.finalize_local_playlist_index_switch_if_needed(&actions);
+        self.finalize_local_playlist_index_switch_if_needed(&actions)?;
         Ok(sent)
     }
 
@@ -140,7 +140,7 @@ where
         ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)?;
         self.session
             .apply_local_playlist_runtime_actions_legacy_compatible(&actions);
-        self.finalize_local_playlist_index_switch_if_needed(&actions);
+        self.finalize_local_playlist_index_switch_if_needed(&actions)?;
         Ok(sent)
     }
 

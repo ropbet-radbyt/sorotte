@@ -573,9 +573,11 @@ fn client_runtime_flush_queued_protocol_lines_to_transport_uses_sender_callback(
 #[test]
 fn client_runtime_protocol_transport_failure_preserves_failed_message_and_tail() {
     let mut control = QueuedRuntimeControl::default();
-    control.send_chat("first".to_owned());
-    control.send_chat("second".to_owned());
-    control.send_chat("third".to_owned());
+    for message in ["first", "second", "third"] {
+        control
+            .emit(ClientEffect::SendChat(message.to_owned()))
+            .expect("chat effect should be supported");
+    }
     let mut runtime = ClientRuntime::new(
         ClientSession::default(),
         RecordingPlayer::default(),
@@ -663,7 +665,9 @@ fn client_runtime_notification_sink_failure_preserves_failed_notification_and_ta
     });
     let mut control = QueuedRuntimeControl::default();
     for notification in notifications.clone() {
-        control.notify_chat(notification);
+        control
+            .emit(ClientEffect::NotifyChat(notification))
+            .expect("chat notification effect should be supported");
     }
     let mut runtime = ClientRuntime::new(
         ClientSession::default(),

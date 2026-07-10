@@ -1,4 +1,5 @@
 use super::*;
+use crate::control::client_effect_player_error;
 
 impl ClientSession {
     pub(crate) fn snapshot_local_action_state(&self) -> ClientSessionLocalActionSnapshot {
@@ -384,7 +385,7 @@ impl ClientSession {
     ) -> Result<(), PlayerError>
     where
         P: PlayerAdapter,
-        C: ClientRuntimeControl,
+        C: ClientEffectSink,
     {
         for action in actions {
             match action {
@@ -392,56 +393,102 @@ impl ClientSession {
                     player.set_paused(*paused)?;
                 }
                 ClientRuntimeAction::RequestUserList => {
-                    control.request_user_list();
+                    control
+                        .emit(ClientEffect::RequestUserList)
+                        .map_err(client_effect_player_error)?;
                 }
                 ClientRuntimeAction::SetRoom { room } => {
-                    control.set_room(room.clone());
+                    control
+                        .emit(ClientEffect::SetRoom(room.clone()))
+                        .map_err(client_effect_player_error)?;
                 }
                 ClientRuntimeAction::SetReady {
                     ready,
                     manually_initiated,
                 } => {
-                    control.set_ready(*ready, *manually_initiated);
+                    control
+                        .emit(ClientEffect::SetReady {
+                            ready: *ready,
+                            manually_initiated: *manually_initiated,
+                        })
+                        .map_err(client_effect_player_error)?;
                 }
                 ClientRuntimeAction::SetReadyForUser {
                     ready,
                     manually_initiated,
                     username,
                 } => {
-                    control.set_ready_for_user(*ready, *manually_initiated, username.clone());
+                    control
+                        .emit(ClientEffect::SetReadyForUser {
+                            ready: *ready,
+                            manually_initiated: *manually_initiated,
+                            username: username.clone(),
+                        })
+                        .map_err(client_effect_player_error)?;
                 }
-                ClientRuntimeAction::SetFile { file_payload } => {
-                    control.set_file(file_payload.clone());
+                ClientRuntimeAction::SetFile { file } => {
+                    control
+                        .emit(ClientEffect::SetFile(file.clone()))
+                        .map_err(client_effect_player_error)?;
                 }
                 ClientRuntimeAction::SetPlaylist { files } => {
-                    control.set_playlist(files.clone());
+                    control
+                        .emit(ClientEffect::SetPlaylist(files.clone()))
+                        .map_err(client_effect_player_error)?;
                 }
                 ClientRuntimeAction::SetPlaylistIndex { index } => {
-                    control.set_playlist_index(*index);
+                    control
+                        .emit(ClientEffect::SetPlaylistIndex(*index))
+                        .map_err(client_effect_player_error)?;
                 }
                 ClientRuntimeAction::RequestControllerAuth { room, password } => {
-                    control.request_controller_auth(room.clone(), password.clone());
+                    let payload = ControllerAuthPayload::new()
+                        .with_room(room.clone())
+                        .with_password(password.clone());
+                    control
+                        .emit(ClientEffect::RequestControllerAuth(payload))
+                        .map_err(client_effect_player_error)?;
                 }
                 ClientRuntimeAction::SendChat { message } => {
-                    control.send_chat(message.clone());
+                    control
+                        .emit(ClientEffect::SendChat(message.clone()))
+                        .map_err(client_effect_player_error)?;
                 }
                 ClientRuntimeAction::NotifyChat(notification) => {
-                    control.notify_chat(notification.clone());
+                    control
+                        .emit(ClientEffect::NotifyChat(notification.clone()))
+                        .map_err(client_effect_player_error)?;
                 }
                 ClientRuntimeAction::NotifyControlledRoomCreation(notification) => {
-                    control.notify_controlled_room_creation(notification.clone());
+                    control
+                        .emit(ClientEffect::NotifyControlledRoomCreation(
+                            notification.clone(),
+                        ))
+                        .map_err(client_effect_player_error)?;
                 }
                 ClientRuntimeAction::NotifyControllerAuthTransition(notification) => {
-                    control.notify_controller_auth_transition(notification.clone());
+                    control
+                        .emit(ClientEffect::NotifyControllerAuthTransition(
+                            notification.clone(),
+                        ))
+                        .map_err(client_effect_player_error)?;
                 }
                 ClientRuntimeAction::NotifyUserChange(notification) => {
-                    control.notify_user_change(notification.clone());
+                    control
+                        .emit(ClientEffect::NotifyUserChange(notification.clone()))
+                        .map_err(client_effect_player_error)?;
                 }
                 ClientRuntimeAction::NotifyReconnectTransition(notification) => {
-                    control.notify_reconnect_transition(notification.clone());
+                    control
+                        .emit(ClientEffect::NotifyReconnectTransition(
+                            notification.clone(),
+                        ))
+                        .map_err(client_effect_player_error)?;
                 }
                 ClientRuntimeAction::NotifyAutoplayCountdown(notification) => {
-                    control.notify_autoplay_countdown(notification.clone());
+                    control
+                        .emit(ClientEffect::NotifyAutoplayCountdown(notification.clone()))
+                        .map_err(client_effect_player_error)?;
                 }
                 ClientRuntimeAction::SetPosition(position) => {
                     player.set_position(*position)?;
@@ -450,10 +497,14 @@ impl ClientSession {
                     player.set_playback_rate(*rate)?;
                 }
                 ClientRuntimeAction::ScheduleReconnect { delay_seconds } => {
-                    control.schedule_reconnect(*delay_seconds);
+                    control
+                        .emit(ClientEffect::ScheduleReconnect(*delay_seconds))
+                        .map_err(client_effect_player_error)?;
                 }
                 ClientRuntimeAction::StopReconnect => {
-                    control.stop_reconnect();
+                    control
+                        .emit(ClientEffect::StopReconnect)
+                        .map_err(client_effect_player_error)?;
                 }
             }
         }

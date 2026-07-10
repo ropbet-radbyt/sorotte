@@ -88,7 +88,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sorotte_client_core::{ClientRuntimeControl, ClientSession};
+    use sorotte_client_core::{ClientEffect, ClientEffectSink, ClientSession};
     use sorotte_protocol::decode_message_line_items;
     use tokio::io::BufReader;
 
@@ -146,7 +146,9 @@ mod tests {
     #[tokio::test]
     async fn cli_writer_failure_leaves_protocol_message_queued() {
         let mut control = QueuedRuntimeControl::default();
-        control.send_chat("retry me".to_owned());
+        control
+            .emit(ClientEffect::SendChat("retry me".to_owned()))
+            .expect("chat effect should be supported");
         let mut runtime =
             ClientRuntime::new(ClientSession::default(), ProtocolIoTestPlayer, control);
         let (reader, mut writer) = tokio::io::duplex(64);

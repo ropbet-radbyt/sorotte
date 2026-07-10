@@ -13,8 +13,13 @@ fn dispatch_runtime_actions_applies_player_and_control_operations() {
             ready: true,
             manually_initiated: false,
         },
+        ClientRuntimeAction::SetReadyForUser {
+            ready: false,
+            manually_initiated: true,
+            username: "bob".to_owned(),
+        },
         ClientRuntimeAction::SetFile {
-            file_payload: json!({"name":"movie.mkv","size":123456789}),
+            file: protocol_file_payload(json!({"name":"movie.mkv","size":123456789})),
         },
         ClientRuntimeAction::SetPlaylist {
             files: vec!["ep1.mkv".to_owned(), "ep2.mkv".to_owned()],
@@ -63,8 +68,14 @@ fn dispatch_runtime_actions_applies_player_and_control_operations() {
     assert_eq!(control.room_updates, vec!["room2".to_owned()]);
     assert_eq!(control.ready_updates, vec![(true, false)]);
     assert_eq!(
+        control.ready_for_user_updates,
+        vec![(false, true, "bob".to_owned())]
+    );
+    assert_eq!(
         control.file_updates,
-        vec![json!({"name":"movie.mkv","size":123456789})]
+        vec![protocol_file_payload(
+            json!({"name":"movie.mkv","size":123456789})
+        )]
     );
     assert_eq!(
         control.playlist_updates,
@@ -73,7 +84,11 @@ fn dispatch_runtime_actions_applies_player_and_control_operations() {
     assert_eq!(control.playlist_index_updates, vec![1]);
     assert_eq!(
         control.controller_auth_requests,
-        vec![("+room:ABCDEF123456".to_owned(), "AB-123-456".to_owned())]
+        vec![
+            ControllerAuthPayload::new()
+                .with_room("+room:ABCDEF123456")
+                .with_password("AB-123-456")
+        ]
     );
     assert_eq!(control.chat_messages, vec!["hello room".to_owned()]);
     assert_eq!(
@@ -134,7 +149,12 @@ fn dispatch_runtime_actions_stops_on_player_error() {
 #[test]
 fn queued_runtime_control_set_ready_emits_protocol_set_ready_message() {
     let mut control = QueuedRuntimeControl::default();
-    control.set_ready(true, false);
+    control
+        .emit(ClientEffect::SetReady {
+            ready: true,
+            manually_initiated: false,
+        })
+        .expect("ready effect should be supported");
 
     assert_eq!(control.outbound_messages().len(), 1);
     let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
@@ -152,7 +172,9 @@ fn queued_runtime_control_set_ready_emits_protocol_set_ready_message() {
 #[test]
 fn queued_runtime_control_set_room_emits_protocol_set_room_message() {
     let mut control = QueuedRuntimeControl::default();
-    control.set_room("room2".to_owned());
+    control
+        .emit(ClientEffect::SetRoom("room2".to_owned()))
+        .expect("room effect should be supported");
 
     assert_eq!(control.outbound_messages().len(), 1);
     let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
@@ -169,13 +191,15 @@ fn queued_runtime_control_set_room_emits_protocol_set_room_message() {
 #[test]
 fn queued_runtime_control_set_file_emits_protocol_set_file_message() {
     let mut control = QueuedRuntimeControl::default();
-    control.set_file(json!({
-        "name": "movie.mkv",
-        "duration": 95.5,
-        "size": 123456789,
-        "path": "C:/media/movie.mkv",
-        "extra": "keep-me"
-    }));
+    control
+        .emit(ClientEffect::SetFile(protocol_file_payload(json!({
+            "name": "movie.mkv",
+            "duration": 95.5,
+            "size": 123456789,
+            "path": "C:/media/movie.mkv",
+            "extra": "keep-me"
+        }))))
+        .expect("file effect should be supported");
 
     assert_eq!(control.outbound_messages().len(), 1);
     let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
@@ -196,7 +220,12 @@ fn queued_runtime_control_set_file_emits_protocol_set_file_message() {
 #[test]
 fn queued_runtime_control_can_drain_encoded_protocol_lines() {
     let mut control = QueuedRuntimeControl::default();
-    control.set_ready(true, false);
+    control
+        .emit(ClientEffect::SetReady {
+            ready: true,
+            manually_initiated: false,
+        })
+        .expect("ready effect should be supported");
 
     let lines = control
         .drain_outbound_message_lines()
@@ -215,4 +244,42 @@ fn queued_runtime_control_can_drain_encoded_protocol_lines() {
         "encoded line should preserve manuallyInitiated"
     );
     assert!(control.outbound_messages().is_empty());
+}
+
+#[test]
+fn client_file_effect_rejects_non_object_payload() {
+    let error = ClientEffect::set_file_from_value(json!("not-an-object"))
+        .expect_err("non-object file payload should be rejected");
+
+    assert!(matches!(error, ClientEffectError::InvalidFilePayload(_)));
+}
+
+#[derive(Default)]
+struct UnsupportedEffectSink;
+
+impl ClientEffectSink for UnsupportedEffectSink {
+    fn emit(&mut self, _effect: ClientEffect) -> Result<(), ClientEffectError> {
+        Err(ClientEffectError::Unsupported("set_ready_for_user"))
+    }
+}
+
+#[test]
+fn dispatch_runtime_actions_surfaces_effect_sink_failure() {
+    let actions = vec![ClientRuntimeAction::SetReadyForUser {
+        ready: true,
+        manually_initiated: true,
+        username: "bob".to_owned(),
+    }];
+    let mut player = RecordingPlayer::default();
+    let mut control = UnsupportedEffectSink;
+
+    let error = ClientSession::dispatch_runtime_actions(&actions, &mut player, &mut control)
+        .expect_err("unsupported client effect should be returned");
+
+    assert_eq!(
+        error,
+        PlayerError::OperationFailed(
+            "client effect is not supported: set_ready_for_user".to_owned()
+        )
+    );
 }

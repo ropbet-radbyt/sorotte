@@ -36,11 +36,11 @@ fn reconnect_state_restore_emits_ready_and_file_actions_after_hello() {
                 manually_initiated: false,
             },
             ClientRuntimeAction::SetFile {
-                file_payload: json!({
+                file: protocol_file_payload(json!({
                     "name": "movie.mkv",
                     "size": 123456789,
                     "duration": 95.5
-                })
+                }))
             },
             ClientRuntimeAction::RequestUserList,
         ]
@@ -102,11 +102,11 @@ fn repeated_reconnect_resets_preserve_cached_restore_state() {
                 manually_initiated: false,
             },
             ClientRuntimeAction::SetFile {
-                file_payload: json!({
+                file: protocol_file_payload(json!({
                     "name": "movie.mkv",
                     "size": 123456789,
                     "duration": 95.5
-                }),
+                })),
             },
             ClientRuntimeAction::RequestUserList,
         ]

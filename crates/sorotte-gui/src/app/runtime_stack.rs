@@ -22,11 +22,11 @@ use sorotte_client_app::app_boundary::state::{
     parse_host_and_optional_port_from_host_arg_legacy_compatible,
 };
 use sorotte_client_core::{
-    AUTOPLAY_TICK_INTERVAL_SECONDS, ChatNotification, ClientMediaMatchPeerFileState, ClientRuntime,
-    ClientRuntimeAction, ClientRuntimeControl, ClientSession, DesyncCorrectionConfig, PrivacyMode,
-    QueuedRuntimeControl, ReadinessAutoplayConfig, RoomPlaylistView, RoomPlaystateView,
-    SYNCPLAY_COMPAT_VERSION_LEGACY, SYNCPLAY_WIRE_VERSION_LEGACY, SessionBehaviorConfig,
-    legacy_server_password_token,
+    AUTOPLAY_TICK_INTERVAL_SECONDS, ChatNotification, ClientEffect, ClientEffectSink,
+    ClientMediaMatchPeerFileState, ClientRuntime, ClientRuntimeAction, ClientSession,
+    DesyncCorrectionConfig, PrivacyMode, QueuedRuntimeControl, ReadinessAutoplayConfig,
+    RoomPlaylistView, RoomPlaystateView, SYNCPLAY_COMPAT_VERSION_LEGACY,
+    SYNCPLAY_WIRE_VERSION_LEGACY, SessionBehaviorConfig, legacy_server_password_token,
 };
 use sorotte_media_match::MediaMatchTier;
 use sorotte_player_api::PlayerPlaybackTelemetryUpdate;

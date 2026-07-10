@@ -280,7 +280,7 @@ fn sanitize_outbound_file_payload_legacy_like_applies_privacy_modes_and_removes_
     )
     .expect("raw mode should return sanitized payload");
     assert_eq!(
-        raw,
+        json!(raw),
         json!({
             "name": "https://example.invalid/media/Movie Name.mkv",
             "size": 123456789,
@@ -297,7 +297,7 @@ fn sanitize_outbound_file_payload_legacy_like_applies_privacy_modes_and_removes_
     )
     .expect("hashed mode should return sanitized payload");
     assert_eq!(
-        hashed,
+        json!(hashed),
         json!({
             "name": "a9858cb4803c",
             "size": "15e2b0d3c338",
@@ -314,7 +314,7 @@ fn sanitize_outbound_file_payload_legacy_like_applies_privacy_modes_and_removes_
     )
     .expect("hidden mode should return sanitized payload");
     assert_eq!(
-        hidden,
+        json!(hidden),
         json!({
             "name": PRIVACY_HIDDEN_FILENAME,
             "size": 0,
@@ -340,7 +340,7 @@ fn sanitize_outbound_file_payload_legacy_like_supplies_legacy_defaults_for_missi
     )
     .expect("raw mode should return sanitized payload");
     assert_eq!(
-        raw,
+        json!(raw),
         json!({
             "name": "movie.mkv",
             "size": 0,
@@ -362,7 +362,7 @@ fn sanitize_outbound_file_payload_legacy_like_supplies_legacy_defaults_for_missi
     .expect("hashed filename should be available");
     let hashed_zero_size = ClientSession::hash_filesize_for_compare("0");
     assert_eq!(
-        hashed,
+        json!(hashed),
         json!({
             "name": hashed_name,
             "size": hashed_zero_size,
@@ -378,7 +378,7 @@ fn sanitize_outbound_file_payload_legacy_like_supplies_legacy_defaults_for_missi
     )
     .expect("hidden mode should return sanitized payload");
     assert_eq!(
-        hidden,
+        json!(hidden),
         json!({
             "name": PRIVACY_HIDDEN_FILENAME,
             "size": 0,
@@ -432,12 +432,12 @@ fn local_file_publish_runtime_actions_apply_privacy_and_update_local_user_file_v
         actions,
         vec![
             ClientRuntimeAction::SetFile {
-                file_payload: json!({
+                file: protocol_file_payload(json!({
                     "name": "a9858cb4803c",
                     "size": "15e2b0d3c338",
                     "duration": 95.5,
                     "extra": "keep-me"
-                }),
+                })),
             },
             ClientRuntimeAction::RequestUserList,
         ]
@@ -476,7 +476,7 @@ fn local_file_publish_empty_payload_clears_local_user_file_view() {
         actions,
         vec![
             ClientRuntimeAction::SetFile {
-                file_payload: json!({}),
+                file: protocol_file_payload(json!({})),
             },
             ClientRuntimeAction::RequestUserList,
         ]
