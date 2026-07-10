@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::feature_slices::GuiRuntimeInput;
 
 pub(in crate::app) trait GuiNativeRuntimeBridge {
     fn shows_manual_pending_controls(&self) -> bool;
@@ -193,6 +194,15 @@ pub(in crate::app) trait GuiNativeRuntimePump {
 
 pub(in crate::app) trait GuiQueuedRuntimeOwner {
     fn pump(&mut self, handle: &GuiQueuedRuntimeBridgeHandle, state: &SorotteGuiShellAppState);
+
+    fn pump_runtime_input(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        input: &GuiRuntimeInput,
+    ) {
+        let state = input.to_compatibility_projection();
+        self.pump(handle, &state);
+    }
 }
 
 #[derive(Default)]

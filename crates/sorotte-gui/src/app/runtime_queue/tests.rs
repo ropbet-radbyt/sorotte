@@ -424,7 +424,7 @@ fn gui_threaded_runtime_owner_pump_joins_worker_on_drop() {
 }
 
 #[test]
-fn gui_threaded_runtime_owner_pump_reuses_identical_state_snapshots() {
+fn gui_threaded_runtime_owner_pump_reuses_identical_runtime_inputs() {
     let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         chat_input_enabled: Some(true),
         ..StoredClientSettingsMvp::default()
@@ -438,20 +438,64 @@ fn gui_threaded_runtime_owner_pump_reuses_identical_state_snapshots() {
 
     GuiNativeRuntimePump::pump(&mut threaded_pump, &state);
     let first_snapshot = threaded_pump
-        .last_submitted_state
+        .last_submitted_input
         .clone()
         .expect("first pump should submit a state snapshot");
 
     GuiNativeRuntimePump::pump(&mut threaded_pump, &state);
     let second_snapshot = threaded_pump
-        .last_submitted_state
+        .last_submitted_input
         .clone()
         .expect("second pump should keep a state snapshot");
 
     assert!(
         Arc::ptr_eq(&first_snapshot, &second_snapshot),
-        "identical UI state submissions should reuse the existing runtime snapshot",
+        "identical runtime inputs should reuse the existing worker snapshot",
     );
+}
+
+#[test]
+fn gui_threaded_runtime_owner_pump_reuses_input_after_ui_only_changes() {
+    let mut state =
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut threaded_pump = GuiThreadedRuntimeOwnerPump::new_with_poll_interval(
+        GuiQueuedRuntimeBridgeHandle::default(),
+        GuiPreviewRuntimeOwner,
+        Duration::from_secs(30),
+    )
+    .expect("threaded runtime owner should spawn");
+
+    GuiNativeRuntimePump::pump(&mut threaded_pump, &state);
+    let first_input = threaded_pump
+        .last_submitted_input
+        .clone()
+        .expect("first pump should submit runtime input");
+    let first_revision = threaded_pump
+        .shared
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .latest_input_revision;
+
+    state.active_view = GuiShellView::Room;
+    state.new_main_window_user_draft = "UI-only draft".to_owned();
+    GuiNativeRuntimePump::pump(&mut threaded_pump, &state);
+    let second_input = threaded_pump
+        .last_submitted_input
+        .clone()
+        .expect("second pump should retain runtime input");
+    let second_revision = threaded_pump
+        .shared
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .latest_input_revision;
+
+    assert!(
+        Arc::ptr_eq(&first_input, &second_input),
+        "UI-only changes must not clone or resubmit runtime input",
+    );
+    assert_eq!(second_revision, first_revision);
 }
 
 #[test]

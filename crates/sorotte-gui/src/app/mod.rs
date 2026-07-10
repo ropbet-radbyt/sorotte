@@ -1,6 +1,7 @@
 mod child_process;
 mod configuration_draft;
 mod connection_workflows;
+mod feature_slices;
 mod feedback_workflows;
 mod launcher;
 mod local_command_dispatch;

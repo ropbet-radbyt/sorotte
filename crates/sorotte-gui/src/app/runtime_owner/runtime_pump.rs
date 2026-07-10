@@ -1,3 +1,4 @@
+use super::super::feature_slices::GuiRuntimeInput;
 use super::super::remote_services;
 use super::*;
 
@@ -17,9 +18,17 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         state: &SorotteGuiShellAppState,
     ) {
+        let input = GuiRuntimeInput::from_shell(state);
+        self.pump_runtime_projection(handle, input.to_compatibility_projection());
+    }
+
+    pub(in crate::app) fn pump_runtime_projection(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        mut projected_state: SorotteGuiShellAppState,
+    ) {
         self.runtime_pump_generation = self.runtime_pump_generation.wrapping_add(1);
         self.poll_managed_mpv_process();
-        let mut projected_state = state.clone();
         let mut media_resolution_completed = false;
         self.pump_due_session_transport_reconnect(handle, &mut projected_state);
         self.sync_detached_session_runtime_state_or_notify(handle, &mut projected_state);
@@ -63,7 +72,9 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.sync_detached_session_runtime_state_or_notify(handle, &mut projected_state);
             }
         }
-        for request in handle.drain_requests() {
+        for command in handle.drain_client_commands() {
+            let _feature = command.feature();
+            let request = command.into_compatibility_request();
             if !self.handle_runtime_request(handle, &mut projected_state, request) {
                 continue;
             }
