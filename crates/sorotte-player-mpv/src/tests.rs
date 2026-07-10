@@ -46,7 +46,7 @@ struct FakeTransport {
 }
 
 impl MpvJsonIpcTransport for FakeTransport {
-    fn send_line(&mut self, line: &str) -> io::Result<()> {
+    fn send_line_until(&mut self, line: &str, _deadline: std::time::Instant) -> io::Result<()> {
         self.shared
             .lock()
             .expect("fake transport mutex should not be poisoned")
@@ -55,7 +55,11 @@ impl MpvJsonIpcTransport for FakeTransport {
         Ok(())
     }
 
-    fn read_line(&mut self, line: &mut String) -> io::Result<usize> {
+    fn read_line_until(
+        &mut self,
+        line: &mut String,
+        _deadline: std::time::Instant,
+    ) -> io::Result<usize> {
         let mut guard = self
             .shared
             .lock()

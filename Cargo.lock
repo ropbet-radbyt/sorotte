@@ -3469,6 +3469,7 @@ dependencies = [
  "anyhow",
  "serde_json",
  "sorotte-player-api",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
