@@ -6,8 +6,9 @@ use super::media_resolution::{
     GuiMediaResolutionCandidate, GuiMediaResolutionPlan, GuiMediaResolutionTarget,
 };
 use sorotte_plex::{
-    PlexClientConfig, PlexHttpClient, PlexMatchCache, PlexMediaResolver, PlexStreamTarget,
-    is_plex_playlist_uri, parse_plex_playlist_uri, redact_plex_token,
+    PlexClientConfig, cache::PlexMatchCache, http::PlexHttpClient, is_plex_playlist_uri,
+    library::PlexStreamTarget, parse_plex_playlist_uri, redact_plex_token,
+    resolver::PlexMediaResolver,
 };
 
 enum GuiPlexStreamResolutionState {

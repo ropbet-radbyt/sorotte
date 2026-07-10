@@ -8,9 +8,15 @@ use sorotte_client_core::{
     ReconnectStateRestoreCorrectionStateSnapshot, ReconnectTransitionNotification,
     RoomPlaystateView, UserChangeNotification,
 };
-use sorotte_player_api::{PlayerAdapter, PlayerError, PlayerPlaybackTelemetryUpdate};
+use sorotte_player_api::{
+    PlayerAdapter, PlayerCommand, PlayerError, PlayerPlaybackTelemetryUpdate,
+};
 pub use sorotte_plex::PlexClientConfig;
-use sorotte_plex::{PlexHttpClient, PlexMatchCache, PlexSyncEngine, PlexWatchEvent};
+use sorotte_plex::{
+    cache::PlexMatchCache,
+    http::PlexHttpClient,
+    timeline::{PlexSyncEngine, PlexWatchEvent},
+};
 use sorotte_protocol::{ProtocolError, ProtocolMessage, StatePayload, decode_message_line_items};
 use sorotte_secret::SecretValue;
 use std::collections::VecDeque;
@@ -516,7 +522,10 @@ where
             ),
             ClientCommand::OpenMedia { path } => (
                 "open-media",
-                self.runtime.player_mut().open_file(&path).map(|()| true),
+                self.runtime
+                    .player_mut()
+                    .execute(PlayerCommand::OpenFile(path))
+                    .map(|()| true),
             ),
             ClientCommand::PlayerPlaybackObserved {
                 paused,

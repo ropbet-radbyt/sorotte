@@ -1,5 +1,6 @@
 use super::*;
 use crate::control::client_effect_player_error;
+use sorotte_player_api::PlayerCommand;
 
 impl ClientSession {
     pub(crate) fn snapshot_local_action_state(&self) -> ClientSessionLocalActionSnapshot {
@@ -503,7 +504,7 @@ impl ClientSession {
         for action in actions {
             match action {
                 ClientRuntimeAction::SetPaused(paused) => {
-                    player.set_paused(*paused)?;
+                    player.execute(PlayerCommand::SetPaused(*paused))?;
                 }
                 ClientRuntimeAction::RequestUserList => {
                     control
@@ -604,10 +605,10 @@ impl ClientSession {
                         .map_err(client_effect_player_error)?;
                 }
                 ClientRuntimeAction::SetPosition(position) => {
-                    player.set_position(*position)?;
+                    player.execute(PlayerCommand::SetPosition(*position))?;
                 }
                 ClientRuntimeAction::SetPlaybackRate(rate) => {
-                    player.set_playback_rate(*rate)?;
+                    player.execute(PlayerCommand::SetPlaybackRate(*rate))?;
                 }
                 ClientRuntimeAction::ScheduleReconnect { delay_seconds } => {
                     control

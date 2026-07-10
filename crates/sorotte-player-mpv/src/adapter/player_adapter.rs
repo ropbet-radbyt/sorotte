@@ -1,9 +1,17 @@
 use super::*;
-use sorotte_player_api::PlayerAdapter;
+use sorotte_player_api::{PlayerAdapter, PlayerCapabilities};
 
 impl PlayerAdapter for MpvAdapter {
     fn name(&self) -> &'static str {
         "mpv"
+    }
+
+    fn capabilities(&self) -> PlayerCapabilities {
+        if self.ipc_client.is_some() || self.simulation_mode {
+            PlayerCapabilities::ALL
+        } else {
+            PlayerCapabilities::NONE
+        }
     }
 
     fn open_file(&mut self, path: &str) -> Result<(), PlayerError> {

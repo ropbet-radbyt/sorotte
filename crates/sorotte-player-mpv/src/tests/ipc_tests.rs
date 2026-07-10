@@ -429,9 +429,11 @@ fn open_file_collects_filesystem_size_for_local_paths() {
     writeln!(temp_file, "12345").expect("temp file should be writable");
     drop(temp_file);
 
-    let mut adapter = MpvAdapter::default();
+    let mut adapter = SimulatedPlayer::new();
     adapter
-        .open_file(temp_path.to_string_lossy().as_ref())
+        .execute(PlayerCommand::OpenFile(
+            temp_path.to_string_lossy().into_owned(),
+        ))
         .expect("mpv stub should accept local temp file");
 
     let file_update = adapter

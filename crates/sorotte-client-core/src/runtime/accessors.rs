@@ -1,5 +1,6 @@
 use super::*;
 use crate::control::client_effect_player_error;
+use sorotte_player_api::PlayerCommand;
 
 pub struct ClientSessionUpdate<'a> {
     session: &'a mut ClientSession,
@@ -141,19 +142,25 @@ pub struct ClientPlayerIo<'a, P> {
 
 impl<P: PlayerAdapter> ClientPlayerIo<'_, P> {
     pub fn open_file(&mut self, path: &str) -> Result<(), PlayerError> {
-        self.player.open_file(path)
+        self.player
+            .execute(PlayerCommand::OpenFile(path.to_owned()))
     }
 
     pub fn set_paused(&mut self, paused: bool) -> Result<(), PlayerError> {
-        self.player.set_paused(paused)
+        self.player.execute(PlayerCommand::SetPaused(paused))
     }
 
     pub fn set_position(&mut self, position_seconds: f64) -> Result<(), PlayerError> {
-        self.player.set_position(position_seconds)
+        self.player
+            .execute(PlayerCommand::SetPosition(position_seconds))
     }
 
     pub fn set_playback_rate(&mut self, rate: f64) -> Result<(), PlayerError> {
-        self.player.set_playback_rate(rate)
+        self.player.execute(PlayerCommand::SetPlaybackRate(rate))
+    }
+
+    pub fn execute(&mut self, command: PlayerCommand) -> Result<(), PlayerError> {
+        self.player.execute(command)
     }
 }
 
@@ -235,9 +242,15 @@ where
 
     fn execute_client_effect(&mut self, effect: ClientEffect) -> Result<(), PlayerError> {
         match effect {
-            ClientEffect::SetPlayerPaused(paused) => self.player.set_paused(paused),
-            ClientEffect::SetPlayerPosition(position) => self.player.set_position(position),
-            ClientEffect::SetPlayerPlaybackRate(rate) => self.player.set_playback_rate(rate),
+            ClientEffect::SetPlayerPaused(paused) => {
+                self.player.execute(PlayerCommand::SetPaused(paused))
+            }
+            ClientEffect::SetPlayerPosition(position) => {
+                self.player.execute(PlayerCommand::SetPosition(position))
+            }
+            ClientEffect::SetPlayerPlaybackRate(rate) => {
+                self.player.execute(PlayerCommand::SetPlaybackRate(rate))
+            }
             control_effect => self
                 .control
                 .emit(control_effect)

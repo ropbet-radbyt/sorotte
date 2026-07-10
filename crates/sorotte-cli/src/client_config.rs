@@ -10,14 +10,14 @@ use sorotte_client_core::{
     UnpauseActionMode,
 };
 use sorotte_player_mpv::MpvAdapter;
+#[cfg(test)]
+use sorotte_player_mpv::SimulatedPlayer;
 
+#[cfg(test)]
+use crate::apply_legacy_syncplay_ui_settings_to_mpv_adapter_legacy_compatible;
 use crate::env_support::{
     env_flag_enabled, env_flag_override, env_non_negative_f64, env_port, env_privacy_mode,
     env_string_list, env_trimmed, env_u32, env_usize,
-};
-#[cfg(test)]
-use crate::{
-    apply_legacy_syncplay_ui_settings_to_mpv_adapter_legacy_compatible, create_mpv_adapter_from_env,
 };
 mod env_build;
 mod overrides;

@@ -65,6 +65,7 @@ impl fmt::Debug for MpvAdapter {
                 "legacy_syncplayintf_script_name",
                 &self.legacy_syncplayintf_script_name,
             )
+            .field("simulation_mode", &self.simulation_mode)
             .field("ipc_attached", &self.ipc_client.is_some())
             .field(
                 "pending_ipc_connection_events",
@@ -113,6 +114,7 @@ impl Default for MpvAdapter {
             legacy_syncplayintf_script_loaded: false,
             legacy_syncplayintf_options_applied: false,
             legacy_syncplayintf_script_name: LEGACY_SYNCPLAYINTF_SCRIPT_NAME.to_owned(),
+            simulation_mode: false,
             ipc_client: None,
             pending_ipc_connection_events: VecDeque::new(),
         }

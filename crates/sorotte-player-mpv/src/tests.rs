@@ -1,9 +1,9 @@
-use super::{LegacySyncplayOsdKind, LegacySyncplayUiSettings, MpvAdapter};
+use super::{LegacySyncplayOsdKind, LegacySyncplayUiSettings, MpvAdapter, SimulatedPlayer};
 use crate::ipc::{MpvJsonIpcTransport, read_line_from_stream};
 use serde_json::{Value, json};
 use sorotte_player_api::{
-    LocalFileUpdate, PlayerAdapter, PlayerMediaLoadFailureKind, PlayerMediaLoadOutcome,
-    PlayerPlaybackTelemetryUpdate,
+    LocalFileUpdate, PlayerAdapter, PlayerCommand, PlayerError, PlayerMediaLoadFailureKind,
+    PlayerMediaLoadOutcome, PlayerPlaybackTelemetryUpdate,
 };
 use std::{
     collections::VecDeque,

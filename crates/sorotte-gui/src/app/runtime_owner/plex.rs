@@ -43,7 +43,9 @@ impl GuiPersistedConfigRuntimeOwner {
         match std::thread::Builder::new()
             .name("sorotte-gui-plex-auth-start".to_owned())
             .spawn(move || {
-                let result = client.start_auth().map_err(|error| error.to_string());
+                let result = PlexAuthService::new(&client)
+                    .start()
+                    .map_err(|error| error.to_string());
                 let _ = tx.send(result);
             }) {
             Ok(_thread) => {
@@ -361,7 +363,9 @@ impl GuiPersistedConfigRuntimeOwner {
         match std::thread::Builder::new()
             .name("sorotte-gui-plex-auth-poll".to_owned())
             .spawn(move || {
-                let result = client.poll_auth(pin_id).map_err(|error| error.to_string());
+                let result = PlexAuthService::new(&client)
+                    .poll(pin_id)
+                    .map_err(|error| error.to_string());
                 let _ = tx.send((user_initiated, result));
             }) {
             Ok(_thread) => {
@@ -669,8 +673,8 @@ impl GuiPersistedConfigRuntimeOwner {
         match std::thread::Builder::new()
             .name("sorotte-gui-plex-playlist-search".to_owned())
             .spawn(move || {
-                let result = client
-                    .search_selected_server_media(&config, &worker_query, 25)
+                let result = PlexLibraryService::new(&client)
+                    .search_selected(&config, &worker_query, 25)
                     .map(|results| {
                         results
                             .into_iter()
@@ -734,8 +738,8 @@ impl GuiPersistedConfigRuntimeOwner {
         match std::thread::Builder::new()
             .name("sorotte-gui-plex-playlist-resolve".to_owned())
             .spawn(move || {
-                let result = client
-                    .playlist_uri_for_selected_server_rating_key(&config, &worker_rating_key)
+                let result = PlexLibraryService::new(&client)
+                    .playlist_uri(&config, &worker_rating_key)
                     .map(|uri| format_plex_playlist_uri(&uri))
                     .map_err(|error| error.to_string());
                 let _ = tx.send(GuiPlexPlaylistResolveWorkerResult {
@@ -1399,8 +1403,8 @@ fn refresh_plex_servers_and_reachability(
         .as_ref()
         .filter(|token| !token.expose_secret().trim().is_empty())
         .ok_or_else(|| "Plex login is required before servers can be refreshed.".to_owned())?;
-    let servers = client
-        .discover_servers(token.expose_secret())
+    let servers = PlexDiscoveryService::new(client)
+        .discover(token.expose_secret())
         .map_err(|error| error.to_string())?;
     let mut reachability = HashMap::new();
     for server in &servers {
@@ -1449,7 +1453,7 @@ fn verify_plex_server_reachability(
     client: &PlexHttpClient,
     server: &PlexServerConnection,
 ) -> GuiPlexServerReachability {
-    match client.verify_server_connection(server) {
+    match PlexDiscoveryService::new(client).verify(server) {
         Ok(()) => GuiPlexServerReachability::Reachable,
         Err(_error) => GuiPlexServerReachability::Unreachable,
     }

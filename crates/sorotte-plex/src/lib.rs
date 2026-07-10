@@ -1,3 +1,11 @@
+pub mod auth;
+pub mod cache;
+pub mod discovery;
+pub mod http;
+pub mod library;
+pub mod resolver;
+pub mod timeline;
+
 use std::{
     collections::BTreeMap,
     fmt, fs,

@@ -63,6 +63,7 @@ pub struct MpvAdapter {
     legacy_syncplayintf_script_loaded: bool,
     legacy_syncplayintf_options_applied: bool,
     legacy_syncplayintf_script_name: String,
+    simulation_mode: bool,
     ipc_client: Option<MpvJsonIpcClient>,
     pending_ipc_connection_events: VecDeque<MpvIpcConnectionEvent>,
 }
@@ -78,8 +79,20 @@ impl MpvAdapter {
         let client =
             MpvJsonIpcClient::connect(path.as_ref()).map_err(PlayerError::OperationFailed)?;
         self.collect_ipc_connection_events();
+        self.simulation_mode = false;
         self.ipc_client = Some(client);
         Ok(())
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.ipc_client.is_some()
+    }
+
+    pub(crate) fn simulated() -> Self {
+        Self {
+            simulation_mode: true,
+            ..Self::default()
+        }
     }
 
     pub fn take_ipc_connection_events(&mut self) -> Vec<MpvIpcConnectionEvent> {
@@ -239,7 +252,9 @@ impl MpvAdapter {
         settings: LegacySyncplayUiSettings,
     ) -> Result<(), PlayerError> {
         self.legacy_syncplay_ui_settings = settings;
-        if self.legacy_syncplay_ui_settings.should_move_osd() {
+        if self.legacy_syncplay_ui_settings.should_move_osd()
+            && (self.ipc_client.is_some() || self.simulation_mode)
+        {
             self.set_property_string(MPV_PROPERTY_OSD_ALIGN_Y, "bottom")?;
             self.set_property_i64(
                 MPV_PROPERTY_OSD_MARGIN_Y,
@@ -812,6 +827,8 @@ impl MpvAdapter {
             ipc_client
                 .send_command_expect_success(command)
                 .map_err(PlayerError::OperationFailed)?;
+        } else if !self.simulation_mode {
+            return Err(PlayerError::NotConnected);
         }
         self.drain_ipc_events_if_attached();
         Ok(())

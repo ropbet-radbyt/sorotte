@@ -22,20 +22,20 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use sorotte_media_match::{
     MEDIA_MATCH_ALGORITHM_VERSION, MEDIA_MATCH_ANCHOR_VERSION, MEDIA_MATCH_V3_PROFILE_LABEL,
-    MediaExtractionSettings, MediaFingerprintError, MediaFingerprintRecord, MediaMatchCache,
-    MediaMatchCandidateDecision, MediaMatchDecision, MediaMatchSettings, MediaMatchTier,
-    MediaMatchToolPaths, MediaMatchV3RetrievalStats, decide_media_match,
+    MediaExtractionSettings, MediaFingerprintError, MediaFingerprintRecord, MediaIndexService,
+    MediaMatchCache, MediaMatchCandidateDecision, MediaMatchDecision, MediaMatchSettings,
+    MediaMatchTier, MediaMatchToolPaths, MediaMatchV3RetrievalStats, decide_media_match,
     delete_media_match_v3_file_and_fingerprints, delete_media_match_v3_fingerprints_and_anchors,
-    fingerprint_media_file_cancellable_with_report, load_media_match_v3_cache_for_settings,
-    load_media_match_v3_record_for_path, media_extraction_settings_hash,
-    media_match_v3_anchor_candidate_paths_with_stats, media_match_wire_value_from_records,
-    normalize_media_path, open_media_match_v3_index, rank_media_match_candidates,
-    refresh_anchor_stats_v3, save_media_match_v3_record, summarize_record_v3_diagnostics,
+    fingerprint_media_file_cancellable_with_report, media_extraction_settings_hash,
+    media_match_wire_value_from_records, normalize_media_path, open_media_match_v3_index,
+    rank_media_match_candidates, refresh_anchor_stats_v3, save_media_match_v3_record,
+    summarize_record_v3_diagnostics,
 };
 
 #[cfg(test)]
 use sorotte_media_match::{
-    AudioAnchor, anchor_stats_v3_dirty, map_query_position_to_candidate_ms,
+    AudioAnchor, anchor_stats_v3_dirty, load_media_match_v3_record_for_path,
+    map_query_position_to_candidate_ms, media_match_v3_anchor_candidate_paths_with_stats,
     refresh_all_anchor_stats_v3,
 };
 
@@ -2193,13 +2193,10 @@ fn media_match_v3_anchor_candidate_paths(
     normalized_current_path: &str,
     extraction_settings: &MediaExtractionSettings,
 ) -> Result<Vec<String>, String> {
-    let connection = open_media_match_sqlite_index(root)?;
-    media_match_v3_anchor_candidate_paths_with_stats(
-        &connection,
-        normalized_current_path,
-        extraction_settings,
-    )
-    .map(|(paths, _stats)| paths)
+    MediaIndexService::new(managed_media_match_index_dir(root))
+        .open()?
+        .anchor_candidate_paths(normalized_current_path, extraction_settings)
+        .map(|(paths, _stats)| paths)
 }
 
 fn summarize_current_media_match(
@@ -2224,16 +2221,14 @@ fn summarize_current_media_match(
             None,
         );
     };
-    let (anchor_candidates, retrieval_stats) = open_media_match_sqlite_index(root)
-        .and_then(|connection| {
-            media_match_v3_anchor_candidate_paths_with_stats(
-                &connection,
-                &normalized_current_path,
-                extraction_settings,
-            )
-        })
-        .map(|(paths, stats)| (paths, Some(stats)))
-        .unwrap_or_default();
+    let (anchor_candidates, retrieval_stats) =
+        MediaIndexService::new(managed_media_match_index_dir(root))
+            .open()
+            .and_then(|session| {
+                session.anchor_candidate_paths(&normalized_current_path, extraction_settings)
+            })
+            .map(|(paths, stats)| (paths, Some(stats)))
+            .unwrap_or_default();
     let retrieval_suffix = retrieval_stats
         .as_ref()
         .map(format_media_match_v3_retrieval_stats)
@@ -2634,16 +2629,13 @@ pub(super) fn load_media_match_cache_for_settings(
     root: &Path,
     extraction_settings: &MediaExtractionSettings,
 ) -> Option<MediaMatchCache> {
-    let connection = open_media_match_sqlite_index(root).ok()?;
-    load_media_match_cache_for_settings_from_sqlite(&connection, extraction_settings)
+    let session = MediaIndexService::new(managed_media_match_index_dir(root))
+        .open()
+        .ok()?;
+    session
+        .load_cache(extraction_settings)
+        .ok()
         .filter(|cache| !cache.records.is_empty())
-}
-
-fn load_media_match_cache_for_settings_from_sqlite(
-    connection: &Connection,
-    extraction_settings: &MediaExtractionSettings,
-) -> Option<MediaMatchCache> {
-    load_media_match_v3_cache_for_settings(connection, extraction_settings).ok()
 }
 
 pub(super) fn media_match_wire_value_for_path(
@@ -2672,32 +2664,18 @@ pub(super) fn media_match_record_for_path(
         .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
         .unwrap_or(0);
     let size_bytes = metadata.len();
-    let connection = open_media_match_sqlite_index(root).ok()?;
-    load_media_match_record_for_path_from_sqlite(
-        &connection,
-        &normalized_path,
-        extraction_settings,
-        modified_unix_millis,
-        size_bytes,
-    )
-}
-
-fn load_media_match_record_for_path_from_sqlite(
-    connection: &Connection,
-    normalized_path: &str,
-    extraction_settings: &MediaExtractionSettings,
-    modified_unix_millis: u64,
-    size_bytes: u64,
-) -> Option<MediaFingerprintRecord> {
-    load_media_match_v3_record_for_path(
-        connection,
-        normalized_path,
-        extraction_settings,
-        modified_unix_millis,
-        size_bytes,
-    )
-    .ok()
-    .flatten()
+    let session = MediaIndexService::new(managed_media_match_index_dir(root))
+        .open()
+        .ok()?;
+    session
+        .load_record(
+            &normalized_path,
+            extraction_settings,
+            modified_unix_millis,
+            size_bytes,
+        )
+        .ok()
+        .flatten()
 }
 
 #[cfg(test)]

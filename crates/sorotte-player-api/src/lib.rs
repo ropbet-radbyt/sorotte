@@ -2,8 +2,102 @@
 pub enum PlayerError {
     #[error("operation not supported: {0}")]
     Unsupported(&'static str),
+    #[error("player is not connected")]
+    NotConnected,
     #[error("operation failed: {0}")]
     OperationFailed(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum PlayerCapability {
+    OpenFile,
+    SetOption,
+    ApplyProfile,
+    Playback,
+    Audio,
+    Video,
+    Window,
+    Subtitles,
+    Osd,
+    Telemetry,
+    ChatInput,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PlayerCapabilities(u64);
+
+impl PlayerCapabilities {
+    pub const NONE: Self = Self(0);
+    pub const ALL: Self = Self((1 << 11) - 1);
+
+    pub const fn contains(self, capability: PlayerCapability) -> bool {
+        self.0 & (1 << capability as u8) != 0
+    }
+
+    pub fn from_capabilities(capabilities: impl IntoIterator<Item = PlayerCapability>) -> Self {
+        capabilities
+            .into_iter()
+            .fold(Self::NONE, |result, capability| {
+                Self(result.0 | (1 << capability as u8))
+            })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlayerCommand {
+    OpenFile(String),
+    SetOptionString { name: String, value: String },
+    ApplyProfile(String),
+    SetPaused(bool),
+    SetPosition(f64),
+    SetPlaybackRate(f64),
+    SetMuted(bool),
+    SetVolume(f64),
+    SetDeinterlace(bool),
+    SetKeepaspect(bool),
+    SetKeepaspectWindow(bool),
+    SetFullscreen(bool),
+    SetOntop(bool),
+    SetBorder(bool),
+    SetForceWindow(bool),
+    SetKeepOpen(bool),
+    SetKeepOpenPause(bool),
+    SetCursorAutohideFsOnly(bool),
+    SetStopScreensaver(bool),
+    SetSubVisibility(bool),
+    SetOsdBar(bool),
+    SetWindowMaximized(bool),
+    SetWindowMinimized(bool),
+}
+
+impl PlayerCommand {
+    pub const fn required_capability(&self) -> PlayerCapability {
+        match self {
+            Self::OpenFile(_) => PlayerCapability::OpenFile,
+            Self::SetOptionString { .. } => PlayerCapability::SetOption,
+            Self::ApplyProfile(_) => PlayerCapability::ApplyProfile,
+            Self::SetPaused(_) | Self::SetPosition(_) | Self::SetPlaybackRate(_) => {
+                PlayerCapability::Playback
+            }
+            Self::SetMuted(_) | Self::SetVolume(_) => PlayerCapability::Audio,
+            Self::SetDeinterlace(_) | Self::SetKeepaspect(_) | Self::SetKeepaspectWindow(_) => {
+                PlayerCapability::Video
+            }
+            Self::SetFullscreen(_)
+            | Self::SetOntop(_)
+            | Self::SetBorder(_)
+            | Self::SetForceWindow(_)
+            | Self::SetKeepOpen(_)
+            | Self::SetKeepOpenPause(_)
+            | Self::SetCursorAutohideFsOnly(_)
+            | Self::SetStopScreensaver(_)
+            | Self::SetWindowMaximized(_)
+            | Self::SetWindowMinimized(_) => PlayerCapability::Window,
+            Self::SetSubVisibility(_) => PlayerCapability::Subtitles,
+            Self::SetOsdBar(_) => PlayerCapability::Osd,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -131,6 +225,38 @@ impl PlayerMediaLoadOutcome {
 
 pub trait PlayerAdapter: Send + Sync {
     fn name(&self) -> &'static str;
+    fn capabilities(&self) -> PlayerCapabilities {
+        PlayerCapabilities::NONE
+    }
+    fn execute(&mut self, command: PlayerCommand) -> Result<(), PlayerError> {
+        match command {
+            PlayerCommand::OpenFile(path) => self.open_file(&path),
+            PlayerCommand::SetOptionString { name, value } => self.set_option_string(&name, &value),
+            PlayerCommand::ApplyProfile(profile) => self.apply_profile(&profile),
+            PlayerCommand::SetPaused(paused) => self.set_paused(paused),
+            PlayerCommand::SetPosition(position) => self.set_position(position),
+            PlayerCommand::SetPlaybackRate(rate) => self.set_playback_rate(rate),
+            PlayerCommand::SetMuted(muted) => self.set_muted(muted),
+            PlayerCommand::SetVolume(volume) => self.set_volume(volume),
+            PlayerCommand::SetDeinterlace(enabled) => self.set_deinterlace(enabled),
+            PlayerCommand::SetKeepaspect(enabled) => self.set_keepaspect(enabled),
+            PlayerCommand::SetKeepaspectWindow(enabled) => self.set_keepaspect_window(enabled),
+            PlayerCommand::SetFullscreen(enabled) => self.set_fullscreen(enabled),
+            PlayerCommand::SetOntop(enabled) => self.set_ontop(enabled),
+            PlayerCommand::SetBorder(enabled) => self.set_border(enabled),
+            PlayerCommand::SetForceWindow(enabled) => self.set_force_window(enabled),
+            PlayerCommand::SetKeepOpen(enabled) => self.set_keep_open(enabled),
+            PlayerCommand::SetKeepOpenPause(enabled) => self.set_keep_open_pause(enabled),
+            PlayerCommand::SetCursorAutohideFsOnly(enabled) => {
+                self.set_cursor_autohide_fs_only(enabled)
+            }
+            PlayerCommand::SetStopScreensaver(enabled) => self.set_stop_screensaver(enabled),
+            PlayerCommand::SetSubVisibility(enabled) => self.set_sub_visibility(enabled),
+            PlayerCommand::SetOsdBar(enabled) => self.set_osd_bar(enabled),
+            PlayerCommand::SetWindowMaximized(enabled) => self.set_window_maximized(enabled),
+            PlayerCommand::SetWindowMinimized(enabled) => self.set_window_minimized(enabled),
+        }
+    }
     fn open_file(&mut self, _path: &str) -> Result<(), PlayerError> {
         Err(PlayerError::Unsupported("open_file"))
     }
@@ -217,11 +343,25 @@ pub trait PlayerAdapter: Send + Sync {
     }
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+pub struct DisconnectedPlayer;
+
+impl PlayerAdapter for DisconnectedPlayer {
+    fn name(&self) -> &'static str {
+        "disconnected"
+    }
+
+    fn execute(&mut self, _command: PlayerCommand) -> Result<(), PlayerError> {
+        Err(PlayerError::NotConnected)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        LocalFileUpdate, PlayerAdapter, PlayerError, PlayerMediaLoadFailureKind,
-        PlayerMediaLoadOutcome, PlayerPlaybackTelemetryUpdate,
+        DisconnectedPlayer, LocalFileUpdate, PlayerAdapter, PlayerCapabilities, PlayerCapability,
+        PlayerCommand, PlayerError, PlayerMediaLoadFailureKind, PlayerMediaLoadOutcome,
+        PlayerPlaybackTelemetryUpdate,
     };
 
     struct DummyPlayer;
@@ -332,6 +472,40 @@ mod tests {
         assert_eq!(player.take_playback_telemetry_update(), None);
         assert_eq!(player.take_media_load_outcome(), None);
         assert_eq!(player.take_pending_chat_request(), None);
+        assert_eq!(player.capabilities(), PlayerCapabilities::NONE);
+        assert_eq!(
+            player.execute(PlayerCommand::SetPaused(true)),
+            Err(PlayerError::Unsupported("set_paused"))
+        );
+    }
+
+    #[test]
+    fn player_commands_advertise_required_capabilities() {
+        assert_eq!(
+            PlayerCommand::OpenFile("movie.mkv".to_owned()).required_capability(),
+            PlayerCapability::OpenFile
+        );
+        assert_eq!(
+            PlayerCommand::SetVolume(50.0).required_capability(),
+            PlayerCapability::Audio
+        );
+        let capabilities = PlayerCapabilities::from_capabilities([
+            PlayerCapability::OpenFile,
+            PlayerCapability::Playback,
+        ]);
+        assert!(capabilities.contains(PlayerCapability::OpenFile));
+        assert!(capabilities.contains(PlayerCapability::Playback));
+        assert!(!capabilities.contains(PlayerCapability::Audio));
+    }
+
+    #[test]
+    fn disconnected_player_rejects_commands_explicitly() {
+        let mut player = DisconnectedPlayer;
+        assert_eq!(
+            player.execute(PlayerCommand::OpenFile("movie.mkv".to_owned())),
+            Err(PlayerError::NotConnected)
+        );
+        assert_eq!(player.capabilities(), PlayerCapabilities::NONE);
     }
 
     #[test]

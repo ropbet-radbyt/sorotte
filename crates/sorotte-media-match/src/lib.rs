@@ -5,6 +5,7 @@ mod diagnostics;
 mod extraction;
 mod identity;
 mod matching;
+mod media_index;
 mod report_compare;
 mod settings;
 mod timeline_v3;
@@ -43,6 +44,7 @@ pub use extraction::{
 };
 pub use identity::normalize_media_path;
 pub use matching::{MediaMatchCandidateDecision, decide_media_match, rank_media_match_candidates};
+pub use media_index::{MediaIndexService, MediaIndexSession};
 pub use report_compare::{
     MediaMatchV3ReportComparison, MediaMatchV3ReportComparisonSummary,
     MediaMatchV3ReportCompatibility, MediaMatchV3ReportCompatibilityOptions,

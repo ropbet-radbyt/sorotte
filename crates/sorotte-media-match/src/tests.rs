@@ -1,10 +1,56 @@
 use crate::{
     AudioAnchor, MatchClassV3, MediaDurationCompatibility, MediaFileIdentity,
-    MediaFingerprintRecord, MediaMatchAutoplayPolicy, MediaMatchSettings, MediaMatchTier,
-    decide_media_match, decide_media_match_against_wire_signature,
+    MediaFingerprintRecord, MediaIndexService, MediaMatchAutoplayPolicy, MediaMatchSettings,
+    MediaMatchTier, decide_media_match, decide_media_match_against_wire_signature,
     media_match_wire_signature_from_records, rank_media_match_candidates,
     settings::MediaExtractionSettings,
 };
+
+#[test]
+fn media_index_service_owns_record_round_trip() {
+    let root = std::env::temp_dir().join(format!(
+        "sorotte-media-index-service-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should be after the Unix epoch")
+            .as_nanos()
+    ));
+    let service = MediaIndexService::new(&root);
+    let session = service.open().expect("index session should open");
+    let record = record("episode.mkv", 0);
+
+    session
+        .save_record(&record, None)
+        .expect("record should save through the service");
+    let loaded = session
+        .load_record(
+            "episode.mkv",
+            &record.extraction_settings,
+            record.identity.modified_unix_millis,
+            record.identity.size_bytes,
+        )
+        .expect("record should load through the service")
+        .expect("saved record should exist");
+    assert_eq!(loaded.identity, record.identity);
+
+    session
+        .delete_file("episode.mkv")
+        .expect("record should delete through the service");
+    assert!(
+        session
+            .load_record(
+                "episode.mkv",
+                &record.extraction_settings,
+                record.identity.modified_unix_millis,
+                record.identity.size_bytes,
+            )
+            .expect("deleted record lookup should succeed")
+            .is_none()
+    );
+    drop(session);
+    std::fs::remove_dir_all(root).expect("temporary index directory should be removable");
+}
 
 #[test]
 fn fixed_sampled_fast_is_the_only_normal_settings_path() {

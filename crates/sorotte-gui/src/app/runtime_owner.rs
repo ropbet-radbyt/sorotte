@@ -37,10 +37,15 @@ use sorotte_client_app::app_boundary::{
 use sorotte_player_api::{LocalFileUpdate, PlayerAdapter};
 use sorotte_player_mpv::MpvAdapter;
 use sorotte_plex::{
-    PlexAuthPollResult, PlexAuthSession, PlexClientConfig, PlexHttpClient, PlexMatchCache,
-    PlexServerConnection, PlexStreamTarget, PlexSyncEngine, PlexSyncState, PlexSyncStatus,
-    PlexWatchEvent, SecretPlexPlaybackUrl, format_plex_playlist_uri,
+    PlexClientConfig, SecretPlexPlaybackUrl,
+    auth::{PlexAuthPollResult, PlexAuthService, PlexAuthSession},
+    cache::PlexMatchCache,
+    discovery::{PlexDiscoveryService, PlexServerConnection},
+    format_plex_playlist_uri,
+    http::PlexHttpClient,
+    library::{PlexLibraryService, PlexStreamTarget},
     plex_server_connection_kind_from_uri,
+    timeline::{PlexSyncEngine, PlexSyncState, PlexSyncStatus, PlexWatchEvent},
 };
 
 use super::media_match_support::{

@@ -9,6 +9,8 @@ use sorotte_client_app::app_boundary::{
 };
 use sorotte_player_api::{PlayerAdapter, PlayerError};
 use sorotte_player_mpv::MpvAdapter;
+#[cfg(test)]
+use sorotte_player_mpv::SimulatedPlayer;
 
 use crate::client_args::LegacyClientArgOverrides;
 use crate::client_config::{ClientLoopConfig, create_client_session};
@@ -57,12 +59,10 @@ pub(super) use self::external_launch::{
 };
 #[cfg(all(test, windows))]
 pub(super) use self::managed_process::connect_mpv_adapter_with_retry;
+#[cfg(test)]
+pub(super) use self::managed_process::managed_mpv_launch_base_args_legacy_compatible;
 pub(super) use self::managed_process::{
     ManagedMpvProcessGuard, create_client_runtime_with_managed_mpv_support,
-};
-#[cfg(test)]
-pub(super) use self::managed_process::{
-    create_mpv_adapter_from_env, managed_mpv_launch_base_args_legacy_compatible,
 };
 pub(super) use self::program_resolution::{
     find_default_managed_mpv_bin, resolve_managed_mpv_launch_program_legacy_compatible,
