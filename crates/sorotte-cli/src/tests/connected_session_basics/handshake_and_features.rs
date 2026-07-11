@@ -101,6 +101,60 @@ async fn connected_client_session_sends_hello_and_applies_inbound_set_ready() {
 }
 
 #[tokio::test]
+async fn connected_client_session_outbound_hello_does_not_activate_the_session() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let addr = listener
+        .local_addr()
+        .expect("listener should have local addr");
+
+    let server_task = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.expect("server should accept");
+        let (reader, _writer) = socket.into_split();
+        let mut lines = BufReader::new(reader).lines();
+        let hello_line = lines
+            .next_line()
+            .await
+            .expect("hello line read should succeed")
+            .expect("hello line should be present");
+        assert!(hello_line.contains("\"Hello\""));
+        std::future::pending::<()>().await;
+    });
+
+    let mut config = test_client_loop_config_with_addr(addr);
+    config.max_connected_runtime_seconds = 0.05;
+    let mut runtime = create_client_runtime(&config);
+    let stream = TcpStream::connect(addr)
+        .await
+        .expect("client should connect to test listener");
+    let mut notification_sink = ignore_autoplay_notification;
+    let mut file_difference_sink = ignore_file_difference_notification;
+
+    let exit = run_connected_client_session(
+        stream,
+        &mut runtime,
+        &config,
+        None,
+        None,
+        &mut notification_sink,
+        &mut file_difference_sink,
+    )
+    .await
+    .expect("connected session should stop at its runtime window");
+
+    assert_eq!(exit, ConnectedSessionExit::RuntimeWindowElapsed);
+    assert!(matches!(
+        runtime.connection_phase(),
+        sorotte_client_app::app_boundary::application::ConnectionPhase::AwaitingHello
+    ));
+    assert_eq!(runtime.session().username(), Some("cli-user"));
+    assert_eq!(runtime.session().room(), Some("cli-room"));
+    server_task.abort();
+    let _ = server_task.await;
+}
+
+#[tokio::test]
 async fn connected_client_session_sends_ready_on_server_hello_when_ready_at_start_enabled() {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await

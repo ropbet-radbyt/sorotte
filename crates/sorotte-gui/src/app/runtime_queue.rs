@@ -504,12 +504,17 @@ impl GuiNativeRuntimeBridge for GuiQueuedRuntimeBridge {
 pub(super) struct GuiQueuedRuntimeOwnerPump<TOwner> {
     handle: GuiQueuedRuntimeBridgeHandle,
     owner: TOwner,
+    last_input: Option<GuiRuntimeInput>,
 }
 
 #[cfg(test)]
 impl<TOwner> GuiQueuedRuntimeOwnerPump<TOwner> {
     pub(super) fn new(handle: GuiQueuedRuntimeBridgeHandle, owner: TOwner) -> Self {
-        Self { handle, owner }
+        Self {
+            handle,
+            owner,
+            last_input: None,
+        }
     }
 }
 
@@ -519,7 +524,16 @@ where
     TOwner: GuiQueuedRuntimeOwner,
 {
     fn pump(&mut self, state: &SorotteGuiShellAppState) {
-        self.owner.pump(&self.handle, state);
+        if !self
+            .last_input
+            .as_ref()
+            .is_some_and(|input| input.matches_shell(state))
+        {
+            let input = GuiRuntimeInput::from_shell(state);
+            self.owner.input_changed(&self.handle, &input);
+            self.last_input = Some(input);
+        }
+        self.owner.poll(&self.handle);
     }
 }
 
@@ -595,6 +609,7 @@ impl GuiThreadedRuntimeOwnerPump {
 
         loop {
             let mut timed_out = false;
+            let mut changed_input = None;
             let mut shared_state = shared
                 .state
                 .lock()
@@ -607,8 +622,12 @@ impl GuiThreadedRuntimeOwnerPump {
                 if shared_state.latest_input_revision != latest_revision {
                     latest_revision = shared_state.latest_input_revision;
                     latest_input = shared_state.latest_input.clone();
+                    changed_input = latest_input.clone();
                 }
-                if shared_state.runtime_wake_revision != latest_runtime_wake_revision || timed_out {
+                if shared_state.runtime_wake_revision != latest_runtime_wake_revision
+                    || timed_out
+                    || changed_input.is_some()
+                {
                     latest_runtime_wake_revision = shared_state.runtime_wake_revision;
                     break;
                 }
@@ -629,8 +648,11 @@ impl GuiThreadedRuntimeOwnerPump {
 
             drop(shared_state);
 
-            if let Some(input) = latest_input.as_ref() {
-                owner.pump_runtime_input(&handle, input);
+            if let Some(input) = changed_input.as_ref() {
+                owner.input_changed(&handle, input);
+            }
+            if latest_input.is_some() {
+                owner.poll(&handle);
             }
         }
     }

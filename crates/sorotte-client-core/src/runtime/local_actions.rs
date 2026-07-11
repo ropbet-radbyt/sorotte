@@ -98,21 +98,114 @@ where
     }
 
     pub fn run_toggle_pause(&mut self) -> Result<bool, PlayerError> {
+        if self.session.model.local_pause_change_in_flight() {
+            return Err(PlayerError::OperationFailed(
+                "a local pause change is already in progress".to_owned(),
+            ));
+        }
         self.sync_player_playback_telemetry_into_session_and_buffer();
-        let session_snapshot = self.session.snapshot_local_action_state();
+        let original_paused = self.session.model.playback.local_paused;
+        let original_ready = self
+            .session
+            .username()
+            .and_then(|username| self.session.user_ready(username));
+        let original_last_paused_on_leave_at_seconds =
+            self.session.model.playback.last_paused_on_leave_at_seconds;
         let actions = self.session.runtime_actions_for_local_pause_toggle();
+        let planned_paused = self.session.model.playback.local_paused;
+        let planned_ready = self
+            .session
+            .username()
+            .and_then(|username| self.session.user_ready(username));
+        let planned_last_paused_on_leave_at_seconds =
+            self.session.model.playback.last_paused_on_leave_at_seconds;
+        self.session.model.apply_local_pause_state(
+            original_paused,
+            original_ready,
+            original_last_paused_on_leave_at_seconds,
+        );
         let sent = !actions.is_empty();
-        self.dispatch_runtime_actions_with_session_rollback(session_snapshot, &actions)
-            .map(|_| sent)
+        if !sent {
+            return Ok(false);
+        }
+        let effects = Self::local_pause_effects(&actions)?;
+        self.run_model_event(ClientEvent::LocalPauseChangeRequested {
+            original_paused,
+            original_ready,
+            original_last_paused_on_leave_at_seconds,
+            planned_paused,
+            planned_ready,
+            planned_last_paused_on_leave_at_seconds,
+            effects,
+        })?;
+        Ok(true)
     }
 
     pub fn run_set_paused(&mut self, paused: bool) -> Result<bool, PlayerError> {
+        if self.session.model.local_pause_change_in_flight() {
+            return Err(PlayerError::OperationFailed(
+                "a local pause change is already in progress".to_owned(),
+            ));
+        }
         self.sync_player_playback_telemetry_into_session_and_buffer();
-        let session_snapshot = self.session.snapshot_local_action_state();
+        let original_paused = self.session.model.playback.local_paused;
+        let original_ready = self
+            .session
+            .username()
+            .and_then(|username| self.session.user_ready(username));
+        let original_last_paused_on_leave_at_seconds =
+            self.session.model.playback.last_paused_on_leave_at_seconds;
         let actions = self.session.runtime_actions_for_local_pause_set(paused);
+        let planned_paused = self.session.model.playback.local_paused;
+        let planned_ready = self
+            .session
+            .username()
+            .and_then(|username| self.session.user_ready(username));
+        let planned_last_paused_on_leave_at_seconds =
+            self.session.model.playback.last_paused_on_leave_at_seconds;
+        self.session.model.apply_local_pause_state(
+            original_paused,
+            original_ready,
+            original_last_paused_on_leave_at_seconds,
+        );
         let sent = !actions.is_empty();
-        self.dispatch_runtime_actions_with_session_rollback(session_snapshot, &actions)
-            .map(|_| sent)
+        if !sent {
+            return Ok(false);
+        }
+        let effects = Self::local_pause_effects(&actions)?;
+        self.run_model_event(ClientEvent::LocalPauseChangeRequested {
+            original_paused,
+            original_ready,
+            original_last_paused_on_leave_at_seconds,
+            planned_paused,
+            planned_ready,
+            planned_last_paused_on_leave_at_seconds,
+            effects,
+        })?;
+        Ok(true)
+    }
+
+    fn local_pause_effects(
+        actions: &[ClientRuntimeAction],
+    ) -> Result<Vec<ClientEffect>, PlayerError> {
+        actions
+            .iter()
+            .map(|action| match action {
+                ClientRuntimeAction::SetPaused(paused) => {
+                    Ok(ClientEffect::SetPlayerPaused(*paused))
+                }
+                ClientRuntimeAction::SetReady {
+                    ready,
+                    manually_initiated,
+                } => Ok(ClientEffect::SetReady {
+                    ready: *ready,
+                    manually_initiated: *manually_initiated,
+                }),
+                other => Err(PlayerError::OperationFailed(format!(
+                    "invalid local pause effect sequence: {other:?}"
+                ))),
+            })
+            .collect()
     }
 
     pub fn run_request_user_list(&mut self) -> Result<bool, PlayerError> {

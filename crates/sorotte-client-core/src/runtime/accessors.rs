@@ -18,6 +18,10 @@ impl<'a> ClientSessionUpdate<'a> {
         self.session.apply_player_playback_telemetry_update(update);
     }
 
+    pub fn initialize_local_identity(&mut self, username: String, room: String) {
+        self.session.initialize_local_identity(username, room);
+    }
+
     pub fn apply_protocol_message(
         &mut self,
         message: ProtocolMessage,

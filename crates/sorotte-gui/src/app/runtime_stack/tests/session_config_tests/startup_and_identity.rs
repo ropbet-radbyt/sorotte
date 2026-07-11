@@ -4,11 +4,19 @@ use super::*;
 fn gui_client_core_outbound_delivery_retains_front_until_matching_write_receipt() {
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
+    assert!(matches!(
+        adapter.runtime.connection_phase(),
+        sorotte_client_app::app_boundary::application::ConnectionPhase::Connecting
+    ));
 
     let startup = adapter
         .begin_outbound_protocol_delivery()
         .expect("startup delivery should stage")
         .expect("startup Hello should be pending");
+    assert!(matches!(
+        adapter.runtime.connection_phase(),
+        sorotte_client_app::app_boundary::application::ConnectionPhase::AwaitingHello
+    ));
     assert!(startup.line().contains("\"Hello\""));
     assert!(
         adapter
@@ -30,12 +38,20 @@ fn gui_client_core_outbound_delivery_retains_front_until_matching_write_receipt(
         .acknowledge_outbound_protocol_delivery(startup_retry.token())
         .expect("matching write receipt should acknowledge startup Hello");
     assert!(adapter.pending_startup_protocol_lines.is_empty());
+    assert!(matches!(
+        adapter.runtime.connection_phase(),
+        sorotte_client_app::app_boundary::application::ConnectionPhase::AwaitingHello
+    ));
 
     adapter
         .apply_message_json(
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
         )
         .expect("server Hello should activate the session");
+    assert!(matches!(
+        adapter.runtime.connection_phase(),
+        sorotte_client_app::app_boundary::application::ConnectionPhase::Active(_)
+    ));
     GuiSessionRuntimeAdapter::send_chat_message(&mut adapter, "receipt-canary".to_owned())
         .expect("chat should queue");
     assert_eq!(adapter.runtime.pending_protocol_message_count(), 1);
@@ -90,11 +106,19 @@ fn failed_runtime_delivery_retries_only_after_reconnect_hello_completes() {
         .fail_outbound_protocol_delivery(failed_chat.token())
         .expect("partial write failure should leave the core front unacknowledged");
     adapter.prepare_transport_reconnect();
+    assert!(matches!(
+        adapter.runtime.connection_phase(),
+        sorotte_client_app::app_boundary::application::ConnectionPhase::Reconnecting { attempt: 0 }
+    ));
 
     let reconnect_hello = adapter
         .begin_outbound_protocol_delivery()
         .expect("reconnect Hello should stage")
         .expect("reconnect Hello should take priority");
+    assert!(matches!(
+        adapter.runtime.connection_phase(),
+        sorotte_client_app::app_boundary::application::ConnectionPhase::AwaitingHello
+    ));
     assert!(reconnect_hello.line().contains("\"Hello\""));
     assert!(!reconnect_hello.line().contains("retry-canary"));
     adapter

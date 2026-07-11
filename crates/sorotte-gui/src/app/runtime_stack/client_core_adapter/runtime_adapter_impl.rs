@@ -510,16 +510,16 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         paused: Option<bool>,
         position_seconds: Option<f64>,
     ) -> Result<(), String> {
-        self.runtime
-            .session_mut()
-            .apply_player_playback_telemetry_update(&PlayerPlaybackTelemetryUpdate {
+        self.dispatch_application_command(ClientCommand::PlayerPlaybackObserved(
+            PlayerPlaybackTelemetryUpdate {
                 paused,
                 position_seconds,
                 playback_rate: None,
                 paused_for_cache: None,
                 cache_buffering_percent: None,
-            });
-        Ok(())
+            },
+        ))
+        .map(|_| ())
     }
 
     fn sync_local_playback_cache_state(
@@ -527,16 +527,16 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         paused_for_cache: Option<bool>,
         cache_buffering_percent: Option<f64>,
     ) -> Result<(), String> {
-        self.runtime
-            .session_mut()
-            .apply_player_playback_telemetry_update(&PlayerPlaybackTelemetryUpdate {
+        self.dispatch_application_command(ClientCommand::PlayerPlaybackObserved(
+            PlayerPlaybackTelemetryUpdate {
                 paused: None,
                 position_seconds: None,
                 playback_rate: None,
                 paused_for_cache,
                 cache_buffering_percent,
-            });
-        Ok(())
+            },
+        ))
+        .map(|_| ())
     }
 
     fn set_playback_paused(&mut self, paused: bool) -> Result<bool, String> {

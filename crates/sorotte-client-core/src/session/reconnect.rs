@@ -72,6 +72,7 @@ impl ClientSession {
         self.reset_playlist_index_transition_tracking();
         self.model.playback.local_position = None;
         self.model.playback.local_paused = None;
+        self.model.playback.local_playback_rate = None;
         self.model.playback.local_paused_for_cache = None;
         self.model.playback.local_cache_buffering_percent = None;
         self.model.playback.pending_cache_room_playstate_resync = false;

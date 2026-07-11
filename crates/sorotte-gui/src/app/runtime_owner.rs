@@ -12,6 +12,7 @@ mod room_transitions;
 mod runtime_pump;
 mod session_transport;
 mod startup_player;
+mod updates;
 
 use std::{
     collections::{BTreeSet, HashMap, VecDeque},
@@ -48,6 +49,7 @@ use sorotte_plex::{
     timeline::{PlexSyncEngine, PlexSyncState, PlexSyncStatus, PlexWatchEvent},
 };
 
+use self::updates::GuiUpdateRuntime;
 use super::media_match_support::{
     MediaMatchIndexRebuildResult, MediaMatchToolProgress,
     clear_persisted_media_match_cache_at_root, probe_media_match_runtime_snapshot,
@@ -90,6 +92,7 @@ use super::ui_state::clear_legacy_gui_qsettings_files_at_root;
 
 pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) config_path: Option<PathBuf>,
+    pub(super) legacy_projection: Option<SorotteGuiShellAppState>,
     pub(super) session: Option<Box<dyn GuiSessionRuntimeAdapter + Send>>,
     pub(super) session_projects_to_shell: bool,
     pub(super) session_transport: Option<GuiQueuedSessionTransportHandle>,
@@ -103,9 +106,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) startup_saved_connect_attempted: bool,
     pub(super) startup_remote_actions_attempted: bool,
     pub(super) startup_remote_actions_rx: Option<mpsc::Receiver<Vec<GuiShellAction>>>,
-    pub(super) background_update_check_rx:
-        Option<mpsc::Receiver<super::remote_services::LegacyUpdateCheckResult>>,
-    pub(super) background_update_check_next_due_at: Option<Instant>,
+    pub(super) update_runtime: GuiUpdateRuntime,
     pub(super) startup_stream_helper_probe_completed: bool,
     pub(super) startup_stream_helper_probe_rx:
         Option<mpsc::Receiver<GuiStreamHelperRuntimeSnapshot>>,

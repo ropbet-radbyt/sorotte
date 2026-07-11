@@ -769,6 +769,14 @@ impl ClientSession {
         self.model.playback.local_paused
     }
 
+    pub fn local_playback_rate(&self) -> Option<f64> {
+        self.model.playback.local_playback_rate
+    }
+
+    pub fn local_pause_change_health(&self) -> LocalPauseChangeHealth {
+        self.model.playback.local_pause_change_health
+    }
+
     pub fn local_paused_for_cache(&self) -> Option<bool> {
         self.model.playback.local_paused_for_cache
     }

@@ -2,8 +2,12 @@ use super::*;
 
 impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app) fn with_config_path(config_path: Option<PathBuf>) -> Self {
+        let update_config_root = config_path
+            .as_ref()
+            .and_then(|path| path.parent().map(Path::to_path_buf));
         Self {
             config_path,
+            legacy_projection: None,
             session: None,
             session_projects_to_shell: false,
             session_transport: None,
@@ -17,8 +21,7 @@ impl GuiPersistedConfigRuntimeOwner {
             startup_saved_connect_attempted: false,
             startup_remote_actions_attempted: false,
             startup_remote_actions_rx: None,
-            background_update_check_rx: None,
-            background_update_check_next_due_at: None,
+            update_runtime: GuiUpdateRuntime::new(update_config_root),
             startup_stream_helper_probe_completed: false,
             startup_stream_helper_probe_rx: None,
             player: None,

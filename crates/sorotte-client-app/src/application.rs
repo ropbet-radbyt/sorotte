@@ -88,6 +88,11 @@ pub enum ClientCommand {
     Connect {
         endpoint: String,
     },
+    BeginConnecting,
+    InitializeSessionIdentity {
+        username: String,
+        room: String,
+    },
     TransportConnected,
     Reconnect {
         attempt: u32,
@@ -111,10 +116,7 @@ pub enum ClientCommand {
     OpenMedia {
         path: String,
     },
-    PlayerPlaybackObserved {
-        paused: bool,
-        position_seconds: f64,
-    },
+    PlayerPlaybackObserved(PlayerPlaybackTelemetryUpdate),
     UpdateSettings(Box<ClientApplicationSettings>),
     SendChat(String),
     RequestUserList,
@@ -160,12 +162,16 @@ impl std::fmt::Debug for ClientCommand {
                 .field("password", password)
                 .finish(),
             Self::Connect { .. } => formatter.write_str("Connect"),
+            Self::BeginConnecting => formatter.write_str("BeginConnecting"),
+            Self::InitializeSessionIdentity { .. } => {
+                formatter.write_str("InitializeSessionIdentity")
+            }
             Self::TransportConnected => formatter.write_str("TransportConnected"),
             Self::Reconnect { .. } => formatter.write_str("Reconnect"),
             Self::Disconnect { .. } => formatter.write_str("Disconnect"),
             Self::SetRoom { .. } => formatter.write_str("SetRoom"),
             Self::SetReady { .. } => formatter.write_str("SetReady"),
-            Self::PlayerPlaybackObserved { .. } => formatter.write_str("PlayerPlaybackObserved"),
+            Self::PlayerPlaybackObserved(_) => formatter.write_str("PlayerPlaybackObserved"),
             Self::UpdateSettings(_) => formatter.write_str("UpdateSettings"),
             Self::SendChat(_) => formatter.write_str("SendChat"),
             Self::RequestUserList => formatter.write_str("RequestUserList"),
@@ -208,6 +214,9 @@ pub enum ClientEvent {
     PlaybackChanged {
         paused: Option<bool>,
         position_seconds: Option<f64>,
+        playback_rate: Option<f64>,
+        paused_for_cache: Option<bool>,
+        cache_buffering_percent: Option<f64>,
     },
     ReadinessChanged {
         username: Option<String>,
@@ -239,10 +248,16 @@ impl std::fmt::Debug for ClientEvent {
             Self::PlaybackChanged {
                 paused,
                 position_seconds,
+                playback_rate,
+                paused_for_cache,
+                cache_buffering_percent,
             } => formatter
                 .debug_struct("PlaybackChanged")
                 .field("paused", paused)
                 .field("position_seconds", position_seconds)
+                .field("playback_rate", playback_rate)
+                .field("paused_for_cache", paused_for_cache)
+                .field("cache_buffering_percent", cache_buffering_percent)
                 .finish(),
             Self::ReadinessChanged { username, ready } => formatter
                 .debug_struct("ReadinessChanged")
@@ -282,6 +297,9 @@ struct ApplicationSnapshot {
     room: Option<String>,
     paused: Option<bool>,
     position_seconds: Option<f64>,
+    playback_rate: Option<f64>,
+    paused_for_cache: Option<bool>,
+    cache_buffering_percent: Option<f64>,
     username: Option<String>,
     ready: Option<bool>,
 }
@@ -536,6 +554,9 @@ where
             room: session.room().map(ToOwned::to_owned),
             paused: session.local_paused(),
             position_seconds: session.local_position_seconds(),
+            playback_rate: session.local_playback_rate(),
+            paused_for_cache: session.local_paused_for_cache(),
+            cache_buffering_percent: session.local_cache_buffering_percent(),
             ready: username
                 .as_deref()
                 .and_then(|username| session.user_ready(username)),
@@ -557,10 +578,18 @@ where
                 current: after.room.clone(),
             });
         }
-        if before.paused != after.paused || before.position_seconds != after.position_seconds {
+        if before.paused != after.paused
+            || before.position_seconds != after.position_seconds
+            || before.playback_rate != after.playback_rate
+            || before.paused_for_cache != after.paused_for_cache
+            || before.cache_buffering_percent != after.cache_buffering_percent
+        {
             events.push(ClientEvent::PlaybackChanged {
                 paused: after.paused,
                 position_seconds: after.position_seconds,
+                playback_rate: after.playback_rate,
+                paused_for_cache: after.paused_for_cache,
+                cache_buffering_percent: after.cache_buffering_percent,
             });
         }
         if before.username != after.username || before.ready != after.ready {
@@ -654,8 +683,35 @@ where
                 self.endpoint = Some(endpoint);
                 return self.set_connection_phase(ConnectionPhase::Connecting);
             }
+            ClientCommand::BeginConnecting => {
+                return match self.connection_phase() {
+                    ConnectionPhase::Disconnected
+                    | ConnectionPhase::AwaitingHello
+                    | ConnectionPhase::Reconnecting { .. } => {
+                        self.set_connection_phase(ConnectionPhase::Connecting)
+                    }
+                    ConnectionPhase::Connecting => Vec::new(),
+                    phase => vec![ClientEvent::OperationFailed {
+                        operation: "begin-connecting",
+                        message: format!(
+                            "a connection attempt cannot begin while the session is {phase:?}"
+                        ),
+                    }],
+                };
+            }
             ClientCommand::TransportConnected => {
-                return self.set_connection_phase(ConnectionPhase::AwaitingHello);
+                return match self.connection_phase() {
+                    ConnectionPhase::Connecting | ConnectionPhase::Reconnecting { .. } => {
+                        self.set_connection_phase(ConnectionPhase::AwaitingHello)
+                    }
+                    ConnectionPhase::AwaitingHello => Vec::new(),
+                    phase => vec![ClientEvent::OperationFailed {
+                        operation: "transport-connected",
+                        message: format!(
+                            "transport connection cannot complete while the session is {phase:?}"
+                        ),
+                    }],
+                };
             }
             ClientCommand::Reconnect { attempt } => {
                 return self.set_connection_phase(ConnectionPhase::Reconnecting { attempt });
@@ -678,6 +734,27 @@ where
                     .map(|()| true)
                     .map_err(protocol_player_error),
             ),
+            ClientCommand::InitializeSessionIdentity { username, room } => {
+                if matches!(
+                    self.connection_phase(),
+                    ConnectionPhase::Connecting
+                        | ConnectionPhase::AwaitingHello
+                        | ConnectionPhase::Reconnecting { .. }
+                ) {
+                    self.runtime
+                        .session_mut()
+                        .initialize_local_identity(username, room);
+                    ("initialize-session-identity", Ok(true))
+                } else {
+                    (
+                        "initialize-session-identity",
+                        Err(PlayerError::OperationFailed(format!(
+                            "session identity cannot be initialized while the session is {:?}",
+                            self.connection_phase()
+                        ))),
+                    )
+                }
+            }
             ClientCommand::SetRoom {
                 room,
                 legacy_fallback,
@@ -714,17 +791,10 @@ where
                     .execute(PlayerCommand::OpenFile(path))
                     .map(|()| true),
             ),
-            ClientCommand::PlayerPlaybackObserved {
-                paused,
-                position_seconds,
-            } => {
+            ClientCommand::PlayerPlaybackObserved(update) => {
                 self.runtime
                     .session_mut()
-                    .apply_player_playback_telemetry_update(
-                        &PlayerPlaybackTelemetryUpdate::default()
-                            .with_paused(paused)
-                            .with_position_seconds(position_seconds),
-                    );
+                    .apply_player_playback_telemetry_update(&update);
                 ("player-playback-observed", Ok(true))
             }
             ClientCommand::UpdateSettings(settings) => {
@@ -796,10 +866,14 @@ where
                 });
                 events
             }
-            Err(error) => vec![ClientEvent::OperationFailed {
-                operation,
-                message: error.to_string(),
-            }],
+            Err(error) => {
+                let mut events = self.domain_events_since(&before);
+                events.push(ClientEvent::OperationFailed {
+                    operation,
+                    message: error.to_string(),
+                });
+                events
+            }
         }
     }
 
@@ -1385,6 +1459,7 @@ mod tests {
         opened: Vec<String>,
         paused: bool,
         open_error: Option<String>,
+        pause_error: Option<String>,
     }
 
     impl PlayerAdapter for TestPlayer {
@@ -1402,7 +1477,10 @@ mod tests {
 
         fn set_paused(&mut self, paused: bool) -> Result<(), PlayerError> {
             self.paused = paused;
-            Ok(())
+            match self.pause_error.as_ref() {
+                Some(message) => Err(PlayerError::OperationFailed(message.clone())),
+                None => Ok(()),
+            }
         }
     }
 
@@ -1528,12 +1606,78 @@ mod tests {
             vec![ClientEvent::ConnectionChanged(ConnectionPhase::Connecting)],
         );
         assert_eq!(application.endpoint(), Some("sync.example:8999"));
+        let identity_events = application.dispatch(ClientCommand::InitializeSessionIdentity {
+            username: "alice".to_owned(),
+            room: "room-a".to_owned(),
+        });
+        assert!(identity_events.iter().any(|event| matches!(
+            event,
+            ClientEvent::RoomChanged { current, .. } if current.as_deref() == Some("room-a")
+        )));
+        assert!(matches!(
+            application.connection_phase(),
+            ConnectionPhase::Connecting
+        ));
         assert_eq!(
             application.dispatch(ClientCommand::TransportConnected),
             vec![ClientEvent::ConnectionChanged(
                 ConnectionPhase::AwaitingHello,
             )],
         );
+        assert_eq!(
+            application.dispatch(ClientCommand::Reconnect { attempt: 2 }),
+            vec![ClientEvent::ConnectionChanged(
+                ConnectionPhase::Reconnecting { attempt: 2 },
+            )],
+        );
+        assert_eq!(
+            application.dispatch(ClientCommand::TransportConnected),
+            vec![ClientEvent::ConnectionChanged(
+                ConnectionPhase::AwaitingHello,
+            )],
+        );
+        assert!(matches!(
+            application.connection_phase(),
+            ConnectionPhase::AwaitingHello
+        ));
+
+        let events = application.dispatch(ClientCommand::ReceiveProtocolLine {
+            line: r#"{"Hello":{"username":"alice","room":{"name":"room-a"},"version":"1.7.5","features":{"chat":true}}}"#
+                .to_owned(),
+            received_at_seconds: 1.0,
+        });
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ClientEvent::ConnectionChanged(ConnectionPhase::Active(capabilities))
+                if capabilities.chat
+        )));
+
+        let identity_events = application.dispatch(ClientCommand::InitializeSessionIdentity {
+            username: "mallory".to_owned(),
+            room: "wrong-room".to_owned(),
+        });
+        assert!(identity_events.iter().any(|event| matches!(
+            event,
+            ClientEvent::OperationFailed {
+                operation: "initialize-session-identity",
+                ..
+            }
+        )));
+        assert_eq!(application.session().username(), Some("alice"));
+        assert_eq!(application.session().room(), Some("room-a"));
+
+        let transport_events = application.dispatch(ClientCommand::TransportConnected);
+        assert!(transport_events.iter().any(|event| matches!(
+            event,
+            ClientEvent::OperationFailed {
+                operation: "transport-connected",
+                ..
+            }
+        )));
+        assert!(matches!(
+            application.connection_phase(),
+            ConnectionPhase::Active(_)
+        ));
     }
 
     #[test]
@@ -1560,10 +1704,11 @@ mod tests {
     fn application_toggles_from_observed_player_playback_state() {
         let mut application =
             ClientApplication::new(ClientSession::default(), TestPlayer::default());
-        let _ = application.dispatch(ClientCommand::PlayerPlaybackObserved {
-            paused: false,
-            position_seconds: 12.5,
-        });
+        let _ = application.dispatch(ClientCommand::PlayerPlaybackObserved(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(false)
+                .with_position_seconds(12.5),
+        ));
 
         let events = application.dispatch(ClientCommand::TogglePause);
 
@@ -1575,6 +1720,98 @@ mod tests {
                 changed: true,
             }
         )));
+    }
+
+    #[test]
+    fn application_applies_complete_player_playback_telemetry_updates() {
+        let mut application =
+            ClientApplication::new(ClientSession::default(), TestPlayer::default());
+
+        let events = application.dispatch(ClientCommand::PlayerPlaybackObserved(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(false)
+                .with_position_seconds(42.5)
+                .with_playback_rate(0.95)
+                .with_paused_for_cache(false)
+                .with_cache_buffering_percent(37.5),
+        ));
+
+        assert_eq!(application.session().local_paused(), Some(false));
+        assert_eq!(application.session().local_position_seconds(), Some(42.5));
+        assert_eq!(application.session().local_playback_rate(), Some(0.95));
+        assert_eq!(application.session().local_paused_for_cache(), Some(false));
+        assert_eq!(
+            application.session().local_cache_buffering_percent(),
+            Some(37.5)
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ClientEvent::PlaybackChanged {
+                paused: Some(false),
+                position_seconds: Some(42.5),
+                playback_rate: Some(0.95),
+                paused_for_cache: Some(false),
+                cache_buffering_percent: Some(37.5),
+            }
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ClientEvent::CommandCompleted {
+                command: "player-playback-observed",
+                changed: true,
+            }
+        )));
+
+        let _ = application.dispatch(ClientCommand::PlayerPlaybackObserved(
+            PlayerPlaybackTelemetryUpdate::default().with_playback_rate(f64::NAN),
+        ));
+        assert_eq!(application.session().local_playback_rate(), Some(0.95));
+        application.session_mut().reset_sync_state_for_reconnect();
+        assert_eq!(application.session().local_playback_rate(), None);
+    }
+
+    #[test]
+    fn application_failure_preserves_final_domain_truth_before_operation_failed() {
+        let player = TestPlayer {
+            pause_error: Some("pause transport failed".to_owned()),
+            ..TestPlayer::default()
+        };
+        let mut application = ClientApplication::new(ClientSession::default(), player);
+        application
+            .session_mut()
+            .behavior_config_mut()
+            .pause_on_leave = true;
+        let _ = application.dispatch(ClientCommand::Connect {
+            endpoint: "sync.example:8999".to_owned(),
+        });
+        let _ = application.dispatch(ClientCommand::PlayerPlaybackObserved(
+            PlayerPlaybackTelemetryUpdate::default().with_paused(false),
+        ));
+
+        let events = application.dispatch(ClientCommand::Disconnect { now_seconds: 1.0 });
+
+        let connection_event = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    ClientEvent::ConnectionChanged(ConnectionPhase::Disconnected)
+                )
+            })
+            .expect("disconnect state change should survive the player failure");
+        let failure_event = events
+            .iter()
+            .position(|event| matches!(event, ClientEvent::OperationFailed { .. }))
+            .expect("the player failure should still be surfaced");
+        assert!(connection_event < failure_event);
+        assert!(matches!(
+            events.last(),
+            Some(ClientEvent::OperationFailed { .. })
+        ));
+        assert!(matches!(
+            application.connection_phase(),
+            ConnectionPhase::Disconnected
+        ));
     }
 
     #[test]

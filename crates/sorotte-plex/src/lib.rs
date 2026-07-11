@@ -659,7 +659,7 @@ impl PlexHttpClient {
         })
     }
 
-    pub fn start_auth(&self) -> PlexResult<PlexAuthSession> {
+    pub(crate) fn start_auth(&self) -> PlexResult<PlexAuthSession> {
         let url = format!("{}/api/v2/pins", self.plex_tv_base_url);
         let response = self
             .client
@@ -683,7 +683,7 @@ impl PlexHttpClient {
         )
     }
 
-    pub fn poll_auth(&self, pin_id: u64) -> PlexResult<PlexAuthPollResult> {
+    pub(crate) fn poll_auth(&self, pin_id: u64) -> PlexResult<PlexAuthPollResult> {
         let url = format!("{}/api/v2/pins/{pin_id}", self.plex_tv_base_url);
         let response = self
             .client
@@ -711,7 +711,10 @@ impl PlexHttpClient {
         })
     }
 
-    pub fn discover_servers(&self, user_token: &str) -> PlexResult<Vec<PlexServerConnection>> {
+    pub(crate) fn discover_servers(
+        &self,
+        user_token: &str,
+    ) -> PlexResult<Vec<PlexServerConnection>> {
         if user_token.trim().is_empty() {
             return Err(PlexError::MissingToken);
         }
@@ -783,7 +786,7 @@ impl PlexHttpClient {
         Ok(parse_server_resources_response(&json))
     }
 
-    pub fn verify_server_connection(&self, server: &PlexServerConnection) -> PlexResult<()> {
+    pub(crate) fn verify_server_connection(&self, server: &PlexServerConnection) -> PlexResult<()> {
         if server.access_token.expose_secret().trim().is_empty() {
             return Err(PlexError::MissingToken);
         }
@@ -1271,11 +1274,23 @@ impl PlexMetadataTransport for PlexHttpClient {
 
 pub trait PlexServerDiscoveryTransport {
     fn discover_servers(&self, user_token: &str) -> PlexResult<Vec<PlexServerConnection>>;
+
+    fn verify_server_connection(&self, server: &PlexServerConnection) -> PlexResult<()>;
+
+    fn server_machine_identifier(&self, server_url: &str, token: &str) -> PlexResult<String>;
 }
 
 impl PlexServerDiscoveryTransport for PlexHttpClient {
     fn discover_servers(&self, user_token: &str) -> PlexResult<Vec<PlexServerConnection>> {
         PlexHttpClient::discover_servers(self, user_token)
+    }
+
+    fn verify_server_connection(&self, server: &PlexServerConnection) -> PlexResult<()> {
+        PlexHttpClient::verify_server_connection(self, server)
+    }
+
+    fn server_machine_identifier(&self, server_url: &str, token: &str) -> PlexResult<String> {
+        PlexHttpClient::server_machine_identifier(self, server_url, token)
     }
 }
 
@@ -3434,6 +3449,14 @@ mod tests {
     }
 
     impl PlexServerDiscoveryTransport for FakeTransport {
+        fn verify_server_connection(&self, _server: &PlexServerConnection) -> PlexResult<()> {
+            Ok(())
+        }
+
+        fn server_machine_identifier(&self, _server_url: &str, _token: &str) -> PlexResult<String> {
+            Ok("fake-machine".to_owned())
+        }
+
         fn discover_servers(&self, user_token: &str) -> PlexResult<Vec<PlexServerConnection>> {
             self.discoveries.borrow_mut().push(user_token.to_owned());
             Ok(self.discovered_servers.borrow().clone())

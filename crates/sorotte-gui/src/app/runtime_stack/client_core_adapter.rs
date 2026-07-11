@@ -96,7 +96,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             &mut runtime,
             ClientCommand::update_settings(Self::application_settings(&runtime_settings, &room)),
         )?;
-        runtime.session_mut().mark_connecting();
+        Self::dispatch_command_to_application(&mut runtime, ClientCommand::BeginConnecting)?;
 
         Ok(Self {
             username,
@@ -293,7 +293,10 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         )?;
         self.runtime = runtime;
         self.staged_outbound_protocol_delivery = None;
-        self.runtime.session_mut().mark_reconnecting(0);
+        Self::dispatch_command_to_application(
+            &mut self.runtime,
+            ClientCommand::Reconnect { attempt: 0 },
+        )?;
         self.pending_startup_protocol_lines.clear();
         self.pending_startup_protocol_lines
             .push_back(Self::hello_json(&username, &room, &self.runtime_settings));
@@ -309,7 +312,9 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
 
     pub(super) fn prepare_transport_reconnect(&mut self) {
         self.staged_outbound_protocol_delivery = None;
-        self.runtime.session_mut().mark_reconnecting(0);
+        let _ = self
+            .runtime
+            .dispatch(ClientCommand::Reconnect { attempt: 0 });
         let username = self.current_username_for_next_hello();
         self.username = username.clone();
         self.baseline_room = self
@@ -600,7 +605,10 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
 
     pub(in crate::app) fn flush_outbound_protocol_lines(&mut self) -> Result<Vec<String>, String> {
         if !self.pending_startup_protocol_lines.is_empty() && !self.runtime.session().is_active() {
-            self.runtime.session_mut().mark_awaiting_hello();
+            let _ = Self::dispatch_command_to_application(
+                &mut self.runtime,
+                ClientCommand::TransportConnected,
+            )?;
         }
         let mut lines: Vec<_> = self.pending_startup_protocol_lines.drain(..).collect();
         lines.extend(
@@ -621,7 +629,10 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         let (line, source) = if let Some(line) = self.pending_startup_protocol_lines.front() {
             let line = line.clone();
             if !self.runtime.session().is_active() {
-                self.runtime.session_mut().mark_awaiting_hello();
+                let _ = Self::dispatch_command_to_application(
+                    &mut self.runtime,
+                    ClientCommand::TransportConnected,
+                )?;
             }
             (line, GuiClientCoreProtocolDeliverySource::Startup)
         } else {

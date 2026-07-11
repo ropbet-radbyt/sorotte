@@ -1,7 +1,7 @@
 use std::{
     sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -43,7 +43,7 @@ fn gui_queued_runtime_bridge_and_preview_owner_cover_runtime_requests() {
         GuiQueuedRuntimeBridge::new_with_manual_pending_controls(true);
     assert!(preview_runtime.shows_manual_pending_controls());
     let mut preview_pump =
-        GuiQueuedRuntimeOwnerPump::new(preview_handle.clone(), GuiPreviewRuntimeOwner);
+        GuiQueuedRuntimeOwnerPump::new(preview_handle.clone(), GuiPreviewRuntimeOwner::default());
     GuiNativeRuntimePump::pump(&mut preview_pump, &state);
     preview_handle.push_request(GuiRuntimeRequest::SeekOffset(3.5));
     GuiNativeRuntimePump::pump(&mut preview_pump, &state);
@@ -354,6 +354,122 @@ fn wait_for_runtime_actions(
     }
 }
 
+fn wait_until(timeout: Duration, description: &str, mut condition: impl FnMut() -> bool) {
+    let started_at = Instant::now();
+    while !condition() {
+        assert!(
+            started_at.elapsed() < timeout,
+            "timed out waiting for {description}",
+        );
+        thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[test]
+fn gui_threaded_runtime_owner_reconciles_changed_input_once_and_polls_repeatedly() {
+    struct CountingRuntimeOwner {
+        input_changes: Arc<AtomicUsize>,
+        projection_rebuilds: Arc<AtomicUsize>,
+        polls: Arc<AtomicUsize>,
+        requests: Arc<Mutex<Vec<GuiRuntimeRequest>>>,
+    }
+
+    impl GuiQueuedRuntimeOwner for CountingRuntimeOwner {
+        fn input_changed(
+            &mut self,
+            _handle: &GuiQueuedRuntimeBridgeHandle,
+            input: &crate::app::feature_slices::GuiRuntimeInput,
+        ) {
+            self.input_changes.fetch_add(1, Ordering::SeqCst);
+            let _projection = input.to_compatibility_projection();
+            self.projection_rebuilds.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn poll(&mut self, handle: &GuiQueuedRuntimeBridgeHandle) {
+            self.polls.fetch_add(1, Ordering::SeqCst);
+            self.requests
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .extend(handle.drain_requests());
+        }
+    }
+
+    let input_changes = Arc::new(AtomicUsize::new(0));
+    let projection_rebuilds = Arc::new(AtomicUsize::new(0));
+    let polls = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut threaded_pump = GuiThreadedRuntimeOwnerPump::new_with_poll_interval(
+        handle.clone(),
+        CountingRuntimeOwner {
+            input_changes: input_changes.clone(),
+            projection_rebuilds: projection_rebuilds.clone(),
+            polls: polls.clone(),
+            requests: requests.clone(),
+        },
+        Duration::from_millis(5),
+    )
+    .expect("threaded runtime owner should spawn");
+    let mut state =
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+    GuiNativeRuntimePump::pump(&mut threaded_pump, &state);
+    wait_until(Duration::from_secs(1), "initial input change", || {
+        input_changes.load(Ordering::SeqCst) == 1
+    });
+    wait_until(Duration::from_secs(1), "repeated runtime polls", || {
+        polls.load(Ordering::SeqCst) >= 3
+    });
+
+    let first_revision = threaded_pump
+        .shared
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .latest_input_revision;
+    GuiNativeRuntimePump::pump(&mut threaded_pump, &state);
+    state.active_view = GuiShellView::Room;
+    state.new_main_window_user_draft = "UI-only draft".to_owned();
+    GuiNativeRuntimePump::pump(&mut threaded_pump, &state);
+
+    let polls_before_wait = polls.load(Ordering::SeqCst);
+    wait_until(
+        Duration::from_secs(1),
+        "polls after unchanged UI input",
+        || polls.load(Ordering::SeqCst) >= polls_before_wait + 2,
+    );
+    let second_revision = threaded_pump
+        .shared
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .latest_input_revision;
+    assert_eq!(input_changes.load(Ordering::SeqCst), 1);
+    assert_eq!(projection_rebuilds.load(Ordering::SeqCst), 1);
+    assert_eq!(second_revision, first_revision);
+
+    handle.push_request(GuiRuntimeRequest::SeekOffset(1.0));
+    handle.push_request(GuiRuntimeRequest::UndoSeek);
+    wait_until(Duration::from_secs(1), "ordered runtime commands", || {
+        requests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
+            == 2
+    });
+    assert_eq!(
+        *requests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        vec![
+            GuiRuntimeRequest::SeekOffset(1.0),
+            GuiRuntimeRequest::UndoSeek,
+        ]
+    );
+    assert_eq!(input_changes.load(Ordering::SeqCst), 1);
+    assert_eq!(projection_rebuilds.load(Ordering::SeqCst), 1);
+}
+
 #[test]
 fn gui_threaded_runtime_owner_pump_wakes_immediately_for_requests_without_waiting_for_poll_timeout()
 {
@@ -364,7 +480,7 @@ fn gui_threaded_runtime_owner_pump_wakes_immediately_for_requests_without_waitin
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut threaded_pump = GuiThreadedRuntimeOwnerPump::new_with_poll_interval(
         handle.clone(),
-        GuiPreviewRuntimeOwner,
+        GuiPreviewRuntimeOwner::default(),
         Duration::from_secs(30),
     )
     .expect("threaded runtime owner should spawn");
@@ -397,12 +513,14 @@ fn gui_threaded_runtime_owner_pump_joins_worker_on_drop() {
     }
 
     impl GuiQueuedRuntimeOwner for DropAwareRuntimeOwner {
-        fn pump(
+        fn input_changed(
             &mut self,
             _handle: &GuiQueuedRuntimeBridgeHandle,
-            _state: &SorotteGuiShellAppState,
+            _input: &crate::app::feature_slices::GuiRuntimeInput,
         ) {
         }
+
+        fn poll(&mut self, _handle: &GuiQueuedRuntimeBridgeHandle) {}
     }
 
     let dropped = Arc::new(AtomicBool::new(false));
@@ -431,7 +549,7 @@ fn gui_threaded_runtime_owner_pump_reuses_identical_runtime_inputs() {
     });
     let mut threaded_pump = GuiThreadedRuntimeOwnerPump::new_with_poll_interval(
         GuiQueuedRuntimeBridgeHandle::default(),
-        GuiPreviewRuntimeOwner,
+        GuiPreviewRuntimeOwner::default(),
         Duration::from_secs(30),
     )
     .expect("threaded runtime owner should spawn");
@@ -460,7 +578,7 @@ fn gui_threaded_runtime_owner_pump_reuses_input_after_ui_only_changes() {
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
     let mut threaded_pump = GuiThreadedRuntimeOwnerPump::new_with_poll_interval(
         GuiQueuedRuntimeBridgeHandle::default(),
-        GuiPreviewRuntimeOwner,
+        GuiPreviewRuntimeOwner::default(),
         Duration::from_secs(30),
     )
     .expect("threaded runtime owner should spawn");

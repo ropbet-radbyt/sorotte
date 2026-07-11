@@ -18,6 +18,7 @@ pub(crate) struct ClientSessionLocalActionSnapshot {
     media_match_peer_tiers: BTreeMap<String, MediaMatchTier>,
     local_position: Option<f64>,
     local_paused: Option<bool>,
+    local_playback_rate: Option<f64>,
     local_paused_for_cache: Option<bool>,
     local_cache_buffering_percent: Option<f64>,
     pending_cache_room_playstate_resync: bool,

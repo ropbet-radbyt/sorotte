@@ -109,8 +109,9 @@ pub(crate) use self::inbound::{
     ClientStateUpdate, normalize_client_protocol_message, normalize_client_state_payload,
 };
 pub use self::model::{
-    ClientEvent, ClientModel, ConnectionPhase, ConnectionState, ControllerState, PlaybackSyncState,
-    PlaylistState, ReadinessState, ReconnectState, RoomState, ServerCapabilities,
+    ClientEvent, ClientModel, ConnectionPhase, ConnectionState, ControllerState,
+    LocalPauseChangeHealth, PlaybackSyncState, PlaylistState, ReadinessState, ReconnectState,
+    RoomState, ServerCapabilities,
 };
 pub use self::notifications::{
     AutoplayCountdownNotification, ChatNotification, ControlledRoomCreationNotification,

@@ -400,6 +400,7 @@ fn gui_persisted_config_runtime_owner_routes_local_readiness_over_tcp_transport(
         .expect("test session transport listener should expose a local address");
     let (hello_ready_tx, hello_ready_rx) = mpsc::channel();
     let (ready_line_tx, ready_line_rx) = mpsc::channel();
+    let (release_server_tx, release_server_rx) = mpsc::channel();
     let server_thread = std::thread::spawn(move || {
         let (mut stream, _) = listener
             .accept()
@@ -438,6 +439,11 @@ fn gui_persisted_config_runtime_owner_routes_local_readiness_over_tcp_transport(
         stream
             .flush()
             .expect("test session transport server should flush the inbound ready line");
+        release_server_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect(
+                "test session transport server should stay connected until readiness is projected",
+            );
     });
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
@@ -498,6 +504,10 @@ fn gui_persisted_config_runtime_owner_routes_local_readiness_over_tcp_transport(
         },
         "local readiness update over TCP transport",
     );
+
+    release_server_tx
+        .send(())
+        .expect("test session transport server should be releasable after readiness is projected");
 
     server_thread
         .join()

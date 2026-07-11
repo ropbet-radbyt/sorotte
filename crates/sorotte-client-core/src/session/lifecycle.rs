@@ -9,6 +9,7 @@ impl ClientSession {
             media_match_peer_tiers: self.model.room.media_match_peer_tiers.clone(),
             local_position: self.model.playback.local_position,
             local_paused: self.model.playback.local_paused,
+            local_playback_rate: self.model.playback.local_playback_rate,
             local_paused_for_cache: self.model.playback.local_paused_for_cache,
             local_cache_buffering_percent: self.model.playback.local_cache_buffering_percent,
             pending_cache_room_playstate_resync: self
@@ -34,6 +35,7 @@ impl ClientSession {
         self.model.room.media_match_peer_tiers = snapshot.media_match_peer_tiers;
         self.model.playback.local_position = snapshot.local_position;
         self.model.playback.local_paused = snapshot.local_paused;
+        self.model.playback.local_playback_rate = snapshot.local_playback_rate;
         self.model.playback.local_paused_for_cache = snapshot.local_paused_for_cache;
         self.model.playback.local_cache_buffering_percent = snapshot.local_cache_buffering_percent;
         self.model.playback.pending_cache_room_playstate_resync =
@@ -76,6 +78,16 @@ impl ClientSession {
         if let Some(position_seconds) = update.position_seconds.filter(|value| value.is_finite()) {
             self.model.playback.local_position = Some(position_seconds);
         }
+        if let Some(playback_rate) = update.playback_rate.filter(|value| value.is_finite()) {
+            self.model.playback.local_playback_rate = Some(playback_rate);
+        }
+    }
+
+    pub fn initialize_local_identity(&mut self, username: String, room: String) {
+        self.model.connection.username = Some(username.clone());
+        self.update_local_room(room.clone());
+        self.set_user_room(&username, Some(room));
+        self.set_user_ready(&username, false);
     }
 
     pub(super) fn reset_playlist_index_transition_tracking(&mut self) {

@@ -66,16 +66,28 @@ pub struct PlaybackSyncState {
     pub(crate) last_rewound_at_seconds: Option<f64>,
     pub(crate) local_position: Option<f64>,
     pub(crate) local_paused: Option<bool>,
+    pub(crate) local_playback_rate: Option<f64>,
     pub(crate) local_paused_for_cache: Option<bool>,
     pub(crate) local_cache_buffering_percent: Option<f64>,
     pub(crate) pending_cache_room_playstate_resync: bool,
     pub(crate) client_ignoring_on_the_fly: u32,
     pub(crate) server_ignoring_on_the_fly: u32,
     pending_room_pause_sync: Option<PendingRoomPauseSync>,
+    pending_local_pause_change: Option<PendingLocalPauseChange>,
+    pub(crate) local_pause_change_health: LocalPauseChangeHealth,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientEvent {
+    LocalPauseChangeRequested {
+        original_paused: Option<bool>,
+        original_ready: Option<bool>,
+        original_last_paused_on_leave_at_seconds: Option<f64>,
+        planned_paused: Option<bool>,
+        planned_ready: Option<bool>,
+        planned_last_paused_on_leave_at_seconds: Option<f64>,
+        effects: Vec<ClientEffect>,
+    },
     RoomPauseSyncRequested {
         original_position: Option<f64>,
         target_position: Option<f64>,
@@ -84,6 +96,36 @@ pub enum ClientEvent {
     },
     EffectSucceeded(ClientEffect),
     EffectFailed(ClientEffect),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LocalPauseChangeHealth {
+    #[default]
+    Healthy,
+    ControlEffectFailedAfterPlayerChange,
+}
+
+#[derive(Debug)]
+struct PendingLocalPauseChange {
+    original: LocalPauseStateSnapshot,
+    original_health: LocalPauseChangeHealth,
+    effects: Vec<ClientEffect>,
+    next_effect_index: usize,
+    player_pause_succeeded: bool,
+    stage: LocalPauseChangeStage,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LocalPauseStateSnapshot {
+    paused: Option<bool>,
+    ready: Option<bool>,
+    last_paused_on_leave_at_seconds: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalPauseChangeStage {
+    PlayerPause,
+    ControlEffects,
 }
 
 #[derive(Debug)]
@@ -105,6 +147,27 @@ enum RoomPauseSyncStage {
 impl ClientModel {
     pub fn apply(&mut self, event: ClientEvent) -> Vec<ClientEffect> {
         match event {
+            ClientEvent::LocalPauseChangeRequested {
+                original_paused,
+                original_ready,
+                original_last_paused_on_leave_at_seconds,
+                planned_paused,
+                planned_ready,
+                planned_last_paused_on_leave_at_seconds,
+                effects,
+            } => self.begin_local_pause_change(
+                LocalPauseStateSnapshot {
+                    paused: original_paused,
+                    ready: original_ready,
+                    last_paused_on_leave_at_seconds: original_last_paused_on_leave_at_seconds,
+                },
+                LocalPauseStateSnapshot {
+                    paused: planned_paused,
+                    ready: planned_ready,
+                    last_paused_on_leave_at_seconds: planned_last_paused_on_leave_at_seconds,
+                },
+                effects,
+            ),
             ClientEvent::RoomPauseSyncRequested {
                 original_position,
                 target_position,
@@ -117,9 +180,163 @@ impl ClientModel {
                 clear_cache_resync_on_success,
             ),
             ClientEvent::EffectSucceeded(effect) => {
-                self.apply_room_pause_sync_effect_succeeded(effect)
+                if self.local_pause_change_expects(&effect) {
+                    self.apply_local_pause_change_effect_succeeded(effect)
+                } else {
+                    self.apply_room_pause_sync_effect_succeeded(effect)
+                }
             }
-            ClientEvent::EffectFailed(effect) => self.apply_room_pause_sync_effect_failed(effect),
+            ClientEvent::EffectFailed(effect) => {
+                if self.local_pause_change_expects(&effect) {
+                    self.apply_local_pause_change_effect_failed(effect)
+                } else {
+                    self.apply_room_pause_sync_effect_failed(effect)
+                }
+            }
+        }
+    }
+
+    pub(crate) fn local_pause_change_in_flight(&self) -> bool {
+        self.playback.pending_local_pause_change.is_some()
+    }
+
+    pub(crate) fn apply_local_pause_state(
+        &mut self,
+        paused: Option<bool>,
+        ready: Option<bool>,
+        last_paused_on_leave_at_seconds: Option<f64>,
+    ) {
+        self.playback.local_paused = paused;
+        self.playback.last_paused_on_leave_at_seconds = last_paused_on_leave_at_seconds;
+        self.restore_local_ready_state(ready);
+    }
+
+    fn begin_local_pause_change(
+        &mut self,
+        original: LocalPauseStateSnapshot,
+        planned: LocalPauseStateSnapshot,
+        effects: Vec<ClientEffect>,
+    ) -> Vec<ClientEffect> {
+        if self.playback.pending_local_pause_change.is_some()
+            || !Self::valid_local_pause_effect_sequence(&effects)
+        {
+            return Vec::new();
+        }
+        let stage = if matches!(effects.first(), Some(ClientEffect::SetPlayerPaused(_))) {
+            LocalPauseChangeStage::PlayerPause
+        } else {
+            LocalPauseChangeStage::ControlEffects
+        };
+        let first_effect = effects[0].clone();
+        self.apply_local_pause_state(
+            planned.paused,
+            planned.ready,
+            planned.last_paused_on_leave_at_seconds,
+        );
+        self.playback.pending_local_pause_change = Some(PendingLocalPauseChange {
+            original,
+            original_health: self.playback.local_pause_change_health,
+            effects,
+            next_effect_index: 0,
+            player_pause_succeeded: false,
+            stage,
+        });
+        vec![first_effect]
+    }
+
+    fn valid_local_pause_effect_sequence(effects: &[ClientEffect]) -> bool {
+        matches!(
+            effects,
+            [ClientEffect::SetPlayerPaused(_)]
+                | [
+                    ClientEffect::SetPlayerPaused(_),
+                    ClientEffect::SetReady { .. }
+                ]
+                | [ClientEffect::SetReady { .. }]
+        )
+    }
+
+    fn local_pause_change_expects(&self, effect: &ClientEffect) -> bool {
+        self.playback
+            .pending_local_pause_change
+            .as_ref()
+            .and_then(|pending| pending.effects.get(pending.next_effect_index))
+            == Some(effect)
+    }
+
+    fn apply_local_pause_change_effect_succeeded(
+        &mut self,
+        effect: ClientEffect,
+    ) -> Vec<ClientEffect> {
+        if !self.local_pause_change_expects(&effect) {
+            return Vec::new();
+        }
+        let mut pending = self
+            .playback
+            .pending_local_pause_change
+            .take()
+            .expect("matching local pause effect requires a pending transaction");
+        if let ClientEffect::SetPlayerPaused(paused) = effect {
+            pending.player_pause_succeeded = true;
+            self.playback.local_paused = Some(paused);
+        }
+        pending.next_effect_index += 1;
+        let Some(next_effect) = pending.effects.get(pending.next_effect_index).cloned() else {
+            self.playback.local_pause_change_health = LocalPauseChangeHealth::Healthy;
+            return Vec::new();
+        };
+        pending.stage = LocalPauseChangeStage::ControlEffects;
+        self.playback.pending_local_pause_change = Some(pending);
+        vec![next_effect]
+    }
+
+    fn apply_local_pause_change_effect_failed(
+        &mut self,
+        effect: ClientEffect,
+    ) -> Vec<ClientEffect> {
+        if !self.local_pause_change_expects(&effect) {
+            return Vec::new();
+        }
+        let pending = self
+            .playback
+            .pending_local_pause_change
+            .take()
+            .expect("matching local pause effect requires a pending transaction");
+        self.restore_local_ready_state(pending.original.ready);
+        match pending.stage {
+            LocalPauseChangeStage::PlayerPause => {
+                self.playback.local_paused = pending.original.paused;
+                self.playback.last_paused_on_leave_at_seconds =
+                    pending.original.last_paused_on_leave_at_seconds;
+                self.playback.local_pause_change_health = pending.original_health;
+            }
+            LocalPauseChangeStage::ControlEffects if pending.player_pause_succeeded => {
+                self.playback.local_pause_change_health =
+                    LocalPauseChangeHealth::ControlEffectFailedAfterPlayerChange;
+            }
+            LocalPauseChangeStage::ControlEffects => {
+                self.playback.local_paused = pending.original.paused;
+                self.playback.last_paused_on_leave_at_seconds =
+                    pending.original.last_paused_on_leave_at_seconds;
+                self.playback.local_pause_change_health = pending.original_health;
+            }
+        }
+        Vec::new()
+    }
+
+    fn restore_local_ready_state(&mut self, ready: Option<bool>) {
+        let Some(username) = self.connection.username.clone() else {
+            return;
+        };
+        let room_name = {
+            let user = self.room.users.entry(username.clone()).or_default();
+            user.ready = ready;
+            user.room.clone()
+        };
+        if let Some(room_name) = room_name {
+            self.room
+                .domain
+                .join_room_with_ready(&username, &room_name, ready);
         }
     }
 
@@ -417,6 +634,191 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(model.playback.local_position, Some(3.0));
+    }
+
+    #[test]
+    fn local_pause_reducer_keeps_player_truth_and_restores_readiness_after_control_failure() {
+        let mut model = ClientModel::default();
+        model.connection.username = Some("alice".to_owned());
+        model.playback.local_paused = Some(false);
+        model.playback.last_paused_on_leave_at_seconds = Some(12.0);
+        model.room.users.insert(
+            "alice".to_owned(),
+            ClientUserView {
+                room: Some("room1".to_owned()),
+                ready: Some(true),
+                ..ClientUserView::default()
+            },
+        );
+        model
+            .room
+            .domain
+            .join_room_with_ready("alice", "room1", Some(true));
+        let effects = vec![
+            ClientEffect::SetPlayerPaused(true),
+            ClientEffect::SetReady {
+                ready: false,
+                manually_initiated: false,
+            },
+        ];
+
+        assert_eq!(
+            model.apply(ClientEvent::LocalPauseChangeRequested {
+                original_paused: Some(false),
+                original_ready: Some(true),
+                original_last_paused_on_leave_at_seconds: Some(12.0),
+                planned_paused: Some(true),
+                planned_ready: Some(false),
+                planned_last_paused_on_leave_at_seconds: None,
+                effects: effects.clone(),
+            }),
+            vec![ClientEffect::SetPlayerPaused(true)]
+        );
+        assert_eq!(model.playback.local_paused, Some(true));
+        assert_eq!(model.playback.last_paused_on_leave_at_seconds, None);
+        assert_eq!(
+            model.room.users.get("alice").and_then(|user| user.ready),
+            Some(false),
+            "the request event, rather than the planner, must apply optimistic state"
+        );
+        assert!(
+            model
+                .apply(ClientEvent::LocalPauseChangeRequested {
+                    original_paused: Some(false),
+                    original_ready: Some(true),
+                    original_last_paused_on_leave_at_seconds: Some(12.0),
+                    planned_paused: Some(false),
+                    planned_ready: Some(true),
+                    planned_last_paused_on_leave_at_seconds: Some(99.0),
+                    effects: vec![ClientEffect::SetPlayerPaused(false)],
+                })
+                .is_empty(),
+            "a second pause transaction must be rejected while the first effect is in flight"
+        );
+        assert_eq!(model.playback.local_paused, Some(true));
+        assert_eq!(model.playback.last_paused_on_leave_at_seconds, None);
+        assert_eq!(
+            model.apply(ClientEvent::EffectSucceeded(effects[0].clone())),
+            vec![effects[1].clone()]
+        );
+        assert!(
+            model
+                .apply(ClientEvent::EffectFailed(effects[1].clone()))
+                .is_empty()
+        );
+
+        assert_eq!(model.playback.local_paused, Some(true));
+        assert_eq!(
+            model.room.users.get("alice").and_then(|user| user.ready),
+            Some(true),
+            "the failed control effect must roll back only optimistic readiness"
+        );
+        assert_eq!(model.playback.last_paused_on_leave_at_seconds, None);
+        assert_eq!(
+            model.playback.local_pause_change_health,
+            LocalPauseChangeHealth::ControlEffectFailedAfterPlayerChange
+        );
+        assert!(!model.local_pause_change_in_flight());
+    }
+
+    #[test]
+    fn local_pause_reducer_restores_optimistic_state_when_player_effect_fails() {
+        let mut model = ClientModel::default();
+        model.connection.username = Some("alice".to_owned());
+        model.playback.local_paused = Some(false);
+        model.playback.last_paused_on_leave_at_seconds = Some(8.0);
+        model.room.users.insert(
+            "alice".to_owned(),
+            ClientUserView {
+                room: Some("room1".to_owned()),
+                ready: Some(true),
+                ..ClientUserView::default()
+            },
+        );
+        let player_effect = ClientEffect::SetPlayerPaused(true);
+
+        assert_eq!(
+            model.apply(ClientEvent::LocalPauseChangeRequested {
+                original_paused: Some(false),
+                original_ready: Some(true),
+                original_last_paused_on_leave_at_seconds: Some(8.0),
+                planned_paused: Some(true),
+                planned_ready: Some(false),
+                planned_last_paused_on_leave_at_seconds: None,
+                effects: vec![player_effect.clone()],
+            }),
+            vec![player_effect.clone()]
+        );
+        assert_eq!(model.playback.local_paused, Some(true));
+        assert_eq!(model.playback.last_paused_on_leave_at_seconds, None);
+        assert_eq!(
+            model.room.users.get("alice").and_then(|user| user.ready),
+            Some(false)
+        );
+        assert!(
+            model
+                .apply(ClientEvent::EffectFailed(player_effect))
+                .is_empty()
+        );
+
+        assert_eq!(model.playback.local_paused, Some(false));
+        assert_eq!(model.playback.last_paused_on_leave_at_seconds, Some(8.0));
+        assert_eq!(
+            model.room.users.get("alice").and_then(|user| user.ready),
+            Some(true)
+        );
+        assert_eq!(
+            model.playback.local_pause_change_health,
+            LocalPauseChangeHealth::Healthy
+        );
+        assert!(!model.local_pause_change_in_flight());
+    }
+
+    #[test]
+    fn local_pause_reducer_rejects_multiple_control_effects_without_applying_plan() {
+        let mut model = ClientModel::default();
+        model.connection.username = Some("alice".to_owned());
+        model.playback.local_paused = Some(false);
+        model.playback.last_paused_on_leave_at_seconds = Some(8.0);
+        model.room.users.insert(
+            "alice".to_owned(),
+            ClientUserView {
+                room: Some("room1".to_owned()),
+                ready: Some(true),
+                ..ClientUserView::default()
+            },
+        );
+
+        assert!(
+            model
+                .apply(ClientEvent::LocalPauseChangeRequested {
+                    original_paused: Some(false),
+                    original_ready: Some(true),
+                    original_last_paused_on_leave_at_seconds: Some(8.0),
+                    planned_paused: Some(true),
+                    planned_ready: Some(false),
+                    planned_last_paused_on_leave_at_seconds: None,
+                    effects: vec![
+                        ClientEffect::SetReady {
+                            ready: false,
+                            manually_initiated: false,
+                        },
+                        ClientEffect::SetReady {
+                            ready: true,
+                            manually_initiated: false,
+                        },
+                    ],
+                })
+                .is_empty()
+        );
+
+        assert_eq!(model.playback.local_paused, Some(false));
+        assert_eq!(model.playback.last_paused_on_leave_at_seconds, Some(8.0));
+        assert_eq!(
+            model.room.users.get("alice").and_then(|user| user.ready),
+            Some(true)
+        );
+        assert!(!model.local_pause_change_in_flight());
     }
 
     #[test]

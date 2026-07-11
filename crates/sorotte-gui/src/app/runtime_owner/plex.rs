@@ -43,7 +43,7 @@ impl GuiPersistedConfigRuntimeOwner {
         match std::thread::Builder::new()
             .name("sorotte-gui-plex-auth-start".to_owned())
             .spawn(move || {
-                let result = PlexAuthService::new(&client)
+                let result = PlexAuthService::new(client)
                     .start()
                     .map_err(|error| error.to_string());
                 let _ = tx.send(result);
@@ -189,7 +189,10 @@ impl GuiPersistedConfigRuntimeOwner {
                     let result = PlexHttpClient::new("sorotte-gui")
                         .map_err(|error| format!("Failed to create Plex HTTP client: {error}"))
                         .and_then(|client| {
-                            refresh_plex_servers_and_reachability(&client, &startup_settings)
+                            refresh_plex_servers_and_reachability(
+                                PlexDiscoveryService::new(client),
+                                &startup_settings,
+                            )
                         });
                     let _ = tx.send(result);
                 }) {
@@ -363,7 +366,7 @@ impl GuiPersistedConfigRuntimeOwner {
         match std::thread::Builder::new()
             .name("sorotte-gui-plex-auth-poll".to_owned())
             .spawn(move || {
-                let result = PlexAuthService::new(&client)
+                let result = PlexAuthService::new(client)
                     .poll(pin_id)
                     .map_err(|error| error.to_string());
                 let _ = tx.send((user_initiated, result));
@@ -1072,7 +1075,10 @@ impl GuiPersistedConfigRuntimeOwner {
         std::thread::Builder::new()
             .name("sorotte-gui-plex-server-refresh".to_owned())
             .spawn(move || {
-                let result = refresh_plex_servers_and_reachability(&client, &settings);
+                let result = refresh_plex_servers_and_reachability(
+                    PlexDiscoveryService::new(client),
+                    &settings,
+                );
                 let _ = tx.send(result);
             })
             .map_err(|error| error.to_string())?;
@@ -1394,23 +1400,26 @@ fn reconcile_plex_server_selection(
     false
 }
 
-fn refresh_plex_servers_and_reachability(
-    client: &PlexHttpClient,
+fn refresh_plex_servers_and_reachability<T>(
+    discovery: PlexDiscoveryService<T>,
     settings: &StoredClientSettingsMvp,
-) -> Result<GuiPlexServerRefreshOutcome, String> {
+) -> Result<GuiPlexServerRefreshOutcome, String>
+where
+    T: sorotte_plex::discovery::PlexServerDiscoveryTransport,
+{
     let token = settings
         .plex_user_token
         .as_ref()
         .filter(|token| !token.expose_secret().trim().is_empty())
         .ok_or_else(|| "Plex login is required before servers can be refreshed.".to_owned())?;
-    let servers = PlexDiscoveryService::new(client)
+    let servers = discovery
         .discover(token.expose_secret())
         .map_err(|error| error.to_string())?;
     let mut reachability = HashMap::new();
     for server in &servers {
         reachability.insert(
             plex_server_reachability_key(&server.uri),
-            verify_plex_server_reachability(client, server),
+            verify_plex_server_reachability(&discovery, server),
         );
     }
 
@@ -1439,7 +1448,7 @@ fn refresh_plex_servers_and_reachability(
         };
         reachability.insert(
             plex_server_reachability_key(&selected_server.uri),
-            verify_plex_server_reachability(client, &selected_server),
+            verify_plex_server_reachability(&discovery, &selected_server),
         );
     }
 
@@ -1449,11 +1458,14 @@ fn refresh_plex_servers_and_reachability(
     })
 }
 
-fn verify_plex_server_reachability(
-    client: &PlexHttpClient,
+fn verify_plex_server_reachability<T>(
+    discovery: &PlexDiscoveryService<T>,
     server: &PlexServerConnection,
-) -> GuiPlexServerReachability {
-    match PlexDiscoveryService::new(client).verify(server) {
+) -> GuiPlexServerReachability
+where
+    T: sorotte_plex::discovery::PlexServerDiscoveryTransport,
+{
+    match discovery.verify(server) {
         Ok(()) => GuiPlexServerReachability::Reachable,
         Err(_error) => GuiPlexServerReachability::Unreachable,
     }

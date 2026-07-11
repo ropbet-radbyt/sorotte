@@ -34,7 +34,6 @@ use super::super::media_match_support::{
     rebuild_persisted_media_match_index_with_extraction_settings_and_cancel,
     rebuild_persisted_media_match_remote_candidates_with_progress_and_cancel,
 };
-use super::super::remote_services;
 use super::super::runtime_bridge::{GuiPendingCompletionRequest, GuiRuntimeRequest};
 use super::super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 use super::super::runtime_stack::{
@@ -219,65 +218,11 @@ impl GuiPersistedConfigRuntimeOwner {
         request: GuiRuntimeRequest,
     ) -> bool {
         match request {
-            GuiRuntimeRequest::CheckForUpdates {
-                language,
-                update_channel,
-                user_initiated,
-            } => {
-                let result = remote_services::check_for_updates(
-                    Some(language.as_str()),
-                    user_initiated,
-                    update_channel.as_deref(),
-                );
-                Self::push_actions_and_project(
-                    handle,
-                    projected_state,
-                    vec![GuiShellAction::ApplyUpdateCheckResult(result)],
-                );
-            }
-            GuiRuntimeRequest::DownloadUpdate(candidate) => {
-                let result = remote_services::download_and_stage_update(
-                    &candidate,
-                    self.legacy_gui_qsettings_root().as_deref(),
-                );
-                Self::push_actions_and_project(
-                    handle,
-                    projected_state,
-                    vec![GuiShellAction::ApplyUpdateDownloadResult(result)],
-                );
-            }
-            GuiRuntimeRequest::DownloadAndInstallUpdate(candidate) => {
-                let result = remote_services::download_and_stage_update(
-                    &candidate,
-                    self.legacy_gui_qsettings_root().as_deref(),
-                );
-                let staged_update = result.staged_update.clone();
-                Self::push_actions_and_project(
-                    handle,
-                    projected_state,
-                    vec![GuiShellAction::ApplyUpdateDownloadResult(result)],
-                );
-                if let Some(staged_update) = staged_update {
-                    Self::push_actions_and_project(
-                        handle,
-                        projected_state,
-                        vec![GuiShellAction::BeginStagedUpdateApply],
-                    );
-                    let result = remote_services::launch_staged_update(&staged_update);
-                    Self::push_actions_and_project(
-                        handle,
-                        projected_state,
-                        vec![GuiShellAction::ApplyStagedUpdateLaunchResult(result)],
-                    );
-                }
-            }
-            GuiRuntimeRequest::ApplyStagedUpdate(staged_update) => {
-                let result = remote_services::launch_staged_update(&staged_update);
-                Self::push_actions_and_project(
-                    handle,
-                    projected_state,
-                    vec![GuiShellAction::ApplyStagedUpdateLaunchResult(result)],
-                );
+            GuiRuntimeRequest::CheckForUpdates { .. }
+            | GuiRuntimeRequest::DownloadUpdate(_)
+            | GuiRuntimeRequest::DownloadAndInstallUpdate(_)
+            | GuiRuntimeRequest::ApplyStagedUpdate(_) => {
+                unreachable!("update requests are routed through GuiClientCommand::Updates")
             }
             GuiRuntimeRequest::OpenMediaFiles {
                 paths,

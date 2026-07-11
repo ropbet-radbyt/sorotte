@@ -313,18 +313,15 @@ where
     G: FnMut(&str) -> anyhow::Result<()>,
 {
     Ok(match TcpStream::connect(endpoint).await {
-        Ok(stream) => {
-            let _ = launch.runtime.dispatch(ClientCommand::TransportConnected);
-            (
-                client_network_loop_attempt_execution_plan_for_connected_session_exit_legacy_compatible(
-                    run_connected_client_session_with_legacy_startup_overrides_and_diagnostics(
-                        stream, launch,
-                    )
-                    .await?,
-                ),
-                None,
-            )
-        }
+        Ok(stream) => (
+            client_network_loop_attempt_execution_plan_for_connected_session_exit_legacy_compatible(
+                run_connected_client_session_with_legacy_startup_overrides_and_diagnostics(
+                    stream, launch,
+                )
+                .await?,
+            ),
+            None,
+        ),
         Err(connect_err) => (
             client_network_loop_attempt_execution_plan_for_connect_failure_legacy_compatible(),
             Some(connect_err.into()),

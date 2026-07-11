@@ -5,6 +5,7 @@
 //! These views are the compatibility boundary while the remaining shell
 //! actions are moved into feature reducers.
 
+use super::remote_services;
 use super::runtime_bridge::GuiRuntimeRequest;
 use super::shell_state::{
     FirstRunConfigurationDialogDraft, GuiCommandAvailabilityRuntimeOverride,
@@ -29,7 +30,6 @@ pub(super) enum GuiFeature {
     MediaMatch,
     Plex,
     Settings,
-    Updates,
 }
 
 /// Typed application command used by the runtime queue.
@@ -37,20 +37,54 @@ pub(super) enum GuiFeature {
 /// `GuiRuntimeRequest` remains the compatibility action façade at call sites;
 /// requests are classified once when they cross into the application layer.
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct GuiClientCommand {
-    feature: GuiFeature,
-    request: GuiRuntimeRequest,
+pub(super) enum GuiClientCommand {
+    Updates(Box<updates::Command>),
+    Legacy {
+        feature: GuiFeature,
+        request: Box<GuiRuntimeRequest>,
+    },
 }
 
 impl GuiClientCommand {
     pub(super) fn from_compatibility_request(request: GuiRuntimeRequest) -> Self {
         use GuiRuntimeRequest as Request;
 
-        let feature = match &request {
+        match request {
+            Request::CheckForUpdates {
+                language,
+                update_channel,
+                user_initiated,
+            } => Self::Updates(Box::new(updates::Command::CheckForUpdates {
+                language,
+                update_channel,
+                user_initiated,
+            })),
+            Request::DownloadUpdate(candidate) => {
+                Self::Updates(Box::new(updates::Command::Download(candidate)))
+            }
+            Request::DownloadAndInstallUpdate(candidate) => {
+                Self::Updates(Box::new(updates::Command::DownloadAndInstall(candidate)))
+            }
+            Request::ApplyStagedUpdate(staged_update) => {
+                Self::Updates(Box::new(updates::Command::ApplyStaged(staged_update)))
+            }
+            request => Self::Legacy {
+                feature: Self::legacy_feature(&request),
+                request: Box::new(request),
+            },
+        }
+    }
+
+    fn legacy_feature(request: &GuiRuntimeRequest) -> GuiFeature {
+        use GuiRuntimeRequest as Request;
+
+        match request {
             Request::CheckForUpdates { .. }
             | Request::DownloadUpdate(_)
             | Request::DownloadAndInstallUpdate(_)
-            | Request::ApplyStagedUpdate(_) => GuiFeature::Updates,
+            | Request::ApplyStagedUpdate(_) => {
+                unreachable!("update requests are converted to typed update commands")
+            }
             Request::SetRoom(_)
             | Request::ReturnToDefaultRoom
             | Request::SetLocalReady(_)
@@ -109,16 +143,14 @@ impl GuiClientCommand {
             | Request::IntegrateStreamHelperJsRuntime(_)
             | Request::OpenStreamHelperInstallLocation
             | Request::RecheckStreamHelper => GuiFeature::Settings,
-        };
-        Self { feature, request }
-    }
-
-    pub(super) fn feature(&self) -> GuiFeature {
-        self.feature
+        }
     }
 
     pub(super) fn into_compatibility_request(self) -> GuiRuntimeRequest {
-        self.request
+        match self {
+            Self::Updates(command) => (*command).into_compatibility_request(),
+            Self::Legacy { request, .. } => *request,
+        }
     }
 }
 
@@ -214,9 +246,82 @@ pub(super) mod settings {
 pub(super) mod updates {
     use super::*;
 
+    #[derive(Clone, PartialEq)]
+    pub(in crate::app) enum Command {
+        CheckForUpdates {
+            language: String,
+            update_channel: Option<String>,
+            user_initiated: bool,
+        },
+        Download(remote_services::UpdateCandidate),
+        DownloadAndInstall(remote_services::UpdateCandidate),
+        ApplyStaged(remote_services::StagedUpdate),
+    }
+
+    impl std::fmt::Debug for Command {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::CheckForUpdates {
+                    language,
+                    update_channel,
+                    user_initiated,
+                } => formatter
+                    .debug_struct("CheckForUpdates")
+                    .field("language", language)
+                    .field("update_channel", update_channel)
+                    .field("user_initiated", user_initiated)
+                    .finish(),
+                Self::Download(_) => formatter
+                    .debug_tuple("Download")
+                    .field(&"<redacted>")
+                    .finish(),
+                Self::DownloadAndInstall(_) => formatter
+                    .debug_tuple("DownloadAndInstall")
+                    .field(&"<redacted>")
+                    .finish(),
+                Self::ApplyStaged(_) => formatter
+                    .debug_tuple("ApplyStaged")
+                    .field(&"<redacted>")
+                    .finish(),
+            }
+        }
+    }
+
+    impl Command {
+        pub(super) fn into_compatibility_request(self) -> GuiRuntimeRequest {
+            match self {
+                Self::CheckForUpdates {
+                    language,
+                    update_channel,
+                    user_initiated,
+                } => GuiRuntimeRequest::CheckForUpdates {
+                    language,
+                    update_channel,
+                    user_initiated,
+                },
+                Self::Download(candidate) => GuiRuntimeRequest::DownloadUpdate(candidate),
+                Self::DownloadAndInstall(candidate) => {
+                    GuiRuntimeRequest::DownloadAndInstallUpdate(candidate)
+                }
+                Self::ApplyStaged(staged_update) => {
+                    GuiRuntimeRequest::ApplyStagedUpdate(staged_update)
+                }
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(in crate::app) struct RuntimePolicy {
+        pub(in crate::app) automatic: bool,
+        pub(in crate::app) last_checked_for_updates: Option<String>,
+        pub(in crate::app) language: String,
+        pub(in crate::app) channel: Option<String>,
+    }
+
     #[derive(Debug, Clone, PartialEq)]
-    pub(super) struct RuntimeView {
-        pub(super) model: GuiUpdateCheckState,
+    pub(in crate::app) struct RuntimeView {
+        pub(in crate::app) model: GuiUpdateCheckState,
+        pub(in crate::app) policy: RuntimePolicy,
     }
 }
 
@@ -289,6 +394,17 @@ impl GuiRuntimeInput {
             },
             updates: updates::RuntimeView {
                 model: state.update_check.clone(),
+                policy: updates::RuntimePolicy {
+                    automatic: state.configuration.settings.check_for_updates_automatically
+                        == Some(true),
+                    last_checked_for_updates: state
+                        .configuration
+                        .settings
+                        .last_checked_for_updates
+                        .clone(),
+                    language: state.update_check_language(),
+                    channel: state.update_check_channel(),
+                },
             },
         }
     }
@@ -330,6 +446,12 @@ impl GuiRuntimeInput {
             && self.settings.validation == state.validation
             && self.settings.runtime_validation_issues == state.runtime_validation_issues
             && self.updates.model == state.update_check
+            && self.updates.policy.automatic
+                == (state.configuration.settings.check_for_updates_automatically == Some(true))
+            && self.updates.policy.last_checked_for_updates
+                == state.configuration.settings.last_checked_for_updates
+            && self.updates.policy.language == state.update_check_language()
+            && self.updates.policy.channel == state.update_check_channel()
     }
 
     /// Builds the temporary shell-shaped projection used by the compatibility
@@ -378,6 +500,10 @@ impl GuiRuntimeInput {
         state.update_check = self.updates.model.clone();
         state
     }
+
+    pub(super) fn updates(&self) -> &updates::RuntimeView {
+        &self.updates
+    }
 }
 
 #[cfg(test)]
@@ -416,31 +542,128 @@ mod tests {
 
     #[test]
     fn compatibility_commands_are_routed_to_feature_owners() {
-        assert_eq!(
+        assert!(matches!(
             GuiClientCommand::from_compatibility_request(GuiRuntimeRequest::SetRoom(
                 "room".to_owned(),
-            ))
-            .feature(),
-            GuiFeature::Session,
-        );
-        assert_eq!(
-            GuiClientCommand::from_compatibility_request(GuiRuntimeRequest::ShuffleEntirePlaylist,)
-                .feature(),
-            GuiFeature::Playlist,
-        );
-        assert_eq!(
-            GuiClientCommand::from_compatibility_request(GuiRuntimeRequest::StartPlexAuth)
-                .feature(),
-            GuiFeature::Plex,
-        );
-        assert_eq!(
+            )),
+            GuiClientCommand::Legacy {
+                feature: GuiFeature::Session,
+                ..
+            }
+        ));
+        assert!(matches!(
+            GuiClientCommand::from_compatibility_request(GuiRuntimeRequest::ShuffleEntirePlaylist,),
+            GuiClientCommand::Legacy {
+                feature: GuiFeature::Playlist,
+                ..
+            }
+        ));
+        assert!(matches!(
+            GuiClientCommand::from_compatibility_request(GuiRuntimeRequest::StartPlexAuth),
+            GuiClientCommand::Legacy {
+                feature: GuiFeature::Plex,
+                ..
+            }
+        ));
+        assert!(matches!(
             GuiClientCommand::from_compatibility_request(GuiRuntimeRequest::CheckForUpdates {
                 language: "en".to_owned(),
                 update_channel: None,
                 user_initiated: true,
-            })
-            .feature(),
-            GuiFeature::Updates,
-        );
+            }),
+            GuiClientCommand::Updates(command)
+                if matches!(command.as_ref(), updates::Command::CheckForUpdates {
+                language,
+                update_channel: None,
+                user_initiated: true,
+            } if language == "en")
+        ));
+    }
+
+    #[test]
+    fn every_update_request_uses_the_typed_update_route_and_round_trips() {
+        use remote_services::{
+            StagedUpdate, UpdateCandidate, UpdateCandidateSource, UpdateChannel,
+        };
+
+        let candidate = UpdateCandidate {
+            channel: UpdateChannel::Stable,
+            version: "1.2.3".to_owned(),
+            git_sha: None,
+            created_at_utc: String::new(),
+            target: "x86_64-pc-windows-msvc".to_owned(),
+            package: "sorotte.zip".to_owned(),
+            sha256: "abc".to_owned(),
+            download_url: "https://example.invalid/sorotte.zip".to_owned(),
+            details_url: None,
+            source: UpdateCandidateSource::ReleaseAsset,
+        };
+        let staged = StagedUpdate {
+            candidate: candidate.clone(),
+            package_path: "package".to_owned(),
+            source_dir: "source".to_owned(),
+            updater_path: "updater".to_owned(),
+            target_exe_path: "target".to_owned(),
+            backup_dir: "backup".to_owned(),
+            log_path: "log".to_owned(),
+            restart: true,
+        };
+        let requests = vec![
+            GuiRuntimeRequest::CheckForUpdates {
+                language: "en".to_owned(),
+                update_channel: Some("stable".to_owned()),
+                user_initiated: true,
+            },
+            GuiRuntimeRequest::DownloadUpdate(candidate.clone()),
+            GuiRuntimeRequest::DownloadAndInstallUpdate(candidate),
+            GuiRuntimeRequest::ApplyStagedUpdate(staged),
+        ];
+
+        for request in requests {
+            let command = GuiClientCommand::from_compatibility_request(request.clone());
+            assert!(matches!(command, GuiClientCommand::Updates(_)));
+            assert_eq!(command.into_compatibility_request(), request);
+        }
+    }
+
+    #[test]
+    fn typed_update_command_debug_redacts_remote_urls_and_local_stage_paths() {
+        use remote_services::{
+            StagedUpdate, UpdateCandidate, UpdateCandidateSource, UpdateChannel,
+        };
+
+        let marker = "typed-update-secret-marker";
+        let candidate = UpdateCandidate {
+            channel: UpdateChannel::Stable,
+            version: "1.2.3".to_owned(),
+            git_sha: None,
+            created_at_utc: String::new(),
+            target: "x86_64-pc-windows-msvc".to_owned(),
+            package: "sorotte.zip".to_owned(),
+            sha256: "abc".to_owned(),
+            download_url: format!("https://example.invalid/{marker}"),
+            details_url: Some(format!("https://example.invalid/details/{marker}")),
+            source: UpdateCandidateSource::ReleaseAsset,
+        };
+        let staged = StagedUpdate {
+            candidate: candidate.clone(),
+            package_path: format!("C:/updates/{marker}"),
+            source_dir: format!("C:/source/{marker}"),
+            updater_path: format!("C:/updater/{marker}"),
+            target_exe_path: format!("C:/target/{marker}"),
+            backup_dir: format!("C:/backup/{marker}"),
+            log_path: format!("C:/log/{marker}"),
+            restart: true,
+        };
+
+        for command in [
+            updates::Command::Download(candidate.clone()),
+            updates::Command::DownloadAndInstall(candidate),
+            updates::Command::ApplyStaged(staged),
+        ] {
+            let debug = format!("{command:?}");
+            assert!(!debug.contains(marker), "debug leaked marker: {debug}");
+            assert!(debug.contains("<redacted>"));
+        }
     }
 }

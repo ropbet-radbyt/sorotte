@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_owner::GuiUpdateRuntime;
 
 use sorotte_plex::{
     PlexMatchedItem, PlexMediaType, PlexPlaylistUri, PlexStreamTarget, SecretPlexPlaybackUrl,
@@ -43,6 +44,7 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(TelemetryPlayerState::default()));
     let mut owner = GuiPersistedConfigRuntimeOwner {
         config_path: None,
+        legacy_projection: None,
         session: None,
         session_projects_to_shell: false,
         session_transport: None,
@@ -56,8 +58,7 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         startup_saved_connect_attempted: false,
         startup_remote_actions_attempted: false,
         startup_remote_actions_rx: None,
-        background_update_check_rx: None,
-        background_update_check_next_due_at: None,
+        update_runtime: GuiUpdateRuntime::new(None),
         startup_stream_helper_probe_completed: false,
         startup_stream_helper_probe_rx: None,
         player: Some(GuiOwnedPlayer::Custom(Box::new(TelemetryPlayerAdapter {

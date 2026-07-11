@@ -4,6 +4,7 @@ use sorotte_client_app::app_boundary::application::{
 use sorotte_client_app::app_boundary::commands::{
     PlannedLocalRuntimeAction, plan_local_runtime_dispatch_legacy_compatible,
 };
+use sorotte_player_api::PlayerPlaybackTelemetryUpdate;
 use sorotte_player_mpv::MpvAdapter;
 
 use crate::client_config::ClientLoopConfig;
@@ -106,10 +107,11 @@ pub(super) fn run_planned_local_runtime_action_legacy_compatible(
         Some(PlannedLocalRuntimeAction::TogglePause) => {
             let paused = application.player().paused();
             let position_seconds = application.player().position_seconds();
-            let _ = application.dispatch(ClientCommand::PlayerPlaybackObserved {
-                paused,
-                position_seconds,
-            });
+            let _ = application.dispatch(ClientCommand::PlayerPlaybackObserved(
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(paused)
+                    .with_position_seconds(position_seconds),
+            ));
             Some(ClientCommand::TogglePause)
         }
         Some(PlannedLocalRuntimeAction::ToggleReady) => Some(ClientCommand::SetReady {

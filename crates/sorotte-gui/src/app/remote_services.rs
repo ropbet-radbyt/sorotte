@@ -602,13 +602,23 @@ pub(crate) fn should_run_automatic_update_check(
     let Some(settings) = settings else {
         return false;
     };
-    if settings.check_for_updates_automatically != Some(true) {
+    automatic_update_check_due(
+        settings.check_for_updates_automatically == Some(true),
+        settings.last_checked_for_updates.as_deref(),
+        now,
+    )
+}
+
+pub(crate) fn automatic_update_check_due(
+    automatic: bool,
+    last_checked_for_updates: Option<&str>,
+    now: std::time::SystemTime,
+) -> bool {
+    if !automatic {
         return false;
     }
-    let Some(last_checked) = settings
-        .last_checked_for_updates
-        .as_deref()
-        .and_then(parse_legacy_utc_timestamp_legacy_compatible)
+    let Some(last_checked) =
+        last_checked_for_updates.and_then(parse_legacy_utc_timestamp_legacy_compatible)
     else {
         return true;
     };

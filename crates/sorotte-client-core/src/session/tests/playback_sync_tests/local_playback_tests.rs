@@ -1,4 +1,5 @@
 use super::*;
+use crate::LocalPauseChangeHealth;
 
 #[test]
 fn determine_local_state_change_uses_aged_room_position_for_seek_detection() {
@@ -529,6 +530,83 @@ fn client_runtime_set_paused_restores_session_state_when_player_pause_fails() {
     assert!(
         runtime.control().outbound_messages().is_empty(),
         "player failures should prevent any ready protocol messages from being queued"
+    );
+}
+
+#[derive(Debug, Default)]
+struct FailFirstReadyEffectSink {
+    attempted_effects: Vec<ClientEffect>,
+    remaining_ready_failures: usize,
+}
+
+impl ClientEffectSink for FailFirstReadyEffectSink {
+    fn emit(&mut self, effect: ClientEffect) -> Result<(), ClientEffectError> {
+        self.attempted_effects.push(effect.clone());
+        if matches!(effect, ClientEffect::SetReady { .. }) && self.remaining_ready_failures > 0 {
+            self.remaining_ready_failures -= 1;
+            return Err(ClientEffectError::OperationFailed(
+                "forced ready delivery failure".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn client_runtime_pause_keeps_player_truth_when_following_ready_effect_fails() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"readiness":true}}}"#,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json(r#"{"Set":{"ready":{"isReady":true,"username":"alice"}}}"#)
+        .expect("local ready should apply");
+    session.model.playback.local_paused = Some(false);
+
+    let player = RecordingPlayer::default();
+    let control = FailFirstReadyEffectSink {
+        remaining_ready_failures: 1,
+        ..FailFirstReadyEffectSink::default()
+    };
+    let mut runtime = ClientRuntime::new(session, player, control);
+
+    let error = runtime
+        .run_set_paused(true)
+        .expect_err("the failed ready effect should surface after the player pause succeeds");
+
+    assert!(matches!(error, PlayerError::OperationFailed(_)));
+    assert_eq!(runtime.player().paused, Some(true));
+    assert_eq!(runtime.session().local_paused(), Some(true));
+    assert_eq!(
+        runtime.session().user_ready("alice"),
+        Some(true),
+        "only the undelivered optimistic readiness change should roll back"
+    );
+    assert_eq!(
+        runtime.session().local_pause_change_health(),
+        LocalPauseChangeHealth::ControlEffectFailedAfterPlayerChange
+    );
+    assert!(!runtime.session().model.local_pause_change_in_flight());
+    assert_eq!(
+        runtime.control().attempted_effects,
+        vec![ClientEffect::SetReady {
+            ready: false,
+            manually_initiated: false,
+        }]
+    );
+
+    assert!(
+        runtime
+            .run_set_paused(false)
+            .expect("a later successful player change should recover pause health")
+    );
+    assert_eq!(runtime.player().paused, Some(false));
+    assert_eq!(runtime.session().local_paused(), Some(false));
+    assert_eq!(
+        runtime.session().local_pause_change_health(),
+        LocalPauseChangeHealth::Healthy
     );
 }
 

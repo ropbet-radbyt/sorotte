@@ -44,6 +44,16 @@ fn emit_application_service_events(events: Vec<ClientEvent>) {
     }
 }
 
+fn ensure_connected_application_command_succeeded(events: Vec<ClientEvent>) -> anyhow::Result<()> {
+    if let Some(ClientEvent::OperationFailed { operation, message }) = events
+        .into_iter()
+        .find(|event| matches!(event, ClientEvent::OperationFailed { .. }))
+    {
+        return Err(anyhow!("{operation}: {message}"));
+    }
+    Ok(())
+}
+
 fn ensure_rustls_crypto_provider() {
     static RUSTLS_PROVIDER_INIT: OnceLock<()> = OnceLock::new();
     RUSTLS_PROVIDER_INIT.get_or_init(|| {
@@ -247,10 +257,18 @@ where
     }
     hello_payload.features = Some(client_hello_features_legacy_compatible(config));
     let hello_message = ProtocolMessage::hello(hello_payload);
-    runtime
-        .session_mut()
-        .apply_protocol_message(hello_message.clone())?;
-    runtime.session_mut().mark_awaiting_hello();
+    ensure_connected_application_command_succeeded(
+        runtime.dispatch(ClientCommand::BeginConnecting),
+    )?;
+    ensure_connected_application_command_succeeded(runtime.dispatch(
+        ClientCommand::InitializeSessionIdentity {
+            username: config.username.clone(),
+            room: config.room.clone(),
+        },
+    ))?;
+    ensure_connected_application_command_succeeded(
+        runtime.dispatch(ClientCommand::TransportConnected),
+    )?;
 
     let hello_line = encode_message_line(&hello_message)?;
     let stream: Box<dyn ConnectedSessionAsyncStream> =
