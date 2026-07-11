@@ -2515,25 +2515,17 @@ mod tests {
             .finish_media_match_background_index_backup(true)
             .expect("backup should be discarded");
 
-        let connection = rusqlite::Connection::open(
-            root.join("cache")
-                .join("media-match")
-                .join("index-v3.sqlite3"),
-        )
-        .expect("SQLite index should open");
-        let inventory = connection
-            .query_row("SELECT COUNT(*) FROM media_files_v3", [], |row| {
-                row.get::<_, i64>(0)
-            })
-            .expect("inventory count should load");
-        let fingerprints = connection
-            .query_row("SELECT COUNT(*) FROM fingerprints_v3", [], |row| {
-                row.get::<_, i64>(0)
-            })
-            .expect("fingerprint count should load");
+        let summary =
+            sorotte_media_match::MediaIndexService::new(root.join("cache").join("media-match"))
+                .open()
+                .expect("media index should open")
+                .summary(
+                    &sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3(),
+                )
+                .expect("media index summary should load");
 
-        assert_eq!(inventory, 1);
-        assert_eq!(fingerprints, 0);
+        assert_eq!(summary.inventory_count, 1);
+        assert_eq!(summary.v3_fingerprint_row_count, 0);
         assert_eq!(
             result.current_decision,
             Some("unknown: no resolved current local file".to_owned())

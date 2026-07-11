@@ -1,9 +1,9 @@
 use crate::{
     AudioAnchor, MatchClassV3, MediaDurationCompatibility, MediaFileIdentity,
-    MediaFingerprintRecord, MediaIndexService, MediaMatchAutoplayPolicy, MediaMatchSettings,
-    MediaMatchTier, decide_media_match, decide_media_match_against_wire_signature,
-    media_match_wire_signature_from_records, rank_media_match_candidates,
-    settings::MediaExtractionSettings,
+    MediaFingerprintRecord, MediaIndexInventoryEntry, MediaIndexService, MediaMatchAutoplayPolicy,
+    MediaMatchSettings, MediaMatchTier, decide_media_match,
+    decide_media_match_against_wire_signature, media_match_wire_signature_from_records,
+    rank_media_match_candidates, settings::MediaExtractionSettings,
 };
 
 #[test]
@@ -50,6 +50,169 @@ fn media_index_service_owns_record_round_trip() {
     );
     drop(session);
     std::fs::remove_dir_all(root).expect("temporary index directory should be removable");
+}
+
+#[test]
+fn media_index_inventory_change_invalidates_fingerprint_and_anchors() {
+    let root = media_index_test_root("changed-invalidation");
+    let session = MediaIndexService::new(&root)
+        .open()
+        .expect("index session should open");
+    let mut original = record("/media/episode.mkv", 0);
+    original.identity.modified_unix_millis = 10;
+    original.identity.size_bytes = 100;
+    let settings_hash = crate::media_extraction_settings_hash(&original.extraction_settings);
+    session
+        .save_record(&original, None)
+        .expect("original fingerprint should save");
+
+    session
+        .refresh_inventory(
+            &[MediaIndexInventoryEntry::new(
+                original.identity.normalized_path.clone(),
+                20,
+                200,
+            )],
+            std::slice::from_ref(&original.identity.normalized_path),
+            &["/media".to_owned()],
+            || false,
+        )
+        .expect("changed inventory should refresh");
+
+    assert!(
+        session
+            .load_cache(&original.extraction_settings)
+            .expect("cache should load")
+            .records
+            .is_empty(),
+        "a changed file must not retain its fingerprint"
+    );
+    assert_eq!(
+        session.inventory_paths().expect("inventory should load"),
+        vec![original.identity.normalized_path]
+    );
+    assert!(
+        session
+            .anchor_stats_dirty(&settings_hash)
+            .expect("dirty marker should load"),
+        "removing a changed file's anchors must invalidate aggregate anchor stats"
+    );
+    drop(session);
+    std::fs::remove_dir_all(root).expect("temporary index directory should be removable");
+}
+
+#[test]
+fn media_index_inventory_prunes_only_scanned_roots_and_reports_summary() {
+    let root = media_index_test_root("prune-summary");
+    let session = MediaIndexService::new(&root)
+        .open()
+        .expect("index session should open");
+    let kept = record("/library/kept.mkv", 0);
+    let stale = record("/library/stale.mkv", 0);
+    let outside = record("/other/outside.mkv", 0);
+    for record in [&kept, &stale, &outside] {
+        session
+            .save_record(record, None)
+            .expect("fixture fingerprint should save");
+    }
+
+    session
+        .refresh_inventory(
+            &[MediaIndexInventoryEntry::new(
+                kept.identity.normalized_path.clone(),
+                kept.identity.modified_unix_millis,
+                kept.identity.size_bytes,
+            )],
+            std::slice::from_ref(&kept.identity.normalized_path),
+            &["/library".to_owned()],
+            || false,
+        )
+        .expect("inventory should prune stale scanned rows");
+
+    assert_eq!(
+        session.inventory_paths().expect("inventory should load"),
+        vec![
+            kept.identity.normalized_path.clone(),
+            outside.identity.normalized_path.clone(),
+        ]
+    );
+    let summary = session
+        .summary(&kept.extraction_settings)
+        .expect("summary should load");
+    assert_eq!(summary.inventory_count, 2);
+    assert_eq!(summary.fixed_settings_fingerprint_count, 2);
+    assert_eq!(summary.current_settings_fingerprint_count, 2);
+    assert_eq!(summary.v3_fingerprint_row_count, 2);
+    assert!(summary.database_bytes > 0);
+    assert!(summary.v3_audio_blob_bytes > 0);
+    assert!(summary.v3_audio_verify_count > 0);
+    assert!(summary.v3_audio_index_count > 0);
+    drop(session);
+    std::fs::remove_dir_all(root).expect("temporary index directory should be removable");
+}
+
+#[test]
+fn media_index_inventory_cancellation_rolls_back_every_change() {
+    let root = media_index_test_root("cancel-rollback");
+    let session = MediaIndexService::new(&root)
+        .open()
+        .expect("index session should open");
+    let original = record("/media/original.mkv", 0);
+    session
+        .save_record(&original, None)
+        .expect("original fingerprint should save");
+    let entries = [
+        MediaIndexInventoryEntry::new(
+            original.identity.normalized_path.clone(),
+            original.identity.modified_unix_millis + 1,
+            original.identity.size_bytes + 1,
+        ),
+        MediaIndexInventoryEntry::new("/media/new.mkv", 2, 200),
+    ];
+    let seen = entries
+        .iter()
+        .map(|entry| entry.normalized_path.clone())
+        .collect::<Vec<_>>();
+    let mut cancellation_checks = 0;
+
+    let error = session
+        .refresh_inventory(&entries, &seen, &["/media".to_owned()], || {
+            cancellation_checks += 1;
+            cancellation_checks >= 2
+        })
+        .expect_err("refresh should be canceled after its first staged change");
+
+    assert!(error.contains("canceled"));
+    assert_eq!(
+        session.inventory_paths().expect("inventory should load"),
+        vec![original.identity.normalized_path.clone()],
+        "the first staged upsert and invalidation must roll back"
+    );
+    assert!(
+        session
+            .load_record(
+                &original.identity.normalized_path,
+                &original.extraction_settings,
+                original.identity.modified_unix_millis,
+                original.identity.size_bytes,
+            )
+            .expect("record lookup should succeed")
+            .is_some(),
+        "the original fingerprint must survive cancellation"
+    );
+    drop(session);
+    std::fs::remove_dir_all(root).expect("temporary index directory should be removable");
+}
+
+fn media_index_test_root(label: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "sorotte-media-index-{label}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should be after the Unix epoch")
+            .as_nanos()
+    ))
 }
 
 #[test]

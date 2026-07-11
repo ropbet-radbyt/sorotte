@@ -598,27 +598,6 @@ pub fn load_media_match_v3_record_for_path(
         .map_err(|error| format!("failed loading cached V3 record: {error}"))
 }
 
-pub fn media_match_v3_incompatible_record_count_for_path(
-    connection: &Connection,
-    normalized_path: &str,
-    extraction_settings: &MediaExtractionSettings,
-) -> Result<usize, String> {
-    let settings_hash = media_extraction_settings_hash(extraction_settings);
-    let count: i64 = connection
-        .query_row(
-            "SELECT COUNT(*)
-             FROM fingerprints_v3
-             JOIN media_files_v3 ON media_files_v3.file_id = fingerprints_v3.file_id
-             JOIN settings_v3 ON settings_v3.settings_id = fingerprints_v3.settings_id
-             WHERE media_files_v3.normalized_path = ?1
-               AND settings_v3.settings_hash != ?2",
-            params![normalized_path, settings_hash.as_slice()],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
-    Ok(count.max(0) as usize)
-}
-
 pub fn media_match_v3_anchor_candidate_paths_with_stats(
     connection: &Connection,
     normalized_current_path: &str,
@@ -1104,27 +1083,6 @@ pub fn mark_anchor_stats_v3_dirty(
     Ok(())
 }
 
-pub fn mark_anchor_stats_v3_dirty_for_file(
-    connection: &Connection,
-    _file_id: i64,
-) -> Result<(), String> {
-    let mut statement = connection
-        .prepare("SELECT settings_hash FROM settings_v3")
-        .map_err(|error| format!("failed preparing dirty mark: {error}"))?;
-    let hashes = statement
-        .query_map([], |row| row.get::<_, Vec<u8>>(0))
-        .map_err(|error| format!("failed querying dirty settings: {error}"))?;
-    for hash in hashes {
-        let hash = hash.map_err(|error| format!("failed reading dirty hash: {error}"))?;
-        if hash.len() == 32 {
-            let mut settings_hash = [0u8; 32];
-            settings_hash.copy_from_slice(&hash);
-            mark_anchor_stats_v3_dirty(connection, &settings_hash)?;
-        }
-    }
-    Ok(())
-}
-
 pub fn clear_anchor_stats_v3_dirty(
     connection: &Connection,
     settings_hash: &[u8; 32],
@@ -1135,16 +1093,6 @@ pub fn clear_anchor_stats_v3_dirty(
             [anchor_stats_v3_dirty_key(settings_hash)],
         )
         .map_err(|error| format!("failed clearing V3 anchor stats dirty flag: {error}"))?;
-    Ok(())
-}
-
-pub fn clear_all_anchor_stats_v3_dirty(connection: &Connection) -> Result<(), String> {
-    connection
-        .execute(
-            "DELETE FROM metadata WHERE key LIKE ?1",
-            [format!("{MEDIA_MATCH_V3_ANCHOR_STATS_DIRTY_PREFIX}%")],
-        )
-        .map_err(|error| format!("failed clearing V3 anchor stats dirty flags: {error}"))?;
     Ok(())
 }
 

@@ -3427,7 +3427,6 @@ dependencies = [
  "embed-resource",
  "reqwest",
  "rfd",
- "rusqlite",
  "rustls",
  "rustls-pemfile",
  "semver",

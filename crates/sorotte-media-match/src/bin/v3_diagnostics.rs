@@ -5,14 +5,11 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use rusqlite::Connection;
 use sorotte_media_match::{
-    MediaMatchToolPaths, MediaMatchV3DiagnosticIndexMode, MediaMatchV3DiagnosticManifest,
-    MediaMatchV3DiagnosticRunOptions, MediaMatchV3ResolvedManifest,
+    MediaIndexService, MediaMatchToolPaths, MediaMatchV3DiagnosticIndexMode,
+    MediaMatchV3DiagnosticManifest, MediaMatchV3DiagnosticRunOptions, MediaMatchV3ResolvedManifest,
     media_match_v3_diagnostic_manifest_from_json, media_match_v3_diagnostic_manifest_report_json,
-    media_match_v3_index_path, media_match_v3_sqlite_size_report, open_media_match_v3_index,
-    refresh_all_anchor_stats_v3, resolve_media_match_v3_diagnostic_manifest,
-    run_media_match_v3_diagnostic_manifest,
+    resolve_media_match_v3_diagnostic_manifest, run_media_match_v3_diagnostic_manifest,
 };
 
 fn main() -> ExitCode {
@@ -44,14 +41,8 @@ fn run_cli_with_output(
         let cache_root = args
             .cache_root
             .ok_or_else(|| "--cache-size-report requires --cache-root".to_owned())?;
-        let index_path = media_match_v3_index_path(&cache_root);
-        let connection = Connection::open(&index_path).map_err(|error| {
-            format!(
-                "failed opening media-match SQLite index '{}': {error}",
-                index_path.display()
-            )
-        })?;
-        let report = media_match_v3_sqlite_size_report(&cache_root, &connection)?;
+        let session = MediaIndexService::new(cache_root).open()?;
+        let report = session.sqlite_size_report()?;
         write_json(&report, args.output_path.as_deref(), stdout)?;
         return Ok(true);
     }
@@ -86,8 +77,8 @@ fn run_cli_with_output(
             let cache_root = args
                 .cache_root
                 .ok_or_else(|| "--prepare-index-stats requires --cache-root".to_owned())?;
-            let connection = open_media_match_v3_index(&cache_root)?;
-            refresh_all_anchor_stats_v3(&connection, current_unix_millis() as i64)?;
+            let session = MediaIndexService::new(cache_root).open()?;
+            session.refresh_all_anchor_stats(current_unix_millis() as i64)?;
             stdout.push_str("media-match V3 anchor stats prepared\n");
             return Ok(true);
         }
