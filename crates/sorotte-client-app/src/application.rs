@@ -733,9 +733,7 @@ where
 
         let mut state_sync_emitted = false;
         for item in messages {
-            let Ok(message) = item.message else {
-                break;
-            };
+            let message = item.message?;
             match message {
                 ProtocolMessage::State(state) if reconcile_inbound_state => {
                     state_sync_emitted |= self
@@ -1353,6 +1351,93 @@ mod tests {
             application.connection_phase(),
             ConnectionPhase::Active(_)
         ));
+    }
+
+    #[test]
+    fn application_protocol_line_applies_valid_prefix_before_malformed_known_command() {
+        let mut application =
+            ClientApplication::new(ClientSession::default(), TestPlayer::default());
+
+        let error = application
+            .apply_protocol_line(
+                r#"{"Set":{"room":{"name":"prefix-room"}},"List":42}"#,
+                1.0,
+                false,
+                false,
+                false,
+            )
+            .expect_err("malformed List command should be reported");
+
+        assert!(matches!(error, ProtocolError::InvalidJson(_)));
+        assert_eq!(application.session().room(), Some("prefix-room"));
+    }
+
+    #[test]
+    fn application_protocol_line_applies_valid_prefix_before_unknown_command() {
+        let mut application =
+            ClientApplication::new(ClientSession::default(), TestPlayer::default());
+
+        let error = application
+            .apply_protocol_line(
+                r#"{"Set":{"room":{"name":"prefix-room"}},"FutureCommand":{"value":1}}"#,
+                1.0,
+                false,
+                false,
+                false,
+            )
+            .expect_err("unknown command should be reported");
+
+        assert!(matches!(error, ProtocolError::InvalidJson(_)));
+        assert_eq!(application.session().room(), Some("prefix-room"));
+    }
+
+    #[test]
+    fn application_protocol_line_stops_when_first_command_is_invalid() {
+        let mut application =
+            ClientApplication::new(ClientSession::default(), TestPlayer::default());
+
+        let error = application
+            .apply_protocol_line(
+                r#"{"FutureCommand":{"value":1},"Set":{"room":{"name":"must-not-apply"}}}"#,
+                1.0,
+                false,
+                false,
+                false,
+            )
+            .expect_err("leading unknown command should be reported");
+
+        assert!(matches!(error, ProtocolError::InvalidJson(_)));
+        assert_eq!(application.session().room(), None);
+    }
+
+    #[test]
+    fn application_protocol_line_applies_several_valid_commands_then_stops_at_error() {
+        let mut application =
+            ClientApplication::new(ClientSession::default(), TestPlayer::default());
+
+        let error = application
+            .apply_protocol_line(
+                r#"{"Set":{"room":{"name":"prefix-room"}},"List":{"listed-room":{}},"State":{"playstate":{"position":42.0,"paused":true,"doSeek":true,"setBy":"alice"}},"FutureCommand":{"value":1},"Hello":{"username":"must-not-apply","room":{"name":"trailing-room"},"version":"1.2.255"}}"#,
+                1.0,
+                false,
+                false,
+                false,
+            )
+            .expect_err("unknown command should stop the ordered application pass");
+
+        assert!(matches!(error, ProtocolError::InvalidJson(_)));
+        assert_eq!(application.session().room(), Some("prefix-room"));
+        assert_eq!(
+            application.session().room_names(),
+            vec!["listed-room".to_owned(), "prefix-room".to_owned()]
+        );
+        let playstate = application
+            .session()
+            .current_room_playstate()
+            .expect("valid State command should be applied before the error");
+        assert_eq!(playstate.position, Some(42.0));
+        assert_eq!(playstate.paused, Some(true));
+        assert_eq!(application.session().username(), None);
     }
 
     #[test]
