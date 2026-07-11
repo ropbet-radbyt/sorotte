@@ -127,6 +127,21 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) {
+        self.run_deferred_startup_remote_actions_with_fetcher(
+            handle,
+            projected_state,
+            |language| remote_services::fetch_public_servers(Some(language)),
+        );
+    }
+
+    pub(super) fn run_deferred_startup_remote_actions_with_fetcher<FPublicServers>(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        fetch_public_servers: FPublicServers,
+    ) where
+        FPublicServers: Fn(&str) -> Result<Vec<(String, String)>, String> + Send + 'static,
+    {
         if !self.startup_remote_actions_attempted {
             self.startup_remote_actions_attempted = true;
             let settings = projected_state.configuration.to_stored_settings();
@@ -135,7 +150,6 @@ impl GuiPersistedConfigRuntimeOwner {
                 std::time::SystemTime::now(),
             ) {
                 self.update_runtime.start_startup_check(handle);
-                return;
             }
 
             if settings.check_for_updates_automatically != Some(true)
@@ -153,7 +167,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 .spawn(move || {
                     let actions =
                         gui_startup_public_server_actions_with_fetcher(&settings, |language| {
-                            remote_services::fetch_public_servers(Some(language))
+                            fetch_public_servers(language)
                         });
                     let _ = tx.send(actions);
                 }) {

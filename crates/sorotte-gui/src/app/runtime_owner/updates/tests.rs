@@ -479,6 +479,192 @@ fn runtime_owner_routes_startup_check_through_update_coordinator() {
 }
 
 #[test]
+fn startup_due_update_and_empty_public_server_cache_complete_independently() {
+    assert_startup_remote_jobs_complete_independently(true);
+    assert_startup_remote_jobs_complete_independently(false);
+}
+
+fn assert_startup_remote_jobs_complete_independently(update_completes_first: bool) {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let update_gate = Arc::new(BlockGate::default());
+    let mut service = fake_service(calls.clone());
+    service.blocked_check_language = Some("fr".to_owned());
+    service.check_gate = Some(update_gate.clone());
+
+    let public_server_gate = Arc::new(BlockGate::default());
+    let public_server_calls = Arc::new(Mutex::new(Vec::new()));
+    let fetch_gate = public_server_gate.clone();
+    let fetch_calls = public_server_calls.clone();
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.update_runtime = runtime_with_service(service);
+    owner
+        .update_runtime
+        .reconcile(&update_view(true, "fr", Some("dev")));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let settings = StoredClientSettingsMvp {
+        check_for_updates_automatically: Some(true),
+        language: Some("fr".to_owned()),
+        update_channel: Some("dev".to_owned()),
+        last_checked_for_updates: None,
+        public_servers: Some(Vec::new()),
+        ..StoredClientSettingsMvp::default()
+    };
+    let mut projected_state = SorotteGuiShellAppState::from_stored_settings(&settings);
+    let mut observed_state = SorotteGuiShellAppState::from_stored_settings(&settings);
+    let mut observed_actions = Vec::new();
+
+    owner.run_deferred_startup_remote_actions_with_fetcher(
+        &handle,
+        &mut projected_state,
+        move |language| {
+            fetch_calls
+                .lock()
+                .expect("public-server fetch calls should remain available")
+                .push(language.to_owned());
+            fetch_gate.block();
+            Ok(vec![(
+                "Hydrated Primary".to_owned(),
+                "hydrated.example:8999".to_owned(),
+            )])
+        },
+    );
+
+    update_gate.wait_until_entered();
+    public_server_gate.wait_until_entered();
+    apply_startup_remote_actions(&handle, &mut observed_state, &mut observed_actions);
+    assert!(owner.update_runtime.active_job.is_some());
+    assert!(owner.startup_remote_actions_rx.is_some());
+    assert_eq!(
+        *calls
+            .lock()
+            .expect("fake update calls should remain available"),
+        vec!["check:fr:false:dev".to_owned()]
+    );
+    assert_eq!(
+        *public_server_calls
+            .lock()
+            .expect("public-server fetch calls should remain available"),
+        vec!["fr".to_owned()]
+    );
+
+    if update_completes_first {
+        update_gate.release();
+        pump_startup_remote_jobs_until(
+            &mut owner,
+            &handle,
+            &mut projected_state,
+            &mut observed_state,
+            &mut observed_actions,
+            |action| matches!(action, GuiShellAction::ApplyUpdateCheckResult(_)),
+        );
+        assert!(observed_state.public_servers.servers.is_empty());
+
+        public_server_gate.release();
+        pump_startup_remote_jobs_until(
+            &mut owner,
+            &handle,
+            &mut projected_state,
+            &mut observed_state,
+            &mut observed_actions,
+            |action| matches!(action, GuiShellAction::ApplyStartupPublicServerCache(_)),
+        );
+    } else {
+        public_server_gate.release();
+        pump_startup_remote_jobs_until(
+            &mut owner,
+            &handle,
+            &mut projected_state,
+            &mut observed_state,
+            &mut observed_actions,
+            |action| matches!(action, GuiShellAction::ApplyStartupPublicServerCache(_)),
+        );
+        assert!(matches!(
+            owner.update_runtime.active_job.as_ref(),
+            Some(active) if matches!(
+                active.kind,
+                UpdateJobKind::Check {
+                    origin: UpdateJobOrigin::Startup,
+                    user_initiated: false,
+                }
+            )
+        ));
+
+        update_gate.release();
+        pump_startup_remote_jobs_until(
+            &mut owner,
+            &handle,
+            &mut projected_state,
+            &mut observed_state,
+            &mut observed_actions,
+            |action| matches!(action, GuiShellAction::ApplyUpdateCheckResult(_)),
+        );
+    }
+
+    assert_eq!(observed_state.public_servers.servers.len(), 1);
+    assert_eq!(
+        observed_state.public_servers.servers[0].address,
+        "hydrated.example:8999"
+    );
+    assert_eq!(
+        observed_state.update_check.message.as_deref(),
+        Some("result:fr")
+    );
+    assert_eq!(
+        observed_actions
+            .iter()
+            .filter(|action| matches!(action, GuiShellAction::ApplyUpdateCheckResult(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        observed_actions
+            .iter()
+            .filter(|action| matches!(action, GuiShellAction::ApplyStartupPublicServerCache(_)))
+            .count(),
+        1
+    );
+}
+
+fn pump_startup_remote_jobs_until(
+    owner: &mut GuiPersistedConfigRuntimeOwner,
+    handle: &GuiQueuedRuntimeBridgeHandle,
+    projected_state: &mut SorotteGuiShellAppState,
+    observed_state: &mut SorotteGuiShellAppState,
+    observed_actions: &mut Vec<GuiShellAction>,
+    completed: impl Fn(&GuiShellAction) -> bool,
+) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        owner.run_deferred_startup_remote_actions_with_fetcher(handle, projected_state, |_| {
+            panic!("startup public-server hydration must only start once")
+        });
+        owner.update_runtime.pump_background_check(handle);
+        let actions = apply_startup_remote_actions(handle, observed_state, observed_actions);
+        if actions.iter().any(&completed) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "startup remote job should complete"
+        );
+        std::thread::yield_now();
+    }
+}
+
+fn apply_startup_remote_actions(
+    handle: &GuiQueuedRuntimeBridgeHandle,
+    state: &mut SorotteGuiShellAppState,
+    observed_actions: &mut Vec<GuiShellAction>,
+) -> Vec<GuiShellAction> {
+    let actions = handle.drain_actions();
+    for action in &actions {
+        let _ = state.apply(action.clone());
+    }
+    observed_actions.extend(actions.iter().cloned());
+    actions
+}
+
+#[test]
 fn stale_background_result_cannot_overwrite_newer_manual_result() {
     assert_stale_automatic_result_is_ignored(UpdateJobOrigin::Background);
 }
