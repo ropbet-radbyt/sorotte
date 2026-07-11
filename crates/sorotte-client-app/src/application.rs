@@ -23,6 +23,8 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::{legacy_settings::AutoplayThresholdOverride, runtime_config::ClientConfig};
+
 const PLEX_SYNC_PUMP_INTERVAL: Duration = Duration::from_secs(1);
 
 type ApplicationPlexSyncEngine = PlexSyncEngine<PlexHttpClient>;
@@ -39,9 +41,34 @@ struct ClientPlexWorkerResult {
     cache_save_error: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Clone, PartialEq, Default)]
 pub struct ClientApplicationSettings {
-    pub autoplay_enabled: Option<bool>,
+    pub config: ClientConfig,
+    pub active_room: Option<String>,
+}
+
+impl ClientApplicationSettings {
+    pub fn new(config: ClientConfig) -> Self {
+        Self {
+            config,
+            active_room: None,
+        }
+    }
+
+    pub fn with_active_room(mut self, active_room: impl Into<String>) -> Self {
+        self.active_room = Some(active_room.into());
+        self
+    }
+}
+
+impl std::fmt::Debug for ClientApplicationSettings {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ClientApplicationSettings")
+            .field("config", &self.config)
+            .field("has_active_room", &self.active_room.is_some())
+            .finish()
+    }
 }
 
 /// Result of applying the decodable prefix of one transport line.
@@ -88,7 +115,7 @@ pub enum ClientCommand {
         paused: bool,
         position_seconds: f64,
     },
-    UpdateSettings(ClientApplicationSettings),
+    UpdateSettings(Box<ClientApplicationSettings>),
     SendChat(String),
     RequestUserList,
     SetPlaylistIndex(i64),
@@ -159,6 +186,10 @@ impl std::fmt::Debug for ClientCommand {
 }
 
 impl ClientCommand {
+    pub fn update_settings(settings: ClientApplicationSettings) -> Self {
+        Self::UpdateSettings(Box::new(settings))
+    }
+
     pub fn request_controller_auth(room: impl Into<String>, password: impl Into<String>) -> Self {
         Self::RequestControllerAuth {
             room: room.into(),
@@ -561,6 +592,61 @@ where
         )]
     }
 
+    fn apply_settings(&mut self, settings: ClientApplicationSettings) {
+        // Build complete replacement slices before borrowing the session mutably. The
+        // validated application command is infallible, and no adapter or I/O callback
+        // can observe a partially applied configuration.
+        let (mut behavior, mut desync, mut readiness) = {
+            let session = self.runtime.session();
+            (
+                session.behavior_config().clone(),
+                session.desync_config().clone(),
+                session.readiness_autoplay_config().clone(),
+            )
+        };
+        let config = settings.config;
+
+        behavior.show_same_room_osd = config.interface.show_same_room_osd;
+        behavior.show_osd_warnings = config.interface.show_osd_warnings;
+        behavior.show_noncontroller_osd = config.interface.show_noncontroller_osd;
+        behavior.show_different_room_osd = config.interface.show_different_room_osd;
+        behavior.pause_on_leave = config.playback.pause_on_leave;
+        behavior.loop_at_end_of_playlist = config.playback.loop_at_end_of_playlist;
+        behavior.loop_single_files = config.playback.loop_single_files;
+        behavior.only_switch_to_trusted_domains = config.playback.only_switch_to_trusted_domains;
+        behavior.trusted_domains = config.playback.trusted_domains.clone();
+
+        desync.rewind_on_desync = config.synchronization.rewind_on_desync;
+        desync.fastforward_on_desync = config.synchronization.fastforward_on_desync;
+        desync.slow_on_desync = config.synchronization.slow_on_desync;
+        desync.rewind_threshold_seconds = config.synchronization.rewind_threshold.get();
+        desync.fastforward_threshold_seconds = config.synchronization.fastforward_threshold.get();
+        desync.slowdown_threshold_seconds = config.synchronization.slowdown_threshold.get();
+
+        readiness.autoplay_require_same_filenames =
+            config.readiness.autoplay_require_same_filenames;
+        readiness.unpause_action = config.readiness.unpause_action.clone();
+        readiness.auto_play_threshold = match config.readiness.autoplay_min_users {
+            AutoplayThresholdOverride::Disable => None,
+            AutoplayThresholdOverride::Set(value) => Some(value),
+        };
+        readiness.show_duration_notification = config.readiness.show_duration_notification;
+
+        let autoplay_enabled = config.readiness.autoplay_initial_state;
+        let controlled_room_password = config.connection.controlled_room_password;
+        let mut session = self.runtime.session_mut();
+        *session.behavior_config_mut() = behavior;
+        *session.desync_config_mut() = desync;
+        *session.readiness_autoplay_config_mut() = readiness;
+        session.set_autoplay_enabled(autoplay_enabled);
+        if let (Some(room), Some(password)) = (settings.active_room, controlled_room_password) {
+            // An absent configured password intentionally does not erase credentials
+            // learned during this live session. A fresh application/session, including
+            // the GUI's reset reconnect path, naturally starts with an empty cache.
+            session.remember_control_password_for_room(&room, password.expose_secret());
+        }
+    }
+
     pub fn dispatch(&mut self, command: ClientCommand) -> Vec<ClientEvent> {
         let before = self.snapshot();
         let (operation, result) = match command {
@@ -642,9 +728,7 @@ where
                 ("player-playback-observed", Ok(true))
             }
             ClientCommand::UpdateSettings(settings) => {
-                if let Some(enabled) = settings.autoplay_enabled {
-                    self.runtime.session_mut().set_autoplay_enabled(enabled);
-                }
+                self.apply_settings(*settings);
                 ("update-settings", Ok(true))
             }
             ClientCommand::SendChat(message) => {
@@ -1322,6 +1406,117 @@ mod tests {
         }
     }
 
+    fn configured_runtime_settings() -> ClientConfig {
+        let mut config = ClientConfig::default();
+        config.interface.show_same_room_osd = false;
+        config.interface.show_osd_warnings = false;
+        config.interface.show_noncontroller_osd = true;
+        config.interface.show_different_room_osd = true;
+        config.playback.pause_on_leave = false;
+        config.playback.loop_at_end_of_playlist = true;
+        config.playback.loop_single_files = true;
+        config.playback.only_switch_to_trusted_domains = false;
+        config.playback.trusted_domains = vec!["*.example.test/media".to_owned()];
+        config.synchronization.rewind_on_desync = false;
+        config.synchronization.fastforward_on_desync = false;
+        config.synchronization.slow_on_desync = false;
+        config.synchronization.rewind_threshold =
+            crate::runtime_config::Seconds::new(1.25).expect("valid rewind threshold");
+        config.synchronization.fastforward_threshold =
+            crate::runtime_config::Seconds::new(4.5).expect("valid fast-forward threshold");
+        config.synchronization.slowdown_threshold =
+            crate::runtime_config::Seconds::new(0.75).expect("valid slowdown threshold");
+        config.readiness.autoplay_initial_state = true;
+        config.readiness.autoplay_require_same_filenames = true;
+        config.readiness.unpause_action = sorotte_client_core::UnpauseActionMode::Always;
+        config.readiness.autoplay_min_users = AutoplayThresholdOverride::Set(4);
+        config.readiness.show_duration_notification = false;
+        config
+    }
+
+    fn assert_runtime_settings_match(
+        application: &ClientApplication<TestPlayer>,
+        config: &ClientConfig,
+    ) {
+        let session = application.session();
+        let behavior = session.behavior_config();
+        assert_eq!(
+            behavior.show_same_room_osd,
+            config.interface.show_same_room_osd
+        );
+        assert_eq!(
+            behavior.show_osd_warnings,
+            config.interface.show_osd_warnings
+        );
+        assert_eq!(
+            behavior.show_noncontroller_osd,
+            config.interface.show_noncontroller_osd
+        );
+        assert_eq!(
+            behavior.show_different_room_osd,
+            config.interface.show_different_room_osd
+        );
+        assert_eq!(behavior.pause_on_leave, config.playback.pause_on_leave);
+        assert_eq!(
+            behavior.loop_at_end_of_playlist,
+            config.playback.loop_at_end_of_playlist
+        );
+        assert_eq!(
+            behavior.loop_single_files,
+            config.playback.loop_single_files
+        );
+        assert_eq!(
+            behavior.only_switch_to_trusted_domains,
+            config.playback.only_switch_to_trusted_domains
+        );
+        assert_eq!(behavior.trusted_domains, config.playback.trusted_domains);
+
+        let desync = session.desync_config();
+        assert_eq!(
+            desync.rewind_on_desync,
+            config.synchronization.rewind_on_desync
+        );
+        assert_eq!(
+            desync.fastforward_on_desync,
+            config.synchronization.fastforward_on_desync
+        );
+        assert_eq!(desync.slow_on_desync, config.synchronization.slow_on_desync);
+        assert_eq!(
+            desync.rewind_threshold_seconds,
+            config.synchronization.rewind_threshold.get()
+        );
+        assert_eq!(
+            desync.fastforward_threshold_seconds,
+            config.synchronization.fastforward_threshold.get()
+        );
+        assert_eq!(
+            desync.slowdown_threshold_seconds,
+            config.synchronization.slowdown_threshold.get()
+        );
+
+        let readiness = session.readiness_autoplay_config();
+        assert_eq!(
+            readiness.autoplay_require_same_filenames,
+            config.readiness.autoplay_require_same_filenames
+        );
+        assert_eq!(readiness.unpause_action, config.readiness.unpause_action);
+        assert_eq!(
+            readiness.auto_play_threshold,
+            match config.readiness.autoplay_min_users {
+                AutoplayThresholdOverride::Disable => None,
+                AutoplayThresholdOverride::Set(value) => Some(value),
+            }
+        );
+        assert_eq!(
+            readiness.show_duration_notification,
+            config.readiness.show_duration_notification
+        );
+        assert_eq!(
+            session.autoplay_enabled(),
+            config.readiness.autoplay_initial_state
+        );
+    }
+
     #[test]
     fn application_tracks_connection_lifecycle_as_events() {
         let mut application =
@@ -1380,6 +1575,124 @@ mod tests {
                 changed: true,
             }
         )));
+    }
+
+    #[test]
+    fn application_settings_command_applies_full_runtime_slices_atomically() {
+        let mut application =
+            ClientApplication::new(ClientSession::default(), TestPlayer::default());
+        {
+            let mut session = application.session_mut();
+            session
+                .behavior_config_mut()
+                .reconnect_state_restore_correction_retry_max_attempts = 91;
+            session.desync_config_mut().slowdown_rate = 0.8125;
+            session
+                .readiness_autoplay_config_mut()
+                .autoplay_delay_seconds = 17.25;
+        }
+        let config = configured_runtime_settings();
+
+        let events = application.dispatch(ClientCommand::update_settings(
+            ClientApplicationSettings::new(config.clone()).with_active_room("room-a"),
+        ));
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ClientEvent::CommandCompleted {
+                command: "update-settings",
+                changed: true,
+            }
+        )));
+        assert_runtime_settings_match(&application, &config);
+        assert_eq!(
+            application
+                .session()
+                .behavior_config()
+                .reconnect_state_restore_correction_retry_max_attempts,
+            91,
+            "the application must preserve behavior fields outside validated ClientConfig ownership"
+        );
+        assert_eq!(application.session().desync_config().slowdown_rate, 0.8125);
+        assert_eq!(
+            application
+                .session()
+                .readiness_autoplay_config()
+                .autoplay_delay_seconds,
+            17.25
+        );
+    }
+
+    #[test]
+    fn application_settings_command_clears_mapped_values_to_validated_defaults() {
+        let mut application =
+            ClientApplication::new(ClientSession::default(), TestPlayer::default());
+        let configured = configured_runtime_settings();
+        let defaults = ClientConfig::default();
+
+        let _ = application.dispatch(ClientCommand::update_settings(
+            ClientApplicationSettings::new(configured).with_active_room("room-a"),
+        ));
+        let _ = application.dispatch(ClientCommand::update_settings(
+            ClientApplicationSettings::new(defaults.clone()).with_active_room("room-a"),
+        ));
+
+        assert_runtime_settings_match(&application, &defaults);
+    }
+
+    #[test]
+    fn application_settings_redact_and_cache_controlled_room_password() {
+        const SECRET: &str = "APP-CONFIG-PASSWORD-123";
+        const ROOM: &str = "+room:ABCDEF123456";
+        let mut config = ClientConfig::default();
+        config.connection.controlled_room_password = Some(SECRET.into());
+        let settings = ClientApplicationSettings::new(config).with_active_room(ROOM);
+        let settings_debug = format!("{settings:?}");
+        let command = ClientCommand::update_settings(settings);
+        let command_debug = format!("{command:?}");
+        assert!(!settings_debug.contains(SECRET));
+        assert!(!command_debug.contains(SECRET));
+        assert!(settings_debug.contains(sorotte_secret::REDACTED_SECRET));
+
+        let mut application =
+            ClientApplication::new(ClientSession::default(), TestPlayer::default());
+        let _ = application.dispatch(command);
+        let _ = application.dispatch(ClientCommand::ReceiveProtocolLine {
+            line: format!(
+                r#"{{"Hello":{{"username":"alice","room":{{"name":"{ROOM}"}},"version":"1.3.0","features":{{"managedRooms":true}}}}}}"#
+            ),
+            received_at_seconds: 1.0,
+        });
+        application
+            .run_controller_reidentify_if_needed()
+            .expect("configured controller password should produce a re-identification effect");
+
+        let line = application
+            .pending_protocol_line()
+            .expect("controller-auth message should encode")
+            .expect("configured controller password should be cached for the active room");
+        assert!(line.contains(SECRET));
+
+        let _ = application.acknowledge_protocol_line();
+        let _ = application.dispatch(ClientCommand::update_settings(
+            ClientApplicationSettings::new(ClientConfig::default()).with_active_room(ROOM),
+        ));
+        let _ = application.dispatch(ClientCommand::ReceiveProtocolLine {
+            line: format!(
+                r#"{{"Hello":{{"username":"alice","room":{{"name":"{ROOM}"}},"version":"1.3.0","features":{{"managedRooms":true}}}}}}"#
+            ),
+            received_at_seconds: 2.0,
+        });
+        application.run_controller_reidentify_if_needed().expect(
+            "clearing configured settings must not erase a password learned by the live session",
+        );
+        assert!(
+            application
+                .pending_protocol_line()
+                .expect("cached controller-auth message should encode")
+                .expect("live session should retain its cached controller password")
+                .contains(SECRET)
+        );
     }
 
     #[test]

@@ -70,7 +70,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     .controlled_room_password
                     .clone(),
             )?;
-            session.apply_runtime_settings_snapshot(&runtime_settings);
+            session.apply_runtime_settings_snapshot(&runtime_settings)?;
             self.session = Some(Box::new(session));
             self.session_projects_to_shell = false;
             self.last_published_local_file = None;
@@ -663,7 +663,17 @@ impl GuiPersistedConfigRuntimeOwner {
                 return;
             }
         };
-        session.apply_runtime_settings_snapshot(&runtime_settings);
+        if let Err(error) = session.apply_runtime_settings_snapshot(&runtime_settings) {
+            let message = format!(
+                "Configured server connect through the detached session runtime failed: {error}"
+            );
+            if clear_pending {
+                self.clear_pending_operation_with_runtime_error(handle, projected_state, message);
+            } else {
+                Self::push_runtime_error_notification(handle, projected_state, message);
+            }
+            return;
+        }
 
         self.session = Some(Box::new(session));
         self.session_projects_to_shell = true;

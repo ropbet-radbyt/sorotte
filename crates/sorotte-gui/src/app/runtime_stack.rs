@@ -18,7 +18,7 @@ use std::{
 
 use serde_json::{Map, Value};
 use sorotte_client_app::app_boundary::application::{
-    ClientApplication, ClientCommand, ClientEvent,
+    ClientApplication, ClientApplicationSettings, ClientCommand, ClientEvent,
 };
 use sorotte_client_app::app_boundary::state::{
     AutoplayThresholdOverride, RoomName, StoredClientSettingsRuntimeSnapshot, Username,
@@ -26,9 +26,8 @@ use sorotte_client_app::app_boundary::state::{
 };
 use sorotte_client_core::{
     AUTOPLAY_TICK_INTERVAL_SECONDS, ChatNotification, ClientEffect, ClientMediaMatchPeerFileState,
-    ClientRuntimeAction, ClientSession, ClientSessionUpdate, PrivacyMode, RoomPlaylistView,
-    RoomPlaystateView, SYNCPLAY_COMPAT_VERSION_LEGACY, SYNCPLAY_WIRE_VERSION_LEGACY,
-    legacy_server_password_token,
+    ClientRuntimeAction, PrivacyMode, RoomPlaylistView, RoomPlaystateView,
+    SYNCPLAY_COMPAT_VERSION_LEGACY, SYNCPLAY_WIRE_VERSION_LEGACY, legacy_server_password_token,
 };
 use sorotte_media_match::{MediaMatchTier, MediaMatchWireSignature};
 use sorotte_player_api::PlayerPlaybackTelemetryUpdate;

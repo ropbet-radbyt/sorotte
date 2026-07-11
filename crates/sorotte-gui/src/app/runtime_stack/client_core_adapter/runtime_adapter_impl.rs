@@ -680,7 +680,15 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn set_autoplay_enabled(&mut self, enabled: bool) -> Result<(), String> {
-        self.runtime.session_mut().set_autoplay_enabled(enabled);
+        let mut config = self.runtime_settings.config.clone();
+        config.readiness.autoplay_initial_state = enabled;
+        let active_room = self
+            .runtime
+            .session()
+            .local_room_command_target_with_legacy_fallback(&self.baseline_room);
+        self.dispatch_application_command(ClientCommand::update_settings(
+            ClientApplicationSettings::new(config).with_active_room(active_room),
+        ))?;
         let (readiness_supported, local_can_control, is_playing_music, recently_advanced) =
             self.autoplay_runtime_flags();
         self.runtime.update_autoplay_check(
@@ -693,10 +701,15 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn set_autoplay_threshold(&mut self, threshold: usize) -> Result<(), String> {
-        self.runtime
-            .session_mut()
-            .readiness_autoplay_config_mut()
-            .auto_play_threshold = Some(threshold);
+        let mut config = self.runtime_settings.config.clone();
+        config.readiness.autoplay_min_users = AutoplayThresholdOverride::Set(threshold);
+        let active_room = self
+            .runtime
+            .session()
+            .local_room_command_target_with_legacy_fallback(&self.baseline_room);
+        self.dispatch_application_command(ClientCommand::update_settings(
+            ClientApplicationSettings::new(config).with_active_room(active_room),
+        ))?;
         let (readiness_supported, local_can_control, is_playing_music, recently_advanced) =
             self.autoplay_runtime_flags();
         self.runtime.update_autoplay_check(
@@ -738,8 +751,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         &mut self,
         runtime_settings: &StoredClientSettingsRuntimeSnapshot,
     ) -> Result<(), String> {
-        self.apply_runtime_settings_snapshot(runtime_settings);
-        Ok(())
+        self.apply_runtime_settings_snapshot(runtime_settings)
     }
 
     fn handle_local_player_unpause_attempt(
@@ -896,8 +908,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
                     .to_owned(),
             );
         }
-        self.reset_session_for_reconnect();
-        Ok(())
+        self.reset_session_for_reconnect()
     }
 
     fn refresh_public_servers(

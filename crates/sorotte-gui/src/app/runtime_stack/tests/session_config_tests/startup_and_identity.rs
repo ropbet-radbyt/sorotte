@@ -280,7 +280,9 @@ fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_uses_updated_run
 
     GuiSessionRuntimeAdapter::sync_runtime_settings(&mut adapter, &runtime_settings)
         .expect("runtime settings should sync into the reconnect hello");
-    adapter.reset_session_for_reconnect();
+    adapter
+        .reset_session_for_reconnect()
+        .expect("runtime settings should apply during reconnect reset");
     let reconnect_lines = adapter
         .flush_outbound_protocol_lines()
         .expect("reconnect protocol lines should encode");
@@ -351,7 +353,9 @@ fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_preserves_curren
         )
         .expect("local user update should apply");
 
-    adapter.reset_session_for_reconnect();
+    adapter
+        .reset_session_for_reconnect()
+        .expect("runtime settings should apply during reconnect reset");
     let reconnect_lines = adapter
         .flush_outbound_protocol_lines()
         .expect("reconnect protocol lines should encode");
