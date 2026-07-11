@@ -17,7 +17,7 @@ impl std::fmt::Debug for ManagedMpvLaunchEnvConfig {
             .debug_struct("ManagedMpvLaunchEnvConfig")
             .field("enabled", &self.enabled)
             .field("mpv_bin", &self.mpv_bin)
-            .field("media_file", &self.media_file)
+            .field("media_file_present", &self.media_file.is_some())
             .field(
                 "extra_args",
                 &RedactedCommandArgs::from_args(&self.extra_args),

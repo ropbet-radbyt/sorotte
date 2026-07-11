@@ -430,6 +430,8 @@ fn free_form_player_argument_debug_is_redacted_across_every_carrier() {
     const AUTHORIZATION_MARKER: &str = "PLAYER_ARG_AUTHORIZATION_CANARY";
     const COOKIES_PATH_MARKER: &str = "PLAYER_ARG_COOKIES_PATH_CANARY";
     const SIGNED_URL_MARKER: &str = "PLAYER_ARG_SIGNED_URL_CANARY";
+    const STARTUP_MEDIA_MARKER: &str = "STARTUP_MEDIA_SECRET";
+    const STARTUP_MEDIA_URL: &str = "https://media.example/video?Signature=STARTUP_MEDIA_SECRET";
 
     let arguments = vec![
         format!("--http-header-fields=Authorization: Bearer {AUTHORIZATION_MARKER}"),
@@ -456,6 +458,7 @@ fn free_form_player_argument_debug_is_redacted_across_every_carrier() {
     };
     let application_settings = ClientApplicationSettings::new(config.clone());
     let managed = ManagedMpvLaunchEnvConfig {
+        media_file: Some(PathBuf::from(STARTUP_MEDIA_URL)),
         extra_args: arguments.clone(),
         ..ManagedMpvLaunchEnvConfig::default()
     };
@@ -511,6 +514,11 @@ fn free_form_player_argument_debug_is_redacted_across_every_carrier() {
             );
         }
     }
+
+    let managed_debug = format!("{managed:?}");
+    assert!(managed_debug.contains("media_file_present: true"));
+    assert!(!managed_debug.contains(STARTUP_MEDIA_MARKER));
+    assert!(!managed_debug.contains(STARTUP_MEDIA_URL));
 
     let diagnostic_output =
         legacy_explicit_mpv_ipc_startup_player_arg_diagnostic_lines_legacy_compatible(
