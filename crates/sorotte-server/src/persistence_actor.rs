@@ -136,7 +136,6 @@ impl PersistenceEventReporter {
             worker: self.worker,
             effect,
         });
-        self.recover_if_needed();
     }
 
     fn failed(&self, effect: ServerPersistenceEffect, error: impl Into<String>) {
@@ -745,6 +744,127 @@ mod tests {
 
         drop(service);
         drop(connection);
+        fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
+    }
+
+    #[test]
+    fn ignored_stale_room_effect_does_not_report_database_recovery() {
+        let db_path = temporary_sqlite_path("room-worker-stale-health");
+        let _ = fs::remove_file(&db_path);
+        let store = RoomPersistenceStore::open(&db_path)
+            .expect("room persistence schema should initialize");
+        let (events, _) = broadcast::channel(32);
+        let mut event_rx = events.subscribe();
+        let degraded_worker_count = Arc::new(AtomicUsize::new(0));
+        let service = RoomPersistenceService::start(store, events, degraded_worker_count.clone())
+            .expect("room persistence worker should start");
+        let external = Connection::open(&db_path).expect("external sqlite connection should open");
+
+        service.enqueue(ServerPersistenceEffect::SaveRoom {
+            room_name: "room-a".to_owned(),
+            files: vec!["new.mkv".to_owned()],
+            playlist_index: Some(0),
+            position: 20.0,
+            version: 2,
+        });
+        assert!(
+            service.flush(),
+            "baseline room write should be acknowledged"
+        );
+        let _: Vec<_> = std::iter::from_fn(|| event_rx.try_recv().ok()).collect();
+
+        external
+            .execute_batch(
+                "CREATE TRIGGER fail_room_b \
+                 BEFORE INSERT ON persistent_rooms \
+                 WHEN NEW.name = 'room-b' \
+                 BEGIN \
+                     SELECT RAISE(FAIL, 'injected room-b write failure'); \
+                 END",
+            )
+            .expect("room-b failure trigger should be installable");
+        service.enqueue(ServerPersistenceEffect::SaveRoom {
+            room_name: "room-b".to_owned(),
+            files: vec!["blocked.mkv".to_owned()],
+            playlist_index: Some(0),
+            position: 30.0,
+            version: 1,
+        });
+        assert!(service.flush(), "failed room write should be acknowledged");
+        assert_eq!(degraded_worker_count.load(Ordering::Acquire), 1);
+        let failure_events: Vec<_> = std::iter::from_fn(|| event_rx.try_recv().ok()).collect();
+        assert!(failure_events.iter().any(|event| matches!(
+            event,
+            ServerPersistenceEvent::Failed {
+                effect: ServerPersistenceEffect::SaveRoom { room_name, .. },
+                ..
+            } if room_name == "room-b"
+        )));
+        assert!(
+            failure_events
+                .iter()
+                .any(|event| matches!(event, ServerPersistenceEvent::Degraded { .. }))
+        );
+
+        service.enqueue(ServerPersistenceEffect::SaveRoom {
+            room_name: "room-a".to_owned(),
+            files: vec!["stale.mkv".to_owned()],
+            playlist_index: Some(0),
+            position: 10.0,
+            version: 1,
+        });
+        assert!(service.flush(), "stale room effect should be acknowledged");
+        assert_eq!(
+            degraded_worker_count.load(Ordering::Acquire),
+            1,
+            "ignoring stale in-memory work does not prove database recovery"
+        );
+        let stale_events: Vec<_> = std::iter::from_fn(|| event_rx.try_recv().ok()).collect();
+        assert!(stale_events.iter().any(|event| matches!(
+            event,
+            ServerPersistenceEvent::IgnoredStale {
+                effect: ServerPersistenceEffect::SaveRoom { room_name, .. },
+                ..
+            } if room_name == "room-a"
+        )));
+        assert!(
+            !stale_events
+                .iter()
+                .any(|event| matches!(event, ServerPersistenceEvent::Recovered { .. })),
+            "a stale effect must not report persistence recovery"
+        );
+
+        external
+            .execute("DROP TRIGGER fail_room_b", [])
+            .expect("room-b failure trigger should be removable");
+        service.enqueue(ServerPersistenceEffect::SaveRoom {
+            room_name: "room-b".to_owned(),
+            files: vec!["recovered.mkv".to_owned()],
+            playlist_index: Some(0),
+            position: 40.0,
+            version: 2,
+        });
+        assert!(
+            service.flush(),
+            "successful recovery write should be acknowledged"
+        );
+        assert_eq!(degraded_worker_count.load(Ordering::Acquire), 0);
+        let recovery_events: Vec<_> = std::iter::from_fn(|| event_rx.try_recv().ok()).collect();
+        assert!(recovery_events.iter().any(|event| matches!(
+            event,
+            ServerPersistenceEvent::Applied {
+                effect: ServerPersistenceEffect::SaveRoom { room_name, .. },
+                ..
+            } if room_name == "room-b"
+        )));
+        assert!(
+            recovery_events
+                .iter()
+                .any(|event| matches!(event, ServerPersistenceEvent::Recovered { .. }))
+        );
+
+        drop(service);
+        drop(external);
         fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
     }
 
