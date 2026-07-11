@@ -162,10 +162,6 @@ impl<P: PlayerAdapter> ClientPlayerIo<'_, P> {
     pub fn set_playback_rate(&mut self, rate: f64) -> Result<(), PlayerError> {
         self.player.execute(PlayerCommand::SetPlaybackRate(rate))
     }
-
-    pub fn execute(&mut self, command: PlayerCommand) -> Result<(), PlayerError> {
-        self.player.execute(command)
-    }
 }
 
 impl<P, C> ClientRuntime<P, C>

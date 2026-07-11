@@ -60,11 +60,11 @@ impl ClientSession {
                 self.model.playback.local_paused_for_cache = Some(paused_for_cache);
                 changed = true;
             }
-            if paused_for_cache || cache_pause_was_active {
-                if !self.model.playback.pending_cache_room_playstate_resync {
-                    self.model.playback.pending_cache_room_playstate_resync = true;
-                    changed = true;
-                }
+            if (paused_for_cache || cache_pause_was_active)
+                && !self.model.playback.pending_cache_room_playstate_resync
+            {
+                self.model.playback.pending_cache_room_playstate_resync = true;
+                changed = true;
             }
         }
         if let Some(cache_buffering_percent) = update
@@ -83,11 +83,9 @@ impl ClientSession {
                 self.model.playback.local_paused = Some(paused);
                 changed = true;
             }
-            if !paused {
-                if self.model.playback.pending_cache_room_playstate_resync {
-                    self.model.playback.pending_cache_room_playstate_resync = false;
-                    changed = true;
-                }
+            if !paused && self.model.playback.pending_cache_room_playstate_resync {
+                self.model.playback.pending_cache_room_playstate_resync = false;
+                changed = true;
             }
         }
         if let Some(position_seconds) = update

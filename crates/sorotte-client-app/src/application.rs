@@ -8,9 +8,7 @@ use sorotte_client_core::{
     ReconnectStateRestoreCorrectionStateSnapshot, ReconnectTransitionNotification,
     RoomPlaystateView, UserChangeNotification,
 };
-use sorotte_player_api::{
-    PlayerAdapter, PlayerCommand, PlayerError, PlayerPlaybackTelemetryUpdate,
-};
+use sorotte_player_api::{PlayerAdapter, PlayerError, PlayerPlaybackTelemetryUpdate};
 pub use sorotte_plex::PlexClientConfig;
 use sorotte_plex::{
     cache::PlexMatchCache,
@@ -786,10 +784,7 @@ where
             ),
             ClientCommand::OpenMedia { path } => (
                 "open-media",
-                self.runtime
-                    .player_mut()
-                    .execute(PlayerCommand::OpenFile(path))
-                    .map(|()| true),
+                self.runtime.player_mut().open_file(&path).map(|()| true),
             ),
             ClientCommand::PlayerPlaybackObserved(update) => {
                 let changed = self
