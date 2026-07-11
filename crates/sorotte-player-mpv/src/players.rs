@@ -20,6 +20,11 @@ impl ConnectedMpvPlayer {
     pub fn into_inner(self) -> MpvAdapter {
         self.0
     }
+
+    #[cfg(test)]
+    pub(crate) fn from_test_adapter(adapter: MpvAdapter) -> Self {
+        Self(adapter)
+    }
 }
 
 impl Deref for ConnectedMpvPlayer {
@@ -77,7 +82,7 @@ macro_rules! impl_player_wrapper {
             }
 
             fn capabilities(&self) -> PlayerCapabilities {
-                PlayerCapabilities::ALL
+                self.0.capabilities()
             }
 
             fn execute(&mut self, command: PlayerCommand) -> Result<(), PlayerError> {

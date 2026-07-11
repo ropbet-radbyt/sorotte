@@ -1,4 +1,7 @@
-use super::{LegacySyncplayOsdKind, LegacySyncplayUiSettings, MpvAdapter, SimulatedPlayer};
+use super::{
+    ConnectedMpvPlayer, LegacySyncplayOsdKind, LegacySyncplayUiSettings, MpvAdapter,
+    SimulatedPlayer,
+};
 use crate::ipc::{MpvJsonIpcTransport, read_line_from_stream};
 use serde_json::{Value, json};
 use sorotte_player_api::{
