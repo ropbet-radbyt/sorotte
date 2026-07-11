@@ -117,9 +117,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.plex_auth_start_rx = None;
                 self.plex_auth_poll_rx = None;
                 self.plex_auth_poll_due_at = None;
-                self.startup_plex_server_refresh_rx = None;
-                self.plex_server_refresh_rx = None;
-                self.plex_server_refresh_context = None;
+                self.plex_server_discovery.invalidate();
                 self.plex_sync_engine = None;
                 self.plex_sync_rx = None;
                 self.plex_sync_next_tick_due_at = None;

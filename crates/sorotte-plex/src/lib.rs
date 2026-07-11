@@ -713,9 +713,9 @@ impl PlexHttpClient {
 
     pub(crate) fn discover_servers(
         &self,
-        user_token: &str,
+        user_token: &SecretValue,
     ) -> PlexResult<Vec<PlexServerConnection>> {
-        if user_token.trim().is_empty() {
+        if user_token.is_blank() {
             return Err(PlexError::MissingToken);
         }
         let mut output = Vec::new();
@@ -762,9 +762,10 @@ impl PlexHttpClient {
 
     fn fetch_server_resources(
         &self,
-        user_token: &str,
+        user_token: &SecretValue,
         url: &str,
     ) -> PlexResult<Vec<PlexServerConnection>> {
+        let user_token = user_token.expose_secret();
         let response = self
             .client
             .get(url)
@@ -784,6 +785,14 @@ impl PlexHttpClient {
         }
         let json: Value = serde_json::from_str(&body)?;
         Ok(parse_server_resources_response(&json))
+    }
+
+    fn discovery_server_machine_identifier(
+        &self,
+        server_url: &str,
+        token: &SecretValue,
+    ) -> PlexResult<String> {
+        self.server_machine_identifier(server_url, token.expose_secret())
     }
 
     pub(crate) fn verify_server_connection(&self, server: &PlexServerConnection) -> PlexResult<()> {
@@ -1273,15 +1282,19 @@ impl PlexMetadataTransport for PlexHttpClient {
 }
 
 pub trait PlexServerDiscoveryTransport {
-    fn discover_servers(&self, user_token: &str) -> PlexResult<Vec<PlexServerConnection>>;
+    fn discover_servers(&self, user_token: &SecretValue) -> PlexResult<Vec<PlexServerConnection>>;
 
     fn verify_server_connection(&self, server: &PlexServerConnection) -> PlexResult<()>;
 
-    fn server_machine_identifier(&self, server_url: &str, token: &str) -> PlexResult<String>;
+    fn server_machine_identifier(
+        &self,
+        server_url: &str,
+        token: &SecretValue,
+    ) -> PlexResult<String>;
 }
 
 impl PlexServerDiscoveryTransport for PlexHttpClient {
-    fn discover_servers(&self, user_token: &str) -> PlexResult<Vec<PlexServerConnection>> {
+    fn discover_servers(&self, user_token: &SecretValue) -> PlexResult<Vec<PlexServerConnection>> {
         PlexHttpClient::discover_servers(self, user_token)
     }
 
@@ -1289,8 +1302,12 @@ impl PlexServerDiscoveryTransport for PlexHttpClient {
         PlexHttpClient::verify_server_connection(self, server)
     }
 
-    fn server_machine_identifier(&self, server_url: &str, token: &str) -> PlexResult<String> {
-        PlexHttpClient::server_machine_identifier(self, server_url, token)
+    fn server_machine_identifier(
+        &self,
+        server_url: &str,
+        token: &SecretValue,
+    ) -> PlexResult<String> {
+        self.discovery_server_machine_identifier(server_url, token)
     }
 }
 
@@ -1562,7 +1579,12 @@ where
             return configured_server_url_and_token(&self.config);
         }
 
-        let user_token = config_user_token(&self.config)?;
+        let user_token = self
+            .config
+            .user_token
+            .as_ref()
+            .filter(|token| !token.is_blank())
+            .ok_or(PlexError::MissingToken)?;
         let servers = self.transport.discover_servers(user_token)?;
         servers
             .into_iter()
@@ -1867,16 +1889,6 @@ fn selected_server_matches_machine_identifier(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .is_some_and(|selected| selected == machine_identifier)
-}
-
-fn config_user_token(config: &PlexClientConfig) -> PlexResult<&str> {
-    config
-        .user_token
-        .as_ref()
-        .map(SecretValue::expose_secret)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or(PlexError::MissingToken)
 }
 
 struct PlexMatchServerRef<'a> {
@@ -3354,7 +3366,7 @@ mod tests {
         search_results: Rc<RefCell<Vec<PlexMediaSearchResult>>>,
         file_searches: Rc<RefCell<Vec<String>>>,
         file_search_results: Rc<RefCell<Vec<PlexMediaSearchResult>>>,
-        discoveries: Rc<RefCell<Vec<String>>>,
+        discoveries: Rc<RefCell<Vec<SecretValue>>>,
         discovered_servers: Rc<RefCell<Vec<PlexServerConnection>>>,
         metadata_lookups: Rc<RefCell<Vec<String>>>,
         metadata_results: Rc<RefCell<BTreeMap<String, PlexMediaMetadata>>>,
@@ -3453,12 +3465,19 @@ mod tests {
             Ok(())
         }
 
-        fn server_machine_identifier(&self, _server_url: &str, _token: &str) -> PlexResult<String> {
+        fn server_machine_identifier(
+            &self,
+            _server_url: &str,
+            _token: &SecretValue,
+        ) -> PlexResult<String> {
             Ok("fake-machine".to_owned())
         }
 
-        fn discover_servers(&self, user_token: &str) -> PlexResult<Vec<PlexServerConnection>> {
-            self.discoveries.borrow_mut().push(user_token.to_owned());
+        fn discover_servers(
+            &self,
+            user_token: &SecretValue,
+        ) -> PlexResult<Vec<PlexServerConnection>> {
+            self.discoveries.borrow_mut().push(user_token.clone());
             Ok(self.discovered_servers.borrow().clone())
         }
     }
@@ -3868,7 +3887,10 @@ mod tests {
         let (_, transport, _) = resolver.into_parts();
 
         assert_eq!(target.matched_item.rating_key, "456");
-        assert_eq!(transport.discoveries.borrow().as_slice(), &["user-token"]);
+        assert_eq!(
+            transport.discoveries.borrow().as_slice(),
+            &[SecretValue::from("user-token")]
+        );
         assert_eq!(
             transport.metadata_lookups.borrow().as_slice(),
             &["http://shared.plex:32400|shared-server-token|456"]
@@ -3929,7 +3951,10 @@ mod tests {
         let (_, transport, _) = resolver.into_parts();
 
         assert_eq!(target.matched_item.rating_key, "456");
-        assert_eq!(transport.discoveries.borrow().as_slice(), &["user-token"]);
+        assert_eq!(
+            transport.discoveries.borrow().as_slice(),
+            &[SecretValue::from("user-token")]
+        );
         assert_eq!(
             transport.stream_tokens.borrow().as_slice(),
             &["shared-server-token"]

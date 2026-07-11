@@ -134,6 +134,10 @@ impl SecretValue {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    pub fn is_blank(&self) -> bool {
+        self.0.trim().is_empty()
+    }
 }
 
 impl fmt::Debug for SecretValue {
@@ -178,6 +182,13 @@ mod tests {
 
         assert_eq!(secret.expose_secret(), "boundary-value");
         assert_eq!(secret.into_exposed_secret(), "boundary-value");
+    }
+
+    #[test]
+    fn blank_secret_checks_do_not_require_exposure() {
+        assert!(SecretValue::new("").is_blank());
+        assert!(SecretValue::new(" \t\r\n").is_blank());
+        assert!(!SecretValue::new(" token ").is_blank());
     }
 
     #[test]

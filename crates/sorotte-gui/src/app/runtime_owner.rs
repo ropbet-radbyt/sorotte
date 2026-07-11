@@ -170,11 +170,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) plex_servers: Vec<PlexServerConnection>,
     pub(super) plex_server_reachability: HashMap<String, GuiPlexServerReachability>,
     pub(super) startup_plex_server_refresh_attempted: bool,
-    pub(super) startup_plex_server_refresh_rx:
-        Option<mpsc::Receiver<Result<GuiPlexServerRefreshOutcome, String>>>,
-    pub(super) plex_server_refresh_rx:
-        Option<mpsc::Receiver<Result<GuiPlexServerRefreshOutcome, String>>>,
-    pub(super) plex_server_refresh_context: Option<GuiPlexServerRefreshContext>,
+    pub(super) plex_server_discovery: GuiPlexServerDiscoveryCoordinator,
     pub(super) plex_sync_engine: Option<PlexSyncEngine<PlexHttpClient>>,
     pub(super) plex_sync_rx: Option<mpsc::Receiver<GuiPlexSyncWorkerResult>>,
     pub(super) plex_sync_next_tick_due_at: Option<Instant>,
@@ -207,8 +203,29 @@ pub(super) struct GuiPlexServerRefreshOutcome {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum GuiPlexServerRefreshContext {
+    Startup,
     Manual,
     Login,
+}
+
+#[derive(Default)]
+pub(super) struct GuiPlexServerDiscoveryCoordinator {
+    pub(super) generation: u64,
+    pub(super) active: Option<GuiPlexServerDiscoveryJob>,
+}
+
+pub(super) struct GuiPlexServerDiscoveryJob {
+    pub(super) generation: u64,
+    pub(super) token: sorotte_secret::SecretValue,
+    pub(super) context: GuiPlexServerRefreshContext,
+    pub(super) receiver: mpsc::Receiver<GuiPlexServerDiscoveryWorkerResult>,
+}
+
+pub(super) struct GuiPlexServerDiscoveryWorkerResult {
+    pub(super) generation: u64,
+    pub(super) token: sorotte_secret::SecretValue,
+    pub(super) context: GuiPlexServerRefreshContext,
+    pub(super) result: Result<GuiPlexServerRefreshOutcome, String>,
 }
 
 pub(super) struct GuiPlexSyncWorkerResult {

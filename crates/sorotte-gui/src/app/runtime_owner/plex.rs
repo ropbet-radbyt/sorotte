@@ -12,6 +12,70 @@ const PLEX_AUTH_AUTO_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const PLEX_WATCH_SYNC_PUMP_INTERVAL: Duration = Duration::from_secs(1);
 const PLEX_WATCH_CACHE_FILE_NAME: &str = "plex-watch-cache.json";
 
+impl GuiPlexServerDiscoveryCoordinator {
+    fn begin_generation(&mut self) -> u64 {
+        self.generation = self.generation.wrapping_add(1).max(1);
+        self.active = None;
+        self.generation
+    }
+
+    fn install(
+        &mut self,
+        generation: u64,
+        token: sorotte_secret::SecretValue,
+        context: GuiPlexServerRefreshContext,
+        receiver: mpsc::Receiver<GuiPlexServerDiscoveryWorkerResult>,
+    ) {
+        if generation == self.generation {
+            self.active = Some(GuiPlexServerDiscoveryJob {
+                generation,
+                token,
+                context,
+                receiver,
+            });
+        }
+    }
+
+    fn take_active(&mut self) -> Option<GuiPlexServerDiscoveryJob> {
+        self.active.take()
+    }
+
+    fn restore_if_current(&mut self, job: GuiPlexServerDiscoveryJob) {
+        if job.generation == self.generation && self.active.is_none() {
+            self.active = Some(job);
+        }
+    }
+
+    fn accepts(
+        &self,
+        job: &GuiPlexServerDiscoveryJob,
+        result: &GuiPlexServerDiscoveryWorkerResult,
+        current_token: Option<&sorotte_secret::SecretValue>,
+    ) -> bool {
+        job.generation == self.generation
+            && result.generation == job.generation
+            && result.token == job.token
+            && result.context == job.context
+            && current_token == Some(&result.token)
+    }
+
+    pub(super) fn invalidate(&mut self) {
+        let _ = self.begin_generation();
+    }
+}
+
+impl std::fmt::Debug for GuiPlexServerDiscoveryWorkerResult {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuiPlexServerDiscoveryWorkerResult")
+            .field("generation", &self.generation)
+            .field("token", &self.token)
+            .field("context", &self.context)
+            .field("succeeded", &self.result.is_ok())
+            .finish()
+    }
+}
+
 impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_start_plex_auth_request(
         &mut self,
@@ -170,8 +234,7 @@ impl GuiPersistedConfigRuntimeOwner {
             && settings
                 .plex_user_token
                 .as_ref()
-                .map(|token| token.expose_secret())
-                .is_some_and(|token| !token.trim().is_empty())
+                .is_some_and(|token| !token.is_blank())
         {
             self.startup_plex_server_refresh_attempted = true;
             if let Some(url) = settings.plex_selected_server_url.as_deref() {
@@ -181,66 +244,15 @@ impl GuiPersistedConfigRuntimeOwner {
                 );
                 self.sync_plex_runtime_snapshot(handle, projected_state, None);
             }
-            let (tx, rx) = mpsc::channel();
-            let startup_settings = settings.clone();
-            match std::thread::Builder::new()
-                .name("sorotte-gui-plex-startup".to_owned())
-                .spawn(move || {
-                    let result = PlexHttpClient::new("sorotte-gui")
-                        .map_err(|error| format!("Failed to create Plex HTTP client: {error}"))
-                        .and_then(|client| {
-                            refresh_plex_servers_and_reachability(
-                                PlexDiscoveryService::new(client),
-                                &startup_settings,
-                            )
-                        });
-                    let _ = tx.send(result);
-                }) {
-                Ok(_thread) => {
-                    self.startup_plex_server_refresh_rx = Some(rx);
-                }
-                Err(error) => self.apply_plex_error(
-                    handle,
-                    projected_state,
-                    format!("Failed to start Plex server refresh at startup: {error}"),
-                ),
-            }
-        }
-
-        let Some(rx) = self.startup_plex_server_refresh_rx.take() else {
-            return;
-        };
-        match rx.try_recv() {
-            Ok(Ok(outcome)) => {
-                self.apply_plex_server_refresh_outcome(outcome);
-                let mut settings = projected_state.configuration.to_stored_settings();
-                if reconcile_plex_server_selection(&mut settings, &self.plex_servers, true) {
-                    self.persist_plex_settings_and_project(handle, projected_state, settings);
-                }
-                self.sync_plex_runtime_snapshot(handle, projected_state, None);
-            }
-            Ok(Err(error)) => {
-                if let Some(url) = projected_state
-                    .configuration
-                    .to_stored_settings()
-                    .plex_selected_server_url
-                    .as_deref()
-                {
-                    self.plex_server_reachability.insert(
-                        plex_server_reachability_key(url),
-                        GuiPlexServerReachability::Unreachable,
-                    );
-                }
+            if let Err(error) = self
+                .start_plex_server_refresh_worker(&settings, GuiPlexServerRefreshContext::Startup)
+            {
                 self.apply_plex_error(
                     handle,
                     projected_state,
-                    format!("Failed to refresh Plex servers at startup: {error}"),
+                    format!("Failed to start Plex server refresh at startup: {error}"),
                 );
             }
-            Err(mpsc::TryRecvError::Empty) => {
-                self.startup_plex_server_refresh_rx = Some(rx);
-            }
-            Err(mpsc::TryRecvError::Disconnected) => {}
         }
     }
 
@@ -255,76 +267,118 @@ impl GuiPersistedConfigRuntimeOwner {
         {
             return;
         }
-        let Some(rx) = self.plex_server_refresh_rx.take() else {
+        let Some(job) = self.plex_server_discovery.take_active() else {
             return;
         };
-        match rx.try_recv() {
-            Ok(Ok(outcome)) => {
-                let context = self
-                    .plex_server_refresh_context
-                    .take()
-                    .unwrap_or(GuiPlexServerRefreshContext::Manual);
-                self.apply_plex_server_refresh_outcome(outcome);
+        match job.receiver.try_recv() {
+            Ok(worker_result) => {
                 let mut settings = projected_state.configuration.to_stored_settings();
-                let selection_changed =
-                    reconcile_plex_server_selection(&mut settings, &self.plex_servers, true);
-                let has_selected_server = settings.plex_selected_server_url.is_some();
-                if selection_changed {
-                    self.persist_plex_settings_and_project(handle, projected_state, settings);
+                let current_token = settings
+                    .plex_user_token
+                    .as_ref()
+                    .filter(|token| !token.is_blank());
+                if !self
+                    .plex_server_discovery
+                    .accepts(&job, &worker_result, current_token)
+                {
+                    return;
                 }
-                self.sync_plex_runtime_snapshot(handle, projected_state, None);
-                if self.plex_servers.is_empty() && !has_selected_server {
-                    let message = match context {
-                        GuiPlexServerRefreshContext::Manual => {
-                            "No reachable Plex Media Servers were returned for this account."
+                match worker_result.result {
+                    Ok(outcome) => {
+                        let context = worker_result.context;
+                        self.apply_plex_server_refresh_outcome(outcome);
+                        let selection_changed = reconcile_plex_server_selection(
+                            &mut settings,
+                            &self.plex_servers,
+                            true,
+                        );
+                        let has_selected_server = settings.plex_selected_server_url.is_some();
+                        if selection_changed {
+                            self.persist_plex_settings_and_project(
+                                handle,
+                                projected_state,
+                                settings,
+                            );
                         }
-                        GuiPlexServerRefreshContext::Login => {
-                            "Plex login succeeded, but no reachable Plex Media Servers were returned for this account."
-                        }
-                    };
-                    Self::push_actions_and_project(
-                        handle,
-                        projected_state,
-                        vec![GuiShellAction::PushTransientNotification {
-                            level: GuiTransientNotificationLevel::Warning,
-                            message: message.to_owned(),
-                        }],
-                    );
-                }
-            }
-            Ok(Err(error)) => {
-                let context = self
-                    .plex_server_refresh_context
-                    .take()
-                    .unwrap_or(GuiPlexServerRefreshContext::Manual);
-                match context {
-                    GuiPlexServerRefreshContext::Manual => self.apply_plex_error(
-                        handle,
-                        projected_state,
-                        format!("Failed to refresh Plex servers: {error}"),
-                    ),
-                    GuiPlexServerRefreshContext::Login => Self::push_actions_and_project(
-                        handle,
-                        projected_state,
-                        vec![GuiShellAction::PushTransientNotification {
-                            level: GuiTransientNotificationLevel::Warning,
-                            message: format!(
-                                "Plex login succeeded, but server discovery failed: {error}"
+                        self.sync_plex_runtime_snapshot(handle, projected_state, None);
+                        let empty_message = match context {
+                            GuiPlexServerRefreshContext::Startup => None,
+                            GuiPlexServerRefreshContext::Manual => Some(
+                                "No reachable Plex Media Servers were returned for this account.",
                             ),
-                        }],
-                    ),
+                            GuiPlexServerRefreshContext::Login => Some(
+                                "Plex login succeeded, but no reachable Plex Media Servers were returned for this account.",
+                            ),
+                        };
+                        if self.plex_servers.is_empty()
+                            && !has_selected_server
+                            && let Some(message) = empty_message
+                        {
+                            Self::push_actions_and_project(
+                                handle,
+                                projected_state,
+                                vec![GuiShellAction::PushTransientNotification {
+                                    level: GuiTransientNotificationLevel::Warning,
+                                    message: message.to_owned(),
+                                }],
+                            );
+                        }
+                    }
+                    Err(error) => match worker_result.context {
+                        GuiPlexServerRefreshContext::Startup => {
+                            if let Some(url) = settings.plex_selected_server_url.as_deref() {
+                                self.plex_server_reachability.insert(
+                                    plex_server_reachability_key(url),
+                                    GuiPlexServerReachability::Unreachable,
+                                );
+                            }
+                            self.apply_plex_error(
+                                handle,
+                                projected_state,
+                                format!("Failed to refresh Plex servers at startup: {error}"),
+                            );
+                        }
+                        GuiPlexServerRefreshContext::Manual => self.apply_plex_error(
+                            handle,
+                            projected_state,
+                            format!("Failed to refresh Plex servers: {error}"),
+                        ),
+                        GuiPlexServerRefreshContext::Login => Self::push_actions_and_project(
+                            handle,
+                            projected_state,
+                            vec![GuiShellAction::PushTransientNotification {
+                                level: GuiTransientNotificationLevel::Warning,
+                                message: format!(
+                                    "Plex login succeeded, but server discovery failed: {error}"
+                                ),
+                            }],
+                        ),
+                    },
                 }
             }
             Err(mpsc::TryRecvError::Empty) => {
-                self.plex_server_refresh_rx = Some(rx);
+                self.plex_server_discovery.restore_if_current(job);
             }
             Err(mpsc::TryRecvError::Disconnected) => {
-                self.plex_server_refresh_context = None;
-                self.apply_plex_error(
-                    handle,
-                    projected_state,
-                    "Plex server refresh worker stopped before returning a result.".to_owned(),
-                );
+                if job.generation == self.plex_server_discovery.generation
+                    && projected_state
+                        .configuration
+                        .to_stored_settings()
+                        .plex_user_token
+                        .as_ref()
+                        == Some(&job.token)
+                {
+                    let message = match job.context {
+                        GuiPlexServerRefreshContext::Startup => {
+                            "Plex startup server refresh worker stopped before returning a result."
+                        }
+                        GuiPlexServerRefreshContext::Manual
+                        | GuiPlexServerRefreshContext::Login => {
+                            "Plex server refresh worker stopped before returning a result."
+                        }
+                    };
+                    self.apply_plex_error(handle, projected_state, message.to_owned());
+                }
             }
         }
     }
@@ -448,9 +502,6 @@ impl GuiPersistedConfigRuntimeOwner {
         let mut settings = projected_state.configuration.to_stored_settings();
         settings.plex_user_token = Some(token);
         settings.plex_sync_enabled.get_or_insert(false);
-        self.startup_plex_server_refresh_rx = None;
-        self.plex_server_refresh_rx = None;
-        self.plex_server_refresh_context = None;
         let refresh_start_error = self
             .start_plex_server_refresh_worker(&settings, GuiPlexServerRefreshContext::Login)
             .err();
@@ -485,9 +536,6 @@ impl GuiPersistedConfigRuntimeOwner {
                 projected_state,
                 GuiPluginSelection::Plex,
             );
-            return true;
-        }
-        if self.plex_server_refresh_rx.is_some() {
             return true;
         }
         let settings = projected_state.configuration.to_stored_settings();
@@ -614,9 +662,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.plex_auth_poll_due_at = None;
         self.plex_servers.clear();
         self.plex_server_reachability.clear();
-        self.startup_plex_server_refresh_rx = None;
-        self.plex_server_refresh_rx = None;
-        self.plex_server_refresh_context = None;
+        self.plex_server_discovery.invalidate();
         self.plex_sync_engine = None;
         self.plex_sync_rx = None;
         self.plex_sync_next_tick_due_at = None;
@@ -1069,9 +1115,20 @@ impl GuiPersistedConfigRuntimeOwner {
         settings: &StoredClientSettingsMvp,
         context: GuiPlexServerRefreshContext,
     ) -> Result<(), String> {
+        if context != GuiPlexServerRefreshContext::Startup {
+            self.startup_plex_server_refresh_attempted = true;
+        }
+        let generation = self.plex_server_discovery.begin_generation();
+        let token = settings
+            .plex_user_token
+            .as_ref()
+            .filter(|token| !token.is_blank())
+            .cloned()
+            .ok_or_else(|| "Plex login is required before servers can be refreshed.".to_owned())?;
         let client = self.ensure_plex_client().cloned()?;
         let settings = settings.clone();
         let (tx, rx) = mpsc::channel();
+        let worker_token = token.clone();
         std::thread::Builder::new()
             .name("sorotte-gui-plex-server-refresh".to_owned())
             .spawn(move || {
@@ -1079,11 +1136,16 @@ impl GuiPersistedConfigRuntimeOwner {
                     PlexDiscoveryService::new(client),
                     &settings,
                 );
-                let _ = tx.send(result);
+                let _ = tx.send(GuiPlexServerDiscoveryWorkerResult {
+                    generation,
+                    token: worker_token,
+                    context,
+                    result,
+                });
             })
             .map_err(|error| error.to_string())?;
-        self.plex_server_refresh_rx = Some(rx);
-        self.plex_server_refresh_context = Some(context);
+        self.plex_server_discovery
+            .install(generation, token, context, rx);
         Ok(())
     }
 
@@ -1410,10 +1472,10 @@ where
     let token = settings
         .plex_user_token
         .as_ref()
-        .filter(|token| !token.expose_secret().trim().is_empty())
+        .filter(|token| !token.is_blank())
         .ok_or_else(|| "Plex login is required before servers can be refreshed.".to_owned())?;
     let servers = discovery
-        .discover(token.expose_secret())
+        .discover(token)
         .map_err(|error| error.to_string())?;
     let mut reachability = HashMap::new();
     for server in &servers {
@@ -1439,7 +1501,7 @@ where
             access_token: settings
                 .plex_selected_server_token
                 .clone()
-                .filter(|token| !token.expose_secret().trim().is_empty())
+                .filter(|token| !token.is_blank())
                 .unwrap_or_else(|| token.clone()),
             owned: true,
             has_local_connection: plex_server_connection_kind_from_uri(uri)
@@ -1664,24 +1726,124 @@ mod tests {
     }
 
     #[test]
-    fn start_plex_server_refresh_worker_supersedes_pending_refresh() {
-        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
-        let (_tx, rx) = mpsc::channel();
-        owner.plex_server_refresh_rx = Some(rx);
-        owner.plex_server_refresh_context = Some(GuiPlexServerRefreshContext::Manual);
-
-        owner
-            .start_plex_server_refresh_worker(
-                &StoredClientSettingsMvp::default(),
-                GuiPlexServerRefreshContext::Login,
-            )
-            .expect("refresh worker should start");
-
-        assert!(owner.plex_server_refresh_rx.is_some());
-        assert_eq!(
-            owner.plex_server_refresh_context,
-            Some(GuiPlexServerRefreshContext::Login)
+    fn manual_discovery_generation_supersedes_startup_without_accepting_its_result() {
+        let mut coordinator = GuiPlexServerDiscoveryCoordinator::default();
+        let startup_token = sorotte_secret::SecretValue::from("same-account-token");
+        let startup_generation = coordinator.begin_generation();
+        let (startup_tx, startup_rx) = mpsc::channel();
+        coordinator.install(
+            startup_generation,
+            startup_token.clone(),
+            GuiPlexServerRefreshContext::Startup,
+            startup_rx,
         );
+
+        let manual_token = startup_token.clone();
+        let manual_generation = coordinator.begin_generation();
+        let (manual_tx, manual_rx) = mpsc::channel();
+        coordinator.install(
+            manual_generation,
+            manual_token.clone(),
+            GuiPlexServerRefreshContext::Manual,
+            manual_rx,
+        );
+
+        assert!(
+            startup_tx
+                .send(GuiPlexServerDiscoveryWorkerResult {
+                    generation: startup_generation,
+                    token: startup_token,
+                    context: GuiPlexServerRefreshContext::Startup,
+                    result: Ok(GuiPlexServerRefreshOutcome {
+                        servers: Vec::new(),
+                        reachability: HashMap::new(),
+                    }),
+                })
+                .is_err(),
+            "manual discovery must drop ownership of the startup receiver"
+        );
+        manual_tx
+            .send(GuiPlexServerDiscoveryWorkerResult {
+                generation: manual_generation,
+                token: manual_token.clone(),
+                context: GuiPlexServerRefreshContext::Manual,
+                result: Ok(GuiPlexServerRefreshOutcome {
+                    servers: Vec::new(),
+                    reachability: HashMap::new(),
+                }),
+            })
+            .expect("current manual result should retain a receiver");
+        let manual_job = coordinator
+            .take_active()
+            .expect("manual job should remain active");
+        let current = manual_job
+            .receiver
+            .recv()
+            .expect("manual result should arrive");
+        assert!(coordinator.accepts(&manual_job, &current, Some(&manual_token)));
+    }
+
+    #[test]
+    fn login_token_generation_invalidates_old_discovery_results_and_redacts_records() {
+        const OLD_TOKEN: &str = "OLD_DISCOVERY_TOKEN_CANARY";
+        const LOGIN_TOKEN: &str = "LOGIN_DISCOVERY_TOKEN_CANARY";
+        let mut coordinator = GuiPlexServerDiscoveryCoordinator::default();
+        let old_generation = coordinator.begin_generation();
+        let login_generation = coordinator.begin_generation();
+        let login_token = sorotte_secret::SecretValue::from(LOGIN_TOKEN);
+        let stale = GuiPlexServerDiscoveryWorkerResult {
+            generation: old_generation,
+            token: OLD_TOKEN.into(),
+            context: GuiPlexServerRefreshContext::Manual,
+            result: Ok(GuiPlexServerRefreshOutcome {
+                servers: Vec::new(),
+                reachability: HashMap::new(),
+            }),
+        };
+        let current = GuiPlexServerDiscoveryWorkerResult {
+            generation: login_generation,
+            token: login_token.clone(),
+            context: GuiPlexServerRefreshContext::Login,
+            result: Ok(GuiPlexServerRefreshOutcome {
+                servers: Vec::new(),
+                reachability: HashMap::new(),
+            }),
+        };
+        let wrong_token = GuiPlexServerDiscoveryWorkerResult {
+            generation: login_generation,
+            token: "WRONG_DISCOVERY_TOKEN_CANARY".into(),
+            context: GuiPlexServerRefreshContext::Login,
+            result: Ok(GuiPlexServerRefreshOutcome {
+                servers: Vec::new(),
+                reachability: HashMap::new(),
+            }),
+        };
+        let wrong_context = GuiPlexServerDiscoveryWorkerResult {
+            generation: login_generation,
+            token: login_token.clone(),
+            context: GuiPlexServerRefreshContext::Manual,
+            result: Ok(GuiPlexServerRefreshOutcome {
+                servers: Vec::new(),
+                reachability: HashMap::new(),
+            }),
+        };
+        let (_login_tx, login_rx) = mpsc::channel();
+        let login_job = GuiPlexServerDiscoveryJob {
+            generation: login_generation,
+            token: login_token.clone(),
+            context: GuiPlexServerRefreshContext::Login,
+            receiver: login_rx,
+        };
+
+        assert!(!coordinator.accepts(&login_job, &stale, Some(&login_token)));
+        assert!(!coordinator.accepts(&login_job, &wrong_token, Some(&login_token)));
+        assert!(!coordinator.accepts(&login_job, &wrong_context, Some(&login_token)));
+        assert!(coordinator.accepts(&login_job, &current, Some(&login_token)));
+        let debug = format!("{stale:?} {current:?} {wrong_token:?}");
+        assert!(!debug.contains(OLD_TOKEN));
+        assert!(!debug.contains(LOGIN_TOKEN));
+        assert!(!debug.contains("WRONG_DISCOVERY_TOKEN_CANARY"));
+        assert!(debug.contains(sorotte_secret::REDACTED_SECRET));
     }
 
     #[test]

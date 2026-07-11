@@ -106,9 +106,8 @@ fn gui_persisted_config_runtime_owner_keeps_offset_commands_on_global_timeline()
         plex_servers: Vec::new(),
         plex_server_reachability: std::collections::HashMap::new(),
         startup_plex_server_refresh_attempted: false,
-        startup_plex_server_refresh_rx: None,
-        plex_server_refresh_rx: None,
-        plex_server_refresh_context: None,
+        plex_server_discovery:
+            crate::app::runtime_owner::GuiPlexServerDiscoveryCoordinator::default(),
         plex_sync_engine: None,
         plex_sync_rx: None,
         plex_sync_next_tick_due_at: None,
