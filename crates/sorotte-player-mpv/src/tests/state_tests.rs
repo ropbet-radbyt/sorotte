@@ -6,7 +6,7 @@ fn stores_opened_file_path() {
     adapter
         .execute(PlayerCommand::OpenFile("movie.mkv".to_owned()))
         .expect("mpv stub should accept file");
-    assert_eq!(adapter.current_path(), Some("movie.mkv"));
+    assert_eq!(adapter.test_adapter().current_path(), Some("movie.mkv"));
 
     let file_update = adapter
         .take_local_file_update()
@@ -45,26 +45,27 @@ fn stores_runtime_state_updates() {
             .expect("simulated mpv should accept typed command");
     }
 
-    assert!(adapter.paused());
-    assert_eq!(adapter.position_seconds(), 24.5);
-    assert_eq!(adapter.playback_rate(), 0.95);
-    assert!(adapter.muted());
-    assert_eq!(adapter.volume(), 50.0);
-    assert!(adapter.deinterlace());
-    assert!(adapter.keepaspect());
-    assert!(adapter.keepaspect_window());
-    assert!(adapter.fullscreen());
-    assert!(adapter.ontop());
-    assert!(adapter.border());
-    assert!(adapter.force_window());
-    assert!(adapter.keep_open());
-    assert!(adapter.keep_open_pause());
-    assert!(adapter.cursor_autohide_fs_only());
-    assert!(adapter.stop_screensaver());
-    assert!(adapter.sub_visibility());
-    assert!(adapter.osd_bar());
-    assert!(adapter.window_maximized());
-    assert!(adapter.window_minimized());
+    let state = adapter.test_adapter();
+    assert!(state.paused());
+    assert_eq!(state.position_seconds(), 24.5);
+    assert_eq!(state.playback_rate(), 0.95);
+    assert!(state.muted());
+    assert_eq!(state.volume(), 50.0);
+    assert!(state.deinterlace());
+    assert!(state.keepaspect());
+    assert!(state.keepaspect_window());
+    assert!(state.fullscreen());
+    assert!(state.ontop());
+    assert!(state.border());
+    assert!(state.force_window());
+    assert!(state.keep_open());
+    assert!(state.keep_open_pause());
+    assert!(state.cursor_autohide_fs_only());
+    assert!(state.stop_screensaver());
+    assert!(state.sub_visibility());
+    assert!(state.osd_bar());
+    assert!(state.window_maximized());
+    assert!(state.window_minimized());
 }
 
 #[test]

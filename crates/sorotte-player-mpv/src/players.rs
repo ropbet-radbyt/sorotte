@@ -1,7 +1,4 @@
-use std::{
-    ops::{Deref, DerefMut},
-    path::Path,
-};
+use std::path::Path;
 
 use sorotte_player_api::{
     LocalFileUpdate, PlayerAdapter, PlayerCapabilities, PlayerCommand, PlayerError,
@@ -21,23 +18,17 @@ impl ConnectedMpvPlayer {
         self.0
     }
 
+    pub fn is_connected(&self) -> bool {
+        self.0.is_connected()
+    }
+
+    pub fn take_ipc_connection_events(&mut self) -> Vec<crate::MpvIpcConnectionEvent> {
+        self.0.take_ipc_connection_events()
+    }
+
     #[cfg(test)]
     pub(crate) fn from_test_adapter(adapter: MpvAdapter) -> Self {
         Self(adapter)
-    }
-}
-
-impl Deref for ConnectedMpvPlayer {
-    type Target = MpvAdapter;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl DerefMut for ConnectedMpvPlayer {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
     }
 }
 
@@ -52,25 +43,20 @@ impl SimulatedPlayer {
     pub fn into_inner(self) -> MpvAdapter {
         self.0
     }
+
+    pub fn is_connected(&self) -> bool {
+        self.0.is_connected()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_adapter(&self) -> &MpvAdapter {
+        &self.0
+    }
 }
 
 impl Default for SimulatedPlayer {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl Deref for SimulatedPlayer {
-    type Target = MpvAdapter;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl DerefMut for SimulatedPlayer {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
     }
 }
 
