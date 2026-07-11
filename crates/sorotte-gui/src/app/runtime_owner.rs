@@ -62,10 +62,10 @@ use super::mpv_launch::{
 use super::runtime_bridge::GuiPendingRoomChangeRequest;
 use super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 use super::runtime_stack::{
-    GuiClientCoreChatSessionRuntimeAdapter, GuiLoopbackSessionTransportDriver, GuiOwnedPlayer,
-    GuiPlayerLaunchRuntimeState, GuiQueuedSessionTransportHandle, GuiSessionRoomPlaystate,
-    GuiSessionRuntimeAdapter, GuiSessionTransportDriver, GuiTestPlayerAdapter,
-    GuiThreadedTcpSessionTransportDriver,
+    GuiClientCoreChatSessionRuntimeAdapter, GuiLoopbackSessionTransportDriver,
+    GuiOutboundProtocolDeliveryResult, GuiOwnedPlayer, GuiPlayerLaunchRuntimeState,
+    GuiQueuedSessionTransportHandle, GuiSessionRoomPlaystate, GuiSessionRuntimeAdapter,
+    GuiSessionTransportDriver, GuiTestPlayerAdapter, GuiThreadedTcpSessionTransportDriver,
 };
 use super::shell_state::{
     GuiCommandAvailabilityState, GuiConfigurationRuntimeSnapshot,

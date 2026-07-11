@@ -1,6 +1,128 @@
 use super::*;
 
 #[test]
+fn gui_client_core_outbound_delivery_retains_front_until_matching_write_receipt() {
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+
+    let startup = adapter
+        .begin_outbound_protocol_delivery()
+        .expect("startup delivery should stage")
+        .expect("startup Hello should be pending");
+    assert!(startup.line().contains("\"Hello\""));
+    assert!(
+        adapter
+            .begin_outbound_protocol_delivery()
+            .expect("duplicate delivery probe should succeed")
+            .is_none(),
+        "one session line must remain in flight until a receipt arrives"
+    );
+    adapter
+        .fail_outbound_protocol_delivery(startup.token())
+        .expect("failed transport attempt should release only the staged clone");
+
+    let startup_retry = adapter
+        .begin_outbound_protocol_delivery()
+        .expect("startup retry should stage")
+        .expect("failed startup Hello should remain pending");
+    assert_eq!(startup_retry.line(), startup.line());
+    adapter
+        .acknowledge_outbound_protocol_delivery(startup_retry.token())
+        .expect("matching write receipt should acknowledge startup Hello");
+    assert!(adapter.pending_startup_protocol_lines.is_empty());
+
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+        )
+        .expect("server Hello should activate the session");
+    GuiSessionRuntimeAdapter::send_chat_message(&mut adapter, "receipt-canary".to_owned())
+        .expect("chat should queue");
+    assert_eq!(adapter.runtime.pending_protocol_message_count(), 1);
+
+    let chat = adapter
+        .begin_outbound_protocol_delivery()
+        .expect("chat delivery should stage")
+        .expect("chat should be pending");
+    assert!(chat.line().contains("receipt-canary"));
+    assert_eq!(
+        adapter.runtime.pending_protocol_message_count(),
+        1,
+        "staging must not acknowledge the client-core outbox"
+    );
+    assert!(
+        adapter
+            .acknowledge_outbound_protocol_delivery(chat.token().wrapping_add(1))
+            .is_err(),
+        "a stale or mismatched receipt must not pop the outbox front"
+    );
+    assert_eq!(adapter.runtime.pending_protocol_message_count(), 1);
+    adapter
+        .acknowledge_outbound_protocol_delivery(chat.token())
+        .expect("matching write receipt should acknowledge chat");
+    assert_eq!(adapter.runtime.pending_protocol_message_count(), 0);
+}
+
+#[test]
+fn failed_runtime_delivery_retries_only_after_reconnect_hello_completes() {
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+    let startup = adapter
+        .begin_outbound_protocol_delivery()
+        .expect("startup delivery should stage")
+        .expect("startup Hello should be pending");
+    adapter
+        .acknowledge_outbound_protocol_delivery(startup.token())
+        .expect("startup Hello should acknowledge");
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+        )
+        .expect("server Hello should activate the session");
+    GuiSessionRuntimeAdapter::send_chat_message(&mut adapter, "retry-canary".to_owned())
+        .expect("chat should queue");
+
+    let failed_chat = adapter
+        .begin_outbound_protocol_delivery()
+        .expect("chat delivery should stage")
+        .expect("chat should be pending");
+    adapter
+        .fail_outbound_protocol_delivery(failed_chat.token())
+        .expect("partial write failure should leave the core front unacknowledged");
+    adapter.prepare_transport_reconnect();
+
+    let reconnect_hello = adapter
+        .begin_outbound_protocol_delivery()
+        .expect("reconnect Hello should stage")
+        .expect("reconnect Hello should take priority");
+    assert!(reconnect_hello.line().contains("\"Hello\""));
+    assert!(!reconnect_hello.line().contains("retry-canary"));
+    adapter
+        .acknowledge_outbound_protocol_delivery(reconnect_hello.token())
+        .expect("reconnect Hello write should acknowledge");
+    assert!(
+        adapter
+            .begin_outbound_protocol_delivery()
+            .expect("inactive delivery probe should succeed")
+            .is_none(),
+        "retained commands must wait for the server Hello, not merely the Hello socket write"
+    );
+    assert_eq!(adapter.runtime.pending_protocol_message_count(), 1);
+
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+        )
+        .expect("replacement server Hello should reactivate the session");
+    let retried_chat = adapter
+        .begin_outbound_protocol_delivery()
+        .expect("retained chat retry should stage")
+        .expect("retained chat should retry after activation");
+    assert!(retried_chat.line().contains("retry-canary"));
+    assert_ne!(retried_chat.token(), failed_chat.token());
+}
+
+#[test]
 fn gui_client_core_chat_session_runtime_adapter_startup_hello_includes_hashed_password_and_full_features()
  {
     let runtime_settings =

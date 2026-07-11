@@ -214,7 +214,7 @@ impl GuiPersistedConfigRuntimeOwner {
             self.session_transport_disconnect_pending_cleanup = true;
             return;
         };
-        session_transport.clear_protocol_lines();
+        session_transport.clear_inbound_protocol_lines();
 
         let Some(session) = self.session.as_mut() else {
             self.session_transport_disconnect_pending_cleanup = true;
@@ -380,20 +380,99 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) {
-        let Some(session_transport) = self.session_transport.as_ref() else {
-            return;
-        };
-        let Some(session_transport_driver) = self.session_transport_driver.as_mut() else {
-            return;
-        };
-        let liveness_enabled = self
-            .session
-            .as_ref()
-            .is_some_and(|session| session.server_handshake_completed());
-        session_transport_driver.set_protocol_liveness_enabled(liveness_enabled);
-        if let Err(error) = session_transport_driver.pump(session_transport) {
-            self.handle_session_transport_failure(handle, projected_state, error);
+        const MAX_RELIABLE_FRAME_WRITES_PER_PUMP: usize = 64;
+
+        if self.apply_session_transport_outbound_delivery_results(handle, projected_state) {
+            self.flush_session_transport_outbound(handle, projected_state);
         }
+        let Some(session_transport) = self.session_transport.as_ref().cloned() else {
+            return;
+        };
+        for _ in 0..MAX_RELIABLE_FRAME_WRITES_PER_PUMP {
+            let liveness_enabled = self
+                .session
+                .as_ref()
+                .is_some_and(|session| session.server_handshake_completed());
+            let pump_result = {
+                let Some(session_transport_driver) = self.session_transport_driver.as_mut() else {
+                    return;
+                };
+                session_transport_driver.set_protocol_liveness_enabled(liveness_enabled);
+                session_transport_driver.pump(&session_transport)
+            };
+            let frame_written =
+                self.apply_session_transport_outbound_delivery_results(handle, projected_state);
+            if let Err(error) = pump_result {
+                session_transport.fail_pending_outbound_protocol_delivery(0, error.clone());
+                self.apply_session_transport_outbound_delivery_results(handle, projected_state);
+                self.handle_session_transport_failure(handle, projected_state, error);
+                return;
+            }
+            if !frame_written {
+                return;
+            }
+            self.flush_session_transport_outbound(handle, projected_state);
+        }
+    }
+
+    fn apply_session_transport_outbound_delivery_results(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+    ) -> bool {
+        let Some(session_transport) = self.session_transport.as_ref() else {
+            return false;
+        };
+        let results = session_transport.drain_outbound_protocol_delivery_results();
+        if results.is_empty() {
+            return false;
+        }
+
+        let mut actions = Vec::new();
+        let mut frame_written = false;
+        for result in results {
+            match result {
+                GuiOutboundProtocolDeliveryResult::FrameWritten { token } => {
+                    frame_written = true;
+                    if let Some(session) = self.session.as_mut()
+                        && let Err(error) = session.acknowledge_outbound_protocol_delivery(token)
+                    {
+                        actions.push(GuiShellAction::PushTransientNotification {
+                            level: GuiTransientNotificationLevel::Error,
+                            message: format!(
+                                "Outbound protocol delivery acknowledgement failed: {error}"
+                            ),
+                        });
+                    }
+                }
+                GuiOutboundProtocolDeliveryResult::FrameFailed {
+                    token,
+                    bytes_written,
+                    message,
+                } => {
+                    if let Some(session) = self.session.as_mut()
+                        && let Err(error) = session.fail_outbound_protocol_delivery(token)
+                    {
+                        actions.push(GuiShellAction::PushTransientNotification {
+                            level: GuiTransientNotificationLevel::Error,
+                            message: format!(
+                                "Outbound protocol delivery failure handling failed: {error}"
+                            ),
+                        });
+                    }
+                    actions.push(GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Error,
+                        message: format!(
+                            "Outbound protocol frame failed after {bytes_written} bytes and remains queued for retry: {message}"
+                        ),
+                    });
+                }
+            }
+        }
+        if !actions.is_empty() {
+            Self::push_actions_and_project(handle, projected_state, actions);
+        }
+        frame_written
     }
 
     pub(super) fn drain_session_transport_inbound(
@@ -489,18 +568,51 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) {
-        let Some(session_transport) = self.session_transport.as_ref() else {
+        let _ = self.apply_session_transport_outbound_delivery_results(handle, projected_state);
+        let Some(session_transport) = self.session_transport.as_ref().cloned() else {
             return;
         };
         let Some(session) = self.session.as_mut() else {
             return;
         };
-        match session.flush_outbound_protocol_lines() {
-            Ok(outbound_protocol_lines) => {
-                if !outbound_protocol_lines.is_empty() {
-                    session_transport.push_outbound_protocol_lines(outbound_protocol_lines);
+        #[cfg(test)]
+        if self.session_transport_driver.is_none() {
+            // Legacy owner tests use the shared handle itself as an infallible
+            // capture sink. Keep their batch-observation surface while all
+            // fallible production drivers use staged, receipt-based delivery.
+            match session.flush_outbound_protocol_lines() {
+                Ok(lines) => session_transport.push_outbound_protocol_lines(lines),
+                Err(error) => Self::push_actions_and_project(
+                    handle,
+                    projected_state,
+                    vec![GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Error,
+                        message: format!("Outbound session transport flush failed: {error}"),
+                    }],
+                ),
+            }
+            return;
+        }
+        match session.begin_outbound_protocol_delivery() {
+            Ok(Some(delivery)) => {
+                if let Err(delivery) =
+                    session_transport.try_push_outbound_protocol_delivery(delivery)
+                {
+                    let token = delivery.token();
+                    let _ = session.fail_outbound_protocol_delivery(token);
+                    Self::push_actions_and_project(
+                        handle,
+                        projected_state,
+                        vec![GuiShellAction::PushTransientNotification {
+                            level: GuiTransientNotificationLevel::Error,
+                            message:
+                                "Outbound session transport already owns a reliable protocol frame."
+                                    .to_owned(),
+                        }],
+                    );
                 }
             }
+            Ok(None) => {}
             Err(error) => {
                 Self::push_actions_and_project(
                     handle,

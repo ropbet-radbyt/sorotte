@@ -18,7 +18,9 @@ use sorotte_protocol::{
     decode_message_line, decode_message_line_items, encode_message_line,
 };
 
-use super::handle::{GuiQueuedSessionTransportHandle, GuiSessionTransportDriver};
+use super::handle::{
+    GuiOutboundProtocolDeliveryResult, GuiQueuedSessionTransportHandle, GuiSessionTransportDriver,
+};
 
 pub(in crate::app::runtime_stack::transport) const MAX_INBOUND_PROTOCOL_LINE_BYTES: usize =
     // Server List snapshots aggregate per-user file metadata; media-match signatures are capped
@@ -35,13 +37,6 @@ impl GuiTcpSessionNetworkTransport {
         match self {
             Self::Plain(stream) => Some(stream),
             Self::Tls(_) => None,
-        }
-    }
-
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        match self {
-            Self::Plain(stream) => stream.write(buf),
-            Self::Tls(stream) => stream.write(buf),
         }
     }
 
@@ -69,6 +64,22 @@ impl GuiTcpSessionNetworkTransport {
     }
 }
 
+impl Write for GuiTcpSessionNetworkTransport {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            Self::Plain(stream) => stream.write(buf),
+            Self::Tls(stream) => stream.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Self::Plain(stream) => stream.flush(),
+            Self::Tls(stream) => stream.flush(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GuiTcpSessionTlsNegotiationState {
     PendingRequest,
@@ -77,14 +88,20 @@ enum GuiTcpSessionTlsNegotiationState {
     Active,
 }
 
+struct GuiTcpPendingOutboundFrame {
+    token: Option<u64>,
+    bytes: Vec<u8>,
+    offset: usize,
+}
+
 pub(in crate::app) struct GuiTcpSessionTransportDriver {
     host: String,
     port: u16,
     transport: Option<GuiTcpSessionNetworkTransport>,
     pending_transport_outbound_lines: VecDeque<Vec<u8>>,
     pending_transport_outbound_offset: usize,
-    pending_outbound_lines: VecDeque<Vec<u8>>,
-    pending_outbound_offset: usize,
+    pending_outbound_lines: VecDeque<GuiTcpPendingOutboundFrame>,
+    transport_handle: Option<GuiQueuedSessionTransportHandle>,
     inbound_buffer: Vec<u8>,
     inbound_idle_timeout: Duration,
     last_inbound_activity_at: Instant,
@@ -201,7 +218,7 @@ impl GuiTcpSessionTransportDriver {
             pending_transport_outbound_lines: VecDeque::new(),
             pending_transport_outbound_offset: 0,
             pending_outbound_lines: VecDeque::new(),
-            pending_outbound_offset: 0,
+            transport_handle: None,
             inbound_buffer: Vec::new(),
             inbound_idle_timeout: Self::INBOUND_IDLE_TIMEOUT,
             last_inbound_activity_at: Instant::now(),
@@ -233,12 +250,30 @@ impl GuiTcpSessionTransportDriver {
         self
     }
 
+    fn fail_pending_outbound_deliveries(&mut self, message: &str) {
+        let Some(transport_handle) = self.transport_handle.as_ref() else {
+            return;
+        };
+        for frame in &self.pending_outbound_lines {
+            if let Some(token) = frame.token {
+                transport_handle.publish_outbound_protocol_delivery_result(
+                    GuiOutboundProtocolDeliveryResult::FrameFailed {
+                        token,
+                        bytes_written: frame.offset,
+                        message: message.to_owned(),
+                    },
+                );
+            }
+        }
+        transport_handle.fail_pending_outbound_protocol_delivery(0, message.to_owned());
+    }
+
     fn disconnect_with_error(&mut self, message: String) -> Result<(), String> {
+        self.fail_pending_outbound_deliveries(&message);
         self.transport = None;
         self.pending_transport_outbound_lines.clear();
         self.pending_transport_outbound_offset = 0;
         self.pending_outbound_lines.clear();
-        self.pending_outbound_offset = 0;
         self.inbound_buffer.clear();
         Err(message)
     }
@@ -260,14 +295,18 @@ impl GuiTcpSessionTransportDriver {
     }
 
     fn reconnect_stream(&mut self) -> Result<(), String> {
-        let stream = Self::connect_stream(&self.host, self.port)?;
-        Self::configure_connected_stream(&stream)?;
-        self.transport = Some(GuiTcpSessionNetworkTransport::Plain(stream));
+        let reset_message =
+            "Outbound protocol delivery was interrupted while reconnecting the TCP transport.";
+        self.fail_pending_outbound_deliveries(reset_message);
+        self.transport = None;
         self.pending_transport_outbound_lines.clear();
         self.pending_transport_outbound_offset = 0;
         self.pending_outbound_lines.clear();
-        self.pending_outbound_offset = 0;
         self.inbound_buffer.clear();
+
+        let stream = Self::connect_stream(&self.host, self.port)?;
+        Self::configure_connected_stream(&stream)?;
+        self.transport = Some(GuiTcpSessionNetworkTransport::Plain(stream));
         self.last_inbound_activity_at = Instant::now();
         self.tls_negotiation_state = GuiTcpSessionTlsNegotiationState::PendingRequest;
         Ok(())
@@ -288,17 +327,32 @@ impl GuiTcpSessionTransportDriver {
     }
 
     fn queue_outbound_lines(&mut self, transport: &GuiQueuedSessionTransportHandle) {
+        if let Some(delivery) = transport.take_outbound_protocol_delivery_for_driver() {
+            let mut encoded_line = delivery.line.into_bytes();
+            encoded_line.extend_from_slice(b"\r\n");
+            self.pending_outbound_lines
+                .push_back(GuiTcpPendingOutboundFrame {
+                    token: Some(delivery.token),
+                    bytes: encoded_line,
+                    offset: 0,
+                });
+        }
         for line in transport.drain_outbound_protocol_lines() {
             let mut encoded_line = line.into_bytes();
             encoded_line.extend_from_slice(b"\r\n");
-            self.pending_outbound_lines.push_back(encoded_line);
+            self.pending_outbound_lines
+                .push_back(GuiTcpPendingOutboundFrame {
+                    token: None,
+                    bytes: encoded_line,
+                    offset: 0,
+                });
         }
     }
 
-    fn flush_queue(
+    fn flush_transport_queue(
         queue: &mut VecDeque<Vec<u8>>,
         offset: &mut usize,
-        transport: &mut GuiTcpSessionNetworkTransport,
+        transport: &mut impl Write,
         closed_message: &'static str,
         error_prefix: &'static str,
     ) -> Result<(), String> {
@@ -324,11 +378,41 @@ impl GuiTcpSessionTransportDriver {
         Ok(())
     }
 
+    fn flush_outbound_frame_queue(
+        queue: &mut VecDeque<GuiTcpPendingOutboundFrame>,
+        transport: &mut impl Write,
+        mut frame_written: impl FnMut(u64),
+    ) -> Result<(), String> {
+        while let Some(front) = queue.front_mut() {
+            let pending_slice = &front.bytes[front.offset..];
+            match transport.write(pending_slice) {
+                Ok(0) => {
+                    return Err("Session transport TCP connection closed while writing.".to_owned());
+                }
+                Ok(written) => {
+                    front.offset += written;
+                    if front.offset >= front.bytes.len() {
+                        let token = front.token;
+                        queue.pop_front();
+                        if let Some(token) = token {
+                            frame_written(token);
+                        }
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) => {
+                    return Err(format!("Session transport TCP write failed: {error}"));
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn flush_outbound_lines(&mut self) -> Result<(), String> {
         let Some(transport) = self.transport.as_mut() else {
             return Ok(());
         };
-        if let Err(error) = Self::flush_queue(
+        if let Err(error) = Self::flush_transport_queue(
             &mut self.pending_transport_outbound_lines,
             &mut self.pending_transport_outbound_offset,
             transport,
@@ -340,13 +424,16 @@ impl GuiTcpSessionTransportDriver {
         if self.tls_negotiation_state == GuiTcpSessionTlsNegotiationState::AwaitingResponse {
             return Ok(());
         }
-        if let Err(error) = Self::flush_queue(
-            &mut self.pending_outbound_lines,
-            &mut self.pending_outbound_offset,
-            transport,
-            "Session transport TCP connection closed while writing.",
-            "Session transport TCP write failed",
-        ) {
+        let transport_handle = self.transport_handle.clone();
+        if let Err(error) =
+            Self::flush_outbound_frame_queue(&mut self.pending_outbound_lines, transport, |token| {
+                if let Some(transport_handle) = transport_handle.as_ref() {
+                    transport_handle.publish_outbound_protocol_delivery_result(
+                        GuiOutboundProtocolDeliveryResult::FrameWritten { token },
+                    );
+                }
+            })
+        {
             return self.disconnect_with_error(error);
         }
         Ok(())
@@ -584,18 +671,35 @@ impl GuiTcpSessionTransportDriver {
 
 impl GuiSessionTransportDriver for GuiTcpSessionTransportDriver {
     fn pump(&mut self, transport: &GuiQueuedSessionTransportHandle) -> Result<(), String> {
-        self.queue_tls_negotiation_request_if_needed()?;
-        self.queue_outbound_lines(transport);
-        self.flush_outbound_lines()?;
-        self.drain_inbound_lines(transport)?;
-        if self.tls_negotiation_state != GuiTcpSessionTlsNegotiationState::AwaitingResponse {
+        if self.transport_handle.is_none() {
+            self.transport_handle = Some(transport.clone());
+        }
+        let result = (|| {
+            self.queue_tls_negotiation_request_if_needed()?;
+            self.queue_outbound_lines(transport);
             self.flush_outbound_lines()?;
+            self.drain_inbound_lines(transport)?;
+            if self.tls_negotiation_state != GuiTcpSessionTlsNegotiationState::AwaitingResponse {
+                self.flush_outbound_lines()?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            return self.disconnect_with_error(error);
         }
         Ok(())
     }
 
     fn reconnect(&mut self) -> Result<(), String> {
         self.reconnect_stream()
+    }
+}
+
+impl Drop for GuiTcpSessionTransportDriver {
+    fn drop(&mut self) {
+        self.fail_pending_outbound_deliveries(
+            "Outbound protocol delivery was interrupted while dropping the TCP transport.",
+        );
     }
 }
 
@@ -610,6 +714,8 @@ pub(in crate::app) struct GuiThreadedTcpSessionTransportDriver {
 
 struct GuiThreadedTcpSessionTransportWorker {
     stop_tx: mpsc::Sender<()>,
+    pump_tx: mpsc::Sender<()>,
+    pump_result_rx: mpsc::Receiver<Result<(), String>>,
     error_rx: mpsc::Receiver<String>,
     join_handle: Option<thread::JoinHandle<()>>,
 }
@@ -647,6 +753,8 @@ impl GuiThreadedTcpSessionTransportDriver {
         let liveness_line = Self::liveness_protocol_line()?;
         let liveness_enabled = self.liveness_enabled.clone();
         let (stop_tx, stop_rx) = mpsc::channel();
+        let (pump_tx, pump_rx) = mpsc::channel();
+        let (pump_result_tx, pump_result_rx) = mpsc::channel();
         let (error_tx, error_rx) = mpsc::channel();
         let join_handle = thread::Builder::new()
             .name("sorotte-gui-tcp-transport".to_owned())
@@ -656,7 +764,20 @@ impl GuiThreadedTcpSessionTransportDriver {
                     transport.outbound_protocol_activity_revision();
                 let mut next_liveness_at = Instant::now() + Self::LIVENESS_INITIAL_DELAY;
                 loop {
+                    let pump_requested = match pump_rx.recv_timeout(Self::WORKER_PUMP_INTERVAL) {
+                        Ok(()) => true,
+                        Err(mpsc::RecvTimeoutError::Timeout) => false,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => {
+                            driver.fail_pending_outbound_deliveries(
+                                "Outbound protocol delivery was interrupted while stopping the TCP transport worker.",
+                            );
+                            break;
+                        }
+                    };
                     if stop_rx.try_recv().is_ok() {
+                        driver.fail_pending_outbound_deliveries(
+                            "Outbound protocol delivery was interrupted while stopping the TCP transport worker.",
+                        );
                         break;
                     }
 
@@ -682,16 +803,26 @@ impl GuiThreadedTcpSessionTransportDriver {
                     liveness_was_enabled = liveness_is_enabled;
 
                     if let Err(error) = driver.pump(&transport) {
-                        let _ = error_tx.send(error);
+                        let _ = error_tx.send(error.clone());
+                        if pump_requested {
+                            let _ = pump_result_tx.send(Err(error));
+                        }
                         break;
                     }
-                    thread::sleep(Self::WORKER_PUMP_INTERVAL);
+                    if pump_requested && pump_result_tx.send(Ok(())).is_err() {
+                        driver.fail_pending_outbound_deliveries(
+                            "Outbound protocol delivery was interrupted after the TCP transport owner disconnected.",
+                        );
+                        break;
+                    }
                 }
             })
             .map_err(|error| format!("Session transport TCP worker spawn failed: {error}"))?;
 
         self.worker = Some(GuiThreadedTcpSessionTransportWorker {
             stop_tx,
+            pump_tx,
+            pump_result_rx,
             error_rx,
             join_handle: Some(join_handle),
         });
@@ -714,6 +845,12 @@ impl GuiThreadedTcpSessionTransportDriver {
     fn stop_worker(&mut self) {
         if let Some(worker) = self.worker.take() {
             worker.stop();
+        }
+        if let Some(transport_handle) = self.transport_handle.as_ref() {
+            transport_handle.fail_pending_outbound_protocol_delivery(
+                0,
+                "Outbound protocol delivery was interrupted while stopping the TCP transport worker.",
+            );
         }
     }
 
@@ -741,9 +878,36 @@ impl GuiSessionTransportDriver for GuiThreadedTcpSessionTransportDriver {
             self.transport_handle = Some(transport.clone());
         }
         if let Some(error) = self.take_worker_error() {
+            transport.fail_pending_outbound_protocol_delivery(0, error.clone());
             return Err(error);
         }
-        self.ensure_worker_started(transport)
+        if let Err(error) = self.ensure_worker_started(transport) {
+            transport.fail_pending_outbound_protocol_delivery(0, error.clone());
+            return Err(error);
+        }
+        if self.worker_failed {
+            // The owner already observed this generation's failure and owns
+            // the reconnect deadline. Stay quiescent until reconnect()
+            // installs a replacement worker instead of reporting a fresh
+            // failure on every UI pump.
+            return Ok(());
+        }
+        let pump_result = self
+            .worker
+            .as_ref()
+            .ok_or_else(|| "Session transport TCP worker is unavailable.".to_owned())?
+            .pump();
+        if let Err(error) = pump_result {
+            transport.fail_pending_outbound_protocol_delivery(0, error.clone());
+            self.stop_worker();
+            self.worker_failed = true;
+            return Err(error);
+        }
+        if let Some(error) = self.take_worker_error() {
+            transport.fail_pending_outbound_protocol_delivery(0, error.clone());
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn set_protocol_liveness_enabled(&mut self, enabled: bool) {
@@ -765,6 +929,15 @@ impl GuiSessionTransportDriver for GuiThreadedTcpSessionTransportDriver {
 }
 
 impl GuiThreadedTcpSessionTransportWorker {
+    fn pump(&self) -> Result<(), String> {
+        self.pump_tx
+            .send(())
+            .map_err(|_| "Session transport TCP worker exited unexpectedly.".to_owned())?;
+        self.pump_result_rx
+            .recv()
+            .map_err(|_| "Session transport TCP worker exited unexpectedly.".to_owned())?
+    }
+
     fn stop(mut self) {
         let _ = self.stop_tx.send(());
         if let Some(join_handle) = self.join_handle.take() {
@@ -781,7 +954,33 @@ impl Drop for GuiThreadedTcpSessionTransportDriver {
 
 #[cfg(test)]
 mod tests {
+    use super::super::handle::GuiOutboundProtocolDelivery;
     use super::*;
+
+    struct PartialThenErrorWriter {
+        prefix_bytes: usize,
+        calls: usize,
+        written: Vec<u8>,
+    }
+
+    impl Write for PartialThenErrorWriter {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            self.calls += 1;
+            if self.calls > 1 {
+                return Err(io::Error::new(
+                    io::ErrorKind::ConnectionReset,
+                    "scripted write failure",
+                ));
+            }
+            let written = self.prefix_bytes.min(buffer.len());
+            self.written.extend_from_slice(&buffer[..written]);
+            Ok(written)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn next_complete_inbound_line_accepts_valid_prefix_before_unknown_command() {
@@ -795,5 +994,96 @@ mod tests {
         assert!(line.contains("\"Set\""));
         assert!(line.contains("\"Bogus\""));
         assert!(inbound_buffer.is_empty());
+    }
+
+    #[test]
+    fn partial_frame_write_is_failed_without_ack_and_can_be_retried_in_full() {
+        let transport = GuiQueuedSessionTransportHandle::default();
+        let line = r#"{"Chat":"retry me"}"#;
+        transport
+            .try_push_outbound_protocol_delivery(GuiOutboundProtocolDelivery::new(41, line))
+            .expect("first tracked delivery should fit");
+        let delivery = transport
+            .take_outbound_protocol_delivery_for_driver()
+            .expect("driver should claim the tracked delivery");
+        let mut bytes = delivery.line.into_bytes();
+        bytes.extend_from_slice(b"\r\n");
+        let expected_frame = bytes.clone();
+        let mut queue = VecDeque::from([GuiTcpPendingOutboundFrame {
+            token: Some(delivery.token),
+            bytes,
+            offset: 0,
+        }]);
+        let mut writer = PartialThenErrorWriter {
+            prefix_bytes: 7,
+            calls: 0,
+            written: Vec::new(),
+        };
+        let mut written_tokens = Vec::new();
+
+        let error = GuiTcpSessionTransportDriver::flush_outbound_frame_queue(
+            &mut queue,
+            &mut writer,
+            |token| written_tokens.push(token),
+        )
+        .expect_err("the scripted second write should fail");
+
+        assert!(error.contains("scripted write failure"));
+        assert_eq!(writer.written, expected_frame[..7]);
+        assert_eq!(queue.front().map(|frame| frame.offset), Some(7));
+        assert!(written_tokens.is_empty());
+        transport.publish_outbound_protocol_delivery_result(
+            GuiOutboundProtocolDeliveryResult::FrameFailed {
+                token: 41,
+                bytes_written: 7,
+                message: error,
+            },
+        );
+        let blocked = GuiOutboundProtocolDelivery::new(42, line);
+        assert_eq!(
+            transport.try_push_outbound_protocol_delivery(blocked.clone()),
+            Err(blocked),
+            "the tracked slot must remain occupied until the owner drains its result"
+        );
+        assert_eq!(
+            transport.drain_outbound_protocol_delivery_results(),
+            vec![GuiOutboundProtocolDeliveryResult::FrameFailed {
+                token: 41,
+                bytes_written: 7,
+                message: "Session transport TCP write failed: scripted write failure".to_owned(),
+            }]
+        );
+
+        transport
+            .try_push_outbound_protocol_delivery(GuiOutboundProtocolDelivery::new(42, line))
+            .expect("replacement generation should accept the retry");
+        let retry = transport
+            .take_outbound_protocol_delivery_for_driver()
+            .expect("driver should claim the retry");
+        let mut retry_bytes = retry.line.into_bytes();
+        retry_bytes.extend_from_slice(b"\r\n");
+        let mut retry_queue = VecDeque::from([GuiTcpPendingOutboundFrame {
+            token: Some(retry.token),
+            bytes: retry_bytes,
+            offset: 0,
+        }]);
+        let mut replacement_wire = Vec::new();
+        GuiTcpSessionTransportDriver::flush_outbound_frame_queue(
+            &mut retry_queue,
+            &mut replacement_wire,
+            |token| {
+                transport.publish_outbound_protocol_delivery_result(
+                    GuiOutboundProtocolDeliveryResult::FrameWritten { token },
+                );
+            },
+        )
+        .expect("replacement transport should write the complete frame");
+
+        assert!(retry_queue.is_empty());
+        assert_eq!(replacement_wire, expected_frame);
+        assert_eq!(
+            transport.drain_outbound_protocol_delivery_results(),
+            vec![GuiOutboundProtocolDeliveryResult::FrameWritten { token: 42 }]
+        );
     }
 }

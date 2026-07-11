@@ -54,6 +54,7 @@ pub(super) use self::session_adapter::{
 #[cfg(test)]
 pub(super) use self::transport::GuiTcpSessionTransportDriver;
 pub(super) use self::transport::{
-    GuiLoopbackSessionTransportDriver, GuiQueuedSessionTransportHandle, GuiSessionTransportDriver,
+    GuiLoopbackSessionTransportDriver, GuiOutboundProtocolDelivery,
+    GuiOutboundProtocolDeliveryResult, GuiQueuedSessionTransportHandle, GuiSessionTransportDriver,
     GuiThreadedTcpSessionTransportDriver,
 };

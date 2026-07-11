@@ -36,6 +36,20 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         self.shared_playlist_control_available()
     }
 
+    fn begin_outbound_protocol_delivery(
+        &mut self,
+    ) -> Result<Option<GuiOutboundProtocolDelivery>, String> {
+        GuiClientCoreChatSessionRuntimeAdapter::begin_outbound_protocol_delivery(self)
+    }
+
+    fn acknowledge_outbound_protocol_delivery(&mut self, token: u64) -> Result<(), String> {
+        GuiClientCoreChatSessionRuntimeAdapter::acknowledge_outbound_protocol_delivery(self, token)
+    }
+
+    fn fail_outbound_protocol_delivery(&mut self, token: u64) -> Result<(), String> {
+        GuiClientCoreChatSessionRuntimeAdapter::fail_outbound_protocol_delivery(self, token)
+    }
+
     fn flush_outbound_protocol_lines(&mut self) -> Result<Vec<String>, String> {
         GuiClientCoreChatSessionRuntimeAdapter::flush_outbound_protocol_lines(self)
     }

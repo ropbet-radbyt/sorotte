@@ -5,7 +5,10 @@ mod tcp;
 #[cfg(test)]
 mod tests;
 
-pub(in super::super) use handle::{GuiQueuedSessionTransportHandle, GuiSessionTransportDriver};
+pub(in super::super) use handle::{
+    GuiOutboundProtocolDelivery, GuiOutboundProtocolDeliveryResult,
+    GuiQueuedSessionTransportHandle, GuiSessionTransportDriver,
+};
 pub(in super::super) use loopback::GuiLoopbackSessionTransportDriver;
 #[cfg(test)]
 pub(in super::super) use tcp::GuiTcpSessionTransportDriver;

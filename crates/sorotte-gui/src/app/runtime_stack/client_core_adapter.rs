@@ -14,11 +14,25 @@ pub(in crate::app) struct GuiClientCoreChatSessionRuntimeAdapter {
     pub(super) runtime_settings: StoredClientSettingsRuntimeSnapshot,
     pub(in crate::app) runtime: ClientApplication<GuiNoopClientRuntimePlayer>,
     pub(super) pending_startup_protocol_lines: VecDeque<String>,
+    pub(super) next_outbound_protocol_delivery_token: u64,
+    pub(super) staged_outbound_protocol_delivery: Option<GuiStagedClientCoreProtocolDelivery>,
     pub(super) next_state_sync_heartbeat_at: Option<Instant>,
     pub(super) next_autoplay_tick_at: Option<Instant>,
     pub(super) pending_attached_player_local_runtime_actions: Vec<GuiAttachedPlayerRuntimeAction>,
     pub(super) tracked_remote_usernames: BTreeSet<String>,
     pub(super) optimistic_room_playlist: Option<(String, RoomPlaylistView)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GuiClientCoreProtocolDeliverySource {
+    Startup,
+    Runtime,
+}
+
+pub(super) struct GuiStagedClientCoreProtocolDelivery {
+    pub(super) token: u64,
+    pub(super) line: String,
+    pub(super) source: GuiClientCoreProtocolDeliverySource,
 }
 
 impl GuiClientCoreChatSessionRuntimeAdapter {
@@ -79,6 +93,8 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             runtime_settings,
             runtime: ClientApplication::new(session, GuiNoopClientRuntimePlayer),
             pending_startup_protocol_lines: VecDeque::from([hello_json]),
+            next_outbound_protocol_delivery_token: 1,
+            staged_outbound_protocol_delivery: None,
             next_state_sync_heartbeat_at: None,
             next_autoplay_tick_at: None,
             pending_attached_player_local_runtime_actions: Vec::new(),
@@ -304,6 +320,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             );
         }
         self.runtime = ClientApplication::new(session, GuiNoopClientRuntimePlayer);
+        self.staged_outbound_protocol_delivery = None;
         self.runtime.session_mut().mark_reconnecting(0);
         self.pending_startup_protocol_lines.clear();
         self.pending_startup_protocol_lines
@@ -318,6 +335,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     pub(super) fn prepare_transport_reconnect(&mut self) {
+        self.staged_outbound_protocol_delivery = None;
         self.runtime.session_mut().mark_reconnecting(0);
         let username = self.current_username_for_next_hello();
         self.username = username.clone();
@@ -618,6 +636,103 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                 .map_err(|error| format!("Queued protocol line encoding failed: {error}"))?,
         );
         Ok(lines)
+    }
+
+    pub(in crate::app) fn begin_outbound_protocol_delivery(
+        &mut self,
+    ) -> Result<Option<GuiOutboundProtocolDelivery>, String> {
+        if self.staged_outbound_protocol_delivery.is_some() {
+            return Ok(None);
+        }
+
+        let (line, source) = if let Some(line) = self.pending_startup_protocol_lines.front() {
+            let line = line.clone();
+            if !self.runtime.session().is_active() {
+                self.runtime.session_mut().mark_awaiting_hello();
+            }
+            (line, GuiClientCoreProtocolDeliverySource::Startup)
+        } else {
+            if !self.runtime.session().is_active() {
+                return Ok(None);
+            }
+            let Some(line) = self
+                .runtime
+                .pending_protocol_line()
+                .map_err(|error| format!("Queued protocol line encoding failed: {error}"))?
+            else {
+                return Ok(None);
+            };
+            (line, GuiClientCoreProtocolDeliverySource::Runtime)
+        };
+
+        let token = self.next_outbound_protocol_delivery_token;
+        self.next_outbound_protocol_delivery_token = self
+            .next_outbound_protocol_delivery_token
+            .wrapping_add(1)
+            .max(1);
+        self.staged_outbound_protocol_delivery = Some(GuiStagedClientCoreProtocolDelivery {
+            token,
+            line: line.clone(),
+            source,
+        });
+        Ok(Some(GuiOutboundProtocolDelivery::new(token, line)))
+    }
+
+    pub(in crate::app) fn acknowledge_outbound_protocol_delivery(
+        &mut self,
+        token: u64,
+    ) -> Result<(), String> {
+        let Some(staged) = self.staged_outbound_protocol_delivery.take() else {
+            return Err(format!(
+                "Outbound protocol delivery receipt {token} had no staged session line."
+            ));
+        };
+        if staged.token != token {
+            self.staged_outbound_protocol_delivery = Some(staged);
+            return Err(format!(
+                "Outbound protocol delivery receipt {token} did not match staged receipt {}.",
+                self.staged_outbound_protocol_delivery
+                    .as_ref()
+                    .map(|delivery| delivery.token)
+                    .unwrap_or_default()
+            ));
+        }
+
+        match staged.source {
+            GuiClientCoreProtocolDeliverySource::Startup => {
+                if self.pending_startup_protocol_lines.front() == Some(&staged.line) {
+                    self.pending_startup_protocol_lines.pop_front();
+                }
+            }
+            GuiClientCoreProtocolDeliverySource::Runtime => {
+                let pending = self
+                    .runtime
+                    .pending_protocol_line()
+                    .map_err(|error| format!("Queued protocol line encoding failed: {error}"))?;
+                if pending.as_deref() != Some(staged.line.as_str()) {
+                    return Err(
+                        "Outbound protocol delivery receipt did not match the client-core outbox front."
+                            .to_owned(),
+                    );
+                }
+                let _ = self.runtime.acknowledge_protocol_line();
+            }
+        }
+        Ok(())
+    }
+
+    pub(in crate::app) fn fail_outbound_protocol_delivery(
+        &mut self,
+        token: u64,
+    ) -> Result<(), String> {
+        let Some(staged) = self.staged_outbound_protocol_delivery.as_ref() else {
+            return Ok(());
+        };
+        if staged.token != token {
+            return Ok(());
+        }
+        self.staged_outbound_protocol_delivery = None;
+        Ok(())
     }
 
     fn apply_protocol_message(&mut self, message: ProtocolMessage) -> Result<(), String> {
