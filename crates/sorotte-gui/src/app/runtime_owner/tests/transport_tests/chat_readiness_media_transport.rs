@@ -10,6 +10,7 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_transport_lines() 
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         chat_input_enabled: Some(true),
+        shared_playlist_enabled: Some(false),
         ..StoredClientSettingsMvp::default()
     });
 

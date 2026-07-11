@@ -68,6 +68,7 @@ fn gui_persisted_config_runtime_owner_keeps_chat_disabled_until_server_hello_rep
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         chat_input_enabled: Some(true),
+        shared_playlist_enabled: Some(false),
         ..StoredClientSettingsMvp::default()
     });
 

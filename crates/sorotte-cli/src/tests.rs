@@ -14,9 +14,10 @@ use super::{
     apply_stored_media_search_startup_file_fallback_if_missing_legacy_compatible,
     chat_notification_message, clear_sorotte_cli_gui_state,
     clear_sorotte_cli_stored_settings_legacy_compatible,
-    cli_plex_config_from_env_and_stored_settings, controlled_room_base_name_legacy_compatible,
-    controller_auth_notification_hidden_from_osd, controller_auth_transition_notification_message,
-    create_client_runtime, create_client_runtime_with_managed_mpv_support, create_client_session,
+    cli_plex_config_from_env_and_stored_settings, client_hello_features_legacy_compatible,
+    controlled_room_base_name_legacy_compatible, controller_auth_notification_hidden_from_osd,
+    controller_auth_transition_notification_message, create_client_runtime,
+    create_client_runtime_with_managed_mpv_support, create_client_session,
     flush_autoplay_notifications_to_sink, flush_chat_notifications_to_sink,
     flush_controller_auth_notifications_to_sink, flush_file_difference_notifications_to_sink,
     flush_reconnect_correction_diagnostics_to_sink, flush_reconnect_notifications_to_sink,
@@ -231,6 +232,24 @@ fn test_client_loop_config_with_addr(addr: std::net::SocketAddr) -> ClientLoopCo
         host: addr.ip().to_string(),
         port: addr.port(),
         ..test_client_loop_config()
+    }
+}
+
+#[test]
+fn cli_hello_shared_playlist_feature_preserves_default_and_explicit_values() {
+    for (configured, expected) in [(None, true), (Some(true), true), (Some(false), false)] {
+        let config = ClientLoopConfig {
+            shared_playlists_enabled_override: configured,
+            ..test_client_loop_config()
+        };
+        let features = client_hello_features_legacy_compatible(&config);
+        assert_eq!(
+            features
+                .get("sharedPlaylists")
+                .and_then(serde_json::Value::as_bool),
+            Some(expected),
+            "unexpected sharedPlaylists value for override {configured:?}"
+        );
     }
 }
 

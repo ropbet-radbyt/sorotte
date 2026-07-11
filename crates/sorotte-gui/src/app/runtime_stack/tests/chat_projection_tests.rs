@@ -92,6 +92,7 @@ fn gui_client_core_chat_session_runtime_adapter_projects_session_state_into_main
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
+        shared_playlist_enabled: Some(false),
         ..StoredClientSettingsMvp::default()
     });
     let mut playback_ready_snapshot =
@@ -264,6 +265,7 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_user_changes_as_system_
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
+        shared_playlist_enabled: Some(false),
         ..StoredClientSettingsMvp::default()
     });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")

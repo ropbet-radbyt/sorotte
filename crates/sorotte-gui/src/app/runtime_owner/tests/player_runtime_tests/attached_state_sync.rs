@@ -136,8 +136,10 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         pending_logical_media_override: None,
     };
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(false),
+        ..StoredClientSettingsMvp::default()
+    });
 
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     let bootstrap_actions = without_media_match_runtime_snapshots(handle.drain_actions());

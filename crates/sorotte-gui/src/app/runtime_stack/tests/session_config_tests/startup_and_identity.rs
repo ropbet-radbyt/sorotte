@@ -123,6 +123,41 @@ fn failed_runtime_delivery_retries_only_after_reconnect_hello_completes() {
 }
 
 #[test]
+fn gui_hello_shared_playlist_feature_preserves_default_and_explicit_values() {
+    for (configured, expected) in [(None, true), (Some(true), true), (Some(false), false)] {
+        let runtime_settings =
+            stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {
+                shared_playlist_enabled: configured,
+                ..StoredClientSettingsMvp::default()
+            });
+        let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+            .expect("client-core chat adapter should bootstrap");
+        GuiSessionRuntimeAdapter::sync_runtime_settings(&mut adapter, &runtime_settings)
+            .expect("runtime settings should sync into the startup Hello");
+
+        let startup_lines = adapter
+            .flush_outbound_protocol_lines()
+            .expect("startup protocol lines should encode");
+        let ProtocolMessage::Hello(hello) =
+            decode_message_line(&startup_lines[0]).expect("startup Hello should decode")
+        else {
+            panic!("startup protocol line should be a Hello message");
+        };
+        assert_eq!(
+            hello
+                .hello
+                .features
+                .as_ref()
+                .and_then(serde_json::Value::as_object)
+                .and_then(|features| features.get("sharedPlaylists"))
+                .and_then(serde_json::Value::as_bool),
+            Some(expected),
+            "unexpected sharedPlaylists value for stored setting {configured:?}"
+        );
+    }
+}
+
+#[test]
 fn gui_client_core_chat_session_runtime_adapter_startup_hello_includes_hashed_password_and_full_features()
  {
     let runtime_settings =

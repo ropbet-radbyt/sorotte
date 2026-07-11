@@ -7,9 +7,7 @@ fn startup_notice_mentions_configuration_surface_and_grouped_sections() {
     assert!(notice.contains("[Shell App State]"));
     assert!(notice.contains("active_view=setup"));
     assert!(notice.contains("open_modal=(none)"));
-    assert!(
-        notice.contains("[Selection] user=0, playlist=(none), menu=0:0, media_directory=(none)")
-    );
+    assert!(notice.contains("[Selection] user=0, playlist=0, menu=0:0, media_directory=(none)"));
     assert!(notice.contains(
         "[Commands] busy=no, save_configuration=yes, reset_configuration=no, reload_configuration=yes, connect_saved_server=no, disconnect_session=no, connect_public_server=no, refresh_public_servers=yes, search_missing_media=no, toggle_pause=no, send_chat_message=yes"
     ));

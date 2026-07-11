@@ -746,8 +746,10 @@ fn gui_shell_app_state_announces_shared_playlist_events() {
 
 #[test]
 fn gui_shell_app_state_rejects_invalid_shared_playlist_events() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(false),
+        ..StoredClientSettingsMvp::default()
+    });
 
     assert!(
         !state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![

@@ -4,7 +4,10 @@ use super::*;
 fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(false),
+        ..StoredClientSettingsMvp::default()
+    });
 
     handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
         paths: vec!["C:/Media/episode1.mkv".to_owned()],
@@ -65,6 +68,7 @@ fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
     let mut cancel_chat_state =
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
             chat_input_enabled: Some(true),
+            shared_playlist_enabled: Some(false),
             ..StoredClientSettingsMvp::default()
         });
     cancel_chat_state.outgoing_chat_message = Some("cancel me".to_owned());
@@ -86,7 +90,10 @@ fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
     assert!(cancel_chat_state.outgoing_chat_message.is_none());
 
     let mut toggle_state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            shared_playlist_enabled: Some(false),
+            ..StoredClientSettingsMvp::default()
+        });
     toggle_state.main_window.playback.can_toggle_pause = true;
     toggle_state.main_window.playlist =
         vec![MainWindowPlaylistRow::inferred("episode1.mkv", false)];
@@ -638,6 +645,7 @@ fn gui_persisted_config_runtime_owner_clears_detached_missing_media_search_witho
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         media_search_directories: Some(vec!["C:/Media".to_owned()]),
+        shared_playlist_enabled: Some(false),
         ..StoredClientSettingsMvp::default()
     });
 

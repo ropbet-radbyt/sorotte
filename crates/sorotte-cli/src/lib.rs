@@ -73,8 +73,8 @@ use self::client_config::build_client_loop_config_from_env;
 use self::client_config::{
     ChatPolicyOverrides, ClientBehaviorOverrides, ClientLoopConfig, ReadinessAutoplayOverrides,
     apply_chat_policy_overrides, apply_client_behavior_overrides,
-    apply_readiness_autoplay_overrides, create_client_runtime, create_client_session,
-    normalize_controlled_room_input,
+    apply_readiness_autoplay_overrides, client_hello_features_legacy_compatible,
+    create_client_runtime, create_client_session, normalize_controlled_room_input,
     parse_reconnect_state_restore_correction_policy_mode_legacy_compatible,
 };
 use self::config_paths::set_sorotte_cli_config_cli_overrides;

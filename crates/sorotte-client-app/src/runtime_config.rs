@@ -331,7 +331,7 @@ impl Default for PlaybackConfig {
             folder_search_warning_threshold: Seconds(DEFAULT_FOLDER_SEARCH_WARNING_SECONDS),
             default_rate: PlaybackRate(1.0),
             default_volume: Percent(100.0),
-            shared_playlist_enabled: false,
+            shared_playlist_enabled: true,
             pause_on_leave: behavior.pause_on_leave,
             loop_at_end_of_playlist: behavior.loop_at_end_of_playlist,
             loop_single_files: behavior.loop_single_files,
@@ -1142,6 +1142,40 @@ fn non_empty_trimmed(value: String, label: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_stored_settings_keep_shared_playlists_enabled_by_default() {
+        assert!(PlaybackConfig::default().shared_playlist_enabled);
+
+        let config = ClientConfig::try_from_stored(&StoredClientSettingsV1::default())
+            .expect("empty stored settings should resolve");
+        assert!(config.playback.shared_playlist_enabled);
+    }
+
+    #[test]
+    fn legacy_ini_without_shared_playlist_field_keeps_compatibility_default() {
+        let settings = crate::sorotte_ini::parse_sorotte_ini_stored_client_settings_mvp(
+            "[client_settings]\nname = legacy-user\n",
+        );
+        assert_eq!(settings.shared_playlist_enabled, None);
+
+        let config = ClientConfig::try_from_stored(&settings)
+            .expect("legacy settings without the field should resolve");
+        assert!(config.playback.shared_playlist_enabled);
+    }
+
+    #[test]
+    fn explicit_shared_playlist_settings_override_compatibility_default() {
+        for enabled in [true, false] {
+            let settings = StoredClientSettingsV1 {
+                shared_playlist_enabled: Some(enabled),
+                ..StoredClientSettingsV1::default()
+            };
+            let config = ClientConfig::try_from_stored(&settings)
+                .expect("explicit shared-playlist setting should resolve");
+            assert_eq!(config.playback.shared_playlist_enabled, enabled);
+        }
+    }
 
     #[test]
     fn resolves_storage_dto_into_sliced_runtime_config() {
