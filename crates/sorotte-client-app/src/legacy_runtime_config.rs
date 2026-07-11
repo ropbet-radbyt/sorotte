@@ -1,5 +1,5 @@
 use crate::legacy_settings::{AutoplayThresholdOverride, StoredClientSettingsMvp};
-use crate::runtime_config::{ClientConfig, ClientConfigIssue};
+use crate::runtime_config::{ClientConfig, ClientConfigIssue, ServerPort};
 use sorotte_client_core::{PrivacyMode, UnpauseActionMode};
 use sorotte_secret::SecretValue;
 
@@ -196,7 +196,12 @@ pub fn stored_client_settings_runtime_snapshot_legacy_compatible(
         .filter(|username| !username.is_empty());
 
     if (resolved.host.is_none() || resolved.port.is_none())
-        && let Some(address) = first_stored_public_server_address_legacy_compatible(settings)
+        && let Some(address) = config_resolution
+            .config
+            .connection
+            .public_servers
+            .first()
+            .map(|server| server.address.as_str())
     {
         let (fallback_host, fallback_port) =
             parse_host_and_optional_port_from_host_arg_legacy_compatible(address);
@@ -252,10 +257,15 @@ pub fn stored_client_settings_config_plan_legacy_compatible(
         .as_deref()
         .and_then(|host| parse_host_and_optional_port_from_host_arg_legacy_compatible(host).1);
     if !env_presence.port {
-        plan.port = settings
-            .port
-            .or(embedded_stored_port)
-            .or(resolved_settings.port);
+        plan.port = match settings.port {
+            Some(port) => validated_stored_server_port(port),
+            None => match embedded_stored_port {
+                Some(port) => validated_stored_server_port(port),
+                None => resolved_settings
+                    .port
+                    .and_then(validated_stored_server_port),
+            },
+        };
     }
     if !env_presence.server_password {
         plan.server_password = config.connection.server_password.clone();
@@ -386,15 +396,8 @@ fn first_stored_room_list_entry_legacy_compatible(
         .find(|room| !room.trim().is_empty())
 }
 
-fn first_stored_public_server_address_legacy_compatible(
-    settings: &StoredClientSettingsMvp,
-) -> Option<&str> {
-    settings
-        .public_servers
-        .as_ref()?
-        .iter()
-        .map(|(_, address)| address.as_str())
-        .find(|address| !address.trim().is_empty())
+fn validated_stored_server_port(port: u16) -> Option<u16> {
+    ServerPort::new(port).ok().map(ServerPort::get)
 }
 
 #[cfg(test)]
@@ -504,6 +507,62 @@ mod tests {
                 .map(|secret| secret.expose_secret()),
             Some("AB-123")
         );
+    }
+
+    #[test]
+    fn legacy_runtime_snapshot_filters_zero_port_public_server_before_fallback() {
+        let settings = StoredClientSettingsMvp {
+            public_servers: Some(vec![
+                ("Invalid".to_owned(), "invalid.example:0".to_owned()),
+                ("Fallback".to_owned(), "fallback.example:8123".to_owned()),
+            ]),
+            ..StoredClientSettingsMvp::default()
+        };
+
+        let snapshot = stored_client_settings_runtime_snapshot_legacy_compatible(&settings);
+
+        assert_eq!(snapshot.settings.host.as_deref(), Some("fallback.example"));
+        assert_eq!(snapshot.settings.port, Some(8123));
+        assert_eq!(snapshot.config.connection.public_servers.len(), 1);
+        assert_eq!(
+            snapshot
+                .validation_issues
+                .iter()
+                .map(|issue| issue.field.as_str())
+                .collect::<Vec<_>>(),
+            vec!["public_servers[0].address"]
+        );
+    }
+
+    #[test]
+    fn legacy_config_plan_does_not_apply_invalid_embedded_or_explicit_zero_ports() {
+        let embedded_settings = StoredClientSettingsMvp {
+            host: Some("example.org:0".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        };
+        let embedded_snapshot =
+            stored_client_settings_runtime_snapshot_legacy_compatible(&embedded_settings);
+        let embedded_plan = stored_client_settings_config_plan_legacy_compatible(
+            &embedded_settings,
+            &StoredClientSettingsEnvPresence::default(),
+        );
+        assert_eq!(embedded_plan.host.as_deref(), Some("example.org"));
+        assert_eq!(embedded_plan.port, None);
+        assert_eq!(embedded_snapshot.validation_issues[0].field, "host");
+
+        let explicit_settings = StoredClientSettingsMvp {
+            host: Some("example.org:8123".to_owned()),
+            port: Some(0),
+            ..StoredClientSettingsMvp::default()
+        };
+        let explicit_snapshot =
+            stored_client_settings_runtime_snapshot_legacy_compatible(&explicit_settings);
+        let explicit_plan = stored_client_settings_config_plan_legacy_compatible(
+            &explicit_settings,
+            &StoredClientSettingsEnvPresence::default(),
+        );
+        assert_eq!(explicit_plan.port, None);
+        assert_eq!(explicit_snapshot.validation_issues[0].field, "port");
     }
 
     #[test]

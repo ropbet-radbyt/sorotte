@@ -503,33 +503,25 @@ pub fn resolve_client_config(settings: &StoredClientSettingsV1) -> ClientConfigR
     let mut config = ClientConfig::default();
     let mut issues = Vec::new();
 
-    config.connection.public_servers = resolve_public_servers(settings, &mut issues);
+    let resolved_public_servers = resolve_public_servers(settings, &mut issues);
+    config.connection.public_servers = resolved_public_servers.configs;
     config.connection.room_history = resolve_room_history(settings, &mut issues);
 
     if let Some(raw_host) = resolve_optional_text("host", settings.host.as_deref(), &mut issues) {
-        let (host, embedded_port) =
-            parse_host_and_optional_port_from_host_arg_legacy_compatible(&raw_host);
-        config.connection.host = non_empty_trimmed(host, "host").ok();
+        let endpoint = resolve_endpoint("host", &raw_host, &mut issues);
+        config.connection.host = non_empty_trimmed(endpoint.host, "host").ok();
         if settings.port.is_none()
-            && let Some(port) = embedded_port
-            && let Ok(port) = ServerPort::new(port)
+            && let Some(port) = endpoint.port
         {
             config.connection.port = port;
         }
     }
     if config.connection.host.is_none()
-        && let Some(address) = config
-            .connection
-            .public_servers
-            .iter()
-            .map(|server| server.address.as_str())
-            .next()
+        && let Some(endpoint) = resolved_public_servers.first_endpoint
     {
-        let (host, port) = parse_host_and_optional_port_from_host_arg_legacy_compatible(address);
-        config.connection.host = non_empty_trimmed(host, "host").ok();
+        config.connection.host = non_empty_trimmed(endpoint.host, "host").ok();
         if settings.port.is_none()
-            && let Some(port) = port
-            && let Ok(port) = ServerPort::new(port)
+            && let Some(port) = endpoint.port
         {
             config.connection.port = port;
         }
@@ -904,32 +896,81 @@ fn apply_interface_settings(
         .unwrap_or(interface.show_contact_info);
 }
 
+struct ResolvedEndpoint {
+    host: String,
+    port: Option<ServerPort>,
+    is_valid: bool,
+}
+
+struct ResolvedPublicServers {
+    configs: Vec<PublicServerConfig>,
+    first_endpoint: Option<ResolvedEndpoint>,
+}
+
+fn resolve_endpoint(
+    field: impl Into<String>,
+    address: &str,
+    issues: &mut Vec<ClientConfigIssue>,
+) -> ResolvedEndpoint {
+    let field = field.into();
+    let (host, embedded_port) =
+        parse_host_and_optional_port_from_host_arg_legacy_compatible(address);
+    let (port, is_valid) = match embedded_port.map(ServerPort::new) {
+        Some(Ok(port)) => (Some(port), true),
+        Some(Err(message)) => {
+            issues.push(ClientConfigIssue::new(
+                field,
+                format!("embedded port {message}"),
+            ));
+            (None, false)
+        }
+        None => (None, true),
+    };
+    ResolvedEndpoint {
+        host,
+        port,
+        is_valid,
+    }
+}
+
 fn resolve_public_servers(
     settings: &StoredClientSettingsV1,
     issues: &mut Vec<ClientConfigIssue>,
-) -> Vec<PublicServerConfig> {
-    settings
+) -> ResolvedPublicServers {
+    let mut configs = Vec::new();
+    let mut first_endpoint = None;
+    for (index, (label, address)) in settings
         .public_servers
         .as_deref()
         .unwrap_or_default()
         .iter()
         .enumerate()
-        .filter_map(|(index, (label, address))| {
-            let label = label.trim();
-            let address = address.trim();
-            if address.is_empty() {
-                issues.push(ClientConfigIssue::new(
-                    format!("public_servers[{index}].address"),
-                    "must not be empty",
-                ));
-                return None;
-            }
-            Some(PublicServerConfig {
-                label: label.to_owned(),
-                address: address.to_owned(),
-            })
-        })
-        .collect()
+    {
+        let label = label.trim();
+        let address = address.trim();
+        let field = format!("public_servers[{index}].address");
+        if address.is_empty() {
+            issues.push(ClientConfigIssue::new(field, "must not be empty"));
+            continue;
+        }
+
+        let endpoint = resolve_endpoint(field, address, issues);
+        if !endpoint.is_valid {
+            continue;
+        }
+        if first_endpoint.is_none() {
+            first_endpoint = Some(endpoint);
+        }
+        configs.push(PublicServerConfig {
+            label: label.to_owned(),
+            address: address.to_owned(),
+        });
+    }
+
+    ResolvedPublicServers {
+        configs,
+        first_endpoint,
+    }
 }
 
 fn resolve_room_history(
@@ -1209,6 +1250,107 @@ mod tests {
         );
         assert!(!config.plugins.stream_support_enabled);
         assert!(config.plex.sync_enabled);
+    }
+
+    #[test]
+    fn embedded_zero_port_in_host_is_reported_instead_of_silently_using_the_default() {
+        let resolution = ClientConfig::resolve(&StoredClientSettingsV1 {
+            host: Some("example.org:0".to_owned()),
+            ..StoredClientSettingsV1::default()
+        });
+
+        assert_eq!(
+            resolution.config.connection.host.as_deref(),
+            Some("example.org")
+        );
+        assert_eq!(resolution.config.connection.port.get(), DEFAULT_SERVER_PORT);
+        assert_eq!(
+            resolution.issues,
+            vec![ClientConfigIssue::new(
+                "host",
+                "embedded port must be between 1 and 65535",
+            )]
+        );
+        assert!(resolution.into_result().is_err());
+    }
+
+    #[test]
+    fn embedded_zero_port_in_public_server_is_reported_and_filtered_before_fallback() {
+        let resolution = ClientConfig::resolve(&StoredClientSettingsV1 {
+            public_servers: Some(vec![
+                ("Invalid".to_owned(), "public.example:0".to_owned()),
+                ("Primary".to_owned(), "fallback.example:8123".to_owned()),
+            ]),
+            ..StoredClientSettingsV1::default()
+        });
+
+        assert_eq!(
+            resolution.config.connection.host.as_deref(),
+            Some("fallback.example")
+        );
+        assert_eq!(resolution.config.connection.port.get(), 8123);
+        assert_eq!(
+            resolution.config.connection.public_servers,
+            vec![PublicServerConfig {
+                label: "Primary".to_owned(),
+                address: "fallback.example:8123".to_owned(),
+            }]
+        );
+        assert_eq!(
+            resolution.issues,
+            vec![ClientConfigIssue::new(
+                "public_servers[0].address",
+                "embedded port must be between 1 and 65535",
+            )]
+        );
+        assert!(resolution.into_result().is_err());
+    }
+
+    #[test]
+    fn embedded_port_issues_aggregate_and_explicit_port_validation_remains_independent() {
+        let resolution = ClientConfig::resolve(&StoredClientSettingsV1 {
+            host: Some("example.org:0".to_owned()),
+            port: Some(0),
+            public_servers: Some(vec![("Secondary".to_owned(), "[2001:db8::1]:0".to_owned())]),
+            ..StoredClientSettingsV1::default()
+        });
+
+        assert_eq!(resolution.config.connection.port.get(), DEFAULT_SERVER_PORT);
+        assert_eq!(
+            resolution
+                .issues
+                .iter()
+                .map(|issue| issue.field.as_str())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["host", "port", "public_servers[0].address"])
+        );
+        assert_eq!(resolution.issues.len(), 3);
+    }
+
+    #[test]
+    fn valid_embedded_ports_keep_host_ipv4_ipv6_parsing_and_explicit_port_precedence() {
+        for (raw_host, expected_host) in [
+            ("example.org:7001", "example.org"),
+            ("127.0.0.1:7001", "127.0.0.1"),
+            ("[2001:db8::1]:7001", "[2001:db8::1]"),
+        ] {
+            let config = ClientConfig::try_from_stored(&StoredClientSettingsV1 {
+                host: Some(raw_host.to_owned()),
+                ..StoredClientSettingsV1::default()
+            })
+            .expect("valid embedded endpoint should resolve");
+            assert_eq!(config.connection.host.as_deref(), Some(expected_host));
+            assert_eq!(config.connection.port.get(), 7001);
+        }
+
+        let config = ClientConfig::try_from_stored(&StoredClientSettingsV1 {
+            host: Some("[2001:db8::1]:7001".to_owned()),
+            port: Some(7002),
+            ..StoredClientSettingsV1::default()
+        })
+        .expect("valid explicit port should override an embedded port");
+        assert_eq!(config.connection.host.as_deref(), Some("[2001:db8::1]"));
+        assert_eq!(config.connection.port.get(), 7002);
     }
 
     #[test]
