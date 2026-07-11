@@ -1,8 +1,17 @@
+use super::GuiPersistedConfigRuntimeOwner;
 use super::feature_slices::GuiRuntimeInput;
+use super::runtime_bridge::GuiQueuedRuntimeOwner;
 use super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
+#[cfg(any(
+    feature = "gui-semantic-smoke",
+    all(test, feature = "live-python-interop")
+))]
 use super::shell_state::SorotteGuiShellAppState;
-use super::{GuiPersistedConfigRuntimeOwner, GuiQueuedRuntimeOwner};
 
+#[cfg(any(
+    feature = "gui-semantic-smoke",
+    all(test, feature = "live-python-interop")
+))]
 impl GuiPersistedConfigRuntimeOwner {
     /// Compatibility entry point for direct, single-threaded semantic adapters.
     /// Production's threaded bridge submits compact input only when it changes.

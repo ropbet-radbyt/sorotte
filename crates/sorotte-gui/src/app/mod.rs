@@ -50,9 +50,11 @@ use self::render_io::GuiDroppedFilesTarget;
 use self::runtime_bridge::GuiNativeRuntimeBridge;
 #[cfg(test)]
 use self::runtime_bridge::GuiPendingRoomChangeRequest;
+#[cfg(test)]
+use self::runtime_bridge::GuiQueuedRuntimeOwner;
 #[cfg(any(test, feature = "gui-semantic-smoke"))]
 use self::runtime_bridge::{
-    GuiPendingCompletionRequest, GuiPreviewRuntimeBridge, GuiQueuedRuntimeOwner, GuiRuntimeRequest,
+    GuiPendingCompletionRequest, GuiPreviewRuntimeBridge, GuiRuntimeRequest,
 };
 use self::runtime_owner::GuiPersistedConfigRuntimeOwner;
 #[cfg(test)]
