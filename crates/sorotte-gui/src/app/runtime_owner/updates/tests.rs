@@ -1,10 +1,62 @@
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
 
 use super::*;
 use crate::app::{
     feature_slices::updates,
     remote_services::{LegacyUpdateCheckStatus, UpdateCandidateSource, UpdateChannel},
+    runtime_bridge::{GuiQueuedRuntimeOwner, GuiRuntimeRequest},
+    runtime_owner::GuiPersistedConfigRuntimeOwner,
+    shell_state::SorotteGuiShellAppState,
 };
+use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
+
+#[derive(Default)]
+struct BlockGate {
+    entered: Mutex<bool>,
+    released: Mutex<bool>,
+    entered_cv: Condvar,
+    released_cv: Condvar,
+}
+
+impl BlockGate {
+    fn block(&self) {
+        *self.entered.lock().expect("gate should remain available") = true;
+        self.entered_cv.notify_all();
+        let mut released = self.released.lock().expect("gate should remain available");
+        while !*released {
+            released = self
+                .released_cv
+                .wait(released)
+                .expect("gate should remain available");
+        }
+    }
+
+    fn wait_until_entered(&self) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut entered = self.entered.lock().expect("gate should remain available");
+        while !*entered {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "worker should enter the blocking service"
+            );
+            let (next, timeout) = self
+                .entered_cv
+                .wait_timeout(entered, remaining)
+                .expect("gate should remain available");
+            entered = next;
+            assert!(
+                !timeout.timed_out() || *entered,
+                "worker should enter the blocking service"
+            );
+        }
+    }
+
+    fn release(&self) {
+        *self.released.lock().expect("gate should remain available") = true;
+        self.released_cv.notify_all();
+    }
+}
 
 #[derive(Clone)]
 struct FakeUpdateService {
@@ -12,6 +64,9 @@ struct FakeUpdateService {
     check_result: LegacyUpdateCheckResult,
     download_result: UpdateDownloadResult,
     launch_result: UpdateApplyLaunchResult,
+    blocked_check_language: Option<String>,
+    check_gate: Option<Arc<BlockGate>>,
+    download_gate: Option<Arc<BlockGate>>,
 }
 
 impl GuiUpdateService for FakeUpdateService {
@@ -28,7 +83,15 @@ impl GuiUpdateService for FakeUpdateService {
                 "check:{language}:{user_initiated}:{}",
                 update_channel.unwrap_or_default()
             ));
-        self.check_result.clone()
+        if self.blocked_check_language.as_deref() == Some(language)
+            && let Some(gate) = self.check_gate.as_ref()
+        {
+            gate.block();
+        }
+        let mut result = self.check_result.clone();
+        result.message = format!("result:{language}");
+        result.user_initiated = user_initiated;
+        result
     }
 
     fn download_and_stage_update(
@@ -46,6 +109,9 @@ impl GuiUpdateService for FakeUpdateService {
                     .map(|path| path.display().to_string())
                     .unwrap_or_default()
             ));
+        if let Some(gate) = self.download_gate.as_ref() {
+            gate.block();
+        }
         self.download_result.clone()
     }
 
@@ -94,15 +160,14 @@ fn check_result() -> LegacyUpdateCheckResult {
         candidate: Some(candidate()),
         self_update_supported: true,
         public_servers: None,
-        checked_at_utc: "2026-07-11T00:00:00Z".to_owned(),
+        checked_at_utc: "1970-01-01 00:00:00.000".to_owned(),
         user_initiated: true,
     }
 }
 
-fn fake_runtime() -> (GuiUpdateRuntime, Arc<Mutex<Vec<String>>>) {
-    let calls = Arc::new(Mutex::new(Vec::new()));
-    let service = FakeUpdateService {
-        calls: calls.clone(),
+fn fake_service(calls: Arc<Mutex<Vec<String>>>) -> FakeUpdateService {
+    FakeUpdateService {
+        calls,
         check_result: check_result(),
         download_result: UpdateDownloadResult {
             state: UpdateDownloadState::Staged,
@@ -113,15 +178,57 @@ fn fake_runtime() -> (GuiUpdateRuntime, Arc<Mutex<Vec<String>>>) {
             success: true,
             message: "Updater launched.".to_owned(),
         },
-    };
+        blocked_check_language: None,
+        check_gate: None,
+        download_gate: None,
+    }
+}
+
+fn fake_runtime() -> (GuiUpdateRuntime, Arc<Mutex<Vec<String>>>) {
+    let calls = Arc::new(Mutex::new(Vec::new()));
     (
-        GuiUpdateRuntime::with_service(Some(PathBuf::from("C:/config")), Arc::new(service)),
+        GuiUpdateRuntime::with_service(
+            Some(PathBuf::from("C:/config")),
+            Arc::new(fake_service(calls.clone())),
+        ),
         calls,
     )
 }
 
+fn runtime_with_service(service: FakeUpdateService) -> GuiUpdateRuntime {
+    GuiUpdateRuntime::with_service(Some(PathBuf::from("C:/config")), Arc::new(service))
+}
+
+fn pump_until_actions(
+    runtime: &mut GuiUpdateRuntime,
+    handle: &GuiQueuedRuntimeBridgeHandle,
+) -> Vec<GuiShellAction> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        runtime.pump_background_check(handle);
+        let actions = handle.drain_actions();
+        if !actions.is_empty() {
+            return actions;
+        }
+        assert!(Instant::now() < deadline, "update worker should complete");
+        std::thread::yield_now();
+    }
+}
+
+fn update_view(automatic: bool, language: &str, channel: Option<&str>) -> updates::RuntimeView {
+    updates::RuntimeView {
+        model: GuiUpdateCheckState::default(),
+        policy: updates::RuntimePolicy {
+            automatic,
+            last_checked_for_updates: None,
+            language: language.to_owned(),
+            channel: channel.map(str::to_owned),
+        },
+    }
+}
+
 #[test]
-fn typed_update_commands_emit_ordered_actions_without_shell_state() {
+fn typed_update_commands_run_asynchronously_and_emit_ordered_actions() {
     let (mut runtime, calls) = fake_runtime();
     let handle = GuiQueuedRuntimeBridgeHandle::default();
 
@@ -133,18 +240,21 @@ fn typed_update_commands_emit_ordered_actions_without_shell_state() {
             user_initiated: true,
         },
     );
-    assert_eq!(
-        handle.drain_actions(),
-        vec![GuiShellAction::ApplyUpdateCheckResult(check_result())]
-    );
+    assert!(handle.drain_actions().is_empty());
+    assert!(matches!(
+        pump_until_actions(&mut runtime, &handle).as_slice(),
+        [GuiShellAction::ApplyUpdateCheckResult(result)] if result.message == "result:fr"
+    ));
 
     runtime.handle_command(&handle, Command::Download(candidate()));
-    assert_eq!(handle.drain_actions().len(), 1);
+    assert!(matches!(
+        pump_until_actions(&mut runtime, &handle).as_slice(),
+        [GuiShellAction::ApplyUpdateDownloadResult(_)]
+    ));
 
     runtime.handle_command(&handle, Command::DownloadAndInstall(candidate()));
-    let install_actions = handle.drain_actions();
     assert!(matches!(
-        install_actions.as_slice(),
+        pump_until_actions(&mut runtime, &handle).as_slice(),
         [
             GuiShellAction::ApplyUpdateDownloadResult(_),
             GuiShellAction::BeginStagedUpdateApply,
@@ -154,7 +264,7 @@ fn typed_update_commands_emit_ordered_actions_without_shell_state() {
 
     runtime.handle_command(&handle, Command::ApplyStaged(staged_update()));
     assert!(matches!(
-        handle.drain_actions().as_slice(),
+        pump_until_actions(&mut runtime, &handle).as_slice(),
         [GuiShellAction::ApplyStagedUpdateLaunchResult(_)]
     ));
 
@@ -173,46 +283,143 @@ fn typed_update_commands_emit_ordered_actions_without_shell_state() {
 }
 
 #[test]
+fn blocked_service_does_not_block_runtime_owner_command_or_pump() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let gate = Arc::new(BlockGate::default());
+    let mut service = fake_service(calls);
+    service.blocked_check_language = Some("blocked".to_owned());
+    service.check_gate = Some(gate.clone());
+    let mut runtime = runtime_with_service(service);
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let watchdog_gate = gate.clone();
+    let (watchdog_done_tx, watchdog_done_rx) = mpsc::channel();
+    let watchdog = std::thread::spawn(move || {
+        if watchdog_done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .is_err()
+        {
+            watchdog_gate.release();
+        }
+    });
+
+    let started = Instant::now();
+    runtime.handle_command(
+        &handle,
+        Command::CheckForUpdates {
+            language: "blocked".to_owned(),
+            update_channel: None,
+            user_initiated: true,
+        },
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "starting an update must not block the runtime-owner loop"
+    );
+    gate.wait_until_entered();
+    let pump_started = Instant::now();
+    runtime.pump_background_check(&handle);
+    assert!(
+        pump_started.elapsed() < Duration::from_secs(1),
+        "polling a blocked update must leave transport/session pumping live"
+    );
+
+    gate.release();
+    let _ = watchdog_done_tx.send(());
+    watchdog.join().expect("watchdog should finish");
+    let _ = pump_until_actions(&mut runtime, &handle);
+}
+
+#[test]
+fn blocked_update_job_leaves_session_transport_pumping_live() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let gate = Arc::new(BlockGate::default());
+    let mut service = fake_service(calls);
+    service.blocked_check_language = Some("blocked".to_owned());
+    service.check_gate = Some(gate.clone());
+    let runtime = runtime_with_service(service);
+    let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core session runtime should bootstrap");
+    owner.update_runtime = runtime;
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    let watchdog_gate = gate.clone();
+    let (watchdog_done_tx, watchdog_done_rx) = mpsc::channel();
+    let watchdog = std::thread::spawn(move || {
+        if watchdog_done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .is_err()
+        {
+            watchdog_gate.release();
+        }
+    });
+
+    handle.push_request(GuiRuntimeRequest::CheckForUpdates {
+        language: "blocked".to_owned(),
+        update_channel: None,
+        user_initiated: true,
+    });
+    let started = Instant::now();
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "the complete owner pump must not wait for the update service"
+    );
+    gate.wait_until_entered();
+    assert!(
+        session_transport
+            .drain_outbound_protocol_lines()
+            .iter()
+            .any(|line| line.contains("\"Hello\"")),
+        "the owner must flush the startup Hello after scheduling update work"
+    );
+
+    session_transport.push_inbound_protocol_line(
+        r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"readiness":true}}}"#,
+    );
+    let generation_before_inbound = owner.runtime_pump_generation;
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    assert_eq!(
+        owner.runtime_pump_generation,
+        generation_before_inbound.wrapping_add(1)
+    );
+    assert!(
+        owner
+            .session
+            .as_ref()
+            .is_some_and(|session| session.server_handshake_completed()),
+        "a server Hello must be processed while the update service remains blocked"
+    );
+
+    gate.release();
+    let _ = watchdog_done_tx.send(());
+    watchdog.join().expect("watchdog should finish");
+    let _ = pump_until_actions(&mut owner.update_runtime, &handle);
+}
+
+#[test]
 fn background_check_uses_narrow_policy_and_schedules_only_once() {
     let (mut runtime, calls) = fake_runtime();
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    runtime.reconcile(&updates::RuntimeView {
-        model: GuiUpdateCheckState::default(),
-        policy: updates::RuntimePolicy {
-            automatic: true,
-            last_checked_for_updates: None,
-            language: "fr".to_owned(),
-            channel: Some("dev".to_owned()),
-        },
-    });
+    runtime.reconcile(&update_view(true, "fr", Some("dev")));
 
-    runtime.pump_background_check(&handle, false);
+    runtime.pump_background_check(&handle);
     assert_eq!(
         handle.drain_actions(),
         vec![GuiShellAction::BeginUpdateCheck {
             user_initiated: false,
         }]
     );
-
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let result_actions = loop {
-        runtime.pump_background_check(&handle, false);
-        let actions = handle.drain_actions();
-        if !actions.is_empty() {
-            break actions;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "fake background update check should complete"
-        );
-        std::thread::yield_now();
-    };
     assert!(matches!(
-        result_actions.as_slice(),
-        [GuiShellAction::ApplyUpdateCheckResult(_)]
+        pump_until_actions(&mut runtime, &handle).as_slice(),
+        [GuiShellAction::ApplyUpdateCheckResult(result)] if result.message == "result:fr"
     ));
 
-    runtime.pump_background_check(&handle, false);
+    runtime.pump_background_check(&handle);
     assert!(handle.drain_actions().is_empty());
     assert_eq!(
         *calls
@@ -223,26 +430,233 @@ fn background_check_uses_narrow_policy_and_schedules_only_once() {
 }
 
 #[test]
-fn startup_remote_check_blocks_background_update_work() {
-    let (mut runtime, calls) = fake_runtime();
+fn runtime_owner_routes_startup_check_through_update_coordinator() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let runtime = runtime_with_service(fake_service(calls.clone()));
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.update_runtime = runtime;
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    runtime.reconcile(&updates::RuntimeView {
-        model: GuiUpdateCheckState::default(),
-        policy: updates::RuntimePolicy {
-            automatic: true,
-            last_checked_for_updates: None,
-            language: "en".to_owned(),
-            channel: None,
-        },
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        check_for_updates_automatically: Some(true),
+        language: Some("fr".to_owned()),
+        update_channel: Some("dev".to_owned()),
+        last_checked_for_updates: None,
+        ..StoredClientSettingsMvp::default()
     });
 
-    runtime.pump_background_check(&handle, true);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut actions = Vec::new();
+    while !actions
+        .iter()
+        .any(|action| matches!(action, GuiShellAction::ApplyUpdateCheckResult(_)))
+    {
+        GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        actions.extend(handle.drain_actions());
+        assert!(
+            Instant::now() < deadline,
+            "startup update coordinator should return a result"
+        );
+        std::thread::yield_now();
+    }
 
-    assert!(handle.drain_actions().is_empty());
+    assert!(actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::BeginUpdateCheck {
+            user_initiated: false
+        }
+    )));
+    assert!(actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::ApplyUpdateCheckResult(result)
+            if result.message == "result:fr" && !result.user_initiated
+    )));
+    assert_eq!(
+        *calls
+            .lock()
+            .expect("fake update calls should remain available"),
+        vec!["check:fr:false:dev".to_owned()]
+    );
+}
+
+#[test]
+fn stale_background_result_cannot_overwrite_newer_manual_result() {
+    assert_stale_automatic_result_is_ignored(UpdateJobOrigin::Background);
+}
+
+#[test]
+fn stale_startup_result_cannot_overwrite_newer_manual_result() {
+    assert_stale_automatic_result_is_ignored(UpdateJobOrigin::Startup);
+}
+
+fn assert_stale_automatic_result_is_ignored(origin: UpdateJobOrigin) {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let gate = Arc::new(BlockGate::default());
+    let mut service = fake_service(calls.clone());
+    service.blocked_check_language = Some("automatic".to_owned());
+    service.check_gate = Some(gate.clone());
+    let mut runtime = runtime_with_service(service);
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    runtime.reconcile(&update_view(true, "automatic", Some("dev")));
+
+    match origin {
+        UpdateJobOrigin::Startup => runtime.start_startup_check(&handle),
+        UpdateJobOrigin::Background => runtime.pump_background_check(&handle),
+        UpdateJobOrigin::Interactive => unreachable!(),
+    }
+    assert!(matches!(
+        handle.drain_actions().as_slice(),
+        [GuiShellAction::BeginUpdateCheck {
+            user_initiated: false
+        }]
+    ));
+    gate.wait_until_entered();
+
+    runtime.handle_command(
+        &handle,
+        Command::CheckForUpdates {
+            language: "manual".to_owned(),
+            update_channel: Some("stable".to_owned()),
+            user_initiated: true,
+        },
+    );
+    assert!(matches!(
+        pump_until_actions(&mut runtime, &handle).as_slice(),
+        [GuiShellAction::ApplyUpdateCheckResult(result)] if result.message == "result:manual"
+    ));
+
+    gate.release();
+    std::thread::sleep(Duration::from_millis(20));
+    for _ in 0..4 {
+        runtime.pump_background_check(&handle);
+    }
+    let late_actions = handle.drain_actions();
     assert!(
+        !late_actions.iter().any(|action| matches!(
+            action,
+            GuiShellAction::ApplyUpdateCheckResult(result)
+                if result.message == "result:automatic"
+        )),
+        "an automatic result from a superseded job must be ignored"
+    );
+    assert_eq!(
         calls
             .lock()
             .expect("fake update calls should remain available")
-            .is_empty()
+            .iter()
+            .filter(|call| call.starts_with("check:"))
+            .count(),
+        2,
+        "a fresh automatic retry must not start before the manual result is projected"
     );
+}
+
+#[test]
+fn duplicate_download_and_install_is_rejected_while_first_job_is_active() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let gate = Arc::new(BlockGate::default());
+    let mut service = fake_service(calls.clone());
+    service.download_gate = Some(gate.clone());
+    let mut runtime = runtime_with_service(service);
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+
+    runtime.handle_command(&handle, Command::DownloadAndInstall(candidate()));
+    gate.wait_until_entered();
+    runtime.handle_command(&handle, Command::DownloadAndInstall(candidate()));
+    assert!(matches!(
+        handle.drain_actions().as_slice(),
+        [GuiShellAction::AnnounceSystemChatEvent(message)]
+            if message.contains("another update operation is in progress")
+    ));
+    assert_eq!(
+        calls
+            .lock()
+            .expect("fake update calls should remain available")
+            .iter()
+            .filter(|call| call.starts_with("download:"))
+            .count(),
+        1
+    );
+
+    gate.release();
+    assert!(matches!(
+        pump_until_actions(&mut runtime, &handle).as_slice(),
+        [
+            GuiShellAction::ApplyUpdateDownloadResult(_),
+            GuiShellAction::BeginStagedUpdateApply,
+            GuiShellAction::ApplyStagedUpdateLaunchResult(_)
+        ]
+    ));
+}
+
+#[test]
+fn previous_channel_generation_is_cancelled_and_its_result_is_ignored() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let gate = Arc::new(BlockGate::default());
+    let mut service = fake_service(calls);
+    service.blocked_check_language = Some("old".to_owned());
+    service.check_gate = Some(gate.clone());
+    let mut runtime = runtime_with_service(service);
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    runtime.reconcile(&update_view(true, "old", Some("dev")));
+    runtime.pump_background_check(&handle);
+    let _ = handle.drain_actions();
+    gate.wait_until_entered();
+
+    runtime.reconcile(&update_view(false, "new", Some("stable")));
+    runtime.pump_background_check(&handle);
+    assert!(matches!(
+        handle.drain_actions().as_slice(),
+        [GuiShellAction::ApplyUpdateCheckResult(result)]
+            if result.status == LegacyUpdateCheckStatus::Failed
+                && result.message.contains("settings changed")
+    ));
+
+    runtime.handle_command(
+        &handle,
+        Command::CheckForUpdates {
+            language: "new".to_owned(),
+            update_channel: Some("stable".to_owned()),
+            user_initiated: true,
+        },
+    );
+    assert!(matches!(
+        pump_until_actions(&mut runtime, &handle).as_slice(),
+        [GuiShellAction::ApplyUpdateCheckResult(result)] if result.message == "result:new"
+    ));
+    gate.release();
+    std::thread::sleep(Duration::from_millis(20));
+    runtime.pump_background_check(&handle);
+    assert!(!handle.drain_actions().iter().any(|action| matches!(
+        action,
+        GuiShellAction::ApplyUpdateCheckResult(result) if result.message == "result:old"
+    )));
+}
+
+#[test]
+fn config_generation_change_terminates_active_download_state() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let gate = Arc::new(BlockGate::default());
+    let mut service = fake_service(calls);
+    service.download_gate = Some(gate.clone());
+    let mut runtime = runtime_with_service(service);
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    runtime.reconcile(&update_view(false, "en", Some("stable")));
+    runtime.observe_actions(&[GuiShellAction::BeginUpdateDownload]);
+    runtime.handle_command(&handle, Command::Download(candidate()));
+    gate.wait_until_entered();
+
+    runtime.reconcile(&update_view(false, "en", Some("dev")));
+    runtime.pump_background_check(&handle);
+    assert!(matches!(
+        handle.drain_actions().as_slice(),
+        [GuiShellAction::ApplyUpdateDownloadResult(result)]
+            if result.state == UpdateDownloadState::Failed
+                && result.message.contains("settings changed")
+    ));
+    assert_eq!(runtime.model.download_state, UpdateDownloadState::Failed);
+
+    gate.release();
+    std::thread::sleep(Duration::from_millis(20));
+    runtime.pump_background_check(&handle);
+    assert!(handle.drain_actions().is_empty());
 }

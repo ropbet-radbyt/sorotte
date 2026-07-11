@@ -1822,7 +1822,7 @@ fn localize_wire_update_message(message: &str, language: Option<&str>) -> String
     }
 }
 
-fn legacy_utc_timestamp_string_legacy_compatible(now: std::time::SystemTime) -> String {
+pub(super) fn legacy_utc_timestamp_string_legacy_compatible(now: std::time::SystemTime) -> String {
     let duration = now
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();

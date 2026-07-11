@@ -78,7 +78,7 @@ use super::shell_state::{
     GuiTransientNotificationLevel, SorotteGuiShellAppState,
 };
 use super::startup::{
-    explicit_mpv_ipc_path_from_lookup, gui_startup_remote_actions,
+    explicit_mpv_ipc_path_from_lookup, gui_startup_public_server_actions_with_fetcher,
     resolve_sorotte_gui_config_path_legacy_compatible,
 };
 use super::startup_support::{env_flag_enabled_lookup, env_trimmed};

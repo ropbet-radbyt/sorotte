@@ -1,11 +1,10 @@
 use std::{
     env,
     path::{Path, PathBuf},
-    time::SystemTime,
 };
 
+use sorotte_client_app::app_boundary::language::normalized_legacy_runtime_language_tag_legacy_compatible;
 use sorotte_client_app::app_boundary::{
-    language::normalized_legacy_runtime_language_tag_legacy_compatible,
     persistence::load_sorotte_ini_stored_client_settings_mvp_from_path,
     state::StoredClientSettingsMvp,
     storage::{
@@ -428,27 +427,11 @@ fn gui_startup_actions_from_messages(messages: Vec<String>) -> Vec<GuiShellActio
         .collect()
 }
 
-pub(super) fn gui_startup_remote_actions(
+pub(super) fn gui_startup_public_server_actions_with_fetcher<FPublicServers>(
     settings: &StoredClientSettingsMvp,
-) -> Vec<GuiShellAction> {
-    gui_startup_remote_actions_with_fetchers(
-        settings,
-        SystemTime::now(),
-        |language, update_channel| {
-            remote_services::check_for_updates(Some(language), false, update_channel)
-        },
-        |language| remote_services::fetch_public_servers(Some(language)),
-    )
-}
-
-pub(super) fn gui_startup_remote_actions_with_fetchers<FUpdate, FPublicServers>(
-    settings: &StoredClientSettingsMvp,
-    now: SystemTime,
-    mut fetch_update_check: FUpdate,
     fetch_public_servers: FPublicServers,
 ) -> Vec<GuiShellAction>
 where
-    FUpdate: FnMut(&str, Option<&str>) -> remote_services::LegacyUpdateCheckResult,
     FPublicServers: Fn(&str) -> Result<Vec<(String, String)>, String>,
 {
     if settings.check_for_updates_automatically != Some(true) {
@@ -460,11 +443,6 @@ where
         .as_deref()
         .and_then(normalized_legacy_runtime_language_tag_legacy_compatible)
         .unwrap_or("en");
-
-    if remote_services::should_run_automatic_update_check(Some(settings), now) {
-        let result = fetch_update_check(language, settings.update_channel.as_deref());
-        return vec![GuiShellAction::ApplyUpdateCheckResult(result)];
-    }
 
     if settings.public_servers.as_ref().is_none_or(Vec::is_empty) {
         let servers = fetch_public_servers(language);

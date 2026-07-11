@@ -69,54 +69,16 @@ fn startup_preview_includes_shell_summary_and_widget_tree_preview() {
 }
 
 #[test]
-fn gui_startup_remote_actions_run_due_automatic_update_checks() {
-    let settings = StoredClientSettingsMvp {
-        check_for_updates_automatically: Some(true),
-        update_channel: Some("dev".to_owned()),
-        last_checked_for_updates: None,
-        ..StoredClientSettingsMvp::default()
-    };
-    let expected = super::super::remote_services::LegacyUpdateCheckResult {
-        status: super::super::remote_services::LegacyUpdateCheckStatus::UpdateAvailable,
-        message: "Remote startup update available.".to_owned(),
-        url: Some("https://syncplay.pl/download/".to_owned()),
-        candidate: None,
-        self_update_supported: false,
-        public_servers: None,
-        checked_at_utc: "2026-03-08 09:10:11.123".to_owned(),
-        user_initiated: false,
-    };
-
-    let actions = super::super::gui_startup_remote_actions_with_fetchers(
-        &settings,
-        std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_800_000_000),
-        |_, update_channel| {
-            assert_eq!(update_channel, Some("dev"));
-            expected.clone()
-        },
-        |_| Ok(Vec::new()),
-    );
-
-    assert_eq!(
-        actions,
-        vec![GuiShellAction::ApplyUpdateCheckResult(expected)]
-    );
-}
-
-#[test]
-fn gui_startup_remote_actions_seed_public_servers_when_cache_is_empty() {
+fn gui_startup_public_server_actions_seed_cache_when_it_is_empty() {
     let settings = StoredClientSettingsMvp {
         check_for_updates_automatically: Some(true),
         last_checked_for_updates: Some("2027-01-14 09:10:11.123".to_owned()),
         ..StoredClientSettingsMvp::default()
     };
 
-    let actions = super::super::gui_startup_remote_actions_with_fetchers(
-        &settings,
-        std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_800_000_000),
-        |_, _| panic!("update check should not run when the timestamp is still fresh"),
-        |_| Ok(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())]),
-    );
+    let actions = super::super::gui_startup_public_server_actions_with_fetcher(&settings, |_| {
+        Ok(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())])
+    });
 
     assert_eq!(
         actions,

@@ -114,8 +114,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.pump_plex_playlist_workers(handle, &mut projected_state);
         self.sync_plex_watch_state(handle, &mut projected_state);
         self.run_deferred_startup_remote_actions(handle, &mut projected_state);
-        self.update_runtime
-            .pump_background_check(handle, self.startup_remote_actions_rx.is_some());
+        self.update_runtime.pump_background_check(handle);
         self.run_deferred_startup_stream_helper_probe(handle, &mut projected_state);
         projected_state
     }
@@ -132,29 +131,40 @@ impl GuiPersistedConfigRuntimeOwner {
                 Some(&settings),
                 std::time::SystemTime::now(),
             ) {
-                let actions = vec![GuiShellAction::BeginUpdateCheck {
-                    user_initiated: false,
-                }];
-                self.update_runtime.observe_actions(&actions);
-                Self::push_actions_and_project(handle, projected_state, actions);
+                self.update_runtime.start_startup_check(handle);
+                return;
             }
+
+            if settings.check_for_updates_automatically != Some(true)
+                || settings
+                    .public_servers
+                    .as_ref()
+                    .is_some_and(|rows| !rows.is_empty())
+            {
+                return;
+            }
+
             let (tx, rx) = mpsc::channel();
             match std::thread::Builder::new()
                 .name("sorotte-gui-startup-remote".to_owned())
                 .spawn(move || {
-                    let actions = gui_startup_remote_actions(&settings);
+                    let actions =
+                        gui_startup_public_server_actions_with_fetcher(&settings, |language| {
+                            remote_services::fetch_public_servers(Some(language))
+                        });
                     let _ = tx.send(actions);
                 }) {
                 Ok(_thread) => {
                     self.startup_remote_actions_rx = Some(rx);
                 }
-                Err(_error) => {
-                    let actions = gui_startup_remote_actions(
-                        &projected_state.configuration.to_stored_settings(),
+                Err(error) => {
+                    Self::push_actions_and_project(
+                        handle,
+                        projected_state,
+                        vec![GuiShellAction::AnnounceSystemChatEvent(format!(
+                            "Unable to start startup remote-service worker: {error}"
+                        ))],
                     );
-                    self.update_runtime.observe_actions(&actions);
-                    Self::push_actions_and_project(handle, projected_state, actions);
-                    return;
                 }
             }
         }
