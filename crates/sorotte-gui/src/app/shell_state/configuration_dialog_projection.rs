@@ -2,6 +2,7 @@ use super::*;
 
 impl FirstRunConfigurationDialogState {
     pub(in crate::app) fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
+        let config = ClientConfig::resolve(settings).config;
         let startup_entries = legacy_configuration_getter_startup_compat_entries();
         let ignored_startup_exception_count = startup_entries
             .iter()
@@ -21,7 +22,8 @@ impl FirstRunConfigurationDialogState {
                 room: settings.room.clone(),
                 server_password_set: settings
                     .server_password
-                    .as_deref()
+                    .as_ref()
+                    .map(|password| password.expose_secret())
                     .map(str::trim)
                     .is_some_and(|value| !value.is_empty()),
                 player_path: settings.player_path.clone(),
@@ -36,15 +38,13 @@ impl FirstRunConfigurationDialogState {
                 room_history_count: settings.room_list.as_ref().map_or(0, Vec::len),
             },
             readiness: GuiReadinessSection {
-                ready_at_start: settings.ready_at_start.unwrap_or(false),
-                autoplay_enabled: settings.autoplay_initial_state.unwrap_or(false),
-                autoplay_require_same_filenames: settings
-                    .autoplay_require_same_filenames
-                    .unwrap_or(false),
-                shared_playlist_enabled: settings.shared_playlist_enabled.unwrap_or(false),
-                pause_on_leave: settings.pause_on_leave.unwrap_or(false),
-                loop_at_end_of_playlist: settings.loop_at_end_of_playlist.unwrap_or(false),
-                loop_single_files: settings.loop_single_files.unwrap_or(false),
+                ready_at_start: config.readiness.ready_at_start,
+                autoplay_enabled: config.readiness.autoplay_initial_state,
+                autoplay_require_same_filenames: config.readiness.autoplay_require_same_filenames,
+                shared_playlist_enabled: config.playback.shared_playlist_enabled,
+                pause_on_leave: config.playback.pause_on_leave,
+                loop_at_end_of_playlist: config.playback.loop_at_end_of_playlist,
+                loop_single_files: config.playback.loop_single_files,
                 unpause_action_label: settings
                     .unpause_action
                     .clone()
@@ -58,32 +58,30 @@ impl FirstRunConfigurationDialogState {
                     .unwrap_or_else(|| "app-default".to_owned()),
             },
             privacy: GuiPrivacySection {
-                filename_privacy_mode_label: settings
-                    .filename_privacy_mode
-                    .map(privacy_mode_legacy_name_compatible)
-                    .unwrap_or("SendRaw")
-                    .to_owned(),
-                filesize_privacy_mode_label: settings
-                    .filesize_privacy_mode
-                    .map(privacy_mode_legacy_name_compatible)
-                    .unwrap_or("SendRaw")
-                    .to_owned(),
-                only_switch_to_trusted_domains: settings
-                    .only_switch_to_trusted_domains
-                    .unwrap_or(false),
+                filename_privacy_mode_label: privacy_mode_legacy_name_compatible(
+                    config.playback.filename_privacy_mode,
+                )
+                .to_owned(),
+                filesize_privacy_mode_label: privacy_mode_legacy_name_compatible(
+                    config.playback.filesize_privacy_mode,
+                )
+                .to_owned(),
+                only_switch_to_trusted_domains: config.playback.only_switch_to_trusted_domains,
                 trusted_domains_text: optional_string_list_multiline_text(
                     settings.trusted_domains.as_deref(),
                 ),
                 trusted_domain_count: settings.trusted_domains.as_ref().map_or(0, Vec::len),
             },
             desync: GuiDesyncSection {
-                rewind_on_desync: settings.rewind_on_desync.unwrap_or(false),
-                fastforward_on_desync: settings.fastforward_on_desync.unwrap_or(false),
-                slow_on_desync: settings.slow_on_desync.unwrap_or(false),
-                dont_slow_down_with_me: settings.dont_slow_down_with_me.unwrap_or(false),
-                rewind_threshold_seconds: settings.rewind_threshold_seconds,
-                fastforward_threshold_seconds: settings.fastforward_threshold_seconds,
-                slowdown_threshold_seconds: settings.slowdown_threshold_seconds,
+                rewind_on_desync: config.synchronization.rewind_on_desync,
+                fastforward_on_desync: config.synchronization.fastforward_on_desync,
+                slow_on_desync: config.synchronization.slow_on_desync,
+                dont_slow_down_with_me: config.synchronization.dont_slow_down_with_me,
+                rewind_threshold_seconds: Some(config.synchronization.rewind_threshold.get()),
+                fastforward_threshold_seconds: Some(
+                    config.synchronization.fastforward_threshold.get(),
+                ),
+                slowdown_threshold_seconds: Some(config.synchronization.slowdown_threshold.get()),
             },
             media_search: GuiMediaSearchSection {
                 media_directories_text: optional_string_list_multiline_text(
@@ -102,69 +100,48 @@ impl FirstRunConfigurationDialogState {
                     .folder_search_warning_threshold_seconds,
             },
             chat: GuiChatSection {
-                chat_input_enabled: legacy_chat_input_enabled(settings),
-                chat_output_enabled: legacy_chat_output_enabled(settings),
-                chat_direct_input: settings.chat_direct_input.unwrap_or(false),
-                chat_move_osd: settings.chat_move_osd.unwrap_or(false),
-                chat_max_lines: settings.chat_max_lines,
-                chat_input_position_label: settings
-                    .chat_input_position
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .unwrap_or("Top")
-                    .to_owned(),
-                chat_input_font_family: settings.chat_input_font_family.clone(),
-                chat_input_relative_font_size: settings.chat_input_relative_font_size,
-                chat_input_font_weight: settings.chat_input_font_weight,
-                chat_input_font_color: settings.chat_input_font_color.clone(),
-                chat_output_mode_label: settings
-                    .chat_output_mode
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .unwrap_or("Chatroom")
-                    .to_owned(),
-                chat_output_font_family: settings.chat_output_font_family.clone(),
-                chat_output_relative_font_size: settings.chat_output_relative_font_size,
-                chat_output_font_weight: settings.chat_output_font_weight,
-                chat_top_margin: settings.chat_top_margin,
-                chat_left_margin: settings.chat_left_margin,
-                chat_bottom_margin: settings.chat_bottom_margin,
-                chat_osd_margin: settings.chat_osd_margin,
+                chat_input_enabled: config.interface.chat_input_enabled,
+                chat_output_enabled: config.interface.chat_output_enabled,
+                chat_direct_input: config.interface.chat_direct_input,
+                chat_move_osd: config.interface.chat_move_osd,
+                chat_max_lines: Some(config.interface.chat_max_lines),
+                chat_input_position_label: config.interface.chat_input_position.clone(),
+                chat_input_font_family: Some(config.interface.chat_input_font_family.clone()),
+                chat_input_relative_font_size: Some(config.interface.chat_input_relative_font_size),
+                chat_input_font_weight: Some(config.interface.chat_input_font_weight),
+                chat_input_font_color: Some(config.interface.chat_input_font_color.clone()),
+                chat_output_mode_label: config.interface.chat_output_mode.clone(),
+                chat_output_font_family: Some(config.interface.chat_output_font_family.clone()),
+                chat_output_relative_font_size: Some(
+                    config.interface.chat_output_relative_font_size,
+                ),
+                chat_output_font_weight: Some(config.interface.chat_output_font_weight),
+                chat_top_margin: Some(config.interface.chat_top_margin),
+                chat_left_margin: Some(config.interface.chat_left_margin),
+                chat_bottom_margin: Some(config.interface.chat_bottom_margin),
+                chat_osd_margin: Some(config.interface.chat_osd_margin),
             },
             osd: GuiOsdSection {
-                show_osd: settings.show_osd.unwrap_or(false),
-                show_duration_notification: settings.show_duration_notification.unwrap_or(false),
-                show_same_room_osd: settings.show_same_room_osd.unwrap_or(false),
-                show_osd_warnings: settings.show_osd_warnings.unwrap_or(false),
-                show_slowdown_osd: settings.show_slowdown_osd.unwrap_or(false),
-                show_noncontroller_osd: settings.show_noncontroller_osd.unwrap_or(false),
-                show_different_room_osd: settings.show_different_room_osd.unwrap_or(false),
-                show_contact_info: settings.show_contact_info.unwrap_or(false),
-                notification_timeout_seconds: settings.notification_timeout_seconds,
-                alert_timeout_seconds: settings.alert_timeout_seconds,
-                chat_timeout_seconds: settings.chat_timeout_seconds,
+                show_osd: config.interface.show_osd,
+                show_duration_notification: config.readiness.show_duration_notification,
+                show_same_room_osd: config.interface.show_same_room_osd,
+                show_osd_warnings: config.interface.show_osd_warnings,
+                show_slowdown_osd: config.interface.show_slowdown_osd,
+                show_noncontroller_osd: config.interface.show_noncontroller_osd,
+                show_different_room_osd: config.interface.show_different_room_osd,
+                show_contact_info: config.interface.show_contact_info,
+                notification_timeout_seconds: Some(
+                    config.interface.notification_timeout.get() as i64
+                ),
+                alert_timeout_seconds: Some(config.interface.alert_timeout.get() as i64),
+                chat_timeout_seconds: Some(config.interface.chat_timeout.get() as i64),
             },
             system: GuiSystemSection {
-                language_tag: settings
-                    .language
-                    .as_deref()
-                    .and_then(normalized_legacy_runtime_language_tag_legacy_compatible)
-                    .unwrap_or("en")
-                    .to_owned(),
-                check_for_updates_automatically: settings
-                    .check_for_updates_automatically
-                    .unwrap_or(false),
-                update_channel_label: settings
-                    .update_channel
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .unwrap_or_else(|| remote_services::default_update_channel_label())
-                    .to_ascii_lowercase(),
-                autosave_joins_to_list: settings.autosave_joins_to_list.unwrap_or(false),
-                force_gui_prompt: settings.force_gui_prompt.unwrap_or(false),
+                language_tag: config.interface.language.clone(),
+                check_for_updates_automatically: config.interface.check_for_updates_automatically,
+                update_channel_label: config.interface.update_channel.to_ascii_lowercase(),
+                autosave_joins_to_list: config.interface.autosave_joins_to_list,
+                force_gui_prompt: config.interface.force_gui_prompt,
                 compatibility_startup_entry_count: startup_entries.len(),
                 ignored_startup_exception_count,
             },

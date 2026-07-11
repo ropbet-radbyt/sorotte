@@ -18,27 +18,19 @@ use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 use std::io::Read;
 
-use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use sorotte_media_match::{
-    MEDIA_MATCH_ALGORITHM_VERSION, MEDIA_MATCH_ANCHOR_VERSION, MEDIA_MATCH_V3_PROFILE_LABEL,
-    MediaExtractionSettings, MediaFingerprintError, MediaFingerprintRecord, MediaMatchCache,
-    MediaMatchCandidateDecision, MediaMatchDecision, MediaMatchSettings, MediaMatchTier,
-    MediaMatchToolPaths, MediaMatchV3RetrievalStats, decide_media_match,
-    delete_media_match_v3_file_and_fingerprints, delete_media_match_v3_fingerprints_and_anchors,
-    fingerprint_media_file_cancellable_with_report, load_media_match_v3_cache_for_settings,
-    load_media_match_v3_record_for_path, media_extraction_settings_hash,
-    media_match_v3_anchor_candidate_paths_with_stats, media_match_wire_signature_from_value,
-    media_match_wire_value_from_records, normalize_media_path, open_media_match_v3_index,
-    rank_media_match_candidates, refresh_anchor_stats_v3, save_media_match_v3_record,
+    MEDIA_MATCH_ALGORITHM_VERSION, MediaExtractionSettings, MediaFingerprintError,
+    MediaFingerprintRecord, MediaIndexInventoryEntry, MediaIndexService, MediaIndexSession,
+    MediaMatchCache, MediaMatchCandidateDecision, MediaMatchDecision, MediaMatchSettings,
+    MediaMatchTier, MediaMatchToolPaths, MediaMatchV3RetrievalStats, decide_media_match,
+    fingerprint_media_file_cancellable_with_report, media_extraction_settings_hash,
+    media_match_wire_value_from_records, normalize_media_path, rank_media_match_candidates,
     summarize_record_v3_diagnostics,
 };
 
 #[cfg(test)]
-use sorotte_media_match::{
-    AudioAnchor, anchor_stats_v3_dirty, map_query_position_to_candidate_ms,
-    refresh_all_anchor_stats_v3,
-};
+use sorotte_media_match::{AudioAnchor, map_query_position_to_candidate_ms};
 
 use super::shell_state::{
     GuiMediaMatchRuntimeSnapshot, GuiMediaMatchToolHealth,
@@ -108,7 +100,7 @@ pub(super) struct MediaMatchRemoteCandidateRebuildRequest<'a> {
     pub(super) search_roots: &'a [PathBuf],
     pub(super) candidates: Option<Vec<PathBuf>>,
     pub(super) target_file_name: &'a str,
-    pub(super) media_match_signature: &'a serde_json::Value,
+    pub(super) media_match_signature: &'a sorotte_media_match::MediaMatchWireSignature,
     pub(super) settings: &'a MediaMatchSettings,
     pub(super) tools: &'a MediaMatchToolPaths,
     pub(super) extraction_settings: &'a MediaExtractionSettings,
@@ -818,7 +810,7 @@ where
         });
     }
 
-    let checkpoint_connection = open_media_match_sqlite_index(request.root)?;
+    let checkpoint_session = open_media_match_index_session(request.root)?;
     let mut next_cache = initial_media_match_rebuild_cache(&existing_cache, selected.prefiltered);
     let mut instrumentation = MediaMatchRebuildInstrumentation::default();
     let mut parallel_fresh_results = BTreeMap::new();
@@ -929,7 +921,7 @@ where
                         fresh_work_done += 1;
                     }
                     let sqlite_started_at = Instant::now();
-                    save_media_match_record_to_sqlite(&checkpoint_connection, &record)?;
+                    checkpoint_session.save_record(&record, None)?;
                     instrumentation
                         .add_sqlite_writer_millis(sqlite_started_at.elapsed().as_millis());
                     if let Some(report) = report {
@@ -974,7 +966,7 @@ where
     }
 
     refresh_media_match_v3_anchor_stats_for_settings(
-        &checkpoint_connection,
+        &checkpoint_session,
         request.extraction_settings,
         &mut instrumentation,
     )?;
@@ -1027,7 +1019,7 @@ pub(super) fn rebuild_persisted_media_match_remote_candidates_with_progress_and_
 where
     F: FnMut(MediaMatchToolProgress),
 {
-    let signature = media_match_wire_signature_from_value(request.media_match_signature)?;
+    let signature = request.media_match_signature;
     progress(MediaMatchToolProgress::new(
         "Scanning media-search roots",
         Some(format!("{} roots", request.search_roots.len())),
@@ -1064,12 +1056,12 @@ where
     let mut best_match = best_remote_candidate_match(
         &selected.paths,
         &existing_cache,
-        &signature,
+        signature,
         request.settings,
         request.extraction_settings,
     );
     let mut next_cache = existing_cache.clone();
-    let checkpoint_connection = open_media_match_sqlite_index(request.root)?;
+    let checkpoint_session = open_media_match_index_session(request.root)?;
     let mut instrumentation = MediaMatchRebuildInstrumentation::default();
 
     progress(MediaMatchToolProgress::new(
@@ -1118,7 +1110,7 @@ where
                 } else {
                     fingerprinted += 1;
                     fresh_work_done += 1;
-                    save_media_match_record_to_sqlite(&checkpoint_connection, &record)?;
+                    checkpoint_session.save_record(&record, None)?;
                     if let Some(report) = report {
                         instrumentation.add_report(&report);
                     }
@@ -1126,7 +1118,7 @@ where
                 }
                 let decision = sorotte_media_match::decide_media_match_against_wire_signature(
                     &record,
-                    &signature,
+                    signature,
                     request.settings,
                 );
                 if best_match
@@ -1159,14 +1151,14 @@ where
         best_match = best_remote_candidate_match(
             &selected.paths,
             &next_cache,
-            &signature,
+            signature,
             request.settings,
             request.extraction_settings,
         );
     }
 
     refresh_media_match_v3_anchor_stats_for_settings(
-        &checkpoint_connection,
+        &checkpoint_session,
         request.extraction_settings,
         &mut instrumentation,
     )?;
@@ -1335,12 +1327,31 @@ fn media_match_health_message(
 }
 
 fn media_match_cache_status(root: &Path) -> String {
-    match media_match_sqlite_all_settings_counts(root) {
-        Ok((inventory, audio)) if inventory > 0 || audio > 0 => {
-            let storage = media_match_sqlite_storage_status(root).unwrap_or_default();
-            let active = media_match_sqlite_active_settings_counts(root)
-                .map(|active_audio| format!("active settings audio={active_audio}"))
-                .unwrap_or_default();
+    if !managed_media_match_index_path(root).exists() {
+        return "empty".to_owned();
+    }
+    let settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
+    match open_media_match_index_session(root).and_then(|session| session.summary(&settings)) {
+        Ok(summary)
+            if summary.inventory_count > 0 || summary.fixed_settings_fingerprint_count > 0 =>
+        {
+            let storage = if summary.v3_fingerprint_row_count == 0 {
+                String::new()
+            } else {
+                let average =
+                    summary.v3_audio_blob_bytes as f64 / summary.v3_fingerprint_row_count as f64;
+                format!(
+                    "db={} bytes, v3 audio blobs: {} bytes ({average:.0}/fingerprint), verify audio={}, index audio={}",
+                    summary.database_bytes,
+                    summary.v3_audio_blob_bytes,
+                    summary.v3_audio_verify_count,
+                    summary.v3_audio_index_count,
+                )
+            };
+            let active = format!(
+                "active settings audio={}",
+                summary.current_settings_fingerprint_count
+            );
             let details = [active, storage]
                 .into_iter()
                 .filter(|value| !value.is_empty())
@@ -1350,46 +1361,14 @@ fn media_match_cache_status(root: &Path) -> String {
             } else {
                 format!("; {}", details.join("; "))
             };
-            format!("inventory: {inventory}, audio-v3(all settings): {audio}{details}")
+            format!(
+                "inventory: {}, audio-v3(all settings): {}{details}",
+                summary.inventory_count, summary.fixed_settings_fingerprint_count
+            )
         }
         Ok(_) => "empty".to_owned(),
         Err(error) => format!("unreadable cache: {error}"),
     }
-}
-
-fn media_match_sqlite_storage_status(root: &Path) -> Result<String, String> {
-    let connection = open_media_match_sqlite_index(root)?;
-    let db_bytes = fs::metadata(managed_media_match_index_path(root))
-        .map(|metadata| metadata.len())
-        .unwrap_or(0);
-    let (blob_bytes, fingerprint_rows, audio_verify, audio_index) = connection
-        .query_row(
-            "SELECT
-                COALESCE(SUM(COALESCE(LENGTH(audio_blob), 0)), 0),
-                COUNT(*),
-                COALESCE(SUM(audio_verify_count), 0),
-                COALESCE(SUM(audio_index_count), 0)
-             FROM fingerprints_v3
-             JOIN settings_v3 ON settings_v3.settings_id = fingerprints_v3.settings_id
-             WHERE settings_v3.algorithm_version = ?1",
-            [i64::from(MEDIA_MATCH_ANCHOR_VERSION)],
-            |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, i64>(3)?,
-                ))
-            },
-        )
-        .map_err(|error| format!("failed reading media-match storage summary: {error}"))?;
-    if fingerprint_rows <= 0 {
-        return Ok(String::new());
-    }
-    let average = blob_bytes as f64 / fingerprint_rows as f64;
-    Ok(format!(
-        "db={db_bytes} bytes, v3 audio blobs: {blob_bytes} bytes ({average:.0}/fingerprint), verify audio={audio_verify}, index audio={audio_index}"
-    ))
 }
 
 pub(super) fn media_match_tool_paths_for_settings(
@@ -1450,10 +1429,7 @@ fn inventory_media_match_candidates(
     candidates: &[PathBuf],
     cancel_flag: Option<&AtomicBool>,
 ) -> Result<(), String> {
-    let connection = open_media_match_sqlite_index(root)?;
-    let transaction = connection
-        .unchecked_transaction()
-        .map_err(|error| format!("failed starting media-match inventory transaction: {error}"))?;
+    let mut entries = Vec::with_capacity(candidates.len());
     for path in candidates {
         if cancel_flag.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
             return Err("Media Matching inventory scan was canceled.".to_owned());
@@ -1469,96 +1445,30 @@ fn inventory_media_match_candidates(
             .unwrap_or(0);
         let normalized_path = normalize_media_path(path);
         let size_bytes = metadata.len();
-        if let Some((_file_id, old_mtime, old_size)) = transaction
-            .query_row(
-                "SELECT file_id, modified_unix_millis, size_bytes
-                 FROM media_files_v3
-                 WHERE normalized_path = ?1",
-                [normalized_path.as_str()],
-                |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, i64>(2)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(|error| format!("failed reading media-match inventory row: {error}"))?
-            && (old_mtime != modified_unix_millis as i64 || old_size != size_bytes as i64)
-        {
-            delete_media_match_v3_fingerprints_and_anchors(&transaction, &normalized_path)?;
-        }
-        transaction
-            .execute(
-                "INSERT INTO media_files_v3 (
-                    normalized_path,
-                    modified_unix_millis,
-                    size_bytes,
-                    duration_ms,
-                    container_fingerprint,
-                    updated_unix_millis
-                ) VALUES (?1, ?2, ?3, NULL, '', ?4)
-                ON CONFLICT(normalized_path) DO UPDATE SET
-                    modified_unix_millis = excluded.modified_unix_millis,
-                    size_bytes = excluded.size_bytes,
-                    updated_unix_millis = excluded.updated_unix_millis",
-                params![
-                    normalized_path,
-                    modified_unix_millis as i64,
-                    size_bytes as i64,
-                    current_unix_millis() as i64,
-                ],
-            )
-            .map_err(|error| format!("failed writing media-match inventory row: {error}"))?;
+        entries.push(MediaIndexInventoryEntry::new(
+            normalized_path,
+            modified_unix_millis,
+            size_bytes,
+        ));
     }
-    prune_missing_media_match_inventory_rows(&transaction, search_roots, candidates)?;
-    transaction
-        .commit()
-        .map_err(|error| format!("failed committing media-match inventory transaction: {error}"))?;
-    Ok(())
-}
-
-fn prune_missing_media_match_inventory_rows(
-    connection: &Connection,
-    search_roots: &[PathBuf],
-    candidates: &[PathBuf],
-) -> Result<bool, String> {
     let normalized_roots = search_roots
         .iter()
         .map(normalize_media_path)
         .collect::<Vec<_>>();
-    if normalized_roots.is_empty() {
-        return Ok(false);
-    }
     let seen_paths = candidates
         .iter()
         .map(normalize_media_path)
-        .collect::<BTreeSet<_>>();
-    let mut statement = connection
-        .prepare("SELECT file_id, normalized_path FROM media_files_v3")
-        .map_err(|error| format!("failed preparing media-match stale inventory query: {error}"))?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(|error| format!("failed querying media-match stale inventory rows: {error}"))?;
-    let mut stale_paths = Vec::new();
-    for row in rows.flatten() {
-        let (file_id, normalized_path) = row;
-        let _ = file_id;
-        let under_scanned_root = normalized_roots
-            .iter()
-            .any(|root| media_match_path_is_under_root(&normalized_path, root));
-        if under_scanned_root && !seen_paths.contains(&normalized_path) {
-            stale_paths.push(normalized_path);
-        }
+        .collect::<Vec<_>>();
+    let result = open_media_match_index_session(root)?.refresh_inventory(
+        &entries,
+        &seen_paths,
+        &normalized_roots,
+        || cancel_flag.is_some_and(|flag| flag.load(Ordering::Relaxed)),
+    );
+    if result.is_err() && cancel_flag.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+        return Err("Media Matching inventory scan was canceled.".to_owned());
     }
-    let pruned_any = !stale_paths.is_empty();
-    for normalized_path in stale_paths {
-        delete_media_match_v3_file_and_fingerprints(connection, &normalized_path)?;
-    }
-    Ok(pruned_any)
+    result.map(|_| ())
 }
 
 fn media_match_path_is_under_root(normalized_path: &str, normalized_root: &str) -> bool {
@@ -1632,16 +1542,13 @@ pub(super) fn media_match_inventory_exact_candidate_for_targets(
         .iter()
         .map(normalize_media_path)
         .collect::<Vec<_>>();
-    let connection = open_media_match_sqlite_index(root).ok()?;
-    let mut statement = connection
-        .prepare("SELECT normalized_path FROM media_files_v3")
-        .ok()?;
-    let rows = statement
-        .query_map([], |row| row.get::<_, String>(0))
+    let rows = open_media_match_index_session(root)
+        .ok()?
+        .inventory_paths()
         .ok()?;
     let mut best_match: Option<(usize, usize, usize, String, String)> = None;
 
-    for row in rows.flatten() {
+    for row in rows {
         if !normalized_roots
             .iter()
             .any(|root| media_match_path_is_under_root(&row, root))
@@ -2194,13 +2101,10 @@ fn media_match_v3_anchor_candidate_paths(
     normalized_current_path: &str,
     extraction_settings: &MediaExtractionSettings,
 ) -> Result<Vec<String>, String> {
-    let connection = open_media_match_sqlite_index(root)?;
-    media_match_v3_anchor_candidate_paths_with_stats(
-        &connection,
-        normalized_current_path,
-        extraction_settings,
-    )
-    .map(|(paths, _stats)| paths)
+    MediaIndexService::new(managed_media_match_index_dir(root))
+        .open()?
+        .anchor_candidate_paths(normalized_current_path, extraction_settings)
+        .map(|(paths, _stats)| paths)
 }
 
 fn summarize_current_media_match(
@@ -2225,16 +2129,14 @@ fn summarize_current_media_match(
             None,
         );
     };
-    let (anchor_candidates, retrieval_stats) = open_media_match_sqlite_index(root)
-        .and_then(|connection| {
-            media_match_v3_anchor_candidate_paths_with_stats(
-                &connection,
-                &normalized_current_path,
-                extraction_settings,
-            )
-        })
-        .map(|(paths, stats)| (paths, Some(stats)))
-        .unwrap_or_default();
+    let (anchor_candidates, retrieval_stats) =
+        MediaIndexService::new(managed_media_match_index_dir(root))
+            .open()
+            .and_then(|session| {
+                session.anchor_candidate_paths(&normalized_current_path, extraction_settings)
+            })
+            .map(|(paths, stats)| (paths, Some(stats)))
+            .unwrap_or_default();
     let retrieval_suffix = retrieval_stats
         .as_ref()
         .map(format_media_match_v3_retrieval_stats)
@@ -2296,11 +2198,10 @@ pub(super) fn media_match_cached_probable_candidate_for_remote_signature(
     search_roots: &[PathBuf],
     candidates: Option<&[PathBuf]>,
     target_file_name: &str,
-    media_match_signature: &serde_json::Value,
+    media_match_signature: &sorotte_media_match::MediaMatchWireSignature,
     settings: &MediaMatchSettings,
     extraction_settings: &MediaExtractionSettings,
 ) -> Option<MediaMatchRemoteCandidateMatch> {
-    let signature = media_match_wire_signature_from_value(media_match_signature).ok()?;
     let candidates = candidates
         .map(<[PathBuf]>::to_vec)
         .unwrap_or_else(|| collect_media_match_candidates(search_roots));
@@ -2309,7 +2210,7 @@ pub(super) fn media_match_cached_probable_candidate_for_remote_signature(
     best_remote_candidate_match(
         &selected.paths,
         &cache,
-        &signature,
+        media_match_signature,
         settings,
         extraction_settings,
     )
@@ -2628,24 +2529,21 @@ fn load_managed_media_match_metadata(root: &Path) -> Option<ManagedMediaMatchMet
     serde_json::from_str(&contents).ok()
 }
 
-fn open_media_match_sqlite_index(root: &Path) -> Result<Connection, String> {
-    open_media_match_v3_index(&managed_media_match_index_dir(root))
+fn open_media_match_index_session(root: &Path) -> Result<MediaIndexSession, String> {
+    MediaIndexService::new(managed_media_match_index_dir(root)).open()
 }
 
 pub(super) fn load_media_match_cache_for_settings(
     root: &Path,
     extraction_settings: &MediaExtractionSettings,
 ) -> Option<MediaMatchCache> {
-    let connection = open_media_match_sqlite_index(root).ok()?;
-    load_media_match_cache_for_settings_from_sqlite(&connection, extraction_settings)
+    let session = MediaIndexService::new(managed_media_match_index_dir(root))
+        .open()
+        .ok()?;
+    session
+        .load_cache(extraction_settings)
+        .ok()
         .filter(|cache| !cache.records.is_empty())
-}
-
-fn load_media_match_cache_for_settings_from_sqlite(
-    connection: &Connection,
-    extraction_settings: &MediaExtractionSettings,
-) -> Option<MediaMatchCache> {
-    load_media_match_v3_cache_for_settings(connection, extraction_settings).ok()
 }
 
 pub(super) fn media_match_wire_value_for_path(
@@ -2674,38 +2572,24 @@ pub(super) fn media_match_record_for_path(
         .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
         .unwrap_or(0);
     let size_bytes = metadata.len();
-    let connection = open_media_match_sqlite_index(root).ok()?;
-    load_media_match_record_for_path_from_sqlite(
-        &connection,
-        &normalized_path,
-        extraction_settings,
-        modified_unix_millis,
-        size_bytes,
-    )
-}
-
-fn load_media_match_record_for_path_from_sqlite(
-    connection: &Connection,
-    normalized_path: &str,
-    extraction_settings: &MediaExtractionSettings,
-    modified_unix_millis: u64,
-    size_bytes: u64,
-) -> Option<MediaFingerprintRecord> {
-    load_media_match_v3_record_for_path(
-        connection,
-        normalized_path,
-        extraction_settings,
-        modified_unix_millis,
-        size_bytes,
-    )
-    .ok()
-    .flatten()
+    let session = MediaIndexService::new(managed_media_match_index_dir(root))
+        .open()
+        .ok()?;
+    session
+        .load_record(
+            &normalized_path,
+            extraction_settings,
+            modified_unix_millis,
+            size_bytes,
+        )
+        .ok()
+        .flatten()
 }
 
 #[cfg(test)]
 fn save_media_match_cache(root: &Path, cache: &MediaMatchCache) -> Result<(), String> {
-    let connection = open_media_match_sqlite_index(root)?;
-    save_media_match_cache_to_sqlite(&connection, cache)
+    let session = open_media_match_index_session(root)?;
+    save_media_match_cache_to_index(&session, cache)
 }
 
 #[cfg(test)]
@@ -2717,101 +2601,35 @@ pub(in crate::app) fn save_media_match_cache_for_test(
 }
 
 #[cfg(test)]
-fn save_media_match_cache_to_sqlite(
-    connection: &Connection,
+fn save_media_match_cache_to_index(
+    session: &MediaIndexSession,
     cache: &MediaMatchCache,
 ) -> Result<(), String> {
     for record in cache.records.values() {
-        save_media_match_record_to_sqlite(connection, record)?;
+        session.save_record(record, None)?;
     }
     Ok(())
 }
 
-fn save_media_match_record_to_sqlite(
-    connection: &Connection,
+#[cfg(test)]
+fn save_media_match_record_to_index(
+    session: &MediaIndexSession,
     record: &MediaFingerprintRecord,
 ) -> Result<(), String> {
-    save_media_match_record_to_sqlite_with_error(connection, record, None)
-}
-
-fn save_media_match_record_to_sqlite_with_error(
-    connection: &Connection,
-    record: &MediaFingerprintRecord,
-    error: Option<&str>,
-) -> Result<(), String> {
-    save_media_match_v3_record(connection, record, error)
+    session.save_record(record, None)
 }
 
 fn refresh_media_match_v3_anchor_stats_for_settings(
-    connection: &Connection,
+    session: &MediaIndexSession,
     extraction_settings: &MediaExtractionSettings,
     instrumentation: &mut MediaMatchRebuildInstrumentation,
 ) -> Result<(), String> {
     let settings_hash = media_extraction_settings_hash(extraction_settings);
     let now = current_unix_millis() as i64;
     let start = Instant::now();
-    refresh_anchor_stats_v3(connection, &settings_hash, now)?;
+    session.refresh_anchor_stats(&settings_hash, now)?;
     instrumentation.add_stats_refresh(start.elapsed().as_millis());
     Ok(())
-}
-
-fn media_match_sqlite_all_settings_counts(root: &Path) -> Result<(usize, usize), String> {
-    if !managed_media_match_index_path(root).exists() {
-        return Ok((0, 0));
-    }
-    let connection = open_media_match_sqlite_index(root)?;
-    let inventory = connection
-        .query_row("SELECT COUNT(*) FROM media_files_v3", [], |row| {
-            row.get::<_, i64>(0)
-        })
-        .map_err(|error| format!("failed reading media-match inventory count: {error}"))?
-        .max(0) as usize;
-    let count_for_profile = |profile: &str| -> Result<usize, String> {
-        let settings = match profile {
-            "audio-constellation-v3" => MediaExtractionSettings::sampled_fast_audio_index_v3(),
-            _ => return Ok(0),
-        };
-        Ok(connection
-            .query_row(
-                "SELECT COUNT(*)
-                 FROM fingerprints_v3
-                 JOIN settings_v3 ON settings_v3.settings_id = fingerprints_v3.settings_id
-                 WHERE settings_v3.algorithm_version = ?1 AND settings_v3.settings_hash = ?2",
-                params![
-                    i64::from(MEDIA_MATCH_ANCHOR_VERSION),
-                    media_extraction_settings_hash(&settings).to_vec()
-                ],
-                |row| row.get::<_, i64>(0),
-            )
-            .map_err(|error| format!("failed reading media-match profile count: {error}"))?
-            .max(0) as usize)
-    };
-    Ok((inventory, count_for_profile(MEDIA_MATCH_V3_PROFILE_LABEL)?))
-}
-
-fn media_match_sqlite_active_settings_counts(root: &Path) -> Result<usize, String> {
-    if !managed_media_match_index_path(root).exists() {
-        return Ok(0);
-    }
-    let connection = open_media_match_sqlite_index(root)?;
-    let count_for_settings = |settings: &MediaExtractionSettings| -> Result<usize, String> {
-        Ok(connection
-            .query_row(
-                "SELECT COUNT(*)
-                 FROM fingerprints_v3
-                 JOIN settings_v3 ON settings_v3.settings_id = fingerprints_v3.settings_id
-                 WHERE settings_v3.algorithm_version = ?1
-                   AND settings_v3.settings_hash = ?2",
-                params![
-                    i64::from(MEDIA_MATCH_ANCHOR_VERSION),
-                    media_extraction_settings_hash(settings).to_vec(),
-                ],
-                |row| row.get::<_, i64>(0),
-            )
-            .map_err(|error| format!("failed reading media-match active-settings count: {error}"))?
-            .max(0) as usize)
-    };
-    count_for_settings(&MediaExtractionSettings::sampled_fast_audio_index_v3())
 }
 
 fn save_managed_media_match_metadata(
@@ -3080,47 +2898,23 @@ mod tests {
     }
 
     fn media_match_record_updated_unix_millis(root: &Path, record: &MediaFingerprintRecord) -> i64 {
-        let connection = open_media_match_sqlite_index(root).expect("SQLite index should open");
-        connection
-            .query_row(
-                "SELECT fingerprints_v3.updated_unix_millis
-                 FROM fingerprints_v3
-                 JOIN media_files_v3 ON media_files_v3.file_id = fingerprints_v3.file_id
-                 JOIN settings_v3 ON settings_v3.settings_id = fingerprints_v3.settings_id
-                 WHERE media_files_v3.normalized_path = ?1
-                   AND settings_v3.algorithm_version = ?2
-                   AND settings_v3.settings_hash = ?3",
-                params![
-                    record.identity.normalized_path,
-                    i64::from(MEDIA_MATCH_ANCHOR_VERSION),
-                    media_extraction_settings_hash(&record.extraction_settings).to_vec(),
-                ],
-                |row| row.get::<_, i64>(0),
+        open_media_match_index_session(root)
+            .expect("media index should open")
+            .record_updated_unix_millis(
+                &record.identity.normalized_path,
+                &record.extraction_settings,
             )
+            .expect("record timestamp query should run")
             .expect("record timestamp should be readable")
     }
 
     fn v3_audio_bucket_document_frequency(
-        connection: &Connection,
-        settings_hash: &[u8],
+        session: &MediaIndexSession,
+        settings_hash: &[u8; 32],
         bucket: u32,
     ) -> Option<i64> {
-        connection
-            .query_row(
-                "SELECT document_frequency
-                 FROM audio_anchor_buckets_v3
-                 JOIN settings_v3 ON settings_v3.settings_id = audio_anchor_buckets_v3.settings_id
-                 WHERE settings_v3.algorithm_version = ?1
-                   AND settings_v3.settings_hash = ?2
-                   AND audio_anchor_buckets_v3.bucket = ?3",
-                params![
-                    i64::from(MEDIA_MATCH_ANCHOR_VERSION),
-                    settings_hash,
-                    i64::from(bucket),
-                ],
-                |row| row.get::<_, i64>(0),
-            )
-            .optional()
+        session
+            .audio_bucket_document_frequency(settings_hash, bucket)
             .expect("anchor stats frequency query should run")
     }
 
@@ -3199,23 +2993,21 @@ mod tests {
     #[test]
     fn media_match_v3_anchor_stats_refreshes_explicitly_after_saves() {
         let root = unique_media_match_test_root("v3-stats-refresh");
-        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
+        let session = open_media_match_index_session(&root).expect("media index should open");
         let mut record = fake_media_match_record("episode.mkv");
         seed_strong_anchor_fixture(&mut record);
-        save_media_match_record_to_sqlite(&connection, &record)
+        save_media_match_record_to_index(&session, &record)
             .expect("V3 record should save without refreshing stats");
         let settings_hash = media_extraction_settings_hash(&record.extraction_settings);
         assert!(
-            anchor_stats_v3_dirty(&connection, &settings_hash).expect("dirty marker should load"),
+            session
+                .anchor_stats_dirty(&settings_hash)
+                .expect("dirty marker should load"),
             "checkpointed V3 saves must mark active settings stats dirty"
         );
 
-        let stats_before = connection
-            .query_row(
-                "SELECT COUNT(*) FROM audio_anchor_buckets_v3 WHERE document_frequency > 0",
-                [],
-                |row| row.get::<_, i64>(0),
-            )
+        let stats_before = session
+            .positive_anchor_bucket_count()
             .expect("stats count should load");
         assert_eq!(
             stats_before, 0,
@@ -3224,23 +3016,21 @@ mod tests {
 
         let mut instrumentation = MediaMatchRebuildInstrumentation::default();
         refresh_media_match_v3_anchor_stats_for_settings(
-            &connection,
+            &session,
             &MediaExtractionSettings::sampled_fast_audio_index_v3(),
             &mut instrumentation,
         )
         .expect("batch stats refresh should succeed");
-        let stats_after = connection
-            .query_row(
-                "SELECT COUNT(*) FROM audio_anchor_buckets_v3 WHERE document_frequency > 0",
-                [],
-                |row| row.get::<_, i64>(0),
-            )
+        let stats_after = session
+            .positive_anchor_bucket_count()
             .expect("stats count should load");
 
         assert!(stats_after > 0);
         assert_eq!(instrumentation.stats_refreshes, 1);
         assert!(
-            !anchor_stats_v3_dirty(&connection, &settings_hash).expect("dirty marker should load"),
+            !session
+                .anchor_stats_dirty(&settings_hash)
+                .expect("dirty marker should load"),
             "explicit per-settings refresh should clear the scoped dirty marker"
         );
         let _ = std::fs::remove_dir_all(&root);
@@ -3249,7 +3039,7 @@ mod tests {
     #[test]
     fn dirty_stats_after_checkpoint_refreshes_on_candidate_lookup() {
         let root = unique_media_match_test_root("v3-dirty-checkpoint");
-        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
+        let session = open_media_match_index_session(&root).expect("media index should open");
         let query = v3_record_with_audio_anchors(
             "query.mkv",
             &[(10, 100_000, 4), (11, 160_000, 4), (12, 220_000, 4)],
@@ -3258,11 +3048,13 @@ mod tests {
             "candidate.mkv",
             &[(10, 105_000, 4), (11, 165_000, 4), (12, 225_000, 4)],
         );
-        save_media_match_record_to_sqlite(&connection, &query).expect("query should save");
-        save_media_match_record_to_sqlite(&connection, &candidate).expect("candidate should save");
+        save_media_match_record_to_index(&session, &query).expect("query should save");
+        save_media_match_record_to_index(&session, &candidate).expect("candidate should save");
         let settings_hash = media_extraction_settings_hash(&query.extraction_settings);
         assert!(
-            anchor_stats_v3_dirty(&connection, &settings_hash).expect("dirty marker should load"),
+            session
+                .anchor_stats_dirty(&settings_hash)
+                .expect("dirty marker should load"),
             "a checkpoint before batch refresh should leave stats dirty"
         );
 
@@ -3274,9 +3066,11 @@ mod tests {
         .expect("candidate lookup should refresh dirty stats");
 
         assert!(candidates.contains(&candidate.identity.normalized_path));
-        let refreshed = open_media_match_sqlite_index(&root).expect("SQLite index should reopen");
+        let refreshed = open_media_match_index_session(&root).expect("media index should reopen");
         assert!(
-            !anchor_stats_v3_dirty(&refreshed, &settings_hash).expect("dirty marker should load"),
+            !refreshed
+                .anchor_stats_dirty(&settings_hash)
+                .expect("dirty marker should load"),
             "candidate lookup should refresh stats and clear the active dirty marker"
         );
         assert_eq!(
@@ -3289,7 +3083,7 @@ mod tests {
     #[test]
     fn offset_aware_retrieval_prefers_dominant_offset_cluster() {
         let root = unique_media_match_test_root("v3-offset-retrieval");
-        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
+        let connection = open_media_match_index_session(&root).expect("media index should open");
         let query_anchors = (0..8)
             .map(|index| (100 + index, 120_000 + (index * 60_000), 4))
             .collect::<Vec<_>>();
@@ -3312,7 +3106,7 @@ mod tests {
                 .collect::<Vec<_>>(),
         );
         for record in [&query, &scattered, &clustered] {
-            save_media_match_record_to_sqlite(&connection, record).expect("record should save");
+            save_media_match_record_to_index(&connection, record).expect("record should save");
         }
 
         let candidates = media_match_anchor_candidate_paths(
@@ -3332,7 +3126,7 @@ mod tests {
     #[test]
     fn offset_aware_retrieval_downweights_high_document_frequency_buckets() {
         let root = unique_media_match_test_root("v3-offset-df");
-        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
+        let connection = open_media_match_index_session(&root).expect("media index should open");
         let common = (0..6)
             .map(|index| (500 + index, 120_000 + (index * 60_000), 4))
             .collect::<Vec<_>>();
@@ -3356,10 +3150,10 @@ mod tests {
                 .map(|(bucket, t_ms, weight)| (*bucket, *t_ms + 5_000, *weight))
                 .collect::<Vec<_>>(),
         );
-        save_media_match_record_to_sqlite(&connection, &query).expect("query should save");
-        save_media_match_record_to_sqlite(&connection, &common_candidate)
+        save_media_match_record_to_index(&connection, &query).expect("query should save");
+        save_media_match_record_to_index(&connection, &common_candidate)
             .expect("common candidate should save");
-        save_media_match_record_to_sqlite(&connection, &rare_candidate)
+        save_media_match_record_to_index(&connection, &rare_candidate)
             .expect("rare candidate should save");
         for dummy_index in 0..260 {
             let dummy = v3_record_with_audio_anchors(
@@ -3372,7 +3166,7 @@ mod tests {
                     })
                     .collect::<Vec<_>>(),
             );
-            save_media_match_record_to_sqlite(&connection, &dummy).expect("dummy should save");
+            save_media_match_record_to_index(&connection, &dummy).expect("dummy should save");
         }
 
         let candidates = media_match_anchor_candidate_paths(
@@ -3393,7 +3187,7 @@ mod tests {
     #[test]
     fn retrieval_common_bucket_cap_skips_overly_common_buckets() {
         let root = unique_media_match_test_root("v3-common-bucket-cap");
-        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
+        let connection = open_media_match_index_session(&root).expect("media index should open");
         let query =
             v3_record_with_audio_anchors("query.mkv", &[(777, 120_000, 4), (999, 420_000, 4)]);
         let common_candidate =
@@ -3401,22 +3195,19 @@ mod tests {
         let rare_candidate =
             v3_record_with_audio_anchors("rare-candidate.mkv", &[(999, 425_000, 4)]);
         for record in [&query, &common_candidate, &rare_candidate] {
-            save_media_match_record_to_sqlite(&connection, record).expect("record should save");
+            save_media_match_record_to_index(&connection, record).expect("record should save");
         }
         for dummy_index in 0..260 {
             let dummy = v3_record_with_audio_anchors(
                 &format!("common-dummy-{dummy_index}.mkv"),
                 &[(777, 180_000 + dummy_index, 1)],
             );
-            save_media_match_record_to_sqlite(&connection, &dummy).expect("dummy should save");
+            save_media_match_record_to_index(&connection, &dummy).expect("dummy should save");
         }
 
-        let (candidates, stats) = media_match_v3_anchor_candidate_paths_with_stats(
-            &connection,
-            &query.identity.normalized_path,
-            &query.extraction_settings,
-        )
-        .expect("candidate lookup should run");
+        let (candidates, stats) = connection
+            .anchor_candidate_paths(&query.identity.normalized_path, &query.extraction_settings)
+            .expect("candidate lookup should run");
 
         assert!(stats.query_buckets_total >= 2, "{stats:?}");
         assert!(stats.query_buckets_skipped_common >= 1, "{stats:?}");
@@ -3437,7 +3228,7 @@ mod tests {
     #[test]
     fn v3_runtime_and_diagnostic_retrieval_share_index_results() {
         let root = unique_media_match_test_root("v3-shared-retrieval");
-        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
+        let connection = open_media_match_index_session(&root).expect("media index should open");
         let query = v3_record_with_audio_anchors(
             "query.mkv",
             &[
@@ -3463,7 +3254,7 @@ mod tests {
             ],
         );
         for record in [&query, &candidate, &scattered] {
-            save_media_match_record_to_sqlite(&connection, record).expect("record should save");
+            save_media_match_record_to_index(&connection, record).expect("record should save");
         }
 
         let runtime_candidates = media_match_v3_anchor_candidate_paths(
@@ -3472,12 +3263,9 @@ mod tests {
             &query.extraction_settings,
         )
         .expect("runtime candidate lookup should run");
-        let (diagnostic_candidates, stats) = media_match_v3_anchor_candidate_paths_with_stats(
-            &connection,
-            &query.identity.normalized_path,
-            &query.extraction_settings,
-        )
-        .expect("diagnostic candidate lookup should run");
+        let (diagnostic_candidates, stats) = connection
+            .anchor_candidate_paths(&query.identity.normalized_path, &query.extraction_settings)
+            .expect("diagnostic candidate lookup should run");
 
         assert_eq!(runtime_candidates, diagnostic_candidates);
         assert_eq!(
@@ -3507,18 +3295,18 @@ mod tests {
                 weight: 4,
             },
         ];
-        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
-        save_media_match_record_to_sqlite(&connection, &record).expect("record should save");
+        let connection = open_media_match_index_session(&root).expect("media index should open");
+        save_media_match_record_to_index(&connection, &record).expect("record should save");
 
-        let shared = load_media_match_v3_record_for_path(
-            &connection,
-            &record.identity.normalized_path,
-            &extraction_settings,
-            record.identity.modified_unix_millis,
-            record.identity.size_bytes,
-        )
-        .expect("shared loader should run")
-        .expect("shared loader should return saved record");
+        let shared = connection
+            .load_record(
+                &record.identity.normalized_path,
+                &extraction_settings,
+                record.identity.modified_unix_millis,
+                record.identity.size_bytes,
+            )
+            .expect("shared loader should run")
+            .expect("shared loader should return saved record");
         let runtime = media_match_record_for_path(
             &root,
             media_path.to_str().expect("test path should be UTF-8"),
@@ -3601,7 +3389,7 @@ mod tests {
     #[test]
     fn offset_aware_retrieval_prefers_body_span_over_intro_outro_edges() {
         let root = unique_media_match_test_root("v3-offset-body-span");
-        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
+        let connection = open_media_match_index_session(&root).expect("media index should open");
         let edge = vec![
             (1_000, 0, 4),
             (1_001, 30_000, 4),
@@ -3631,7 +3419,7 @@ mod tests {
                 .collect::<Vec<_>>(),
         );
         for record in [&query, &edge_candidate, &body_candidate] {
-            save_media_match_record_to_sqlite(&connection, record).expect("record should save");
+            save_media_match_record_to_index(&connection, record).expect("record should save");
         }
 
         let candidates = media_match_anchor_candidate_paths(
@@ -3651,7 +3439,7 @@ mod tests {
     #[test]
     fn offset_aware_retrieval_is_deterministic_on_ties() {
         let root = unique_media_match_test_root("v3-offset-ties");
-        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
+        let connection = open_media_match_index_session(&root).expect("media index should open");
         let query_anchors = (0..6)
             .map(|index| (3_000 + index, 120_000 + (index * 60_000), 4))
             .collect::<Vec<_>>();
@@ -3671,7 +3459,7 @@ mod tests {
                 .collect::<Vec<_>>(),
         );
         for record in [&query, &first, &second] {
-            save_media_match_record_to_sqlite(&connection, record).expect("record should save");
+            save_media_match_record_to_index(&connection, record).expect("record should save");
         }
 
         let candidates = media_match_anchor_candidate_paths(
@@ -3766,10 +3554,12 @@ mod tests {
         cache.insert(fake_media_match_record("episode.mkv"));
         save_media_match_cache(&root, &cache).expect("cache should be written");
 
-        assert_eq!(
-            media_match_sqlite_all_settings_counts(&root).expect("counts should load"),
-            (1, 1)
-        );
+        let summary = open_media_match_index_session(&root)
+            .expect("media index should open")
+            .summary(&MediaExtractionSettings::sampled_fast_audio_index_v3())
+            .expect("index summary should load");
+        assert_eq!(summary.inventory_count, 1);
+        assert_eq!(summary.fixed_settings_fingerprint_count, 1);
         assert_eq!(
             load_media_match_cache_for_settings(
                 &root,
@@ -3914,7 +3704,7 @@ mod tests {
     #[test]
     fn media_match_save_and_loads_valid_audio_v3_landmarks() {
         let root = unique_media_match_test_root("valid-audio-v3");
-        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
+        let connection = open_media_match_index_session(&root).expect("media index should open");
         let mut record = fake_media_match_record("valid-audio-v3.mkv");
         record.extraction_settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
         record.audio_anchors = vec![AudioAnchor {
@@ -3923,7 +3713,7 @@ mod tests {
             weight: 3,
         }];
 
-        save_media_match_record_to_sqlite(&connection, &record)
+        save_media_match_record_to_index(&connection, &record)
             .expect("valid audio V3 landmark should save");
         let cache = load_media_match_cache_for_settings(
             &root,
@@ -4142,8 +3932,9 @@ mod tests {
         cache.insert(kept.clone());
         cache.insert(removed);
         save_media_match_cache(&root, &cache).expect("cache should be written");
-        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
-        refresh_all_anchor_stats_v3(&connection, current_unix_millis() as i64)
+        let connection = open_media_match_index_session(&root).expect("media index should open");
+        connection
+            .refresh_all_anchor_stats(current_unix_millis() as i64)
             .expect("initial stats refresh should succeed");
         let settings_hash = media_extraction_settings_hash(&extraction_settings);
         let shared_before = v3_audio_bucket_document_frequency(&connection, &settings_hash, 500);
@@ -4161,7 +3952,9 @@ mod tests {
         )
         .expect("inventory should prune deleted files and mark stats dirty");
         assert!(
-            anchor_stats_v3_dirty(&connection, &settings_hash).expect("dirty marker should load"),
+            connection
+                .anchor_stats_dirty(&settings_hash)
+                .expect("dirty marker should load"),
             "inventory pruning should defer expensive all-settings stats refresh"
         );
         media_match_anchor_candidate_paths(
@@ -4172,7 +3965,7 @@ mod tests {
         .expect("candidate lookup should refresh dirty anchor stats");
 
         let refreshed_connection =
-            open_media_match_sqlite_index(&root).expect("SQLite index should reopen");
+            open_media_match_index_session(&root).expect("media index should reopen");
         let shared_after =
             v3_audio_bucket_document_frequency(&refreshed_connection, &settings_hash, 500);
         let removed_only_after =
@@ -4184,7 +3977,8 @@ mod tests {
             "anchor stats for pruned-only buckets should be refreshed to zero"
         );
         assert!(
-            !anchor_stats_v3_dirty(&refreshed_connection, &settings_hash)
+            !refreshed_connection
+                .anchor_stats_dirty(&settings_hash)
                 .expect("dirty marker should load"),
             "candidate lookup should clear the dirty marker after refreshing stats"
         );
@@ -4206,17 +4000,11 @@ mod tests {
         let mut cache = MediaMatchCache::default();
         cache.insert(record);
         save_media_match_cache(&root, &cache).expect("cache should be written");
-        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
+        let connection = open_media_match_index_session(&root).expect("media index should open");
         let blob_bytes = connection
-            .query_row(
-                "SELECT COALESCE(SUM(COALESCE(LENGTH(audio_blob), 0)), 0)
-                 FROM fingerprints_v3
-                 JOIN settings_v3 ON settings_v3.settings_id = fingerprints_v3.settings_id
-                 WHERE settings_v3.algorithm_version = ?1",
-                params![i64::from(MEDIA_MATCH_ANCHOR_VERSION)],
-                |row| row.get::<_, i64>(0),
-            )
-            .expect("blob byte count should load");
+            .summary(&MediaExtractionSettings::sampled_fast_audio_index_v3())
+            .expect("index summary should load")
+            .v3_audio_blob_bytes;
 
         assert!(
             blob_bytes <= 2_048,
@@ -4248,20 +4036,13 @@ mod tests {
             |_| {},
         )
         .expect("inventory-only scan should not require media tools");
-        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
-        let inventory = connection
-            .query_row("SELECT COUNT(*) FROM media_files_v3", [], |row| {
-                row.get::<_, i64>(0)
-            })
-            .expect("inventory count should load");
-        let fingerprints = connection
-            .query_row("SELECT COUNT(*) FROM fingerprints_v3", [], |row| {
-                row.get::<_, i64>(0)
-            })
-            .expect("fingerprint count should load");
+        let connection = open_media_match_index_session(&root).expect("media index should open");
+        let summary = connection
+            .summary(&MediaExtractionSettings::sampled_fast_audio_index_v3())
+            .expect("index summary should load");
 
-        assert_eq!(inventory, 2);
-        assert_eq!(fingerprints, 0);
+        assert_eq!(summary.inventory_count, 2);
+        assert_eq!(summary.v3_fingerprint_row_count, 0);
         assert!(result.message.contains("inventoried 2 discovered files"));
         assert!(result.message.contains("No active local media path"));
         let _ = std::fs::remove_dir_all(&root);
@@ -4467,12 +4248,11 @@ mod tests {
         );
 
         assert!(result.is_err());
-        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
+        let connection = open_media_match_index_session(&root).expect("media index should open");
         let fingerprints = connection
-            .query_row("SELECT COUNT(*) FROM fingerprints_v3", [], |row| {
-                row.get::<_, i64>(0)
-            })
-            .expect("fingerprint count should load");
+            .summary(&MediaExtractionSettings::sampled_fast_audio_index_v3())
+            .expect("index summary should load")
+            .v3_fingerprint_row_count;
         assert_eq!(
             fingerprints, 0,
             "cancelled rebuilds must not checkpoint empty or partial fingerprints"

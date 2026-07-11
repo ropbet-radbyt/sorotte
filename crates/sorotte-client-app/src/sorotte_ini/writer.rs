@@ -54,7 +54,11 @@ fn upsert_sorotte_ini_stored_client_settings_mvp_with_plex_identity_clear(
     if let Some(port) = settings.port {
         upsert_ini_value_legacy_compatible(&mut lines, "server_data", "port", &port.to_string());
     }
-    if let Some(server_password) = settings.server_password.as_deref() {
+    if let Some(server_password) = settings
+        .server_password
+        .as_ref()
+        .map(|password| password.expose_secret())
+    {
         upsert_ini_value_legacy_compatible(&mut lines, "server_data", "password", server_password);
     }
     if let Some(username) = settings.username.as_deref() {
@@ -189,7 +193,11 @@ fn upsert_sorotte_ini_stored_client_settings_mvp_with_plex_identity_clear(
         remove_ini_value_legacy_compatible(&mut lines, "plex", "selectedServerUrl");
         remove_ini_value_legacy_compatible(&mut lines, "plex", "selectedServerToken");
     }
-    if let Some(value) = settings.plex_user_token.as_deref() {
+    if let Some(value) = settings
+        .plex_user_token
+        .as_ref()
+        .map(|token| token.expose_secret())
+    {
         upsert_ini_value_legacy_compatible(&mut lines, "plex", "userToken", value);
     }
     if let Some(value) = settings.plex_selected_server_id.as_deref() {
@@ -198,7 +206,11 @@ fn upsert_sorotte_ini_stored_client_settings_mvp_with_plex_identity_clear(
     if let Some(value) = settings.plex_selected_server_url.as_deref() {
         upsert_ini_value_legacy_compatible(&mut lines, "plex", "selectedServerUrl", value);
     }
-    if let Some(value) = settings.plex_selected_server_token.as_deref() {
+    if let Some(value) = settings
+        .plex_selected_server_token
+        .as_ref()
+        .map(|token| token.expose_secret())
+    {
         upsert_ini_value_legacy_compatible(&mut lines, "plex", "selectedServerToken", value);
     }
     if let Some(value) = settings.folder_search_first_file_timeout_seconds

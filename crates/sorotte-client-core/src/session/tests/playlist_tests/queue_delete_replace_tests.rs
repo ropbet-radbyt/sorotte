@@ -3,8 +3,15 @@ use super::*;
 #[test]
 fn queued_runtime_control_set_playlist_and_index_emit_protocol_messages() {
     let mut control = QueuedRuntimeControl::default();
-    control.set_playlist(vec!["episode1.mkv".to_owned(), "episode2.mkv".to_owned()]);
-    control.set_playlist_index(1);
+    control
+        .emit(ClientEffect::SetPlaylist(vec![
+            "episode1.mkv".to_owned(),
+            "episode2.mkv".to_owned(),
+        ]))
+        .expect("playlist effect should be supported");
+    control
+        .emit(ClientEffect::SetPlaylistIndex(1))
+        .expect("playlist index effect should be supported");
 
     assert_eq!(control.outbound_messages().len(), 2);
     let ProtocolMessage::Set(change_message) = &control.outbound_messages()[0] else {
@@ -35,7 +42,9 @@ fn plex_playlist_sidecar_outbound_keeps_syncplay_files_baseline() {
     let plex_uri =
         "plex://server/metadata/14452?title=Episode%2011&file=Episode%2011%20%5B1080p%5D.mkv";
     let mut control = QueuedRuntimeControl::default();
-    control.set_playlist(vec![plex_uri.to_owned()]);
+    control
+        .emit(ClientEffect::SetPlaylist(vec![plex_uri.to_owned()]))
+        .expect("playlist effect should be supported");
 
     let ProtocolMessage::Set(change_message) = &control.outbound_messages()[0] else {
         panic!("expected queued control playlist change to emit Set message");
@@ -218,7 +227,7 @@ fn client_runtime_replace_playlist_preserves_existing_selection_without_redundan
     );
     assert_eq!(
         runtime
-            .session_mut()
+            .session_mut_for_test()
             .take_pending_playlist_index_reset_intent(),
         None,
         "preserving the existing selection during playlist replace should not queue a reset"

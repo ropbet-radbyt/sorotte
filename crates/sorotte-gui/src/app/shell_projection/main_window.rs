@@ -24,21 +24,22 @@ impl MainWindowShellState {
     pub(in crate::app) fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
         let runtime_settings = stored_client_settings_runtime_snapshot_legacy_compatible(settings);
         let room_name = runtime_settings
-            .settings
+            .config
+            .connection
             .room
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
+            .as_ref()
+            .map(|room| room.as_str())
             .unwrap_or("(no room joined)")
             .to_owned();
-        let username = settings
+        let username = runtime_settings
+            .config
+            .connection
             .username
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
+            .as_ref()
+            .map(|username| username.as_str())
             .unwrap_or("You")
             .to_owned();
-        let shared_playlist_enabled = settings.shared_playlist_enabled.unwrap_or(false);
+        let shared_playlist_enabled = runtime_settings.config.playback.shared_playlist_enabled;
         let controlled_room_active = room_name.starts_with('+');
 
         let playlist_default_source = GuiPlaylistDefaultSourceState::default();
@@ -80,7 +81,7 @@ impl MainWindowShellState {
             playlist,
             playlist_default_source,
             active_playlist_index: None,
-            chat: if legacy_chat_output_enabled(settings) {
+            chat: if runtime_settings.config.interface.chat_output_enabled {
                 vec![MainWindowChatRow {
                     sender: "system".to_owned(),
                     message: "Chat pane ready".to_owned(),
@@ -100,7 +101,7 @@ impl MainWindowShellState {
                 can_manage_playlist: false,
             },
             playback_paused: false,
-            autoplay_active: settings.autoplay_initial_state.unwrap_or(false),
+            autoplay_active: runtime_settings.config.readiness.autoplay_initial_state,
             autoplay_threshold: autoplay_threshold_from_settings(settings),
             autoplay_countdown_seconds: None,
             user_offset_seconds: 0.0,

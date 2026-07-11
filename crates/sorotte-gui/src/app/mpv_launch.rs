@@ -10,6 +10,7 @@ use std::{
 use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
 use sorotte_player_api::PlayerAdapter;
 use sorotte_player_mpv::{LegacySyncplayUiSettings, MpvAdapter};
+use sorotte_secret::RedactedCommandArgs;
 
 use super::child_process::configure_gui_child_process;
 
@@ -29,12 +30,27 @@ pub(crate) enum ManagedMpvSettingsDecision {
     Launch(Box<ManagedMpvLaunchConfig>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct ManagedMpvLaunchConfig {
     pub(crate) requested_player_path: String,
     pub(crate) program: PathBuf,
     pub(crate) extra_args: Vec<String>,
     pub(crate) ui_settings: LegacySyncplayUiSettings,
+}
+
+impl std::fmt::Debug for ManagedMpvLaunchConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ManagedMpvLaunchConfig")
+            .field("requested_player_path", &self.requested_player_path)
+            .field("program", &self.program)
+            .field(
+                "extra_args",
+                &RedactedCommandArgs::from_args(&self.extra_args),
+            )
+            .field("ui_settings", &self.ui_settings)
+            .finish()
+    }
 }
 
 impl ManagedMpvLaunchConfig {
@@ -613,14 +629,38 @@ fn generate_managed_mpv_ipc_path() -> Result<(String, Option<PathBuf>), String> 
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::path::PathBuf;
 
     use super::{
-        LEGACY_SYNCPLAYINTF_CHAT_INPUT_BRIDGE_MARKER, ManagedMpvSettingsDecision,
-        autodetect_mpv_player_path_legacy_compatible_from_lookup,
+        LEGACY_SYNCPLAYINTF_CHAT_INPUT_BRIDGE_MARKER, ManagedMpvLaunchConfig,
+        ManagedMpvSettingsDecision, autodetect_mpv_player_path_legacy_compatible_from_lookup,
         legacy_syncplayintf_script_source_with_chat_input_bridge, managed_mpv_launch_args,
         managed_mpv_settings_decision_from_settings,
     };
     use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
+    use sorotte_player_mpv::LegacySyncplayUiSettings;
+
+    #[test]
+    fn managed_mpv_launch_config_debug_redacts_free_form_arguments() {
+        let config = ManagedMpvLaunchConfig {
+            requested_player_path: "mpv".to_owned(),
+            program: PathBuf::from("mpv"),
+            extra_args: vec![
+                "--http-header-fields=Authorization: Bearer GUI_PLAYER_ARG_CANARY".to_owned(),
+                "--cookies-file=C:/private/GUI_PLAYER_ARG_CANARY.txt".to_owned(),
+                "https://media.example/video?Signature=GUI_PLAYER_ARG_CANARY".to_owned(),
+            ],
+            ui_settings: LegacySyncplayUiSettings::default(),
+        };
+
+        let rendered = format!("{config:?}");
+
+        assert!(rendered.contains("RedactedCommandArgs"));
+        assert!(!rendered.contains("GUI_PLAYER_ARG_CANARY"));
+        assert!(!rendered.contains("Authorization: Bearer"));
+        assert!(!rendered.contains("--cookies-file"));
+        assert!(!rendered.contains("?Signature="));
+    }
 
     #[test]
     fn managed_mpv_settings_decision_uses_saved_player_path_and_per_player_arguments() {

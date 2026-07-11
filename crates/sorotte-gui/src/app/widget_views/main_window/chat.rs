@@ -1,7 +1,7 @@
 use super::*;
 
 impl SorotteGuiShellAppState {
-    pub(super) fn main_window_chat_panel(&self) -> GuiWidgetNode {
+    pub(in crate::app) fn main_window_chat_panel(&self) -> GuiWidgetNode {
         let chat_unavailable_reason =
             (!self.commands.can_send_chat_message).then(|| self.chat_send_unavailable_reason());
         let chat_input_node = GuiWidgetNode::leaf(

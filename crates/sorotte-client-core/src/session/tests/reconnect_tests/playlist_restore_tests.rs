@@ -24,6 +24,11 @@ fn reconnect_playlist_restore_emits_actions_on_empty_server_playlist_snapshot() 
     );
 
     session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sharedPlaylists":true}}}"#,
+        )
+        .expect("reconnect hello should apply");
+    session
         .apply_message_json(r#"{"Set":{"playlistChange":{"files":[]}}}"#)
         .expect("empty server playlist snapshot should apply");
 
@@ -135,6 +140,11 @@ fn client_runtime_reconnect_playlist_restore_dispatches_protocol_messages() {
         .expect("local playlist index should apply");
     session.reset_sync_state_for_reconnect();
     session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sharedPlaylists":true}}}"#,
+        )
+        .expect("reconnect hello should apply");
+    session
         .apply_message_json(r#"{"Set":{"playlistChange":{"files":[]}}}"#)
         .expect("empty reconnect playlist snapshot should apply");
 
@@ -229,7 +239,11 @@ fn client_runtime_reconnect_state_and_playlist_restore_precede_validation_mismat
         .run_reconnect_state_restore_if_needed()
         .expect("reconnect state restore should dispatch");
     assert!(
-        runtime.session().reconnect_state_restore_validation_pending,
+        runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending,
         "state restore dispatch should enable reconnect validation"
     );
 
@@ -237,7 +251,11 @@ fn client_runtime_reconnect_state_and_playlist_restore_precede_validation_mismat
         .run_reconnect_playlist_restore_if_needed()
         .expect("reconnect playlist restore should dispatch");
     assert!(
-        runtime.session().reconnect_state_restore_validation_pending,
+        runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending,
         "playlist restore should not clear reconnect validation pending state"
     );
 
@@ -320,7 +338,11 @@ fn client_runtime_reconnect_state_and_playlist_restore_precede_validation_mismat
         "validation mismatch should still issue corrective seek after playlist restore dispatch"
     );
     assert!(
-        !runtime.session().reconnect_state_restore_validation_pending,
+        !runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending,
         "validation pending should clear after post-restore correction"
     );
     assert_eq!(
@@ -372,6 +394,11 @@ fn client_runtime_reconnect_playlist_restore_uses_latest_local_playlist_before_e
 
     let (mut session, player, _control) = runtime.into_parts();
     session.reset_sync_state_for_reconnect();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sharedPlaylists":true}}}"#,
+        )
+        .expect("reconnect hello should apply");
     session
         .apply_message_json(r#"{"Set":{"playlistChange":{"files":[]}}}"#)
         .expect("empty reconnect playlist snapshot should apply");

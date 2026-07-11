@@ -10,6 +10,7 @@ use std::{
 
 use sorotte_client_app::app_boundary::commands::LocalOffsetCommand;
 
+use super::feature_slices::{GuiClientCommand, GuiRuntimeInput};
 use super::runtime_bridge::{
     GuiNativeRuntimeBridge, GuiNativeRuntimePump, GuiPendingCompletionRequest,
     GuiQueuedRuntimeOwner, GuiRuntimeRequest,
@@ -24,7 +25,7 @@ type GuiRepaintNotifier = Arc<dyn Fn() + Send + Sync>;
 #[derive(Clone, Default)]
 pub(super) struct GuiQueuedRuntimeBridgeHandle {
     queued_actions: Arc<Mutex<VecDeque<GuiShellAction>>>,
-    queued_requests: Arc<Mutex<VecDeque<GuiRuntimeRequest>>>,
+    queued_commands: Arc<Mutex<VecDeque<GuiClientCommand>>>,
     repaint_notifier: Arc<Mutex<Option<GuiRepaintNotifier>>>,
     threaded_runtime_owner: Arc<Mutex<Option<Weak<GuiThreadedRuntimeOwnerShared>>>>,
 }
@@ -127,21 +128,32 @@ impl GuiQueuedRuntimeBridgeHandle {
         I: IntoIterator<Item = GuiRuntimeRequest>,
     {
         let mut queue = self
-            .queued_requests
+            .queued_commands
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let previous_len = queue.len();
-        queue.extend(requests);
-        let queued_requests = queue.len().saturating_sub(previous_len);
+        queue.extend(
+            requests
+                .into_iter()
+                .map(GuiClientCommand::from_compatibility_request),
+        );
+        let queued_commands = queue.len().saturating_sub(previous_len);
         drop(queue);
-        if queued_requests != 0 {
+        if queued_commands != 0 {
             self.notify_threaded_runtime_owner();
         }
     }
 
     pub(super) fn drain_requests(&self) -> Vec<GuiRuntimeRequest> {
+        self.drain_client_commands()
+            .into_iter()
+            .map(GuiClientCommand::into_compatibility_request)
+            .collect()
+    }
+
+    pub(super) fn drain_client_commands(&self) -> Vec<GuiClientCommand> {
         let mut queue = self
-            .queued_requests
+            .queued_commands
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         queue.drain(..).collect()
@@ -385,7 +397,10 @@ impl GuiNativeRuntimeBridge for GuiQueuedRuntimeBridge {
         if nonempty_room_name_text(&room).is_some() && normalized_editable_text(&password).is_some()
         {
             self.handle
-                .push_request(GuiRuntimeRequest::RequestControllerAuth { room, password });
+                .push_request(GuiRuntimeRequest::RequestControllerAuth {
+                    room,
+                    password: password.into(),
+                });
         }
         Vec::new()
     }
@@ -489,12 +504,17 @@ impl GuiNativeRuntimeBridge for GuiQueuedRuntimeBridge {
 pub(super) struct GuiQueuedRuntimeOwnerPump<TOwner> {
     handle: GuiQueuedRuntimeBridgeHandle,
     owner: TOwner,
+    last_input: Option<GuiRuntimeInput>,
 }
 
 #[cfg(test)]
 impl<TOwner> GuiQueuedRuntimeOwnerPump<TOwner> {
     pub(super) fn new(handle: GuiQueuedRuntimeBridgeHandle, owner: TOwner) -> Self {
-        Self { handle, owner }
+        Self {
+            handle,
+            owner,
+            last_input: None,
+        }
     }
 }
 
@@ -504,14 +524,23 @@ where
     TOwner: GuiQueuedRuntimeOwner,
 {
     fn pump(&mut self, state: &SorotteGuiShellAppState) {
-        self.owner.pump(&self.handle, state);
+        if !self
+            .last_input
+            .as_ref()
+            .is_some_and(|input| input.matches_shell(state))
+        {
+            let input = GuiRuntimeInput::from_shell(state);
+            self.owner.input_changed(&self.handle, &input);
+            self.last_input = Some(input);
+        }
+        self.owner.poll(&self.handle);
     }
 }
 
 #[derive(Default)]
 struct GuiThreadedRuntimeOwnerSharedState {
-    latest_state: Option<Arc<SorotteGuiShellAppState>>,
-    latest_state_revision: u64,
+    latest_input: Option<Arc<GuiRuntimeInput>>,
+    latest_input_revision: u64,
     runtime_wake_revision: u64,
     stop_requested: bool,
 }
@@ -523,7 +552,7 @@ struct GuiThreadedRuntimeOwnerShared {
 }
 
 pub(super) struct GuiThreadedRuntimeOwnerPump {
-    last_submitted_state: Option<Arc<SorotteGuiShellAppState>>,
+    last_submitted_input: Option<Arc<GuiRuntimeInput>>,
     shared: Arc<GuiThreadedRuntimeOwnerShared>,
     worker: Option<JoinHandle<()>>,
 }
@@ -560,7 +589,7 @@ impl GuiThreadedRuntimeOwnerPump {
             .map_err(|error| format!("failed to spawn syncplay GUI runtime thread: {error}"))?;
         handle.set_threaded_runtime_owner(&shared);
         Ok(Self {
-            last_submitted_state: None,
+            last_submitted_input: None,
             shared,
             worker: Some(worker),
         })
@@ -574,12 +603,13 @@ impl GuiThreadedRuntimeOwnerPump {
     ) where
         TOwner: GuiQueuedRuntimeOwner,
     {
-        let mut latest_state = None;
+        let mut latest_input = None;
         let mut latest_revision = 0_u64;
         let mut latest_runtime_wake_revision = 0_u64;
 
         loop {
             let mut timed_out = false;
+            let mut changed_input = None;
             let mut shared_state = shared
                 .state
                 .lock()
@@ -589,15 +619,19 @@ impl GuiThreadedRuntimeOwnerPump {
                 if shared_state.stop_requested {
                     return;
                 }
-                if shared_state.latest_state_revision != latest_revision {
-                    latest_revision = shared_state.latest_state_revision;
-                    latest_state = shared_state.latest_state.clone();
+                if shared_state.latest_input_revision != latest_revision {
+                    latest_revision = shared_state.latest_input_revision;
+                    latest_input = shared_state.latest_input.clone();
+                    changed_input = latest_input.clone();
                 }
-                if shared_state.runtime_wake_revision != latest_runtime_wake_revision || timed_out {
+                if shared_state.runtime_wake_revision != latest_runtime_wake_revision
+                    || timed_out
+                    || changed_input.is_some()
+                {
                     latest_runtime_wake_revision = shared_state.runtime_wake_revision;
                     break;
                 }
-                if latest_state.is_some() {
+                if latest_input.is_some() {
                     let (next_shared_state, timeout) = shared
                         .wake
                         .wait_timeout(shared_state, poll_interval)
@@ -614,8 +648,11 @@ impl GuiThreadedRuntimeOwnerPump {
 
             drop(shared_state);
 
-            if let Some(state) = latest_state.as_ref() {
-                owner.pump(&handle, state);
+            if let Some(input) = changed_input.as_ref() {
+                owner.input_changed(&handle, input);
+            }
+            if latest_input.is_some() {
+                owner.poll(&handle);
             }
         }
     }
@@ -680,18 +717,23 @@ impl GuiNativeRuntimePump for GuiRuntimeThreadUnavailablePump {
 
 impl GuiNativeRuntimePump for GuiThreadedRuntimeOwnerPump {
     fn pump(&mut self, state: &SorotteGuiShellAppState) {
-        let state_changed = self.last_submitted_state.as_deref() != Some(state);
+        if self
+            .last_submitted_input
+            .as_deref()
+            .is_some_and(|input| input.matches_shell(state))
+        {
+            return;
+        }
+        let input = GuiRuntimeInput::from_shell(state);
         let mut shared_state = self
             .shared
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if state_changed {
-            let snapshot = Arc::new(state.clone());
-            self.last_submitted_state = Some(snapshot.clone());
-            shared_state.latest_state = Some(snapshot);
-            shared_state.latest_state_revision = shared_state.latest_state_revision.wrapping_add(1);
-        }
+        let snapshot = Arc::new(input);
+        self.last_submitted_input = Some(snapshot.clone());
+        shared_state.latest_input = Some(snapshot);
+        shared_state.latest_input_revision = shared_state.latest_input_revision.wrapping_add(1);
         shared_state.runtime_wake_revision = shared_state.runtime_wake_revision.wrapping_add(1);
         drop(shared_state);
         self.shared.wake.notify_one();

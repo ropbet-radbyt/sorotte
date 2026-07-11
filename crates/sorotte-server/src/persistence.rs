@@ -1,10 +1,21 @@
 use super::*;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(crate) struct PersistedRoomState {
     pub(crate) files: Vec<String>,
     pub(crate) index: Option<i64>,
     pub(crate) position: f64,
+}
+
+impl std::fmt::Debug for PersistedRoomState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PersistedRoomState")
+            .field("files_count", &self.files.len())
+            .field("index", &self.index)
+            .field("position", &self.position)
+            .finish()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -32,18 +43,28 @@ impl StatsPersistenceStore {
         Ok(store)
     }
 
-    pub(crate) fn add_version_log(
+    pub(crate) fn add_version_logs(
         &self,
+        connection: &mut Connection,
         snapshot_time: i64,
-        version: &str,
+        versions: &[String],
     ) -> Result<(), StatsPersistenceError> {
-        let connection = self.connection("connect")?;
-        connection
-            .execute(
-                "INSERT INTO clients_snapshots (snapshot_time, version) VALUES (?1, ?2)",
-                params![snapshot_time, version],
-            )
-            .map_err(|source| self.sqlite_error("insert clients snapshot row", source))?;
+        let transaction = connection
+            .transaction()
+            .map_err(|source| self.sqlite_error("begin clients snapshot transaction", source))?;
+        {
+            let mut statement = transaction
+                .prepare("INSERT INTO clients_snapshots (snapshot_time, version) VALUES (?1, ?2)")
+                .map_err(|source| self.sqlite_error("prepare clients snapshot insert", source))?;
+            for version in versions {
+                statement
+                    .execute(params![snapshot_time, version])
+                    .map_err(|source| self.sqlite_error("insert clients snapshot row", source))?;
+            }
+        }
+        transaction
+            .commit()
+            .map_err(|source| self.sqlite_error("commit clients snapshot transaction", source))?;
         Ok(())
     }
 
@@ -61,7 +82,10 @@ impl StatsPersistenceStore {
         Ok(())
     }
 
-    fn connection(&self, action: &'static str) -> Result<Connection, StatsPersistenceError> {
+    pub(crate) fn connection(
+        &self,
+        action: &'static str,
+    ) -> Result<Connection, StatsPersistenceError> {
         Connection::open(&self.db_path).map_err(|source| self.sqlite_error(action, source))
     }
 
@@ -137,12 +161,12 @@ impl RoomPersistenceStore {
 
     pub(crate) fn save_room(
         &self,
+        connection: &Connection,
         room_name: &str,
         files: &[String],
         playlist_index: Option<i64>,
         position: f64,
     ) -> Result<(), RoomPersistenceError> {
-        let connection = self.connection("connect")?;
         connection
             .execute(
                 "INSERT OR REPLACE INTO persistent_rooms \
@@ -160,8 +184,11 @@ impl RoomPersistenceStore {
         Ok(())
     }
 
-    pub(crate) fn delete_room(&self, room_name: &str) -> Result<(), RoomPersistenceError> {
-        let connection = self.connection("connect")?;
+    pub(crate) fn delete_room(
+        &self,
+        connection: &Connection,
+        room_name: &str,
+    ) -> Result<(), RoomPersistenceError> {
         connection
             .execute(
                 "DELETE FROM persistent_rooms WHERE name = ?1",

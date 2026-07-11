@@ -43,6 +43,25 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         command_availability
     }
 
+    /// Stages at most one reliable protocol line without removing it from the
+    /// session-owned outbox. The line remains owned by the adapter until a
+    /// matching transport receipt is acknowledged.
+    fn begin_outbound_protocol_delivery(
+        &mut self,
+    ) -> Result<Option<GuiOutboundProtocolDelivery>, String> {
+        Ok(None)
+    }
+
+    fn acknowledge_outbound_protocol_delivery(&mut self, _token: u64) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn fail_outbound_protocol_delivery(&mut self, _token: u64) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Legacy infallible ownership transfer retained for focused adapter tests.
+    /// Production transports use the staged delivery API above.
     fn flush_outbound_protocol_lines(&mut self) -> Result<Vec<String>, String> {
         Ok(Vec::new())
     }
@@ -207,8 +226,8 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         true
     }
 
-    fn server_media_match_supported(&self) -> Option<bool> {
-        None
+    fn server_media_match_supported(&self) -> bool {
+        false
     }
 
     fn current_room_playstate(&self) -> Option<GuiSessionRoomPlaystate> {
@@ -252,7 +271,7 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         Ok(())
     }
 
-    fn current_room_media_match_signatures(&self) -> Vec<(String, Value)> {
+    fn current_room_media_match_signatures(&self) -> Vec<(String, MediaMatchWireSignature)> {
         Vec::new()
     }
 

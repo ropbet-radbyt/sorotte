@@ -40,8 +40,8 @@ fn current_room_playstate_at_advances_unpaused_position() {
 #[test]
 fn determine_local_state_change_requires_divergence_from_previous_local_position() {
     let mut session = ClientSession::default();
-    session.room = Some("room1".to_owned());
-    session.room_playstates.insert(
+    session.model.room.name = Some("room1".to_owned());
+    session.model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(0.0),
@@ -50,8 +50,8 @@ fn determine_local_state_change_requires_divergence_from_previous_local_position
             set_by: Some("bob".to_owned()),
         },
     );
-    session.local_position = Some(0.6);
-    session.local_paused = Some(false);
+    session.model.playback.local_position = Some(0.6);
+    session.model.playback.local_paused = Some(false);
 
     let (pause_change, seeked) = session.determine_local_state_change(false, 1.2);
 

@@ -4,11 +4,10 @@ use serde_json::{Map, Value};
 use sorotte_client_app::app_boundary::{
     persistence::upsert_sorotte_ini_stored_client_settings_mvp_at_path,
     state::{
-        StoredClientSettingsMvp, StoredClientSettingsRuntimeSnapshot,
+        ClientConfig, StoredClientSettingsMvp, StoredClientSettingsRuntimeSnapshot,
         stored_client_settings_runtime_snapshot_legacy_compatible,
     },
 };
-use sorotte_client_core::PrivacyMode;
 use sorotte_media_match::MEDIA_MATCH_FILE_PAYLOAD_KEY;
 use sorotte_player_api::{LocalFileUpdate, PlayerAdapter};
 
@@ -44,17 +43,34 @@ impl GuiPersistedConfigRuntimeOwner {
     ) -> Result<(), String> {
         if self.session.is_none() {
             let runtime_settings = Self::detached_runtime_settings_for_state(state);
-            self.session_default_room = runtime_settings.settings.room.clone();
+            self.session_default_room = runtime_settings
+                .config
+                .connection
+                .room
+                .as_ref()
+                .map(|room| room.as_str().to_owned());
             let mut session = GuiClientCoreChatSessionRuntimeAdapter::new_with_control_password(
                 runtime_settings
-                    .settings
+                    .config
+                    .connection
                     .username
-                    .clone()
+                    .as_ref()
+                    .map(|username| username.as_str().to_owned())
                     .unwrap_or_default(),
-                runtime_settings.settings.room.clone().unwrap_or_default(),
-                runtime_settings.controlled_room_password_override.clone(),
+                runtime_settings
+                    .config
+                    .connection
+                    .room
+                    .as_ref()
+                    .map(|room| room.as_str().to_owned())
+                    .unwrap_or_default(),
+                runtime_settings
+                    .config
+                    .connection
+                    .controlled_room_password
+                    .clone(),
             )?;
-            session.apply_runtime_settings_snapshot(&runtime_settings);
+            session.apply_runtime_settings_snapshot(&runtime_settings)?;
             self.session = Some(Box::new(session));
             self.session_projects_to_shell = false;
             self.last_published_local_file = None;
@@ -96,12 +112,9 @@ impl GuiPersistedConfigRuntimeOwner {
         {
             return None;
         }
-        if self
-            .session
-            .as_ref()
-            .and_then(|session| session.server_media_match_supported())
-            != Some(true)
-        {
+        if !self.session.as_ref().is_some_and(|session| {
+            session.server_handshake_completed() && session.server_media_match_supported()
+        }) {
             return None;
         }
         if !self.media_match_wire_signature_allowed_for_local_file(state, local_file) {
@@ -160,16 +173,15 @@ impl GuiPersistedConfigRuntimeOwner {
     ) -> Result<(), String> {
         let runtime_settings = Self::detached_runtime_settings_for_state(state);
         if !self.session_projects_to_shell {
-            self.session_default_room = runtime_settings.settings.room.clone();
+            self.session_default_room = runtime_settings
+                .config
+                .connection
+                .room
+                .as_ref()
+                .map(|room| room.as_str().to_owned());
         }
-        let filename_privacy_mode = runtime_settings
-            .settings
-            .filename_privacy_mode
-            .unwrap_or(PrivacyMode::SendRaw);
-        let filesize_privacy_mode = runtime_settings
-            .settings
-            .filesize_privacy_mode
-            .unwrap_or(PrivacyMode::SendRaw);
+        let filename_privacy_mode = runtime_settings.config.playback.filename_privacy_mode;
+        let filesize_privacy_mode = runtime_settings.config.playback.filesize_privacy_mode;
         let player_local_file = self.player_local_file.clone();
         let media_match_signature =
             self.media_match_wire_signature_for_local_file(state, player_local_file.as_ref());
@@ -473,7 +485,10 @@ impl GuiPersistedConfigRuntimeOwner {
     ) -> Option<MenuDialogRuntimeSnapshot> {
         let settings = state.configuration.to_stored_settings();
         let desired_show_chat_enabled = legacy_chat_enabled(&settings);
-        let desired_show_playlist_enabled = settings.shared_playlist_enabled.unwrap_or(false);
+        let desired_show_playlist_enabled = ClientConfig::resolve(&settings)
+            .config
+            .playback
+            .shared_playlist_enabled;
         let mut action_overrides = Vec::new();
         for (section_title, action_label, enabled) in [
             ("Window", "Show Chat", desired_show_chat_enabled),
@@ -648,7 +663,17 @@ impl GuiPersistedConfigRuntimeOwner {
                 return;
             }
         };
-        session.apply_runtime_settings_snapshot(&runtime_settings);
+        if let Err(error) = session.apply_runtime_settings_snapshot(&runtime_settings) {
+            let message = format!(
+                "Configured server connect through the detached session runtime failed: {error}"
+            );
+            if clear_pending {
+                self.clear_pending_operation_with_runtime_error(handle, projected_state, message);
+            } else {
+                Self::push_runtime_error_notification(handle, projected_state, message);
+            }
+            return;
+        }
 
         self.session = Some(Box::new(session));
         self.session_projects_to_shell = true;

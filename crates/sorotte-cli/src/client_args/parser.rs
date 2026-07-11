@@ -113,7 +113,7 @@ where
             "-p" | "--password" => {
                 overrides.connect_requested = true;
                 overrides.controlled_room_password_override =
-                    take_next_non_flag_arg_legacy_compatible(&mut iter);
+                    take_next_non_flag_arg_legacy_compatible(&mut iter).map(SecretValue::from);
             }
             _ => {
                 if arg.starts_with('-') {

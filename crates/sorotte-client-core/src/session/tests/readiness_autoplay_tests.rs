@@ -8,8 +8,8 @@ fn handle_disconnect_clears_readiness_support_until_next_hello() {
                 r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"readiness":true,"setOthersReadiness":true}}}"#,
             )
             .expect("hello should apply");
-    assert_eq!(session.server_readiness_supported(), Some(true));
-    assert_eq!(session.server_set_others_readiness_supported(), Some(true));
+    assert!(session.server_readiness_supported());
+    assert!(session.server_set_others_readiness_supported());
     assert_eq!(
         session.runtime_actions_for_local_ready_toggle(true),
         vec![ClientRuntimeAction::SetReady {
@@ -27,8 +27,9 @@ fn handle_disconnect_clears_readiness_support_until_next_hello() {
     );
 
     let _ = session.handle_disconnect(200.0);
-    assert_eq!(session.server_readiness_supported(), None);
-    assert_eq!(session.server_set_others_readiness_supported(), None);
+    assert_eq!(session.connection_phase(), &ConnectionPhase::Disconnected);
+    assert!(!session.server_readiness_supported());
+    assert!(!session.server_set_others_readiness_supported());
     assert!(
         session
             .runtime_actions_for_local_ready_toggle(true)
@@ -81,6 +82,91 @@ fn client_ready_missing_username_targets_local_user() {
         .expect("ready state should apply");
 
     assert_eq!(session.user_ready("alice"), Some(true));
+}
+
+#[test]
+fn hello_assigned_username_migrates_provisional_identity_before_list() {
+    let mut session = ClientSession::default();
+    session.initialize_local_identity("alice".to_owned(), "provisional-room".to_owned());
+    session
+        .apply_message_json(
+            r#"{"Set":{"user":{"alice":{"room":{"name":"provisional-room"},"file":{"name":"episode.mkv"},"isReady":false}}}}"#,
+        )
+        .expect("provisional file and readiness should apply");
+    session.set_media_match_peer_tiers(BTreeMap::from([(
+        "alice".to_owned(),
+        MediaMatchTier::Strong,
+    )]));
+    session
+        .apply_message_json(r#"{"Set":{"ready":{"isReady":true,"username":"alice_2"}}}"#)
+        .expect("server-assigned readiness should apply before Hello");
+
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice_2","room":{"name":"server-room"},"version":"1.7.5","features":{"readiness":true}}}"#,
+        )
+        .expect("server Hello should migrate the provisional identity");
+
+    assert_eq!(session.username(), Some("alice_2"));
+    assert_eq!(session.room(), Some("server-room"));
+    assert_eq!(session.usernames_in_room("server-room"), vec!["alice_2"]);
+    assert_eq!(session.model.room.users.len(), 1);
+    assert!(!session.model.room.users.contains_key("alice"));
+    assert_eq!(session.user_file_name("alice_2"), Some("episode.mkv"));
+    assert_eq!(session.user_ready("alice_2"), Some(true));
+    assert!(session.media_match_peer_tiers().is_empty());
+
+    let domain_users = session
+        .model
+        .room
+        .domain
+        .users_in_room("server-room")
+        .expect("assigned user should join the server room");
+    assert_eq!(domain_users.len(), 1);
+    assert_eq!(domain_users[0].username, "alice_2");
+    assert_eq!(domain_users[0].ready, Some(true));
+    assert!(
+        session
+            .model
+            .room
+            .domain
+            .users_in_room("provisional-room")
+            .is_none(),
+        "the provisional and pre-Hello assigned memberships must both be removed"
+    );
+
+    assert_eq!(session.users_in_current_room_count_for_threshold(), 1);
+    assert_eq!(session.ready_user_count_in_current_room(), 1);
+    assert!(session.all_users_in_current_room_ready());
+    session.set_autoplay_enabled(true);
+    session.readiness_autoplay_config_mut().auto_play_threshold = Some(1);
+    session.model.playback.local_paused = Some(true);
+    assert!(
+        session.autoplay_conditions_met(true, true, false, false),
+        "the migrated local identity must satisfy autoplay before the first List snapshot"
+    );
+}
+
+#[test]
+fn hello_username_migration_does_not_replace_assigned_file() {
+    let mut session = ClientSession::default();
+    session.initialize_local_identity("alice".to_owned(), "room1".to_owned());
+    session
+        .apply_message_json(
+            r#"{"Set":{"user":{"alice":{"room":{"name":"room1"},"file":{"name":"provisional.mkv"},"isReady":false},"alice_2":{"room":{"name":"room1"},"file":{"name":"server.mkv"},"isReady":true}}}}"#,
+        )
+        .expect("provisional and assigned file state should apply");
+
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice_2","room":{"name":"room1"},"version":"1.7.5","features":{"readiness":true}}}"#,
+        )
+        .expect("server Hello should migrate the provisional identity");
+
+    assert_eq!(session.user_file_name("alice_2"), Some("server.mkv"));
+    assert_eq!(session.user_ready("alice_2"), Some(true));
+    assert_eq!(session.model.room.users.len(), 1);
+    assert!(!session.model.room.users.contains_key("alice"));
 }
 
 #[test]
@@ -212,7 +298,7 @@ fn autoplay_require_same_filenames_blocks_missing_file_metadata() {
     session
         .readiness_autoplay_config_mut()
         .autoplay_require_same_filenames = true;
-    session.local_paused = Some(true);
+    session.model.playback.local_paused = Some(true);
 
     assert!(
         !session.autoplay_conditions_met(true, true, false, false),
@@ -238,7 +324,7 @@ fn autoplay_require_same_filenames_uses_legacy_filename_comparison() {
     session
         .readiness_autoplay_config_mut()
         .autoplay_require_same_filenames = true;
-    session.local_paused = Some(true);
+    session.model.playback.local_paused = Some(true);
 
     assert!(
         session.autoplay_conditions_met(true, true, false, false),
@@ -274,7 +360,7 @@ fn per_peer_strong_media_match_can_satisfy_same_filename_autoplay_gate() {
     session
         .readiness_autoplay_config_mut()
         .autoplay_require_same_filenames = true;
-    session.local_paused = Some(true);
+    session.model.playback.local_paused = Some(true);
 
     assert!(!session.autoplay_conditions_met(true, true, false, false));
 
@@ -315,7 +401,7 @@ fn missing_peer_media_match_keeps_same_filename_gate_closed() {
     session
         .readiness_autoplay_config_mut()
         .autoplay_require_same_filenames = true;
-    session.local_paused = Some(true);
+    session.model.playback.local_paused = Some(true);
     session
         .set_media_match_peer_tiers(BTreeMap::from([("bob".to_owned(), MediaMatchTier::Strong)]));
 
@@ -394,7 +480,7 @@ fn runtime_actions_for_readiness_unpause_attempt_blocks_and_sets_ready_when_inst
             }
         ]
     );
-    assert_eq!(session.local_paused, Some(true));
+    assert_eq!(session.model.playback.local_paused, Some(true));
 }
 
 #[test]
@@ -420,7 +506,7 @@ fn runtime_actions_for_readiness_unpause_attempt_sets_ready_when_if_others_ready
             manually_initiated: false
         }]
     );
-    assert_eq!(session.local_paused, Some(false));
+    assert_eq!(session.model.playback.local_paused, Some(false));
 }
 
 #[test]
@@ -439,7 +525,7 @@ fn cache_pause_blocks_readiness_unpause_without_changing_ready_or_manual_pause_s
     session
         .apply_message_json(r#"{"Set":{"ready":{"isReady":true,"username":"alice"}}}"#)
         .expect("local ready state should apply");
-    session.local_paused = Some(false);
+    session.model.playback.local_paused = Some(false);
     session.apply_player_playback_telemetry_update(
         &PlayerPlaybackTelemetryUpdate::default()
             .with_paused(true)
@@ -494,7 +580,7 @@ fn runtime_actions_for_readiness_unpause_attempt_honors_pause_on_leave_cooldown(
         "legacy behavior suppresses readiness toggle right after pause-on-leave"
     );
     assert_eq!(session.last_paused_on_leave_at_seconds(), None);
-    assert_eq!(session.local_paused, Some(false));
+    assert_eq!(session.model.playback.local_paused, Some(false));
 }
 
 #[test]
@@ -543,7 +629,7 @@ fn local_pause_marks_local_user_not_ready_when_readiness_is_supported() {
     session
         .apply_message_json(r#"{"Set":{"ready":{"isReady":true,"username":"alice"}}}"#)
         .expect("local ready should apply");
-    session.local_paused = Some(false);
+    session.model.playback.local_paused = Some(false);
 
     let actions = session.runtime_actions_for_local_pause_set(true);
 
@@ -579,7 +665,7 @@ fn autoplay_check_starts_countdown_when_conditions_are_met() {
             .expect("other user ready state should apply");
     session.set_autoplay_enabled(true);
     session.readiness_autoplay_config_mut().auto_play_threshold = Some(2);
-    session.local_paused = Some(true);
+    session.model.playback.local_paused = Some(true);
 
     session.autoplay_check(true, true, false, false);
 
@@ -608,7 +694,7 @@ fn autoplay_check_waits_for_pending_playlist_index_reset() {
             .expect("other user ready state should apply");
     session.set_autoplay_enabled(false);
     session.readiness_autoplay_config_mut().auto_play_threshold = Some(5);
-    session.local_paused = Some(true);
+    session.model.playback.local_paused = Some(true);
     session.begin_local_playlist_index_reset_intent(true, 10.0);
 
     session.autoplay_check(true, true, false, true);
@@ -648,7 +734,7 @@ fn autoplay_check_does_not_start_countdown_while_paused_for_cache() {
             .expect("other user ready state should apply");
     session.set_autoplay_enabled(true);
     session.readiness_autoplay_config_mut().auto_play_threshold = Some(2);
-    session.local_paused = Some(true);
+    session.model.playback.local_paused = Some(true);
     session.apply_player_playback_telemetry_update(
         &PlayerPlaybackTelemetryUpdate::default().with_paused_for_cache(true),
     );
@@ -684,7 +770,7 @@ fn autoplay_check_stops_countdown_when_conditions_fail() {
             .expect("other user ready state should apply");
     session.set_autoplay_enabled(true);
     session.readiness_autoplay_config_mut().auto_play_threshold = Some(2);
-    session.local_paused = Some(true);
+    session.model.playback.local_paused = Some(true);
     session.autoplay_check(true, true, false, false);
     assert!(session.autoplay_timer_is_running());
 
@@ -718,7 +804,7 @@ fn autoplay_countdown_tick_unpauses_when_timer_reaches_zero() {
             .expect("other user ready state should apply");
     session.set_autoplay_enabled(true);
     session.readiness_autoplay_config_mut().auto_play_threshold = Some(2);
-    session.local_paused = Some(true);
+    session.model.playback.local_paused = Some(true);
     session.autoplay_check(true, true, false, false);
 
     let tick_1 = session.autoplay_countdown_tick(true, true, false, false);
@@ -754,7 +840,7 @@ fn autoplay_countdown_tick_unpauses_when_timer_reaches_zero() {
         )]
     );
     assert_eq!(tick_4, vec![ClientRuntimeAction::SetPaused(false)]);
-    assert_eq!(session.local_paused, Some(false));
+    assert_eq!(session.model.playback.local_paused, Some(false));
     assert!(!session.autoplay_timer_is_running());
     assert_eq!(
         session.autoplay_time_left_seconds(),
@@ -780,7 +866,7 @@ fn autoplay_conditions_recently_advanced_overrides_disabled_autoplay_and_thresho
             .expect("other user ready state should apply");
     session.set_autoplay_enabled(false);
     session.readiness_autoplay_config_mut().auto_play_threshold = Some(5);
-    session.local_paused = Some(true);
+    session.model.playback.local_paused = Some(true);
 
     assert!(
         !session.autoplay_conditions_met(true, true, false, false),
@@ -794,11 +880,9 @@ fn autoplay_conditions_recently_advanced_overrides_disabled_autoplay_and_thresho
 
 #[test]
 fn autoplay_check_ignores_playing_music_state() {
-    let mut session = ClientSession {
-        autoplay_timer_running: true,
-        autoplay_time_left_seconds: 1.5,
-        ..ClientSession::default()
-    };
+    let mut session = ClientSession::default();
+    session.model.readiness.autoplay_timer_running = true;
+    session.model.readiness.autoplay_time_left_seconds = 1.5;
 
     session.autoplay_check(true, true, true, false);
 
@@ -878,6 +962,8 @@ fn client_runtime_set_room_preserves_autoplay_state_on_room_change() {
     assert_eq!(
         runtime
             .session()
+            .model
+            .controller
             .pending_local_room_switch_target
             .as_deref(),
         Some("room2")
@@ -934,7 +1020,7 @@ fn client_runtime_tick_autoplay_dispatches_unpause_to_player() {
             .expect("other user ready should apply");
     session.set_autoplay_enabled(true);
     session.readiness_autoplay_config_mut().auto_play_threshold = Some(2);
-    session.local_paused = Some(true);
+    session.model.playback.local_paused = Some(true);
 
     let player = RecordingPlayer::default();
     let control = QueuedRuntimeControl::default();
@@ -997,7 +1083,7 @@ fn client_runtime_drain_autoplay_notifications_to_sink_dispatches_callback() {
             .expect("other user ready should apply");
     session.set_autoplay_enabled(true);
     session.readiness_autoplay_config_mut().auto_play_threshold = Some(2);
-    session.local_paused = Some(true);
+    session.model.playback.local_paused = Some(true);
 
     let player = RecordingPlayer::default();
     let control = QueuedRuntimeControl::default();

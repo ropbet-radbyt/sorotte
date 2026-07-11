@@ -95,7 +95,7 @@ fn gui_shell_dispatch_plan_routes_update_checks_to_runtime_owner() {
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         section: "System",
         label: "Update Channel",
-        value: "dev".to_owned(),
+        value: "dev".to_owned().into(),
     }));
     let plan = GuiShellDispatchPlan::from_shell_actions(
         &state,

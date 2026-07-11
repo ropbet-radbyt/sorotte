@@ -9,6 +9,7 @@ use sorotte_client_app::app_boundary::{
         parse_host_and_optional_port_from_host_arg_legacy_compatible as shared_parse_host_and_optional_port_from_host_arg_legacy_compatible,
     },
 };
+use sorotte_secret::SecretValue;
 
 use crate::client_config::ClientLoopConfig;
 use crate::mpv_startup::legacy_player_path_compatibility_warning_line_legacy_compatible;

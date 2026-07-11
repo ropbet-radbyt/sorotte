@@ -9,7 +9,7 @@ use super::*;
     dead_code,
     reason = "This enum is the GUI runtime command vocabulary; feature and smoke targets construct different subsets."
 )]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(in crate::app) enum GuiRuntimeRequest {
     CheckForUpdates {
         language: String,
@@ -39,7 +39,7 @@ pub(in crate::app) enum GuiRuntimeRequest {
     },
     RequestControllerAuth {
         room: String,
-        password: String,
+        password: SecretValue,
     },
     QueuePlaylistEntry {
         entry: String,
@@ -106,4 +106,93 @@ pub(in crate::app) enum GuiRuntimeRequest {
     TogglePlaybackPause,
     CompletePendingOperation(GuiPendingCompletionRequest),
     CancelPendingOperation(GuiPendingOperationKind),
+}
+
+impl std::fmt::Debug for GuiRuntimeRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OpenMediaFiles {
+                paths,
+                load_into_shared_playlist,
+                playlist_insert_slot,
+            } => formatter
+                .debug_struct("OpenMediaFiles")
+                .field("paths", &sorotte_secret::REDACTED_SECRET)
+                .field("path_count", &paths.len())
+                .field("load_into_shared_playlist", load_into_shared_playlist)
+                .field("playlist_insert_slot", playlist_insert_slot)
+                .finish(),
+            Self::OpenMainWindowUserMedia(_) => formatter
+                .debug_tuple("OpenMainWindowUserMedia")
+                .field(&sorotte_secret::REDACTED_SECRET)
+                .finish(),
+            Self::OpenMainWindowUserContainingFolder(_) => formatter
+                .debug_tuple("OpenMainWindowUserContainingFolder")
+                .field(&sorotte_secret::REDACTED_SECRET)
+                .finish(),
+            Self::SetRoom(_) => formatter
+                .debug_tuple("SetRoom")
+                .field(&sorotte_secret::REDACTED_SECRET)
+                .finish(),
+            Self::RequestControllerAuth { password, .. } => formatter
+                .debug_struct("RequestControllerAuth")
+                .field("room", &sorotte_secret::REDACTED_SECRET)
+                .field("password", password)
+                .finish(),
+            Self::QueuePlaylistEntry {
+                select_after_queue, ..
+            } => formatter
+                .debug_struct("QueuePlaylistEntry")
+                .field("entry", &sorotte_secret::REDACTED_SECRET)
+                .field("select_after_queue", select_after_queue)
+                .finish(),
+            Self::ReplacePlaylist {
+                files,
+                selected_index,
+            } => formatter
+                .debug_struct("ReplacePlaylist")
+                .field("files", &sorotte_secret::REDACTED_SECRET)
+                .field("file_count", &files.len())
+                .field("selected_index", selected_index)
+                .finish(),
+            Self::SelectPlexServer {
+                machine_identifier, ..
+            } => formatter
+                .debug_struct("SelectPlexServer")
+                .field("machine_identifier", machine_identifier)
+                .field("uri", &sorotte_secret::REDACTED_SECRET)
+                .finish(),
+            _ => formatter
+                .debug_tuple("GuiRuntimeRequest")
+                .field(&std::mem::discriminant(self))
+                .finish(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod media_target_debug_tests {
+    use super::*;
+
+    #[test]
+    fn runtime_media_requests_redact_tokenized_targets() {
+        let secret = "https://media.example/video?token=runtime-request-canary";
+        let requests = [
+            GuiRuntimeRequest::OpenMediaFiles {
+                paths: vec![secret.to_owned()],
+                load_into_shared_playlist: false,
+                playlist_insert_slot: None,
+            },
+            GuiRuntimeRequest::OpenMainWindowUserMedia(secret.to_owned()),
+            GuiRuntimeRequest::OpenMainWindowUserContainingFolder(secret.to_owned()),
+            GuiRuntimeRequest::QueuePlaylistEntry {
+                entry: secret.to_owned(),
+                select_after_queue: true,
+            },
+        ];
+
+        let debug = format!("{requests:?}");
+        assert!(debug.contains(sorotte_secret::REDACTED_SECRET));
+        assert!(!debug.contains("runtime-request-canary"));
+    }
 }

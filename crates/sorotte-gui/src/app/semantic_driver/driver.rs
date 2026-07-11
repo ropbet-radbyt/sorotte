@@ -1,9 +1,8 @@
 use super::super::{
     GuiDroppedFilesTarget, GuiInteractionRuntimeSnapshot, GuiPendingCompletionRequest,
     GuiPendingOperationKind, GuiPersistedConfigRuntimeOwner, GuiPreviewRuntimeBridge,
-    GuiQueuedRuntimeBridgeHandle, GuiQueuedRuntimeOwner, GuiRuntimeRequest, GuiShellAction,
-    GuiWidgetEguiRenderer, GuiWidgetKind, GuiWidgetNode, SorotteGuiShellAppState,
-    StoredClientSettingsMvp,
+    GuiQueuedRuntimeBridgeHandle, GuiRuntimeRequest, GuiShellAction, GuiWidgetEguiRenderer,
+    GuiWidgetKind, GuiWidgetNode, SorotteGuiShellAppState, StoredClientSettingsMvp,
 };
 use super::super::{GuiNativeRuntimeBridge, local_command_dispatch::GuiShellDispatchPlan};
 use super::GuiSemanticStep;
@@ -255,7 +254,7 @@ impl GuiSemanticDriver {
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         let handle = GuiQueuedRuntimeBridgeHandle::default();
         handle.push_request(GuiRuntimeRequest::CompletePendingOperation(request));
-        GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &self.state);
+        owner.pump_compatibility_state(&handle, &self.state);
         let actions = handle.drain_actions();
         if actions.is_empty() {
             return Err(

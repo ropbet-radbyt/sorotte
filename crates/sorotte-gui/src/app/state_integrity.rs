@@ -118,7 +118,7 @@ impl SorotteGuiShellAppState {
             self.text_edit_session = None;
             return;
         }
-        session.is_dirty = session.buffer != control.value;
+        session.is_dirty = session.buffer.expose_for_ui() != control.value;
     }
 
     pub(super) fn normalize_playlist_text_edit_session(&mut self) {
@@ -181,7 +181,8 @@ impl SorotteGuiShellAppState {
             return;
         }
         session.room_name = current_room_name;
-        session.is_dirty = normalized_editable_text(&session.password_buffer).is_some();
+        session.is_dirty =
+            normalized_editable_text(session.password_buffer.expose_secret()).is_some();
     }
 
     pub(super) fn sync_focused_configuration_control_to_text_edit_session(&mut self) {

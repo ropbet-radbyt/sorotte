@@ -198,7 +198,7 @@ fn gui_client_core_chat_session_runtime_adapter_applies_valid_prefix_before_batc
         "batched unknown command should still surface a protocol error"
     );
     assert_eq!(
-        adapter.runtime.session().username.as_deref(),
+        adapter.runtime.session().username(),
         Some("alice"),
         "valid Hello before the unknown command should be applied"
     );
@@ -580,6 +580,7 @@ fn gui_client_core_chat_session_runtime_adapter_restores_readiness_controls_afte
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
+        shared_playlist_enabled: Some(false),
         ..StoredClientSettingsMvp::default()
     });
     let mut stale_snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);

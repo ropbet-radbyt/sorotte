@@ -51,7 +51,11 @@ impl SorotteGuiShellAppState {
                 value,
             } => {
                 let previous_settings = self.configuration.to_stored_settings();
-                let applied = self.configuration.apply_text_value(section, label, &value);
+                let applied = self.configuration.apply_text_value(
+                    section,
+                    label,
+                    value.expose_for_config_apply(),
+                );
                 if applied {
                     self.sync_derived_surfaces_from_configuration_settings(&previous_settings);
                     self.clear_action_error_and_refresh();

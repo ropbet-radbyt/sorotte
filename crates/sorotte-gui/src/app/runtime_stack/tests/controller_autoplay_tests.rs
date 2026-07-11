@@ -20,7 +20,7 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_controller_auth_transit
     adapter
         .runtime
         .session_mut()
-        .remember_control_password_for_room(room, "ab-123-456");
+        .remember_control_password_for_room(room, "ab-123-456".into());
     adapter
         .apply_message_json(
             r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.7.5","features":{"chat":true}}}"#,
@@ -143,11 +143,15 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_controlled_room_creatio
         .position(|action| {
             matches!(
                 action,
-                GuiShellAction::AnnounceSystemChatEvent(message)
-                    if message == "Created controlled room +room:ABCDEF123456 with password AB123456 (+room:ABCDEF123456:AB123456)."
+                GuiShellAction::AnnounceControlledRoomCreated { room, password }
+                    if room == "+room:ABCDEF123456"
+                        && password.expose_secret() == "AB123456"
             )
         })
         .expect("new controlled room should surface a system chat entry");
+    let actions_debug = format!("{actions:?}");
+    assert!(!actions_debug.contains("AB123456"));
+    assert!(actions_debug.contains(sorotte_secret::REDACTED_SECRET));
     let reidentify_notice_index = actions
         .iter()
         .position(|action| {
@@ -187,6 +191,18 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_controlled_room_creatio
         )),
         "new controlled room should still refresh the main-window snapshot"
     );
+
+    assert!(state.apply(actions[created_chat_index].clone()));
+    let created_chat = state
+        .main_window
+        .chat
+        .last()
+        .expect("created-room action should remain visible in system chat");
+    assert_eq!(
+        created_chat.message,
+        "Created controlled room +room:ABCDEF123456 with password AB123456 (+room:ABCDEF123456:AB123456)."
+    );
+    assert!(!format!("{:?}", state.main_window).contains("AB123456"));
 }
 
 #[test]
@@ -201,7 +217,7 @@ fn gui_client_core_chat_session_runtime_adapter_auto_reidentifies_controlled_roo
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new_with_control_password(
         "alice",
         room,
-        Some("ab-123-456".to_owned()),
+        Some("ab-123-456".into()),
     )
     .expect("client-core chat adapter should bootstrap");
 
@@ -259,11 +275,16 @@ fn gui_client_core_chat_session_runtime_adapter_set_room_preserves_autoplay_stat
         )
         .expect("remote ready user should apply");
     adapter.runtime.session_mut().set_autoplay_enabled(true);
+    let mut readiness = adapter
+        .runtime
+        .session()
+        .readiness_autoplay_config()
+        .clone();
+    readiness.auto_play_threshold = Some(2);
     adapter
         .runtime
         .session_mut()
-        .readiness_autoplay_config_mut()
-        .auto_play_threshold = Some(2);
+        .set_readiness_autoplay_config(readiness);
     adapter
         .runtime
         .session_mut()
@@ -325,11 +346,16 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_autoplay_countdown_noti
         )
         .expect("remote ready user should apply");
     adapter.runtime.session_mut().set_autoplay_enabled(true);
+    let mut readiness = adapter
+        .runtime
+        .session()
+        .readiness_autoplay_config()
+        .clone();
+    readiness.auto_play_threshold = Some(2);
     adapter
         .runtime
         .session_mut()
-        .readiness_autoplay_config_mut()
-        .auto_play_threshold = Some(2);
+        .set_readiness_autoplay_config(readiness);
     adapter
         .runtime
         .session_mut()
@@ -415,11 +441,16 @@ fn gui_client_core_chat_session_runtime_adapter_queues_attached_player_unpause_w
         )
         .expect("remote ready user should apply");
     adapter.runtime.session_mut().set_autoplay_enabled(true);
+    let mut readiness = adapter
+        .runtime
+        .session()
+        .readiness_autoplay_config()
+        .clone();
+    readiness.auto_play_threshold = Some(2);
     adapter
         .runtime
         .session_mut()
-        .readiness_autoplay_config_mut()
-        .auto_play_threshold = Some(2);
+        .set_readiness_autoplay_config(readiness);
     adapter
         .runtime
         .session_mut()

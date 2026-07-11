@@ -16,13 +16,10 @@ pub fn user_change_notification_message(notification: &UserChangeNotification) -
             ..
         } => match file_name.as_deref() {
             Some(file_name) => {
-                let mut message = if let Some(duration_seconds) = file_duration
-                    .as_ref()
-                    .and_then(|duration| duration.as_f64())
-                {
+                let mut message = if let Some(duration_seconds) = file_duration {
                     format!(
                         "{username} is playing '{file_name}' ({})",
-                        format_duration_legacy(duration_seconds)
+                        format_duration_legacy(*duration_seconds)
                     )
                 } else {
                     format!("{username} is playing '{file_name}'")
@@ -144,14 +141,11 @@ pub fn user_change_notification_message_localized_legacy_compatible(
             ..
         } => match file_name.as_deref() {
             Some(file_name) => {
-                let mut message = if let Some(duration_seconds) = file_duration
-                    .as_ref()
-                    .and_then(|duration| duration.as_f64())
-                {
+                let mut message = if let Some(duration_seconds) = file_duration {
                     format!(
                         "{username} {} '{file_name}' ({})",
                         localized_user_playing_phrase_legacy_compatible(language),
-                        format_duration_legacy(duration_seconds)
+                        format_duration_legacy(*duration_seconds)
                     )
                 } else {
                     format!(

@@ -1,4 +1,5 @@
 use super::*;
+use crate::redacted_debug::{RedactedJsonMap, RedactedOptionalJsonValue};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -17,7 +18,7 @@ impl ListPayload {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ListUserEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<f64>,
@@ -31,6 +32,23 @@ pub struct ListUserEntry {
     pub features: Option<Value>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+impl std::fmt::Debug for ListUserEntry {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ListUserEntry")
+            .field("position", &self.position)
+            .field("file", &RedactedOptionalJsonValue(self.file.as_ref()))
+            .field("controller", &self.controller)
+            .field("is_ready", &self.is_ready)
+            .field(
+                "features",
+                &RedactedOptionalJsonValue(self.features.as_ref()),
+            )
+            .field("extra", &RedactedJsonMap(&self.extra))
+            .finish()
+    }
 }
 
 impl ListUserEntry {

@@ -396,6 +396,7 @@ fn stats_snapshot_start_delay_for_port_matches_legacy_formula() {
 
     assert_eq!(runtime.stats_next_snapshot_at_seconds, Some(151.0));
 
+    drop(runtime);
     fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
 }
 
@@ -427,11 +428,15 @@ fn stats_snapshot_records_connected_client_versions() {
     runtime
         .advance_time_and_collect_fanout(1.1)
         .expect("time advance should trigger first stats snapshot");
+    runtime
+        .flush_persistence()
+        .expect("stats persistence worker should acknowledge the snapshot");
     assert_eq!(
         load_stats_snapshot_rows(&db_path),
         vec![(1, "1.6.0".to_owned()), (1, "1.7.0".to_owned())]
     );
 
+    drop(runtime);
     fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
 }
 
@@ -456,11 +461,15 @@ fn server_app_with_stats_db_path_wires_runtime_override() {
     app.runtime_mut()
         .advance_time_and_collect_fanout(1.1)
         .expect("time advance should trigger stats snapshot");
+    app.runtime_mut()
+        .flush_persistence()
+        .expect("stats persistence worker should acknowledge the snapshot");
     assert_eq!(
         load_stats_snapshot_rows(&db_path),
         vec![(1, "2.0.0".to_owned())]
     );
 
+    drop(app);
     fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
 }
 
@@ -570,6 +579,25 @@ fn protocol_error_dispatch_sends_not_json_error_and_close() {
         has_close_transport_action(&dispatch.transport_actions, "client-1"),
         "malformed protocol line should schedule connection close after Error"
     );
+}
+
+#[test]
+fn reflected_malformed_line_debug_does_not_expose_credentials() {
+    let marker = "server-reflected-line-password-canary";
+    let malformed = format!("not-json password={marker}");
+    let mut runtime = ServerRuntime::new();
+
+    let dispatch = runtime
+        .handle_line_fanout_with_transport_actions("client-1", &malformed)
+        .expect("malformed protocol line should produce protocol error dispatch");
+
+    assert!(
+        dispatch_error_message(&dispatch)
+            .as_deref()
+            .is_some_and(|message| message.contains(marker)),
+        "wire-compatible error should retain the reflected input"
+    );
+    assert!(!format!("{dispatch:?}").contains(marker));
 }
 
 #[test]

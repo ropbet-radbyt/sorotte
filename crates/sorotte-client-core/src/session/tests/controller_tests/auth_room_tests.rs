@@ -278,7 +278,10 @@ fn new_controlled_room_message_queues_room_switch_and_auth_request() {
             )
             .expect("new controlled room message should apply");
 
-    assert_eq!(session.room.as_deref(), Some("+room:ABCDEF123456"));
+    assert_eq!(
+        session.model.room.name.as_deref(),
+        Some("+room:ABCDEF123456")
+    );
     assert_eq!(session.user_room("alice"), Some("+room:ABCDEF123456"));
     assert_eq!(session.user_controller("alice"), Some(false));
     assert_eq!(session.local_can_control(), Some(false));
@@ -298,7 +301,7 @@ fn new_controlled_room_message_queues_room_switch_and_auth_request() {
             ),
             ClientRuntimeAction::RequestControllerAuth {
                 room: "+room:ABCDEF123456".to_owned(),
-                password: "AB-123-456".to_owned(),
+                password: "AB-123-456".into(),
             },
         ]
     );
@@ -361,7 +364,7 @@ fn controller_reidentify_action_emits_after_hello_when_password_is_stored() {
             ),
             ClientRuntimeAction::RequestControllerAuth {
                 room: "+room:ABCDEF123456".to_owned(),
-                password: "AB-123-456".to_owned(),
+                password: "AB-123-456".into(),
             },
         ]
     );
@@ -397,7 +400,7 @@ fn new_controlled_room_message_stores_password_for_future_reidentify() {
             ),
             ClientRuntimeAction::RequestControllerAuth {
                 room: "+room:ABCDEF123456".to_owned(),
-                password: "AB-123-456".to_owned(),
+                password: "AB-123-456".into(),
             },
         ]
     );
@@ -415,7 +418,7 @@ fn manual_controller_auth_success_stores_password_for_future_reidentify() {
         !session
             .runtime_actions_for_local_controller_auth_request(
                 "+room:ABCDEF123456".to_owned(),
-                "ab_123-456!".to_owned(),
+                "ab_123-456!".into(),
             )
             .is_empty(),
         "manual controller auth should record the attempted password"
@@ -444,7 +447,7 @@ fn manual_controller_auth_success_stores_password_for_future_reidentify() {
             ),
             ClientRuntimeAction::RequestControllerAuth {
                 room: "+room:ABCDEF123456".to_owned(),
-                password: "AB123-456".to_owned(),
+                password: "AB123-456".into(),
             },
         ]
     );
@@ -464,7 +467,7 @@ fn new_controlled_room_message_emits_creation_notification() {
         vec![ClientRuntimeAction::NotifyControlledRoomCreation(
             ControlledRoomCreationNotification::Created {
                 room: "+room:ABCDEF123456".to_owned(),
-                password: "AB123456".to_owned(),
+                password: "AB123456".into(),
             },
         )]
     );

@@ -23,7 +23,7 @@ fn gui_shell_app_state_preserves_runtime_show_chat_override_across_configuration
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         section: "Connection",
         label: "Host",
-        value: "syncplay.example".to_owned(),
+        value: "syncplay.example".to_owned().into(),
     }));
 
     let window = state

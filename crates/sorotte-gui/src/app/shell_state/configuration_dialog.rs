@@ -1,4 +1,5 @@
 use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
+use sorotte_secret::SecretValue;
 
 use super::super::GuiLaunchMode;
 
@@ -137,11 +138,78 @@ impl GuiDialogControlKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(in crate::app) struct GuiDialogControl {
     pub(in crate::app) label: &'static str,
     pub(in crate::app) kind: GuiDialogControlKind,
     pub(in crate::app) value: String,
+}
+
+impl std::fmt::Debug for GuiDialogControl {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = if self.kind == GuiDialogControlKind::PasswordInput {
+            sorotte_secret::REDACTED_SECRET
+        } else {
+            &self.value
+        };
+        formatter
+            .debug_struct("GuiDialogControl")
+            .field("label", &self.label)
+            .field("kind", &self.kind)
+            .field("value", &value)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::app) enum GuiConfigurationTextValue {
+    Plain(String),
+    Secret(SecretValue),
+}
+
+impl GuiConfigurationTextValue {
+    pub(in crate::app) fn for_control(
+        kind: GuiDialogControlKind,
+        value: impl Into<String>,
+    ) -> Self {
+        let value = value.into();
+        if kind == GuiDialogControlKind::PasswordInput {
+            Self::Secret(value.into())
+        } else {
+            Self::Plain(value)
+        }
+    }
+
+    pub(in crate::app) fn expose_for_ui(&self) -> &str {
+        match self {
+            Self::Plain(value) => value,
+            Self::Secret(value) => value.expose_secret(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(in crate::app) fn as_str(&self) -> &str {
+        self.expose_for_ui()
+    }
+
+    pub(in crate::app) fn expose_for_config_apply(&self) -> &str {
+        self.expose_for_ui()
+    }
+}
+
+impl std::fmt::Display for GuiConfigurationTextValue {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Plain(value) => formatter.write_str(value),
+            Self::Secret(_) => formatter.write_str(sorotte_secret::REDACTED_SECRET),
+        }
+    }
+}
+
+impl From<String> for GuiConfigurationTextValue {
+    fn from(value: String) -> Self {
+        Self::Plain(value)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

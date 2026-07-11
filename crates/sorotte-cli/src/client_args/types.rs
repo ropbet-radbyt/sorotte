@@ -1,4 +1,6 @@
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+use sorotte_secret::SecretValue;
+
+#[derive(Clone, Default, PartialEq, Eq)]
 pub(crate) struct LegacyClientArgOverrides {
     pub(crate) connect_requested: bool,
     pub(crate) no_store: bool,
@@ -17,10 +19,31 @@ pub(crate) struct LegacyClientArgOverrides {
     pub(crate) port: Option<u16>,
     pub(crate) username: Option<String>,
     pub(crate) room: Option<String>,
-    pub(crate) controlled_room_password_override: Option<String>,
+    pub(crate) controlled_room_password_override: Option<SecretValue>,
     pub(crate) show_help: bool,
     pub(crate) show_version: bool,
     pub(crate) unknown_options: Vec<String>,
+}
+
+impl std::fmt::Debug for LegacyClientArgOverrides {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LegacyClientArgOverrides")
+            .field("connect_requested", &self.connect_requested)
+            .field("no_store", &self.no_store)
+            .field("debug_requested", &self.debug_requested)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("room_configured", &self.room.is_some())
+            .field(
+                "controlled_room_password_override",
+                &self.controlled_room_password_override,
+            )
+            .field("show_help", &self.show_help)
+            .field("show_version", &self.show_version)
+            .finish_non_exhaustive()
+    }
 }
 
 impl LegacyClientArgOverrides {

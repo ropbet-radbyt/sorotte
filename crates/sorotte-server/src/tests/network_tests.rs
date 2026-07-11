@@ -12,10 +12,16 @@ async fn connected_tcp_pair() -> (TcpStream, TcpStream) {
     (client_stream.expect("client should connect"), server_stream)
 }
 
+fn server_actor_with_tls_cert_path(cert_path: &Path) -> ServerActorHandle {
+    let mut model = ServerRuntime::new();
+    model.set_tls_cert_path(Some(cert_path.to_path_buf()));
+    ServerActorHandle::spawn(model)
+}
+
 #[tokio::test]
 async fn server_network_rejects_line_over_max_bytes() {
     let (mut client_stream, server_stream) = connected_tcp_pair().await;
-    let runtime = Arc::new(Mutex::new(ServerRuntime::new()));
+    let runtime = ServerActorHandle::spawn(ServerRuntime::new());
     let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
     let session_task = tokio::spawn(
         crate::network::run_server_network_client_session_with_pre_hello_timeout(
@@ -174,7 +180,7 @@ async fn server_network_buffered_line_reader_keeps_partial_line_after_cancel() {
 #[tokio::test]
 async fn server_network_closes_pre_hello_idle_client() {
     let (mut client_stream, server_stream) = connected_tcp_pair().await;
-    let runtime = Arc::new(Mutex::new(ServerRuntime::new()));
+    let runtime = ServerActorHandle::spawn(ServerRuntime::new());
     let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
     let session_task = tokio::spawn(
         crate::network::run_server_network_client_session_with_pre_hello_timeout(
@@ -203,7 +209,7 @@ async fn server_network_closes_pre_hello_idle_client() {
 #[tokio::test]
 async fn server_network_does_not_create_session_for_pre_hello_idle_client() {
     let (_client_stream, server_stream) = connected_tcp_pair().await;
-    let runtime = Arc::new(Mutex::new(ServerRuntime::new()));
+    let runtime = ServerActorHandle::spawn(ServerRuntime::new());
     let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
 
     crate::network::run_server_network_client_session_with_pre_hello_timeout(
@@ -219,7 +225,11 @@ async fn server_network_does_not_create_session_for_pre_hello_idle_client() {
     .expect("idle pre-hello close should not be an error");
 
     assert!(
-        runtime.lock().await.session("client-1").is_none(),
+        runtime
+            .session("client-1")
+            .await
+            .expect("server actor should answer session query")
+            .is_none(),
         "idle pre-hello clients should never create a runtime session"
     );
 }
@@ -244,11 +254,9 @@ async fn server_network_tick_does_not_accumulate_simulated_time() {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("listener should bind");
-    let runtime = Arc::new(Mutex::new(ServerRuntime::new()));
-    {
-        let mut runtime_guard = runtime.lock().await;
-        runtime_guard.set_time_now_override_seconds(Some(50.0));
-    }
+    let mut model = ServerRuntime::new();
+    model.set_time_now_override_seconds(Some(50.0));
+    let runtime = ServerActorHandle::spawn(model);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let server_task = tokio::spawn(run_server_network_loop_until_shutdown(
         listener,
@@ -267,39 +275,365 @@ async fn server_network_tick_does_not_accumulate_simulated_time() {
         .expect("server loop should exit without error");
 
     assert_eq!(
-        runtime.lock().await.time_now_override_seconds,
+        runtime
+            .time_now_override_seconds()
+            .await
+            .expect("server actor should answer time query"),
         Some(50.0),
         "production network ticks should not advance the deterministic override"
     );
 }
 
 #[tokio::test]
-async fn server_network_closes_or_drops_slow_client_when_outbound_queue_full() {
-    let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
-    let (event_tx, _event_rx) = mpsc::channel(crate::CLIENT_OUTBOUND_QUEUE_CAPACITY);
-    for index in 0..crate::CLIENT_OUTBOUND_QUEUE_CAPACITY {
-        event_tx
-            .try_send(crate::ClientOutboundEvent::Line(format!("queued-{index}")))
-            .expect("test queue should accept initial fill");
+async fn server_network_shutdown_closes_and_awaits_active_sessions() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let address = listener
+        .local_addr()
+        .expect("listener should have local address");
+    let runtime = ServerActorHandle::spawn(ServerRuntime::new());
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let server_task = tokio::spawn(run_server_network_loop_until_shutdown(
+        listener,
+        runtime.clone(),
+        None,
+        shutdown_rx,
+    ));
+
+    let stream = TcpStream::connect(address)
+        .await
+        .expect("client should connect");
+    let (reader, mut writer) = stream.into_split();
+    writer
+        .write_all(br#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.0"}}"#)
+        .await
+        .expect("hello should write");
+    writer
+        .write_all(b"\n")
+        .await
+        .expect("hello newline should write");
+    writer.flush().await.expect("hello should flush");
+
+    let mut reader = BufReader::new(reader);
+    loop {
+        let mut line = String::new();
+        let read = timeout(Duration::from_secs(2), reader.read_line(&mut line))
+            .await
+            .expect("hello response should arrive before timeout")
+            .expect("hello response should read");
+        assert!(read > 0, "server should not close before Hello response");
+        if matches!(
+            decode_message_line(line.trim_end()).expect("response should decode"),
+            ProtocolMessage::Hello(_)
+        ) {
+            break;
+        }
     }
+    assert!(
+        runtime
+            .session("client-1")
+            .await
+            .expect("actor should answer before shutdown")
+            .is_some(),
+        "active network client should own a runtime session"
+    );
+
+    shutdown_tx.send(true).expect("shutdown signal should send");
+    timeout(Duration::from_secs(2), server_task)
+        .await
+        .expect("network shutdown should stay within its grace deadline")
+        .expect("server network task should join")
+        .expect("server network shutdown should succeed");
+
+    timeout(Duration::from_secs(1), async {
+        loop {
+            let mut line = String::new();
+            if reader
+                .read_line(&mut line)
+                .await
+                .expect("shutdown read should succeed")
+                == 0
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("active client transport should receive EOF during shutdown");
+    assert!(
+        runtime
+            .session("client-1")
+            .await
+            .expect("actor should answer after network shutdown")
+            .is_none(),
+        "network owner must await the session's normal disconnect cleanup"
+    );
+    assert!(
+        TcpStream::connect(address).await.is_err(),
+        "listener must be closed before network shutdown returns"
+    );
+
+    runtime
+        .shutdown()
+        .await
+        .expect("test actor should shut down cleanly");
+}
+
+#[tokio::test]
+async fn server_lifecycle_explicitly_shuts_down_actor_after_network_teardown() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let runtime = ServerActorHandle::spawn(ServerRuntime::new());
+    let retained_probe = runtime.clone();
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    shutdown_tx.send(true).expect("shutdown signal should send");
+
+    run_server_network_loops_and_shutdown_actor(vec![listener], runtime, None, shutdown_rx)
+        .await
+        .expect("lifecycle should drain the network and actor");
+
+    assert!(
+        matches!(
+            retained_probe.session("probe").await,
+            Err(ServerActorError::Unavailable)
+        ),
+        "a retained sender clone proves the actor stopped explicitly rather than through Drop"
+    );
+}
+
+#[tokio::test]
+async fn server_lifecycle_preserves_network_and_actor_shutdown_failures() {
+    let runtime = ServerActorHandle::spawn(ServerRuntime::new());
+    runtime
+        .clone()
+        .shutdown()
+        .await
+        .expect("precondition actor shutdown should succeed");
+    let (_shutdown_tx, shutdown_rx) = watch::channel(true);
+
+    let error = run_server_network_loops_and_shutdown_actor(vec![], runtime, None, shutdown_rx)
+        .await
+        .expect_err("network and actor shutdown failures should be observable");
+
+    assert!(
+        matches!(
+            error,
+            ServerLifecycleError::NetworkAndShutdown {
+                network: ServerNetworkError::Io(_),
+                shutdown: ServerActorError::Unavailable,
+            }
+        ),
+        "lifecycle errors must retain both the network failure and durability-barrier failure"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn server_actor_remains_responsive_while_room_persistence_waits_on_sqlite() {
+    let db_path = temporary_sqlite_path("actor-sqlite-contention");
+    let _ = fs::remove_file(&db_path);
+    let mut model = ServerRuntime::with_persistent_rooms_enabled(true);
+    model
+        .set_persistent_rooms_db_path(Some(db_path.clone()))
+        .expect("room persistence should initialize");
+    let runtime = ServerActorHandle::spawn(model);
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"persistent-room"},"version":"9.9.9"}}"#,
+            None,
+        )
+        .await
+        .expect("hello command should succeed");
+
+    let blocker = Connection::open(&db_path).expect("blocking sqlite connection should open");
+    blocker
+        .execute_batch("BEGIN IMMEDIATE")
+        .expect("blocking sqlite transaction should begin");
+
+    timeout(
+        Duration::from_millis(250),
+        runtime.handle_line(
+            "client-1",
+            r#"{"Set":{"playlistChange":{"files":["episode1.mkv"]}}}"#,
+            None,
+        ),
+    )
+    .await
+    .expect("model transition must not wait for sqlite busy timeout")
+    .expect("playlist transition should succeed");
+    timeout(
+        Duration::from_millis(250),
+        runtime.handle_line("client-1", r#"{"List":null}"#, None),
+    )
+    .await
+    .expect("a second command must progress while persistence is blocked")
+    .expect("list command should succeed");
+
+    blocker
+        .execute_batch("ROLLBACK")
+        .expect("blocking sqlite transaction should release");
+    drop(blocker);
+    runtime
+        .shutdown()
+        .await
+        .expect("actor shutdown should flush and join persistence workers");
+    fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
+}
+
+fn test_outbound_line(
+    line: impl Into<String>,
+    delivery: ServerOutboundDelivery,
+) -> DirectedOutboundLine {
+    DirectedOutboundLine {
+        client_id: "client-1".to_owned(),
+        line: line.into(),
+        delivery,
+    }
+}
+
+async fn fill_reliable_outbound_queue(
+    client_event_senders: &crate::network::SharedClientEventSenders,
+) {
+    let lines = (0..crate::CLIENT_OUTBOUND_QUEUE_CAPACITY).map(|index| {
+        test_outbound_line(format!("queued-{index}"), ServerOutboundDelivery::Reliable)
+    });
+    crate::network::dispatch_outbound_lines_to_clients(client_event_senders, lines.collect()).await;
+}
+
+#[tokio::test]
+async fn server_network_transient_full_queue_keeps_live_client_registered() {
+    let metrics = crate::ServerOutboundBackpressureMetrics::default();
+    let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    let (event_tx, mut event_rx) = crate::network::client_event_queue(metrics.clone());
     {
         let mut senders = client_event_senders.lock().await;
         senders.insert("client-1".to_owned(), event_tx);
     }
+    fill_reliable_outbound_queue(&client_event_senders).await;
+
+    let dispatch_senders = client_event_senders.clone();
+    let overflow_dispatch = tokio::spawn(async move {
+        crate::network::dispatch_outbound_lines_to_clients(
+            &dispatch_senders,
+            vec![test_outbound_line(
+                r#"{"Chat":"retained"}"#,
+                ServerOutboundDelivery::Reliable,
+            )],
+        )
+        .await;
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(
+        event_rx.receive_reliable_line_for_test().await.is_some(),
+        "draining one queued line should release reliable capacity"
+    );
+    overflow_dispatch
+        .await
+        .expect("overflow dispatch task should join");
+
+    assert!(client_event_senders.lock().await.contains_key("client-1"));
+    let snapshot = metrics.snapshot();
+    assert_eq!(snapshot.full_queue_events, 1);
+    assert_eq!(snapshot.overload_disconnects, 0);
+    assert_eq!(snapshot.dropped_messages, 0);
+}
+
+#[tokio::test]
+async fn server_network_sustained_full_queue_signals_explicit_overload_close() {
+    let metrics = crate::ServerOutboundBackpressureMetrics::default();
+    let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    let (event_tx, event_rx) = crate::network::client_event_queue(metrics.clone());
+    {
+        let mut senders = client_event_senders.lock().await;
+        senders.insert("client-1".to_owned(), event_tx);
+    }
+    fill_reliable_outbound_queue(&client_event_senders).await;
 
     crate::network::dispatch_outbound_lines_to_clients(
         &client_event_senders,
-        vec![DirectedOutboundLine {
-            client_id: "client-1".to_owned(),
-            line: r#"{"Chat":"overflow"}"#.to_owned(),
-        }],
+        vec![test_outbound_line(
+            r#"{"Chat":"overload"}"#,
+            ServerOutboundDelivery::Reliable,
+        )],
     )
     .await;
 
     assert!(
         !client_event_senders.lock().await.contains_key("client-1"),
-        "a full outbound queue should close/drop the slow client sender"
+        "an overloaded sender should be removed only after close is signalled"
     );
+    assert_eq!(
+        event_rx.overload_queue_depth_for_test(),
+        Some(crate::CLIENT_OUTBOUND_QUEUE_CAPACITY)
+    );
+    let snapshot = metrics.snapshot();
+    assert_eq!(snapshot.full_queue_events, 1);
+    assert_eq!(snapshot.overload_disconnects, 1);
+    assert_eq!(snapshot.closed_channel_events, 0);
+    assert_eq!(snapshot.dropped_messages, 1);
+}
+
+#[tokio::test]
+async fn server_network_closed_queue_is_not_reported_as_overload() {
+    let metrics = crate::ServerOutboundBackpressureMetrics::default();
+    let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    let (event_tx, event_rx) = crate::network::client_event_queue(metrics.clone());
+    drop(event_rx);
+    client_event_senders
+        .lock()
+        .await
+        .insert("client-1".to_owned(), event_tx);
+
+    crate::network::dispatch_outbound_lines_to_clients(
+        &client_event_senders,
+        vec![test_outbound_line(
+            r#"{"Chat":"closed"}"#,
+            ServerOutboundDelivery::Reliable,
+        )],
+    )
+    .await;
+
+    let snapshot = metrics.snapshot();
+    assert_eq!(snapshot.closed_channel_events, 1);
+    assert_eq!(snapshot.full_queue_events, 0);
+    assert_eq!(snapshot.overload_disconnects, 0);
+    assert_eq!(snapshot.dropped_messages, 1);
+}
+
+#[tokio::test]
+async fn server_network_periodic_state_updates_coalesce_to_latest() {
+    let runtime = ServerActorHandle::spawn(ServerRuntime::new());
+    let metrics = runtime.outbound_backpressure_metrics();
+    let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    let (event_tx, mut event_rx) = crate::network::client_event_queue(metrics.clone());
+    client_event_senders
+        .lock()
+        .await
+        .insert("client-1".to_owned(), event_tx);
+
+    crate::network::dispatch_outbound_lines_to_clients(
+        &client_event_senders,
+        vec![
+            test_outbound_line("state-1", ServerOutboundDelivery::CoalesciblePeriodicState),
+            test_outbound_line("state-2", ServerOutboundDelivery::CoalesciblePeriodicState),
+        ],
+    )
+    .await;
+
+    assert_eq!(
+        event_rx.receive_periodic_state_for_test().await.as_deref(),
+        Some("state-2")
+    );
+    let snapshot = runtime.outbound_backpressure_snapshot();
+    assert_eq!(snapshot.coalesced_state_updates, 1);
+    assert_eq!(snapshot.queue_depth, 0);
+    assert_eq!(snapshot.dropped_messages, 0);
+    runtime
+        .shutdown()
+        .await
+        .expect("server actor should shut down cleanly");
 }
 
 #[tokio::test]
@@ -363,7 +697,7 @@ async fn server_network_loop_routes_hello_response_to_connected_client() {
     let address = listener
         .local_addr()
         .expect("listener should have local address");
-    let runtime = Arc::new(Mutex::new(ServerRuntime::new()));
+    let runtime = ServerActorHandle::spawn(ServerRuntime::new());
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let server_task = tokio::spawn(run_server_network_loop_until_shutdown(
         listener,
@@ -429,11 +763,9 @@ async fn server_network_loop_passes_peer_ip_to_motd_template() {
     let address = listener
         .local_addr()
         .expect("listener should have local address");
-    let runtime = Arc::new(Mutex::new(ServerRuntime::new()));
-    {
-        let mut runtime_guard = runtime.lock().await;
-        runtime_guard.set_motd_template(Some("Peer=$userIp User=$username Room=$room".to_owned()));
-    }
+    let mut model = ServerRuntime::new();
+    model.set_motd_template(Some("Peer=$userIp User=$username Room=$room".to_owned()));
+    let runtime = ServerActorHandle::spawn(model);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let server_task = tokio::spawn(run_server_network_loop_until_shutdown(
         listener,
@@ -500,7 +832,7 @@ async fn server_network_loop_ignores_whitespace_only_lines() {
     let address = listener
         .local_addr()
         .expect("listener should have local address");
-    let runtime = Arc::new(Mutex::new(ServerRuntime::new()));
+    let runtime = ServerActorHandle::spawn(ServerRuntime::new());
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let server_task = tokio::spawn(run_server_network_loop_until_shutdown(
         listener,
@@ -566,7 +898,7 @@ async fn server_network_loop_sends_error_for_invalid_utf8_line() {
     let address = listener
         .local_addr()
         .expect("listener should have local address");
-    let runtime = Arc::new(Mutex::new(ServerRuntime::new()));
+    let runtime = ServerActorHandle::spawn(ServerRuntime::new());
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let server_task = tokio::spawn(run_server_network_loop_until_shutdown(
         listener,
@@ -615,11 +947,7 @@ async fn server_network_closes_starttls_client_that_never_handshakes() {
     write_valid_tls_bundle(&cert_path);
 
     let (mut client_stream, server_stream) = connected_tcp_pair().await;
-    let runtime = Arc::new(Mutex::new(ServerRuntime::new()));
-    {
-        let mut runtime_guard = runtime.lock().await;
-        runtime_guard.set_tls_cert_path(Some(cert_path.clone()));
-    }
+    let runtime = server_actor_with_tls_cert_path(&cert_path);
     let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
     let session_task = tokio::spawn(
         crate::network::run_server_network_client_session_with_timeouts(
@@ -692,11 +1020,7 @@ async fn server_network_starttls_handshake_timeout_does_not_create_session() {
     write_valid_tls_bundle(&cert_path);
 
     let (mut client_stream, server_stream) = connected_tcp_pair().await;
-    let runtime = Arc::new(Mutex::new(ServerRuntime::new()));
-    {
-        let mut runtime_guard = runtime.lock().await;
-        runtime_guard.set_tls_cert_path(Some(cert_path.clone()));
-    }
+    let runtime = server_actor_with_tls_cert_path(&cert_path);
     let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
     let session_task = tokio::spawn(
         crate::network::run_server_network_client_session_with_timeouts(
@@ -741,7 +1065,11 @@ async fn server_network_starttls_handshake_timeout_does_not_create_session() {
         .expect("session task should join")
         .expect_err("TLS handshake timeout should end the session with an error");
     assert!(
-        runtime.lock().await.session("client-1").is_none(),
+        runtime
+            .session("client-1")
+            .await
+            .expect("server actor should answer session query")
+            .is_none(),
         "a client that only requests StartTLS should not create a runtime session"
     );
 
@@ -756,11 +1084,7 @@ async fn server_network_starttls_success_still_allows_hello() {
     write_valid_tls_bundle(&cert_path);
 
     let (mut client_stream, server_stream) = connected_tcp_pair().await;
-    let runtime = Arc::new(Mutex::new(ServerRuntime::new()));
-    {
-        let mut runtime_guard = runtime.lock().await;
-        runtime_guard.set_tls_cert_path(Some(cert_path.clone()));
-    }
+    let runtime = server_actor_with_tls_cert_path(&cert_path);
     let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
     let session_task = tokio::spawn(
         crate::network::run_server_network_client_session_with_timeouts(
@@ -849,7 +1173,11 @@ async fn server_network_starttls_success_still_allows_hello() {
     }
     assert!(saw_hello, "successful StartTLS should preserve Hello flow");
     assert!(
-        runtime.lock().await.session("client-1").is_some(),
+        runtime
+            .session("client-1")
+            .await
+            .expect("server actor should answer session query")
+            .is_some(),
         "successful StartTLS Hello should create the runtime session"
     );
 
@@ -878,11 +1206,7 @@ async fn server_network_loop_forwards_tls_start_transport_action_to_sink() {
     let address = listener
         .local_addr()
         .expect("listener should have local address");
-    let runtime = Arc::new(Mutex::new(ServerRuntime::new()));
-    {
-        let mut runtime_guard = runtime.lock().await;
-        runtime_guard.set_tls_cert_path(Some(cert_path.clone()));
-    }
+    let runtime = server_actor_with_tls_cert_path(&cert_path);
     let (transport_action_tx, mut transport_action_rx) = mpsc::unbounded_channel();
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let server_task = tokio::spawn(run_server_network_loop_until_shutdown(
@@ -953,11 +1277,7 @@ async fn server_network_loop_tls_upgrade_preserves_post_upgrade_protocol_flow() 
     let address = listener
         .local_addr()
         .expect("listener should have local address");
-    let runtime = Arc::new(Mutex::new(ServerRuntime::new()));
-    {
-        let mut runtime_guard = runtime.lock().await;
-        runtime_guard.set_tls_cert_path(Some(cert_path.clone()));
-    }
+    let runtime = server_actor_with_tls_cert_path(&cert_path);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let server_task = tokio::spawn(run_server_network_loop_until_shutdown(
         listener,
@@ -1067,11 +1387,7 @@ async fn server_network_loop_tls_upgrade_uses_cached_context_when_files_disappea
     let address = listener
         .local_addr()
         .expect("listener should have local address");
-    let runtime = Arc::new(Mutex::new(ServerRuntime::new()));
-    {
-        let mut runtime_guard = runtime.lock().await;
-        runtime_guard.set_tls_cert_path(Some(cert_path.clone()));
-    }
+    let runtime = server_actor_with_tls_cert_path(&cert_path);
 
     fs::remove_file(cert_path.join("privkey.pem")).expect("privkey file should be removable");
     fs::remove_file(cert_path.join("chain.pem")).expect("chain file should be removable");
@@ -1190,11 +1506,7 @@ async fn server_network_loop_tls_upgrade_keeps_inflight_handshake_when_bundle_ro
     let address = listener
         .local_addr()
         .expect("listener should have local address");
-    let runtime = Arc::new(Mutex::new(ServerRuntime::new()));
-    {
-        let mut runtime_guard = runtime.lock().await;
-        runtime_guard.set_tls_cert_path(Some(cert_path.clone()));
-    }
+    let runtime = server_actor_with_tls_cert_path(&cert_path);
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let server_task = tokio::spawn(run_server_network_loop_until_shutdown(
@@ -1348,11 +1660,7 @@ async fn server_network_loop_tls_upgrade_recovers_after_invalid_rotation_bundle_
     let address = listener
         .local_addr()
         .expect("listener should have local address");
-    let runtime = Arc::new(Mutex::new(ServerRuntime::new()));
-    {
-        let mut runtime_guard = runtime.lock().await;
-        runtime_guard.set_tls_cert_path(Some(cert_path.clone()));
-    }
+    let runtime = server_actor_with_tls_cert_path(&cert_path);
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let server_task = tokio::spawn(run_server_network_loop_until_shutdown(

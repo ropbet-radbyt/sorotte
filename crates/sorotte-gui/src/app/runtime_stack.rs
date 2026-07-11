@@ -17,18 +17,19 @@ use std::{
 };
 
 use serde_json::{Map, Value};
+use sorotte_client_app::app_boundary::application::{
+    ClientApplication, ClientApplicationSettings, ClientCommand, ClientEvent,
+};
 use sorotte_client_app::app_boundary::state::{
-    AutoplayThresholdOverride, StoredClientSettingsRuntimeSnapshot,
+    AutoplayThresholdOverride, RoomName, StoredClientSettingsRuntimeSnapshot, Username,
     parse_host_and_optional_port_from_host_arg_legacy_compatible,
 };
 use sorotte_client_core::{
-    AUTOPLAY_TICK_INTERVAL_SECONDS, ChatNotification, ClientMediaMatchPeerFileState, ClientRuntime,
-    ClientRuntimeAction, ClientRuntimeControl, ClientSession, DesyncCorrectionConfig, PrivacyMode,
-    QueuedRuntimeControl, ReadinessAutoplayConfig, RoomPlaylistView, RoomPlaystateView,
-    SYNCPLAY_COMPAT_VERSION_LEGACY, SYNCPLAY_WIRE_VERSION_LEGACY, SessionBehaviorConfig,
-    legacy_server_password_token,
+    AUTOPLAY_TICK_INTERVAL_SECONDS, ChatNotification, ClientEffect, ClientMediaMatchPeerFileState,
+    ClientRuntimeAction, PrivacyMode, RoomPlaylistView, RoomPlaystateView,
+    SYNCPLAY_COMPAT_VERSION_LEGACY, SYNCPLAY_WIRE_VERSION_LEGACY, legacy_server_password_token,
 };
-use sorotte_media_match::MediaMatchTier;
+use sorotte_media_match::{MediaMatchTier, MediaMatchWireSignature};
 use sorotte_player_api::PlayerPlaybackTelemetryUpdate;
 use sorotte_protocol::{
     HelloPayload, ListPayload, ProtocolMessage, decode_message_line_items, encode_message_line,
@@ -52,6 +53,7 @@ pub(super) use self::session_adapter::{
 #[cfg(test)]
 pub(super) use self::transport::GuiTcpSessionTransportDriver;
 pub(super) use self::transport::{
-    GuiLoopbackSessionTransportDriver, GuiQueuedSessionTransportHandle, GuiSessionTransportDriver,
+    GuiLoopbackSessionTransportDriver, GuiOutboundProtocolDelivery,
+    GuiOutboundProtocolDeliveryResult, GuiQueuedSessionTransportHandle, GuiSessionTransportDriver,
     GuiThreadedTcpSessionTransportDriver,
 };

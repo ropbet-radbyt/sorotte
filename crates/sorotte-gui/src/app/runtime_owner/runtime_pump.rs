@@ -1,7 +1,6 @@
+use super::super::feature_slices::GuiClientCommand;
 use super::super::remote_services;
 use super::*;
-
-const BACKGROUND_UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(86_400);
 
 impl Default for GuiPersistedConfigRuntimeOwner {
     fn default() -> Self {
@@ -12,14 +11,21 @@ impl Default for GuiPersistedConfigRuntimeOwner {
 }
 
 impl GuiPersistedConfigRuntimeOwner {
-    pub(in crate::app) fn pump_runtime(
+    pub(in crate::app) fn poll_cached_runtime(&mut self, handle: &GuiQueuedRuntimeBridgeHandle) {
+        let Some(mut projected_state) = self.legacy_projection.take() else {
+            return;
+        };
+        projected_state = self.pump_runtime_projection_owned(handle, projected_state);
+        self.legacy_projection = Some(projected_state);
+    }
+
+    fn pump_runtime_projection_owned(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        state: &SorotteGuiShellAppState,
-    ) {
+        mut projected_state: SorotteGuiShellAppState,
+    ) -> SorotteGuiShellAppState {
         self.runtime_pump_generation = self.runtime_pump_generation.wrapping_add(1);
         self.poll_managed_mpv_process();
-        let mut projected_state = state.clone();
         let mut media_resolution_completed = false;
         self.pump_due_session_transport_reconnect(handle, &mut projected_state);
         self.sync_detached_session_runtime_state_or_notify(handle, &mut projected_state);
@@ -63,8 +69,20 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.sync_detached_session_runtime_state_or_notify(handle, &mut projected_state);
             }
         }
-        for request in handle.drain_requests() {
-            if !self.handle_runtime_request(handle, &mut projected_state, request) {
+        for command in handle.drain_client_commands() {
+            let handled = match command {
+                GuiClientCommand::Player(command) => {
+                    self.handle_player_command(handle, &mut projected_state, command)
+                }
+                GuiClientCommand::Updates(command) => {
+                    self.update_runtime.handle_command(handle, *command);
+                    true
+                }
+                GuiClientCommand::Legacy { request, .. } => {
+                    self.handle_runtime_request(handle, &mut projected_state, *request)
+                }
+            };
+            if !handled {
                 continue;
             }
             self.sync_detached_session_runtime_state_or_notify(handle, &mut projected_state);
@@ -99,8 +117,9 @@ impl GuiPersistedConfigRuntimeOwner {
         self.pump_plex_playlist_workers(handle, &mut projected_state);
         self.sync_plex_watch_state(handle, &mut projected_state);
         self.run_deferred_startup_remote_actions(handle, &mut projected_state);
-        self.pump_background_update_check(handle, &mut projected_state);
+        self.update_runtime.pump_background_check(handle);
         self.run_deferred_startup_stream_helper_probe(handle, &mut projected_state);
+        projected_state
     }
 
     fn run_deferred_startup_remote_actions(
@@ -108,6 +127,21 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) {
+        self.run_deferred_startup_remote_actions_with_fetcher(
+            handle,
+            projected_state,
+            |language| remote_services::fetch_public_servers(Some(language)),
+        );
+    }
+
+    pub(super) fn run_deferred_startup_remote_actions_with_fetcher<FPublicServers>(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        fetch_public_servers: FPublicServers,
+    ) where
+        FPublicServers: Fn(&str) -> Result<Vec<(String, String)>, String> + Send + 'static,
+    {
         if !self.startup_remote_actions_attempted {
             self.startup_remote_actions_attempted = true;
             let settings = projected_state.configuration.to_stored_settings();
@@ -115,30 +149,39 @@ impl GuiPersistedConfigRuntimeOwner {
                 Some(&settings),
                 std::time::SystemTime::now(),
             ) {
-                Self::push_actions_and_project(
-                    handle,
-                    projected_state,
-                    vec![GuiShellAction::BeginUpdateCheck {
-                        user_initiated: false,
-                    }],
-                );
+                self.update_runtime.start_startup_check(handle);
             }
+
+            if settings.check_for_updates_automatically != Some(true)
+                || settings
+                    .public_servers
+                    .as_ref()
+                    .is_some_and(|rows| !rows.is_empty())
+            {
+                return;
+            }
+
             let (tx, rx) = mpsc::channel();
             match std::thread::Builder::new()
                 .name("sorotte-gui-startup-remote".to_owned())
                 .spawn(move || {
-                    let actions = gui_startup_remote_actions(&settings);
+                    let actions =
+                        gui_startup_public_server_actions_with_fetcher(&settings, |language| {
+                            fetch_public_servers(language)
+                        });
                     let _ = tx.send(actions);
                 }) {
                 Ok(_thread) => {
                     self.startup_remote_actions_rx = Some(rx);
                 }
-                Err(_error) => {
-                    let actions = gui_startup_remote_actions(
-                        &projected_state.configuration.to_stored_settings(),
+                Err(error) => {
+                    Self::push_actions_and_project(
+                        handle,
+                        projected_state,
+                        vec![GuiShellAction::AnnounceSystemChatEvent(format!(
+                            "Unable to start startup remote-service worker: {error}"
+                        ))],
                     );
-                    Self::push_actions_and_project(handle, projected_state, actions);
-                    return;
                 }
             }
         }
@@ -148,110 +191,13 @@ impl GuiPersistedConfigRuntimeOwner {
         };
         match rx.try_recv() {
             Ok(actions) => {
+                self.update_runtime.observe_actions(&actions);
                 Self::push_actions_and_project(handle, projected_state, actions);
             }
             Err(mpsc::TryRecvError::Empty) => {
                 self.startup_remote_actions_rx = Some(rx);
             }
             Err(mpsc::TryRecvError::Disconnected) => {}
-        }
-    }
-
-    fn pump_background_update_check(
-        &mut self,
-        handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
-    ) {
-        if let Some(rx) = self.background_update_check_rx.take() {
-            match rx.try_recv() {
-                Ok(result) => {
-                    self.background_update_check_next_due_at =
-                        Some(Instant::now() + BACKGROUND_UPDATE_CHECK_INTERVAL);
-                    Self::push_actions_and_project(
-                        handle,
-                        projected_state,
-                        vec![GuiShellAction::ApplyUpdateCheckResult(result)],
-                    );
-                }
-                Err(mpsc::TryRecvError::Empty) => {
-                    self.background_update_check_rx = Some(rx);
-                    return;
-                }
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    self.background_update_check_next_due_at =
-                        Some(Instant::now() + Duration::from_secs(60));
-                    return;
-                }
-            }
-        }
-
-        if self.startup_remote_actions_rx.is_some() {
-            return;
-        }
-        if self
-            .background_update_check_next_due_at
-            .is_some_and(|due_at| Instant::now() < due_at)
-        {
-            return;
-        }
-        if matches!(
-            projected_state.update_check.status,
-            Some(remote_services::LegacyUpdateCheckStatus::Checking)
-        ) || matches!(
-            projected_state.update_check.download_state,
-            remote_services::UpdateDownloadState::Downloading
-        ) {
-            return;
-        }
-
-        let settings = projected_state.configuration.to_stored_settings();
-        if !remote_services::should_run_automatic_update_check(
-            Some(&settings),
-            std::time::SystemTime::now(),
-        ) {
-            return;
-        }
-
-        let language = projected_state.update_check_language();
-        let update_channel = projected_state.update_check_channel();
-        Self::push_actions_and_project(
-            handle,
-            projected_state,
-            vec![GuiShellAction::BeginUpdateCheck {
-                user_initiated: false,
-            }],
-        );
-
-        let (tx, rx) = mpsc::channel();
-        let thread_language = language.clone();
-        let thread_update_channel = update_channel.clone();
-        match std::thread::Builder::new()
-            .name("sorotte-gui-background-update-check".to_owned())
-            .spawn(move || {
-                let result = remote_services::check_for_updates(
-                    Some(thread_language.as_str()),
-                    false,
-                    thread_update_channel.as_deref(),
-                );
-                let _ = tx.send(result);
-            }) {
-            Ok(_thread) => {
-                self.background_update_check_rx = Some(rx);
-            }
-            Err(_error) => {
-                let result = remote_services::check_for_updates(
-                    Some(language.as_str()),
-                    false,
-                    update_channel.as_deref(),
-                );
-                self.background_update_check_next_due_at =
-                    Some(Instant::now() + BACKGROUND_UPDATE_CHECK_INTERVAL);
-                Self::push_actions_and_project(
-                    handle,
-                    projected_state,
-                    vec![GuiShellAction::ApplyUpdateCheckResult(result)],
-                );
-            }
         }
     }
 
@@ -339,6 +285,7 @@ impl GuiPersistedConfigRuntimeOwner {
             return;
         }
         self.startup_remote_actions_attempted = true;
+        self.update_runtime.observe_actions(&actions);
         Self::push_actions_and_project(handle, projected_state, actions);
     }
 

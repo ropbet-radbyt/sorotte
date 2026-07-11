@@ -33,7 +33,7 @@ fn gui_client_core_chat_session_runtime_adapter_syncs_runtime_settings_into_sess
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new_with_control_password(
         "alice",
         "room1",
-        Some("ab-123-456".to_owned()),
+        Some("ab-123-456".into()),
     )
     .expect("client-core chat adapter should bootstrap");
 

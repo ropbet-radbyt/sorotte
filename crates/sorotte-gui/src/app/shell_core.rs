@@ -23,12 +23,22 @@ impl SorotteGuiShellAppState {
     pub(super) fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
         let runtime_settings = stored_client_settings_runtime_snapshot_legacy_compatible(settings);
         let mut shell_settings = settings.clone();
-        shell_settings.room = runtime_settings.settings.room.clone().map(|room| {
-            runtime_settings
-                .controlled_room_password_override
-                .as_ref()
-                .map_or(room.clone(), |password| format!("{room}:{password}"))
-        });
+        shell_settings.room = runtime_settings
+            .config
+            .connection
+            .room
+            .as_ref()
+            .map(|room| room.as_str().to_owned())
+            .map(|room| {
+                runtime_settings
+                    .config
+                    .connection
+                    .controlled_room_password
+                    .as_ref()
+                    .map_or(room.clone(), |password| {
+                        format!("{room}:{}", password.expose_secret())
+                    })
+            });
         let mut state = Self {
             active_view: GuiShellView::Setup,
             selected_configuration_tab: GuiConfigurationTab::Connection,
@@ -140,9 +150,22 @@ impl SorotteGuiShellAppState {
         let address = format!("{normalized_host}:{port}");
         Some(GuiSavedSessionConnectTarget {
             address,
-            username: runtime_settings.settings.username.unwrap_or_default(),
-            room: runtime_settings.settings.room.unwrap_or_default(),
-            controlled_room_password_override: runtime_settings.controlled_room_password_override,
+            username: runtime_settings
+                .config
+                .connection
+                .username
+                .map(|username| username.into_inner())
+                .unwrap_or_default(),
+            room: runtime_settings
+                .config
+                .connection
+                .room
+                .map(|room| room.into_inner())
+                .unwrap_or_default(),
+            controlled_room_password_override: runtime_settings
+                .config
+                .connection
+                .controlled_room_password,
         })
     }
 

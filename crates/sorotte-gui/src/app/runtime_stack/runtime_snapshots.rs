@@ -9,11 +9,12 @@ use super::super::support::{
     legacy_chat_enabled, nonempty_room_name_text, normalized_editable_text,
 };
 use super::GuiClientCoreChatSessionRuntimeAdapter;
+use sorotte_client_app::app_boundary::state::ClientConfig;
 
 impl GuiClientCoreChatSessionRuntimeAdapter {
     fn room_control_status_for_runtime_snapshot(&self, controlled_room_active: bool) -> String {
         let session = self.runtime.session();
-        if session.server_chat_supported().is_none() {
+        if !session.is_active() {
             return MainWindowShellState::room_control_status_waiting_for_server();
         }
         if !controlled_room_active {
@@ -65,10 +66,10 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     ) -> Vec<MainWindowRuntimeUserSnapshot> {
         let session = self.runtime.session();
         let settings = state.configuration.to_stored_settings();
-        let trusted_domains = settings.trusted_domains.unwrap_or_default();
-        let only_switch_to_trusted_domains =
-            settings.only_switch_to_trusted_domains.unwrap_or(true);
-        let local_username = session.username.as_deref();
+        let playback = ClientConfig::resolve(&settings).config.playback;
+        let trusted_domains = playback.trusted_domains;
+        let only_switch_to_trusted_domains = playback.only_switch_to_trusted_domains;
+        let local_username = session.username();
         let mut users = Vec::new();
         for room_name in session.room_names() {
             for username in session.usernames_in_room(&room_name) {
@@ -173,8 +174,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         snapshot.show_playback_buttons = state.main_window.show_playback_buttons;
         snapshot.show_autoplay_controls = state.main_window.show_autoplay_controls;
         if let Some(room_name) = session
-            .room
-            .as_deref()
+            .room()
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
@@ -220,14 +220,8 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         if let Some(paused) = session.local_paused() {
             snapshot.playback_paused = paused;
         }
-        if session.server_chat_supported().is_none() {
-            snapshot.can_set_ready = false;
-        } else if let Some(server_readiness_supported) = session.server_readiness_supported() {
-            snapshot.can_set_ready = server_readiness_supported;
-        }
-        snapshot.can_set_others_ready = session
-            .server_set_others_readiness_supported()
-            .unwrap_or(false)
+        snapshot.can_set_ready = session.is_active() && session.server_readiness_supported();
+        snapshot.can_set_others_ready = session.server_set_others_readiness_supported()
             && session.local_can_control().unwrap_or(false);
         (snapshot != MainWindowRuntimeSnapshot::from_shell_state(&state.main_window))
             .then_some(snapshot)
@@ -272,8 +266,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         let session_room_name = self
             .runtime
             .session()
-            .room
-            .as_deref()
+            .room()
             .map(str::trim)
             .filter(|value| !value.is_empty());
         let managed_rooms_server_supported = self.managed_rooms_server_supported();
@@ -283,7 +276,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             && session_room_name.is_some_and(|room_name| room_name.starts_with('+'));
         let config_chat_enabled = legacy_chat_enabled(&settings);
         let desired_show_chat_enabled =
-            config_chat_enabled && self.runtime.session().server_chat_supported() == Some(true);
+            config_chat_enabled && self.runtime.session().server_chat_supported();
 
         let current_show_chat_enabled = state
             .menus

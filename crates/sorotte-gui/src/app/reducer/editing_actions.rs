@@ -98,7 +98,10 @@ impl SorotteGuiShellAppState {
                 self.text_edit_session = Some(GuiTextEditSessionState {
                     section: focused.section,
                     label: focused.label,
-                    buffer: control.value.clone(),
+                    buffer: GuiConfigurationTextValue::for_control(
+                        control.kind,
+                        control.value.clone(),
+                    ),
                     is_dirty: false,
                 });
                 if let Some(focused_state) = self.focused_configuration_control.as_mut() {

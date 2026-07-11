@@ -122,7 +122,9 @@ fn flush_reconnect_notifications_to_sink_dispatches_disconnected_notification() 
         controlled_room_password_override: None,
     };
     let mut runtime = create_client_runtime(&config);
-    runtime.session_mut().reconnect_policy_mut().max_retries = 0;
+    let mut reconnect_policy = runtime.session().reconnect_policy().clone();
+    reconnect_policy.max_retries = 0;
+    runtime.session_mut().set_reconnect_policy(reconnect_policy);
     runtime
         .run_reconnect_retry(1)
         .expect("terminal reconnect retry should queue disconnected notification");
@@ -286,6 +288,12 @@ fn flush_reconnect_notifications_to_sink_dispatches_playlist_restore_notificatio
         .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"alice"}}}"#)
         .expect("local playlist index should apply");
     runtime.session_mut().reset_sync_state_for_reconnect();
+    runtime
+        .session_mut()
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sharedPlaylists":true}}}"#,
+        )
+        .expect("reconnect hello should apply");
     runtime
         .session_mut()
         .apply_message_json(r#"{"Set":{"playlistChange":{"files":[]}}}"#)

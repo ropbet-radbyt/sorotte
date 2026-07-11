@@ -136,7 +136,7 @@ impl FirstRunConfigurationDialogDraft {
                 self.settings.room = configured_room_name_text(value);
             }
             ("Connection", "Server Password") => {
-                self.settings.server_password = normalized_editable_text(value);
+                self.settings.server_password = normalized_editable_text(value).map(Into::into);
             }
             ("Connection", "Player Path") => {
                 self.settings.player_path = normalized_editable_text(value);

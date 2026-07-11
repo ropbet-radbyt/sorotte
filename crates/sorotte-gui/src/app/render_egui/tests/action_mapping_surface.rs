@@ -425,8 +425,8 @@ fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
         &create_actions[0],
         GuiShellAction::RequestControllerAuth { room, password }
             if room == "Lounge"
-                && password.len() == 10
-                && password.chars().enumerate().all(|(index, c)| match index {
+                && password.expose_secret().len() == 10
+                && password.expose_secret().chars().enumerate().all(|(index, c)| match index {
                     2 | 6 => c == '-',
                     0 | 1 => c.is_ascii_uppercase(),
                     _ => c.is_ascii_digit(),
@@ -452,7 +452,7 @@ fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
     assert!(controller_auth_state.apply(GuiShellAction::BeginControllerAuthEdit));
     assert!(
         controller_auth_state.apply(GuiShellAction::UpdateControllerAuthPasswordEdit(
-            "ab-123-456".to_owned(),
+            "ab-123-456".into(),
         ))
     );
     let controller_auth_tree = controller_auth_state.main_window_widget_tree();
@@ -470,7 +470,7 @@ fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
         vec![
             GuiShellAction::RequestControllerAuth {
                 room: "+Lounge:ABCDEF123456".to_owned(),
-                password: "ab-123-456".to_owned(),
+                password: "ab-123-456".into(),
             },
             GuiShellAction::CancelControllerAuthEdit,
         ]

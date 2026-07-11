@@ -3,15 +3,19 @@ use std::collections::BTreeMap;
 use super::{
     FirstRunConfigurationDialogState, GuiCommandAvailabilityState, GuiCommandRuntimeSnapshot,
     GuiConfigurationDraftRuntimeSnapshot, GuiConfigurationRuntimeSnapshot, GuiConfigurationTab,
+    GuiConfigurationTextValue, GuiControllerAuthEditSessionState, GuiDialogControl,
     GuiDialogControlKind, GuiDraftRuntimeSnapshot, GuiErrorRuntimeSnapshot,
     GuiFeedbackRuntimeSnapshot, GuiFocusedConfigurationControlRuntimeSnapshot,
     GuiInteractionRuntimeSnapshot, GuiMainWindowUserEditSessionRuntimeSnapshot,
     GuiMediaSourceProviderId, GuiPendingOperationKind, GuiPlaylistDefaultSourceId,
-    GuiPlaylistSourceStatus, GuiPlexPlaylistSearchResult, GuiPlexRuntimeSnapshot,
+    GuiPlaylistSourceStatus, GuiPlaylistTextEditSessionRuntimeSnapshot,
+    GuiPlaylistTextEditSessionState, GuiPlexPlaylistSearchResult, GuiPlexRuntimeSnapshot,
     GuiPluginSelection, GuiPublicServerEditSessionRuntimeSnapshot,
-    GuiSavedConfigurationRuntimeSnapshot, GuiSelectionState, GuiShellAction, GuiShellModal,
-    GuiShellView, GuiStreamTargetKind, GuiTextEditSessionRuntimeSnapshot, GuiTransientNotification,
-    GuiTransientNotificationLevel, GuiValidationIssue, GuiWidgetKind, MainWindowPlaylistRow,
+    GuiSavedConfigurationRuntimeSnapshot, GuiSavedSessionConnectTarget, GuiSelectionState,
+    GuiShellAction, GuiShellModal, GuiShellView, GuiStreamTargetKind,
+    GuiTextEditSessionRuntimeSnapshot, GuiTextEditSessionState, GuiTransientNotification,
+    GuiTransientNotificationLevel, GuiUrlEditSessionRuntimeSnapshot, GuiUrlEditSessionState,
+    GuiValidationIssue, GuiWidgetKind, MainWindowChatRow, MainWindowPlaylistRow,
     MainWindowRuntimeChatSnapshot, MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot,
     MainWindowShellState, MediaSearchDirectoryRow, MediaSearchWorkflowShellState,
     MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot, MenuDialogShellState,
@@ -20,6 +24,63 @@ use super::{
     playlist_entries_from_multiline_text, save_playlist_entries_to_path,
 };
 
+use crate::app::widget_tree::GuiWidgetTextPreviewRenderer;
+
+#[test]
+fn projected_media_and_plex_debug_redacts_tokenized_urls() {
+    let marker = "gui-projection-token-canary";
+    let target = format!("https://media.example/video?X-Plex-Token={marker}");
+    let settings = StoredClientSettingsMvp {
+        plex_selected_server_url: Some(target.clone()),
+        ..StoredClientSettingsMvp::default()
+    };
+
+    let mut shell = MainWindowShellState::from_stored_settings(&settings);
+    shell.users[0].file_name = Some(target.clone());
+    shell.users[0].file_name_label = target.clone();
+    shell.playlist = vec![MainWindowPlaylistRow::inferred(target.clone(), true)];
+    let runtime = MainWindowRuntimeSnapshot::from_shell_state(&shell);
+
+    let stream = super::GuiStreamHelperState {
+        target: Some(target.clone()),
+        ..super::GuiStreamHelperState::default()
+    };
+    let stream_runtime = super::GuiStreamHelperRuntimeSnapshot {
+        target: Some(target.clone()),
+        ..super::GuiStreamHelperRuntimeSnapshot::default()
+    };
+
+    let mut plex = super::GuiPlexState::from_stored_settings(&settings);
+    plex.auth_code = Some(target.clone());
+    plex.auth_url = Some(target.clone());
+    plex.selected_server_url = Some(target.clone());
+    plex.servers.push(super::GuiPlexServerRow {
+        name: "server".to_owned(),
+        machine_identifier: "machine".to_owned(),
+        uri: target.clone(),
+        reachability: super::GuiPlexServerReachability::Unknown,
+        connection_kind: sorotte_plex::PlexServerConnectionKind::Remote,
+        has_local_connection: false,
+        owned: true,
+        selected: true,
+    });
+    let plex_runtime = GuiPlexRuntimeSnapshot::from(&plex);
+
+    for debug in [
+        format!("{settings:?}"),
+        format!("{:?}", shell.users[0]),
+        format!("{:?}", shell.playlist[0]),
+        format!("{shell:?}"),
+        format!("{runtime:?}"),
+        format!("{stream:?}"),
+        format!("{stream_runtime:?}"),
+        format!("{plex:?}"),
+        format!("{plex_runtime:?}"),
+    ] {
+        assert!(debug.contains(sorotte_secret::REDACTED_SECRET));
+        assert!(!debug.contains(marker), "leaky Debug output: {debug}");
+    }
+}
 use crate::app::{
     GuiDroppedFilesTarget, GuiLaunchMode, GuiWidgetEguiRenderer,
     remote_services::{LegacyUpdateCheckResult, LegacyUpdateCheckStatus},
@@ -173,7 +234,7 @@ fn configuration_surface_maps_existing_stored_settings_into_sections() {
         force_gui_prompt: Some(true),
         host: Some("syncplay.example".to_owned()),
         port: Some(8995),
-        server_password: Some("secret".to_owned()),
+        server_password: Some("secret".into()),
         username: Some(TEST_USERNAME.to_owned()),
         room: Some("room-a".to_owned()),
         room_list: Some(vec!["room-a".to_owned(), "room-b".to_owned()]),
@@ -585,12 +646,12 @@ fn configuration_validation_flags_invalid_chat_mode_controls() {
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         section: "Chat",
         label: "Input Position",
-        value: "Sideways".to_owned(),
+        value: "Sideways".to_owned().into(),
     }));
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         section: "Chat",
         label: "Input Font Size",
-        value: "0".to_owned(),
+        value: "0".to_owned().into(),
     }));
 
     assert_eq!(state.validation.issues.len(), 2);
@@ -605,4 +666,155 @@ fn configuration_validation_flags_invalid_chat_mode_controls() {
             && issue.message == "must be a positive integer."
     }));
     assert!(!state.commands.can_save_configuration);
+}
+
+#[test]
+fn gui_shell_credential_state_and_actions_redact_debug_output() {
+    let secret = "gui-shell-password-canary";
+    let target = GuiSavedSessionConnectTarget {
+        address: "sync.example:8999".to_owned(),
+        username: "alice".to_owned(),
+        room: "room".to_owned(),
+        controlled_room_password_override: Some(secret.into()),
+    };
+    let edit = GuiControllerAuthEditSessionState {
+        room_name: "room".to_owned(),
+        password_buffer: secret.into(),
+        is_dirty: true,
+    };
+    let action = GuiShellAction::RequestControllerAuth {
+        room: "room".to_owned(),
+        password: secret.into(),
+    };
+
+    for debug in [
+        format!("{target:?}"),
+        format!("{edit:?}"),
+        format!("{action:?}"),
+    ] {
+        assert!(debug.contains(sorotte_secret::REDACTED_SECRET));
+        assert!(!debug.contains(secret));
+    }
+}
+
+#[test]
+fn configuration_password_edit_values_redact_actions_controls_and_snapshots() {
+    let secret = "configuration-password-debug-canary";
+    let value = GuiConfigurationTextValue::for_control(GuiDialogControlKind::PasswordInput, secret);
+    let control = GuiDialogControl {
+        label: "Server Password",
+        kind: GuiDialogControlKind::PasswordInput,
+        value: secret.to_owned(),
+    };
+    let edit = GuiTextEditSessionState {
+        section: "Connection",
+        label: "Server Password",
+        buffer: value.clone(),
+        is_dirty: true,
+    };
+    let snapshot = GuiTextEditSessionRuntimeSnapshot {
+        section: "Connection".to_owned(),
+        label: "Server Password".to_owned(),
+        buffer: value.clone(),
+        is_dirty: true,
+    };
+    let actions = vec![
+        GuiShellAction::UpdateConfigurationTextEdit(value.clone()),
+        GuiShellAction::EditConfigurationText {
+            section: "Connection",
+            label: "Server Password",
+            value,
+        },
+    ];
+
+    for debug in [
+        format!("{control:?}"),
+        format!("{edit:?}"),
+        format!("{snapshot:?}"),
+        format!("{actions:?}"),
+    ] {
+        assert!(debug.contains(sorotte_secret::REDACTED_SECRET));
+        assert!(!debug.contains(secret));
+    }
+}
+
+#[test]
+fn controlled_room_secret_stays_redacted_in_actions_and_chat_state_debug() {
+    let secret = "controlled-room-debug-canary";
+    let action = GuiShellAction::AnnounceControlledRoomCreated {
+        room: "+movie-room".to_owned(),
+        password: secret.into(),
+    };
+    let actions = vec![action.clone()];
+    assert!(!format!("{actions:?}").contains(secret));
+
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        chat_output_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    assert!(state.apply(action));
+    let chat = state
+        .main_window
+        .chat
+        .last()
+        .expect("controlled-room announcement should remain visible");
+    assert!(chat.message.contains(secret));
+
+    let row = MainWindowChatRow {
+        sender: chat.sender.clone(),
+        message: chat.message.clone(),
+    };
+    let snapshot = MainWindowRuntimeChatSnapshot {
+        sender: chat.sender.clone(),
+        message: chat.message.clone(),
+    };
+    let chat_panel = state.main_window_chat_panel();
+    let mut preview_renderer = GuiWidgetTextPreviewRenderer::default();
+    chat_panel.render_with(&mut preview_renderer);
+    let preview = preview_renderer.finish();
+    for debug in [
+        format!("{row:?}"),
+        format!("{snapshot:?}"),
+        format!("{:?}", state.main_window),
+        format!(
+            "{:?}",
+            MainWindowRuntimeSnapshot::from_shell_state(&state.main_window)
+        ),
+        format!("{chat_panel:?}"),
+        preview,
+    ] {
+        assert!(debug.contains(sorotte_secret::REDACTED_SECRET));
+        assert!(!debug.contains(secret));
+    }
+}
+
+#[test]
+fn media_url_and_playlist_edit_state_debug_redacts_tokenized_targets() {
+    let secret = "https://media.example/item?token=edit-state-canary";
+    let url_state = GuiUrlEditSessionState {
+        buffer: secret.to_owned(),
+        is_dirty: true,
+    };
+    let url_snapshot = GuiUrlEditSessionRuntimeSnapshot {
+        buffer: secret.to_owned(),
+        is_dirty: true,
+    };
+    let playlist_state = GuiPlaylistTextEditSessionState {
+        buffer: secret.to_owned(),
+        is_dirty: true,
+    };
+    let playlist_snapshot = GuiPlaylistTextEditSessionRuntimeSnapshot {
+        buffer: secret.to_owned(),
+        is_dirty: true,
+    };
+
+    for debug in [
+        format!("{url_state:?}"),
+        format!("{url_snapshot:?}"),
+        format!("{playlist_state:?}"),
+        format!("{playlist_snapshot:?}"),
+    ] {
+        assert!(debug.contains(sorotte_secret::REDACTED_SECRET));
+        assert!(!debug.contains("edit-state-canary"));
+    }
 }

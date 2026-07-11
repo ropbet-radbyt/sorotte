@@ -90,10 +90,10 @@ fn gui_persisted_config_runtime_owner_disables_plex_without_clearing_credentials
     let root = test_temp_root("plugin-disable-plex-preserves-settings");
     let config_path = root.join("sorotte.ini");
     let saved_settings = StoredClientSettingsMvp {
-        plex_user_token: Some("user-token".to_owned()),
+        plex_user_token: Some("user-token".into()),
         plex_selected_server_id: Some("machine-id".to_owned()),
         plex_selected_server_url: Some("https://plex.example.invalid:32400".to_owned()),
-        plex_selected_server_token: Some("server-token".to_owned()),
+        plex_selected_server_token: Some("server-token".into()),
         plex_sync_enabled: Some(true),
         plex_streaming_enabled: Some(true),
         ..StoredClientSettingsMvp::default()
@@ -143,7 +143,13 @@ fn gui_persisted_config_runtime_owner_disables_plex_without_clearing_credentials
         .expect("Plex plugin setting config should be readable")
         .expect("Plex plugin setting config should exist");
     assert_eq!(settings.plex_plugin_enabled, Some(false));
-    assert_eq!(settings.plex_user_token.as_deref(), Some("user-token"));
+    assert_eq!(
+        settings
+            .plex_user_token
+            .as_ref()
+            .map(|token| token.expose_secret()),
+        Some("user-token")
+    );
     assert_eq!(
         settings.plex_selected_server_id.as_deref(),
         Some("machine-id")
@@ -153,7 +159,10 @@ fn gui_persisted_config_runtime_owner_disables_plex_without_clearing_credentials
         Some("https://plex.example.invalid:32400")
     );
     assert_eq!(
-        settings.plex_selected_server_token.as_deref(),
+        settings
+            .plex_selected_server_token
+            .as_ref()
+            .map(|token| token.expose_secret()),
         Some("server-token")
     );
     assert_eq!(settings.plex_sync_enabled, Some(true));

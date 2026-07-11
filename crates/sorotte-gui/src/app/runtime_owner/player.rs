@@ -11,6 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use sorotte_client_app::app_boundary::state::ClientConfig;
 use sorotte_player_api::{LocalFileUpdate, PlayerAdapter, PlayerMediaLoadOutcome};
 use sorotte_player_mpv::LegacySyncplayOsdKind;
 

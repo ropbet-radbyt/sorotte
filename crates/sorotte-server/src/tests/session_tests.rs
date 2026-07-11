@@ -200,6 +200,72 @@ fn set_file_broadcasts_user_file_update_and_list_filters_media_match_by_recipien
 }
 
 #[test]
+fn set_file_preserves_unknown_fields_and_presence_through_fanout() {
+    let cases: Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/compatibility/file_presence.json"
+    ))
+    .expect("file-presence compatibility fixture should decode");
+    let object_cases = cases
+        .as_array()
+        .expect("file-presence fixture should be an array")
+        .iter()
+        .filter(|case| case["hasFile"] == Value::Bool(true) && case["payload"].is_object());
+
+    for case in object_cases {
+        let label = case["label"]
+            .as_str()
+            .expect("file-presence case should have a label");
+        let mut runtime = ServerRuntime::default();
+        runtime
+            .handle_line(
+                "client-1",
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("alice hello should establish session");
+        runtime
+            .handle_line(
+                "client-2",
+                r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("bob hello should establish session");
+        let request = json!({"Set": {"file": case["payload"].clone()}}).to_string();
+
+        let messages = decode_directed_lines(
+            &runtime
+                .handle_line_fanout("client-1", &request)
+                .unwrap_or_else(|error| panic!("{label} should fan out: {error}")),
+        );
+        let file = messages
+            .iter()
+            .find_map(|(recipient, message)| {
+                if recipient != "client-2" {
+                    return None;
+                }
+                let ProtocolMessage::Set(payload) = message else {
+                    return None;
+                };
+                payload
+                    .set
+                    .user
+                    .as_ref()
+                    .and_then(|users| users.get("alice"))
+                    .and_then(|user| user.file.as_ref())
+            })
+            .unwrap_or_else(|| panic!("{label} should remain a present file in fanout"));
+
+        assert!(
+            file.as_object().is_some_and(|fields| !fields.is_empty()),
+            "{label} must not collapse to the legacy empty-object no-file sentinel"
+        );
+        assert_eq!(
+            file.get("vendorExtension"),
+            case["payload"].get("vendorExtension"),
+            "{label} should preserve its unknown field"
+        );
+    }
+}
+
+#[test]
 fn set_file_keeps_media_match_self_echo_compact_for_large_signatures() {
     let mut runtime = ServerRuntime::default();
     runtime
@@ -299,6 +365,93 @@ fn set_features_updates_list_snapshot_features() {
         rooms["room1"]["alice"].features.as_ref(),
         Some(&json!({"uiMode":"GUI","chat":false}))
     );
+    let capabilities = &runtime
+        .session("client-1")
+        .expect("session should remain registered")
+        .capabilities;
+    assert_eq!(capabilities.ui_mode.as_deref(), Some("GUI"));
+    assert!(!capabilities.chat);
+}
+
+#[test]
+fn set_features_normalizes_empty_objects_and_rejects_invalid_updates() {
+    let mut runtime = ServerRuntime::default();
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255","features":{"chat":true}}}"#,
+        )
+        .expect("alice hello should establish session");
+    let _ = runtime.drain_compatibility_fallbacks();
+
+    runtime
+        .handle_line("client-1", r#"{"Set":{"features":{}}}"#)
+        .expect("empty feature object should be accepted");
+    assert!(
+        !runtime
+            .session("client-1")
+            .expect("session should remain registered")
+            .capabilities
+            .chat,
+        "an explicit empty feature object disables advertised capabilities"
+    );
+
+    runtime
+        .handle_line("client-1", r#"{"Set":{"features":[]}}"#)
+        .expect("invalid feature update should use a compatibility fallback");
+    assert!(
+        !runtime
+            .session("client-1")
+            .expect("session should remain registered")
+            .capabilities
+            .chat,
+        "an invalid feature update must not replace the previous capabilities"
+    );
+    assert!(
+        runtime
+            .drain_compatibility_fallbacks()
+            .iter()
+            .any(|fallback| matches!(
+                fallback,
+                crate::ServerCompatibilityFallback::IgnoredInvalidFeatures { .. }
+            ))
+    );
+}
+
+#[test]
+fn invalid_file_extensions_are_dropped_at_the_server_boundary() {
+    let mut runtime = ServerRuntime::default();
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{}}}"#,
+        )
+        .expect("hello should establish session");
+    let _ = runtime.drain_compatibility_fallbacks();
+
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Set":{"file":{"name":"movie.mkv","size":{"nested":true},"mediaMatch":{"schema":3,"profiles":[]},"futureField":{"opaque":true}}}}"#,
+        )
+        .expect("known file fields should still apply");
+
+    let session = runtime
+        .session("client-1")
+        .expect("session should remain registered");
+    let file = session.file.as_ref().expect("file name should be retained");
+    assert_eq!(file.name.as_deref(), Some("movie.mkv"));
+    assert_eq!(file.size, None);
+    assert_eq!(file.media_match, None);
+    let fallbacks = runtime.drain_compatibility_fallbacks();
+    assert!(fallbacks.iter().any(|fallback| matches!(
+        fallback,
+        crate::ServerCompatibilityFallback::IgnoredInvalidFileSize { .. }
+    )));
+    assert!(fallbacks.iter().any(|fallback| matches!(
+        fallback,
+        crate::ServerCompatibilityFallback::IgnoredInvalidMediaMatch { .. }
+    )));
 }
 
 #[test]
@@ -910,7 +1063,7 @@ fn hello_response_features_reflect_isolate_rooms() {
 #[test]
 fn hello_requires_server_password_token_when_configured() {
     let mut runtime = ServerRuntime::default();
-    runtime.set_server_password_token(Some("secret".to_owned()));
+    runtime.set_server_password_token(Some("secret".into()));
 
     let directed_lines = runtime
         .handle_line_fanout(
@@ -940,7 +1093,7 @@ fn hello_requires_server_password_token_when_configured() {
 #[test]
 fn hello_password_error_dispatch_schedules_close_after_error() {
     let mut runtime = ServerRuntime::default();
-    runtime.set_server_password_token(Some("secret".to_owned()));
+    runtime.set_server_password_token(Some("secret".into()));
 
     let dispatch = runtime
         .handle_line_fanout_with_transport_actions(
@@ -962,7 +1115,7 @@ fn hello_password_error_dispatch_schedules_close_after_error() {
 #[test]
 fn hello_server_password_token_accepts_exact_match_and_username_is_truncated() {
     let mut runtime = ServerRuntime::default();
-    runtime.set_server_password_token(Some("secret".to_owned()));
+    runtime.set_server_password_token(Some("secret".into()));
     runtime.set_max_username_length(4);
 
     runtime
@@ -983,7 +1136,7 @@ fn hello_server_password_token_accepts_exact_match_and_username_is_truncated() {
 #[test]
 fn hello_server_password_token_accepts_legacy_python_md5_hash() {
     let mut runtime = ServerRuntime::default();
-    runtime.set_server_password_token(Some("secret".to_owned()));
+    runtime.set_server_password_token(Some("secret".into()));
 
     runtime
         .handle_line(
@@ -1000,7 +1153,7 @@ fn hello_server_password_token_accepts_legacy_python_md5_hash() {
 #[test]
 fn hello_server_password_token_rejects_non_matching_token() {
     let mut runtime = ServerRuntime::default();
-    runtime.set_server_password_token(Some("secret".to_owned()));
+    runtime.set_server_password_token(Some("secret".into()));
 
     let directed_lines = runtime
         .handle_line_fanout(
@@ -1025,6 +1178,24 @@ fn hello_server_password_token_rejects_non_matching_token() {
         runtime.session("client-1").is_none(),
         "session should not be created after wrong password"
     );
+}
+
+#[test]
+fn server_runtime_and_outbound_line_debug_redact_credentials() {
+    const MARKER: &str = "server-runtime-secret-canary-582f";
+    const SALT_MARKER: &str = "server-room-salt-canary-a193";
+    let mut runtime = ServerRuntime::with_room_password_salt(SALT_MARKER);
+    runtime.set_server_password_token(Some(MARKER.into()));
+    let line = DirectedOutboundLine {
+        client_id: "client-1".to_owned(),
+        line: format!(r#"{{"Set":{{"controllerAuth":{{"password":"{MARKER}"}}}}}}"#),
+        delivery: ServerOutboundDelivery::Reliable,
+    };
+
+    for debug in [format!("{runtime:?}"), format!("{line:?}")] {
+        assert!(!debug.contains(MARKER));
+        assert!(!debug.contains(SALT_MARKER));
+    }
 }
 
 #[test]

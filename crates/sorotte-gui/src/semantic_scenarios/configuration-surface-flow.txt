@@ -19,6 +19,8 @@ activate	config:Readiness:Ready At Start
 activate	config:Readiness:Autoplay
 activate	config:Readiness:Require Same Filenames
 activate	config:Readiness:Shared Playlists
+activate	config:Readiness:Shared Playlists
+activate	config:Readiness:Pause On Leave
 activate	config:Readiness:Pause On Leave
 activate	config:Readiness:Loop At End Of Playlist
 activate	config:Readiness:Loop Single Files
@@ -27,9 +29,16 @@ enter-text	config:Readiness:Autoplay Min Users	false	3
 enter-text	config:Privacy:Filename Privacy	false	SendHashed
 enter-text	config:Privacy:Filesize Privacy	false	DoNotSend
 enter-text	config:Privacy:Trusted Domains	false	youtube.com\n*.example.com/videos
+# The resolved legacy default is enabled; exercise false -> true so the draft
+# records the explicit enabled value and the derived TLS prompt follows it.
 activate	config:Privacy:Trusted Domains Only
+activate	config:Privacy:Trusted Domains Only
+assert-value	config:Privacy:Trusted Domains Only	yes
+activate	config:Desync:Rewind On Desync
 activate	config:Desync:Rewind On Desync
 activate	config:Desync:Fastforward On Desync
+activate	config:Desync:Fastforward On Desync
+activate	config:Desync:Slow On Desync
 activate	config:Desync:Slow On Desync
 activate	config:Desync:Dont Slow Down With Me
 enter-text	config:Desync:Rewind Threshold	false	1.25
@@ -43,6 +52,7 @@ enter-text	config:Media Search:Warning Threshold	false	7.5
 activate	config:Chat:Chat Input
 activate	config:Chat:Chat Output
 activate	config:Chat:Direct Input
+activate	config:Chat:Move OSD
 activate	config:Chat:Move OSD
 enter-text	config:Chat:Input Position	false	Bottom
 enter-text	config:Chat:Output Mode	false	Scrolling
@@ -59,8 +69,12 @@ enter-text	config:Chat:Left Margin	false	20
 enter-text	config:Chat:Bottom Margin	false	30
 enter-text	config:Chat:OSD Margin	false	110
 activate	config:OSD:Show OSD
+activate	config:OSD:Show OSD
+activate	config:OSD:Show Duration
 activate	config:OSD:Show Duration
 activate	config:OSD:Show Same Room
+activate	config:OSD:Show Same Room
+activate	config:OSD:Show Warnings
 activate	config:OSD:Show Warnings
 activate	config:OSD:Show Slowdown
 activate	config:OSD:Show Noncontroller

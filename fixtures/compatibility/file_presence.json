@@ -1,0 +1,42 @@
+[
+  {
+    "label": "unknown-only object",
+    "payload": {
+      "vendorExtension": {
+        "version": 1
+      }
+    },
+    "hasFile": true,
+    "name": null
+  },
+  {
+    "label": "null known fields plus unknown field",
+    "payload": {
+      "name": null,
+      "duration": null,
+      "size": null,
+      "mediaMatch": null,
+      "vendorExtension": 1
+    },
+    "hasFile": true,
+    "name": null
+  },
+  {
+    "label": "string payload",
+    "payload": "opaque-media-id",
+    "hasFile": true,
+    "name": "opaque-media-id"
+  },
+  {
+    "label": "empty object",
+    "payload": {},
+    "hasFile": false,
+    "name": null
+  },
+  {
+    "label": "null payload",
+    "payload": null,
+    "hasFile": false,
+    "name": null
+  }
+]

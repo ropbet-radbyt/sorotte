@@ -3,6 +3,7 @@ use super::spawn_legacy_external_player_from_spec_legacy_compatible;
 use super::{
     AutoplayThresholdOverride, ChatPolicyOverrides, ClientBehaviorOverrides, ClientLoopConfig,
     ConnectedSessionExit, LEGACY_SYNCPLAYINTF_CHAT_INPUT_BRIDGE_MARKER, LegacyClientArgOverrides,
+    LegacyExplicitMpvIpcStartupPlayerArgDiagnostics, LegacyExplicitMpvIpcStartupPlayerCommand,
     LegacyExternalPlayerLaunchSpec, LocalInputCommand, LocalOffsetCommand,
     ManagedMpvLaunchEnvConfig, PlannedLocalRuntimeAction, ReadinessAutoplayOverrides,
     ReconnectCorrectionDiagnosticsFormat, ReconnectCorrectionDiagnosticsState,
@@ -14,14 +15,16 @@ use super::{
     apply_stored_media_search_startup_file_fallback_if_missing_legacy_compatible,
     chat_notification_message, clear_sorotte_cli_gui_state,
     clear_sorotte_cli_stored_settings_legacy_compatible,
-    cli_plex_config_from_env_and_stored_settings, controlled_room_base_name_legacy_compatible,
-    controller_auth_notification_hidden_from_osd, controller_auth_transition_notification_message,
-    create_client_runtime, create_client_runtime_with_managed_mpv_support, create_client_session,
+    cli_plex_config_from_env_and_stored_settings, client_hello_features_legacy_compatible,
+    controlled_room_base_name_legacy_compatible, controller_auth_notification_hidden_from_osd,
+    controller_auth_transition_notification_message, create_client_runtime,
+    create_client_runtime_with_managed_mpv_support, create_client_session,
     flush_autoplay_notifications_to_sink, flush_chat_notifications_to_sink,
     flush_controller_auth_notifications_to_sink, flush_file_difference_notifications_to_sink,
     flush_reconnect_correction_diagnostics_to_sink, flush_reconnect_notifications_to_sink,
     flush_user_change_notifications_to_sink, format_duration_legacy,
     format_file_difference_summary, generate_room_password_legacy_compatible,
+    legacy_explicit_mpv_ipc_startup_player_arg_diagnostic_lines_legacy_compatible,
     legacy_external_player_launch_spec_from_overrides_legacy_compatible,
     legacy_syncplay_ui_settings_from_stored_settings,
     legacy_syncplayintf_script_source_with_chat_input_bridge_legacy_compatible,
@@ -59,6 +62,7 @@ use super::{
     user_change_notification_message,
 };
 use serde_json::Value;
+use sorotte_client_app::app_boundary::application::{ClientApplication, ClientApplicationSettings};
 use sorotte_client_app::app_boundary::compatibility::{
     LegacyConfigurationGetterCompatibilityStatus, LegacyConfigurationGetterIniCompatEntry,
     LegacyConfigurationGetterStartupCompatEntry, legacy_configuration_getter_ini_compat_entries,
@@ -70,6 +74,7 @@ use sorotte_client_app::app_boundary::persistence::{
     parse_serialized_per_player_arguments_map_legacy_compatible,
     parse_serialized_public_servers_list_legacy_compatible,
 };
+use sorotte_client_app::app_boundary::state::{ClientConfig, PlaybackConfig};
 use sorotte_client_core::{
     AutoplayCountdownNotification, ChatNotification, ClientRuntime, ClientSession,
     ControllerAuthTransitionNotification, FileDifferenceSummary, PrivacyMode, QueuedRuntimeControl,
@@ -233,6 +238,57 @@ fn test_client_loop_config_with_addr(addr: std::net::SocketAddr) -> ClientLoopCo
     }
 }
 
+#[test]
+fn cli_hello_shared_playlist_feature_preserves_default_and_explicit_values() {
+    for (configured, expected) in [(None, true), (Some(true), true), (Some(false), false)] {
+        let config = ClientLoopConfig {
+            shared_playlists_enabled_override: configured,
+            ..test_client_loop_config()
+        };
+        let features = client_hello_features_legacy_compatible(&config);
+        assert_eq!(
+            features
+                .get("sharedPlaylists")
+                .and_then(serde_json::Value::as_bool),
+            Some(expected),
+            "unexpected sharedPlaylists value for override {configured:?}"
+        );
+    }
+}
+
+#[test]
+fn cli_runtime_configuration_debug_redacts_all_passwords() {
+    let server_password = "cli-server-password-canary";
+    let room_password = "cli-room-password-canary";
+    let config = ClientLoopConfig {
+        server_password: Some(server_password.into()),
+        controlled_room_password_override: Some(room_password.into()),
+        room: format!("+room:{room_password}"),
+        ..test_client_loop_config()
+    };
+    let overrides = LegacyClientArgOverrides {
+        room: Some(format!("+room:{room_password}")),
+        controlled_room_password_override: Some(room_password.into()),
+        ..LegacyClientArgOverrides::default()
+    };
+
+    for debug in [format!("{config:?}"), format!("{overrides:?}")] {
+        assert!(debug.contains(sorotte_secret::REDACTED_SECRET));
+        assert!(!debug.contains(server_password));
+        assert!(!debug.contains(room_password));
+    }
+
+    for field_debug in [
+        format!("{:?}", config.server_password),
+        format!("{:?}", config.controlled_room_password_override),
+        format!("{:?}", overrides.controlled_room_password_override),
+    ] {
+        assert!(field_debug.contains(sorotte_secret::REDACTED_SECRET));
+        assert!(!field_debug.contains(server_password));
+        assert!(!field_debug.contains(room_password));
+    }
+}
+
 type TestServerLines = tokio::io::Lines<BufReader<OwnedReadHalf>>;
 
 async fn expect_client_hello_and_send_standard_test_server_hello(
@@ -280,7 +336,7 @@ async fn expect_client_hello_and_send_standard_test_server_hello(
 }
 
 fn seed_stub_player_pause_position_telemetry(
-    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    runtime: &mut ClientApplication<MpvAdapter>,
     paused: bool,
     position_seconds: f64,
 ) {
@@ -301,10 +357,7 @@ fn seed_stub_player_pause_position_telemetry(
         );
 }
 
-fn seed_stub_player_playback_rate(
-    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
-    rate: f64,
-) {
+fn seed_stub_player_playback_rate(runtime: &mut ClientApplication<MpvAdapter>, rate: f64) {
     runtime
         .player_mut()
         .set_playback_rate(rate)
@@ -313,7 +366,7 @@ fn seed_stub_player_playback_rate(
 
 async fn run_connected_client_session_expect_normal_exit(
     addr: std::net::SocketAddr,
-    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    runtime: &mut ClientApplication<MpvAdapter>,
     config: &ClientLoopConfig,
 ) {
     let stream = TcpStream::connect(addr)
@@ -370,6 +423,115 @@ fn first_media_file(media_dir: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+#[test]
+fn free_form_player_argument_debug_is_redacted_across_every_carrier() {
+    const AUTHORIZATION_MARKER: &str = "PLAYER_ARG_AUTHORIZATION_CANARY";
+    const COOKIES_PATH_MARKER: &str = "PLAYER_ARG_COOKIES_PATH_CANARY";
+    const SIGNED_URL_MARKER: &str = "PLAYER_ARG_SIGNED_URL_CANARY";
+    const STARTUP_MEDIA_MARKER: &str = "STARTUP_MEDIA_SECRET";
+    const STARTUP_MEDIA_URL: &str = "https://media.example/video?Signature=STARTUP_MEDIA_SECRET";
+
+    let arguments = vec![
+        format!("--http-header-fields=Authorization: Bearer {AUTHORIZATION_MARKER}"),
+        format!("--cookies-file=C:/private/{COOKIES_PATH_MARKER}.txt"),
+        format!("https://media.example/video?Signature={SIGNED_URL_MARKER}"),
+    ];
+    let stored_settings = StoredClientSettingsMvp {
+        per_player_arguments: Some(std::collections::BTreeMap::from([(
+            "mpv".to_owned(),
+            arguments.clone(),
+        )])),
+        ..StoredClientSettingsMvp::default()
+    };
+    let playback = PlaybackConfig {
+        per_player_arguments: std::collections::BTreeMap::from([(
+            PathBuf::from("mpv"),
+            arguments.clone(),
+        )]),
+        ..PlaybackConfig::default()
+    };
+    let config = ClientConfig {
+        playback: playback.clone(),
+        ..ClientConfig::default()
+    };
+    let application_settings = ClientApplicationSettings::new(config.clone());
+    let managed = ManagedMpvLaunchEnvConfig {
+        media_file: Some(PathBuf::from(STARTUP_MEDIA_URL)),
+        extra_args: arguments.clone(),
+        ..ManagedMpvLaunchEnvConfig::default()
+    };
+    let diagnostics = LegacyExplicitMpvIpcStartupPlayerArgDiagnostics {
+        supported_tokens: vec![arguments[0].clone()],
+        malformed_tokens: vec![arguments[1].clone()],
+        unsupported_tokens: vec![arguments[2].clone()],
+    };
+    let command = LegacyExplicitMpvIpcStartupPlayerCommand::SetOptionString {
+        name: format!("script-opts-{AUTHORIZATION_MARKER}"),
+        value: arguments.join("|"),
+    };
+    let launch = LegacyExternalPlayerLaunchSpec {
+        program: PathBuf::from("mpv"),
+        args: arguments,
+    };
+
+    let rendered_carriers = [
+        ("StoredClientSettingsV1", format!("{stored_settings:?}")),
+        ("PlaybackConfig", format!("{playback:?}")),
+        ("ClientConfig", format!("{config:?}")),
+        (
+            "ClientApplicationSettings",
+            format!("{application_settings:?}"),
+        ),
+        ("ManagedMpvLaunchEnvConfig", format!("{managed:?}")),
+        (
+            "LegacyExplicitMpvIpcStartupPlayerArgDiagnostics",
+            format!("{diagnostics:?}"),
+        ),
+        (
+            "LegacyExplicitMpvIpcStartupPlayerCommand",
+            format!("{command:?}"),
+        ),
+        ("LegacyExternalPlayerLaunchSpec", format!("{launch:?}")),
+    ];
+
+    for (carrier, rendered) in rendered_carriers {
+        assert!(
+            rendered.contains("RedactedCommandArgs"),
+            "{carrier} should expose only the redacted argument summary: {rendered}",
+        );
+        for marker in [AUTHORIZATION_MARKER, COOKIES_PATH_MARKER, SIGNED_URL_MARKER] {
+            assert!(
+                !rendered.contains(marker),
+                "{carrier} leaked player argument marker {marker}: {rendered}",
+            );
+        }
+        for raw_fragment in ["Authorization: Bearer", "--cookies-file", "?Signature="] {
+            assert!(
+                !rendered.contains(raw_fragment),
+                "{carrier} leaked raw player argument content {raw_fragment}: {rendered}",
+            );
+        }
+    }
+
+    let managed_debug = format!("{managed:?}");
+    assert!(managed_debug.contains("media_file_present: true"));
+    assert!(!managed_debug.contains(STARTUP_MEDIA_MARKER));
+    assert!(!managed_debug.contains(STARTUP_MEDIA_URL));
+
+    let diagnostic_output =
+        legacy_explicit_mpv_ipc_startup_player_arg_diagnostic_lines_legacy_compatible(
+            &diagnostics,
+            1,
+        )
+        .join("\n");
+    for marker in [AUTHORIZATION_MARKER, COOKIES_PATH_MARKER, SIGNED_URL_MARKER] {
+        assert!(!diagnostic_output.contains(marker));
+    }
+    assert!(!diagnostic_output.contains("Authorization: Bearer"));
+    assert!(!diagnostic_output.contains("--cookies-file"));
+    assert!(!diagnostic_output.contains("?Signature="));
 }
 
 mod cli_runtime_overrides;

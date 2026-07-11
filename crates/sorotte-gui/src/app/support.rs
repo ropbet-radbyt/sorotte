@@ -7,7 +7,7 @@ use std::{
 use sorotte_client_app::app_boundary::{
     commands::LocalOffsetCommand,
     persistence::parse_serialized_string_list_legacy_compatible,
-    state::{AutoplayThresholdOverride, StoredClientSettingsMvp},
+    state::{AutoplayThresholdOverride, ClientConfig, StoredClientSettingsMvp},
 };
 
 use super::DEFAULT_MAIN_WINDOW_AUTOPLAY_THRESHOLD;
@@ -85,21 +85,25 @@ pub(super) fn bool_label(value: bool) -> &'static str {
 }
 
 pub(super) fn legacy_chat_input_enabled(settings: &StoredClientSettingsMvp) -> bool {
-    settings.chat_input_enabled.unwrap_or(true)
-}
-
-pub(super) fn legacy_chat_output_enabled(settings: &StoredClientSettingsMvp) -> bool {
-    settings.chat_output_enabled.unwrap_or(true)
+    ClientConfig::resolve(settings)
+        .config
+        .interface
+        .chat_input_enabled
 }
 
 pub(super) fn legacy_chat_enabled(settings: &StoredClientSettingsMvp) -> bool {
-    legacy_chat_input_enabled(settings) || legacy_chat_output_enabled(settings)
+    let interface = ClientConfig::resolve(settings).config.interface;
+    interface.chat_input_enabled || interface.chat_output_enabled
 }
 
 pub(super) fn autoplay_threshold_from_settings(settings: &StoredClientSettingsMvp) -> usize {
-    match settings.autoplay_min_users.as_ref() {
-        Some(AutoplayThresholdOverride::Set(count)) => (*count).clamp(2, 99),
-        Some(AutoplayThresholdOverride::Disable) | None => DEFAULT_MAIN_WINDOW_AUTOPLAY_THRESHOLD,
+    match &ClientConfig::resolve(settings)
+        .config
+        .readiness
+        .autoplay_min_users
+    {
+        AutoplayThresholdOverride::Set(count) => (*count).clamp(2, 99),
+        AutoplayThresholdOverride::Disable => DEFAULT_MAIN_WINDOW_AUTOPLAY_THRESHOLD,
     }
 }
 

@@ -34,7 +34,10 @@ fn apply_legacy_client_arg_overrides_updates_client_loop_config() {
     assert_eq!(config.username, "legacy-user");
     assert_eq!(config.room, "+room:ABCDEF123456");
     assert_eq!(
-        config.controlled_room_password_override.as_deref(),
+        config
+            .controlled_room_password_override
+            .as_ref()
+            .map(sorotte_secret::SecretValue::expose_secret),
         Some("AB-123-456")
     );
 }
@@ -60,7 +63,7 @@ fn apply_legacy_client_arg_overrides_prefers_explicit_password_flag() {
         port: None,
         username: None,
         room: Some("+room:ABCDEF123456:AB-123-456".to_owned()),
-        controlled_room_password_override: Some("CD-987-654".to_owned()),
+        controlled_room_password_override: Some("CD-987-654".into()),
         show_help: false,
         show_version: false,
         unknown_options: vec![],
@@ -68,7 +71,10 @@ fn apply_legacy_client_arg_overrides_prefers_explicit_password_flag() {
 
     apply_legacy_client_arg_overrides(&mut config, &overrides);
     assert_eq!(
-        config.controlled_room_password_override.as_deref(),
+        config
+            .controlled_room_password_override
+            .as_ref()
+            .map(sorotte_secret::SecretValue::expose_secret),
         Some("CD-987-654")
     );
 }

@@ -1,9 +1,10 @@
 use super::*;
+use crate::control::client_effect_player_error;
 
 impl<P, C> ClientRuntime<P, C>
 where
     P: PlayerAdapter,
-    C: ClientRuntimeControl,
+    C: ClientEffectSink,
 {
     pub fn run_readiness_unpause_attempt(
         &mut self,
@@ -124,10 +125,14 @@ where
             attempted_correction |= is_correction_action;
             if is_correction_action {
                 self.session
-                    .reconnect_state_restore_correction_metrics
+                    .model
+                    .reconnect
+                    .state_restore_correction_metrics
                     .correction_actions_attempted = self
                     .session
-                    .reconnect_state_restore_correction_metrics
+                    .model
+                    .reconnect
+                    .state_restore_correction_metrics
                     .correction_actions_attempted
                     .saturating_add(1);
             }
@@ -139,17 +144,23 @@ where
             ) {
                 if is_correction_action {
                     self.session
-                        .reconnect_state_restore_correction_metrics
+                        .model
+                        .reconnect
+                        .state_restore_correction_metrics
                         .correction_action_failures = self
                         .session
-                        .reconnect_state_restore_correction_metrics
+                        .model
+                        .reconnect
+                        .state_restore_correction_metrics
                         .correction_action_failures
                         .saturating_add(1);
                     if let Some(notification) = self
                         .session
                         .defer_reconnect_state_restore_validation_after_correction_failure()
                     {
-                        self.control.notify_reconnect_transition(notification);
+                        self.control
+                            .emit(ClientEffect::NotifyReconnectTransition(notification))
+                            .map_err(client_effect_player_error)?;
                     }
                     return Ok(());
                 }
@@ -158,10 +169,14 @@ where
 
             if is_correction_action {
                 self.session
-                    .reconnect_state_restore_correction_metrics
+                    .model
+                    .reconnect
+                    .state_restore_correction_metrics
                     .correction_actions_succeeded = self
                     .session
-                    .reconnect_state_restore_correction_metrics
+                    .model
+                    .reconnect
+                    .state_restore_correction_metrics
                     .correction_actions_succeeded
                     .saturating_add(1);
             }
@@ -179,7 +194,12 @@ where
 
     pub fn run_room_pause_sync_if_needed(&mut self) -> Result<(), PlayerError> {
         // Reconnect validation owns correction immediately after reconnect state restore.
-        if self.session.reconnect_state_restore_validation_pending {
+        if self
+            .session
+            .model
+            .reconnect
+            .state_restore_validation_pending
+        {
             return Ok(());
         }
 
@@ -189,28 +209,40 @@ where
             return Ok(());
         };
         let room_seeked = room_playstate.do_seek == Some(true);
-        let cache_pause_active = self.session.local_paused_for_cache == Some(true);
+        let cache_pause_active = self.session.model.playback.local_paused_for_cache == Some(true);
         let cache_blocks_room_unpause = cache_pause_active && room_playstate.paused == Some(false);
         if cache_blocks_room_unpause {
-            self.session.pending_cache_room_playstate_resync = true;
+            self.session
+                .model
+                .playback
+                .pending_cache_room_playstate_resync = true;
         }
-        let cache_room_playstate_resync =
-            !cache_pause_active && self.session.pending_cache_room_playstate_resync;
-        let pause_mismatch = room_playstate
-            .paused
-            .is_some_and(|room_paused| self.session.local_paused.unwrap_or(true) != room_paused);
+        let cache_room_playstate_resync = !cache_pause_active
+            && self
+                .session
+                .model
+                .playback
+                .pending_cache_room_playstate_resync;
+        let pause_mismatch = room_playstate.paused.is_some_and(|room_paused| {
+            self.session.model.playback.local_paused.unwrap_or(true) != room_paused
+        });
         let pause_mismatch_actionable = pause_mismatch && !cache_blocks_room_unpause;
         if !room_seeked && !pause_mismatch_actionable && !cache_room_playstate_resync {
             return Ok(());
         }
         let set_by_is_self = self
             .session
+            .model
+            .connection
             .username
             .as_deref()
             .zip(room_playstate.set_by.as_deref())
             .is_some_and(|(username, set_by)| username == set_by);
         if set_by_is_self {
-            self.session.pending_cache_room_playstate_resync = false;
+            self.session
+                .model
+                .playback
+                .pending_cache_room_playstate_resync = false;
             return Ok(());
         }
 
@@ -232,27 +264,12 @@ where
             return Ok(());
         }
 
-        if let Some(room_position) = target_position {
-            ClientSession::dispatch_runtime_actions(
-                &[ClientRuntimeAction::SetPosition(room_position)],
-                &mut self.player,
-                &mut self.control,
-            )?;
-            self.session.local_position = Some(room_position);
-        }
-        if let Some(room_paused) = target_paused {
-            ClientSession::dispatch_runtime_actions(
-                &[ClientRuntimeAction::SetPaused(room_paused)],
-                &mut self.player,
-                &mut self.control,
-            )?;
-            // Mirror the confirmed local state to avoid duplicate correction attempts until telemetry catches up.
-            self.session.local_paused = Some(room_paused);
-        }
-        if cache_room_playstate_resync {
-            self.session.pending_cache_room_playstate_resync = false;
-        }
-        Ok(())
+        self.run_model_event(ClientEvent::RoomPauseSyncRequested {
+            original_position: self.session.model.playback.local_position,
+            target_position,
+            target_paused,
+            clear_cache_resync_on_success: cache_room_playstate_resync,
+        })
     }
 
     pub fn run_desync_correction_if_needed(
@@ -263,18 +280,23 @@ where
         speed_supported: bool,
     ) -> Result<(), PlayerError> {
         // Reconnect validation owns the correction window immediately after reconnect restore.
-        if self.session.reconnect_state_restore_validation_pending {
+        if self
+            .session
+            .model
+            .reconnect
+            .state_restore_validation_pending
+        {
             return Ok(());
         }
 
         self.sync_player_playback_telemetry_into_session_and_buffer();
-        let Some(local_position) = self.session.local_position else {
+        let Some(local_position) = self.session.model.playback.local_position else {
             return Ok(());
         };
         let local_position =
             self.desync_local_position_with_legacy_ping_forward_delay(local_position);
         let Some(room_playstate) = self.session.current_room_playstate_at(now_seconds) else {
-            self.session.behind_first_detected_at_seconds = None;
+            self.session.model.playback.behind_first_detected_at_seconds = None;
             return Ok(());
         };
 

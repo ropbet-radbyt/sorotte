@@ -4,7 +4,7 @@ use super::*;
 fn client_runtime_reconnect_state_restore_validation_adaptive_retry_backoff_scales_after_prior_exhaustion()
  {
     let mut session = ClientSession::default();
-    session.room = Some("room1".to_owned());
+    session.model.room.name = Some("room1".to_owned());
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_retry_max_attempts = 0;
@@ -14,7 +14,7 @@ fn client_runtime_reconnect_state_restore_validation_adaptive_retry_backoff_scal
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_retry_adaptive_cycle_backoff = true;
-    session.room_playstates.insert(
+    session.model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(120.0),
@@ -22,7 +22,7 @@ fn client_runtime_reconnect_state_restore_validation_adaptive_retry_backoff_scal
             ..RoomPlaystateView::default()
         },
     );
-    session.reconnect_state_restore_validation_pending = true;
+    session.model.reconnect.state_restore_validation_pending = true;
 
     let player = RecordingPlayer {
         fail_set_position: true,
@@ -58,19 +58,23 @@ fn client_runtime_reconnect_state_restore_validation_adaptive_retry_backoff_scal
     assert_eq!(
         runtime
             .session()
-            .reconnect_state_restore_correction_consecutive_retry_exhaustions,
+            .model
+            .reconnect
+            .state_restore_correction_consecutive_retry_exhaustions,
         1
     );
 
     runtime
-        .session_mut()
+        .session_mut_for_test()
         .behavior_config_mut()
         .reconnect_state_restore_correction_retry_max_attempts = 1;
     runtime
-        .session_mut()
-        .reconnect_state_restore_validation_pending = true;
-    runtime.session_mut().local_paused = Some(true);
-    runtime.session_mut().local_position = Some(117.5);
+        .session_mut_for_test()
+        .model
+        .reconnect
+        .state_restore_validation_pending = true;
+    runtime.session_mut_for_test().model.playback.local_paused = Some(true);
+    runtime.session_mut_for_test().model.playback.local_position = Some(117.5);
 
     runtime
         .run_reconnect_state_restore_validation_if_needed()
@@ -96,7 +100,9 @@ fn client_runtime_reconnect_state_restore_validation_adaptive_retry_backoff_scal
     assert_eq!(
         runtime
             .session()
-            .reconnect_state_restore_validation_retry_cooldown_ticks,
+            .model
+            .reconnect
+            .state_restore_validation_retry_cooldown_ticks,
         2
     );
 }
@@ -105,7 +111,7 @@ fn client_runtime_reconnect_state_restore_validation_adaptive_retry_backoff_scal
 fn client_runtime_reconnect_state_restore_validation_adaptive_retry_budget_reduces_after_prior_exhaustion()
  {
     let mut session = ClientSession::default();
-    session.room = Some("room1".to_owned());
+    session.model.room.name = Some("room1".to_owned());
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_retry_max_attempts = 0;
@@ -115,7 +121,7 @@ fn client_runtime_reconnect_state_restore_validation_adaptive_retry_budget_reduc
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_retry_adaptive_cycle_budget = true;
-    session.room_playstates.insert(
+    session.model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(120.0),
@@ -123,7 +129,7 @@ fn client_runtime_reconnect_state_restore_validation_adaptive_retry_budget_reduc
             ..RoomPlaystateView::default()
         },
     );
-    session.reconnect_state_restore_validation_pending = true;
+    session.model.reconnect.state_restore_validation_pending = true;
 
     let player = RecordingPlayer {
         fail_set_position: true,
@@ -159,19 +165,23 @@ fn client_runtime_reconnect_state_restore_validation_adaptive_retry_budget_reduc
     assert_eq!(
         runtime
             .session()
-            .reconnect_state_restore_correction_consecutive_retry_exhaustions,
+            .model
+            .reconnect
+            .state_restore_correction_consecutive_retry_exhaustions,
         1
     );
 
     runtime
-        .session_mut()
+        .session_mut_for_test()
         .behavior_config_mut()
         .reconnect_state_restore_correction_retry_max_attempts = 2;
     runtime
-        .session_mut()
-        .reconnect_state_restore_validation_pending = true;
-    runtime.session_mut().local_paused = Some(true);
-    runtime.session_mut().local_position = Some(117.5);
+        .session_mut_for_test()
+        .model
+        .reconnect
+        .state_restore_validation_pending = true;
+    runtime.session_mut_for_test().model.playback.local_paused = Some(true);
+    runtime.session_mut_for_test().model.playback.local_position = Some(117.5);
 
     runtime
         .run_reconnect_state_restore_validation_if_needed()
@@ -213,7 +223,7 @@ fn client_runtime_reconnect_state_restore_validation_adaptive_retry_budget_reduc
 fn client_runtime_reconnect_state_restore_validation_adaptive_retry_budget_honors_min_attempt_floor()
  {
     let mut session = ClientSession::default();
-    session.room = Some("room1".to_owned());
+    session.model.room.name = Some("room1".to_owned());
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_retry_max_attempts = 3;
@@ -226,8 +236,11 @@ fn client_runtime_reconnect_state_restore_validation_adaptive_retry_budget_honor
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_retry_adaptive_cycle_budget_min_attempts = 2;
-    session.reconnect_state_restore_correction_consecutive_retry_exhaustions = 5;
-    session.room_playstates.insert(
+    session
+        .model
+        .reconnect
+        .state_restore_correction_consecutive_retry_exhaustions = 5;
+    session.model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(120.0),
@@ -235,7 +248,7 @@ fn client_runtime_reconnect_state_restore_validation_adaptive_retry_budget_honor
             ..RoomPlaystateView::default()
         },
     );
-    session.reconnect_state_restore_validation_pending = true;
+    session.model.reconnect.state_restore_validation_pending = true;
 
     let player = RecordingPlayer {
         fail_set_position: true,
@@ -276,14 +289,14 @@ fn client_runtime_reconnect_state_restore_validation_adaptive_retry_budget_honor
 fn client_runtime_reconnect_state_restore_validation_success_resets_adaptive_retry_backoff_history()
 {
     let mut session = ClientSession::default();
-    session.room = Some("room1".to_owned());
+    session.model.room.name = Some("room1".to_owned());
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_retry_cooldown_ticks = 1;
     session
         .behavior_config_mut()
         .reconnect_state_restore_correction_retry_adaptive_cycle_backoff = true;
-    session.room_playstates.insert(
+    session.model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(120.0),
@@ -291,8 +304,11 @@ fn client_runtime_reconnect_state_restore_validation_success_resets_adaptive_ret
             ..RoomPlaystateView::default()
         },
     );
-    session.reconnect_state_restore_validation_pending = true;
-    session.reconnect_state_restore_correction_consecutive_retry_exhaustions = 2;
+    session.model.reconnect.state_restore_validation_pending = true;
+    session
+        .model
+        .reconnect
+        .state_restore_correction_consecutive_retry_exhaustions = 2;
 
     let player = RecordingPlayer {
         pending_playback_telemetry_update: Some(
@@ -309,12 +325,20 @@ fn client_runtime_reconnect_state_restore_validation_success_resets_adaptive_ret
         .run_reconnect_state_restore_validation_if_needed()
         .expect("successful correction should complete reconnect validation");
 
-    assert!(!runtime.session().reconnect_state_restore_validation_pending);
+    assert!(
+        !runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending
+    );
     assert_eq!(runtime.player().position, Some(120.0));
     assert_eq!(
         runtime
             .session()
-            .reconnect_state_restore_correction_consecutive_retry_exhaustions,
+            .model
+            .reconnect
+            .state_restore_correction_consecutive_retry_exhaustions,
         0,
         "adaptive retry backoff history should reset after a successful correction"
     );

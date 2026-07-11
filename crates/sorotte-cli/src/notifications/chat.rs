@@ -25,18 +25,22 @@ fn emit_chat_notification_to_player_legacy_compatible(
 }
 
 pub(crate) fn flush_chat_notifications_legacy_compatible(
-    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    runtime: &mut ClientApplication<MpvAdapter>,
 ) -> anyhow::Result<()> {
-    for notification in runtime.drain_chat_notifications() {
-        emit_chat_notification_to_player_legacy_compatible(runtime.player_mut(), &notification);
+    while let Some(notification) = runtime.pending_chat_notification().cloned() {
+        runtime.with_player_io(|player| {
+            emit_chat_notification_to_player_legacy_compatible(player, &notification);
+        });
         emit_chat_notification(&notification)?;
+        let acknowledged = runtime.acknowledge_chat_notification();
+        debug_assert!(acknowledged.is_some());
     }
     Ok(())
 }
 
 #[cfg(test)]
 pub(crate) fn flush_chat_notifications_to_sink<F>(
-    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    runtime: &mut ClientApplication<MpvAdapter>,
     notify: &mut F,
 ) -> anyhow::Result<()>
 where

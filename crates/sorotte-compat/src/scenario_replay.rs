@@ -188,6 +188,7 @@ pub(crate) fn run_python_fanout_roundtrip_with_full_overrides(
             outbound_lines.push(DirectedOutboundLine {
                 client_id: directed_client.to_owned(),
                 line,
+                delivery: ServerOutboundDelivery::Reliable,
             });
         }
 

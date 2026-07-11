@@ -15,9 +15,11 @@ use sorotte_protocol::{
     HelloPayload, ProtocolError, ProtocolMessage, decode_message_line, encode_message_line,
     extract_hello_from_message,
 };
-use sorotte_server::{DirectedOutboundLine, ServerRuntime, ServerRuntimeError};
+use sorotte_server::{
+    DirectedOutboundLine, ServerOutboundDelivery, ServerRuntime, ServerRuntimeError,
+};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct PythonHandshakeTranscript {
     pub request_line: String,
     pub response_line: String,
@@ -25,12 +27,41 @@ pub struct PythonHandshakeTranscript {
     pub response_hello: HelloPayload,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+impl std::fmt::Debug for PythonHandshakeTranscript {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PythonHandshakeTranscript")
+            .field("request_line_bytes", &self.request_line.len())
+            .field("response_line_bytes", &self.response_line.len())
+            .field("response_message", &self.response_message)
+            .field("response_hello", &self.response_hello)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq)]
 pub struct PythonProtocolStep {
     pub request_line: String,
     pub request_message: ProtocolMessage,
     pub response_lines: Vec<String>,
     pub response_messages: Vec<ProtocolMessage>,
+}
+
+impl std::fmt::Debug for PythonProtocolStep {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let response_line_bytes = self
+            .response_lines
+            .iter()
+            .map(String::len)
+            .collect::<Vec<_>>();
+        formatter
+            .debug_struct("PythonProtocolStep")
+            .field("request_line_bytes", &self.request_line.len())
+            .field("request_message", &self.request_message)
+            .field("response_line_bytes", &response_line_bytes)
+            .field("response_messages", &self.response_messages)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -93,18 +124,40 @@ pub struct LegacyClientChatSendContractResult {
     pub debug_messages: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct ServerRuntimeScenarioStep {
     pub client_id: String,
     pub request_line: String,
     pub advance_seconds: f64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl std::fmt::Debug for ServerRuntimeScenarioStep {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ServerRuntimeScenarioStep")
+            .field("client_id", &self.client_id)
+            .field("request_line_bytes", &self.request_line.len())
+            .field("advance_seconds", &self.advance_seconds)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub struct ServerRuntimeScenarioEvent {
     pub client_id: String,
     pub request_line: String,
     pub outbound_lines: Vec<DirectedOutboundLine>,
+}
+
+impl std::fmt::Debug for ServerRuntimeScenarioEvent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ServerRuntimeScenarioEvent")
+            .field("client_id", &self.client_id)
+            .field("request_line_bytes", &self.request_line.len())
+            .field("outbound_lines", &self.outbound_lines)
+            .finish()
+    }
 }
 
 // This value is part of controlled-room hash compatibility; keep it byte-stable.

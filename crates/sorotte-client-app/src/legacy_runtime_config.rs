@@ -1,10 +1,14 @@
 use crate::legacy_settings::{AutoplayThresholdOverride, StoredClientSettingsMvp};
+use crate::runtime_config::{ClientConfig, ClientConfigIssue, ServerPort};
 use sorotte_client_core::{PrivacyMode, UnpauseActionMode};
+use sorotte_secret::SecretValue;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct StoredClientSettingsRuntimeSnapshot {
     pub settings: StoredClientSettingsMvp,
-    pub controlled_room_password_override: Option<String>,
+    pub config: ClientConfig,
+    pub validation_issues: Vec<ClientConfigIssue>,
+    pub controlled_room_password_override: Option<SecretValue>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -45,10 +49,10 @@ pub struct StoredClientSettingsEnvPresence {
 pub struct StoredClientSettingsConfigPlan {
     pub host: Option<String>,
     pub port: Option<u16>,
-    pub server_password: Option<String>,
+    pub server_password: Option<SecretValue>,
     pub username: Option<String>,
     pub room: Option<String>,
-    pub controlled_room_password_override: Option<String>,
+    pub controlled_room_password_override: Option<SecretValue>,
     pub autoplay_enabled: Option<bool>,
     pub autoplay_require_same_filenames: Option<bool>,
     pub ready_at_start_override: Option<bool>,
@@ -171,6 +175,7 @@ pub fn normalize_controlled_room_input_legacy_compatible(room: String) -> (Strin
 pub fn stored_client_settings_runtime_snapshot_legacy_compatible(
     settings: &StoredClientSettingsMvp,
 ) -> StoredClientSettingsRuntimeSnapshot {
+    let config_resolution = ClientConfig::resolve(settings);
     let mut resolved = settings.clone();
     resolved.host = resolved
         .host
@@ -180,8 +185,10 @@ pub fn stored_client_settings_runtime_snapshot_legacy_compatible(
     resolved.server_password = resolved
         .server_password
         .take()
+        .map(|password| password.into_exposed_secret())
         .map(|password| password.trim().to_owned())
-        .filter(|password| !password.is_empty());
+        .filter(|password| !password.is_empty())
+        .map(Into::into);
     resolved.username = resolved
         .username
         .take()
@@ -189,7 +196,12 @@ pub fn stored_client_settings_runtime_snapshot_legacy_compatible(
         .filter(|username| !username.is_empty());
 
     if (resolved.host.is_none() || resolved.port.is_none())
-        && let Some(address) = first_stored_public_server_address_legacy_compatible(settings)
+        && let Some(address) = config_resolution
+            .config
+            .connection
+            .public_servers
+            .first()
+            .map(|server| server.address.as_str())
     {
         let (fallback_host, fallback_port) =
             parse_host_and_optional_port_from_host_arg_legacy_compatible(address);
@@ -222,7 +234,9 @@ pub fn stored_client_settings_runtime_snapshot_legacy_compatible(
 
     StoredClientSettingsRuntimeSnapshot {
         settings: resolved,
-        controlled_room_password_override,
+        config: config_resolution.config,
+        validation_issues: config_resolution.issues,
+        controlled_room_password_override: controlled_room_password_override.map(Into::into),
     }
 }
 
@@ -232,100 +246,140 @@ pub fn stored_client_settings_config_plan_legacy_compatible(
 ) -> StoredClientSettingsConfigPlan {
     let resolved = stored_client_settings_runtime_snapshot_legacy_compatible(settings);
     let resolved_settings = &resolved.settings;
+    let config = &resolved.config;
     let mut plan = StoredClientSettingsConfigPlan::default();
 
     if !env_presence.host {
-        plan.host = resolved_settings.host.clone();
+        plan.host = config.connection.host.clone();
     }
+    let embedded_stored_port = settings
+        .host
+        .as_deref()
+        .and_then(|host| parse_host_and_optional_port_from_host_arg_legacy_compatible(host).1);
     if !env_presence.port {
-        plan.port = resolved_settings.port;
+        plan.port = match settings.port {
+            Some(port) => validated_stored_server_port(port),
+            None => match embedded_stored_port {
+                Some(port) => validated_stored_server_port(port),
+                None => resolved_settings
+                    .port
+                    .and_then(validated_stored_server_port),
+            },
+        };
     }
     if !env_presence.server_password {
-        plan.server_password = resolved_settings.server_password.clone();
+        plan.server_password = config.connection.server_password.clone();
     }
     if !env_presence.username {
-        plan.username = resolved_settings.username.clone();
+        plan.username = config
+            .connection
+            .username
+            .as_ref()
+            .map(|username| username.as_str().to_owned());
     }
     if !env_presence.room {
-        plan.room = resolved_settings.room.clone();
-        plan.controlled_room_password_override = resolved.controlled_room_password_override;
+        plan.room = config
+            .connection
+            .room
+            .as_ref()
+            .map(|room| room.as_str().to_owned());
+        plan.controlled_room_password_override = config.connection.controlled_room_password.clone();
     }
-    if !env_presence.autoplay {
-        plan.autoplay_enabled = resolved_settings.autoplay_initial_state;
+    if !env_presence.autoplay && resolved_settings.autoplay_initial_state.is_some() {
+        plan.autoplay_enabled = Some(config.readiness.autoplay_initial_state);
     }
-    if !env_presence.autoplay_require_same_filenames {
-        plan.autoplay_require_same_filenames = resolved_settings.autoplay_require_same_filenames;
+    if !env_presence.autoplay_require_same_filenames
+        && resolved_settings.autoplay_require_same_filenames.is_some()
+    {
+        plan.autoplay_require_same_filenames =
+            Some(config.readiness.autoplay_require_same_filenames);
     }
-    if !env_presence.ready_at_start {
-        plan.ready_at_start_override = resolved_settings.ready_at_start;
+    if !env_presence.ready_at_start && resolved_settings.ready_at_start.is_some() {
+        plan.ready_at_start_override = Some(config.readiness.ready_at_start);
     }
-    if !env_presence.shared_playlist_enabled {
-        plan.shared_playlists_enabled_override = resolved_settings.shared_playlist_enabled;
+    if !env_presence.shared_playlist_enabled && resolved_settings.shared_playlist_enabled.is_some()
+    {
+        plan.shared_playlists_enabled_override = Some(config.playback.shared_playlist_enabled);
     }
-    if !env_presence.pause_on_leave {
-        plan.pause_on_leave_override = resolved_settings.pause_on_leave;
+    if !env_presence.pause_on_leave && resolved_settings.pause_on_leave.is_some() {
+        plan.pause_on_leave_override = Some(config.playback.pause_on_leave);
     }
-    if !env_presence.loop_at_end_of_playlist {
-        plan.loop_at_end_of_playlist_override = resolved_settings.loop_at_end_of_playlist;
+    if !env_presence.loop_at_end_of_playlist && resolved_settings.loop_at_end_of_playlist.is_some()
+    {
+        plan.loop_at_end_of_playlist_override = Some(config.playback.loop_at_end_of_playlist);
     }
-    if !env_presence.loop_single_files {
-        plan.loop_single_files_override = resolved_settings.loop_single_files;
+    if !env_presence.loop_single_files && resolved_settings.loop_single_files.is_some() {
+        plan.loop_single_files_override = Some(config.playback.loop_single_files);
     }
-    if !env_presence.only_switch_to_trusted_domains {
+    if !env_presence.only_switch_to_trusted_domains
+        && resolved_settings.only_switch_to_trusted_domains.is_some()
+    {
         plan.only_switch_to_trusted_domains_override =
-            resolved_settings.only_switch_to_trusted_domains;
+            Some(config.playback.only_switch_to_trusted_domains);
     }
-    if !env_presence.trusted_domains {
-        plan.trusted_domains_override = resolved_settings.trusted_domains.clone();
+    if !env_presence.trusted_domains && resolved_settings.trusted_domains.is_some() {
+        plan.trusted_domains_override = Some(config.playback.trusted_domains.clone());
     }
-    if !env_presence.rewind_on_desync {
-        plan.rewind_on_desync_override = resolved_settings.rewind_on_desync;
+    if !env_presence.rewind_on_desync && resolved_settings.rewind_on_desync.is_some() {
+        plan.rewind_on_desync_override = Some(config.synchronization.rewind_on_desync);
     }
-    if !env_presence.fastforward_on_desync {
-        plan.fastforward_on_desync_override = resolved_settings.fastforward_on_desync;
+    if !env_presence.fastforward_on_desync && resolved_settings.fastforward_on_desync.is_some() {
+        plan.fastforward_on_desync_override = Some(config.synchronization.fastforward_on_desync);
     }
-    if !env_presence.slow_on_desync {
-        plan.slow_on_desync_override = resolved_settings.slow_on_desync;
+    if !env_presence.slow_on_desync && resolved_settings.slow_on_desync.is_some() {
+        plan.slow_on_desync_override = Some(config.synchronization.slow_on_desync);
     }
-    if !env_presence.dont_slow_down_with_me {
-        plan.dont_slow_down_with_me_override = resolved_settings.dont_slow_down_with_me;
+    if !env_presence.dont_slow_down_with_me && resolved_settings.dont_slow_down_with_me.is_some() {
+        plan.dont_slow_down_with_me_override = Some(config.synchronization.dont_slow_down_with_me);
     }
-    if !env_presence.rewind_threshold_seconds {
-        plan.rewind_threshold_seconds_override = resolved_settings.rewind_threshold_seconds;
+    if !env_presence.rewind_threshold_seconds
+        && resolved_settings.rewind_threshold_seconds.is_some()
+    {
+        plan.rewind_threshold_seconds_override =
+            Some(config.synchronization.rewind_threshold.get());
     }
-    if !env_presence.fastforward_threshold_seconds {
+    if !env_presence.fastforward_threshold_seconds
+        && resolved_settings.fastforward_threshold_seconds.is_some()
+    {
         plan.fastforward_threshold_seconds_override =
-            resolved_settings.fastforward_threshold_seconds;
+            Some(config.synchronization.fastforward_threshold.get());
     }
-    if !env_presence.slowdown_threshold_seconds {
-        plan.slowdown_threshold_seconds_override = resolved_settings.slowdown_threshold_seconds;
+    if !env_presence.slowdown_threshold_seconds
+        && resolved_settings.slowdown_threshold_seconds.is_some()
+    {
+        plan.slowdown_threshold_seconds_override =
+            Some(config.synchronization.slowdown_threshold.get());
     }
-    if !env_presence.unpause_action {
-        plan.unpause_action_override = resolved_settings.unpause_action.clone();
+    if !env_presence.unpause_action && resolved_settings.unpause_action.is_some() {
+        plan.unpause_action_override = Some(config.readiness.unpause_action.clone());
     }
-    if !env_presence.autoplay_min_users {
-        plan.auto_play_threshold_override = resolved_settings.autoplay_min_users.clone();
+    if !env_presence.autoplay_min_users && resolved_settings.autoplay_min_users.is_some() {
+        plan.auto_play_threshold_override = Some(config.readiness.autoplay_min_users.clone());
     }
-    if !env_presence.filename_privacy_mode {
-        plan.filename_privacy_mode = resolved_settings.filename_privacy_mode;
+    if !env_presence.filename_privacy_mode && resolved_settings.filename_privacy_mode.is_some() {
+        plan.filename_privacy_mode = Some(config.playback.filename_privacy_mode);
     }
-    if !env_presence.filesize_privacy_mode {
-        plan.filesize_privacy_mode = resolved_settings.filesize_privacy_mode;
+    if !env_presence.filesize_privacy_mode && resolved_settings.filesize_privacy_mode.is_some() {
+        plan.filesize_privacy_mode = Some(config.playback.filesize_privacy_mode);
     }
-    if !env_presence.show_duration_notification {
-        plan.show_duration_notification_override = resolved_settings.show_duration_notification;
+    if !env_presence.show_duration_notification
+        && resolved_settings.show_duration_notification.is_some()
+    {
+        plan.show_duration_notification_override =
+            Some(config.readiness.show_duration_notification);
     }
-    if !env_presence.show_same_room_osd {
-        plan.show_same_room_osd_override = resolved_settings.show_same_room_osd;
+    if !env_presence.show_same_room_osd && resolved_settings.show_same_room_osd.is_some() {
+        plan.show_same_room_osd_override = Some(config.interface.show_same_room_osd);
     }
-    if !env_presence.show_osd_warnings {
-        plan.show_osd_warnings_override = resolved_settings.show_osd_warnings;
+    if !env_presence.show_osd_warnings && resolved_settings.show_osd_warnings.is_some() {
+        plan.show_osd_warnings_override = Some(config.interface.show_osd_warnings);
     }
-    if !env_presence.show_noncontroller_osd {
-        plan.show_noncontroller_osd_override = resolved_settings.show_noncontroller_osd;
+    if !env_presence.show_noncontroller_osd && resolved_settings.show_noncontroller_osd.is_some() {
+        plan.show_noncontroller_osd_override = Some(config.interface.show_noncontroller_osd);
     }
-    if !env_presence.show_different_room_osd {
-        plan.show_different_room_osd_override = resolved_settings.show_different_room_osd;
+    if !env_presence.show_different_room_osd && resolved_settings.show_different_room_osd.is_some()
+    {
+        plan.show_different_room_osd_override = Some(config.interface.show_different_room_osd);
     }
 
     plan
@@ -342,15 +396,8 @@ fn first_stored_room_list_entry_legacy_compatible(
         .find(|room| !room.trim().is_empty())
 }
 
-fn first_stored_public_server_address_legacy_compatible(
-    settings: &StoredClientSettingsMvp,
-) -> Option<&str> {
-    settings
-        .public_servers
-        .as_ref()?
-        .iter()
-        .map(|(_, address)| address.as_str())
-        .find(|address| !address.trim().is_empty())
+fn validated_stored_server_port(port: u16) -> Option<u16> {
+    ServerPort::new(port).ok().map(ServerPort::get)
 }
 
 #[cfg(test)]
@@ -416,6 +463,28 @@ mod tests {
     }
 
     #[test]
+    fn legacy_runtime_config_debug_redacts_all_passwords() {
+        const SERVER_MARKER: &str = "SERVER-SECRET-CANARY-91A2";
+        const ROOM_MARKER: &str = "ROOM-SECRET-CANARY-73B4";
+        let settings = StoredClientSettingsMvp {
+            server_password: Some(SERVER_MARKER.into()),
+            room: Some(format!("+room:ABCDEF123456:{ROOM_MARKER}")),
+            ..StoredClientSettingsMvp::default()
+        };
+        let snapshot = stored_client_settings_runtime_snapshot_legacy_compatible(&settings);
+        let plan = stored_client_settings_config_plan_legacy_compatible(
+            &settings,
+            &StoredClientSettingsEnvPresence::default(),
+        );
+
+        for debug in [format!("{snapshot:?}"), format!("{plan:?}")] {
+            assert!(debug.contains("<redacted>"));
+            assert!(!debug.contains(SERVER_MARKER));
+            assert!(!debug.contains(ROOM_MARKER));
+        }
+    }
+
+    #[test]
     fn stored_client_settings_runtime_snapshot_legacy_compatible_uses_room_list_and_public_server_fallbacks()
      {
         let snapshot =
@@ -432,9 +501,68 @@ mod tests {
             Some("+room:ABCDEF123456")
         );
         assert_eq!(
-            snapshot.controlled_room_password_override.as_deref(),
+            snapshot
+                .controlled_room_password_override
+                .as_ref()
+                .map(|secret| secret.expose_secret()),
             Some("AB-123")
         );
+    }
+
+    #[test]
+    fn legacy_runtime_snapshot_filters_zero_port_public_server_before_fallback() {
+        let settings = StoredClientSettingsMvp {
+            public_servers: Some(vec![
+                ("Invalid".to_owned(), "invalid.example:0".to_owned()),
+                ("Fallback".to_owned(), "fallback.example:8123".to_owned()),
+            ]),
+            ..StoredClientSettingsMvp::default()
+        };
+
+        let snapshot = stored_client_settings_runtime_snapshot_legacy_compatible(&settings);
+
+        assert_eq!(snapshot.settings.host.as_deref(), Some("fallback.example"));
+        assert_eq!(snapshot.settings.port, Some(8123));
+        assert_eq!(snapshot.config.connection.public_servers.len(), 1);
+        assert_eq!(
+            snapshot
+                .validation_issues
+                .iter()
+                .map(|issue| issue.field.as_str())
+                .collect::<Vec<_>>(),
+            vec!["public_servers[0].address"]
+        );
+    }
+
+    #[test]
+    fn legacy_config_plan_does_not_apply_invalid_embedded_or_explicit_zero_ports() {
+        let embedded_settings = StoredClientSettingsMvp {
+            host: Some("example.org:0".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        };
+        let embedded_snapshot =
+            stored_client_settings_runtime_snapshot_legacy_compatible(&embedded_settings);
+        let embedded_plan = stored_client_settings_config_plan_legacy_compatible(
+            &embedded_settings,
+            &StoredClientSettingsEnvPresence::default(),
+        );
+        assert_eq!(embedded_plan.host.as_deref(), Some("example.org"));
+        assert_eq!(embedded_plan.port, None);
+        assert_eq!(embedded_snapshot.validation_issues[0].field, "host");
+
+        let explicit_settings = StoredClientSettingsMvp {
+            host: Some("example.org:8123".to_owned()),
+            port: Some(0),
+            ..StoredClientSettingsMvp::default()
+        };
+        let explicit_snapshot =
+            stored_client_settings_runtime_snapshot_legacy_compatible(&explicit_settings);
+        let explicit_plan = stored_client_settings_config_plan_legacy_compatible(
+            &explicit_settings,
+            &StoredClientSettingsEnvPresence::default(),
+        );
+        assert_eq!(explicit_plan.port, None);
+        assert_eq!(explicit_snapshot.validation_issues[0].field, "port");
     }
 
     #[test]
@@ -514,8 +642,28 @@ mod tests {
         assert_eq!(plan.port, Some(8999));
         assert_eq!(plan.room.as_deref(), Some("+room:ABCDEF123456"));
         assert_eq!(
-            plan.controlled_room_password_override.as_deref(),
+            plan.controlled_room_password_override
+                .as_ref()
+                .map(|secret| secret.expose_secret()),
             Some("AB-123")
         );
+    }
+
+    #[test]
+    fn stored_client_settings_config_plan_uses_public_server_port_with_explicit_host() {
+        let plan = stored_client_settings_config_plan_legacy_compatible(
+            &StoredClientSettingsMvp {
+                host: Some("stored.example".to_owned()),
+                public_servers: Some(vec![(
+                    "Public".to_owned(),
+                    "fallback.example:8123".to_owned(),
+                )]),
+                ..StoredClientSettingsMvp::default()
+            },
+            &StoredClientSettingsEnvPresence::default(),
+        );
+
+        assert_eq!(plan.host.as_deref(), Some("stored.example"));
+        assert_eq!(plan.port, Some(8123));
     }
 }

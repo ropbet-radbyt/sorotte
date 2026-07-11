@@ -56,7 +56,13 @@ fn parse_sorotte_ini_stored_client_settings_mvp_normalizes_and_reads_known_secti
     );
     assert_eq!(settings.plex_sync_enabled, Some(true));
     assert_eq!(settings.plex_streaming_enabled, Some(true));
-    assert_eq!(settings.plex_user_token.as_deref(), Some("user-token"));
+    assert_eq!(
+        settings
+            .plex_user_token
+            .as_ref()
+            .map(|token| token.expose_secret()),
+        Some("user-token")
+    );
     assert_eq!(
         settings.plex_selected_server_id.as_deref(),
         Some("machine-id")
@@ -66,7 +72,10 @@ fn parse_sorotte_ini_stored_client_settings_mvp_normalizes_and_reads_known_secti
         Some("http://plex.local:32400")
     );
     assert_eq!(
-        settings.plex_selected_server_token.as_deref(),
+        settings
+            .plex_selected_server_token
+            .as_ref()
+            .map(|token| token.expose_secret()),
         Some("server-token")
     );
     assert_eq!(settings.stream_support_plugin_enabled, Some(false));
@@ -224,10 +233,10 @@ fn upsert_sorotte_ini_stored_client_settings_mvp_writes_plex_settings() {
         &StoredClientSettingsMvp {
             plex_sync_enabled: Some(true),
             plex_streaming_enabled: Some(true),
-            plex_user_token: Some("user-token".to_owned()),
+            plex_user_token: Some("user-token".into()),
             plex_selected_server_id: Some("machine-id".to_owned()),
             plex_selected_server_url: Some("http://plex.local:32400".to_owned()),
-            plex_selected_server_token: Some("server-token".to_owned()),
+            plex_selected_server_token: Some("server-token".into()),
             ..StoredClientSettingsMvp::default()
         },
     );
@@ -305,8 +314,8 @@ fn upsert_sorotte_ini_stored_client_settings_mvp_clearing_plex_identity_removes_
 #[test]
 fn stored_settings_debug_redacts_plex_tokens() {
     let settings = StoredClientSettingsMvp {
-        plex_user_token: Some("secret-user-token".to_owned()),
-        plex_selected_server_token: Some("secret-server-token".to_owned()),
+        plex_user_token: Some("secret-user-token".into()),
+        plex_selected_server_token: Some("secret-server-token".into()),
         ..StoredClientSettingsMvp::default()
     };
 

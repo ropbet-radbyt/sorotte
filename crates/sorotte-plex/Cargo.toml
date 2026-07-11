@@ -14,4 +14,5 @@ rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sorotte-player-api = { path = "../sorotte-player-api" }
+sorotte-secret = { path = "../sorotte-secret" }
 thiserror.workspace = true

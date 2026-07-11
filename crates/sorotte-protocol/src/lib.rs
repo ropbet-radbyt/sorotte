@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sorotte_secret::SecretValue;
 
 mod chat;
 mod codec;
@@ -9,6 +10,7 @@ mod envelope;
 mod hello;
 mod list;
 mod message;
+mod redacted_debug;
 mod room;
 mod set;
 mod state;

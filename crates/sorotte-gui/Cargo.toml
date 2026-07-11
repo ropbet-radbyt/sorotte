@@ -22,7 +22,6 @@ eframe.workspace = true
 egui.workspace = true
 reqwest.workspace = true
 rfd.workspace = true
-rusqlite.workspace = true
 rustls.workspace = true
 rustls-pemfile.workspace = true
 semver.workspace = true
@@ -38,6 +37,7 @@ sorotte-player-api = { path = "../sorotte-player-api" }
 sorotte-player-mpv = { path = "../sorotte-player-mpv" }
 sorotte-plex = { path = "../sorotte-plex" }
 sorotte-protocol = { path = "../sorotte-protocol" }
+sorotte-secret = { path = "../sorotte-secret" }
 webpki-roots.workspace = true
 
 [target.'cfg(windows)'.dependencies]

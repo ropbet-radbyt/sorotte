@@ -49,7 +49,13 @@ fn scripted_server_runtime_controlled_room_invalid_password_scenario_validates_f
                 .as_ref()
                 .expect("step 4 should include newControlledRoom");
             assert_eq!(new_room.room_name.as_deref(), Some("+room1:CB39A19549E8"));
-            assert_eq!(new_room.password.as_deref(), Some("AB-123-456"));
+            assert_eq!(
+                new_room
+                    .password
+                    .as_ref()
+                    .map(|password| password.expose_secret()),
+                Some("AB-123-456")
+            );
         }
         other => panic!("expected set response at step 4, got {}", other.kind()),
     }

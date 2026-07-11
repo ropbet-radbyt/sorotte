@@ -426,3 +426,65 @@ fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_propagates_p
         None => env.remove_var(key_client_ipc),
     }
 }
+
+#[test]
+fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_redacts_player_arg_errors() {
+    const PLAYER_ARG_ERROR_CANARY: &str = "PLAYER_ARG_ERROR_SIGNED_URL_CANARY";
+
+    struct FailingPlayer;
+    impl PlayerAdapter for FailingPlayer {
+        fn name(&self) -> &'static str {
+            "failing"
+        }
+        fn set_option_string(&mut self, _name: &str, _value: &str) -> Result<(), PlayerError> {
+            Err(PlayerError::OperationFailed("boom".to_owned()))
+        }
+    }
+
+    let env = TestEnvGuard::lock(&LEGACY_EXTERNAL_PLAYER_ENV_LOCK);
+    let key_client_ipc = "SOROTTE_CLIENT_MPV_IPC_PATH";
+    let old_client_ipc = std::env::var_os(key_client_ipc);
+    env.set_var(key_client_ipc, r"\\.\pipe\syncplay-test");
+    let overrides = LegacyClientArgOverrides {
+        connect_requested: true,
+        no_store: false,
+        debug_requested: false,
+        force_gui_prompt_requested: false,
+        no_gui_requested: false,
+        clear_gui_data_requested: false,
+        config_path: None,
+        config_root: None,
+        language: None,
+        player_path: None,
+        file: None,
+        player_args: vec![format!(
+            "--script-opts=https://media.example/video?Signature={PLAYER_ARG_ERROR_CANARY}"
+        )],
+        load_playlist_from_file: None,
+        host: None,
+        port: None,
+        username: None,
+        room: None,
+        controlled_room_password_override: None,
+        show_help: false,
+        show_version: false,
+        unknown_options: vec![],
+    };
+    let mut player = FailingPlayer;
+
+    let error = apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_legacy_compatible(
+        &mut player,
+        &overrides,
+    )
+    .expect_err("player error should propagate");
+    let rendered = error.to_string();
+    assert!(rendered.contains("failed applying legacy explicit-mpv-IPC startup option"));
+    assert!(!rendered.contains(PLAYER_ARG_ERROR_CANARY));
+    assert!(!rendered.contains("script-opts"));
+    assert!(!rendered.contains("?Signature="));
+
+    match old_client_ipc {
+        Some(value) => env.set_var(key_client_ipc, value),
+        None => env.remove_var(key_client_ipc),
+    }
+}

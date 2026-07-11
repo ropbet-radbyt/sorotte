@@ -93,23 +93,32 @@ fn cli_plex_config_uses_stored_settings_unless_env_overrides() {
     let config = cli_plex_config_from_env_and_stored_settings(Some(&StoredClientSettingsMvp {
         plex_sync_enabled: Some(true),
         plex_streaming_enabled: Some(true),
-        plex_user_token: Some("stored-user-token".to_owned()),
+        plex_user_token: Some("stored-user-token".into()),
         plex_selected_server_id: Some("stored-machine".to_owned()),
         plex_selected_server_url: Some("http://stored-plex:32400".to_owned()),
-        plex_selected_server_token: Some("stored-server-token".to_owned()),
+        plex_selected_server_token: Some("stored-server-token".into()),
         ..StoredClientSettingsMvp::default()
     }));
 
     assert!(config.enabled);
     assert!(config.streaming_enabled);
-    assert_eq!(config.user_token.as_deref(), Some("stored-user-token"));
+    assert_eq!(
+        config
+            .user_token
+            .as_ref()
+            .map(|token| token.expose_secret()),
+        Some("stored-user-token")
+    );
     assert_eq!(config.selected_server_id.as_deref(), Some("stored-machine"));
     assert_eq!(
         config.selected_server_url.as_deref(),
         Some("http://env-plex:32400")
     );
     assert_eq!(
-        config.selected_server_token.as_deref(),
+        config
+            .selected_server_token
+            .as_ref()
+            .map(|token| token.expose_secret()),
         Some("stored-server-token")
     );
 
@@ -179,11 +188,13 @@ async fn connected_session_reports_plex_timeline_from_player_telemetry() {
     let mut config = test_client_loop_config_with_addr(addr);
     config.max_connected_runtime_seconds = 0.4;
     let mut runtime = create_client_runtime(&config);
-    runtime.player_mut().queue_local_file_update(
-        LocalFileUpdate::new("Movie Name.mkv")
-            .with_duration_seconds(95.5)
-            .with_path("C:/media/Movie Name.mkv"),
-    );
+    runtime.with_player_io(|player| {
+        player.queue_local_file_update(
+            LocalFileUpdate::new("Movie Name.mkv")
+                .with_duration_seconds(95.5)
+                .with_path("C:/media/Movie Name.mkv"),
+        );
+    });
     runtime
         .session_mut()
         .apply_player_playback_telemetry_update(

@@ -352,9 +352,11 @@ async fn connected_client_session_truncates_chat_message_to_session_max_length()
         controlled_room_password_override: None,
     };
     let mut runtime = create_client_runtime(&config);
-    let chat_config = runtime.session_mut().chat_config_mut();
+    let mut chat_config = runtime.session().chat_config().clone();
     chat_config.max_chat_message_length = 5;
     chat_config.apply_server_max_chat_message_length = false;
+    let mut session_update = runtime.session_mut();
+    session_update.set_chat_config(chat_config);
     let stream = TcpStream::connect(addr)
         .await
         .expect("client should connect to test listener");

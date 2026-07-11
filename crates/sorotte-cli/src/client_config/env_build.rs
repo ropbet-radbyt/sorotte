@@ -11,7 +11,7 @@ pub(crate) fn build_client_loop_config_from_env() -> ClientLoopConfig {
     ClientLoopConfig {
         host: env_trimmed("SOROTTE_CLIENT_HOST").unwrap_or_else(|| "127.0.0.1".to_owned()),
         port: env_port("SOROTTE_CLIENT_PORT").unwrap_or(8999),
-        server_password: env_trimmed("SOROTTE_CLIENT_SERVER_PASSWORD"),
+        server_password: env_trimmed("SOROTTE_CLIENT_SERVER_PASSWORD").map(SecretValue::from),
         username: env_trimmed("SOROTTE_CLIENT_USERNAME")
             .or_else(|| env_trimmed("SOROTTE_CLIENT_NAME"))
             .unwrap_or_else(|| "cli-user".to_owned()),
@@ -76,6 +76,6 @@ pub(crate) fn build_client_loop_config_from_env() -> ClientLoopConfig {
         show_different_room_osd_override: env_flag_override(
             "SOROTTE_CLIENT_SHOW_DIFFERENT_ROOM_OSD",
         ),
-        controlled_room_password_override,
+        controlled_room_password_override: controlled_room_password_override.map(SecretValue::from),
     }
 }

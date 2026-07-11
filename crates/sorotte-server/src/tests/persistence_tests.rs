@@ -246,6 +246,7 @@ fn persistent_room_sqlite_reload_restores_playlist_index_and_position() {
     assert_eq!(playstate.position, Some(24.0));
     assert_eq!(playstate.paused, Some(true));
 
+    drop(runtime);
     fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
 }
 
@@ -347,6 +348,7 @@ fn permanent_room_file_retains_empty_playlist_state_when_room_empties() {
         "permanent room should preserve playlist index even when playlist is empty"
     );
 
+    drop(runtime);
     fs::remove_file(&permanent_rooms_file).expect("temporary permanent rooms file cleanup");
     fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
 }
@@ -432,6 +434,7 @@ fn gui_list_shows_dummy_entry_for_empty_permanent_room() {
         "cli list should not include dummy empty permanent room"
     );
 
+    drop(runtime);
     fs::remove_file(&permanent_rooms_file).expect("temporary permanent rooms file cleanup");
     fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
 }
@@ -506,6 +509,7 @@ fn isolated_gui_list_shows_dummy_entry_for_empty_permanent_room() {
         "isolated cli list should not include dummy empty permanent room"
     );
 
+    drop(runtime);
     fs::remove_file(&permanent_rooms_file).expect("temporary permanent rooms file cleanup");
     fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
 }

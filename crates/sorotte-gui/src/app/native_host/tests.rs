@@ -95,7 +95,7 @@ fn gui_text_preview_host_renders_player_setup_shell_state() {
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         section: "Connection",
         label: "Host",
-        value: "player-setup.example".to_owned(),
+        value: "player-setup.example".to_owned().into(),
     }));
     assert!(
         state.apply(GuiShellAction::ApplyGuiPlayerSetupRuntimeSnapshot(

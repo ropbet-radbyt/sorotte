@@ -82,7 +82,10 @@ impl SorotteGuiShellAppState {
                 self.text_edit_session = Some(GuiTextEditSessionState {
                     section,
                     label,
-                    buffer: control.value.clone(),
+                    buffer: GuiConfigurationTextValue::for_control(
+                        control.kind,
+                        control.value.clone(),
+                    ),
                     is_dirty: false,
                 });
                 if let Some(tab) = Self::configuration_tab_for_section(section) {
@@ -102,7 +105,7 @@ impl SorotteGuiShellAppState {
                     .control_value(session.section, session.label)
                     .unwrap_or("(missing)")
                     .to_owned();
-                session.is_dirty = buffer != current_value;
+                session.is_dirty = buffer.expose_for_ui() != current_value;
                 session.buffer = buffer;
                 self.clear_action_error_and_refresh();
                 true
@@ -117,7 +120,7 @@ impl SorotteGuiShellAppState {
                 let applied = self.configuration.apply_text_value(
                     session.section,
                     session.label,
-                    &session.buffer,
+                    session.buffer.expose_for_config_apply(),
                 );
                 if !applied {
                     return self.record_action_error(
@@ -261,6 +264,9 @@ impl SorotteGuiShellAppState {
             }
             GuiShellAction::AnnounceSystemChatEvent(message) => {
                 self.announce_system_chat_event(message)
+            }
+            GuiShellAction::AnnounceControlledRoomCreated { room, password } => {
+                self.announce_controlled_room_created(room, password)
             }
             GuiShellAction::ToggleSelectedMainWindowUserReady => {
                 self.toggle_selected_main_window_user_ready()

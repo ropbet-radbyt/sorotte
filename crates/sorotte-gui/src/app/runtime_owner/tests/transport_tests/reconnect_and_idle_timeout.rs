@@ -1,7 +1,220 @@
 use super::*;
 use crate::app::runtime_stack::{
-    GuiQueuedSessionTransportHandle, GuiSessionTransportDriver, GuiTcpSessionTransportDriver,
+    GuiOutboundProtocolDeliveryResult, GuiQueuedSessionTransportHandle, GuiSessionTransportDriver,
+    GuiTcpSessionTransportDriver,
 };
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ScriptedProtocolWrite {
+    generation: usize,
+    line: String,
+    written_prefix: String,
+    bytes_written: usize,
+    completed: bool,
+}
+
+#[derive(Default)]
+struct ScriptedPartialWriteTransportState {
+    generation: usize,
+    fail_next_chat: bool,
+    writes: Vec<ScriptedProtocolWrite>,
+}
+
+struct ScriptedPartialWriteTransportDriver {
+    state: std::sync::Arc<std::sync::Mutex<ScriptedPartialWriteTransportState>>,
+}
+
+impl GuiSessionTransportDriver for ScriptedPartialWriteTransportDriver {
+    fn pump(&mut self, transport: &GuiQueuedSessionTransportHandle) -> Result<(), String> {
+        let Some(delivery) = transport.take_outbound_protocol_delivery_for_driver() else {
+            return Ok(());
+        };
+        let token = delivery.token();
+        let line = delivery.line().to_owned();
+        let mut state = self
+            .state
+            .lock()
+            .expect("scripted transport state lock should not be poisoned");
+        let generation = state.generation;
+        let should_fail = state.fail_next_chat
+            && line.contains("\"Chat\"")
+            && line.contains("retry-after-partial-write");
+        if should_fail {
+            state.fail_next_chat = false;
+            let bytes_written = line.len().min(8);
+            let written_prefix = line[..bytes_written].to_owned();
+            state.writes.push(ScriptedProtocolWrite {
+                generation,
+                line,
+                written_prefix,
+                bytes_written,
+                completed: false,
+            });
+            drop(state);
+            transport.publish_outbound_protocol_delivery_result(
+                GuiOutboundProtocolDeliveryResult::FrameFailed {
+                    token,
+                    bytes_written,
+                    message: "scripted partial frame write".to_owned(),
+                },
+            );
+            return Err("scripted connection failed after a partial frame write".to_owned());
+        }
+
+        let bytes_written = line.len();
+        let written_prefix = line.clone();
+        state.writes.push(ScriptedProtocolWrite {
+            generation,
+            line,
+            written_prefix,
+            bytes_written,
+            completed: true,
+        });
+        drop(state);
+        transport.publish_outbound_protocol_delivery_result(
+            GuiOutboundProtocolDeliveryResult::FrameWritten { token },
+        );
+        Ok(())
+    }
+
+    fn reconnect(&mut self) -> Result<(), String> {
+        self.state
+            .lock()
+            .expect("scripted transport state lock should not be poisoned")
+            .generation += 1;
+        Ok(())
+    }
+}
+
+#[test]
+fn gui_runtime_owner_retries_partially_written_chat_only_after_reconnect_hello() {
+    const SERVER_HELLO: &str = r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#;
+    const CHAT_MESSAGE: &str = "retry-after-partial-write";
+
+    let scripted_state = std::sync::Arc::new(std::sync::Mutex::new(
+        ScriptedPartialWriteTransportState::default(),
+    ));
+    let (owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
+    let mut owner =
+        owner.with_session_transport_driver(Box::new(ScriptedPartialWriteTransportDriver {
+            state: scripted_state.clone(),
+        }));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        chat_input_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    {
+        let writes = scripted_state
+            .lock()
+            .expect("scripted transport state lock should not be poisoned");
+        assert_eq!(writes.writes.len(), 1);
+        assert!(writes.writes[0].line.contains("\"Hello\""));
+        assert!(writes.writes[0].completed);
+    }
+
+    session_transport.push_inbound_protocol_line(SERVER_HELLO);
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    scripted_state
+        .lock()
+        .expect("scripted transport state lock should not be poisoned")
+        .writes
+        .clear();
+
+    assert!(state.apply(GuiShellAction::BeginLocalChatSend(CHAT_MESSAGE.to_owned())));
+    scripted_state
+        .lock()
+        .expect("scripted transport state lock should not be poisoned")
+        .fail_next_chat = true;
+    handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+        GuiPendingCompletionRequest::SendChatMessage(CHAT_MESSAGE.to_owned()),
+    ));
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert!(
+        owner.session_transport_reconnect_due_at.is_some(),
+        "a partial frame write must make the current transport generation unhealthy"
+    );
+    let failed_chat = {
+        let writes = scripted_state
+            .lock()
+            .expect("scripted transport state lock should not be poisoned");
+        let failed = writes
+            .writes
+            .iter()
+            .find(|write| write.line.contains(CHAT_MESSAGE))
+            .expect("the first generation should attempt the queued chat")
+            .clone();
+        assert_eq!(failed.generation, 0);
+        assert!(!failed.completed);
+        assert!(failed.bytes_written > 0);
+        assert!(failed.bytes_written < failed.line.len());
+        assert_eq!(failed.written_prefix, failed.line[..failed.bytes_written]);
+        failed
+    };
+
+    owner.session_transport_reconnect_due_at = Some(std::time::Instant::now());
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    {
+        let writes = scripted_state
+            .lock()
+            .expect("scripted transport state lock should not be poisoned");
+        let replacement_writes = writes
+            .writes
+            .iter()
+            .filter(|write| write.generation == 1)
+            .collect::<Vec<_>>();
+        assert_eq!(replacement_writes.len(), 1);
+        assert!(replacement_writes[0].line.contains("\"Hello\""));
+        assert!(replacement_writes[0].completed);
+        assert!(
+            replacement_writes
+                .iter()
+                .all(|write| !write.line.contains(CHAT_MESSAGE)),
+            "the retained command must not be sent before the replacement server Hello"
+        );
+    }
+
+    session_transport.push_inbound_protocol_line(SERVER_HELLO);
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    let writes = scripted_state
+        .lock()
+        .expect("scripted transport state lock should not be poisoned");
+    let replacement_writes = writes
+        .writes
+        .iter()
+        .filter(|write| write.generation == 1)
+        .collect::<Vec<_>>();
+    let replacement_hello_index = replacement_writes
+        .iter()
+        .position(|write| write.line.contains("\"Hello\""))
+        .expect("the replacement generation should send its client Hello");
+    let retried_chat = replacement_writes
+        .iter()
+        .enumerate()
+        .filter(|(_, write)| write.line.contains(CHAT_MESSAGE))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        retried_chat.len(),
+        1,
+        "a written receipt must remove the retried command from the core outbox"
+    );
+    assert!(retried_chat[0].0 > replacement_hello_index);
+    assert!(retried_chat[0].1.completed);
+    assert_eq!(retried_chat[0].1.line, failed_chat.line);
+}
 
 struct RecordingLivenessTransportDriver {
     events: std::sync::Arc<std::sync::Mutex<Vec<bool>>>,

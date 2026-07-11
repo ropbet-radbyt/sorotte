@@ -2,7 +2,10 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs, io,
     path::{Path, PathBuf},
-    sync::{Arc, LazyLock},
+    sync::{
+        Arc, LazyLock,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -18,22 +21,23 @@ use sha1::{Digest, Sha1};
 use sha2::Sha256;
 use sorotte_core::{DomainError, SyncDomain};
 use sorotte_protocol::{
-    ChatPayload, ControllerAuthPayload, DEFAULT_MAX_PROTOCOL_LINE_BYTES, HelloPayload,
+    ChatPayload, ControllerAuthPayload, DEFAULT_MAX_PROTOCOL_LINE_BYTES, FilePayload, HelloPayload,
     IgnoringOnTheFlyPayload, ListPayload, ListUserEntry, NewControlledRoomPayload, PingPayload,
     PlaylistIndexPayload, PlaystatePayload, ProtocolError, ProtocolMessage, ReadyPayload, RoomRef,
-    SOROTTE_PLEX_PLAYLIST_URIS_FEATURE, SetPayload, StatePayload, TlsPayload, UserSetPayload,
+    SOROTTE_PLEX_PLAYLIST_URIS_FEATURE, SetPayload, StatePayload, UserSetPayload,
     canonical_playlist_files_from_change, decode_line, decode_message_line_items,
     encode_message_line, playlist_change_with_plex_sidecar,
 };
+use sorotte_secret::SecretValue;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::{
-        Mutex,
+        Mutex, broadcast,
         mpsc::{Receiver, Sender, UnboundedSender, channel},
         watch,
     },
-    task::JoinHandle,
+    task::{JoinHandle, JoinSet},
     time,
 };
 use tokio_rustls::{TlsAcceptor, server::TlsStream};
@@ -80,7 +84,12 @@ const SERVER_NETWORK_TICK_INTERVAL_SECONDS: f64 = 0.25;
 const MAX_PROTOCOL_LINE_BYTES: usize = DEFAULT_MAX_PROTOCOL_LINE_BYTES * 8;
 const PROTOCOL_LINE_TOO_LONG_ERROR: &str = "Protocol line too long";
 const CLIENT_OUTBOUND_QUEUE_CAPACITY: usize = 256;
+// A reliable line gets a short chance to enter a temporarily full queue. If
+// capacity does not recover, the client is explicitly closed and cleaned up.
+const CLIENT_OUTBOUND_OVERLOAD_GRACE_MILLIS: u64 = 100;
 const ACCEPTED_CLIENT_QUEUE_CAPACITY: usize = 1024;
+const SERVER_NETWORK_SHUTDOWN_GRACE_SECONDS: f64 = 5.0;
+const SERVER_PERSISTENCE_EVENT_CAPACITY: usize = 256;
 const TLS_HANDSHAKE_TIMEOUT_SECONDS: f64 = IO_TIMEOUT_SECONDS;
 const SERVER_WRITE_TIMEOUT_SECONDS: f64 = IO_TIMEOUT_SECONDS;
 const TLS_REQUIRED_CERT_FILENAMES: [&str; 3] = ["privkey.pem", "cert.pem", "chain.pem"];
@@ -92,31 +101,48 @@ const LEGACY_SERVER_NOT_KNOWN_ERROR: &str =
     "You must be known to server before sending this command";
 const LEGACY_SERVER_HELLO_ERROR: &str = "Not enough Hello arguments";
 
+mod actor;
 mod app;
 mod auth;
+mod backpressure;
 mod compat;
+mod inbound;
 mod messages;
 mod network;
 mod persistence;
+mod persistence_actor;
 mod runtime_api;
 mod runtime_handlers;
 mod runtime_maintenance;
 mod tls;
 
+pub use actor::{ServerActorError, ServerActorHandle};
 pub use app::ServerApp;
+pub use backpressure::ServerOutboundBackpressureSnapshot;
+pub use inbound::{ServerClientCapabilities, ServerCompatibilityFallback};
 pub use network::{
-    run_server_network_loop_until_shutdown, run_server_network_loops_until_shutdown,
+    run_server_network_loop_until_shutdown, run_server_network_loops_and_shutdown_actor,
+    run_server_network_loops_until_shutdown,
 };
 pub use persistence::{RoomPersistenceError, StatsPersistenceError};
+pub use persistence_actor::{
+    ServerPersistenceEffect, ServerPersistenceEvent, ServerPersistenceWorkerKind,
+};
 
 pub(crate) use auth::{
     RoomPasswordCheckError, RoomPasswordProvider, generate_server_salt_legacy_compatible,
 };
+pub(crate) use backpressure::ServerOutboundBackpressureMetrics;
 pub(crate) use compat::*;
+pub(crate) use inbound::{
+    ServerHelloCommand, ServerInboundCommand, ServerSetCommand, ServerSharedFile,
+    ServerStateCommand, normalize_server_protocol_message,
+};
 pub(crate) use messages::*;
 #[cfg(test)]
 pub(crate) use network::read_network_line_from_stream;
 pub(crate) use persistence::{PersistedRoomState, RoomPersistenceStore, StatsPersistenceStore};
+pub(crate) use persistence_actor::{RoomPersistenceService, StatsPersistenceService};
 pub(crate) use tls::{
     load_tls_server_config, tls_certificate_bundle_is_available,
     tls_certificate_bundle_modified_time,
@@ -127,8 +153,8 @@ pub struct ServerSession {
     pub username: String,
     pub room: String,
     pub version: String,
-    pub features: Option<Value>,
-    pub file: Option<Value>,
+    pub capabilities: ServerClientCapabilities,
+    pub(crate) file: Option<ServerSharedFile>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -151,14 +177,47 @@ pub enum ServerRuntimeError {
     MissingSession(String),
     #[error("hello payload is missing required username, room, or version")]
     InvalidHello,
+    #[error("{0} persistence worker is unavailable")]
+    PersistenceWorkerUnavailable(&'static str),
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum ServerNetworkError {
     #[error(transparent)]
-    Runtime(#[from] ServerRuntimeError),
+    Actor(#[from] ServerActorError),
     #[error(transparent)]
     Io(#[from] io::Error),
+    #[error(
+        "client '{client_id}' disconnected after sustained outbound overload at queue depth {queue_depth}"
+    )]
+    OutboundOverload {
+        client_id: String,
+        queue_depth: usize,
+    },
+    #[error(
+        "server network shutdown exceeded its {timeout_millis} ms grace period with {acceptor_tasks} acceptor task(s) and {session_tasks} client session task(s) still active"
+    )]
+    ShutdownTimeout {
+        timeout_millis: u64,
+        acceptor_tasks: usize,
+        session_tasks: usize,
+    },
+}
+
+/// Errors from the production lifecycle boundary. Network teardown and the
+/// actor durability barrier are both attempted, and a dual failure preserves
+/// both causes for diagnostics.
+#[derive(Debug, thiserror::Error)]
+pub enum ServerLifecycleError {
+    #[error("server network failed: {0}")]
+    Network(ServerNetworkError),
+    #[error("server actor shutdown failed: {0}")]
+    Shutdown(ServerActorError),
+    #[error("server network failed: {network}; server actor shutdown also failed: {shutdown}")]
+    NetworkAndShutdown {
+        network: ServerNetworkError,
+        shutdown: ServerActorError,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -176,10 +235,28 @@ impl DirectedProtocolMessage {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct DirectedOutboundLine {
     pub client_id: String,
     pub line: String,
+    pub delivery: ServerOutboundDelivery,
+}
+
+impl std::fmt::Debug for DirectedOutboundLine {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DirectedOutboundLine")
+            .field("client_id", &self.client_id)
+            .field("line_bytes", &self.line.len())
+            .field("delivery", &self.delivery)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerOutboundDelivery {
+    Reliable,
+    CoalesciblePeriodicState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -209,15 +286,6 @@ impl DirectedTransportAction {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ClientOutboundEvent {
-    Line(String),
-    TransportAction(ServerTransportAction),
-}
-
-type ClientEventSender = Sender<ClientOutboundEvent>;
-type SharedClientEventSenders = Arc<Mutex<BTreeMap<String, ClientEventSender>>>;
-
 #[derive(Debug)]
 pub struct ServerRuntime {
     domain: SyncDomain,
@@ -233,9 +301,9 @@ pub struct ServerRuntime {
     client_next_periodic_state_at: BTreeMap<String, f64>,
     time_now_override_seconds: Option<f64>,
     room_password_provider: RoomPasswordProvider,
-    server_password_token: Option<String>,
+    server_password_token: Option<SecretValue>,
     motd_template: Option<String>,
-    stats_persistence: Option<StatsPersistenceStore>,
+    stats_persistence: Option<StatsPersistenceService>,
     stats_snapshot_start_delay_seconds: f64,
     stats_snapshot_interval_seconds: f64,
     stats_next_snapshot_at_seconds: Option<f64>,
@@ -252,14 +320,28 @@ pub struct ServerRuntime {
     readiness_enabled: bool,
     max_chat_message_length: usize,
     max_username_length: usize,
-    room_persistence: Option<RoomPersistenceStore>,
+    room_persistence: Option<RoomPersistenceService>,
+    room_persistence_versions: BTreeMap<String, u64>,
+    persistence_events: broadcast::Sender<ServerPersistenceEvent>,
+    persistence_degraded_worker_count: Arc<AtomicUsize>,
     permanent_rooms: BTreeSet<String>,
+    pending_compatibility_fallbacks: Vec<ServerCompatibilityFallback>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Clone, PartialEq, Eq, Default)]
 struct RoomPlaylistState {
     files: Vec<String>,
     index: Option<i64>,
+}
+
+impl std::fmt::Debug for RoomPlaylistState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RoomPlaylistState")
+            .field("files_count", &self.files.len())
+            .field("index", &self.index)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

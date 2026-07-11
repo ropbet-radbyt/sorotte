@@ -33,7 +33,7 @@ fn gui_widget_egui_renderer_maps_text_and_checkbox_edits_to_actions() {
         Some(vec![GuiShellAction::EditConfigurationText {
             section: "Connection",
             label: "Host",
-            value: "syncplay.example".to_owned(),
+            value: "syncplay.example".to_owned().into(),
         }])
     );
     assert_eq!(
@@ -55,7 +55,7 @@ fn gui_widget_egui_renderer_maps_text_and_checkbox_edits_to_actions() {
         Some(vec![GuiShellAction::EditConfigurationText {
             section: "Privacy",
             label: "Trusted Domains",
-            value: "youtube.com; *.example.com/videos".to_owned(),
+            value: "youtube.com; *.example.com/videos".to_owned().into(),
         }])
     );
     assert_eq!(
@@ -115,7 +115,7 @@ fn gui_widget_egui_renderer_maps_text_and_checkbox_edits_to_actions() {
             GuiShellAction::EditConfigurationText {
                 section: "Connection",
                 label: "Room",
-                value: "  TeamRoom  ".to_owned(),
+                value: "  TeamRoom  ".to_owned().into(),
             },
             GuiShellAction::JoinMainWindowRoom("  TeamRoom  ".to_owned()),
         ])
@@ -132,7 +132,7 @@ fn gui_widget_egui_renderer_maps_text_and_checkbox_edits_to_actions() {
             GuiShellAction::EditConfigurationText {
                 section: "Connection",
                 label: "Room",
-                value: "   ".to_owned(),
+                value: "   ".to_owned().into(),
             },
             GuiShellAction::JoinMainWindowRoom("   ".to_owned()),
         ])
@@ -176,8 +176,8 @@ fn gui_widget_egui_renderer_maps_text_and_checkbox_edits_to_actions() {
         &controlled_room_actions[1],
         GuiShellAction::RequestControllerAuth { room, password }
             if room == "  Studio  "
-                && password.len() == 10
-                && password.chars().enumerate().all(|(index, c)| match index {
+                && password.expose_secret().len() == 10
+                && password.expose_secret().chars().enumerate().all(|(index, c)| match index {
                     2 | 6 => c == '-',
                     0 | 1 => c.is_ascii_uppercase(),
                     _ => c.is_ascii_digit(),
@@ -207,10 +207,10 @@ fn gui_widget_egui_renderer_maps_text_and_checkbox_edits_to_actions() {
             true,
         ),
         Some(vec![
-            GuiShellAction::UpdateControllerAuthPasswordEdit("ab-123-456".to_owned()),
+            GuiShellAction::UpdateControllerAuthPasswordEdit("ab-123-456".into()),
             GuiShellAction::RequestControllerAuth {
                 room: "+Lounge:ABCDEF123456".to_owned(),
-                password: "ab-123-456".to_owned(),
+                password: "ab-123-456".into(),
             },
             GuiShellAction::CancelControllerAuthEdit,
         ])

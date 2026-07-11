@@ -14,9 +14,9 @@ use sorotte_player_api::{
 };
 
 use crate::constants::*;
-use crate::ipc::MpvJsonIpcClient;
 #[cfg(test)]
 use crate::ipc::MpvJsonIpcTransport;
+use crate::ipc::{MpvIpcConnectionEvent, MpvJsonIpcClient};
 use crate::legacy_ui::{
     LegacySyncplayOsdKind, LegacySyncplayUiSettings, legacy_syncplayintf_script_name_for_path,
     sanitize_legacy_syncplay_script_message_text,
@@ -63,7 +63,9 @@ pub struct MpvAdapter {
     legacy_syncplayintf_script_loaded: bool,
     legacy_syncplayintf_options_applied: bool,
     legacy_syncplayintf_script_name: String,
+    simulation_mode: bool,
     ipc_client: Option<MpvJsonIpcClient>,
+    pending_ipc_connection_events: VecDeque<MpvIpcConnectionEvent>,
 }
 
 impl MpvAdapter {
@@ -76,8 +78,36 @@ impl MpvAdapter {
     pub fn connect_json_ipc(&mut self, path: impl AsRef<Path>) -> Result<(), PlayerError> {
         let client =
             MpvJsonIpcClient::connect(path.as_ref()).map_err(PlayerError::OperationFailed)?;
+        self.collect_ipc_connection_events();
+        self.simulation_mode = false;
         self.ipc_client = Some(client);
         Ok(())
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.ipc_client
+            .as_ref()
+            .is_some_and(MpvJsonIpcClient::is_healthy)
+    }
+
+    pub(crate) fn simulated() -> Self {
+        Self {
+            simulation_mode: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn take_ipc_connection_events(&mut self) -> Vec<MpvIpcConnectionEvent> {
+        self.collect_ipc_connection_events();
+        self.pending_ipc_connection_events.drain(..).collect()
+    }
+
+    fn collect_ipc_connection_events(&mut self) {
+        let Some(ipc_client) = self.ipc_client.as_mut() else {
+            return;
+        };
+        self.pending_ipc_connection_events
+            .extend(ipc_client.take_connection_events());
     }
 
     pub fn current_path(&self) -> Option<&str> {
@@ -224,7 +254,9 @@ impl MpvAdapter {
         settings: LegacySyncplayUiSettings,
     ) -> Result<(), PlayerError> {
         self.legacy_syncplay_ui_settings = settings;
-        if self.legacy_syncplay_ui_settings.should_move_osd() {
+        if self.legacy_syncplay_ui_settings.should_move_osd()
+            && (self.ipc_client.is_some() || self.simulation_mode)
+        {
             self.set_property_string(MPV_PROPERTY_OSD_ALIGN_Y, "bottom")?;
             self.set_property_i64(
                 MPV_PROPERTY_OSD_MARGIN_Y,
@@ -422,26 +454,17 @@ impl MpvAdapter {
     fn poll_local_file_update_from_mpv(
         ipc_client: &mut MpvJsonIpcClient,
     ) -> Result<Option<LocalFileUpdate>, String> {
-        let Some(path) = ipc_client
-            .get_property_string(MPV_PROPERTY_PATH)
-            .unwrap_or(None)
-        else {
+        let Some(path) = ipc_client.get_property_string(MPV_PROPERTY_PATH)? else {
             return Ok(None);
         };
 
         let mut local_file_update = Self::local_file_update_for_path(path.as_str());
 
-        if let Some(duration_seconds) = ipc_client
-            .get_property_f64(MPV_PROPERTY_DURATION)
-            .unwrap_or(None)
-        {
+        if let Some(duration_seconds) = ipc_client.get_property_f64(MPV_PROPERTY_DURATION)? {
             local_file_update = local_file_update.with_duration_seconds(duration_seconds);
         }
 
-        if let Some(size_bytes) = ipc_client
-            .get_property_u64(MPV_PROPERTY_FILE_SIZE)
-            .unwrap_or(None)
-        {
+        if let Some(size_bytes) = ipc_client.get_property_u64(MPV_PROPERTY_FILE_SIZE)? {
             local_file_update = local_file_update.with_size_bytes(size_bytes);
         }
 
@@ -806,6 +829,8 @@ impl MpvAdapter {
             ipc_client
                 .send_command_expect_success(command)
                 .map_err(PlayerError::OperationFailed)?;
+        } else if !self.simulation_mode {
+            return Err(PlayerError::NotConnected);
         }
         self.drain_ipc_events_if_attached();
         Ok(())

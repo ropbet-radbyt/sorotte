@@ -8,6 +8,7 @@ use sorotte_client_app::app_boundary::notifications::{
     user_change_notification_message as shared_user_change_notification_message,
 };
 use sorotte_client_app::app_boundary::{
+    application::ClientApplication,
     diagnostics::{
         ReconnectCorrectionDiagnosticsAlertThresholds, ReconnectCorrectionDiagnosticsFormat,
         ReconnectCorrectionDiagnosticsState,
@@ -27,9 +28,8 @@ use sorotte_client_app::app_boundary::{
 #[cfg(test)]
 use sorotte_client_core::FileDifferenceSummary;
 use sorotte_client_core::{
-    AutoplayCountdownNotification, ChatNotification, ClientRuntime,
-    ControllerAuthTransitionNotification, QueuedRuntimeControl, ReconnectTransitionNotification,
-    RoomPlaystateView, UserChangeNotification,
+    AutoplayCountdownNotification, ChatNotification, ControllerAuthTransitionNotification,
+    ReconnectTransitionNotification, RoomPlaystateView, UserChangeNotification,
 };
 use sorotte_player_api::{PlayerError, PlayerPlaybackTelemetryUpdate};
 use sorotte_player_mpv::{LegacySyncplayOsdKind, MpvAdapter};

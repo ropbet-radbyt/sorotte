@@ -1,14 +1,18 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
 use serde_json::json;
 
 use super::{
-    ChatPayload, HelloPayload, ListPayload, PingPayload, PlaystatePayload, ProtocolMessage,
-    ReadyPayload, RoomRef, SOROTTE_PLEX_PLAYLIST_URIS_KEY, SetPayload, StatePayload,
-    canonical_playlist_files_from_change, decode_line, decode_message_line,
-    decode_message_line_items, decode_message_lines, encode_line, encode_message_line,
-    extract_hello, extract_hello_from_message, playlist_change_with_plex_sidecar,
+    ChatMessagePayload, ChatPayload, ControllerAuthPayload, ErrorPayload, FilePayload,
+    HelloPayload, IgnoringOnTheFlyPayload, ListPayload, ListUserEntry, NewControlledRoomPayload,
+    PingPayload, PlaylistChangePayload, PlaylistIndexPayload, PlaystatePayload, ProtocolError,
+    ProtocolMessage, ReadyPayload, RoomRef, SOROTTE_PLEX_PLAYLIST_URIS_KEY, SetPayload,
+    StatePayload, TlsPayload, UserSetPayload, canonical_playlist_files_from_change, decode_line,
+    decode_message_line, decode_message_line_items, decode_message_lines, encode_line,
+    encode_message_line, extract_hello, extract_hello_from_message,
+    playlist_change_with_plex_sidecar,
 };
 
 fn fixture_dir() -> PathBuf {
@@ -316,7 +320,13 @@ fn set_fixtures_decode_controller_playlist_and_file_variants() {
                 .controller_auth
                 .expect("controllerAuth payload should be present");
             assert_eq!(controller_auth.room.as_deref(), Some("room1"));
-            assert_eq!(controller_auth.password.as_deref(), Some("secret"));
+            assert_eq!(
+                controller_auth
+                    .password
+                    .as_ref()
+                    .map(|password| password.expose_secret()),
+                Some("secret")
+            );
             assert_eq!(controller_auth.user.as_deref(), Some("alice"));
             assert_eq!(controller_auth.success, Some(true));
         }
@@ -333,7 +343,12 @@ fn set_fixtures_decode_controller_playlist_and_file_variants() {
                 .new_controlled_room
                 .expect("newControlledRoom payload should be present");
             assert_eq!(room.room_name.as_deref(), Some("managed-room"));
-            assert_eq!(room.password.as_deref(), Some("roompass"));
+            assert_eq!(
+                room.password
+                    .as_ref()
+                    .map(|password| password.expose_secret()),
+                Some("roompass")
+            );
         }
         other => panic!("expected Set message, found {}", other.kind()),
     }
@@ -394,6 +409,257 @@ fn set_fixtures_decode_controller_playlist_and_file_variants() {
         }
         other => panic!("expected Set message, found {}", other.kind()),
     }
+}
+
+#[test]
+fn credential_payload_debug_is_redacted() {
+    const DIRECT_MARKER: &str = "controller-secret-value";
+    const EXTRA_MARKER: &str = "nested-controller-token-canary-293fa8";
+    let mut controller_auth = ControllerAuthPayload::new().with_password(DIRECT_MARKER);
+    controller_auth.extra.insert(
+        "vendorExtension".to_owned(),
+        json!({ "nested": [{ "accessToken": EXTRA_MARKER }] }),
+    );
+    let mut new_controlled_room =
+        NewControlledRoomPayload::new().with_password("new-room-secret-value");
+    new_controlled_room.extra.insert(
+        "vendorExtension".to_owned(),
+        json!({ "nested": { "roomPassword": EXTRA_MARKER } }),
+    );
+
+    let controller_debug = format!("{controller_auth:?}");
+    assert!(controller_debug.contains("<redacted>"));
+    assert!(!controller_debug.contains(DIRECT_MARKER));
+    assert!(!controller_debug.contains(EXTRA_MARKER));
+
+    let new_room_debug = format!("{new_controlled_room:?}");
+    assert!(new_room_debug.contains("<redacted>"));
+    assert!(!new_room_debug.contains("new-room-secret-value"));
+    assert!(!new_room_debug.contains(EXTRA_MARKER));
+
+    let set = SetPayload::new()
+        .with_controller_auth(controller_auth)
+        .with_new_controlled_room(new_controlled_room);
+    for debug in [
+        format!("{set:?}"),
+        format!("{:?}", ProtocolMessage::set(set)),
+    ] {
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains(DIRECT_MARKER));
+        assert!(!debug.contains("new-room-secret-value"));
+        assert!(!debug.contains(EXTRA_MARKER));
+    }
+}
+
+#[test]
+fn hello_debug_redacts_sensitive_flattened_fields() {
+    const MARKER: &str = "protocol-hello-secret-canary-4f5c1d";
+    let mut hello = HelloPayload::new("alice", "room", "1.2.255");
+    hello.extra.insert(
+        "password".to_owned(),
+        serde_json::Value::String(MARKER.to_owned()),
+    );
+    hello.extra.insert(
+        "vendorAccessToken".to_owned(),
+        serde_json::Value::String(MARKER.to_owned()),
+    );
+    hello.extra.insert(
+        "nested".to_owned(),
+        serde_json::json!({ "credentials": { "authTokenValue": MARKER } }),
+    );
+    hello.features = Some(serde_json::json!({ "futureSecret": MARKER }));
+
+    let direct_debug = format!("{hello:?}");
+    let message_debug = format!("{:?}", ProtocolMessage::hello(hello));
+    for debug in [direct_debug, message_debug] {
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains(MARKER));
+    }
+}
+
+#[test]
+fn decoded_line_item_debug_redacts_nested_raw_payload_credentials() {
+    const MARKER: &str = "decoded-line-token-canary-a69be1";
+    let items = decode_message_line_items(&format!(
+        r#"{{"Bogus":{{"vendor":{{"nested":{{"sessionToken":"{MARKER}"}}}}}}}}"#
+    ))
+    .expect("raw protocol line should decode into an item");
+
+    let debug = format!(
+        "{:?}",
+        items.first().expect("decoded item should be present")
+    );
+    assert!(debug.contains("<redacted>"));
+    assert!(!debug.contains(MARKER));
+}
+
+#[test]
+fn tokenized_media_url_debug_is_redacted_at_every_protocol_layer() {
+    const MARKER: &str = "protocol-media-url-token-canary-71d8";
+    let target = format!("https://plex.invalid/video?X-Plex-Token={MARKER}");
+    let file = FilePayload::new()
+        .with_name(target.clone())
+        .with_path(target.clone());
+    let playlist = PlaylistChangePayload::new([target.clone()]);
+    let raw_line = serde_json::json!({
+        "Set": { "file": { "path": target } }
+    })
+    .to_string();
+    let decoded = decode_message_line_items(&raw_line).expect("raw Set line should decode");
+
+    for debug in [
+        format!("{file:?}"),
+        format!("{playlist:?}"),
+        format!(
+            "{:?}",
+            ProtocolMessage::set(SetPayload::new().with_file(file))
+        ),
+        format!("{:?}", decoded.first().expect("decoded item should exist")),
+    ] {
+        assert!(debug.contains(sorotte_secret::REDACTED_SECRET));
+        assert!(!debug.contains(MARKER));
+    }
+}
+
+#[test]
+fn reflected_protocol_error_debug_and_display_hide_credentials() {
+    const MARKER: &str = "protocol-reflected-error-password-canary-6a2f";
+    let reflected = format!(r#"Not JSON: {{"password" : "{MARKER}"}}"#);
+    let payload = ErrorPayload::new(reflected.clone());
+    let error = ProtocolError::ServerError { message: reflected };
+
+    for rendered in [
+        format!("{payload:?}"),
+        format!("{:?}", ProtocolMessage::error(payload)),
+        format!("{error:?}"),
+        error.to_string(),
+    ] {
+        assert!(!rendered.contains(MARKER));
+    }
+    assert!(error.to_string().contains(sorotte_secret::REDACTED_SECRET));
+}
+
+#[test]
+fn permissive_protocol_dto_debug_recursively_redacts_unknown_credentials() {
+    const MARKER: &str = "permissive-protocol-secret-canary-e3915b";
+    fn nested_secret() -> serde_json::Value {
+        json!({ "vendor": [{ "futureCredential": MARKER }] })
+    }
+    fn assert_redacted(debug: &str) {
+        assert!(debug.contains("<redacted>"), "missing redaction in {debug}");
+        assert!(!debug.contains(MARKER), "credential leaked in {debug}");
+    }
+
+    let mut set = SetPayload::new().with_features(nested_secret());
+    set.extra.insert("extension".to_owned(), nested_secret());
+    assert_redacted(&format!("{set:?}"));
+    assert_redacted(&format!("{:?}", ProtocolMessage::set(set)));
+
+    let mut file = FilePayload::new()
+        .with_size(nested_secret())
+        .with_path(format!("https://media.invalid/video?access_token={MARKER}"));
+    file.extra.insert("extension".to_owned(), nested_secret());
+    assert_redacted(&format!("{file:?}"));
+    assert_redacted(&format!(
+        "{:?}",
+        ProtocolMessage::set(SetPayload::new().with_file(file))
+    ));
+
+    let mut user = UserSetPayload::new()
+        .with_file(nested_secret())
+        .with_event(nested_secret())
+        .with_features(nested_secret());
+    user.extra.insert("extension".to_owned(), nested_secret());
+    assert_redacted(&format!("{user:?}"));
+    let mut users = BTreeMap::new();
+    users.insert("alice".to_owned(), user);
+    assert_redacted(&format!(
+        "{:?}",
+        ProtocolMessage::set(SetPayload::new().with_user(users))
+    ));
+
+    let mut ready = ReadyPayload::new(true);
+    ready.extra.insert("extension".to_owned(), nested_secret());
+    assert_redacted(&format!("{ready:?}"));
+    assert_redacted(&format!(
+        "{:?}",
+        ProtocolMessage::set(SetPayload::new().with_ready(ready))
+    ));
+
+    let mut playlist_change = PlaylistChangePayload::new(["movie.mkv"]);
+    playlist_change
+        .extra
+        .insert("extension".to_owned(), nested_secret());
+    assert_redacted(&format!("{playlist_change:?}"));
+    assert_redacted(&format!(
+        "{:?}",
+        ProtocolMessage::set(SetPayload::new().with_playlist_change(playlist_change))
+    ));
+
+    let mut playlist_index = PlaylistIndexPayload::new(0);
+    playlist_index
+        .extra
+        .insert("extension".to_owned(), nested_secret());
+    assert_redacted(&format!("{playlist_index:?}"));
+    assert_redacted(&format!(
+        "{:?}",
+        ProtocolMessage::set(SetPayload::new().with_playlist_index(playlist_index))
+    ));
+
+    let mut chat = ChatMessagePayload::new("alice", "hello");
+    chat.extra.insert("extension".to_owned(), nested_secret());
+    assert_redacted(&format!("{chat:?}"));
+    assert_redacted(&format!(
+        "{:?}",
+        ProtocolMessage::chat(ChatPayload::Message(chat))
+    ));
+
+    let mut error = ErrorPayload::new("failure");
+    error.extra.insert("extension".to_owned(), nested_secret());
+    assert_redacted(&format!("{error:?}"));
+    assert_redacted(&format!("{:?}", ProtocolMessage::error(error)));
+
+    let mut tls = TlsPayload::new("true");
+    tls.extra.insert("extension".to_owned(), nested_secret());
+    assert_redacted(&format!("{tls:?}"));
+    assert_redacted(&format!("{:?}", ProtocolMessage::tls(tls)));
+
+    let mut playstate = PlaystatePayload::new();
+    playstate
+        .extra
+        .insert("extension".to_owned(), nested_secret());
+    assert_redacted(&format!("{playstate:?}"));
+    let mut ping = PingPayload::new();
+    ping.extra.insert("extension".to_owned(), nested_secret());
+    assert_redacted(&format!("{ping:?}"));
+    let mut ignoring = IgnoringOnTheFlyPayload::new();
+    ignoring
+        .extra
+        .insert("extension".to_owned(), nested_secret());
+    assert_redacted(&format!("{ignoring:?}"));
+    let mut state = StatePayload::new()
+        .with_playstate(playstate)
+        .with_ping(ping)
+        .with_ignoring_on_the_fly(ignoring);
+    state.extra.insert("extension".to_owned(), nested_secret());
+    assert_redacted(&format!("{state:?}"));
+    assert_redacted(&format!("{:?}", ProtocolMessage::state(state)));
+
+    let mut list_user = ListUserEntry::new()
+        .with_file(nested_secret())
+        .with_features(nested_secret());
+    list_user
+        .extra
+        .insert("extension".to_owned(), nested_secret());
+    assert_redacted(&format!("{list_user:?}"));
+    let mut room_users = BTreeMap::new();
+    room_users.insert("alice".to_owned(), list_user);
+    let mut rooms = BTreeMap::new();
+    rooms.insert("room".to_owned(), room_users);
+    assert_redacted(&format!(
+        "{:?}",
+        ProtocolMessage::list(ListPayload::rooms(rooms))
+    ));
 }
 
 #[test]

@@ -31,7 +31,7 @@ impl SorotteGuiShellAppState {
                                 },
                             );
                             let value = active_edit_session
-                                .map(|session| session.buffer.clone())
+                                .map(|session| session.buffer.expose_for_ui().to_owned())
                                 .unwrap_or_else(|| control.value.clone());
                             let enabled = control.kind.is_editable()
                                 && !busy

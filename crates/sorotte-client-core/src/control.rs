@@ -1,6 +1,28 @@
 use super::*;
+use std::collections::VecDeque;
 
-#[derive(Debug, Clone, PartialEq)]
+use crate::outbox::EffectOutbox;
+
+macro_rules! notification_outbox_methods {
+    ($front:ident, $acknowledge:ident, $flush:ident, $field:ident, $notification:ty) => {
+        pub(crate) fn $front(&self) -> Option<&$notification> {
+            self.$field.front()
+        }
+
+        pub(crate) fn $acknowledge(&mut self) -> Option<$notification> {
+            self.$field.acknowledge_front()
+        }
+
+        pub(crate) fn $flush<E>(
+            &mut self,
+            notify: impl FnMut(&$notification) -> Result<(), E>,
+        ) -> Result<(), E> {
+            self.$field.try_flush(notify)
+        }
+    };
+}
+
+#[derive(Clone, PartialEq)]
 pub enum ClientRuntimeAction {
     SetPaused(bool),
     RequestUserList,
@@ -17,7 +39,7 @@ pub enum ClientRuntimeAction {
         username: String,
     },
     SetFile {
-        file_payload: Value,
+        file: FilePayload,
     },
     SetPlaylist {
         files: Vec<String>,
@@ -27,7 +49,7 @@ pub enum ClientRuntimeAction {
     },
     RequestControllerAuth {
         room: String,
-        password: String,
+        password: SecretValue,
     },
     SendChat {
         message: String,
@@ -46,76 +68,226 @@ pub enum ClientRuntimeAction {
     StopReconnect,
 }
 
-pub trait ClientRuntimeControl {
-    fn request_user_list(&mut self) {}
-    fn set_room(&mut self, _room: String) {}
-    fn set_ready(&mut self, ready: bool, manually_initiated: bool);
-    fn set_ready_for_user(&mut self, ready: bool, manually_initiated: bool, _username: String) {
-        self.set_ready(ready, manually_initiated);
+impl std::fmt::Debug for ClientRuntimeAction {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SetPaused(value) => formatter.debug_tuple("SetPaused").field(value).finish(),
+            Self::RequestUserList => formatter.write_str("RequestUserList"),
+            Self::SetRoom { .. } => formatter.write_str("SetRoom(<redacted>)"),
+            Self::SetReady {
+                ready,
+                manually_initiated,
+            } => formatter
+                .debug_struct("SetReady")
+                .field("ready", ready)
+                .field("manually_initiated", manually_initiated)
+                .finish(),
+            Self::SetReadyForUser {
+                ready,
+                manually_initiated,
+                ..
+            } => formatter
+                .debug_struct("SetReadyForUser")
+                .field("ready", ready)
+                .field("manually_initiated", manually_initiated)
+                .field("username", &sorotte_secret::REDACTED_SECRET)
+                .finish(),
+            Self::SetFile { file } => formatter.debug_tuple("SetFile").field(file).finish(),
+            Self::SetPlaylist { files } => formatter
+                .debug_struct("SetPlaylist")
+                .field("files_count", &files.len())
+                .finish(),
+            Self::SetPlaylistIndex { index } => formatter
+                .debug_struct("SetPlaylistIndex")
+                .field("index", index)
+                .finish(),
+            Self::RequestControllerAuth { password, .. } => formatter
+                .debug_struct("RequestControllerAuth")
+                .field("room", &sorotte_secret::REDACTED_SECRET)
+                .field("password", password)
+                .finish(),
+            Self::SendChat { .. } => formatter.write_str("SendChat(<redacted>)"),
+            Self::NotifyChat(_) => formatter.write_str("NotifyChat(<redacted>)"),
+            Self::NotifyControlledRoomCreation(notification) => formatter
+                .debug_tuple("NotifyControlledRoomCreation")
+                .field(notification)
+                .finish(),
+            Self::NotifyControllerAuthTransition(_) => {
+                formatter.write_str("NotifyControllerAuthTransition(<redacted>)")
+            }
+            Self::NotifyUserChange(_) => formatter.write_str("NotifyUserChange(<redacted>)"),
+            Self::NotifyReconnectTransition(notification) => formatter
+                .debug_tuple("NotifyReconnectTransition")
+                .field(notification)
+                .finish(),
+            Self::NotifyAutoplayCountdown(notification) => formatter
+                .debug_tuple("NotifyAutoplayCountdown")
+                .field(notification)
+                .finish(),
+            Self::SetPosition(value) => formatter.debug_tuple("SetPosition").field(value).finish(),
+            Self::SetPlaybackRate(value) => formatter
+                .debug_tuple("SetPlaybackRate")
+                .field(value)
+                .finish(),
+            Self::ScheduleReconnect { delay_seconds } => formatter
+                .debug_struct("ScheduleReconnect")
+                .field("delay_seconds", delay_seconds)
+                .finish(),
+            Self::StopReconnect => formatter.write_str("StopReconnect"),
+        }
     }
-    fn set_file(&mut self, _file_payload: Value) {}
-    fn set_playlist(&mut self, _files: Vec<String>) {}
-    fn set_playlist_index(&mut self, _index: i64) {}
-    fn send_state(&mut self, _state: StatePayload) {}
-    fn request_controller_auth(&mut self, _room: String, _password: String) {}
-    fn send_chat(&mut self, _message: String) {}
-    fn notify_chat(&mut self, _notification: ChatNotification) {}
-    fn notify_controlled_room_creation(
-        &mut self,
-        _notification: ControlledRoomCreationNotification,
-    ) {
+}
+
+#[derive(Clone, PartialEq)]
+pub enum ClientEffect {
+    SetPlayerPaused(bool),
+    SetPlayerPosition(f64),
+    SetPlayerPlaybackRate(f64),
+    RequestUserList,
+    SetRoom(String),
+    SetReady {
+        ready: bool,
+        manually_initiated: bool,
+    },
+    SetReadyForUser {
+        ready: bool,
+        manually_initiated: bool,
+        username: String,
+    },
+    SetFile(FilePayload),
+    SetPlaylist(Vec<String>),
+    SetPlaylistIndex(i64),
+    SendState(StatePayload),
+    RequestControllerAuth(ControllerAuthPayload),
+    SendChat(String),
+    NotifyChat(ChatNotification),
+    NotifyControlledRoomCreation(ControlledRoomCreationNotification),
+    NotifyControllerAuthTransition(ControllerAuthTransitionNotification),
+    NotifyUserChange(UserChangeNotification),
+    NotifyReconnectTransition(ReconnectTransitionNotification),
+    NotifyAutoplayCountdown(AutoplayCountdownNotification),
+    ScheduleReconnect(f64),
+    StopReconnect,
+}
+
+impl std::fmt::Debug for ClientEffect {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SetPlayerPaused(value) => formatter
+                .debug_tuple("SetPlayerPaused")
+                .field(value)
+                .finish(),
+            Self::SetPlayerPosition(value) => formatter
+                .debug_tuple("SetPlayerPosition")
+                .field(value)
+                .finish(),
+            Self::SetPlayerPlaybackRate(value) => formatter
+                .debug_tuple("SetPlayerPlaybackRate")
+                .field(value)
+                .finish(),
+            Self::RequestUserList => formatter.write_str("RequestUserList"),
+            Self::SetRoom(_) => formatter.write_str("SetRoom(<redacted>)"),
+            Self::SetReady {
+                ready,
+                manually_initiated,
+            } => formatter
+                .debug_struct("SetReady")
+                .field("ready", ready)
+                .field("manually_initiated", manually_initiated)
+                .finish(),
+            Self::SetReadyForUser {
+                ready,
+                manually_initiated,
+                ..
+            } => formatter
+                .debug_struct("SetReadyForUser")
+                .field("ready", ready)
+                .field("manually_initiated", manually_initiated)
+                .field("username", &sorotte_secret::REDACTED_SECRET)
+                .finish(),
+            Self::SetFile(file) => formatter.debug_tuple("SetFile").field(file).finish(),
+            Self::SetPlaylist(files) => formatter
+                .debug_struct("SetPlaylist")
+                .field("files_count", &files.len())
+                .finish(),
+            Self::SetPlaylistIndex(index) => formatter
+                .debug_tuple("SetPlaylistIndex")
+                .field(index)
+                .finish(),
+            Self::SendState(state) => formatter.debug_tuple("SendState").field(state).finish(),
+            Self::RequestControllerAuth(payload) => formatter
+                .debug_tuple("RequestControllerAuth")
+                .field(payload)
+                .finish(),
+            Self::SendChat(_) => formatter.write_str("SendChat(<redacted>)"),
+            Self::NotifyChat(_) => formatter.write_str("NotifyChat(<redacted>)"),
+            Self::NotifyControlledRoomCreation(notification) => formatter
+                .debug_tuple("NotifyControlledRoomCreation")
+                .field(notification)
+                .finish(),
+            Self::NotifyControllerAuthTransition(_) => {
+                formatter.write_str("NotifyControllerAuthTransition(<redacted>)")
+            }
+            Self::NotifyUserChange(_) => formatter.write_str("NotifyUserChange(<redacted>)"),
+            Self::NotifyReconnectTransition(notification) => formatter
+                .debug_tuple("NotifyReconnectTransition")
+                .field(notification)
+                .finish(),
+            Self::NotifyAutoplayCountdown(notification) => formatter
+                .debug_tuple("NotifyAutoplayCountdown")
+                .field(notification)
+                .finish(),
+            Self::ScheduleReconnect(delay_seconds) => formatter
+                .debug_tuple("ScheduleReconnect")
+                .field(delay_seconds)
+                .finish(),
+            Self::StopReconnect => formatter.write_str("StopReconnect"),
+        }
     }
-    fn notify_controller_auth_transition(
-        &mut self,
-        _notification: ControllerAuthTransitionNotification,
-    ) {
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ClientEffectError {
+    #[error("client effect is not supported: {0}")]
+    Unsupported(&'static str),
+    #[error("invalid file effect payload: {0}")]
+    InvalidFilePayload(String),
+    #[error("client effect failed: {0}")]
+    OperationFailed(String),
+}
+
+impl ClientEffect {
+    pub fn set_file_from_value(value: Value) -> Result<Self, ClientEffectError> {
+        serde_json::from_value(value)
+            .map(Self::SetFile)
+            .map_err(|error| ClientEffectError::InvalidFilePayload(error.to_string()))
     }
-    fn notify_user_change(&mut self, _notification: UserChangeNotification) {}
-    fn notify_reconnect_transition(&mut self, _notification: ReconnectTransitionNotification) {}
-    fn schedule_reconnect(&mut self, delay_seconds: f64);
-    fn stop_reconnect(&mut self);
-    fn notify_autoplay_countdown(&mut self, _notification: AutoplayCountdownNotification) {}
+}
+
+pub trait ClientEffectSink {
+    fn emit(&mut self, effect: ClientEffect) -> Result<(), ClientEffectError>;
+}
+
+pub(crate) fn client_effect_player_error(error: ClientEffectError) -> PlayerError {
+    PlayerError::OperationFailed(error.to_string())
 }
 
 #[derive(Debug, Default)]
 pub struct QueuedRuntimeControl {
-    pub(crate) outbound_messages: Vec<ProtocolMessage>,
+    pub(crate) outbound_messages: EffectOutbox<ProtocolMessage>,
     reconnect_delays: Vec<f64>,
     stop_reconnect_calls: usize,
-    chat_notifications: Vec<ChatNotification>,
-    controlled_room_creation_notifications: Vec<ControlledRoomCreationNotification>,
-    controller_auth_notifications: Vec<ControllerAuthTransitionNotification>,
-    user_change_notifications: Vec<UserChangeNotification>,
-    reconnect_notifications: Vec<ReconnectTransitionNotification>,
-    autoplay_notifications: Vec<AutoplayCountdownNotification>,
+    chat_notifications: EffectOutbox<ChatNotification>,
+    controlled_room_creation_notifications: EffectOutbox<ControlledRoomCreationNotification>,
+    controller_auth_notifications: EffectOutbox<ControllerAuthTransitionNotification>,
+    user_change_notifications: EffectOutbox<UserChangeNotification>,
+    reconnect_notifications: EffectOutbox<ReconnectTransitionNotification>,
+    autoplay_notifications: EffectOutbox<AutoplayCountdownNotification>,
 }
 
 impl QueuedRuntimeControl {
-    fn file_payload_from_value(file_payload: Value) -> Option<FilePayload> {
-        let Value::Object(mut fields) = file_payload else {
-            return None;
-        };
-
-        let name = fields
-            .remove("name")
-            .and_then(|value| value.as_str().map(str::to_owned));
-        let duration = fields.remove("duration").and_then(|value| value.as_f64());
-        let size = fields.remove("size");
-        let path = fields
-            .remove("path")
-            .and_then(|value| value.as_str().map(str::to_owned));
-
-        Some(FilePayload {
-            name,
-            duration,
-            size,
-            path,
-            extra: fields.into_iter().collect(),
-        })
-    }
-
-    pub fn outbound_messages(&self) -> &[ProtocolMessage] {
-        &self.outbound_messages
+    pub fn outbound_messages(&self) -> &VecDeque<ProtocolMessage> {
+        self.outbound_messages.pending()
     }
 
     pub fn reconnect_delays(&self) -> &[f64] {
@@ -126,40 +298,69 @@ impl QueuedRuntimeControl {
         self.stop_reconnect_calls
     }
 
-    pub fn autoplay_notifications(&self) -> &[AutoplayCountdownNotification] {
-        &self.autoplay_notifications
+    pub fn autoplay_notifications(&self) -> &VecDeque<AutoplayCountdownNotification> {
+        self.autoplay_notifications.pending()
     }
 
-    pub fn chat_notifications(&self) -> &[ChatNotification] {
-        &self.chat_notifications
+    pub fn chat_notifications(&self) -> &VecDeque<ChatNotification> {
+        self.chat_notifications.pending()
     }
 
-    pub fn controlled_room_creation_notifications(&self) -> &[ControlledRoomCreationNotification] {
-        &self.controlled_room_creation_notifications
+    pub fn controlled_room_creation_notifications(
+        &self,
+    ) -> &VecDeque<ControlledRoomCreationNotification> {
+        self.controlled_room_creation_notifications.pending()
     }
 
-    pub fn controller_auth_notifications(&self) -> &[ControllerAuthTransitionNotification] {
-        &self.controller_auth_notifications
+    pub fn controller_auth_notifications(&self) -> &VecDeque<ControllerAuthTransitionNotification> {
+        self.controller_auth_notifications.pending()
     }
 
-    pub fn user_change_notifications(&self) -> &[UserChangeNotification] {
-        &self.user_change_notifications
+    pub fn user_change_notifications(&self) -> &VecDeque<UserChangeNotification> {
+        self.user_change_notifications.pending()
     }
 
-    pub fn reconnect_notifications(&self) -> &[ReconnectTransitionNotification] {
-        &self.reconnect_notifications
+    pub fn reconnect_notifications(&self) -> &VecDeque<ReconnectTransitionNotification> {
+        self.reconnect_notifications.pending()
     }
 
     pub fn drain_outbound_messages(&mut self) -> Vec<ProtocolMessage> {
-        std::mem::take(&mut self.outbound_messages)
+        self.outbound_messages.drain()
     }
 
     pub fn drain_outbound_message_lines(&mut self) -> Result<Vec<String>, ProtocolError> {
-        let messages = self.drain_outbound_messages();
-        messages
+        let lines = self
+            .outbound_messages
+            .pending()
             .iter()
             .map(encode_message_line)
-            .collect::<Result<Vec<_>, _>>()
+            .collect::<Result<Vec<_>, _>>()?;
+        self.outbound_messages.clear();
+        Ok(lines)
+    }
+
+    pub(crate) fn front_outbound_message_line(&self) -> Result<Option<String>, ProtocolError> {
+        self.outbound_messages
+            .front()
+            .map(encode_message_line)
+            .transpose()
+    }
+
+    pub(crate) fn acknowledge_outbound_message(&mut self) -> Option<ProtocolMessage> {
+        self.outbound_messages.acknowledge_front()
+    }
+
+    pub(crate) fn flush_outbound_message_lines<F>(
+        &mut self,
+        mut send_line: F,
+    ) -> Result<(), ProtocolError>
+    where
+        F: FnMut(&str) -> Result<(), ProtocolError>,
+    {
+        self.outbound_messages.try_flush(|message| {
+            let line = encode_message_line(message)?;
+            send_line(&line)
+        })
     }
 
     pub fn drain_reconnect_delays(&mut self) -> Vec<f64> {
@@ -173,137 +374,251 @@ impl QueuedRuntimeControl {
     }
 
     pub fn drain_autoplay_notifications(&mut self) -> Vec<AutoplayCountdownNotification> {
-        std::mem::take(&mut self.autoplay_notifications)
+        self.autoplay_notifications.drain()
     }
 
     pub fn drain_chat_notifications(&mut self) -> Vec<ChatNotification> {
-        std::mem::take(&mut self.chat_notifications)
+        self.chat_notifications.drain()
     }
 
     pub fn drain_controlled_room_creation_notifications(
         &mut self,
     ) -> Vec<ControlledRoomCreationNotification> {
-        std::mem::take(&mut self.controlled_room_creation_notifications)
+        self.controlled_room_creation_notifications.drain()
     }
 
     pub fn drain_controller_auth_notifications(
         &mut self,
     ) -> Vec<ControllerAuthTransitionNotification> {
-        std::mem::take(&mut self.controller_auth_notifications)
+        self.controller_auth_notifications.drain()
     }
 
     pub fn drain_user_change_notifications(&mut self) -> Vec<UserChangeNotification> {
-        std::mem::take(&mut self.user_change_notifications)
+        self.user_change_notifications.drain()
     }
 
     pub fn drain_reconnect_notifications(&mut self) -> Vec<ReconnectTransitionNotification> {
-        std::mem::take(&mut self.reconnect_notifications)
+        self.reconnect_notifications.drain()
+    }
+
+    notification_outbox_methods!(
+        front_autoplay_notification,
+        acknowledge_autoplay_notification,
+        flush_autoplay_notifications,
+        autoplay_notifications,
+        AutoplayCountdownNotification
+    );
+    notification_outbox_methods!(
+        front_chat_notification,
+        acknowledge_chat_notification,
+        flush_chat_notifications,
+        chat_notifications,
+        ChatNotification
+    );
+    notification_outbox_methods!(
+        front_controlled_room_creation_notification,
+        acknowledge_controlled_room_creation_notification,
+        flush_controlled_room_creation_notifications,
+        controlled_room_creation_notifications,
+        ControlledRoomCreationNotification
+    );
+    notification_outbox_methods!(
+        front_controller_auth_notification,
+        acknowledge_controller_auth_notification,
+        flush_controller_auth_notifications,
+        controller_auth_notifications,
+        ControllerAuthTransitionNotification
+    );
+    notification_outbox_methods!(
+        front_user_change_notification,
+        acknowledge_user_change_notification,
+        flush_user_change_notifications,
+        user_change_notifications,
+        UserChangeNotification
+    );
+    notification_outbox_methods!(
+        front_reconnect_notification,
+        acknowledge_reconnect_notification,
+        flush_reconnect_notifications,
+        reconnect_notifications,
+        ReconnectTransitionNotification
+    );
+}
+
+impl ClientEffectSink for QueuedRuntimeControl {
+    fn emit(&mut self, effect: ClientEffect) -> Result<(), ClientEffectError> {
+        match effect {
+            ClientEffect::SetPlayerPaused(_) => {
+                return Err(ClientEffectError::Unsupported("set_player_paused"));
+            }
+            ClientEffect::SetPlayerPosition(_) => {
+                return Err(ClientEffectError::Unsupported("set_player_position"));
+            }
+            ClientEffect::SetPlayerPlaybackRate(_) => {
+                return Err(ClientEffectError::Unsupported("set_player_playback_rate"));
+            }
+            ClientEffect::RequestUserList => self
+                .outbound_messages
+                .push_back(ProtocolMessage::list_request()),
+            ClientEffect::SetRoom(room) => {
+                let set_payload = SetPayload::new().with_room(RoomRef::new(room));
+                self.outbound_messages
+                    .push_back(ProtocolMessage::set(set_payload));
+            }
+            ClientEffect::SetReady {
+                ready,
+                manually_initiated,
+            } => {
+                let ready_payload =
+                    ReadyPayload::new(ready).with_manually_initiated(manually_initiated);
+                let set_payload = SetPayload::new().with_ready(ready_payload);
+                self.outbound_messages
+                    .push_back(ProtocolMessage::set(set_payload));
+            }
+            ClientEffect::SetReadyForUser {
+                ready,
+                manually_initiated,
+                username,
+            } => {
+                let ready_payload = ReadyPayload::new(ready)
+                    .with_manually_initiated(manually_initiated)
+                    .with_username(username);
+                let set_payload = SetPayload::new().with_ready(ready_payload);
+                self.outbound_messages
+                    .push_back(ProtocolMessage::set(set_payload));
+            }
+            ClientEffect::SetFile(file) => {
+                let set_payload = SetPayload::new().with_file(file);
+                self.outbound_messages
+                    .push_back(ProtocolMessage::set(set_payload));
+            }
+            ClientEffect::SetPlaylist(files) => {
+                let set_payload = SetPayload::new()
+                    .with_playlist_change(playlist_change_with_plex_sidecar(files, true));
+                self.outbound_messages
+                    .push_back(ProtocolMessage::set(set_payload));
+            }
+            ClientEffect::SetPlaylistIndex(index) => {
+                let set_payload =
+                    SetPayload::new().with_playlist_index(PlaylistIndexPayload::new(index));
+                self.outbound_messages
+                    .push_back(ProtocolMessage::set(set_payload));
+            }
+            ClientEffect::SendState(state) => self
+                .outbound_messages
+                .push_back(ProtocolMessage::state(state)),
+            ClientEffect::RequestControllerAuth(payload) => {
+                let set_payload = SetPayload::new().with_controller_auth(payload);
+                self.outbound_messages
+                    .push_back(ProtocolMessage::set(set_payload));
+            }
+            ClientEffect::SendChat(message) => self
+                .outbound_messages
+                .push_back(ProtocolMessage::chat_text(message)),
+            ClientEffect::NotifyChat(notification) => {
+                self.chat_notifications.push_back(notification);
+            }
+            ClientEffect::NotifyControlledRoomCreation(notification) => self
+                .controlled_room_creation_notifications
+                .push_back(notification),
+            ClientEffect::NotifyControllerAuthTransition(notification) => {
+                self.controller_auth_notifications.push_back(notification);
+            }
+            ClientEffect::NotifyUserChange(notification) => {
+                self.user_change_notifications.push_back(notification);
+            }
+            ClientEffect::NotifyReconnectTransition(notification) => {
+                self.reconnect_notifications.push_back(notification);
+            }
+            ClientEffect::NotifyAutoplayCountdown(notification) => {
+                self.autoplay_notifications.push_back(notification);
+            }
+            ClientEffect::ScheduleReconnect(delay_seconds) => {
+                self.reconnect_delays.push(delay_seconds);
+            }
+            ClientEffect::StopReconnect => self.stop_reconnect_calls += 1,
+        }
+        Ok(())
     }
 }
 
-impl ClientRuntimeControl for QueuedRuntimeControl {
-    fn request_user_list(&mut self) {
-        self.outbound_messages.push(ProtocolMessage::list_request());
-    }
+#[cfg(test)]
+mod credential_debug_tests {
+    use super::{
+        ChatNotification, ClientEffect, ClientMediaMatchPeerFileState, ClientRuntimeAction,
+        ControlledRoomCreationNotification, ReconnectPlaylistRestoreIntent, RoomPlaylistView,
+        SecretValue, SharedFile,
+    };
 
-    fn set_room(&mut self, room: String) {
-        let set_payload = SetPayload::new().with_room(RoomRef::new(room));
-        self.outbound_messages
-            .push(ProtocolMessage::set(set_payload));
-    }
-
-    fn set_ready(&mut self, ready: bool, manually_initiated: bool) {
-        let ready_payload = ReadyPayload::new(ready).with_manually_initiated(manually_initiated);
-        let set_payload = SetPayload::new().with_ready(ready_payload);
-        self.outbound_messages
-            .push(ProtocolMessage::set(set_payload));
-    }
-
-    fn set_ready_for_user(&mut self, ready: bool, manually_initiated: bool, username: String) {
-        let ready_payload = ReadyPayload::new(ready)
-            .with_manually_initiated(manually_initiated)
-            .with_username(username);
-        let set_payload = SetPayload::new().with_ready(ready_payload);
-        self.outbound_messages
-            .push(ProtocolMessage::set(set_payload));
-    }
-
-    fn set_file(&mut self, file_payload: Value) {
-        let Some(file_payload) = Self::file_payload_from_value(file_payload) else {
-            return;
+    #[test]
+    fn controller_password_debug_canary_is_redacted_across_actions_and_notifications() {
+        const MARKER: &str = "client-core-secret-canary-0c96a1";
+        let action = ClientRuntimeAction::RequestControllerAuth {
+            room: "+room:ABCDEF123456".to_owned(),
+            password: SecretValue::new(MARKER),
         };
-        let set_payload = SetPayload::new().with_file(file_payload);
-        self.outbound_messages
-            .push(ProtocolMessage::set(set_payload));
+        let notification = ControlledRoomCreationNotification::Created {
+            room: "+room:ABCDEF123456".to_owned(),
+            password: SecretValue::new(MARKER),
+        };
+
+        for debug in [format!("{action:?}"), format!("{notification:?}")] {
+            assert!(debug.contains("<redacted>"));
+            assert!(!debug.contains(MARKER));
+        }
     }
 
-    fn set_playlist(&mut self, files: Vec<String>) {
-        let set_payload =
-            SetPayload::new().with_playlist_change(playlist_change_with_plex_sidecar(files, true));
-        self.outbound_messages
-            .push(ProtocolMessage::set(set_payload));
-    }
+    #[test]
+    fn tokenized_media_debug_canary_is_redacted_across_domain_carriers() {
+        const MARKER: &str = "client-core-media-secret-canary-4a8f62";
+        let target = format!("https://media.example/video?X-Plex-Token={MARKER}");
+        let debug_values = [
+            format!(
+                "{:?}",
+                SharedFile {
+                    name: Some(target.clone()),
+                    ..SharedFile::default()
+                }
+            ),
+            format!(
+                "{:?}",
+                ClientMediaMatchPeerFileState {
+                    file_name: Some(target.clone()),
+                    ..ClientMediaMatchPeerFileState::default()
+                }
+            ),
+            format!(
+                "{:?}",
+                RoomPlaylistView {
+                    files: vec![target.clone()],
+                    ..RoomPlaylistView::default()
+                }
+            ),
+            format!(
+                "{:?}",
+                ReconnectPlaylistRestoreIntent {
+                    files: vec![target.clone()],
+                    index: Some(0),
+                }
+            ),
+            format!(
+                "{:?}",
+                ClientRuntimeAction::SetPlaylist {
+                    files: vec![target.clone()],
+                }
+            ),
+            format!("{:?}", ClientEffect::SetPlaylist(vec![target.clone()])),
+            format!(
+                "{:?}",
+                ChatNotification::Message {
+                    username: None,
+                    message: target,
+                }
+            ),
+        ];
 
-    fn set_playlist_index(&mut self, index: i64) {
-        let set_payload = SetPayload::new().with_playlist_index(PlaylistIndexPayload::new(index));
-        self.outbound_messages
-            .push(ProtocolMessage::set(set_payload));
-    }
-
-    fn send_state(&mut self, state: StatePayload) {
-        self.outbound_messages.push(ProtocolMessage::state(state));
-    }
-
-    fn request_controller_auth(&mut self, room: String, password: String) {
-        let payload = ControllerAuthPayload::new()
-            .with_room(room)
-            .with_password(password);
-        let set_payload = SetPayload::new().with_controller_auth(payload);
-        self.outbound_messages
-            .push(ProtocolMessage::set(set_payload));
-    }
-
-    fn send_chat(&mut self, message: String) {
-        self.outbound_messages
-            .push(ProtocolMessage::chat_text(message));
-    }
-
-    fn notify_chat(&mut self, notification: ChatNotification) {
-        self.chat_notifications.push(notification);
-    }
-
-    fn notify_controlled_room_creation(
-        &mut self,
-        notification: ControlledRoomCreationNotification,
-    ) {
-        self.controlled_room_creation_notifications
-            .push(notification);
-    }
-
-    fn notify_controller_auth_transition(
-        &mut self,
-        notification: ControllerAuthTransitionNotification,
-    ) {
-        self.controller_auth_notifications.push(notification);
-    }
-
-    fn notify_user_change(&mut self, notification: UserChangeNotification) {
-        self.user_change_notifications.push(notification);
-    }
-
-    fn schedule_reconnect(&mut self, delay_seconds: f64) {
-        self.reconnect_delays.push(delay_seconds);
-    }
-
-    fn stop_reconnect(&mut self) {
-        self.stop_reconnect_calls += 1;
-    }
-
-    fn notify_reconnect_transition(&mut self, notification: ReconnectTransitionNotification) {
-        self.reconnect_notifications.push(notification);
-    }
-
-    fn notify_autoplay_countdown(&mut self, notification: AutoplayCountdownNotification) {
-        self.autoplay_notifications.push(notification);
+        for debug in debug_values {
+            assert!(!debug.contains(MARKER), "leaky Debug output: {debug}");
+        }
     }
 }

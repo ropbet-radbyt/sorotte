@@ -1,3 +1,10 @@
+pub mod application {
+    pub use crate::application::{
+        ClientApplication, ClientApplicationSettings, ClientCommand, ClientEvent, ConnectionPhase,
+        PlexClientConfig, ProtocolLineApplyOutcome,
+    };
+}
+
 pub mod commands {
     pub use crate::legacy_local_commands::{
         LocalInputCommand, LocalInputCommandErrorKind, LocalInputCommandPlanningContext,
@@ -149,11 +156,17 @@ pub mod state {
         stored_client_settings_runtime_snapshot_legacy_compatible,
     };
     pub use crate::legacy_settings::{
-        AutoplayThresholdOverride, StoredClientSettingsMvp,
+        AutoplayThresholdOverride, StoredClientSettingsMvp, StoredClientSettingsV1,
         autoplay_threshold_override_legacy_value_compatible,
         parse_autoplay_min_users_override_legacy_compatible,
         parse_unpause_action_mode_legacy_compatible, privacy_mode_legacy_name_compatible,
         unpause_action_mode_legacy_name_compatible,
+    };
+    pub use crate::runtime_config::{
+        ClientConfig, ClientConfigErrors, ClientConfigIssue, ClientConfigResolution,
+        ConnectionConfig, InterfaceConfig, MediaMatchConfig, Percent, PlaybackConfig, PlaybackRate,
+        PlexConfig, PluginConfig, PublicServerConfig, ReadinessConfig, RoomName, Seconds,
+        ServerPort, SyncConfig, Username, resolve_client_config,
     };
 }
 
@@ -192,15 +205,23 @@ mod tests {
 
     #[test]
     fn app_boundary_state_and_persistence_surface_round_trip_basic_values() {
-        let settings = state::StoredClientSettingsMvp {
-            host: Some("example.com".to_string()),
-            ..state::StoredClientSettingsMvp::default()
+        let settings = state::StoredClientSettingsV1 {
+            host: Some("example.com:8998".to_string()),
+            ..state::StoredClientSettingsV1::default()
         };
+        let runtime_config = state::ClientConfig::try_from_stored(&settings)
+            .expect("valid stored settings should resolve");
+        assert_eq!(
+            runtime_config.connection.host.as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(runtime_config.connection.port.get(), 8998);
         let config_plan = state::stored_client_settings_config_plan_legacy_compatible(
             &settings,
             &state::StoredClientSettingsEnvPresence::default(),
         );
         assert_eq!(config_plan.host.as_deref(), Some("example.com"));
+        assert_eq!(config_plan.port, Some(8998));
 
         let parsed = persistence::parse_sorotte_ini_stored_client_settings_mvp(
             "[server_data]\nhost = syncplay.test\n",

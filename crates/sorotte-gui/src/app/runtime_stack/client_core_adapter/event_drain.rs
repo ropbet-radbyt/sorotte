@@ -5,6 +5,9 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         &mut self,
         state: &SorotteGuiShellAppState,
     ) -> Vec<GuiShellAction> {
+        // Building the returned action batch is an infallible, best-effort UI
+        // ownership handoff. Fallible notification adapters use the client-core
+        // outbox sink APIs instead so failed effects remain retryable.
         let mut actions = Vec::new();
         let mut trailing_actions = Vec::new();
         let language = Some(state.runtime_language_tag_legacy_compatible());

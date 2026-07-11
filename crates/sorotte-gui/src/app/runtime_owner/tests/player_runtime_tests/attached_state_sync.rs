@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_owner::GuiUpdateRuntime;
 
 use sorotte_plex::{
     PlexMatchedItem, PlexMediaType, PlexPlaylistUri, PlexStreamTarget, SecretPlexPlaybackUrl,
@@ -43,6 +44,7 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(TelemetryPlayerState::default()));
     let mut owner = GuiPersistedConfigRuntimeOwner {
         config_path: None,
+        legacy_projection: None,
         session: None,
         session_projects_to_shell: false,
         session_transport: None,
@@ -56,8 +58,7 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         startup_saved_connect_attempted: false,
         startup_remote_actions_attempted: false,
         startup_remote_actions_rx: None,
-        background_update_check_rx: None,
-        background_update_check_next_due_at: None,
+        update_runtime: GuiUpdateRuntime::new(None),
         startup_stream_helper_probe_completed: false,
         startup_stream_helper_probe_rx: None,
         player: Some(GuiOwnedPlayer::Custom(Box::new(TelemetryPlayerAdapter {
@@ -116,9 +117,8 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         plex_servers: Vec::new(),
         plex_server_reachability: std::collections::HashMap::new(),
         startup_plex_server_refresh_attempted: false,
-        startup_plex_server_refresh_rx: None,
-        plex_server_refresh_rx: None,
-        plex_server_refresh_context: None,
+        plex_server_discovery:
+            crate::app::runtime_owner::GuiPlexServerDiscoveryCoordinator::default(),
         plex_sync_engine: None,
         plex_sync_rx: None,
         plex_sync_next_tick_due_at: None,
@@ -136,8 +136,10 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         pending_logical_media_override: None,
     };
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(false),
+        ..StoredClientSettingsMvp::default()
+    });
 
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     let bootstrap_actions = without_media_match_runtime_snapshots(handle.drain_actions());

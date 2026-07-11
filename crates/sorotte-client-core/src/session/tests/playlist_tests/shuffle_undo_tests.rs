@@ -104,7 +104,7 @@ fn client_runtime_shuffle_entire_playlist_resets_index_to_zero() {
     );
 
     let ProtocolMessage::Set(last_set) = outbound_messages
-        .last()
+        .back()
         .expect("shuffle entire should emit at least one Set message")
     else {
         panic!("last outbound message should be Set.playlistIndex");
@@ -180,13 +180,13 @@ fn client_runtime_undo_playlist_change_toggles_between_previous_and_current_play
     }
 
     runtime
-            .session_mut()
+            .session_mut_for_test()
             .apply_message_json(
                 r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv","episode3.mkv"],"user":"alice"}}}"#,
             )
             .expect("restored playlist echo should apply");
     runtime
-        .session_mut()
+        .session_mut_for_test()
         .apply_message_json(r#"{"Set":{"playlistIndex":{"index":2,"user":"alice"}}}"#)
         .expect("restored playlist index echo should apply");
 

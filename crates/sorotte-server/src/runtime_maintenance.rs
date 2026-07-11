@@ -82,10 +82,10 @@ impl ServerRuntime {
         &mut self,
         now_seconds: f64,
     ) -> Result<(), ServerRuntimeError> {
-        let Some(stats_persistence) = self.stats_persistence.clone() else {
+        if self.stats_persistence.is_none() {
             self.stats_next_snapshot_at_seconds = None;
             return Ok(());
-        };
+        }
         if self.stats_next_snapshot_at_seconds.is_none() {
             self.initialize_stats_snapshot_schedule_at(now_seconds);
         }
@@ -93,7 +93,7 @@ impl ServerRuntime {
             return Ok(());
         };
         while next_snapshot_at_seconds <= now_seconds {
-            self.record_stats_snapshot_at(&stats_persistence, next_snapshot_at_seconds)?;
+            self.record_stats_snapshot_at(next_snapshot_at_seconds)?;
             next_snapshot_at_seconds += self.stats_snapshot_interval_seconds;
         }
         self.stats_next_snapshot_at_seconds = Some(next_snapshot_at_seconds);
@@ -102,7 +102,6 @@ impl ServerRuntime {
 
     pub(crate) fn record_stats_snapshot_at(
         &self,
-        stats_persistence: &StatsPersistenceStore,
         snapshot_at_seconds: f64,
     ) -> Result<(), ServerRuntimeError> {
         let snapshot_time = snapshot_at_seconds.floor() as i64;
@@ -112,8 +111,11 @@ impl ServerRuntime {
             .map(|session| session.version.clone())
             .collect();
         versions.sort();
-        for version in versions {
-            stats_persistence.add_version_log(snapshot_time, &version)?;
+        if let Some(stats_persistence) = self.stats_persistence.as_ref() {
+            stats_persistence.enqueue(ServerPersistenceEffect::RecordStatsSnapshot {
+                snapshot_time,
+                versions,
+            });
         }
         Ok(())
     }
@@ -351,33 +353,57 @@ impl ServerRuntime {
         self.room_is_persistent(room_name) && !self.room_playlist_state(room_name).files.is_empty()
     }
 
-    pub(crate) fn persist_room_if_needed(&self, room_name: &str) -> Result<(), ServerRuntimeError> {
+    pub(crate) fn persist_room_if_needed(
+        &mut self,
+        room_name: &str,
+    ) -> Result<(), ServerRuntimeError> {
         if !self.room_is_persistent(room_name) {
             return Ok(());
         }
-        let Some(room_persistence) = self.room_persistence.as_ref() else {
+        if self.room_persistence.is_none() {
             return Ok(());
-        };
-        let playlist = self.room_playlist_state(room_name);
+        }
+        let playlist = self.room_playlist_state(room_name).clone();
         let playback = self.room_playback_state_at(room_name, self.current_time_seconds());
-        room_persistence.save_room(
-            room_name,
-            &playlist.files,
-            playlist.index,
-            playback.position,
-        )?;
+        let version = self.next_room_persistence_version(room_name);
+        self.room_persistence
+            .as_ref()
+            .expect("room persistence presence checked above")
+            .enqueue(ServerPersistenceEffect::SaveRoom {
+                room_name: room_name.to_owned(),
+                files: playlist.files,
+                playlist_index: playlist.index,
+                position: playback.position,
+                version,
+            });
         Ok(())
     }
 
     pub(crate) fn delete_persisted_room_if_needed(
-        &self,
+        &mut self,
         room_name: &str,
     ) -> Result<(), ServerRuntimeError> {
-        let Some(room_persistence) = self.room_persistence.as_ref() else {
+        if self.room_persistence.is_none() {
             return Ok(());
-        };
-        room_persistence.delete_room(room_name)?;
+        }
+        let version = self.next_room_persistence_version(room_name);
+        self.room_persistence
+            .as_ref()
+            .expect("room persistence presence checked above")
+            .enqueue(ServerPersistenceEffect::DeleteRoom {
+                room_name: room_name.to_owned(),
+                version,
+            });
         Ok(())
+    }
+
+    fn next_room_persistence_version(&mut self, room_name: &str) -> u64 {
+        let version = self
+            .room_persistence_versions
+            .entry(room_name.to_owned())
+            .or_default();
+        *version = version.saturating_add(1);
+        *version
     }
 
     pub(crate) fn cleanup_room_if_empty(
@@ -507,7 +533,7 @@ impl ServerRuntime {
             if controlled_room && !self.user_is_room_controller(&session.username, room_name) {
                 continue;
             }
-            if !session.file.as_ref().is_some_and(legacy_json_value_truthy) {
+            if session.file.is_none() {
                 continue;
             }
             let Some(position) = self
@@ -761,7 +787,7 @@ impl ServerRuntime {
             .filter(|(_, session)| {
                 session.room == room_name
                     && client_version_meets_minimum(&session.version, LEGACY_CHAT_MIN_VERSION)
-                    && !client_supports_feature(session.features.as_ref(), "setOthersReadiness")
+                    && !session.capabilities.remote_readiness
             })
             .map(|(client_id, _)| client_id.clone())
             .collect()
@@ -789,7 +815,7 @@ impl ServerRuntime {
         self.sessions
             .iter()
             .filter(|(_, session)| {
-                features_include_ui_mode(session.features.as_ref())
+                session.capabilities.ui_mode_advertised
                     && (!self.isolate_rooms
                         || room_name.is_some_and(|room_name| session.room == room_name))
             })
@@ -857,14 +883,11 @@ impl ServerRuntime {
         &self,
         client_id: &str,
         source_client_id: &str,
-        mut file: Value,
+        file: &ServerSharedFile,
     ) -> Value {
-        if (!self.client_session_supports_media_match(client_id) || client_id == source_client_id)
-            && let Some(file_object) = file.as_object_mut()
-        {
-            file_object.remove("mediaMatch");
-        }
-        file
+        file.to_wire_value(
+            self.client_session_supports_media_match(client_id) && client_id != source_client_id,
+        )
     }
 
     pub(crate) fn playlist_change_message_for_client(
@@ -888,13 +911,13 @@ impl ServerRuntime {
     fn client_session_supports_media_match(&self, client_id: &str) -> bool {
         self.sessions
             .get(client_id)
-            .is_some_and(|session| client_supports_media_match(session.features.as_ref()))
+            .is_some_and(|session| session.capabilities.media_match)
     }
 
     fn client_session_supports_sorotte_plex_playlist_uris(&self, client_id: &str) -> bool {
-        self.sessions.get(client_id).is_some_and(|session| {
-            client_supports_sorotte_plex_playlist_uris(session.features.as_ref())
-        })
+        self.sessions
+            .get(client_id)
+            .is_some_and(|session| session.capabilities.plex_playlist_uris)
     }
 
     fn sanitize_list_rooms_snapshot_for_client(
@@ -940,11 +963,11 @@ impl ServerRuntime {
         } else {
             self.list_rooms_snapshot()
         };
-        if client_is_gui_user(
-            self.sessions
-                .get(client_id)
-                .and_then(|session| session.features.as_ref()),
-        ) {
+        if self
+            .sessions
+            .get(client_id)
+            .is_some_and(|session| session.capabilities.is_gui_user())
+        {
             self.add_empty_room_dummy_entries(&mut rooms);
         }
         self.sanitize_list_rooms_snapshot_for_client(client_id, &mut rooms);
@@ -957,14 +980,18 @@ impl ServerRuntime {
             let ready = self.user_ready(&session.username, &session.room);
             let mut entry = ListUserEntry::new()
                 .with_position(0.0)
-                .with_file(session.file.clone().unwrap_or_else(|| json!({})))
+                .with_file(
+                    session
+                        .file
+                        .as_ref()
+                        .map(|file| file.to_wire_value(true))
+                        .unwrap_or_else(|| json!({})),
+                )
                 .with_controller(self.user_is_room_controller(&session.username, &session.room));
             if let Some(ready) = ready {
                 entry = entry.with_is_ready(ready);
             }
-            if let Some(features) = &session.features {
-                entry = entry.with_features(features.clone());
-            }
+            entry = entry.with_features(session.capabilities.to_wire_value());
             rooms
                 .entry(session.room.clone())
                 .or_insert_with(BTreeMap::new)

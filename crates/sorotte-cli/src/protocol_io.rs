@@ -1,5 +1,5 @@
-use sorotte_client_core::{ClientRuntime, QueuedRuntimeControl};
-use sorotte_player_mpv::MpvAdapter;
+use sorotte_client_app::app_boundary::application::ClientApplication;
+use sorotte_player_api::PlayerAdapter;
 use sorotte_protocol::DEFAULT_MAX_PROTOCOL_LINE_BYTES;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -70,17 +70,17 @@ where
     Ok(())
 }
 
-pub(super) async fn flush_runtime_protocol_lines(
-    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+pub(super) async fn flush_runtime_protocol_lines<P>(
+    runtime: &mut ClientApplication<P>,
     writer: &mut (impl AsyncWrite + Unpin),
-) -> anyhow::Result<()> {
-    let mut lines = Vec::new();
-    runtime.flush_queued_protocol_lines_to_transport(|line| {
-        lines.push(line.to_owned());
-        Ok(())
-    })?;
-    for line in &lines {
-        write_protocol_line(writer, line).await?;
+) -> anyhow::Result<()>
+where
+    P: PlayerAdapter,
+{
+    while let Some(line) = runtime.pending_protocol_line()? {
+        write_protocol_line(writer, &line).await?;
+        let acknowledged = runtime.acknowledge_protocol_line();
+        debug_assert!(acknowledged.is_some());
     }
     Ok(())
 }
@@ -88,8 +88,19 @@ pub(super) async fn flush_runtime_protocol_lines(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sorotte_client_core::{
+        ClientEffect, ClientEffectSink, ClientRuntime, ClientSession, QueuedRuntimeControl,
+    };
     use sorotte_protocol::decode_message_line_items;
     use tokio::io::BufReader;
+
+    struct ProtocolIoTestPlayer;
+
+    impl PlayerAdapter for ProtocolIoTestPlayer {
+        fn name(&self) -> &'static str {
+            "protocol-io-test-player"
+        }
+    }
 
     #[tokio::test]
     async fn cli_connected_session_rejects_inbound_line_over_max_bytes() {
@@ -132,5 +143,30 @@ mod tests {
             .expect("protocol line should write");
 
         assert_eq!(output, b"{\"List\":null}\r\n");
+    }
+
+    #[tokio::test]
+    async fn cli_writer_failure_leaves_protocol_message_queued() {
+        let mut control = QueuedRuntimeControl::default();
+        control
+            .emit(ClientEffect::SendChat("retry me".to_owned()))
+            .expect("chat effect should be supported");
+        let runtime = ClientRuntime::new(ClientSession::default(), ProtocolIoTestPlayer, control);
+        let mut runtime = ClientApplication::from_runtime(runtime);
+        let (reader, mut writer) = tokio::io::duplex(64);
+        drop(reader);
+
+        flush_runtime_protocol_lines(&mut runtime, &mut writer)
+            .await
+            .expect_err("closed transport should reject the protocol line");
+
+        assert_eq!(runtime.pending_protocol_message_count(), 1);
+        assert!(
+            runtime
+                .pending_protocol_line()
+                .expect("pending line should still serialize")
+                .expect("failed line should remain pending")
+                .contains("retry me")
+        );
     }
 }

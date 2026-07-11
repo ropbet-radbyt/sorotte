@@ -203,39 +203,11 @@ pub(crate) fn truncate_text_to_max_chars(value: &str, max_chars: usize) -> Strin
     value.chars().take(max_chars).collect()
 }
 
-pub(crate) fn truncate_file_payload_name(file: &mut Value, max_chars: usize) {
-    let Some(file_object) = file.as_object_mut() else {
-        return;
-    };
-    let Some(name_value) = file_object.get_mut("name") else {
-        return;
-    };
-    let Some(name) = name_value.as_str() else {
-        return;
-    };
-    *name_value = Value::String(truncate_text_to_max_chars(name, max_chars));
-}
-
-pub(crate) fn legacy_json_value_truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(value) => *value,
-        Value::Number(value) => value.as_f64().is_some_and(|number| number != 0.0),
-        Value::String(value) => !value.is_empty(),
-        Value::Array(value) => !value.is_empty(),
-        Value::Object(value) => !value.is_empty(),
-    }
-}
-
 pub(crate) fn playlist_is_valid(files: &[String]) -> bool {
     if files.len() > DEFAULT_PLAYLIST_MAX_ITEMS {
         return false;
     }
     files.iter().map(|file| file.chars().count()).sum::<usize>() <= DEFAULT_PLAYLIST_MAX_CHARACTERS
-}
-
-pub(crate) fn hello_server_password_token(hello: &HelloPayload) -> Option<&str> {
-    hello.extra.get("password").and_then(Value::as_str)
 }
 
 pub(crate) fn legacy_server_password_token_md5_hex(token: &str) -> String {
@@ -251,58 +223,12 @@ pub(crate) fn server_password_token_matches_legacy_compatible(
         || presented_token == legacy_server_password_token_md5_hex(configured_token)
 }
 
-pub(crate) fn client_supports_persistent_rooms(advertised_features: Option<&Value>) -> bool {
-    client_supports_feature(advertised_features, "persistentRooms")
-}
-
-pub(crate) fn client_supports_media_match(advertised_features: Option<&Value>) -> bool {
-    client_supports_feature(advertised_features, "mediaMatch")
-}
-
-pub(crate) fn client_supports_sorotte_plex_playlist_uris(
-    advertised_features: Option<&Value>,
-) -> bool {
-    client_supports_feature(advertised_features, SOROTTE_PLEX_PLAYLIST_URIS_FEATURE)
-}
-
-pub(crate) fn client_supports_feature(
-    advertised_features: Option<&Value>,
-    feature_name: &str,
-) -> bool {
-    advertised_features
-        .and_then(Value::as_object)
-        .and_then(|features| features.get(feature_name))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-}
-
-pub(crate) fn legacy_client_feature_defaults(version: &str) -> Value {
-    json!({
-        "sharedPlaylists": client_version_meets_minimum(version, LEGACY_SHARED_PLAYLIST_MIN_VERSION),
-        "chat": client_version_meets_minimum(version, LEGACY_CHAT_MIN_VERSION),
-        "featureList": false,
-        "readiness": client_version_meets_minimum(version, LEGACY_USER_READY_MIN_VERSION),
-        "managedRooms": client_version_meets_minimum(version, LEGACY_CONTROLLED_ROOMS_MIN_VERSION),
-        "persistentRooms": false,
-        "uiMode": LEGACY_UI_MODE_UNKNOWN,
-    })
-}
-
-pub(crate) fn legacy_client_features_for_version(
-    version: &str,
-    advertised_features: Option<Value>,
-) -> Value {
-    advertised_features
-        .filter(legacy_json_value_truthy)
-        .unwrap_or_else(|| legacy_client_feature_defaults(version))
-}
-
 pub(crate) fn persistent_rooms_notice_motd(
     base_motd: String,
     persistent_rooms_enabled: bool,
-    advertised_features: Option<&Value>,
+    client_supports_persistent_rooms: bool,
 ) -> String {
-    if !persistent_rooms_enabled || client_supports_persistent_rooms(advertised_features) {
+    if !persistent_rooms_enabled || client_supports_persistent_rooms {
         return base_motd;
     }
     if base_motd.is_empty() {
@@ -334,27 +260,6 @@ pub(crate) fn parse_permanent_rooms_file(contents: &str) -> BTreeSet<String> {
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
         .map(str::to_owned)
         .collect()
-}
-
-pub(crate) fn feature_ui_mode(features: Option<&Value>) -> Option<&str> {
-    features
-        .and_then(Value::as_object)
-        .and_then(|features| features.get("uiMode"))
-        .and_then(Value::as_str)
-}
-
-pub(crate) fn client_is_gui_user(features: Option<&Value>) -> bool {
-    let mut ui_mode = feature_ui_mode(features).unwrap_or(LEGACY_UI_MODE_UNKNOWN);
-    if ui_mode == LEGACY_UI_MODE_UNKNOWN {
-        ui_mode = LEGACY_UI_MODE_GRAPHICAL;
-    }
-    ui_mode == LEGACY_UI_MODE_GRAPHICAL
-}
-
-pub(crate) fn features_include_ui_mode(features: Option<&Value>) -> bool {
-    features
-        .and_then(Value::as_object)
-        .is_some_and(|features| features.contains_key("uiMode"))
 }
 
 pub(crate) fn legacy_dummy_list_entry() -> ListUserEntry {

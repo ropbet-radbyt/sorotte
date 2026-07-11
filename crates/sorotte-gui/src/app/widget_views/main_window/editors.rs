@@ -135,7 +135,7 @@ impl SorotteGuiShellAppState {
                                 "main-window:controller-auth:password",
                                 "Password",
                                 GuiWidgetKind::PasswordInput,
-                                Some(session.password_buffer.clone()),
+                                Some(session.password_buffer.expose_secret().to_owned()),
                                 self.pending_operation.is_none(),
                                 false,
                             ),

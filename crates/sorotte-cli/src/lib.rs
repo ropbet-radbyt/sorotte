@@ -1,4 +1,5 @@
 use anyhow::anyhow;
+use sorotte_client_app::app_boundary::application::{ClientApplication, ClientCommand};
 #[cfg(test)]
 use sorotte_client_app::app_boundary::commands::{
     LocalInputCommand, LocalOffsetCommand, PlannedLocalRuntimeAction,
@@ -35,8 +36,6 @@ use sorotte_client_app::app_boundary::state::{
     parse_autoplay_min_users_override_legacy_compatible,
     parse_unpause_action_mode_legacy_compatible,
 };
-use sorotte_client_core::ClientSession;
-use sorotte_server::ServerApp;
 
 mod client_args;
 mod client_config;
@@ -74,8 +73,8 @@ use self::client_config::build_client_loop_config_from_env;
 use self::client_config::{
     ChatPolicyOverrides, ClientBehaviorOverrides, ClientLoopConfig, ReadinessAutoplayOverrides,
     apply_chat_policy_overrides, apply_client_behavior_overrides,
-    apply_readiness_autoplay_overrides, create_client_runtime, create_client_session,
-    normalize_controlled_room_input,
+    apply_readiness_autoplay_overrides, client_hello_features_legacy_compatible,
+    create_client_runtime, create_client_session, normalize_controlled_room_input,
     parse_reconnect_state_restore_correction_policy_mode_legacy_compatible,
 };
 use self::config_paths::set_sorotte_cli_config_cli_overrides;
@@ -85,7 +84,7 @@ use self::diagnostics_config::{
     reconnect_correction_diagnostics_alert_thresholds_from_env,
     reconnect_correction_diagnostics_format_from_env,
 };
-use self::env_support::{env_flag_enabled, env_port, env_trimmed};
+use self::env_support::{env_flag_enabled, env_trimmed};
 #[cfg(test)]
 use self::env_support::{
     parse_env_bool_legacy_compatible, parse_env_non_negative_f64_legacy_compatible,
@@ -104,8 +103,7 @@ use self::mpv_startup::{
     LegacyExplicitMpvIpcStartupPlayerCommand, LegacyExternalPlayerLaunchSpec,
     ManagedMpvLaunchEnvConfig,
     analyze_legacy_explicit_mpv_ipc_startup_player_args_legacy_compatible,
-    apply_legacy_client_arg_managed_mpv_overrides, create_mpv_adapter_from_env,
-    find_default_managed_mpv_bin,
+    apply_legacy_client_arg_managed_mpv_overrides, find_default_managed_mpv_bin,
     legacy_explicit_mpv_ipc_startup_player_arg_diagnostic_lines_legacy_compatible,
     legacy_external_player_launch_spec_from_overrides_legacy_compatible,
     legacy_non_mpv_player_path_ignored_by_mpv_integration_warning_line_legacy_compatible,
@@ -184,41 +182,6 @@ use self::update_check::{
 };
 
 pub async fn run_sorotte_cli_from_env() -> anyhow::Result<()> {
-    let motd_template = env_trimmed("SOROTTE_SERVER_MOTD_TEMPLATE");
-    let rooms_db_file = env_trimmed("SOROTTE_SERVER_ROOMS_DB_FILE");
-    let permanent_rooms_file = env_trimmed("SOROTTE_SERVER_PERMANENT_ROOMS_FILE");
-    let tls_cert_path = env_trimmed("SOROTTE_SERVER_TLS_CERT_PATH");
-    let stats_db_file = env_trimmed("SOROTTE_SERVER_STATS_DB_FILE");
-    let server_port = env_port("SOROTTE_SERVER_PORT");
-    let persistent_rooms_enabled = env_flag_enabled("SOROTTE_SERVER_PERSISTENT_ROOMS");
-    let mut server = ServerApp::new();
-    if let Some(template) = motd_template {
-        server.runtime_mut().set_motd_template(Some(template));
-    }
-    server
-        .runtime_mut()
-        .set_persistent_rooms_db_path(rooms_db_file.as_deref().map(std::path::PathBuf::from))?;
-    server.runtime_mut().set_permanent_rooms_file_path(
-        permanent_rooms_file
-            .as_deref()
-            .map(std::path::PathBuf::from),
-    )?;
-    server
-        .runtime_mut()
-        .set_persistent_rooms_enabled(persistent_rooms_enabled || rooms_db_file.is_some());
-    if let Some(port) = server_port {
-        server
-            .runtime_mut()
-            .set_stats_snapshot_start_delay_for_port(port);
-    }
-    server
-        .runtime_mut()
-        .set_tls_cert_path(tls_cert_path.as_deref().map(std::path::PathBuf::from));
-    server
-        .runtime_mut()
-        .set_stats_db_path(stats_db_file.as_deref().map(std::path::PathBuf::from))?;
-    server.bootstrap_room("cli-demo");
-
     let mut client_arg_overrides = parse_legacy_client_arg_overrides(std::env::args().skip(1));
     if client_arg_overrides.show_version {
         println!("sorotte-cli {}", env!("CARGO_PKG_VERSION"));
@@ -354,15 +317,29 @@ pub async fn run_sorotte_cli_from_env() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let mut client = ClientSession::default();
-    client.apply_hello_json(
-        r#"{"Hello":{"username":"cli-user","room":{"name":"cli-demo"},"version":"1.2.255"}}"#,
-    )?;
+    let mut client =
+        ClientApplication::with_default_session(sorotte_player_mpv::MpvAdapter::default());
+    let events = client.dispatch(ClientCommand::ReceiveProtocolLine {
+        line: r#"{"Hello":{"username":"cli-user","room":{"name":"cli-demo"},"version":"1.2.255"}}"#
+            .to_owned(),
+        received_at_seconds: 0.0,
+    });
+    if let Some(sorotte_client_app::app_boundary::application::ClientEvent::OperationFailed {
+        message,
+        ..
+    }) = events.into_iter().find(|event| {
+        matches!(
+            event,
+            sorotte_client_app::app_boundary::application::ClientEvent::OperationFailed { .. }
+        )
+    }) {
+        return Err(anyhow!(message));
+    }
 
     println!(
         "sorotte-cli bootstrap complete for user {} in room {}",
-        client.username.as_deref().unwrap_or("unknown"),
-        client.room.as_deref().unwrap_or("unknown")
+        client.session().username().unwrap_or("unknown"),
+        client.session().room().unwrap_or("unknown")
     );
     Ok(())
 }

@@ -1,9 +1,20 @@
 use super::*;
 
+fn ensure_application_command_succeeded(events: Vec<ClientEvent>) -> anyhow::Result<()> {
+    if let Some(ClientEvent::OperationFailed { message, .. }) = events
+        .into_iter()
+        .find(|event| matches!(event, ClientEvent::OperationFailed { .. }))
+    {
+        return Err(anyhow!(message));
+    }
+    Ok(())
+}
+
 async fn run_reconnect_backoff(
-    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    runtime: &mut ClientApplication<MpvAdapter>,
     retries: &mut u32,
 ) -> anyhow::Result<bool> {
+    let _ = runtime.dispatch(ClientCommand::Reconnect { attempt: *retries });
     runtime.run_reconnect_retry(*retries)?;
     flush_reconnect_notifications_legacy_compatible(runtime)?;
     let mut reconnect_delay = None;
@@ -31,7 +42,7 @@ async fn run_reconnect_backoff(
 }
 
 async fn run_client_network_loop_event_plan_legacy_compatible(
-    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    runtime: &mut ClientApplication<MpvAdapter>,
     retries: &mut u32,
     network_start: &Instant,
     plan: ClientNetworkLoopEventPlan,
@@ -42,7 +53,9 @@ async fn run_client_network_loop_event_plan_legacy_compatible(
         ));
     }
     if plan.run_disconnect {
-        runtime.run_disconnect(network_start.elapsed().as_secs_f64())?;
+        ensure_application_command_succeeded(runtime.dispatch(ClientCommand::Disconnect {
+            now_seconds: network_start.elapsed().as_secs_f64(),
+        }))?;
     }
     let reconnect_exhausted =
         plan.run_reconnect_backoff && run_reconnect_backoff(runtime, retries).await?;
@@ -53,7 +66,7 @@ async fn run_client_network_loop_event_plan_legacy_compatible(
 }
 
 async fn run_client_network_loop_attempt_plan_legacy_compatible(
-    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    runtime: &mut ClientApplication<MpvAdapter>,
     retries: &mut u32,
     network_start: &Instant,
     plan: ClientNetworkLoopAttemptPlan,
@@ -107,7 +120,7 @@ where
     F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
     G: FnMut(&str) -> anyhow::Result<()>,
 {
-    runtime: ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    runtime: ClientApplication<MpvAdapter>,
     chat_message_on_connect: Option<String>,
     startup_playlist_file_on_connect: Option<String>,
     local_input_rx: Option<UnboundedReceiver<String>>,
@@ -173,13 +186,16 @@ where
     } = startup_plan;
     let (mut runtime, managed_mpv_process_guard) =
         create_client_runtime_with_managed_mpv_support(config, legacy_overrides, stored_settings)?;
+    let _ = runtime.dispatch(ClientCommand::Connect {
+        endpoint: endpoint.clone(),
+    });
     if apply_legacy_explicit_mpv_ipc_startup
         && let Some(overrides) = legacy_overrides
-        && let Err(error) =
+        && let Err(error) = runtime.with_player_io(|player| {
             apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_legacy_compatible(
-                runtime.player_mut(),
-                overrides,
+                player, overrides,
             )
+        })
     {
         eprintln!("warning: failed legacy explicit-mpv-IPC startup file open: {error}");
     }

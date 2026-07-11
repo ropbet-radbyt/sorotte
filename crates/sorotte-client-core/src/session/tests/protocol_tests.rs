@@ -1,4 +1,25 @@
 use super::*;
+use crate::FileSize;
+
+#[test]
+fn connection_phase_transitions_are_explicit_before_hello() {
+    let mut session = ClientSession::default();
+    assert_eq!(session.connection_phase(), &ConnectionPhase::Disconnected);
+
+    session.mark_connecting();
+    assert_eq!(session.connection_phase(), &ConnectionPhase::Connecting);
+    session.mark_awaiting_hello();
+    assert_eq!(session.connection_phase(), &ConnectionPhase::AwaitingHello);
+    session.mark_reconnecting(3);
+    assert_eq!(
+        session.connection_phase(),
+        &ConnectionPhase::Reconnecting { attempt: 3 }
+    );
+    session.mark_closing();
+    assert_eq!(session.connection_phase(), &ConnectionPhase::Closing);
+    session.mark_disconnected();
+    assert_eq!(session.connection_phase(), &ConnectionPhase::Disconnected);
+}
 
 #[test]
 fn hello_populates_session_state() {
@@ -9,8 +30,39 @@ fn hello_populates_session_state() {
         )
         .expect("valid hello should parse");
 
-    assert_eq!(session.username.as_deref(), Some("alice"));
-    assert_eq!(session.room.as_deref(), Some("room1"));
+    assert_eq!(session.model.connection.username.as_deref(), Some("alice"));
+    assert_eq!(session.model.room.name.as_deref(), Some("room1"));
+    assert!(matches!(
+        session.connection_phase(),
+        ConnectionPhase::Active(_)
+    ));
+}
+
+#[test]
+fn active_connection_owns_concrete_server_capabilities() {
+    let mut session = ClientSession::default();
+    session
+        .apply_hello_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":false,"readiness":true,"setOthersReadiness":false,"sharedPlaylists":true,"managedRooms":false,"mediaMatch":true,"sorottePlexPlaylistUris":true,"persistentRooms":true,"maxUsernameLength":12,"maxRoomNameLength":40,"maxFilenameLength":180}}}"#,
+        )
+        .expect("hello should apply");
+
+    assert_eq!(
+        session.connection_phase(),
+        &ConnectionPhase::Active(ServerCapabilities {
+            chat: false,
+            readiness: true,
+            remote_readiness: false,
+            shared_playlists: true,
+            managed_rooms: false,
+            media_match: true,
+            plex_playlist_uris: true,
+            persistent_rooms: true,
+            max_username_length: 12,
+            max_room_name_length: 40,
+            max_filename_length: 180,
+        })
+    );
 }
 
 #[test]
@@ -22,7 +74,7 @@ fn hello_records_server_readiness_support_flag() {
             )
             .expect("hello should apply");
 
-    assert_eq!(session.server_readiness_supported(), Some(true));
+    assert!(session.server_readiness_supported());
 }
 
 #[test]
@@ -34,7 +86,7 @@ fn hello_records_server_chat_support_flag() {
             )
             .expect("hello should apply");
 
-    assert_eq!(session.server_chat_supported(), Some(false));
+    assert!(!session.server_chat_supported());
 }
 
 #[test]
@@ -46,7 +98,7 @@ fn hello_records_persistent_rooms_and_server_limits() {
             )
             .expect("hello should apply");
 
-    assert_eq!(session.server_persistent_rooms_supported(), Some(true));
+    assert!(session.server_persistent_rooms_supported());
     assert_eq!(session.server_max_username_length(), Some(12));
     assert_eq!(session.server_max_room_name_length(), Some(40));
     assert_eq!(session.server_max_filename_length(), Some(180));
@@ -61,7 +113,7 @@ fn hello_without_limit_features_uses_python_compatible_fallbacks() {
         )
         .expect("hello should apply");
 
-    assert_eq!(session.server_persistent_rooms_supported(), Some(false));
+    assert!(!session.server_persistent_rooms_supported());
     assert_eq!(
         session.server_max_username_length(),
         Some(LEGACY_FALLBACK_MAX_USERNAME_LENGTH)
@@ -85,7 +137,7 @@ fn hello_records_server_shared_playlist_support_flag() {
             )
             .expect("hello should apply");
 
-    assert_eq!(session.server_shared_playlists_supported(), Some(false));
+    assert!(!session.server_shared_playlists_supported());
 }
 
 #[test]
@@ -96,7 +148,7 @@ fn hello_records_server_media_match_support_flag() {
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"mediaMatch":true}}}"#,
         )
         .expect("hello should apply");
-    assert_eq!(supported_session.server_media_match_supported(), Some(true));
+    assert!(supported_session.server_media_match_supported());
 
     let mut legacy_session = ClientSession::default();
     legacy_session
@@ -104,7 +156,7 @@ fn hello_records_server_media_match_support_flag() {
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
         )
         .expect("hello should apply");
-    assert_eq!(legacy_session.server_media_match_supported(), Some(false));
+    assert!(!legacy_session.server_media_match_supported());
 }
 
 #[test]
@@ -116,7 +168,7 @@ fn hello_records_server_managed_rooms_support_flag() {
             )
             .expect("hello should apply");
 
-    assert_eq!(session.server_managed_rooms_supported(), Some(false));
+    assert!(!session.server_managed_rooms_supported());
 }
 
 #[test]
@@ -127,10 +179,7 @@ fn hello_without_features_uses_legacy_version_gate_for_shared_playlist_support()
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.3.255"}}"#,
         )
         .expect("hello should apply");
-    assert_eq!(
-        old_server_session.server_shared_playlists_supported(),
-        Some(false)
-    );
+    assert!(!old_server_session.server_shared_playlists_supported());
 
     let mut new_server_session = ClientSession::default();
     new_server_session
@@ -138,10 +187,7 @@ fn hello_without_features_uses_legacy_version_gate_for_shared_playlist_support()
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.4.0"}}"#,
         )
         .expect("hello should apply");
-    assert_eq!(
-        new_server_session.server_shared_playlists_supported(),
-        Some(true)
-    );
+    assert!(new_server_session.server_shared_playlists_supported());
 }
 
 #[test]
@@ -152,10 +198,7 @@ fn hello_without_features_uses_legacy_version_gate_for_managed_rooms_support() {
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
         )
         .expect("hello should apply");
-    assert_eq!(
-        old_server_session.server_managed_rooms_supported(),
-        Some(false)
-    );
+    assert!(!old_server_session.server_managed_rooms_supported());
 
     let mut new_server_session = ClientSession::default();
     new_server_session
@@ -163,10 +206,7 @@ fn hello_without_features_uses_legacy_version_gate_for_managed_rooms_support() {
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.3.0"}}"#,
         )
         .expect("hello should apply");
-    assert_eq!(
-        new_server_session.server_managed_rooms_supported(),
-        Some(true)
-    );
+    assert!(new_server_session.server_managed_rooms_supported());
 }
 
 #[test]
@@ -177,7 +217,7 @@ fn hello_without_features_uses_legacy_version_gate_for_readiness_support() {
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
         )
         .expect("hello should apply");
-    assert_eq!(old_server_session.server_readiness_supported(), Some(false));
+    assert!(!old_server_session.server_readiness_supported());
 
     let mut new_server_session = ClientSession::default();
     new_server_session
@@ -185,7 +225,7 @@ fn hello_without_features_uses_legacy_version_gate_for_readiness_support() {
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.3.0"}}"#,
         )
         .expect("hello should apply");
-    assert_eq!(new_server_session.server_readiness_supported(), Some(true));
+    assert!(new_server_session.server_readiness_supported());
 }
 
 #[test]
@@ -196,7 +236,7 @@ fn hello_without_features_uses_legacy_version_gate_for_chat_support() {
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
         )
         .expect("hello should apply");
-    assert_eq!(old_server_session.server_chat_supported(), Some(false));
+    assert!(!old_server_session.server_chat_supported());
 
     let mut feature_list_session = ClientSession::default();
     feature_list_session
@@ -204,7 +244,7 @@ fn hello_without_features_uses_legacy_version_gate_for_chat_support() {
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
         )
         .expect("hello should apply");
-    assert_eq!(feature_list_session.server_chat_supported(), Some(true));
+    assert!(feature_list_session.server_chat_supported());
 }
 
 #[test]
@@ -215,10 +255,7 @@ fn hello_without_features_uses_legacy_version_gate_for_set_others_readiness_supp
                 r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.1","features":{"readiness":true}}}"#,
             )
             .expect("hello should apply");
-    assert_eq!(
-        old_server_session.server_set_others_readiness_supported(),
-        Some(false)
-    );
+    assert!(!old_server_session.server_set_others_readiness_supported());
 
     let mut new_server_session = ClientSession::default();
     new_server_session
@@ -226,10 +263,7 @@ fn hello_without_features_uses_legacy_version_gate_for_set_others_readiness_supp
                 r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"readiness":true}}}"#,
             )
             .expect("hello should apply");
-    assert_eq!(
-        new_server_session.server_set_others_readiness_supported(),
-        Some(true)
-    );
+    assert!(new_server_session.server_set_others_readiness_supported());
 }
 
 #[test]
@@ -343,8 +377,8 @@ fn apply_protocol_message_applies_chat_without_mutating_identity_state() {
     session
         .apply_protocol_message(message)
         .expect("chat protocol message should apply");
-    assert!(session.username.is_none());
-    assert!(session.room.is_none());
+    assert!(session.model.connection.username.is_none());
+    assert!(session.model.room.name.is_none());
     assert_eq!(
         session.runtime_actions_for_chat_notifications_if_needed(),
         vec![ClientRuntimeAction::NotifyChat(ChatNotification::Message {
@@ -377,16 +411,27 @@ fn list_set_and_state_messages_reconcile_client_view() {
     assert_eq!(session.user_room("bob"), Some("room2"));
     assert_eq!(session.user_ready("bob"), Some(true));
     assert_eq!(session.user_file_name("bob"), Some("bob.mp4"));
-    assert_eq!(session.user_file_size("bob"), Some(&json!("15e2b0d3c338")));
-    assert_eq!(session.user_file_duration("bob"), Some(&json!(95.5)));
     assert_eq!(
-        session.user_media_match_signature("bob"),
-        Some(&json!({
-            "schema": "sorotte.mediaMatch.v3",
-            "profiles": [{"profile": "audio-constellation-v3"}]
-        }))
+        session.user_file_size("bob").map(FileSize::to_json_value),
+        Some(json!("15e2b0d3c338"))
     );
-    assert_eq!(session.user_features("bob"), Some(&json!({"uiMode":"GUI"})));
+    assert_eq!(session.user_file_duration("bob"), Some(95.5));
+    assert_eq!(session.user_media_match_signature("bob"), None);
+    assert_eq!(
+        session
+            .user_capabilities("bob")
+            .and_then(|capabilities| capabilities.ui_mode.as_deref()),
+        Some("GUI")
+    );
+    assert!(
+        session
+            .drain_compatibility_fallbacks()
+            .iter()
+            .any(|fallback| matches!(
+                fallback,
+                crate::ClientCompatibilityFallback::IgnoredInvalidMediaMatch { .. }
+            ))
+    );
     assert_eq!(session.user_controller("bob"), Some(true));
 
     session
@@ -399,10 +444,11 @@ fn list_set_and_state_messages_reconcile_client_view() {
             r#"{"Set":{"features":{"username":"bob","features":{"chat":true,"readiness":true}}}}"#,
         )
         .expect("set features update should apply");
-    assert_eq!(
-        session.user_features("bob"),
-        Some(&json!({"chat":true,"readiness":true}))
-    );
+    let bob_capabilities = session
+        .user_capabilities("bob")
+        .expect("typed peer capabilities should apply");
+    assert!(bob_capabilities.chat);
+    assert!(bob_capabilities.readiness);
 
     session
             .apply_message_json(
@@ -417,8 +463,10 @@ fn list_set_and_state_messages_reconcile_client_view() {
     assert_eq!(session.user_file_duration("bob"), None);
     assert_eq!(session.user_media_match_signature("bob"), None);
     assert_eq!(
-        session.user_features("bob"),
-        Some(&json!({"uiMode":"desktop"}))
+        session
+            .user_capabilities("bob")
+            .and_then(|capabilities| capabilities.ui_mode.as_deref()),
+        Some("desktop")
     );
     assert_eq!(session.user_controller("bob"), Some(true));
 
@@ -434,6 +482,48 @@ fn list_set_and_state_messages_reconcile_client_view() {
     assert_eq!(playstate.paused, Some(false));
     assert_eq!(playstate.do_seek, Some(true));
     assert_eq!(playstate.set_by.as_deref(), Some("alice"));
+}
+
+#[test]
+fn set_commands_apply_in_wire_order_after_normalization() {
+    let mut session = ClientSession::default();
+    session
+        .apply_hello_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"initial"},"version":"1.7.5","features":{}}}"#,
+        )
+        .expect("hello should apply");
+
+    session
+        .apply_message_json(
+            r#"{"Set":{"user":{"alice":{"room":{"name":"from-user"}}},"room":{"name":"from-room"}}}"#,
+        )
+        .expect("ordered Set should apply");
+
+    assert_eq!(session.room(), Some("from-room"));
+    assert_eq!(session.user_room("alice"), Some("from-room"));
+}
+
+#[test]
+fn invalid_file_extensions_become_typed_compatibility_fallbacks() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Set":{"user":{"bob":{"file":{"name":"movie.mkv","size":{"nested":true},"mediaMatch":{"schema":"unsupported","profiles":[]}}}}}}"#,
+        )
+        .expect("compatible fields should still apply");
+
+    assert_eq!(session.user_file_name("bob"), Some("movie.mkv"));
+    assert_eq!(session.user_file_size("bob"), None);
+    assert_eq!(session.user_media_match_signature("bob"), None);
+    let fallbacks = session.drain_compatibility_fallbacks();
+    assert!(fallbacks.iter().any(|fallback| matches!(
+        fallback,
+        crate::ClientCompatibilityFallback::IgnoredInvalidFileSize { .. }
+    )));
+    assert!(fallbacks.iter().any(|fallback| matches!(
+        fallback,
+        crate::ClientCompatibilityFallback::IgnoredInvalidMediaMatch { .. }
+    )));
 }
 
 #[test]
@@ -471,8 +561,11 @@ fn set_user_falsy_file_payload_does_not_clear_existing_file() {
             .expect("initial user file should apply");
     assert_eq!(session.user_has_file("bob"), Some(true));
     assert_eq!(session.user_file_name("bob"), Some("bob.mp4"));
-    assert_eq!(session.user_file_size("bob"), Some(&json!(123456789)));
-    assert_eq!(session.user_file_duration("bob"), Some(&json!(95.5)));
+    assert_eq!(
+        session.user_file_size("bob").map(FileSize::to_json_value),
+        Some(json!(123456789))
+    );
+    assert_eq!(session.user_file_duration("bob"), Some(95.5));
 
     session
         .apply_message_json(
@@ -481,8 +574,11 @@ fn set_user_falsy_file_payload_does_not_clear_existing_file() {
         .expect("falsy file payload should be accepted");
     assert_eq!(session.user_has_file("bob"), Some(true));
     assert_eq!(session.user_file_name("bob"), Some("bob.mp4"));
-    assert_eq!(session.user_file_size("bob"), Some(&json!(123456789)));
-    assert_eq!(session.user_file_duration("bob"), Some(&json!(95.5)));
+    assert_eq!(
+        session.user_file_size("bob").map(FileSize::to_json_value),
+        Some(json!(123456789))
+    );
+    assert_eq!(session.user_file_duration("bob"), Some(95.5));
 }
 
 #[test]
@@ -500,8 +596,11 @@ fn list_snapshot_file_payload_can_clear_existing_file_state() {
             .expect("initial user file should apply");
     assert_eq!(session.user_has_file("bob"), Some(true));
     assert_eq!(session.user_file_name("bob"), Some("bob.mp4"));
-    assert_eq!(session.user_file_size("bob"), Some(&json!(123456789)));
-    assert_eq!(session.user_file_duration("bob"), Some(&json!(95.5)));
+    assert_eq!(
+        session.user_file_size("bob").map(FileSize::to_json_value),
+        Some(json!(123456789))
+    );
+    assert_eq!(session.user_file_duration("bob"), Some(95.5));
 
     session
             .apply_message_json(
@@ -531,32 +630,29 @@ fn list_snapshot_file_payload_tracks_mixed_raw_and_hashed_metadata() {
     assert_eq!(session.user_has_file("alice"), Some(true));
     assert_eq!(session.user_file_name("alice"), Some("**Hidden filename**"));
     assert_eq!(
-        session.user_file_size("alice"),
-        Some(&json!("15e2b0d3c338"))
+        session.user_file_size("alice").map(FileSize::to_json_value),
+        Some(json!("15e2b0d3c338"))
     );
-    assert_eq!(session.user_file_duration("alice"), Some(&json!(95)));
+    assert_eq!(session.user_file_duration("alice"), Some(95.0));
 
     assert_eq!(session.user_has_file("bob"), Some(true));
     assert_eq!(session.user_file_name("bob"), Some("movie.mkv"));
-    assert_eq!(session.user_file_size("bob"), Some(&json!(123456789)));
-    assert_eq!(session.user_file_duration("bob"), Some(&json!(95.5)));
     assert_eq!(
-        session.user_media_match_signature("bob"),
-        Some(&json!({
+        session.user_file_size("bob").map(FileSize::to_json_value),
+        Some(json!(123456789))
+    );
+    assert_eq!(session.user_file_duration("bob"), Some(95.5));
+    let signature = session
+        .user_media_match_signature("bob")
+        .expect("valid media signature should be normalized");
+    assert_eq!(
+        serde_json::to_value(signature).expect("signature should serialize"),
+        json!({
             "schema": "sorotte.mediaMatch.v3",
-            "profiles": [{"profile": "audio-constellation-v3", "algorithmVersion": 3}]
-        }))
+            "profiles": [{"profile": "audio-constellation-v3", "algorithmVersion": 3, "durationMs": null, "audio": null}]
+        })
     );
-    assert_eq!(
-        session.current_room_media_match_signatures(),
-        vec![(
-            "bob".to_owned(),
-            json!({
-                "schema": "sorotte.mediaMatch.v3",
-                "profiles": [{"profile": "audio-constellation-v3", "algorithmVersion": 3}]
-            })
-        )]
-    );
+    assert_eq!(session.current_room_media_match_signatures().len(), 1);
 }
 
 #[test]
@@ -572,10 +668,11 @@ fn top_level_set_features_defaults_to_local_user_when_username_is_omitted() {
         .apply_message_json(r#"{"Set":{"features":{"chat":true,"managedRooms":true}}}"#)
         .expect("top-level local feature update should apply");
 
-    assert_eq!(
-        session.user_features("alice"),
-        Some(&json!({"chat":true,"managedRooms":true}))
-    );
+    let capabilities = session
+        .user_capabilities("alice")
+        .expect("typed local capabilities should apply");
+    assert!(capabilities.chat);
+    assert!(capabilities.managed_rooms);
 }
 
 #[test]
@@ -672,4 +769,69 @@ fn list_snapshot_empty_file_payload_does_not_block_readiness_checks() {
         !session.all_other_users_in_current_room_ready(),
         "non-ready users with file metadata should block readiness checks"
     );
+}
+
+#[test]
+fn forward_compatible_file_presence_is_distinct_from_known_metadata() {
+    let cases: Value = serde_json::from_str(include_str!(
+        "../../../../../fixtures/compatibility/file_presence.json"
+    ))
+    .expect("file-presence compatibility fixture should decode");
+
+    for case in cases
+        .as_array()
+        .expect("file-presence fixture should be an array")
+    {
+        let label = case["label"]
+            .as_str()
+            .expect("file-presence case should have a label");
+        let payload = case["payload"].clone();
+        let expected_has_file = case["hasFile"]
+            .as_bool()
+            .expect("file-presence case should have hasFile");
+        let expected_name = case["name"].as_str();
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+
+        let message = json!({
+            "Set": {
+                "user": {
+                    "bob": {
+                        "room": {"name": "room1"},
+                        "file": payload
+                    }
+                }
+            }
+        });
+        session
+            .apply_message_json(&message.to_string())
+            .unwrap_or_else(|error| panic!("{label} should apply: {error}"));
+
+        assert_eq!(
+            session.user_has_file("bob"),
+            Some(expected_has_file),
+            "wrong presence for {label}"
+        );
+        assert_eq!(
+            session.user_file_name("bob"),
+            expected_name,
+            "wrong known metadata for {label}"
+        );
+        if expected_name.is_none() {
+            assert_eq!(
+                session.user_file_size("bob"),
+                None,
+                "{label} should not synthesize a known size"
+            );
+            assert_eq!(
+                session.user_file_duration("bob"),
+                None,
+                "{label} should not synthesize a known duration"
+            );
+        }
+    }
 }

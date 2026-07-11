@@ -387,7 +387,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_session_runtime_for_session_
 
     handle.push_request(GuiRuntimeRequest::RequestControllerAuth {
         room: "+room:ABCDEF123456".to_owned(),
-        password: "ab-123-456".to_owned(),
+        password: "ab-123-456".into(),
     });
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     assert!(drain_actions_except_media_index(&handle, &mut state).is_empty());

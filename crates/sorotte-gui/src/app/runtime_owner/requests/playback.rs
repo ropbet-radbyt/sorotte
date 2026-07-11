@@ -1,6 +1,42 @@
 use super::*;
+use crate::app::feature_slices::player::Command;
 
 impl GuiPersistedConfigRuntimeOwner {
+    pub(in crate::app::runtime_owner) fn handle_player_command(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        command: Command,
+    ) -> bool {
+        match command {
+            Command::UndoSeek => self.handle_undo_seek_request(handle, projected_state),
+            Command::SetOffset(command) => {
+                self.handle_set_offset_request(handle, projected_state, command)
+            }
+            Command::SetAutoplayEnabled(enabled) => {
+                self.handle_set_autoplay_enabled_request(handle, projected_state, enabled)
+            }
+            Command::SetAutoplayThreshold(threshold) => {
+                self.handle_set_autoplay_threshold_request(handle, projected_state, threshold)
+            }
+            Command::RetryLaunch => {
+                self.handle_retry_player_launch_request(handle, projected_state)
+            }
+            Command::SeekOffset(offset_seconds) => {
+                self.handle_seek_offset_request(handle, projected_state, offset_seconds)
+            }
+            Command::SeekToPosition(position_seconds) => {
+                self.handle_seek_to_position_request(handle, projected_state, position_seconds)
+            }
+            Command::SetPaused(paused) => {
+                self.handle_set_playback_paused_request(handle, projected_state, paused)
+            }
+            Command::TogglePause => {
+                self.handle_toggle_playback_pause_request(handle, projected_state)
+            }
+        }
+    }
+
     pub(super) fn handle_retry_player_launch_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,

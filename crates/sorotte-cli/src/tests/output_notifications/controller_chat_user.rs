@@ -41,7 +41,7 @@ fn flush_controller_auth_notifications_to_sink_dispatches_attempt_notification()
         show_osd_warnings_override: None,
         show_noncontroller_osd_override: None,
         show_different_room_osd_override: None,
-        controlled_room_password_override: Some("AB-123-456".to_owned()),
+        controlled_room_password_override: Some("AB-123-456".into()),
     };
     let mut runtime = create_client_runtime(&config);
     runtime

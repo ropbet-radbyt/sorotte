@@ -8,7 +8,7 @@ use super::*;
     dead_code,
     reason = "The action enum is the full GUI command vocabulary; feature and smoke paths construct subsets."
 )]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(in crate::app) enum GuiShellAction {
     SwitchView(GuiShellView),
     SelectConfigurationTab(GuiConfigurationTab),
@@ -104,7 +104,7 @@ pub(in crate::app) enum GuiShellAction {
         section: &'static str,
         label: &'static str,
     },
-    UpdateConfigurationTextEdit(String),
+    UpdateConfigurationTextEdit(GuiConfigurationTextValue),
     CommitConfigurationTextEdit,
     CancelConfigurationTextEdit,
     BeginRoomHistoryEdit,
@@ -141,7 +141,7 @@ pub(in crate::app) enum GuiShellAction {
     UpdateCreateControlledRoomEdit(String),
     CancelCreateControlledRoomEdit,
     BeginControllerAuthEdit,
-    UpdateControllerAuthPasswordEdit(String),
+    UpdateControllerAuthPasswordEdit(SecretValue),
     CancelControllerAuthEdit,
     UpdateNewMainWindowUserDraft(String),
     CommitNewMainWindowUser,
@@ -189,6 +189,10 @@ pub(in crate::app) enum GuiShellAction {
         message: String,
     },
     AnnounceSystemChatEvent(String),
+    AnnounceControlledRoomCreated {
+        room: String,
+        password: SecretValue,
+    },
     ToggleSelectedMainWindowUserReady,
     ToggleSelectedMainWindowUserController,
     RemoveSelectedMainWindowUser,
@@ -220,7 +224,7 @@ pub(in crate::app) enum GuiShellAction {
     EditConfigurationText {
         section: &'static str,
         label: &'static str,
-        value: String,
+        value: GuiConfigurationTextValue,
     },
     EditConfigurationBool {
         section: &'static str,
@@ -290,7 +294,7 @@ pub(in crate::app) enum GuiShellAction {
     },
     RequestControllerAuth {
         room: String,
-        password: String,
+        password: SecretValue,
     },
     AddTrustedDomain(String),
     JoinMainWindowRoom(String),
@@ -302,4 +306,69 @@ pub(in crate::app) enum GuiShellAction {
         sender: String,
         message: String,
     },
+}
+
+impl std::fmt::Debug for GuiShellAction {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UpdateConfigurationTextEdit(value) => formatter
+                .debug_tuple("UpdateConfigurationTextEdit")
+                .field(value)
+                .finish(),
+            Self::EditConfigurationText {
+                section,
+                label,
+                value,
+            } => formatter
+                .debug_struct("EditConfigurationText")
+                .field("section", section)
+                .field("label", label)
+                .field("value", value)
+                .finish(),
+            Self::UpdateControllerAuthPasswordEdit(password) => formatter
+                .debug_tuple("UpdateControllerAuthPasswordEdit")
+                .field(password)
+                .finish(),
+            Self::AnnounceControlledRoomCreated { password, .. } => formatter
+                .debug_struct("AnnounceControlledRoomCreated")
+                .field("room", &sorotte_secret::REDACTED_SECRET)
+                .field("password", password)
+                .finish(),
+            Self::RequestControllerAuth { password, .. } => formatter
+                .debug_struct("RequestControllerAuth")
+                .field("room", &sorotte_secret::REDACTED_SECRET)
+                .field("password", password)
+                .finish(),
+            Self::RequestMainWindowUserMediaOpen(_) => formatter
+                .debug_tuple("RequestMainWindowUserMediaOpen")
+                .field(&sorotte_secret::REDACTED_SECRET)
+                .finish(),
+            Self::RequestMainWindowUserContainingFolderOpen(_) => formatter
+                .debug_tuple("RequestMainWindowUserContainingFolderOpen")
+                .field(&sorotte_secret::REDACTED_SECRET)
+                .finish(),
+            _ => formatter
+                .debug_tuple("GuiShellAction")
+                .field(&std::mem::discriminant(self))
+                .finish(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod media_target_debug_tests {
+    use super::*;
+
+    #[test]
+    fn shell_media_actions_redact_tokenized_targets() {
+        let secret = "https://media.example/video?token=shell-action-canary";
+        let actions = [
+            GuiShellAction::RequestMainWindowUserMediaOpen(secret.to_owned()),
+            GuiShellAction::RequestMainWindowUserContainingFolderOpen(secret.to_owned()),
+        ];
+
+        let debug = format!("{actions:?}");
+        assert!(debug.contains(sorotte_secret::REDACTED_SECRET));
+        assert!(!debug.contains("shell-action-canary"));
+    }
 }

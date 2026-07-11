@@ -7,133 +7,40 @@ const MPV_BUFFERING_DEFAULT_OPTIONS: &[(&str, &str)] = &[
     ("cache-pause-wait", "5"),
 ];
 
-fn timeout_ms_from_stored_client_setting_legacy_compatible(
-    value: Option<i64>,
-    default_ms: u64,
-) -> u64 {
-    value
-        .and_then(|seconds| {
-            let seconds = u64::try_from(seconds).ok()?;
-            seconds.checked_mul(1_000)
-        })
-        .unwrap_or(default_ms)
-}
-
 pub(crate) fn legacy_syncplay_ui_settings_from_stored_settings(
     settings: Option<&StoredClientSettingsMvp>,
 ) -> LegacySyncplayUiSettings {
-    let mut resolved = LegacySyncplayUiSettings::default();
-    let Some(settings) = settings else {
-        return resolved;
-    };
-
-    if let Some(show_osd) = settings.show_osd {
-        resolved.show_osd = show_osd;
+    let resolved = settings
+        .map(ClientConfig::resolve)
+        .map(|resolution| resolution.config)
+        .unwrap_or_default();
+    let interface = resolved.interface;
+    LegacySyncplayUiSettings {
+        show_osd: interface.show_osd,
+        chat_output_enabled: interface.chat_output_enabled,
+        chat_input_enabled: interface.chat_input_enabled,
+        chat_input_font_underline: interface.chat_input_font_underline,
+        chat_input_font_family: interface.chat_input_font_family,
+        chat_input_relative_font_size: interface.chat_input_relative_font_size,
+        chat_input_font_weight: interface.chat_input_font_weight,
+        chat_input_font_color: interface.chat_input_font_color,
+        chat_input_position: interface.chat_input_position,
+        chat_direct_input: interface.chat_direct_input,
+        chat_output_font_underline: interface.chat_output_font_underline,
+        chat_output_font_family: interface.chat_output_font_family,
+        chat_output_relative_font_size: interface.chat_output_relative_font_size,
+        chat_output_font_weight: interface.chat_output_font_weight,
+        chat_output_mode: interface.chat_output_mode,
+        chat_max_lines: interface.chat_max_lines,
+        chat_top_margin: interface.chat_top_margin,
+        chat_left_margin: interface.chat_left_margin,
+        chat_bottom_margin: interface.chat_bottom_margin,
+        chat_move_osd: interface.chat_move_osd,
+        chat_osd_margin: interface.chat_osd_margin,
+        notification_timeout_ms: interface.notification_timeout.as_millis(),
+        alert_timeout_ms: interface.alert_timeout.as_millis(),
+        chat_timeout_ms: interface.chat_timeout.as_millis(),
     }
-    if let Some(chat_output_enabled) = settings.chat_output_enabled {
-        resolved.chat_output_enabled = chat_output_enabled;
-    }
-    if let Some(chat_input_enabled) = settings.chat_input_enabled {
-        resolved.chat_input_enabled = chat_input_enabled;
-    }
-    if let Some(chat_input_font_underline) = settings.chat_input_font_underline {
-        resolved.chat_input_font_underline = chat_input_font_underline;
-    }
-    if let Some(chat_input_font_family) = settings
-        .chat_input_font_family
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        resolved.chat_input_font_family = chat_input_font_family.to_owned();
-    }
-    if let Some(chat_input_relative_font_size) = settings
-        .chat_input_relative_font_size
-        .filter(|value| *value > 0)
-    {
-        resolved.chat_input_relative_font_size = chat_input_relative_font_size;
-    }
-    if let Some(chat_input_font_weight) = settings.chat_input_font_weight {
-        resolved.chat_input_font_weight = chat_input_font_weight;
-    }
-    if let Some(chat_input_font_color) = settings
-        .chat_input_font_color
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        resolved.chat_input_font_color = chat_input_font_color.to_owned();
-    }
-    if let Some(chat_input_position) = settings
-        .chat_input_position
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        resolved.chat_input_position = chat_input_position.to_owned();
-    }
-    if let Some(chat_direct_input) = settings.chat_direct_input {
-        resolved.chat_direct_input = chat_direct_input;
-    }
-    if let Some(chat_output_font_underline) = settings.chat_output_font_underline {
-        resolved.chat_output_font_underline = chat_output_font_underline;
-    }
-    if let Some(chat_output_font_family) = settings
-        .chat_output_font_family
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        resolved.chat_output_font_family = chat_output_font_family.to_owned();
-    }
-    if let Some(chat_output_relative_font_size) = settings
-        .chat_output_relative_font_size
-        .filter(|value| *value > 0)
-    {
-        resolved.chat_output_relative_font_size = chat_output_relative_font_size;
-    }
-    if let Some(chat_output_font_weight) = settings.chat_output_font_weight {
-        resolved.chat_output_font_weight = chat_output_font_weight;
-    }
-    if let Some(chat_output_mode) = settings
-        .chat_output_mode
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        resolved.chat_output_mode = chat_output_mode.to_owned();
-    }
-    if let Some(chat_max_lines) = settings.chat_max_lines.filter(|value| *value > 0) {
-        resolved.chat_max_lines = chat_max_lines;
-    }
-    if let Some(chat_top_margin) = settings.chat_top_margin.filter(|value| *value >= 0) {
-        resolved.chat_top_margin = chat_top_margin;
-    }
-    if let Some(chat_left_margin) = settings.chat_left_margin.filter(|value| *value >= 0) {
-        resolved.chat_left_margin = chat_left_margin;
-    }
-    if let Some(chat_bottom_margin) = settings.chat_bottom_margin.filter(|value| *value >= 0) {
-        resolved.chat_bottom_margin = chat_bottom_margin;
-    }
-    if let Some(chat_move_osd) = settings.chat_move_osd {
-        resolved.chat_move_osd = chat_move_osd;
-    }
-    if let Some(chat_osd_margin) = settings.chat_osd_margin.filter(|value| *value >= 0) {
-        resolved.chat_osd_margin = chat_osd_margin;
-    }
-    resolved.notification_timeout_ms = timeout_ms_from_stored_client_setting_legacy_compatible(
-        settings.notification_timeout_seconds,
-        resolved.notification_timeout_ms,
-    );
-    resolved.alert_timeout_ms = timeout_ms_from_stored_client_setting_legacy_compatible(
-        settings.alert_timeout_seconds,
-        resolved.alert_timeout_ms,
-    );
-    resolved.chat_timeout_ms = timeout_ms_from_stored_client_setting_legacy_compatible(
-        settings.chat_timeout_seconds,
-        resolved.chat_timeout_ms,
-    );
-    resolved
 }
 
 fn legacy_syncplayintf_script_candidate_paths_legacy_compatible() -> Vec<PathBuf> {

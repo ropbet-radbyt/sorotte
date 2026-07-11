@@ -14,29 +14,40 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         if !legacy_chat_input_enabled(&settings) || state.pending_operation.is_some() {
             return command_availability;
         }
-        match self.runtime.session().server_chat_supported() {
-            Some(true) => {
-                command_availability.can_send_chat_message = true;
-                command_availability.chat_unavailable_reason = None;
-            }
-            None => {
-                command_availability.can_send_chat_message = false;
-                command_availability.chat_unavailable_reason = Some(
-                    "Chat input is unavailable until the server Hello confirms chat support."
-                        .to_owned(),
-                );
-            }
-            Some(false) => {
-                command_availability.can_send_chat_message = false;
-                command_availability.chat_unavailable_reason =
-                    Some("Chat input is unavailable because the server disabled chat.".to_owned());
-            }
+        let session = self.runtime.session();
+        if !session.is_active() {
+            command_availability.can_send_chat_message = false;
+            command_availability.chat_unavailable_reason = Some(
+                "Chat input is unavailable until the server Hello confirms chat support."
+                    .to_owned(),
+            );
+        } else if session.server_chat_supported() {
+            command_availability.can_send_chat_message = true;
+            command_availability.chat_unavailable_reason = None;
+        } else {
+            command_availability.can_send_chat_message = false;
+            command_availability.chat_unavailable_reason =
+                Some("Chat input is unavailable because the server disabled chat.".to_owned());
         }
         command_availability
     }
 
     fn playlist_control_available(&self) -> bool {
         self.shared_playlist_control_available()
+    }
+
+    fn begin_outbound_protocol_delivery(
+        &mut self,
+    ) -> Result<Option<GuiOutboundProtocolDelivery>, String> {
+        GuiClientCoreChatSessionRuntimeAdapter::begin_outbound_protocol_delivery(self)
+    }
+
+    fn acknowledge_outbound_protocol_delivery(&mut self, token: u64) -> Result<(), String> {
+        GuiClientCoreChatSessionRuntimeAdapter::acknowledge_outbound_protocol_delivery(self, token)
+    }
+
+    fn fail_outbound_protocol_delivery(&mut self, token: u64) -> Result<(), String> {
+        GuiClientCoreChatSessionRuntimeAdapter::fail_outbound_protocol_delivery(self, token)
     }
 
     fn flush_outbound_protocol_lines(&mut self) -> Result<Vec<String>, String> {
@@ -48,14 +59,17 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn set_room(&mut self, room: String) -> Result<(), String> {
-        match self.runtime.run_set_room(room) {
+        match self.dispatch_application_command(ClientCommand::SetRoom {
+            room,
+            legacy_fallback: false,
+        }) {
             Ok(true) => {
                 self.pending_room_for_next_hello =
                     self.latest_outbound_room_target_for_next_hello();
                 Ok(())
             }
             Ok(false) => {
-                if self.runtime.session().server_chat_supported().is_none() {
+                if !self.runtime.session().is_active() {
                     Err(
                         "Client-core session runtime cannot change rooms until the server Hello completes."
                             .to_owned(),
@@ -74,14 +88,17 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn set_room_with_legacy_fallback(&mut self, default_room: String) -> Result<(), String> {
-        match self.runtime.run_set_room_with_legacy_fallback(default_room) {
+        match self.dispatch_application_command(ClientCommand::SetRoom {
+            room: default_room,
+            legacy_fallback: true,
+        }) {
             Ok(true) => {
                 self.pending_room_for_next_hello =
                     self.latest_outbound_room_target_for_next_hello();
                 Ok(())
             }
             Ok(false) => {
-                if self.runtime.session().server_chat_supported().is_none() {
+                if !self.runtime.session().is_active() {
                     Err(
                         "Client-core session runtime cannot change rooms until the server Hello completes."
                             .to_owned(),
@@ -100,22 +117,27 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn send_chat_message(&mut self, message: String) -> Result<(), String> {
-        match self.runtime.run_send_chat_message(message) {
+        match self.dispatch_application_command(ClientCommand::SendChat(message)) {
             Ok(true) => Ok(()),
-            Ok(false) => match self.runtime.session().server_chat_supported() {
-                None => Err(
+            Ok(false) => {
+                let session = self.runtime.session();
+                if !session.is_active() {
+                    Err(
                     "Client-core session runtime cannot send chat until the server Hello enables chat."
                         .to_owned(),
-                ),
-                Some(false) => Err(
+                    )
+                } else if !session.server_chat_supported() {
+                    Err(
                     "Client-core session runtime cannot send chat because the server disabled chat."
                         .to_owned(),
-                ),
-                Some(true) => Err(
-                    "Client-core session runtime did not queue an outbound chat message."
-                        .to_owned(),
-                ),
-            },
+                    )
+                } else {
+                    Err(
+                        "Client-core session runtime did not queue an outbound chat message."
+                            .to_owned(),
+                    )
+                }
+            }
             Err(error) => Err(format!(
                 "Client-core session runtime chat dispatch failed: {error}"
             )),
@@ -123,43 +145,49 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn attached_player_chat_input_ready(&self) -> bool {
-        self.runtime.session().server_chat_supported() == Some(true)
+        self.runtime.session().server_chat_supported()
     }
 
     fn attached_player_chat_input_unavailable_message(&self) -> String {
-        match self.runtime.session().server_chat_supported() {
-            None => {
-                "Chat input from the attached player cannot be sent until the server Hello enables chat."
-                    .to_owned()
-            }
-            Some(false) => {
-                "Chat input from the attached player cannot be sent because the server disabled chat."
-                    .to_owned()
-            }
-            Some(true) => {
-                "Chat input from the attached player could not be sent because the session runtime is not ready."
-                    .to_owned()
-            }
+        let session = self.runtime.session();
+        if !session.is_active() {
+            "Chat input from the attached player cannot be sent until the server Hello enables chat."
+                .to_owned()
+        } else if !session.server_chat_supported() {
+            "Chat input from the attached player cannot be sent because the server disabled chat."
+                .to_owned()
+        } else {
+            "Chat input from the attached player could not be sent because the session runtime is not ready."
+                .to_owned()
         }
     }
 
     fn set_local_ready(&mut self, ready: bool) -> Result<(), String> {
-        match self.runtime.run_set_ready_for_user("", ready, true) {
+        match self.dispatch_application_command(ClientCommand::SetReady {
+            username: None,
+            ready: Some(ready),
+            manually_initiated: true,
+        }) {
             Ok(true) => Ok(()),
-            Ok(false) => match self.runtime.session().server_readiness_supported() {
-                None => Err(
+            Ok(false) => {
+                let session = self.runtime.session();
+                if !session.is_active() {
+                    Err(
                     "Client-core session runtime cannot change readiness until the server Hello enables readiness."
                         .to_owned(),
-                ),
-                Some(false) => Err(
+                    )
+                } else if !session.server_readiness_supported() {
+                    Err(
                     "Client-core session runtime cannot change readiness because the server disabled readiness."
                         .to_owned(),
-                ),
-                Some(true) => Err(
-                    "Client-core session runtime did not queue an outbound readiness change."
-                        .to_owned(),
-                ),
-            },
+                    )
+                } else {
+                    Err(
+                        "Client-core session runtime did not queue an outbound readiness change."
+                            .to_owned(),
+                    )
+                }
+            }
             Err(error) => Err(format!(
                 "Client-core session runtime readiness dispatch failed: {error}"
             )),
@@ -177,31 +205,36 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn set_user_ready(&mut self, username: String, ready: bool) -> Result<(), String> {
-        match self.runtime.run_set_ready_for_user(username, ready, true) {
+        match self.dispatch_application_command(ClientCommand::SetReady {
+            username: Some(username),
+            ready: Some(ready),
+            manually_initiated: true,
+        }) {
             Ok(true) => Ok(()),
-            Ok(false) => match self.runtime.session().server_set_others_readiness_supported() {
-                None => Err(
+            Ok(false) => {
+                let session = self.runtime.session();
+                if !session.is_active() {
+                    Err(
                     "Client-core session runtime cannot change other users' readiness until the server Hello enables remote readiness changes."
                         .to_owned(),
-                ),
-                Some(false) => Err(
+                    )
+                } else if !session.server_set_others_readiness_supported() {
+                    Err(
                     "Client-core session runtime cannot change other users' readiness because the server disabled remote readiness changes."
                         .to_owned(),
-                ),
-                Some(true) => {
-                    if self.runtime.session().local_can_control() != Some(true) {
-                        Err(
+                    )
+                } else if session.local_can_control() != Some(true) {
+                    Err(
                             "Client-core session runtime cannot change other users' readiness because the local user cannot control the current room."
                                 .to_owned(),
                         )
-                    } else {
-                        Err(
+                } else {
+                    Err(
                             "Client-core session runtime did not queue an outbound remote readiness change."
                                 .to_owned(),
                         )
-                    }
                 }
-            },
+            }
             Err(error) => Err(format!(
                 "Client-core session runtime readiness dispatch failed: {error}"
             )),
@@ -209,25 +242,17 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn request_controller_auth(&mut self, room: String, password: String) -> Result<(), String> {
-        match self.runtime.run_request_controller_auth(room, password) {
+        match self
+            .dispatch_application_command(ClientCommand::request_controller_auth(room, password))
+        {
             Ok(true) => Ok(()),
             Ok(false) => {
-                if self.runtime.session().username.is_none() {
+                if !self.runtime.session().is_active() {
                     Err(
                         "Client-core session runtime cannot request controller access until the server Hello is received."
                             .to_owned(),
                     )
-                } else if self
-                    .runtime
-                    .session()
-                    .server_managed_rooms_supported()
-                    .is_none()
-                {
-                    Err(
-                        "Client-core session runtime cannot request controller access until the server Hello enables controlled-room support."
-                            .to_owned(),
-                    )
-                } else if self.runtime.session().server_managed_rooms_supported() == Some(false) {
+                } else if !self.runtime.session().server_managed_rooms_supported() {
                     Err(
                         "Client-core session runtime cannot request controller access because the server disabled controlled-room support."
                             .to_owned(),
@@ -485,16 +510,16 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         paused: Option<bool>,
         position_seconds: Option<f64>,
     ) -> Result<(), String> {
-        self.runtime
-            .session_mut()
-            .apply_player_playback_telemetry_update(&PlayerPlaybackTelemetryUpdate {
+        self.dispatch_application_command(ClientCommand::PlayerPlaybackObserved(
+            PlayerPlaybackTelemetryUpdate {
                 paused,
                 position_seconds,
                 playback_rate: None,
                 paused_for_cache: None,
                 cache_buffering_percent: None,
-            });
-        Ok(())
+            },
+        ))
+        .map(|_| ())
     }
 
     fn sync_local_playback_cache_state(
@@ -502,16 +527,16 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         paused_for_cache: Option<bool>,
         cache_buffering_percent: Option<f64>,
     ) -> Result<(), String> {
-        self.runtime
-            .session_mut()
-            .apply_player_playback_telemetry_update(&PlayerPlaybackTelemetryUpdate {
+        self.dispatch_application_command(ClientCommand::PlayerPlaybackObserved(
+            PlayerPlaybackTelemetryUpdate {
                 paused: None,
                 position_seconds: None,
                 playback_rate: None,
                 paused_for_cache,
                 cache_buffering_percent,
-            });
-        Ok(())
+            },
+        ))
+        .map(|_| ())
     }
 
     fn set_playback_paused(&mut self, paused: bool) -> Result<bool, String> {
@@ -581,11 +606,11 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn local_username(&self) -> Option<&str> {
-        self.runtime.session().username.as_deref()
+        self.runtime.session().username()
     }
 
     fn server_handshake_completed(&self) -> bool {
-        self.runtime.session().server_chat_supported().is_some()
+        self.runtime.session().is_active()
     }
 
     fn current_room_playstate(&self) -> Option<GuiSessionRoomPlaystate> {
@@ -624,7 +649,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             .and_then(|index| usize::try_from(index).ok())
     }
 
-    fn server_media_match_supported(&self) -> Option<bool> {
+    fn server_media_match_supported(&self) -> bool {
         self.runtime.session().server_media_match_supported()
     }
 
@@ -655,7 +680,15 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn set_autoplay_enabled(&mut self, enabled: bool) -> Result<(), String> {
-        self.runtime.session_mut().set_autoplay_enabled(enabled);
+        let mut config = self.runtime_settings.config.clone();
+        config.readiness.autoplay_initial_state = enabled;
+        let active_room = self
+            .runtime
+            .session()
+            .local_room_command_target_with_legacy_fallback(&self.baseline_room);
+        self.dispatch_application_command(ClientCommand::update_settings(
+            ClientApplicationSettings::new(config).with_active_room(active_room),
+        ))?;
         let (readiness_supported, local_can_control, is_playing_music, recently_advanced) =
             self.autoplay_runtime_flags();
         self.runtime.update_autoplay_check(
@@ -668,10 +701,15 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn set_autoplay_threshold(&mut self, threshold: usize) -> Result<(), String> {
-        self.runtime
-            .session_mut()
-            .readiness_autoplay_config_mut()
-            .auto_play_threshold = Some(threshold);
+        let mut config = self.runtime_settings.config.clone();
+        config.readiness.autoplay_min_users = AutoplayThresholdOverride::Set(threshold);
+        let active_room = self
+            .runtime
+            .session()
+            .local_room_command_target_with_legacy_fallback(&self.baseline_room);
+        self.dispatch_application_command(ClientCommand::update_settings(
+            ClientApplicationSettings::new(config).with_active_room(active_room),
+        ))?;
         let (readiness_supported, local_can_control, is_playing_music, recently_advanced) =
             self.autoplay_runtime_flags();
         self.runtime.update_autoplay_check(
@@ -699,7 +737,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         Ok(())
     }
 
-    fn current_room_media_match_signatures(&self) -> Vec<(String, Value)> {
+    fn current_room_media_match_signatures(&self) -> Vec<(String, MediaMatchWireSignature)> {
         self.runtime.session().current_room_media_match_signatures()
     }
 
@@ -713,8 +751,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         &mut self,
         runtime_settings: &StoredClientSettingsRuntimeSnapshot,
     ) -> Result<(), String> {
-        self.apply_runtime_settings_snapshot(runtime_settings);
-        Ok(())
+        self.apply_runtime_settings_snapshot(runtime_settings)
     }
 
     fn handle_local_player_unpause_attempt(
@@ -728,11 +765,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             return Ok(GuiLocalPlayerUnpauseDecision::NotApplicable);
         }
 
-        let readiness_supported = self
-            .runtime
-            .session()
-            .server_readiness_supported()
-            .unwrap_or(false);
+        let readiness_supported = self.runtime.session().server_readiness_supported();
         if !readiness_supported {
             return Ok(GuiLocalPlayerUnpauseDecision::NotApplicable);
         }
@@ -769,11 +802,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             return Ok(());
         }
 
-        let readiness_supported = self
-            .runtime
-            .session()
-            .server_readiness_supported()
-            .unwrap_or(false);
+        let readiness_supported = self.runtime.session().server_readiness_supported();
         if !readiness_supported {
             return Ok(());
         }
@@ -879,8 +908,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
                     .to_owned(),
             );
         }
-        self.reset_session_for_reconnect();
-        Ok(())
+        self.reset_session_for_reconnect()
     }
 
     fn refresh_public_servers(

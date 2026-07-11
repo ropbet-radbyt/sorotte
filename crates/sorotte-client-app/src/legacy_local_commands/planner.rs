@@ -180,7 +180,7 @@ pub fn plan_local_input_command_legacy_compatible(
             });
             PlannedLocalInputCommand::RequestControllerAuth {
                 room: controlled_room_base_name_legacy_compatible(&room),
-                password: generate_room_password_legacy_compatible(),
+                password: generate_room_password_legacy_compatible().into(),
             }
         }
         LocalInputCommand::AuthController(password) => {

@@ -12,6 +12,7 @@ mod room_transitions;
 mod runtime_pump;
 mod session_transport;
 mod startup_player;
+mod updates;
 
 use std::{
     collections::{BTreeSet, HashMap, VecDeque},
@@ -29,17 +30,26 @@ use sorotte_client_app::app_boundary::{
         clear_sorotte_ini_stored_client_settings_mvp_at_path,
         load_sorotte_ini_stored_client_settings_mvp_from_path,
     },
-    state::{StoredClientSettingsMvp, stored_client_settings_runtime_snapshot_legacy_compatible},
+    state::{
+        ClientConfig, StoredClientSettingsMvp,
+        stored_client_settings_runtime_snapshot_legacy_compatible,
+    },
 };
 use sorotte_player_api::{LocalFileUpdate, PlayerAdapter};
 use sorotte_player_mpv::MpvAdapter;
 use sorotte_plex::{
-    PlexAuthPollResult, PlexAuthSession, PlexClientConfig, PlexHttpClient, PlexMatchCache,
-    PlexServerConnection, PlexStreamTarget, PlexSyncEngine, PlexSyncState, PlexSyncStatus,
-    PlexWatchEvent, SecretPlexPlaybackUrl, format_plex_playlist_uri,
+    PlexClientConfig, SecretPlexPlaybackUrl,
+    auth::{PlexAuthPollResult, PlexAuthService, PlexAuthSession},
+    cache::PlexMatchCache,
+    discovery::{PlexDiscoveryService, PlexServerConnection},
+    format_plex_playlist_uri,
+    http::PlexHttpClient,
+    library::{PlexLibraryService, PlexStreamTarget},
     plex_server_connection_kind_from_uri,
+    timeline::{PlexSyncEngine, PlexSyncState, PlexSyncStatus, PlexWatchEvent},
 };
 
+use self::updates::GuiUpdateRuntime;
 use super::media_match_support::{
     MediaMatchIndexRebuildResult, MediaMatchToolProgress,
     clear_persisted_media_match_cache_at_root, probe_media_match_runtime_snapshot,
@@ -54,10 +64,10 @@ use super::mpv_launch::{
 use super::runtime_bridge::GuiPendingRoomChangeRequest;
 use super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 use super::runtime_stack::{
-    GuiClientCoreChatSessionRuntimeAdapter, GuiLoopbackSessionTransportDriver, GuiOwnedPlayer,
-    GuiPlayerLaunchRuntimeState, GuiQueuedSessionTransportHandle, GuiSessionRoomPlaystate,
-    GuiSessionRuntimeAdapter, GuiSessionTransportDriver, GuiTestPlayerAdapter,
-    GuiThreadedTcpSessionTransportDriver,
+    GuiClientCoreChatSessionRuntimeAdapter, GuiLoopbackSessionTransportDriver,
+    GuiOutboundProtocolDeliveryResult, GuiOwnedPlayer, GuiPlayerLaunchRuntimeState,
+    GuiQueuedSessionTransportHandle, GuiSessionRoomPlaystate, GuiSessionRuntimeAdapter,
+    GuiSessionTransportDriver, GuiTestPlayerAdapter, GuiThreadedTcpSessionTransportDriver,
 };
 use super::shell_state::{
     GuiCommandAvailabilityState, GuiConfigurationRuntimeSnapshot,
@@ -68,7 +78,7 @@ use super::shell_state::{
     GuiTransientNotificationLevel, SorotteGuiShellAppState,
 };
 use super::startup::{
-    explicit_mpv_ipc_path_from_lookup, gui_startup_remote_actions,
+    explicit_mpv_ipc_path_from_lookup, gui_startup_public_server_actions_with_fetcher,
     resolve_sorotte_gui_config_path_legacy_compatible,
 };
 use super::startup_support::{env_flag_enabled_lookup, env_trimmed};
@@ -82,6 +92,7 @@ use super::ui_state::clear_legacy_gui_qsettings_files_at_root;
 
 pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) config_path: Option<PathBuf>,
+    pub(super) legacy_projection: Option<SorotteGuiShellAppState>,
     pub(super) session: Option<Box<dyn GuiSessionRuntimeAdapter + Send>>,
     pub(super) session_projects_to_shell: bool,
     pub(super) session_transport: Option<GuiQueuedSessionTransportHandle>,
@@ -95,9 +106,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) startup_saved_connect_attempted: bool,
     pub(super) startup_remote_actions_attempted: bool,
     pub(super) startup_remote_actions_rx: Option<mpsc::Receiver<Vec<GuiShellAction>>>,
-    pub(super) background_update_check_rx:
-        Option<mpsc::Receiver<super::remote_services::LegacyUpdateCheckResult>>,
-    pub(super) background_update_check_next_due_at: Option<Instant>,
+    pub(super) update_runtime: GuiUpdateRuntime,
     pub(super) startup_stream_helper_probe_completed: bool,
     pub(super) startup_stream_helper_probe_rx:
         Option<mpsc::Receiver<GuiStreamHelperRuntimeSnapshot>>,
@@ -161,11 +170,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) plex_servers: Vec<PlexServerConnection>,
     pub(super) plex_server_reachability: HashMap<String, GuiPlexServerReachability>,
     pub(super) startup_plex_server_refresh_attempted: bool,
-    pub(super) startup_plex_server_refresh_rx:
-        Option<mpsc::Receiver<Result<GuiPlexServerRefreshOutcome, String>>>,
-    pub(super) plex_server_refresh_rx:
-        Option<mpsc::Receiver<Result<GuiPlexServerRefreshOutcome, String>>>,
-    pub(super) plex_server_refresh_context: Option<GuiPlexServerRefreshContext>,
+    pub(super) plex_server_discovery: GuiPlexServerDiscoveryCoordinator,
     pub(super) plex_sync_engine: Option<PlexSyncEngine<PlexHttpClient>>,
     pub(super) plex_sync_rx: Option<mpsc::Receiver<GuiPlexSyncWorkerResult>>,
     pub(super) plex_sync_next_tick_due_at: Option<Instant>,
@@ -198,8 +203,29 @@ pub(super) struct GuiPlexServerRefreshOutcome {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum GuiPlexServerRefreshContext {
+    Startup,
     Manual,
     Login,
+}
+
+#[derive(Default)]
+pub(super) struct GuiPlexServerDiscoveryCoordinator {
+    pub(super) generation: u64,
+    pub(super) active: Option<GuiPlexServerDiscoveryJob>,
+}
+
+pub(super) struct GuiPlexServerDiscoveryJob {
+    pub(super) generation: u64,
+    pub(super) token: sorotte_secret::SecretValue,
+    pub(super) context: GuiPlexServerRefreshContext,
+    pub(super) receiver: mpsc::Receiver<GuiPlexServerDiscoveryWorkerResult>,
+}
+
+pub(super) struct GuiPlexServerDiscoveryWorkerResult {
+    pub(super) generation: u64,
+    pub(super) token: sorotte_secret::SecretValue,
+    pub(super) context: GuiPlexServerRefreshContext,
+    pub(super) result: Result<GuiPlexServerRefreshOutcome, String>,
 }
 
 pub(super) struct GuiPlexSyncWorkerResult {
@@ -218,24 +244,56 @@ pub(super) struct GuiPlexPlaylistResolveWorkerResult {
     pub(super) result: Result<String, String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(super) struct GuiPlexStreamResolveOutcome {
     pub(super) stream_target: Option<PlexStreamTarget>,
     pub(super) cache: PlexMatchCache,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+impl std::fmt::Debug for GuiPlexStreamResolveOutcome {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuiPlexStreamResolveOutcome")
+            .field("stream_target_resolved", &self.stream_target.is_some())
+            .field("cache", &sorotte_secret::REDACTED_SECRET)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq)]
 pub(super) struct GuiPlexStreamResolveWorkerResult {
     pub(super) trigger_key: String,
     pub(super) target: String,
     pub(super) result: Result<GuiPlexStreamResolveOutcome, String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl std::fmt::Debug for GuiPlexStreamResolveWorkerResult {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuiPlexStreamResolveWorkerResult")
+            .field("trigger_key", &sorotte_secret::REDACTED_SECRET)
+            .field("target", &sorotte_secret::REDACTED_SECRET)
+            .field("result_succeeded", &self.result.is_ok())
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub(super) struct GuiPendingPlaylistSourceResolution {
     pub(super) index: usize,
     pub(super) target: String,
     pub(super) provider_id: GuiMediaSourceProviderId,
+}
+
+impl std::fmt::Debug for GuiPendingPlaylistSourceResolution {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuiPendingPlaylistSourceResolution")
+            .field("index", &self.index)
+            .field("target", &sorotte_secret::REDACTED_SECRET)
+            .field("provider_id", &self.provider_id)
+            .finish()
+    }
 }
 
 #[derive(Debug)]
@@ -252,10 +310,26 @@ pub(super) enum GuiMediaMatchBackgroundWorkerEvent {
     Finished(Result<MediaMatchIndexRebuildResult, String>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) struct GuiMediaMatchRemoteLookupResult {
     pub(super) trigger_key: String,
     pub(super) candidate_path: Option<String>,
+}
+
+impl std::fmt::Debug for GuiMediaMatchRemoteLookupResult {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuiMediaMatchRemoteLookupResult")
+            .field("trigger_key", &sorotte_secret::REDACTED_SECRET)
+            .field(
+                "candidate_path",
+                &self
+                    .candidate_path
+                    .as_ref()
+                    .map(|_| sorotte_secret::REDACTED_SECRET),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -315,7 +389,7 @@ pub(super) enum GuiAttachedMediaSearchBuildStatus {
     Cancelled,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) enum GuiUserMediaTargetResolution {
     Resolved {
         path: String,
@@ -325,6 +399,20 @@ pub(super) enum GuiUserMediaTargetResolution {
     Missing,
 }
 
+impl std::fmt::Debug for GuiUserMediaTargetResolution {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Resolved { source, .. } => formatter
+                .debug_struct("Resolved")
+                .field("path", &sorotte_secret::REDACTED_SECRET)
+                .field("source", source)
+                .finish(),
+            Self::Pending => formatter.write_str("Pending"),
+            Self::Missing => formatter.write_str("Missing"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum GuiUserMediaTargetResolutionSource {
     QuickLocal,
@@ -332,7 +420,7 @@ pub(super) enum GuiUserMediaTargetResolutionSource {
     MediaSearchIndex,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) struct GuiAutomaticMediaResolutionTrigger {
     pub(super) target: String,
     pub(super) source_provider: String,
@@ -343,6 +431,30 @@ pub(super) struct GuiAutomaticMediaResolutionTrigger {
     pub(super) retry_due: bool,
 }
 
+impl std::fmt::Debug for GuiAutomaticMediaResolutionTrigger {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuiAutomaticMediaResolutionTrigger")
+            .field("target", &sorotte_secret::REDACTED_SECRET)
+            .field("source_provider", &self.source_provider)
+            .field("root_count", &self.roots.len())
+            .field(
+                "media_match_remote_targets",
+                &sorotte_secret::REDACTED_SECRET,
+            )
+            .field(
+                "current_player_path",
+                &self
+                    .current_player_path
+                    .as_ref()
+                    .map(|_| sorotte_secret::REDACTED_SECRET),
+            )
+            .field("index_revision", &self.index_revision)
+            .field("retry_due", &self.retry_due)
+            .finish()
+    }
+}
+
 pub(super) struct GuiPendingAttachedMediaResolution {
     pub(super) roots: Vec<String>,
     pub(super) cancel_flag: Arc<AtomicBool>,
@@ -350,10 +462,20 @@ pub(super) struct GuiPendingAttachedMediaResolution {
     pub(super) result_rx: std::sync::mpsc::Receiver<GuiAttachedMediaSearchBuildStatus>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) struct GuiPendingStreamLoadContext {
     pub(super) requested_target: String,
     pub(super) user_initiated: bool,
+}
+
+impl std::fmt::Debug for GuiPendingStreamLoadContext {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuiPendingStreamLoadContext")
+            .field("requested_target", &sorotte_secret::REDACTED_SECRET)
+            .field("user_initiated", &self.user_initiated)
+            .finish()
+    }
 }
 
 #[derive(Clone, PartialEq)]
@@ -367,9 +489,9 @@ pub(super) struct GuiPendingLogicalMediaOverride {
 impl std::fmt::Debug for GuiPendingLogicalMediaOverride {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GuiPendingLogicalMediaOverride")
-            .field("requested_target", &self.requested_target)
+            .field("requested_target", &sorotte_secret::REDACTED_SECRET)
             .field("loaded_target_secret", &self.loaded_target_secret)
-            .field("logical_file", &self.logical_file)
+            .field("logical_file", &sorotte_secret::REDACTED_SECRET)
             .field("user_initiated", &self.user_initiated)
             .finish()
     }
@@ -387,6 +509,59 @@ impl GuiAttachedMediaSearchIndex {
             roots,
             root_indexes_by_key: HashMap::new(),
             roots_requiring_refresh: BTreeSet::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod media_target_debug_tests {
+    use super::*;
+
+    #[test]
+    fn media_resolution_and_stream_contexts_redact_tokenized_targets() {
+        let secret = "https://media.example/item?token=runtime-owner-canary";
+        let trigger = GuiAutomaticMediaResolutionTrigger {
+            target: secret.to_owned(),
+            source_provider: "plex".to_owned(),
+            roots: vec![secret.to_owned()],
+            media_match_remote_targets: secret.to_owned(),
+            current_player_path: Some(secret.to_owned()),
+            index_revision: 7,
+            retry_due: true,
+        };
+        let stream_context = GuiPendingStreamLoadContext {
+            requested_target: secret.to_owned(),
+            user_initiated: true,
+        };
+        let pending_playlist = GuiPendingPlaylistSourceResolution {
+            index: 2,
+            target: secret.to_owned(),
+            provider_id: GuiMediaSourceProviderId::plex_stream(),
+        };
+        let resolved = GuiUserMediaTargetResolution::Resolved {
+            path: secret.to_owned(),
+            source: GuiUserMediaTargetResolutionSource::QuickLocal,
+        };
+        let remote_lookup = GuiMediaMatchRemoteLookupResult {
+            trigger_key: secret.to_owned(),
+            candidate_path: Some(secret.to_owned()),
+        };
+        let plex_worker = GuiPlexStreamResolveWorkerResult {
+            trigger_key: secret.to_owned(),
+            target: secret.to_owned(),
+            result: Err(secret.to_owned()),
+        };
+
+        for debug in [
+            format!("{trigger:?}"),
+            format!("{stream_context:?}"),
+            format!("{pending_playlist:?}"),
+            format!("{resolved:?}"),
+            format!("{remote_lookup:?}"),
+            format!("{plex_worker:?}"),
+        ] {
+            assert!(debug.contains(sorotte_secret::REDACTED_SECRET));
+            assert!(!debug.contains("runtime-owner-canary"));
         }
     }
 }

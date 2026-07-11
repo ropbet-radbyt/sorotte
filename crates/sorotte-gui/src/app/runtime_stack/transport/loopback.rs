@@ -1,4 +1,6 @@
-use super::handle::{GuiQueuedSessionTransportHandle, GuiSessionTransportDriver};
+use super::handle::{
+    GuiOutboundProtocolDeliveryResult, GuiQueuedSessionTransportHandle, GuiSessionTransportDriver,
+};
 
 pub(in crate::app) struct GuiLoopbackSessionTransportDriver {
     echo_username: String,
@@ -58,6 +60,16 @@ impl GuiLoopbackSessionTransportDriver {
 
 impl GuiSessionTransportDriver for GuiLoopbackSessionTransportDriver {
     fn pump(&mut self, transport: &GuiQueuedSessionTransportHandle) -> Result<(), String> {
+        if let Some(delivery) = transport.take_outbound_protocol_delivery_for_driver() {
+            let inbound_line = self.translated_inbound_line(&delivery.line);
+            transport.push_inbound_protocol_line(inbound_line);
+            transport.publish_outbound_protocol_delivery_result(
+                GuiOutboundProtocolDeliveryResult::FrameWritten {
+                    token: delivery.token,
+                },
+            );
+        }
+
         let outbound_protocol_lines = transport.drain_outbound_protocol_lines();
         if outbound_protocol_lines.is_empty() {
             return Ok(());

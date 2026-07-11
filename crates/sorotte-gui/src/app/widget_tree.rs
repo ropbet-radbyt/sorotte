@@ -66,7 +66,7 @@ impl GuiWidgetKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(super) struct GuiWidgetNode {
     pub(super) id: String,
     pub(super) label: String,
@@ -81,7 +81,34 @@ pub(super) struct GuiWidgetNode {
     pub(super) children: Vec<GuiWidgetNode>,
 }
 
+impl std::fmt::Debug for GuiWidgetNode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = if self.value_is_sensitive_for_diagnostics() && self.value.is_some() {
+            Some(sorotte_secret::REDACTED_SECRET)
+        } else {
+            self.value.as_deref()
+        };
+        formatter
+            .debug_struct("GuiWidgetNode")
+            .field("id", &self.id)
+            .field("label", &self.label)
+            .field("kind", &self.kind)
+            .field("value", &value)
+            .field("enabled", &self.enabled)
+            .field("selected", &self.selected)
+            .field("tooltip", &self.tooltip)
+            .field("layout_mode", &self.layout_mode)
+            .field("children", &self.children)
+            .finish()
+    }
+}
+
 impl GuiWidgetNode {
+    fn value_is_sensitive_for_diagnostics(&self) -> bool {
+        self.kind == GuiWidgetKind::PasswordInput
+            || (self.kind == GuiWidgetKind::ListItem && self.id.starts_with("main-window:chat:"))
+    }
+
     pub(super) fn leaf(
         id: impl Into<String>,
         label: impl Into<String>,
@@ -217,7 +244,11 @@ impl GuiWidgetTextPreviewRenderer {
 impl GuiWidgetRenderer for GuiWidgetTextPreviewRenderer {
     fn begin_node(&mut self, node: &GuiWidgetNode, depth: usize) {
         let indent = "  ".repeat(depth);
-        let value = node.value.as_deref().unwrap_or("(none)");
+        let value = if node.value_is_sensitive_for_diagnostics() && node.value.is_some() {
+            sorotte_secret::REDACTED_SECRET
+        } else {
+            node.value.as_deref().unwrap_or("(none)")
+        };
         self.lines.push(format!(
             "{indent}- {} [{}] id={}, enabled={}, selected={}, value={value}",
             node.label,

@@ -15,6 +15,20 @@ impl ClientPingMetricsLegacyCompatible {
     }
 
     pub(crate) fn observe_inbound_state_at(&mut self, state: &StatePayload, now_seconds: f64) {
+        let state = normalize_client_state_payload(state.clone());
+        self.observe_normalized_inbound_state_at(&state, now_seconds);
+    }
+
+    pub(crate) fn observe_normalized_inbound_state(&mut self, state: &ClientStateUpdate) {
+        let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
+        self.observe_normalized_inbound_state_at(state, now_seconds);
+    }
+
+    pub(crate) fn observe_normalized_inbound_state_at(
+        &mut self,
+        state: &ClientStateUpdate,
+        now_seconds: f64,
+    ) {
         let Some(ping) = state.ping.as_ref() else {
             return;
         };

@@ -193,7 +193,10 @@ fn gui_persisted_config_runtime_owner_opens_probable_media_match_candidate_for_s
                 file_name: Some(remote_file_name.to_owned()),
                 file_size: None,
                 file_duration: None,
-                media_match_signature: Some(remote_signature),
+                media_match_signature: Some(
+                    sorotte_media_match::media_match_wire_signature_from_value(&remote_signature)
+                        .expect("remote signature should validate"),
+                ),
             }],
         }));
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
@@ -778,10 +781,10 @@ fn gui_persisted_config_runtime_owner_honors_selected_plex_source_when_local_med
         media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
         plex_plugin_enabled: Some(true),
         plex_streaming_enabled: Some(true),
-        plex_user_token: Some("user-token".to_owned()),
+        plex_user_token: Some("user-token".into()),
         plex_selected_server_id: Some("machine-1".to_owned()),
         plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
-        plex_selected_server_token: Some("server-token".to_owned()),
+        plex_selected_server_token: Some("server-token".into()),
         ..StoredClientSettingsMvp::default()
     });
     state.apply_shared_playlist_entries(
@@ -939,20 +942,21 @@ fn gui_persisted_config_runtime_owner_queues_plex_stream_while_media_match_misse
         .expect("Plex stream Media Match miss fixture root should be created");
 
     let plex_uri = "plex://machine-1/metadata/123?title=Episode%201&file=Episode%201.mkv";
-    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
-        .with_session_runtime(Box::new(MediaMatchPeerSessionRuntimeAdapter {
-            peer_files: vec![sorotte_client_core::ClientMediaMatchPeerFileState {
-                username: "remote".to_owned(),
-                has_file: true,
-                file_name: None,
-                file_size: None,
-                file_duration: None,
-                media_match_signature: Some(serde_json::json!({
-                    "algorithm": "test",
-                    "records": [],
-                })),
-            }],
-        }));
+    let mut owner =
+        GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path)).with_session_runtime(
+            Box::new(MediaMatchPeerSessionRuntimeAdapter {
+                peer_files: vec![sorotte_client_core::ClientMediaMatchPeerFileState {
+                    username: "remote".to_owned(),
+                    has_file: true,
+                    file_name: None,
+                    file_size: None,
+                    file_duration: None,
+                    media_match_signature: Some(
+                        sorotte_media_match::MediaMatchWireSignature::default(),
+                    ),
+                }],
+            }),
+        );
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     owner.active_shared_playlist_index = Some(0);
 
@@ -1067,10 +1071,10 @@ fn gui_persisted_config_runtime_owner_retries_selected_plex_source_when_worker_f
         shared_playlist_enabled: Some(true),
         plex_plugin_enabled: Some(true),
         plex_streaming_enabled: Some(true),
-        plex_user_token: Some("user-token".to_owned()),
+        plex_user_token: Some("user-token".into()),
         plex_selected_server_id: Some("machine-1".to_owned()),
         plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
-        plex_selected_server_token: Some("server-token".to_owned()),
+        plex_selected_server_token: Some("server-token".into()),
         ..StoredClientSettingsMvp::default()
     });
     state.apply_shared_playlist_entries(vec![local_entry.to_owned()], Some(0), false);
@@ -1087,7 +1091,10 @@ fn gui_persisted_config_runtime_owner_retries_selected_plex_source_when_worker_f
         Some("http://127.0.0.1:32400")
     );
     assert_eq!(
-        plex_settings.plex_selected_server_token.as_deref(),
+        plex_settings
+            .plex_selected_server_token
+            .as_ref()
+            .map(|token| token.expose_secret()),
         Some("server-token")
     );
     let handle = GuiQueuedRuntimeBridgeHandle::default();
@@ -1460,20 +1467,21 @@ fn gui_persisted_config_runtime_owner_queues_media_match_remote_lookup_while_med
     std::fs::create_dir_all(&media_root)
         .expect("Media Match remote lookup scheduling fixture directory should be created");
     let playlist_target = "peer-only-episode.mkv";
-    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
-        .with_session_runtime(Box::new(MediaMatchPeerSessionRuntimeAdapter {
-            peer_files: vec![sorotte_client_core::ClientMediaMatchPeerFileState {
-                username: "remote".to_owned(),
-                has_file: true,
-                file_name: Some(playlist_target.to_owned()),
-                file_size: None,
-                file_duration: None,
-                media_match_signature: Some(serde_json::json!({
-                    "algorithm": "test",
-                    "records": [],
-                })),
-            }],
-        }));
+    let mut owner =
+        GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path)).with_session_runtime(
+            Box::new(MediaMatchPeerSessionRuntimeAdapter {
+                peer_files: vec![sorotte_client_core::ClientMediaMatchPeerFileState {
+                    username: "remote".to_owned(),
+                    has_file: true,
+                    file_name: Some(playlist_target.to_owned()),
+                    file_size: None,
+                    file_duration: None,
+                    media_match_signature: Some(
+                        sorotte_media_match::MediaMatchWireSignature::default(),
+                    ),
+                }],
+            }),
+        );
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     owner.active_shared_playlist_index = Some(0);
 
@@ -1550,20 +1558,21 @@ fn gui_persisted_config_runtime_owner_manual_media_match_replaces_stale_playlist
         .expect("Media Match manual selection fixture directory should be created");
     let item_a = "Item A.mkv";
     let item_b = "Item B.mkv";
-    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
-        .with_session_runtime(Box::new(MediaMatchPeerSessionRuntimeAdapter {
-            peer_files: vec![sorotte_client_core::ClientMediaMatchPeerFileState {
-                username: "remote".to_owned(),
-                has_file: true,
-                file_name: Some(item_a.to_owned()),
-                file_size: None,
-                file_duration: None,
-                media_match_signature: Some(serde_json::json!({
-                    "algorithm": "test",
-                    "records": [],
-                })),
-            }],
-        }));
+    let mut owner =
+        GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path)).with_session_runtime(
+            Box::new(MediaMatchPeerSessionRuntimeAdapter {
+                peer_files: vec![sorotte_client_core::ClientMediaMatchPeerFileState {
+                    username: "remote".to_owned(),
+                    has_file: true,
+                    file_name: Some(item_a.to_owned()),
+                    file_size: None,
+                    file_duration: None,
+                    media_match_signature: Some(
+                        sorotte_media_match::MediaMatchWireSignature::default(),
+                    ),
+                }],
+            }),
+        );
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     owner.active_shared_playlist_index = Some(1);
     let (_stale_tx, stale_rx) = mpsc::channel();

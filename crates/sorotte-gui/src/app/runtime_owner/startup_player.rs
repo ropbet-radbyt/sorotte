@@ -2,8 +2,12 @@ use super::*;
 
 impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app) fn with_config_path(config_path: Option<PathBuf>) -> Self {
+        let update_config_root = config_path
+            .as_ref()
+            .and_then(|path| path.parent().map(Path::to_path_buf));
         Self {
             config_path,
+            legacy_projection: None,
             session: None,
             session_projects_to_shell: false,
             session_transport: None,
@@ -17,8 +21,7 @@ impl GuiPersistedConfigRuntimeOwner {
             startup_saved_connect_attempted: false,
             startup_remote_actions_attempted: false,
             startup_remote_actions_rx: None,
-            background_update_check_rx: None,
-            background_update_check_next_due_at: None,
+            update_runtime: GuiUpdateRuntime::new(update_config_root),
             startup_stream_helper_probe_completed: false,
             startup_stream_helper_probe_rx: None,
             player: None,
@@ -77,9 +80,7 @@ impl GuiPersistedConfigRuntimeOwner {
             plex_servers: Vec::new(),
             plex_server_reachability: HashMap::new(),
             startup_plex_server_refresh_attempted: false,
-            startup_plex_server_refresh_rx: None,
-            plex_server_refresh_rx: None,
-            plex_server_refresh_context: None,
+            plex_server_discovery: GuiPlexServerDiscoveryCoordinator::default(),
             plex_sync_engine: None,
             plex_sync_rx: None,
             plex_sync_next_tick_due_at: None,
@@ -529,7 +530,10 @@ impl GuiPersistedConfigRuntimeOwner {
         settings: Option<&StoredClientSettingsMvp>,
     ) {
         if let Some(settings) = settings
-            && !settings.stream_support_plugin_enabled.unwrap_or(true)
+            && !ClientConfig::resolve(settings)
+                .config
+                .plugins
+                .stream_support_enabled
         {
             self.stream_helper_runtime_snapshot = GuiStreamHelperRuntimeSnapshot::default();
             return;
@@ -563,7 +567,10 @@ impl GuiPersistedConfigRuntimeOwner {
         settings: Option<&StoredClientSettingsMvp>,
     ) {
         if let Some(settings) = settings
-            && !settings.media_matching_plugin_enabled.unwrap_or(true)
+            && !ClientConfig::resolve(settings)
+                .config
+                .plugins
+                .media_matching_enabled
         {
             let state = GuiMediaMatchState::from_stored_settings(settings);
             self.media_match_runtime_snapshot = GuiMediaMatchRuntimeSnapshot::from(&state);

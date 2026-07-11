@@ -3,7 +3,13 @@ use super::*;
 #[test]
 fn queued_runtime_control_request_controller_auth_emits_protocol_message() {
     let mut control = QueuedRuntimeControl::default();
-    control.request_controller_auth("+room:ABCDEF123456".to_owned(), "AB-123-456".to_owned());
+    control
+        .emit(ClientEffect::RequestControllerAuth(
+            ControllerAuthPayload::new()
+                .with_room("+room:ABCDEF123456")
+                .with_password("AB-123-456"),
+        ))
+        .expect("controller auth effect should be supported");
 
     assert_eq!(control.outbound_messages().len(), 1);
     let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
@@ -15,7 +21,13 @@ fn queued_runtime_control_request_controller_auth_emits_protocol_message() {
         .as_ref()
         .expect("Set message should contain controllerAuth payload");
     assert_eq!(controller_auth.room.as_deref(), Some("+room:ABCDEF123456"));
-    assert_eq!(controller_auth.password.as_deref(), Some("AB-123-456"));
+    assert_eq!(
+        controller_auth
+            .password
+            .as_ref()
+            .map(|password| password.expose_secret()),
+        Some("AB-123-456")
+    );
     assert!(controller_auth.user.is_none());
     assert!(controller_auth.success.is_none());
 }
@@ -54,7 +66,13 @@ fn client_runtime_controller_reidentify_dispatches_controller_auth_message() {
         .as_ref()
         .expect("queued message should include controllerAuth payload");
     assert_eq!(controller_auth.room.as_deref(), Some("+room:ABCDEF123456"));
-    assert_eq!(controller_auth.password.as_deref(), Some("AB-123-456"));
+    assert_eq!(
+        controller_auth
+            .password
+            .as_ref()
+            .map(|password| password.expose_secret()),
+        Some("AB-123-456")
+    );
     assert!(controller_auth.user.is_none());
     assert!(controller_auth.success.is_none());
 }
@@ -135,7 +153,13 @@ fn client_runtime_new_controlled_room_dispatches_room_then_controller_auth() {
         .as_ref()
         .expect("third outbound message should include controllerAuth payload");
     assert_eq!(controller_auth.room.as_deref(), Some("+room:ABCDEF123456"));
-    assert_eq!(controller_auth.password.as_deref(), Some("AB-123-456"));
+    assert_eq!(
+        controller_auth
+            .password
+            .as_ref()
+            .map(|password| password.expose_secret()),
+        Some("AB-123-456")
+    );
 }
 
 #[test]
@@ -163,7 +187,7 @@ fn client_runtime_new_controlled_room_dispatches_creation_notification() {
         runtime.control().controlled_room_creation_notifications(),
         &[ControlledRoomCreationNotification::Created {
             room: "+room:ABCDEF123456".to_owned(),
-            password: "AB123456".to_owned(),
+            password: "AB123456".into(),
         }]
     );
 }
@@ -230,7 +254,13 @@ fn client_runtime_request_controller_auth_dispatches_protocol_message_with_norma
         controller_auth.room.as_deref(),
         Some(" +room:ABCDEF123456 ")
     );
-    assert_eq!(controller_auth.password.as_deref(), Some("AB123-456"));
+    assert_eq!(
+        controller_auth
+            .password
+            .as_ref()
+            .map(|password| password.expose_secret()),
+        Some("AB123-456")
+    );
     assert_eq!(
         control.controller_auth_notifications(),
         &[ControllerAuthTransitionNotification::Attempting {
@@ -292,7 +322,13 @@ fn client_runtime_request_controller_auth_without_password_dispatches_empty_pass
         controller_auth.room.as_deref(),
         Some(" +room:ABCDEF123456 ")
     );
-    assert_eq!(controller_auth.password.as_deref(), Some(""));
+    assert_eq!(
+        controller_auth
+            .password
+            .as_ref()
+            .map(|password| password.expose_secret()),
+        Some("")
+    );
     assert_eq!(
         control.controller_auth_notifications(),
         &[ControllerAuthTransitionNotification::Attempting {
@@ -329,7 +365,13 @@ fn client_runtime_request_controller_auth_dispatches_for_whitespace_only_room() 
         .as_ref()
         .expect("Set message should contain controllerAuth payload");
     assert_eq!(controller_auth.room.as_deref(), Some(" "));
-    assert_eq!(controller_auth.password.as_deref(), Some("AB-123-456"));
+    assert_eq!(
+        controller_auth
+            .password
+            .as_ref()
+            .map(|password| password.expose_secret()),
+        Some("AB-123-456")
+    );
     assert_eq!(
         control.controller_auth_notifications(),
         &[ControllerAuthTransitionNotification::Attempting {
@@ -398,7 +440,13 @@ fn client_runtime_set_room_reidentifies_controlled_room_with_stored_password() {
         .as_ref()
         .expect("Set message should contain controllerAuth payload");
     assert_eq!(controller_auth.room.as_deref(), Some("+room:ABCDEF123456"));
-    assert_eq!(controller_auth.password.as_deref(), Some("AB-123-456"));
+    assert_eq!(
+        controller_auth
+            .password
+            .as_ref()
+            .map(|password| password.expose_secret()),
+        Some("AB-123-456")
+    );
     assert_eq!(
         control.controller_auth_notifications(),
         &[ControllerAuthTransitionNotification::Attempting {
@@ -427,8 +475,13 @@ fn client_runtime_set_room_with_inline_controlled_room_password_canonicalizes_an
 
     let (session, _, control) = runtime.into_parts();
     assert_eq!(
-        session.controlled_room_passwords.get("+room:ABCDEF123456"),
-        Some(&"AB-123-456".to_owned()),
+        session
+            .model
+            .controller
+            .room_passwords
+            .get("+room:ABCDEF123456")
+            .map(|password| password.expose_secret()),
+        Some("AB-123-456"),
         "inline controlled-room password should be cached for future reidentify flows"
     );
     assert_eq!(control.outbound_messages().len(), 3);
@@ -456,13 +509,38 @@ fn client_runtime_set_room_with_inline_controlled_room_password_canonicalizes_an
         .as_ref()
         .expect("Set message should contain controllerAuth payload");
     assert_eq!(controller_auth.room.as_deref(), Some("+room:ABCDEF123456"));
-    assert_eq!(controller_auth.password.as_deref(), Some("AB-123-456"));
+    assert_eq!(
+        controller_auth
+            .password
+            .as_ref()
+            .map(|password| password.expose_secret()),
+        Some("AB-123-456")
+    );
     assert_eq!(
         control.controller_auth_notifications(),
         &[ControllerAuthTransitionNotification::Attempting {
             room: "+room:ABCDEF123456".to_owned()
         }]
     );
+}
+
+#[test]
+fn cached_control_password_is_typed_and_redacted_after_normalization() {
+    const RAW_PASSWORD: &str = "stored_canary-9123!";
+    const NORMALIZED_PASSWORD: &str = "STOREDCANARY-9123";
+    let mut session = ClientSession::default();
+
+    session.remember_control_password_for_room("+room:ABCDEF123456", RAW_PASSWORD);
+
+    let stored = session
+        .model
+        .controller
+        .room_passwords
+        .get("+room:ABCDEF123456")
+        .expect("controlled-room password should be cached");
+    assert_eq!(stored.expose_secret(), NORMALIZED_PASSWORD);
+    assert_eq!(format!("{stored:?}"), sorotte_secret::REDACTED_SECRET);
+    assert!(!format!("{:?}", session.model.controller).contains(NORMALIZED_PASSWORD));
 }
 
 #[test]
@@ -473,8 +551,9 @@ fn client_runtime_noncontroller_pause_toggle_suppresses_ready_flip_while_recentl
                 r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.7.5"}}"#,
             )
             .expect("hello should apply");
-    session.local_paused = Some(true);
-    session.last_rewound_at_seconds = Some(unix_wall_clock_time_seconds_legacy_compatible());
+    session.model.playback.local_paused = Some(true);
+    session.model.playback.last_rewound_at_seconds =
+        Some(unix_wall_clock_time_seconds_legacy_compatible());
     session
             .apply_message_json(
                 r#"{"State":{"playstate":{"position":5.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
@@ -521,7 +600,7 @@ fn client_runtime_drain_controller_auth_notifications_to_sink_dispatches_callbac
         .run_controller_reidentify_if_needed()
         .expect("controller reidentify should dispatch");
     runtime
-            .session_mut()
+            .session_mut_for_test()
             .apply_message_json(
                 r#"{"Set":{"controllerAuth":{"user":"alice","room":"+room:ABCDEF123456","success":true}}}"#,
             )
@@ -582,7 +661,7 @@ fn client_runtime_drain_controlled_room_creation_notifications_to_sink_dispatche
         captured,
         vec![ControlledRoomCreationNotification::Created {
             room: "+room:ABCDEF123456".to_owned(),
-            password: "AB123456".to_owned(),
+            password: "AB123456".into(),
         }]
     );
     assert!(

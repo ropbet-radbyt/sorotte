@@ -57,7 +57,10 @@ async fn connected_client_session_authenticates_controller_from_local_input_chan
             Some("+room:ABCDEF123456")
         );
         assert_eq!(
-            controller_auth_payload.password.as_deref(),
+            controller_auth_payload
+                .password
+                .as_ref()
+                .map(|password| password.expose_secret()),
             Some("AB123-456")
         );
         writer
@@ -199,7 +202,13 @@ async fn connected_client_session_authenticates_controller_without_password_from
             controller_auth_payload.room.as_deref(),
             Some("+room:ABCDEF123456")
         );
-        assert_eq!(controller_auth_payload.password.as_deref(), Some(""));
+        assert_eq!(
+            controller_auth_payload
+                .password
+                .as_ref()
+                .map(|password| password.expose_secret()),
+            Some("")
+        );
         writer
             .shutdown()
             .await

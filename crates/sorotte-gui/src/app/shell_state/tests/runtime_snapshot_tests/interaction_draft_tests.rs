@@ -10,17 +10,17 @@ fn gui_shell_app_state_tracks_validation_issues_and_preserves_view_modal_across_
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         section: "Connection",
         label: "Port",
-        value: "70000".to_owned(),
+        value: "70000".to_owned().into(),
     }));
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         section: "System",
         label: "Language",
-        value: "zz".to_owned(),
+        value: "zz".to_owned().into(),
     }));
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         section: "System",
         label: "Update Channel",
-        value: "nightly".to_owned(),
+        value: "nightly".to_owned().into(),
     }));
 
     assert_eq!(state.active_view, GuiShellView::Setup);
@@ -67,7 +67,7 @@ fn gui_shell_app_state_validates_trusted_domain_configuration_text() {
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         section: "Privacy",
         label: "Trusted Domains",
-        value: "['trusted.example',".to_owned(),
+        value: "['trusted.example',".to_owned().into(),
     }));
 
     assert!(
@@ -228,7 +228,7 @@ fn gui_shell_app_state_applies_gui_interaction_runtime_snapshots() {
                 text_edit_session: Some(GuiTextEditSessionRuntimeSnapshot {
                     section: "Connection".to_owned(),
                     label: "Host".to_owned(),
-                    buffer: "runtime.example".to_owned(),
+                    buffer: "runtime.example".to_owned().into(),
                     is_dirty: true,
                 }),
                 playlist_text_edit_session: None,
@@ -567,7 +567,7 @@ fn gui_shell_app_state_applies_gui_saved_configuration_runtime_snapshots() {
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         section: "Connection",
         label: "Host",
-        value: "dirty.example".to_owned(),
+        value: "dirty.example".to_owned().into(),
     }));
     assert!(state.commands.can_reset_configuration);
 

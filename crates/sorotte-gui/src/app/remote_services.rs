@@ -330,15 +330,6 @@ pub(crate) fn check_for_updates(
     }
 }
 
-pub(crate) fn default_update_channel_label() -> &'static str {
-    env_trimmed(SOROTTE_GUI_UPDATE_CHANNEL_ENV)
-        .as_deref()
-        .and_then(|value| UpdateChannel::from_config_value(value).ok())
-        .or_else(|| current_install_marker().and_then(|marker| marker.channel))
-        .unwrap_or(UpdateChannel::Stable)
-        .label()
-}
-
 pub(crate) fn download_and_stage_update(
     candidate: &UpdateCandidate,
     gui_config_root: Option<&Path>,
@@ -611,13 +602,23 @@ pub(crate) fn should_run_automatic_update_check(
     let Some(settings) = settings else {
         return false;
     };
-    if settings.check_for_updates_automatically != Some(true) {
+    automatic_update_check_due(
+        settings.check_for_updates_automatically == Some(true),
+        settings.last_checked_for_updates.as_deref(),
+        now,
+    )
+}
+
+pub(crate) fn automatic_update_check_due(
+    automatic: bool,
+    last_checked_for_updates: Option<&str>,
+    now: std::time::SystemTime,
+) -> bool {
+    if !automatic {
         return false;
     }
-    let Some(last_checked) = settings
-        .last_checked_for_updates
-        .as_deref()
-        .and_then(parse_legacy_utc_timestamp_legacy_compatible)
+    let Some(last_checked) =
+        last_checked_for_updates.and_then(parse_legacy_utc_timestamp_legacy_compatible)
     else {
         return true;
     };
@@ -1821,7 +1822,7 @@ fn localize_wire_update_message(message: &str, language: Option<&str>) -> String
     }
 }
 
-fn legacy_utc_timestamp_string_legacy_compatible(now: std::time::SystemTime) -> String {
+pub(super) fn legacy_utc_timestamp_string_legacy_compatible(now: std::time::SystemTime) -> String {
     let duration = now
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();

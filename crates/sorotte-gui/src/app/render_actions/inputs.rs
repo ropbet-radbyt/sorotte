@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::shell_state::GuiConfigurationTextValue;
 
 impl GuiWidgetEguiRenderer {
     pub(in crate::app) fn action_for_checkbox_node(
@@ -81,7 +82,7 @@ impl GuiWidgetEguiRenderer {
                 actions.push(GuiShellAction::EditConfigurationText {
                     section: "Connection",
                     label: "Room",
-                    value: value.to_owned(),
+                    value: value.to_owned().into(),
                 });
             }
             if submitted && nonempty_room_name_text(value).is_some() {
@@ -162,7 +163,7 @@ impl GuiWidgetEguiRenderer {
                 if let Some(room_name) = nonempty_room_name_text(&room_name) {
                     actions.push(GuiShellAction::RequestControllerAuth {
                         room: room_name,
-                        password: generate_room_password_legacy_compatible(),
+                        password: generate_room_password_legacy_compatible().into(),
                     });
                     actions.push(GuiShellAction::CancelCreateControlledRoomEdit);
                 }
@@ -174,7 +175,7 @@ impl GuiWidgetEguiRenderer {
             let mut actions = Vec::new();
             if changed {
                 actions.push(GuiShellAction::UpdateControllerAuthPasswordEdit(
-                    value.to_owned(),
+                    value.into(),
                 ));
             }
             if submitted
@@ -183,7 +184,7 @@ impl GuiWidgetEguiRenderer {
             {
                 actions.push(GuiShellAction::RequestControllerAuth {
                     room: session.room_name.clone(),
-                    password: value.to_owned(),
+                    password: value.into(),
                 });
                 actions.push(GuiShellAction::CancelControllerAuthEdit);
             }
@@ -203,7 +204,7 @@ impl GuiWidgetEguiRenderer {
                 return Some(vec![GuiShellAction::EditConfigurationText {
                     section,
                     label,
-                    value: value.to_owned(),
+                    value: GuiConfigurationTextValue::for_control(kind, value),
                 }]);
             }
             return None;

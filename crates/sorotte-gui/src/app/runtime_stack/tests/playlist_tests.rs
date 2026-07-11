@@ -179,11 +179,9 @@ fn gui_client_core_chat_session_runtime_adapter_marks_single_item_loop_playlist_
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
         )
         .expect("inbound server hello should apply");
-    adapter
-        .runtime
-        .session_mut()
-        .behavior_config_mut()
-        .loop_single_files = true;
+    let mut behavior = adapter.runtime.session().behavior_config().clone();
+    behavior.loop_single_files = true;
+    adapter.runtime.session_mut().set_behavior_config(behavior);
     adapter
         .apply_message_json(
             r#"{"Set":{"playlistChange":{"files":["episode1.mkv"],"user":"alice"}}}"#,
@@ -329,6 +327,7 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_shared_playlist_whe
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
+        shared_playlist_enabled: Some(false),
         ..StoredClientSettingsMvp::default()
     });
     let mut stale_snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
@@ -459,6 +458,7 @@ fn gui_client_core_chat_session_runtime_adapter_projects_local_playlist_replace_
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
+        shared_playlist_enabled: Some(false),
         ..StoredClientSettingsMvp::default()
     });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
@@ -578,6 +578,7 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_playback_pause_when
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
+        shared_playlist_enabled: Some(false),
         ..StoredClientSettingsMvp::default()
     });
     let mut stale_snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
@@ -635,6 +636,7 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_autoplay_state_when
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
+        shared_playlist_enabled: Some(false),
         ..StoredClientSettingsMvp::default()
     });
     let mut stale_snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);

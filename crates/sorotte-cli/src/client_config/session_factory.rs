@@ -4,21 +4,19 @@ use super::overrides::{
 use super::*;
 
 #[cfg(test)]
-pub(crate) fn create_client_runtime(
-    config: &ClientLoopConfig,
-) -> ClientRuntime<MpvAdapter, QueuedRuntimeControl> {
+pub(crate) fn create_client_runtime(config: &ClientLoopConfig) -> ClientApplication<MpvAdapter> {
     let session = create_client_session(config);
-    let mut player = create_mpv_adapter_from_env();
+    let mut player = SimulatedPlayer::new().into_inner();
     apply_legacy_syncplay_ui_settings_to_mpv_adapter_legacy_compatible(&mut player, None)
         .expect("default legacy mpv OSD/chat settings should apply");
-    ClientRuntime::new(session, player, QueuedRuntimeControl::default())
+    ClientApplication::new(session, player)
 }
 
 pub(crate) fn create_client_session(config: &ClientLoopConfig) -> ClientSession {
     let mut session = ClientSession::default();
     session.set_autoplay_enabled(config.autoplay_enabled);
-    if let Some(control_password) = config.controlled_room_password_override.as_deref() {
-        session.remember_control_password_for_room(&config.room, control_password);
+    if let Some(control_password) = config.controlled_room_password_override.as_ref() {
+        session.remember_control_password_for_room(&config.room, control_password.clone());
     }
     if let Some(show_same_room_osd) = config.show_same_room_osd_override {
         session.behavior_config_mut().show_same_room_osd = show_same_room_osd;

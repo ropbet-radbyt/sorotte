@@ -3,8 +3,10 @@ use super::super::*;
 impl ClientSession {
     pub fn recently_advanced(&self, now_seconds: f64) -> bool {
         let threshold_seconds =
-            self.readiness_autoplay_config.autoplay_delay_seconds + RECENTLY_ADVANCED_GRACE_SECONDS;
-        self.last_advanced_at_seconds
+            self.model.readiness.config.autoplay_delay_seconds + RECENTLY_ADVANCED_GRACE_SECONDS;
+        self.model
+            .playback
+            .last_advanced_at_seconds
             .is_some_and(|last_advanced_at_seconds| {
                 let elapsed = now_seconds - last_advanced_at_seconds;
                 elapsed >= 0.0 && elapsed < threshold_seconds
@@ -12,11 +14,12 @@ impl ClientSession {
     }
 
     pub fn plan_reconnect_retry(&mut self, retries: u32) -> ReconnectRetryDecision {
-        self.reset_sync_state_for_reconnect();
+        self.reset_sync_state_for_reconnect_with_attempt(retries);
 
-        if retries > self.reconnect_policy.max_retries {
-            self.reconnect_in_progress = false;
-            self.reconnect_connected_intent = false;
+        if retries > self.model.reconnect.policy.max_retries {
+            self.model.reconnect.in_progress = false;
+            self.model.reconnect.connected_intent = false;
+            self.mark_disconnected();
             return ReconnectRetryDecision {
                 should_retry: false,
                 delay_seconds: None,
@@ -24,9 +27,10 @@ impl ClientSession {
             };
         }
 
-        let exponent = retries.min(self.reconnect_policy.max_backoff_exponent);
-        let delay_seconds = self.reconnect_policy.base_delay_seconds * 2_f64.powi(exponent as i32);
-        self.reconnect_in_progress = true;
+        let exponent = retries.min(self.model.reconnect.policy.max_backoff_exponent);
+        let delay_seconds =
+            self.model.reconnect.policy.base_delay_seconds * 2_f64.powi(exponent as i32);
+        self.model.reconnect.in_progress = true;
 
         ReconnectRetryDecision {
             should_retry: true,
@@ -65,10 +69,10 @@ impl ClientSession {
     pub fn runtime_actions_for_reconnect_transition_if_needed(
         &mut self,
     ) -> Vec<ClientRuntimeAction> {
-        if !self.reconnect_connected_intent {
+        if !self.model.reconnect.connected_intent {
             return Vec::new();
         }
-        self.reconnect_connected_intent = false;
+        self.model.reconnect.connected_intent = false;
         vec![ClientRuntimeAction::NotifyReconnectTransition(
             ReconnectTransitionNotification::Connected,
         )]
@@ -113,24 +117,32 @@ impl ClientSession {
     ) -> Vec<ClientRuntimeAction> {
         let mut actions = Vec::new();
 
-        if let Some(ready) = self.reconnect_ready_restore_intent.take() {
+        if let Some(ready) = self.model.reconnect.ready_restore_intent.take() {
             actions.push(ClientRuntimeAction::SetReady {
                 ready,
                 manually_initiated: false,
             });
         }
 
-        if let Some(file_payload) = self.reconnect_file_restore_intent.take() {
-            actions.push(ClientRuntimeAction::SetFile { file_payload });
+        if let Some(file) = self.model.reconnect.file_restore_intent.take() {
+            actions.push(ClientRuntimeAction::SetFile {
+                file: Self::file_payload_from_shared_file(&file),
+            });
             actions.push(ClientRuntimeAction::RequestUserList);
         }
 
         if !actions.is_empty() {
-            self.reconnect_state_restore_validation_pending = true;
-            self.reconnect_state_restore_validation_retry_attempts = 0;
-            self.reconnect_state_restore_validation_retry_cooldown_ticks = 0;
-            self.reconnect_state_restore_validation_mismatch_notified = false;
-            self.reconnect_state_restore_validation_mismatch_seen_in_cycle = false;
+            self.model.reconnect.state_restore_validation_pending = true;
+            self.model.reconnect.state_restore_validation_retry_attempts = 0;
+            self.model
+                .reconnect
+                .state_restore_validation_retry_cooldown_ticks = 0;
+            self.model
+                .reconnect
+                .state_restore_validation_mismatch_notified = false;
+            self.model
+                .reconnect
+                .state_restore_validation_mismatch_seen_in_cycle = false;
             self.begin_reconnect_state_restore_validation_cycle();
             actions.insert(
                 0,
@@ -146,12 +158,21 @@ impl ClientSession {
     pub fn runtime_actions_for_reconnect_state_restore_validation_if_needed(
         &mut self,
     ) -> Vec<ClientRuntimeAction> {
-        if !self.reconnect_state_restore_validation_pending {
+        if !self.model.reconnect.state_restore_validation_pending {
             return Vec::new();
         }
-        if self.reconnect_state_restore_validation_retry_cooldown_ticks > 0 {
-            self.reconnect_state_restore_validation_retry_cooldown_ticks = self
-                .reconnect_state_restore_validation_retry_cooldown_ticks
+        if self
+            .model
+            .reconnect
+            .state_restore_validation_retry_cooldown_ticks
+            > 0
+        {
+            self.model
+                .reconnect
+                .state_restore_validation_retry_cooldown_ticks = self
+                .model
+                .reconnect
+                .state_restore_validation_retry_cooldown_ticks
                 .saturating_sub(1);
             return Vec::new();
         }
@@ -165,8 +186,10 @@ impl ClientSession {
         else {
             return Vec::new();
         };
-        let (Some(local_paused), Some(local_position)) = (self.local_paused, self.local_position)
-        else {
+        let (Some(local_paused), Some(local_position)) = (
+            self.model.playback.local_paused,
+            self.model.playback.local_position,
+        ) else {
             return Vec::new();
         };
 
@@ -176,40 +199,68 @@ impl ClientSession {
             self.reconnect_state_restore_position_tolerance_seconds_effective();
         let position_matches = position_diff_seconds <= position_tolerance_seconds;
         if pause_matches && position_matches {
-            self.reconnect_state_restore_correction_metrics
+            self.model
+                .reconnect
+                .state_restore_correction_metrics
                 .validation_cycles_completed_without_mismatch = self
-                .reconnect_state_restore_correction_metrics
+                .model
+                .reconnect
+                .state_restore_correction_metrics
                 .validation_cycles_completed_without_mismatch
                 .saturating_add(1);
-            self.reconnect_state_restore_correction_consecutive_mismatch_cycles = 0;
+            self.model
+                .reconnect
+                .state_restore_correction_consecutive_mismatch_cycles = 0;
             self.reset_reconnect_state_restore_correction_retry_exhaustions();
-            self.reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining =
-                0;
-            self.reconnect_state_restore_correction_recovery_reenable_notification_pending = false;
+            self.model
+                .reconnect
+                .state_restore_correction_recovery_cooldown_reconnect_cycles_remaining = 0;
+            self.model
+                .reconnect
+                .state_restore_correction_recovery_reenable_notification_pending = false;
             self.clear_reconnect_state_restore_validation_state();
             return Vec::new();
         }
 
         let correction_policy_mode = self.reconnect_state_restore_correction_policy_mode();
-        let correction_suppressed_for_recovery_cycle =
-            self.reconnect_state_restore_correction_recovery_suppressed_this_cycle;
-        let correction_reenabled_for_this_cycle =
-            self.reconnect_state_restore_correction_recovery_reenabled_this_cycle;
-        if !self.reconnect_state_restore_validation_mismatch_seen_in_cycle
+        let correction_suppressed_for_recovery_cycle = self
+            .model
+            .reconnect
+            .state_restore_correction_recovery_suppressed_this_cycle;
+        let correction_reenabled_for_this_cycle = self
+            .model
+            .reconnect
+            .state_restore_correction_recovery_reenabled_this_cycle;
+        if !self
+            .model
+            .reconnect
+            .state_restore_validation_mismatch_seen_in_cycle
             && !correction_suppressed_for_recovery_cycle
         {
-            self.reconnect_state_restore_validation_mismatch_seen_in_cycle = true;
-            self.reconnect_state_restore_correction_metrics
+            self.model
+                .reconnect
+                .state_restore_validation_mismatch_seen_in_cycle = true;
+            self.model
+                .reconnect
+                .state_restore_correction_metrics
                 .mismatch_cycles_detected = self
-                .reconnect_state_restore_correction_metrics
+                .model
+                .reconnect
+                .state_restore_correction_metrics
                 .mismatch_cycles_detected
                 .saturating_add(1);
-            self.reconnect_state_restore_correction_consecutive_mismatch_cycles = self
-                .reconnect_state_restore_correction_consecutive_mismatch_cycles
+            self.model
+                .reconnect
+                .state_restore_correction_consecutive_mismatch_cycles = self
+                .model
+                .reconnect
+                .state_restore_correction_consecutive_mismatch_cycles
                 .saturating_add(1);
         }
-        let consecutive_mismatch_cycles =
-            self.reconnect_state_restore_correction_consecutive_mismatch_cycles;
+        let consecutive_mismatch_cycles = self
+            .model
+            .reconnect
+            .state_restore_correction_consecutive_mismatch_cycles;
         let disable_after_mismatch_cycles = self
             .behavior_config
             .reconnect_state_restore_correction_disable_after_mismatch_cycles;
@@ -224,9 +275,13 @@ impl ClientSession {
             ReconnectStateRestoreCorrectionPolicyMode::WarnOnlyOnExhaustion
         ) && !disable_correction_due_to_repeated_mismatches;
         if correction_reenabled_for_this_cycle {
-            self.reconnect_state_restore_correction_metrics
+            self.model
+                .reconnect
+                .state_restore_correction_metrics
                 .correction_recovery_cooldown_reenabled_cycles = self
-                .reconnect_state_restore_correction_metrics
+                .model
+                .reconnect
+                .state_restore_correction_metrics
                 .correction_recovery_cooldown_reenabled_cycles
                 .saturating_add(1);
             actions.push(ClientRuntimeAction::NotifyReconnectTransition(
@@ -234,12 +289,21 @@ impl ClientSession {
             ));
         }
         if should_emit_mismatch_notification
-            && !self.reconnect_state_restore_validation_mismatch_notified
+            && !self
+                .model
+                .reconnect
+                .state_restore_validation_mismatch_notified
         {
-            self.reconnect_state_restore_validation_mismatch_notified = true;
-            self.reconnect_state_restore_correction_metrics
+            self.model
+                .reconnect
+                .state_restore_validation_mismatch_notified = true;
+            self.model
+                .reconnect
+                .state_restore_correction_metrics
                 .mismatch_notifications_emitted = self
-                .reconnect_state_restore_correction_metrics
+                .model
+                .reconnect
+                .state_restore_correction_metrics
                 .mismatch_notifications_emitted
                 .saturating_add(1);
             actions.push(ClientRuntimeAction::NotifyReconnectTransition(
@@ -254,15 +318,19 @@ impl ClientSession {
         }
 
         if correction_suppressed_for_recovery_cycle {
-            self.reconnect_state_restore_correction_metrics
+            self.model
+                .reconnect
+                .state_restore_correction_metrics
                 .correction_recovery_cooldown_suppressed_cycles = self
-                .reconnect_state_restore_correction_metrics
+                .model
+                .reconnect
+                .state_restore_correction_metrics
                 .correction_recovery_cooldown_suppressed_cycles
                 .saturating_add(1);
             actions.push(ClientRuntimeAction::NotifyReconnectTransition(
                 ReconnectTransitionNotification::StateRestoreValidationCorrectionRecoveryCooldownSuppressed {
                     remaining_reconnect_cycles_after_this_cycle: self
-                        .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining,
+                        .model.reconnect.state_restore_correction_recovery_cooldown_reconnect_cycles_remaining,
                 },
             ));
             self.clear_reconnect_state_restore_validation_state();
@@ -271,11 +339,17 @@ impl ClientSession {
 
         if disable_correction_due_to_repeated_mismatches {
             if self.activate_reconnect_state_restore_correction_recovery_cooldown_if_configured() {
-                self.reconnect_state_restore_correction_consecutive_mismatch_cycles = 0;
+                self.model
+                    .reconnect
+                    .state_restore_correction_consecutive_mismatch_cycles = 0;
             }
-            self.reconnect_state_restore_correction_metrics
+            self.model
+                .reconnect
+                .state_restore_correction_metrics
                 .correction_disables_after_repeated_mismatches = self
-                .reconnect_state_restore_correction_metrics
+                .model
+                .reconnect
+                .state_restore_correction_metrics
                 .correction_disables_after_repeated_mismatches
                 .saturating_add(1);
             self.clear_reconnect_state_restore_validation_state();
@@ -308,10 +382,13 @@ impl ClientSession {
     pub fn runtime_actions_for_reconnect_playlist_restore_if_needed(
         &mut self,
     ) -> Vec<ClientRuntimeAction> {
-        let Some(restore_intent) = self.reconnect_playlist_restore_intent.take() else {
+        if !self.is_active() {
+            return Vec::new();
+        }
+        let Some(restore_intent) = self.model.reconnect.playlist_restore_intent.take() else {
             return Vec::new();
         };
-        if self.server_shared_playlists_supported == Some(false) {
+        if !self.server_shared_playlists_supported() {
             return Vec::new();
         }
 
@@ -332,19 +409,19 @@ impl ClientSession {
     pub fn runtime_actions_for_controller_reidentify_if_needed(
         &mut self,
     ) -> Vec<ClientRuntimeAction> {
-        if self.server_managed_rooms_supported != Some(true) {
-            self.controlled_room_switch_intent = None;
-            self.controller_reidentify_intent = None;
+        if !self.server_managed_rooms_supported() {
+            self.model.controller.controlled_room_switch_intent = None;
+            self.model.controller.reidentify_intent = None;
             return Vec::new();
         }
 
         let mut actions = Vec::new();
-        if let Some(room) = self.controlled_room_switch_intent.take() {
+        if let Some(room) = self.model.controller.controlled_room_switch_intent.take() {
             actions.push(ClientRuntimeAction::SetRoom { room });
             actions.push(ClientRuntimeAction::RequestUserList);
         }
-        if let Some((room, password)) = self.controller_reidentify_intent.take() {
-            self.last_controller_auth_password_attempt = Some(password.clone());
+        if let Some((room, password)) = self.model.controller.reidentify_intent.take() {
+            self.model.controller.last_auth_password_attempt = Some(password.clone());
             actions.push(ClientRuntimeAction::NotifyControllerAuthTransition(
                 ControllerAuthTransitionNotification::Attempting { room: room.clone() },
             ));

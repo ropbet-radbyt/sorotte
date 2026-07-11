@@ -203,7 +203,13 @@ async fn connected_client_session_reidentifies_controller_when_password_is_confi
             .controller_auth
             .expect("controller auth message should include controllerAuth payload");
         assert_eq!(controller_auth.room.as_deref(), Some("+room:ABCDEF123456"));
-        assert_eq!(controller_auth.password.as_deref(), Some("AB-123-456"));
+        assert_eq!(
+            controller_auth
+                .password
+                .as_ref()
+                .map(|password| password.expose_secret()),
+            Some("AB-123-456")
+        );
     });
 
     let config = ClientLoopConfig {
@@ -245,7 +251,7 @@ async fn connected_client_session_reidentifies_controller_when_password_is_confi
         show_osd_warnings_override: None,
         show_noncontroller_osd_override: None,
         show_different_room_osd_override: None,
-        controlled_room_password_override: Some("ab-123-456".to_owned()),
+        controlled_room_password_override: Some("ab-123-456".into()),
     };
     let mut runtime = create_client_runtime(&config);
     let stream = TcpStream::connect(addr)

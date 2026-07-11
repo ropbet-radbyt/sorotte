@@ -6,17 +6,6 @@ const MANAGED_MPV_BUFFERING_DEFAULT_ARGS: &[&str] = &[
     "--cache-pause-wait=5",
 ];
 
-#[cfg(test)]
-pub(crate) fn create_mpv_adapter_from_env() -> MpvAdapter {
-    let ipc_path =
-        env_trimmed("SOROTTE_CLIENT_MPV_IPC_PATH").or_else(|| env_trimmed("SOROTTE_MPV_IPC_PATH"));
-    let Some(ipc_path) = ipc_path else {
-        return MpvAdapter::default();
-    };
-
-    create_mpv_adapter_from_path_or_stub(&ipc_path)
-}
-
 #[derive(Debug)]
 pub(crate) struct ManagedMpvProcessGuard {
     child: Child,
@@ -38,7 +27,7 @@ pub(crate) fn create_client_runtime_with_managed_mpv_support(
     legacy_overrides: Option<&LegacyClientArgOverrides>,
     stored_settings: Option<&StoredClientSettingsMvp>,
 ) -> anyhow::Result<(
-    ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    ClientApplication<MpvAdapter>,
     Option<ManagedMpvProcessGuard>,
 )> {
     let session = create_client_session(config);
@@ -48,10 +37,7 @@ pub(crate) fn create_client_runtime_with_managed_mpv_support(
         &mut player,
         stored_settings,
     )?;
-    Ok((
-        ClientRuntime::new(session, player, QueuedRuntimeControl::default()),
-        managed_guard,
-    ))
+    Ok((ClientApplication::new(session, player), managed_guard))
 }
 
 fn create_mpv_adapter_and_optional_managed_process_from_env(
@@ -59,12 +45,18 @@ fn create_mpv_adapter_and_optional_managed_process_from_env(
 ) -> anyhow::Result<(MpvAdapter, Option<ManagedMpvProcessGuard>)> {
     let explicit_ipc_path = explicit_mpv_ipc_path_from_env();
     if let Some(ipc_path) = explicit_ipc_path {
-        return Ok((create_mpv_adapter_from_path_or_stub(&ipc_path), None));
+        return Ok((
+            create_mpv_adapter_from_path_or_disconnected(&ipc_path),
+            None,
+        ));
     }
 
     let mut managed_config = managed_mpv_launch_env_config_from_env();
     apply_legacy_client_arg_managed_mpv_overrides(&mut managed_config, legacy_overrides);
     if !managed_config.enabled {
+        #[cfg(test)]
+        return Ok((SimulatedPlayer::new().into_inner(), None));
+        #[cfg(not(test))]
         return Ok((MpvAdapter::default(), None));
     }
 
@@ -72,12 +64,12 @@ fn create_mpv_adapter_and_optional_managed_process_from_env(
     Ok((adapter, Some(guard)))
 }
 
-fn create_mpv_adapter_from_path_or_stub(ipc_path: &str) -> MpvAdapter {
+fn create_mpv_adapter_from_path_or_disconnected(ipc_path: &str) -> MpvAdapter {
     match MpvAdapter::with_json_ipc(ipc_path) {
         Ok(adapter) => adapter,
         Err(err) => {
             eprintln!(
-                "warning: failed to connect mpv JSON IPC at '{ipc_path}': {err}; using stub mpv adapter"
+                "warning: failed to connect mpv JSON IPC at '{ipc_path}': {err}; player is disconnected"
             );
             MpvAdapter::default()
         }

@@ -1,4 +1,5 @@
 use super::*;
+use sorotte_secret::SecretValue;
 
 mod event_drain;
 mod runtime_adapter_impl;
@@ -11,8 +12,10 @@ pub(in crate::app) struct GuiClientCoreChatSessionRuntimeAdapter {
     pub(super) pending_ready_at_start_on_server_hello: bool,
     pub(super) request_user_list_on_first_state_without_media: bool,
     pub(super) runtime_settings: StoredClientSettingsRuntimeSnapshot,
-    pub(in crate::app) runtime: ClientRuntime<GuiNoopClientRuntimePlayer, QueuedRuntimeControl>,
+    pub(in crate::app) runtime: ClientApplication<GuiNoopClientRuntimePlayer>,
     pub(super) pending_startup_protocol_lines: VecDeque<String>,
+    pub(super) next_outbound_protocol_delivery_token: u64,
+    pub(super) staged_outbound_protocol_delivery: Option<GuiStagedClientCoreProtocolDelivery>,
     pub(super) next_state_sync_heartbeat_at: Option<Instant>,
     pub(super) next_autoplay_tick_at: Option<Instant>,
     pub(super) pending_attached_player_local_runtime_actions: Vec<GuiAttachedPlayerRuntimeAction>,
@@ -20,8 +23,65 @@ pub(in crate::app) struct GuiClientCoreChatSessionRuntimeAdapter {
     pub(super) optimistic_room_playlist: Option<(String, RoomPlaylistView)>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GuiClientCoreProtocolDeliverySource {
+    Startup,
+    Runtime,
+}
+
+pub(super) struct GuiStagedClientCoreProtocolDelivery {
+    pub(super) token: u64,
+    pub(super) line: String,
+    pub(super) source: GuiClientCoreProtocolDeliverySource,
+}
+
 impl GuiClientCoreChatSessionRuntimeAdapter {
     const STATE_SYNC_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
+
+    fn startup_protocol_delivery_is_staged(&self) -> bool {
+        self.staged_outbound_protocol_delivery
+            .as_ref()
+            .is_some_and(|delivery| delivery.source == GuiClientCoreProtocolDeliverySource::Startup)
+    }
+
+    fn replace_pending_startup_hello_if_unstaged(&mut self, line: String) {
+        if self.pending_startup_protocol_lines.is_empty()
+            || self.startup_protocol_delivery_is_staged()
+        {
+            return;
+        }
+        self.pending_startup_protocol_lines.clear();
+        self.pending_startup_protocol_lines.push_back(line);
+    }
+
+    fn dispatch_command_to_application(
+        runtime: &mut ClientApplication<GuiNoopClientRuntimePlayer>,
+        command: ClientCommand,
+    ) -> Result<bool, String> {
+        let events = runtime.dispatch(command);
+        if let Some(ClientEvent::OperationFailed { message, .. }) = events
+            .iter()
+            .find(|event| matches!(event, ClientEvent::OperationFailed { .. }))
+        {
+            return Err(message.clone());
+        }
+        Ok(events
+            .iter()
+            .find_map(ClientEvent::command_changed)
+            .unwrap_or(false))
+    }
+
+    fn dispatch_application_command(&mut self, command: ClientCommand) -> Result<bool, String> {
+        Self::dispatch_command_to_application(&mut self.runtime, command)
+    }
+
+    fn application_settings(
+        runtime_settings: &StoredClientSettingsRuntimeSnapshot,
+        active_room: impl Into<String>,
+    ) -> ClientApplicationSettings {
+        ClientApplicationSettings::new(runtime_settings.config.clone())
+            .with_active_room(active_room)
+    }
 
     #[cfg(test)]
     pub(in crate::app) fn new(
@@ -34,17 +94,25 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     pub(in crate::app) fn new_with_control_password(
         username: impl Into<String>,
         room: impl Into<String>,
-        controlled_room_password_override: Option<String>,
+        controlled_room_password_override: Option<SecretValue>,
     ) -> Result<Self, String> {
         let username = username.into();
         let room = room.into();
-        let runtime_settings = StoredClientSettingsRuntimeSnapshot {
-            controlled_room_password_override,
+        let mut runtime_settings = StoredClientSettingsRuntimeSnapshot {
+            controlled_room_password_override: controlled_room_password_override.clone(),
             ..StoredClientSettingsRuntimeSnapshot::default()
         };
+        runtime_settings.config.connection.username = Username::new(username.clone()).ok();
+        runtime_settings.config.connection.room = RoomName::new(room.clone()).ok();
+        runtime_settings.config.connection.controlled_room_password =
+            controlled_room_password_override;
         let hello_json = Self::hello_json(&username, &room, &runtime_settings);
-        let mut session = ClientSession::default();
-        Self::apply_runtime_settings_to_session(&mut session, &runtime_settings, &room);
+        let mut runtime = ClientApplication::with_default_session(GuiNoopClientRuntimePlayer);
+        Self::dispatch_command_to_application(
+            &mut runtime,
+            ClientCommand::update_settings(Self::application_settings(&runtime_settings, &room)),
+        )?;
+        Self::dispatch_command_to_application(&mut runtime, ClientCommand::BeginConnecting)?;
 
         Ok(Self {
             username,
@@ -54,12 +122,10 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             pending_ready_at_start_on_server_hello: false,
             request_user_list_on_first_state_without_media: true,
             runtime_settings,
-            runtime: ClientRuntime::new(
-                session,
-                GuiNoopClientRuntimePlayer,
-                QueuedRuntimeControl::default(),
-            ),
+            runtime,
             pending_startup_protocol_lines: VecDeque::from([hello_json]),
+            next_outbound_protocol_delivery_token: 1,
+            staged_outbound_protocol_delivery: None,
             next_state_sync_heartbeat_at: None,
             next_autoplay_tick_at: None,
             pending_attached_player_local_runtime_actions: Vec::new(),
@@ -71,36 +137,57 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     pub(in crate::app) fn apply_runtime_settings_snapshot(
         &mut self,
         runtime_settings: &StoredClientSettingsRuntimeSnapshot,
-    ) {
+    ) -> Result<(), String> {
+        let session_username_missing = self.runtime.session().username().is_none();
+        let next_username = self
+            .runtime
+            .session()
+            .username()
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                runtime_settings
+                    .config
+                    .connection
+                    .username
+                    .as_ref()
+                    .map(|username| username.as_str().to_owned())
+                    .unwrap_or_default()
+            });
+        let next_baseline_room = runtime_settings
+            .config
+            .connection
+            .room
+            .as_ref()
+            .map(|room| room.as_str().to_owned())
+            .unwrap_or_default();
+        let active_room = self
+            .runtime
+            .session()
+            .local_room_command_target_with_legacy_fallback(&next_baseline_room);
+        Self::dispatch_command_to_application(
+            &mut self.runtime,
+            ClientCommand::update_settings(Self::application_settings(
+                runtime_settings,
+                active_room,
+            )),
+        )?;
+
         self.runtime_settings = runtime_settings.clone();
-        self.username = self.runtime.session().username.clone().unwrap_or_else(|| {
-            self.runtime_settings
-                .settings
-                .username
-                .clone()
-                .unwrap_or_default()
-        });
-        self.baseline_room = runtime_settings.settings.room.clone().unwrap_or_default();
-        if self.runtime.session().username.is_none() {
+        self.username = next_username;
+        self.baseline_room = next_baseline_room;
+        self.dont_slow_down_with_me = runtime_settings
+            .config
+            .synchronization
+            .dont_slow_down_with_me;
+        if session_username_missing {
             self.pending_ready_at_start_on_server_hello = true;
             if !self.pending_startup_protocol_lines.is_empty() {
                 let username = self.current_username_for_next_hello();
                 let room = self.current_room_for_next_hello();
-                self.pending_startup_protocol_lines.clear();
-                self.pending_startup_protocol_lines
-                    .push_back(Self::hello_json(&username, &room, &self.runtime_settings));
+                let hello = Self::hello_json(&username, &room, &self.runtime_settings);
+                self.replace_pending_startup_hello_if_unstaged(hello);
             }
         }
-        self.dont_slow_down_with_me = runtime_settings
-            .settings
-            .dont_slow_down_with_me
-            .unwrap_or(false);
-        let room = self.current_room_for_runtime_settings_sync();
-        Self::apply_runtime_settings_to_session(
-            self.runtime.session_mut(),
-            &self.runtime_settings,
-            &room,
-        );
         let (readiness_supported, local_can_control, is_playing_music, recently_advanced) =
             self.autoplay_runtime_flags();
         self.runtime.update_autoplay_check(
@@ -109,118 +196,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             is_playing_music,
             recently_advanced,
         );
-    }
-
-    fn apply_runtime_settings_to_session(
-        session: &mut ClientSession,
-        runtime_settings: &StoredClientSettingsRuntimeSnapshot,
-        room: &str,
-    ) {
-        let behavior_defaults = SessionBehaviorConfig::default();
-        let desync_defaults = DesyncCorrectionConfig::default();
-        let readiness_defaults = ReadinessAutoplayConfig::default();
-
-        if let Some(control_password) = runtime_settings
-            .controlled_room_password_override
-            .as_deref()
-        {
-            session.remember_control_password_for_room(room, control_password);
-        }
-        if let Some(autoplay_enabled) = runtime_settings.settings.autoplay_initial_state {
-            session.set_autoplay_enabled(autoplay_enabled);
-        }
-        {
-            let behavior_config = session.behavior_config_mut();
-            behavior_config.show_same_room_osd = runtime_settings
-                .settings
-                .show_same_room_osd
-                .unwrap_or(behavior_defaults.show_same_room_osd);
-            behavior_config.show_osd_warnings = runtime_settings
-                .settings
-                .show_osd_warnings
-                .unwrap_or(behavior_defaults.show_osd_warnings);
-            behavior_config.show_noncontroller_osd = runtime_settings
-                .settings
-                .show_noncontroller_osd
-                .unwrap_or(behavior_defaults.show_noncontroller_osd);
-            behavior_config.show_different_room_osd = runtime_settings
-                .settings
-                .show_different_room_osd
-                .unwrap_or(behavior_defaults.show_different_room_osd);
-            behavior_config.pause_on_leave = runtime_settings
-                .settings
-                .pause_on_leave
-                .unwrap_or(behavior_defaults.pause_on_leave);
-            behavior_config.loop_at_end_of_playlist = runtime_settings
-                .settings
-                .loop_at_end_of_playlist
-                .unwrap_or(behavior_defaults.loop_at_end_of_playlist);
-            behavior_config.loop_single_files = runtime_settings
-                .settings
-                .loop_single_files
-                .unwrap_or(behavior_defaults.loop_single_files);
-            behavior_config.only_switch_to_trusted_domains = runtime_settings
-                .settings
-                .only_switch_to_trusted_domains
-                .unwrap_or(behavior_defaults.only_switch_to_trusted_domains);
-            behavior_config.trusted_domains = runtime_settings
-                .settings
-                .trusted_domains
-                .clone()
-                .unwrap_or_else(|| behavior_defaults.trusted_domains.clone());
-        }
-        {
-            let desync_config = session.desync_config_mut();
-            desync_config.rewind_on_desync = runtime_settings
-                .settings
-                .rewind_on_desync
-                .unwrap_or(desync_defaults.rewind_on_desync);
-            desync_config.fastforward_on_desync = runtime_settings
-                .settings
-                .fastforward_on_desync
-                .unwrap_or(desync_defaults.fastforward_on_desync);
-            desync_config.slow_on_desync = runtime_settings
-                .settings
-                .slow_on_desync
-                .unwrap_or(desync_defaults.slow_on_desync);
-            desync_config.rewind_threshold_seconds = runtime_settings
-                .settings
-                .rewind_threshold_seconds
-                .unwrap_or(desync_defaults.rewind_threshold_seconds);
-            desync_config.fastforward_threshold_seconds = runtime_settings
-                .settings
-                .fastforward_threshold_seconds
-                .unwrap_or(desync_defaults.fastforward_threshold_seconds);
-            desync_config.slowdown_threshold_seconds = runtime_settings
-                .settings
-                .slowdown_threshold_seconds
-                .unwrap_or(desync_defaults.slowdown_threshold_seconds);
-        }
-        {
-            let readiness_config = session.readiness_autoplay_config_mut();
-            readiness_config.autoplay_require_same_filenames = runtime_settings
-                .settings
-                .autoplay_require_same_filenames
-                .unwrap_or(readiness_defaults.autoplay_require_same_filenames);
-            readiness_config.unpause_action = runtime_settings
-                .settings
-                .unpause_action
-                .clone()
-                .unwrap_or(readiness_defaults.unpause_action);
-            readiness_config.auto_play_threshold = runtime_settings
-                .settings
-                .autoplay_min_users
-                .as_ref()
-                .map(|auto_play_threshold| match auto_play_threshold {
-                    AutoplayThresholdOverride::Disable => None,
-                    AutoplayThresholdOverride::Set(value) => Some(*value),
-                })
-                .unwrap_or(readiness_defaults.auto_play_threshold);
-            readiness_config.show_duration_notification = runtime_settings
-                .settings
-                .show_duration_notification
-                .unwrap_or(readiness_defaults.show_duration_notification);
-        }
+        Ok(())
     }
 
     fn client_hello_features_legacy_compatible(
@@ -229,12 +205,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         let mut features = Map::new();
         features.insert(
             "sharedPlaylists".to_owned(),
-            Value::Bool(
-                runtime_settings
-                    .settings
-                    .shared_playlist_enabled
-                    .unwrap_or(true),
-            ),
+            Value::Bool(runtime_settings.config.playback.shared_playlist_enabled),
         );
         features.insert("chat".to_owned(), Value::Bool(true));
         features.insert("uiMode".to_owned(), Value::String("GUI".to_owned()));
@@ -259,9 +230,11 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                 runtime_settings,
             ));
         if let Some(server_password) = runtime_settings
-            .settings
+            .config
+            .connection
             .server_password
-            .as_deref()
+            .as_ref()
+            .map(|password| password.expose_secret())
             .filter(|value| !value.is_empty())
         {
             hello.extra.insert(
@@ -275,13 +248,19 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn current_username_for_next_hello(&self) -> String {
-        self.runtime.session().username.clone().unwrap_or_else(|| {
-            self.runtime_settings
-                .settings
-                .username
-                .clone()
-                .unwrap_or_else(|| self.username.clone())
-        })
+        self.runtime
+            .session()
+            .username()
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                self.runtime_settings
+                    .config
+                    .connection
+                    .username
+                    .as_ref()
+                    .map(|username| username.as_str().to_owned())
+                    .unwrap_or_else(|| self.username.clone())
+            })
     }
 
     fn current_room_for_next_hello(&self) -> String {
@@ -295,42 +274,44 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     fn local_username_for_authoritative_updates(&self) -> Option<&str> {
         self.runtime
             .session()
-            .username
-            .as_deref()
+            .username()
             .or_else(|| (!self.username.is_empty()).then_some(self.username.as_str()))
     }
 
-    fn current_room_for_runtime_settings_sync(&self) -> String {
-        self.runtime
-            .session()
-            .local_room_command_target_with_legacy_fallback(&self.baseline_room)
-    }
-
     pub(super) fn shared_playlist_server_supported(&self) -> bool {
-        self.runtime.session().server_shared_playlists_supported() != Some(false)
+        self.runtime.session().server_shared_playlists_supported()
     }
 
     pub(super) fn managed_rooms_server_supported(&self) -> bool {
-        self.runtime.session().server_managed_rooms_supported() == Some(true)
+        self.runtime.session().server_managed_rooms_supported()
     }
 
-    pub(super) fn reset_session_for_reconnect(&mut self) {
+    pub(super) fn reset_session_for_reconnect(&mut self) -> Result<(), String> {
         let username = self.current_username_for_next_hello();
         self.username = username.clone();
         self.baseline_room = self
             .runtime_settings
-            .settings
+            .config
+            .connection
             .room
-            .clone()
+            .as_ref()
+            .map(|room| room.as_str().to_owned())
             .unwrap_or_default();
         let room = self.current_room_for_next_hello();
-        let mut session = ClientSession::default();
-        Self::apply_runtime_settings_to_session(&mut session, &self.runtime_settings, &room);
-        self.runtime = ClientRuntime::new(
-            session,
-            GuiNoopClientRuntimePlayer,
-            QueuedRuntimeControl::default(),
-        );
+        let mut runtime = ClientApplication::with_default_session(GuiNoopClientRuntimePlayer);
+        Self::dispatch_command_to_application(
+            &mut runtime,
+            ClientCommand::update_settings(Self::application_settings(
+                &self.runtime_settings,
+                &room,
+            )),
+        )?;
+        self.runtime = runtime;
+        self.staged_outbound_protocol_delivery = None;
+        Self::dispatch_command_to_application(
+            &mut self.runtime,
+            ClientCommand::Reconnect { attempt: 0 },
+        )?;
         self.pending_startup_protocol_lines.clear();
         self.pending_startup_protocol_lines
             .push_back(Self::hello_json(&username, &room, &self.runtime_settings));
@@ -341,9 +322,14 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         self.request_user_list_on_first_state_without_media = true;
         self.tracked_remote_usernames.clear();
         self.optimistic_room_playlist = None;
+        Ok(())
     }
 
     pub(super) fn prepare_transport_reconnect(&mut self) {
+        self.staged_outbound_protocol_delivery = None;
+        let _ = self
+            .runtime
+            .dispatch(ClientCommand::Reconnect { attempt: 0 });
         let username = self.current_username_for_next_hello();
         self.username = username.clone();
         self.baseline_room = self
@@ -368,15 +354,13 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     fn current_room_name(&self) -> Option<&str> {
         self.runtime
             .session()
-            .room
-            .as_deref()
+            .room()
             .filter(|value| !value.is_empty())
     }
 
     fn latest_outbound_room_target_for_next_hello(&self) -> Option<String> {
         self.runtime
-            .control()
-            .outbound_messages()
+            .pending_protocol_messages()
             .iter()
             .rev()
             .find_map(|message| match message {
@@ -547,7 +531,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn queue_periodic_state_sync_heartbeat_if_due(&mut self) {
-        if self.runtime.session().server_chat_supported().is_none() {
+        if !self.runtime.session().is_active() {
             self.next_state_sync_heartbeat_at = None;
             return;
         }
@@ -569,7 +553,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
 
     fn autoplay_runtime_flags(&self) -> (bool, bool, bool, bool) {
         let session = self.runtime.session();
-        let readiness_supported = session.server_readiness_supported().unwrap_or(false);
+        let readiness_supported = session.server_readiness_supported();
         let local_can_control = session.local_can_control().unwrap_or(false);
         let is_playing_music = session.is_playing_music();
         let recently_advanced = session.recently_advanced(system_time_seconds());
@@ -635,6 +619,18 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     pub(in crate::app) fn flush_outbound_protocol_lines(&mut self) -> Result<Vec<String>, String> {
+        if let Some(staged) = self.staged_outbound_protocol_delivery.as_ref() {
+            return Err(format!(
+                "Cannot drain outbound protocol lines while delivery receipt {} is staged.",
+                staged.token
+            ));
+        }
+        if !self.pending_startup_protocol_lines.is_empty() && !self.runtime.session().is_active() {
+            let _ = Self::dispatch_command_to_application(
+                &mut self.runtime,
+                ClientCommand::TransportConnected,
+            )?;
+        }
         let mut lines: Vec<_> = self.pending_startup_protocol_lines.drain(..).collect();
         lines.extend(
             self.runtime
@@ -642,6 +638,110 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                 .map_err(|error| format!("Queued protocol line encoding failed: {error}"))?,
         );
         Ok(lines)
+    }
+
+    pub(in crate::app) fn begin_outbound_protocol_delivery(
+        &mut self,
+    ) -> Result<Option<GuiOutboundProtocolDelivery>, String> {
+        if self.staged_outbound_protocol_delivery.is_some() {
+            return Ok(None);
+        }
+
+        let (line, source) = if let Some(line) = self.pending_startup_protocol_lines.front() {
+            let line = line.clone();
+            if !self.runtime.session().is_active() {
+                let _ = Self::dispatch_command_to_application(
+                    &mut self.runtime,
+                    ClientCommand::TransportConnected,
+                )?;
+            }
+            (line, GuiClientCoreProtocolDeliverySource::Startup)
+        } else {
+            if !self.runtime.session().is_active() {
+                return Ok(None);
+            }
+            let Some(line) = self
+                .runtime
+                .pending_protocol_line()
+                .map_err(|error| format!("Queued protocol line encoding failed: {error}"))?
+            else {
+                return Ok(None);
+            };
+            (line, GuiClientCoreProtocolDeliverySource::Runtime)
+        };
+
+        let token = self.next_outbound_protocol_delivery_token;
+        self.next_outbound_protocol_delivery_token = self
+            .next_outbound_protocol_delivery_token
+            .wrapping_add(1)
+            .max(1);
+        self.staged_outbound_protocol_delivery = Some(GuiStagedClientCoreProtocolDelivery {
+            token,
+            line: line.clone(),
+            source,
+        });
+        Ok(Some(GuiOutboundProtocolDelivery::new(token, line)))
+    }
+
+    pub(in crate::app) fn acknowledge_outbound_protocol_delivery(
+        &mut self,
+        token: u64,
+    ) -> Result<(), String> {
+        let Some(staged) = self.staged_outbound_protocol_delivery.as_ref() else {
+            return Err(format!(
+                "Outbound protocol delivery receipt {token} had no staged session line."
+            ));
+        };
+        if staged.token != token {
+            return Err(format!(
+                "Outbound protocol delivery receipt {token} did not match staged receipt {}.",
+                staged.token
+            ));
+        }
+
+        let staged_source = staged.source;
+        let staged_line = staged.line.clone();
+
+        match staged_source {
+            GuiClientCoreProtocolDeliverySource::Startup => {
+                if self.pending_startup_protocol_lines.front() != Some(&staged_line) {
+                    return Err(
+                        "Outbound startup protocol delivery receipt did not match the startup outbox front."
+                            .to_owned(),
+                    );
+                }
+                self.pending_startup_protocol_lines.pop_front();
+            }
+            GuiClientCoreProtocolDeliverySource::Runtime => {
+                let pending = self
+                    .runtime
+                    .pending_protocol_line()
+                    .map_err(|error| format!("Queued protocol line encoding failed: {error}"))?;
+                if pending.as_deref() != Some(staged_line.as_str()) {
+                    return Err(
+                        "Outbound protocol delivery receipt did not match the client-core outbox front."
+                            .to_owned(),
+                    );
+                }
+                let _ = self.runtime.acknowledge_protocol_line();
+            }
+        }
+        self.staged_outbound_protocol_delivery = None;
+        Ok(())
+    }
+
+    pub(in crate::app) fn fail_outbound_protocol_delivery(
+        &mut self,
+        token: u64,
+    ) -> Result<(), String> {
+        let Some(staged) = self.staged_outbound_protocol_delivery.as_ref() else {
+            return Ok(());
+        };
+        if staged.token != token {
+            return Ok(());
+        }
+        self.staged_outbound_protocol_delivery = None;
+        Ok(())
     }
 
     fn apply_protocol_message(&mut self, message: ProtocolMessage) -> Result<(), String> {
@@ -669,7 +769,11 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                 Ok(())
             }
             ProtocolMessage::Error(error_message) => {
-                self.runtime.control_mut().stop_reconnect();
+                self.runtime
+                    .emit_effect(ClientEffect::StopReconnect)
+                    .map_err(|error| {
+                        format!("Client-core stop-reconnect effect failed: {error}")
+                    })?;
                 Err(format!(
                     "Inbound client-session message apply failed: server error: {}",
                     error_message.error.message

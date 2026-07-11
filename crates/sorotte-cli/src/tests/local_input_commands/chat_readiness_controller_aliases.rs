@@ -304,11 +304,11 @@ fn parse_local_input_command_parses_create_aliases() {
 fn parse_local_input_command_parses_auth_aliases() {
     assert_eq!(
         parse_local_input_command("auth ab-123-456"),
-        Some(LocalInputCommand::AuthController("ab-123-456".to_owned()))
+        Some(LocalInputCommand::AuthController("ab-123-456".into()))
     );
     assert_eq!(
         parse_local_input_command("a ab-123-456"),
-        Some(LocalInputCommand::AuthController("ab-123-456".to_owned()))
+        Some(LocalInputCommand::AuthController("ab-123-456".into()))
     );
     assert_eq!(
         parse_local_input_command("/auth ab-123-456"),
@@ -320,11 +320,11 @@ fn parse_local_input_command_parses_auth_aliases() {
     );
     assert_eq!(
         parse_local_input_command("auth"),
-        Some(LocalInputCommand::AuthController(String::new()))
+        Some(LocalInputCommand::AuthController(String::new().into()))
     );
     assert_eq!(
         parse_local_input_command("a"),
-        Some(LocalInputCommand::AuthController(String::new()))
+        Some(LocalInputCommand::AuthController(String::new().into()))
     );
     assert_eq!(
         parse_local_input_command("/auth"),
@@ -336,7 +336,7 @@ fn parse_local_input_command_parses_auth_aliases() {
     );
     assert_eq!(
         parse_local_input_command("auth   "),
-        Some(LocalInputCommand::AuthController(String::new()))
+        Some(LocalInputCommand::AuthController(String::new().into()))
     );
 }
 

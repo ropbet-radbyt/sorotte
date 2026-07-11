@@ -14,7 +14,7 @@ pub(crate) enum RoomPasswordCheckError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RoomPasswordProvider {
-    salt: String,
+    salt: SecretValue,
 }
 
 impl Default for RoomPasswordProvider {
@@ -24,7 +24,7 @@ impl Default for RoomPasswordProvider {
 }
 
 impl RoomPasswordProvider {
-    pub(crate) fn new(salt: impl Into<String>) -> Self {
+    pub(crate) fn new(salt: impl Into<SecretValue>) -> Self {
         Self { salt: salt.into() }
     }
 
@@ -65,7 +65,7 @@ impl RoomPasswordProvider {
     }
 
     pub(crate) fn compute_room_hash(&self, room_name: &str, password: &str) -> String {
-        let salt_hash = format!("{:x}", Sha256::digest(self.salt.as_bytes()));
+        let salt_hash = format!("{:x}", Sha256::digest(self.salt.expose_secret().as_bytes()));
         let provisional_input = format!("{room_name}{salt_hash}");
         let provisional_hash = format!("{:x}", Sha256::digest(provisional_input.as_bytes()));
         let room_hash_input = format!("{provisional_hash}{salt_hash}{password}");

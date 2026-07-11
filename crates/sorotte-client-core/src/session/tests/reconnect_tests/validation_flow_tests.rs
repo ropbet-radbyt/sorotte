@@ -60,17 +60,21 @@ fn client_runtime_reconnect_state_restore_validation_uses_cached_telemetry_when_
         "validation should not issue correction seeks before restore starts"
     );
     assert_eq!(
-        runtime.session().local_paused,
+        runtime.session().model.playback.local_paused,
         Some(true),
         "pre-restore validation tick should still pre-sync telemetry into session local state"
     );
     assert_eq!(
-        runtime.session().local_position,
+        runtime.session().model.playback.local_position,
         Some(117.5),
         "pre-restore validation tick should still pre-sync telemetry position into session local state"
     );
     assert!(
-        !runtime.session().reconnect_state_restore_validation_pending,
+        !runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending,
         "validation should remain disabled until restore dispatch starts the validation cycle"
     );
     assert_eq!(
@@ -97,7 +101,11 @@ fn client_runtime_reconnect_state_restore_validation_uses_cached_telemetry_when_
         "restore dispatch should send ready/file restore messages plus a trailing list refresh"
     );
     assert!(
-        runtime.session().reconnect_state_restore_validation_pending,
+        runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending,
         "restore dispatch should enable reconnect state-restore validation"
     );
 
@@ -141,7 +149,11 @@ fn client_runtime_reconnect_state_restore_validation_uses_cached_telemetry_when_
         "post-restore validation should issue a corrective seek toward the aged room position"
     );
     assert!(
-        !runtime.session().reconnect_state_restore_validation_pending,
+        !runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending,
         "validation pending should clear after successful post-restore correction"
     );
     assert!(
@@ -270,7 +282,11 @@ fn client_runtime_reconnect_restore_and_validation_notifications_do_not_duplicat
         "repeated reconnect ticks in the same cycle should not enqueue duplicate restore protocol messages"
     );
     assert!(
-        !runtime.session().reconnect_state_restore_validation_pending,
+        !runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending,
         "validation pending should remain cleared after repeated no-op ticks"
     );
 }
@@ -278,8 +294,8 @@ fn client_runtime_reconnect_restore_and_validation_notifications_do_not_duplicat
 #[test]
 fn client_runtime_reconnect_state_restore_validation_emits_mismatch_notification_and_corrects() {
     let mut session = ClientSession::default();
-    session.room = Some("room1".to_owned());
-    session.room_playstates.insert(
+    session.model.room.name = Some("room1".to_owned());
+    session.model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(120.0),
@@ -287,7 +303,7 @@ fn client_runtime_reconnect_state_restore_validation_emits_mismatch_notification
             ..RoomPlaystateView::default()
         },
     );
-    session.reconnect_state_restore_validation_pending = true;
+    session.model.reconnect.state_restore_validation_pending = true;
 
     let player = RecordingPlayer {
         pending_playback_telemetry_update: Some(
@@ -327,12 +343,12 @@ fn client_runtime_reconnect_state_restore_validation_emits_mismatch_notification
         "validation mismatch policy should issue a corrective seek toward room state"
     );
     assert_eq!(
-        runtime.session().local_paused,
+        runtime.session().model.playback.local_paused,
         Some(false),
         "session local pause state should be updated to the corrective target"
     );
     assert_eq!(
-        runtime.session().local_position,
+        runtime.session().model.playback.local_position,
         Some(120.0),
         "session local position should be updated to the corrective target"
     );
@@ -351,8 +367,8 @@ fn client_runtime_reconnect_state_restore_validation_emits_mismatch_notification
 #[test]
 fn client_runtime_reconnect_state_restore_validation_uses_aged_room_position() {
     let mut session = ClientSession::default();
-    session.room = Some("room1".to_owned());
-    session.room_playstates.insert(
+    session.model.room.name = Some("room1".to_owned());
+    session.model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(120.0),
@@ -360,11 +376,11 @@ fn client_runtime_reconnect_state_restore_validation_uses_aged_room_position() {
             ..RoomPlaystateView::default()
         },
     );
-    session.room_playstate_updated_at_seconds.insert(
+    session.model.room.playstate_updated_at_seconds.insert(
         "room1".to_owned(),
         unix_wall_clock_time_seconds_legacy_compatible() - 2.5,
     );
-    session.reconnect_state_restore_validation_pending = true;
+    session.model.reconnect.state_restore_validation_pending = true;
 
     let player = RecordingPlayer {
         pending_playback_telemetry_update: Some(
@@ -396,7 +412,11 @@ fn client_runtime_reconnect_state_restore_validation_uses_aged_room_position() {
         "aged room position match should not issue a corrective seek"
     );
     assert!(
-        !runtime.session().reconnect_state_restore_validation_pending,
+        !runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending,
         "validation should complete once the aged room playstate matches the fresh local telemetry"
     );
     assert_eq!(
@@ -413,8 +433,8 @@ fn client_runtime_reconnect_state_restore_validation_uses_aged_room_position() {
 #[test]
 fn client_runtime_reconnect_state_restore_validation_waits_for_complete_state() {
     let mut session = ClientSession::default();
-    session.room = Some("room1".to_owned());
-    session.room_playstates.insert(
+    session.model.room.name = Some("room1".to_owned());
+    session.model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(120.0),
@@ -422,7 +442,7 @@ fn client_runtime_reconnect_state_restore_validation_waits_for_complete_state() 
             ..RoomPlaystateView::default()
         },
     );
-    session.reconnect_state_restore_validation_pending = true;
+    session.model.reconnect.state_restore_validation_pending = true;
 
     let player = RecordingPlayer {
         pending_playback_telemetry_update: Some(
@@ -446,7 +466,11 @@ fn client_runtime_reconnect_state_restore_validation_waits_for_complete_state() 
         vec![PlayerPlaybackTelemetryUpdate::default().with_paused(false)]
     );
     assert!(
-        runtime.session().reconnect_state_restore_validation_pending,
+        runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending,
         "pending validation should remain set until complete local/global playstate is available"
     );
 }
@@ -454,8 +478,8 @@ fn client_runtime_reconnect_state_restore_validation_waits_for_complete_state() 
 #[test]
 fn client_runtime_reconnect_state_restore_validation_handles_telemetry_before_room_state() {
     let mut session = ClientSession::default();
-    session.room = Some("room1".to_owned());
-    session.reconnect_state_restore_validation_pending = true;
+    session.model.room.name = Some("room1".to_owned());
+    session.model.reconnect.state_restore_validation_pending = true;
 
     let player = RecordingPlayer {
         pending_playback_telemetry_update: Some(
@@ -477,17 +501,21 @@ fn client_runtime_reconnect_state_restore_validation_handles_telemetry_before_ro
         "no reconnect validation notifications should emit before room playstate arrives"
     );
     assert_eq!(
-        runtime.session().local_paused,
+        runtime.session().model.playback.local_paused,
         Some(true),
         "telemetry should still pre-sync into session local pause state while waiting"
     );
     assert_eq!(
-        runtime.session().local_position,
+        runtime.session().model.playback.local_position,
         Some(117.5),
         "telemetry should still pre-sync into session local position while waiting"
     );
     assert!(
-        runtime.session().reconnect_state_restore_validation_pending,
+        runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending,
         "pending validation should remain set until room playstate arrives"
     );
     assert_eq!(
@@ -500,7 +528,7 @@ fn client_runtime_reconnect_state_restore_validation_handles_telemetry_before_ro
         "telemetry should remain available for diagnostics drains while validation is pending"
     );
 
-    runtime.session_mut().room_playstates.insert(
+    runtime.session_mut_for_test().model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(120.0),
@@ -529,7 +557,11 @@ fn client_runtime_reconnect_state_restore_validation_handles_telemetry_before_ro
     assert_eq!(runtime.player().paused, Some(false));
     assert_eq!(runtime.player().position, Some(120.0));
     assert!(
-        !runtime.session().reconnect_state_restore_validation_pending,
+        !runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending,
         "pending validation should clear after delayed room-state validation succeeds"
     );
     assert!(
@@ -541,8 +573,8 @@ fn client_runtime_reconnect_state_restore_validation_handles_telemetry_before_ro
 #[test]
 fn client_runtime_reconnect_state_restore_validation_handles_room_state_before_telemetry() {
     let mut session = ClientSession::default();
-    session.room = Some("room1".to_owned());
-    session.room_playstates.insert(
+    session.model.room.name = Some("room1".to_owned());
+    session.model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(120.0),
@@ -550,7 +582,7 @@ fn client_runtime_reconnect_state_restore_validation_handles_room_state_before_t
             ..RoomPlaystateView::default()
         },
     );
-    session.reconnect_state_restore_validation_pending = true;
+    session.model.reconnect.state_restore_validation_pending = true;
 
     let player = RecordingPlayer::default();
     let control = QueuedRuntimeControl::default();
@@ -565,17 +597,21 @@ fn client_runtime_reconnect_state_restore_validation_handles_room_state_before_t
         "no reconnect validation notifications should emit before local telemetry arrives"
     );
     assert_eq!(
-        runtime.session().local_paused,
+        runtime.session().model.playback.local_paused,
         None,
         "session local pause should remain unknown while waiting for telemetry"
     );
     assert_eq!(
-        runtime.session().local_position,
+        runtime.session().model.playback.local_position,
         None,
         "session local position should remain unknown while waiting for telemetry"
     );
     assert!(
-        runtime.session().reconnect_state_restore_validation_pending,
+        runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending,
         "pending validation should remain set until telemetry arrives"
     );
     assert!(
@@ -583,7 +619,9 @@ fn client_runtime_reconnect_state_restore_validation_handles_room_state_before_t
         "no telemetry should be buffered before the player reports any updates"
     );
 
-    runtime.player_mut().pending_playback_telemetry_update = Some(
+    runtime
+        .player_mut_for_test()
+        .pending_playback_telemetry_update = Some(
         PlayerPlaybackTelemetryUpdate::default()
             .with_paused(true)
             .with_position_seconds(117.5),
@@ -617,7 +655,11 @@ fn client_runtime_reconnect_state_restore_validation_handles_room_state_before_t
         "validation should issue a corrective seek once telemetry arrives"
     );
     assert!(
-        !runtime.session().reconnect_state_restore_validation_pending,
+        !runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending,
         "pending validation should clear after delayed-telemetry validation succeeds"
     );
     assert_eq!(
@@ -634,11 +676,11 @@ fn client_runtime_reconnect_state_restore_validation_handles_room_state_before_t
 #[test]
 fn client_runtime_reconnect_state_restore_validation_honors_custom_position_tolerance() {
     let mut session = ClientSession::default();
-    session.room = Some("room1".to_owned());
+    session.model.room.name = Some("room1".to_owned());
     session
         .behavior_config_mut()
         .reconnect_state_restore_position_tolerance_seconds = 3.0;
-    session.room_playstates.insert(
+    session.model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(120.0),
@@ -646,7 +688,7 @@ fn client_runtime_reconnect_state_restore_validation_honors_custom_position_tole
             ..RoomPlaystateView::default()
         },
     );
-    session.reconnect_state_restore_validation_pending = true;
+    session.model.reconnect.state_restore_validation_pending = true;
 
     let player = RecordingPlayer {
         pending_playback_telemetry_update: Some(
@@ -669,14 +711,20 @@ fn client_runtime_reconnect_state_restore_validation_honors_custom_position_tole
     );
     assert_eq!(runtime.player().paused, None);
     assert_eq!(runtime.player().position, None);
-    assert!(!runtime.session().reconnect_state_restore_validation_pending);
+    assert!(
+        !runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending
+    );
 }
 
 #[test]
 fn client_runtime_reconnect_state_restore_validation_retries_correction_after_failure() {
     let mut session = ClientSession::default();
-    session.room = Some("room1".to_owned());
-    session.room_playstates.insert(
+    session.model.room.name = Some("room1".to_owned());
+    session.model.room.playstates.insert(
         "room1".to_owned(),
         RoomPlaystateView {
             position: Some(120.0),
@@ -684,7 +732,7 @@ fn client_runtime_reconnect_state_restore_validation_retries_correction_after_fa
             ..RoomPlaystateView::default()
         },
     );
-    session.reconnect_state_restore_validation_pending = true;
+    session.model.reconnect.state_restore_validation_pending = true;
 
     let player = RecordingPlayer {
         fail_set_position: true,
@@ -721,21 +769,31 @@ fn client_runtime_reconnect_state_restore_validation_retries_correction_after_fa
         "mismatch and retry-scheduled notifications should emit on the first correction failure"
     );
     assert_eq!(runtime.player().position, None);
-    assert!(runtime.session().reconnect_state_restore_validation_pending);
+    assert!(
+        runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending
+    );
     assert_eq!(
         runtime
             .session()
-            .reconnect_state_restore_validation_retry_attempts,
+            .model
+            .reconnect
+            .state_restore_validation_retry_attempts,
         1
     );
     assert_eq!(
         runtime
             .session()
-            .reconnect_state_restore_validation_retry_cooldown_ticks,
+            .model
+            .reconnect
+            .state_restore_validation_retry_cooldown_ticks,
         1
     );
 
-    runtime.player_mut().fail_set_position = false;
+    runtime.player_mut_for_test().fail_set_position = false;
 
     runtime
         .run_reconnect_state_restore_validation_if_needed()
@@ -746,13 +804,25 @@ fn client_runtime_reconnect_state_restore_validation_retries_correction_after_fa
         "cooldown should defer retry by one validation invocation"
     );
     assert!(runtime.drain_reconnect_notifications().is_empty());
-    assert!(runtime.session().reconnect_state_restore_validation_pending);
+    assert!(
+        runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending
+    );
 
     runtime
         .run_reconnect_state_restore_validation_if_needed()
         .expect("retry after cooldown should succeed");
     assert_eq!(runtime.player().position, Some(120.0));
-    assert!(!runtime.session().reconnect_state_restore_validation_pending);
+    assert!(
+        !runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending
+    );
     assert!(runtime.drain_reconnect_notifications().is_empty());
     assert_eq!(
         runtime.drain_player_playback_telemetry_updates(),

@@ -219,7 +219,7 @@ fn gui_shell_app_state_rejects_invalid_save_and_playback_toggle_command_actions(
         invalid_configuration_state.apply(GuiShellAction::EditConfigurationText {
             section: "Connection",
             label: "Port",
-            value: "70000".to_owned(),
+            value: "70000".to_owned().into(),
         })
     );
     assert!(!invalid_configuration_state.commands.can_save_configuration);

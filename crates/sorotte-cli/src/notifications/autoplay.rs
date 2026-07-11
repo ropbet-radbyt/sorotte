@@ -89,7 +89,7 @@ fn emit_autoplay_countdown_notification_to_player_legacy_compatible(
 
 #[cfg(test)]
 pub(crate) fn flush_autoplay_notifications_to_sink<F>(
-    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    runtime: &mut ClientApplication<MpvAdapter>,
     notify: &mut F,
 ) -> anyhow::Result<()>
 where
@@ -99,18 +99,19 @@ where
 }
 
 pub(crate) fn flush_autoplay_notifications_legacy_compatible<F>(
-    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    runtime: &mut ClientApplication<MpvAdapter>,
     notify: &mut F,
 ) -> anyhow::Result<()>
 where
     F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
 {
-    for notification in runtime.drain_autoplay_notifications() {
-        emit_autoplay_countdown_notification_to_player_legacy_compatible(
-            runtime.player_mut(),
-            &notification,
-        );
+    while let Some(notification) = runtime.pending_autoplay_notification().cloned() {
+        runtime.with_player_io(|player| {
+            emit_autoplay_countdown_notification_to_player_legacy_compatible(player, &notification);
+        });
         notify(&notification)?;
+        let acknowledged = runtime.acknowledge_autoplay_notification();
+        debug_assert!(acknowledged.is_some());
     }
     Ok(())
 }

@@ -1,9 +1,5 @@
 use super::*;
 
-const LEGACY_FOLDER_SEARCH_FIRST_FILE_TIMEOUT_SECONDS_DEFAULT: f64 = 25.0;
-const LEGACY_FOLDER_SEARCH_TIMEOUT_SECONDS_DEFAULT: f64 = 20.0;
-const LEGACY_FOLDER_SEARCH_WARNING_THRESHOLD_SECONDS_DEFAULT: f64 = 2.0;
-const LEGACY_FOLDER_SEARCH_DOUBLE_CHECK_INTERVAL_SECONDS_DEFAULT: f64 = 30.0;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct LegacyStartupMediaSearchResolution {
     pub(crate) file: Option<String>,
@@ -53,38 +49,27 @@ pub(crate) fn resolve_legacy_startup_file_with_media_search_fallback_legacy_comp
             warning_lines: Vec::new(),
         };
     };
-    let Some(media_directories) = settings.media_search_directories.as_ref() else {
+    let playback = ClientConfig::resolve(settings).config.playback;
+    if playback.media_search_directories.is_empty() {
         return LegacyStartupMediaSearchResolution {
             file: Some(requested_file.to_owned()),
             warning_lines: Vec::new(),
         };
-    };
+    }
 
     let simple_file_name = requested_path
         .file_name()
         .and_then(|name| name.to_str())
         .filter(|name| *name == requested_file);
 
-    let first_file_timeout_seconds = settings
-        .folder_search_first_file_timeout_seconds
-        .unwrap_or(LEGACY_FOLDER_SEARCH_FIRST_FILE_TIMEOUT_SECONDS_DEFAULT);
-    let folder_timeout_seconds = settings
-        .folder_search_timeout_seconds
-        .unwrap_or(LEGACY_FOLDER_SEARCH_TIMEOUT_SECONDS_DEFAULT);
-    let warning_threshold_seconds = settings
-        .folder_search_warning_threshold_seconds
-        .unwrap_or(LEGACY_FOLDER_SEARCH_WARNING_THRESHOLD_SECONDS_DEFAULT);
-    let warning_repeat_interval_seconds = settings
-        .folder_search_double_check_interval_seconds
-        .unwrap_or(LEGACY_FOLDER_SEARCH_DOUBLE_CHECK_INTERVAL_SECONDS_DEFAULT);
+    let first_file_timeout_seconds = playback.first_file_timeout.get();
+    let folder_timeout_seconds = playback.folder_search_timeout.get();
+    let warning_threshold_seconds = playback.folder_search_warning_threshold.get();
+    let warning_repeat_interval_seconds = playback.folder_search_double_check_interval.get();
 
     let mut warning_lines = Vec::new();
-    for directory in media_directories
-        .iter()
-        .map(String::as_str)
-        .filter(|directory| !directory.trim().is_empty())
-    {
-        let directory_path = Path::new(directory);
+    for directory_path in &playback.media_search_directories {
+        let directory = directory_path.display();
         if !directory_path.is_dir() {
             warning_lines.push(format!(
                 "warning: legacy mediaSearchDirectories ignored missing media directory '{directory}'",

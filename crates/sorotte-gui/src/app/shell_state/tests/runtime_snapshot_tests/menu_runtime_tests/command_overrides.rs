@@ -74,7 +74,7 @@ fn gui_shell_app_state_keeps_unrelated_command_flags_live_when_runtime_overrides
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         section: "Connection",
         label: "Port",
-        value: "0".to_owned(),
+        value: "0".to_owned().into(),
     }));
 
     assert!(!state.commands.can_send_chat_message);

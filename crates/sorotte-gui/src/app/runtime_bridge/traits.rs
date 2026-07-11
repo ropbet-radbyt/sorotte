@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::feature_slices::GuiRuntimeInput;
 
 pub(in crate::app) trait GuiNativeRuntimeBridge {
     fn shows_manual_pending_controls(&self) -> bool;
@@ -192,7 +193,22 @@ pub(in crate::app) trait GuiNativeRuntimePump {
 }
 
 pub(in crate::app) trait GuiQueuedRuntimeOwner {
-    fn pump(&mut self, handle: &GuiQueuedRuntimeBridgeHandle, state: &SorotteGuiShellAppState);
+    /// Compatibility entry point for direct, single-threaded runtime tests.
+    /// Production worker code uses `input_changed` and `poll` separately.
+    #[cfg(test)]
+    fn pump(&mut self, handle: &GuiQueuedRuntimeBridgeHandle, state: &SorotteGuiShellAppState) {
+        let input = GuiRuntimeInput::from_shell(state);
+        self.input_changed(handle, &input);
+        self.poll(handle);
+    }
+
+    /// Reconciles state submitted by the UI. The threaded bridge calls this
+    /// only when the compact runtime input changes.
+    fn input_changed(&mut self, handle: &GuiQueuedRuntimeBridgeHandle, input: &GuiRuntimeInput);
+
+    /// Advances runtime-owned work and drains queued commands without
+    /// rebuilding the UI input projection.
+    fn poll(&mut self, handle: &GuiQueuedRuntimeBridgeHandle);
 }
 
 #[derive(Default)]
@@ -204,7 +220,9 @@ impl GuiNativeRuntimePump for GuiNoopRuntimePump {
 
 #[derive(Default)]
 #[cfg(test)]
-pub(in crate::app) struct GuiPreviewRuntimeOwner;
+pub(in crate::app) struct GuiPreviewRuntimeOwner {
+    latest_state: Option<SorotteGuiShellAppState>,
+}
 
 #[cfg(test)]
 impl GuiPreviewRuntimeOwner {
@@ -222,7 +240,14 @@ impl GuiPreviewRuntimeOwner {
 
 #[cfg(test)]
 impl GuiQueuedRuntimeOwner for GuiPreviewRuntimeOwner {
-    fn pump(&mut self, handle: &GuiQueuedRuntimeBridgeHandle, state: &SorotteGuiShellAppState) {
+    fn input_changed(&mut self, _handle: &GuiQueuedRuntimeBridgeHandle, input: &GuiRuntimeInput) {
+        self.latest_state = Some(input.to_compatibility_projection());
+    }
+
+    fn poll(&mut self, handle: &GuiQueuedRuntimeBridgeHandle) {
+        let Some(state) = self.latest_state.as_ref() else {
+            return;
+        };
         for request in handle.drain_requests() {
             Self::push_preview_response(handle, state, request);
         }

@@ -56,7 +56,11 @@ async fn connected_client_session_creates_controlled_room_from_local_input_chann
             controller_auth_payload.room.as_deref(),
             Some("managed-room")
         );
-        let Some(password) = controller_auth_payload.password.as_deref() else {
+        let Some(password) = controller_auth_payload
+            .password
+            .as_ref()
+            .map(|password| password.expose_secret())
+        else {
             panic!("controller auth payload should include password");
         };
         assert!(
@@ -199,7 +203,11 @@ async fn connected_client_session_creates_controlled_room_with_whitespace_parame
             panic!("client should emit Set.controllerAuth from local create command");
         };
         assert_eq!(controller_auth_payload.room.as_deref(), Some(" "));
-        let Some(password) = controller_auth_payload.password.as_deref() else {
+        let Some(password) = controller_auth_payload
+            .password
+            .as_ref()
+            .map(|password| password.expose_secret())
+        else {
             panic!("controller auth payload should include password");
         };
         assert!(

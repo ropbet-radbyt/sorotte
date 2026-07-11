@@ -1,10 +1,11 @@
 use sorotte_client_app::app_boundary::state::parse_host_and_optional_port_from_host_arg_legacy_compatible;
 
 use super::shell_state::{
-    GuiDialogControlKind, GuiFocusedConfigurationControlState, GuiMainWindowUserEditSessionState,
-    GuiPendingOperationKind, GuiPendingOperationState, GuiPublicServerEditSessionState,
-    GuiShellAction, GuiTextEditSessionState, GuiTransientNotificationLevel,
-    SorotteGuiShellAppState, apply_media_match_settings_to_stored_settings,
+    GuiConfigurationTextValue, GuiDialogControlKind, GuiFocusedConfigurationControlState,
+    GuiMainWindowUserEditSessionState, GuiPendingOperationKind, GuiPendingOperationState,
+    GuiPublicServerEditSessionState, GuiShellAction, GuiTextEditSessionState,
+    GuiTransientNotificationLevel, SorotteGuiShellAppState,
+    apply_media_match_settings_to_stored_settings,
 };
 use super::support::nonempty_room_name_text;
 
@@ -167,6 +168,7 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::CancelLocalChatSend
             | GuiShellAction::AnnounceRemoteChatMessage { .. }
             | GuiShellAction::AnnounceSystemChatEvent(_)
+            | GuiShellAction::AnnounceControlledRoomCreated { .. }
             | GuiShellAction::ToggleSelectedMainWindowUserReady
             | GuiShellAction::ToggleSelectedMainWindowUserController
             | GuiShellAction::RemoveSelectedMainWindowUser

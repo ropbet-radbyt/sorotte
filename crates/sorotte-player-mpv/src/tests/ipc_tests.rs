@@ -1,22 +1,69 @@
 use super::*;
-use crate::ipc::{MPV_IPC_MAX_LINE_BYTES, MpvJsonIpcClient};
-use std::{thread, time::Duration};
+use crate::ipc::{MPV_IPC_MAX_LINE_BYTES, MpvIpcConnectionEvent, MpvJsonIpcClient};
+use sorotte_player_api::PlayerCapabilities;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
+};
 
 #[derive(Debug)]
-struct BlockingReadTransport {
-    sleep_duration: Duration,
-}
+struct NeverRespondingTransport;
 
-impl MpvJsonIpcTransport for BlockingReadTransport {
-    fn send_line(&mut self, _line: &str) -> io::Result<()> {
+impl MpvJsonIpcTransport for NeverRespondingTransport {
+    fn send_line_until(&mut self, _line: &str, _deadline: Instant) -> io::Result<()> {
         Ok(())
     }
 
-    fn read_line(&mut self, line: &mut String) -> io::Result<usize> {
-        thread::sleep(self.sleep_duration);
+    fn read_line_until(&mut self, line: &mut String, deadline: Instant) -> io::Result<usize> {
+        if let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+            std::thread::sleep(remaining);
+        }
+        line.clear();
+        Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "test transport never produces a response",
+        ))
+    }
+}
+
+#[derive(Debug)]
+struct DropObservedTransport {
+    dropped: Arc<AtomicBool>,
+}
+
+impl Drop for DropObservedTransport {
+    fn drop(&mut self) {
+        self.dropped.store(true, Ordering::SeqCst);
+    }
+}
+
+impl MpvJsonIpcTransport for DropObservedTransport {
+    fn send_line_until(&mut self, _line: &str, _deadline: Instant) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn read_line_until(&mut self, line: &mut String, _deadline: Instant) -> io::Result<usize> {
         line.clear();
         Ok(0)
     }
+}
+
+#[test]
+fn mpv_ipc_client_joins_worker_during_shutdown() {
+    let dropped = Arc::new(AtomicBool::new(false));
+    let client = MpvJsonIpcClient::new(Box::new(DropObservedTransport {
+        dropped: Arc::clone(&dropped),
+    }));
+
+    drop(client);
+
+    assert!(
+        dropped.load(Ordering::SeqCst),
+        "transport should be dropped before client shutdown returns"
+    );
 }
 
 #[test]
@@ -87,22 +134,161 @@ fn mpv_ipc_rejects_line_over_max_bytes() {
 }
 
 #[test]
-fn mpv_ipc_command_times_out_without_matching_response() {
+fn mpv_ipc_timeout_marks_connection_dead_and_next_command_fails_immediately() {
+    let command_timeout = Duration::from_millis(20);
     let mut client = MpvJsonIpcClient::new_with_command_timeout(
-        Box::new(BlockingReadTransport {
-            sleep_duration: Duration::from_millis(250),
-        }),
-        Duration::from_millis(20),
+        Box::new(NeverRespondingTransport),
+        command_timeout,
     );
 
-    let error = client
+    let first_error = client
         .get_property("path")
         .expect_err("missing matching response should time out");
 
     assert!(
-        error.contains("mpv IPC command timed out"),
-        "unexpected timeout error: {error}"
+        first_error.contains("mpv IPC command timed out"),
+        "unexpected timeout error: {first_error}"
     );
+
+    let second_started_at = Instant::now();
+    let second_error = client
+        .get_property("pause")
+        .expect_err("dead connection should reject a second command");
+    assert!(
+        second_error.contains("not connected"),
+        "unexpected second-command error: {second_error}"
+    );
+    assert!(
+        second_started_at.elapsed() < command_timeout,
+        "second command waited behind the timed-out command"
+    );
+
+    let events = client.take_connection_events();
+    assert!(matches!(
+        events.as_slice(),
+        [
+            MpvIpcConnectionEvent::Connected { .. },
+            MpvIpcConnectionEvent::CommandFailed { .. },
+            MpvIpcConnectionEvent::TimedOut { timeout, .. },
+            MpvIpcConnectionEvent::Disconnected { .. },
+        ] if *timeout == command_timeout
+    ));
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_named_pipe_read_is_cancelled_at_command_deadline() {
+    use std::{
+        ffi::OsStr,
+        os::windows::{
+            ffi::OsStrExt,
+            io::{AsRawHandle, FromRawHandle, OwnedHandle},
+        },
+        path::Path,
+        sync::mpsc,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use windows_sys::Win32::{
+        Foundation::{ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE},
+        Storage::FileSystem::{PIPE_ACCESS_DUPLEX, ReadFile},
+        System::Pipes::{
+            ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
+        },
+    };
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock should be after Unix epoch")
+        .as_nanos();
+    let pipe_name = format!(
+        r"\\.\pipe\sorotte-mpv-timeout-{}-{unique}",
+        std::process::id()
+    );
+    let wide_pipe_name = OsStr::new(&pipe_name)
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    // SAFETY: the pipe name is NUL-terminated and all optional security
+    // attributes are null.
+    let raw_server_handle = unsafe {
+        CreateNamedPipeW(
+            wide_pipe_name.as_ptr(),
+            PIPE_ACCESS_DUPLEX,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+            1,
+            8 * 1024,
+            8 * 1024,
+            0,
+            std::ptr::null(),
+        )
+    };
+    assert_ne!(raw_server_handle, INVALID_HANDLE_VALUE);
+    // SAFETY: ownership of the valid handle returned by `CreateNamedPipeW`
+    // transfers to `OwnedHandle` exactly once.
+    let server_handle = unsafe { OwnedHandle::from_raw_handle(raw_server_handle as _) };
+    let (command_seen_tx, command_seen_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let server_thread = std::thread::spawn(move || {
+        let handle = server_handle.as_raw_handle() as HANDLE;
+        // SAFETY: `handle` is a live named-pipe server handle and this test
+        // intentionally performs a synchronous server-side connection.
+        let connected = unsafe { ConnectNamedPipe(handle, std::ptr::null_mut()) };
+        if connected == 0 {
+            let error = io::Error::last_os_error();
+            assert_eq!(
+                error.raw_os_error(),
+                Some(ERROR_PIPE_CONNECTED as i32),
+                "failed to connect test named pipe: {error}"
+            );
+        }
+
+        let mut request = [0_u8; 8 * 1024];
+        let mut bytes_read = 0_u32;
+        // SAFETY: the request buffer and byte count remain valid for this
+        // synchronous read, and the server handle was not opened overlapped.
+        let read_succeeded = unsafe {
+            ReadFile(
+                handle,
+                request.as_mut_ptr(),
+                request.len() as u32,
+                &mut bytes_read,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_ne!(
+            read_succeeded,
+            0,
+            "test server failed to read request: {}",
+            io::Error::last_os_error()
+        );
+        command_seen_tx
+            .send(())
+            .expect("test should observe the command");
+        let _ = release_rx.recv_timeout(Duration::from_secs(2));
+    });
+
+    let command_timeout = Duration::from_millis(50);
+    let mut client =
+        MpvJsonIpcClient::connect_with_command_timeout(Path::new(&pipe_name), command_timeout)
+            .expect("test client should connect to named pipe");
+    let first_error = client
+        .get_property("path")
+        .expect_err("server intentionally never sends a response");
+    assert!(first_error.contains("timed out"), "{first_error}");
+    command_seen_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("test server should receive the command");
+
+    let second_started_at = Instant::now();
+    let second_error = client
+        .get_property("pause")
+        .expect_err("timed-out named pipe should be disconnected");
+    assert!(second_error.contains("not connected"), "{second_error}");
+    assert!(second_started_at.elapsed() < command_timeout);
+
+    release_tx.send(()).expect("test server should be released");
+    server_thread.join().expect("test server should stop");
 }
 
 #[test]
@@ -125,26 +311,83 @@ fn mpv_ipc_preserves_unrelated_events_while_waiting() {
 }
 
 #[test]
-fn mpv_ipc_ignores_response_for_other_request_id() {
+fn mpv_command_failure_is_observable_without_killing_connection() {
+    let (transport, _state) = fake_transport_with_reads(&[
+        r#"{"request_id":1,"error":"property unavailable"}"#,
+        r#"{"request_id":2,"error":"success","data":"movie.mkv"}"#,
+    ]);
+    let mut client = MpvJsonIpcClient::new(Box::new(transport));
+
+    let first_error = client
+        .get_property("missing")
+        .expect_err("mpv command error should be returned");
+    assert!(first_error.contains("property unavailable"));
+
+    let path = client
+        .get_property_string("path")
+        .expect("ordinary command failure should leave connection healthy");
+    assert_eq!(path.as_deref(), Some("movie.mkv"));
+
+    let events = client.take_connection_events();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, MpvIpcConnectionEvent::CommandFailed { .. }))
+    );
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        MpvIpcConnectionEvent::Disconnected { .. } | MpvIpcConnectionEvent::TimedOut { .. }
+    )));
+}
+
+#[test]
+fn malformed_mpv_response_does_not_leak_tokenized_target() {
+    let secret = "mpv-malformed-response-token-canary";
+    let malformed = format!("not-json X-Plex-Token={secret}");
+    let (transport, _state) = fake_transport_with_reads(&[&malformed]);
+    let mut client = MpvJsonIpcClient::new(Box::new(transport));
+
+    let error = client
+        .get_property_string("path")
+        .expect_err("malformed response should fail and disconnect");
+    let events = client.take_connection_events();
+
+    assert!(!error.contains(secret));
+    assert!(!format!("{events:?}").contains(secret));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, MpvIpcConnectionEvent::Disconnected { .. }))
+    );
+}
+
+#[test]
+fn mpv_ipc_request_id_mismatch_marks_connection_dead() {
     let (transport, _state) = fake_transport_with_reads(&[
         r#"{"request_id":999,"error":"success","data":"old.mkv"}"#,
         r#"{"request_id":1,"error":"success","data":"movie.mkv"}"#,
     ]);
     let mut client = MpvJsonIpcClient::new(Box::new(transport));
 
-    let path = client
+    let error = client
         .get_property_string("path")
-        .expect("matching response should succeed");
+        .expect_err("mismatched request id should corrupt the connection");
 
-    assert_eq!(path.as_deref(), Some("movie.mkv"));
+    assert!(
+        error.contains("request_id mismatch"),
+        "unexpected mismatch error: {error}"
+    );
+
+    let second_error = client
+        .get_property_string("path")
+        .expect_err("corrupt connection should reject later commands");
+    assert!(second_error.contains("not connected"));
 }
 
 #[test]
 fn mpv_adapter_surfaces_timeout_as_player_error() {
     let mut adapter = MpvAdapter::with_test_transport_and_ipc_timeout(
-        BlockingReadTransport {
-            sleep_duration: Duration::from_millis(250),
-        },
+        NeverRespondingTransport,
         Duration::from_millis(20),
     );
 
@@ -161,6 +404,91 @@ fn mpv_adapter_surfaces_timeout_as_player_error() {
         }
         other => panic!("unexpected error variant: {other:?}"),
     }
+
+    assert!(!adapter.is_connected());
+    assert_eq!(adapter.capabilities(), PlayerCapabilities::NONE);
+
+    let events = adapter.take_ipc_connection_events();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, MpvIpcConnectionEvent::TimedOut { .. })),
+        "adapter should surface the typed timeout event: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, MpvIpcConnectionEvent::Disconnected { .. })),
+        "adapter should surface the typed disconnect event: {events:?}"
+    );
+}
+
+#[test]
+fn connected_mpv_player_capabilities_follow_ipc_health() {
+    let adapter = MpvAdapter::with_test_transport_and_ipc_timeout(
+        NeverRespondingTransport,
+        Duration::from_millis(20),
+    );
+    let mut player = ConnectedMpvPlayer::from_test_adapter(adapter);
+
+    assert!(player.is_connected());
+    assert_eq!(player.capabilities(), PlayerCapabilities::ALL);
+
+    let error = player
+        .execute(PlayerCommand::SetPaused(true))
+        .expect_err("connected wrapper should surface the IPC timeout");
+    assert!(
+        matches!(error, PlayerError::OperationFailed(ref message) if message.contains("mpv IPC command timed out")),
+        "unexpected connected-wrapper error: {error:?}"
+    );
+
+    assert!(!player.is_connected());
+    assert_eq!(player.capabilities(), PlayerCapabilities::NONE);
+    let events = player.take_ipc_connection_events();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, MpvIpcConnectionEvent::TimedOut { .. })),
+        "connected wrapper should surface its timeout event: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, MpvIpcConnectionEvent::Disconnected { .. })),
+        "connected wrapper should surface its disconnect event: {events:?}"
+    );
+}
+
+#[test]
+fn simulated_player_keeps_all_capabilities_without_ipc() {
+    let player = SimulatedPlayer::new();
+
+    assert!(!player.is_connected());
+    assert_eq!(player.capabilities(), PlayerCapabilities::ALL);
+}
+
+#[test]
+fn mpv_adapter_property_polling_emits_connection_failure_events() {
+    let mut adapter = MpvAdapter::with_test_transport_and_ipc_timeout(
+        NeverRespondingTransport,
+        Duration::from_millis(20),
+    );
+
+    assert_eq!(adapter.take_local_file_update(), None);
+
+    let events = adapter.take_ipc_connection_events();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, MpvIpcConnectionEvent::CommandFailed { .. })),
+        "property polling should expose its command failure: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, MpvIpcConnectionEvent::TimedOut { .. })),
+        "property polling should expose its timeout: {events:?}"
+    );
 }
 
 #[test]
@@ -170,9 +498,11 @@ fn open_file_collects_filesystem_size_for_local_paths() {
     writeln!(temp_file, "12345").expect("temp file should be writable");
     drop(temp_file);
 
-    let mut adapter = MpvAdapter::default();
+    let mut adapter = SimulatedPlayer::new();
     adapter
-        .open_file(temp_path.to_string_lossy().as_ref())
+        .execute(PlayerCommand::OpenFile(
+            temp_path.to_string_lossy().into_owned(),
+        ))
         .expect("mpv stub should accept local temp file");
 
     let file_update = adapter
@@ -589,10 +919,9 @@ fn set_window_minimized_sends_json_ipc_set_property_command_when_attached() {
 }
 
 #[test]
-fn set_position_waits_for_matching_response_and_ignores_async_events() {
+fn set_position_waits_for_matching_response_and_preserves_async_events() {
     let (transport, state) = fake_transport_with_reads(&[
         r#"{"event":"property-change","name":"pause","data":false}"#,
-        r#"{"request_id":999,"error":"success"}"#,
         r#"{"request_id":1,"error":"success"}"#,
     ]);
     let mut adapter = MpvAdapter::with_test_transport(transport);

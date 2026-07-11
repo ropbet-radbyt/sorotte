@@ -75,7 +75,7 @@ impl GuiPersistedConfigRuntimeOwner {
         vec![GuiShellAction::EditConfigurationText {
             section: "Connection",
             label: "Room",
-            value: next_room.to_owned(),
+            value: next_room.to_owned().into(),
         }]
     }
 

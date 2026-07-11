@@ -256,14 +256,16 @@ fn gui_shell_app_state_starts_controlled_room_and_controller_auth_edit_sessions(
 
     assert!(
         state.apply(GuiShellAction::UpdateControllerAuthPasswordEdit(
-            "ab-123-456".to_owned(),
+            "ab-123-456".into(),
         ))
     );
     assert!(
         state
             .controller_auth_edit_session
             .as_ref()
-            .is_some_and(|session| { session.is_dirty && session.password_buffer == "ab-123-456" })
+            .is_some_and(|session| {
+                session.is_dirty && session.password_buffer.expose_secret() == "ab-123-456"
+            })
     );
     assert!(state.apply(GuiShellAction::CancelControllerAuthEdit));
     assert!(state.controller_auth_edit_session.is_none());
@@ -307,7 +309,7 @@ fn gui_shell_app_state_rejects_invalid_controlled_room_and_controller_auth_edit_
 
     assert!(
         !joined_room_state.apply(GuiShellAction::UpdateControllerAuthPasswordEdit(
-            "ab-123-456".to_owned(),
+            "ab-123-456".into(),
         ))
     );
     assert_eq!(
@@ -489,7 +491,7 @@ fn gui_shell_app_state_tracks_cross_surface_selection_and_preserves_it_across_re
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         section: "Connection",
         label: "Username",
-        value: TEST_USERNAME.to_owned(),
+        value: TEST_USERNAME.to_owned().into(),
     }));
 
     assert_eq!(state.selection.selected_main_window_user, Some(0));

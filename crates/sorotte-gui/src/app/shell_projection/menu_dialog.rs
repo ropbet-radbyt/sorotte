@@ -2,8 +2,10 @@ use super::*;
 
 impl MenuDialogShellState {
     pub(in crate::app) fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
-        let shared_playlist_enabled = settings.shared_playlist_enabled.unwrap_or(false);
-        let chat_enabled = legacy_chat_enabled(settings);
+        let config = ClientConfig::resolve(settings).config;
+        let shared_playlist_enabled = config.playback.shared_playlist_enabled;
+        let chat_enabled =
+            config.interface.chat_input_enabled || config.interface.chat_output_enabled;
 
         Self {
             sections: vec![
@@ -153,7 +155,9 @@ impl MenuDialogShellState {
                     ],
                 },
             ],
-            tls_prompt_expected: settings.only_switch_to_trusted_domains.unwrap_or(false),
+            // The menu models whether the persisted checkbox explicitly requests a prompt;
+            // the live session uses the resolved playback policy.
+            tls_prompt_expected: settings.only_switch_to_trusted_domains == Some(true),
             update_notice_expected: false,
             about_dialog_available: true,
         }

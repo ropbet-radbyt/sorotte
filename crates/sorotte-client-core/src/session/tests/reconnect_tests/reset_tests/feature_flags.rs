@@ -11,8 +11,12 @@ fn reset_sync_state_for_reconnect_clears_readiness_support_until_next_hello() {
 
     session.reset_sync_state_for_reconnect();
 
-    assert_eq!(session.server_readiness_supported(), None);
-    assert_eq!(session.server_set_others_readiness_supported(), None);
+    assert_eq!(
+        session.connection_phase(),
+        &ConnectionPhase::Reconnecting { attempt: 0 }
+    );
+    assert!(!session.server_readiness_supported());
+    assert!(!session.server_set_others_readiness_supported());
     assert!(
         session
             .runtime_actions_for_local_ready_toggle(true)
@@ -36,12 +40,16 @@ fn reset_sync_state_for_reconnect_clears_managed_rooms_support_until_next_hello(
 
     session.reset_sync_state_for_reconnect();
 
-    assert_eq!(session.server_managed_rooms_supported(), None);
+    assert_eq!(
+        session.connection_phase(),
+        &ConnectionPhase::Reconnecting { attempt: 0 }
+    );
+    assert!(!session.server_managed_rooms_supported());
     assert!(
         session
             .runtime_actions_for_local_controller_auth_request(
                 "+room:ABCDEF123456".to_owned(),
-                "AB-123-456".to_owned(),
+                "AB-123-456".into(),
             )
             .is_empty()
     );

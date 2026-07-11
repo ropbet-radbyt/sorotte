@@ -34,7 +34,6 @@ use super::super::media_match_support::{
     rebuild_persisted_media_match_index_with_extraction_settings_and_cancel,
     rebuild_persisted_media_match_remote_candidates_with_progress_and_cancel,
 };
-use super::super::remote_services;
 use super::super::runtime_bridge::{GuiPendingCompletionRequest, GuiRuntimeRequest};
 use super::super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 use super::super::runtime_stack::{
@@ -118,9 +117,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.plex_auth_start_rx = None;
                 self.plex_auth_poll_rx = None;
                 self.plex_auth_poll_due_at = None;
-                self.startup_plex_server_refresh_rx = None;
-                self.plex_server_refresh_rx = None;
-                self.plex_server_refresh_context = None;
+                self.plex_server_discovery.invalidate();
                 self.plex_sync_engine = None;
                 self.plex_sync_rx = None;
                 self.plex_sync_next_tick_due_at = None;
@@ -219,65 +216,22 @@ impl GuiPersistedConfigRuntimeOwner {
         request: GuiRuntimeRequest,
     ) -> bool {
         match request {
-            GuiRuntimeRequest::CheckForUpdates {
-                language,
-                update_channel,
-                user_initiated,
-            } => {
-                let result = remote_services::check_for_updates(
-                    Some(language.as_str()),
-                    user_initiated,
-                    update_channel.as_deref(),
-                );
-                Self::push_actions_and_project(
-                    handle,
-                    projected_state,
-                    vec![GuiShellAction::ApplyUpdateCheckResult(result)],
-                );
+            GuiRuntimeRequest::CheckForUpdates { .. }
+            | GuiRuntimeRequest::DownloadUpdate(_)
+            | GuiRuntimeRequest::DownloadAndInstallUpdate(_)
+            | GuiRuntimeRequest::ApplyStagedUpdate(_) => {
+                unreachable!("update requests are routed through GuiClientCommand::Updates")
             }
-            GuiRuntimeRequest::DownloadUpdate(candidate) => {
-                let result = remote_services::download_and_stage_update(
-                    &candidate,
-                    self.legacy_gui_qsettings_root().as_deref(),
-                );
-                Self::push_actions_and_project(
-                    handle,
-                    projected_state,
-                    vec![GuiShellAction::ApplyUpdateDownloadResult(result)],
-                );
-            }
-            GuiRuntimeRequest::DownloadAndInstallUpdate(candidate) => {
-                let result = remote_services::download_and_stage_update(
-                    &candidate,
-                    self.legacy_gui_qsettings_root().as_deref(),
-                );
-                let staged_update = result.staged_update.clone();
-                Self::push_actions_and_project(
-                    handle,
-                    projected_state,
-                    vec![GuiShellAction::ApplyUpdateDownloadResult(result)],
-                );
-                if let Some(staged_update) = staged_update {
-                    Self::push_actions_and_project(
-                        handle,
-                        projected_state,
-                        vec![GuiShellAction::BeginStagedUpdateApply],
-                    );
-                    let result = remote_services::launch_staged_update(&staged_update);
-                    Self::push_actions_and_project(
-                        handle,
-                        projected_state,
-                        vec![GuiShellAction::ApplyStagedUpdateLaunchResult(result)],
-                    );
-                }
-            }
-            GuiRuntimeRequest::ApplyStagedUpdate(staged_update) => {
-                let result = remote_services::launch_staged_update(&staged_update);
-                Self::push_actions_and_project(
-                    handle,
-                    projected_state,
-                    vec![GuiShellAction::ApplyStagedUpdateLaunchResult(result)],
-                );
+            GuiRuntimeRequest::UndoSeek
+            | GuiRuntimeRequest::SetOffset(_)
+            | GuiRuntimeRequest::SetAutoplayEnabled(_)
+            | GuiRuntimeRequest::SetAutoplayThreshold(_)
+            | GuiRuntimeRequest::RetryPlayerLaunch
+            | GuiRuntimeRequest::SeekOffset(_)
+            | GuiRuntimeRequest::SeekToPosition(_)
+            | GuiRuntimeRequest::SetPlaybackPaused(_)
+            | GuiRuntimeRequest::TogglePlaybackPause => {
+                unreachable!("player requests are routed through GuiClientCommand::Player")
             }
             GuiRuntimeRequest::OpenMediaFiles {
                 paths,
@@ -327,9 +281,6 @@ impl GuiPersistedConfigRuntimeOwner {
                     projected_state,
                     target,
                 );
-            }
-            GuiRuntimeRequest::RetryPlayerLaunch => {
-                return self.handle_retry_player_launch_request(handle, projected_state);
             }
             GuiRuntimeRequest::SetPluginEnabled { plugin, enabled } => {
                 return self.handle_set_plugin_enabled_request(
@@ -480,32 +431,6 @@ impl GuiPersistedConfigRuntimeOwner {
                     rating_key,
                 );
             }
-            GuiRuntimeRequest::UndoSeek => {
-                return self.handle_undo_seek_request(handle, projected_state);
-            }
-            GuiRuntimeRequest::SetOffset(command) => {
-                return self.handle_set_offset_request(handle, projected_state, command);
-            }
-            GuiRuntimeRequest::SetAutoplayEnabled(enabled) => {
-                return self.handle_set_autoplay_enabled_request(handle, projected_state, enabled);
-            }
-            GuiRuntimeRequest::SetAutoplayThreshold(threshold) => {
-                return self.handle_set_autoplay_threshold_request(
-                    handle,
-                    projected_state,
-                    threshold,
-                );
-            }
-            GuiRuntimeRequest::SeekOffset(offset_seconds) => {
-                return self.handle_seek_offset_request(handle, projected_state, offset_seconds);
-            }
-            GuiRuntimeRequest::SeekToPosition(target_position_seconds) => {
-                return self.handle_seek_to_position_request(
-                    handle,
-                    projected_state,
-                    target_position_seconds,
-                );
-            }
             GuiRuntimeRequest::SetRoom(room) => {
                 self.request_room_join_runtime(handle, projected_state, room);
             }
@@ -528,7 +453,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     handle,
                     projected_state,
                     room,
-                    password,
+                    password.into_exposed_secret(),
                 );
             }
             GuiRuntimeRequest::QueuePlaylistEntry {
@@ -581,12 +506,6 @@ impl GuiPersistedConfigRuntimeOwner {
             }
             GuiRuntimeRequest::SendChatMessage(message) => {
                 return self.handle_send_chat_message_request(handle, projected_state, message);
-            }
-            GuiRuntimeRequest::SetPlaybackPaused(paused) => {
-                return self.handle_set_playback_paused_request(handle, projected_state, paused);
-            }
-            GuiRuntimeRequest::TogglePlaybackPause => {
-                return self.handle_toggle_playback_pause_request(handle, projected_state);
             }
             GuiRuntimeRequest::CompletePendingOperation(
                 GuiPendingCompletionRequest::SetPlaybackPause(paused),

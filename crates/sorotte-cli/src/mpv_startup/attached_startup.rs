@@ -27,7 +27,8 @@ where
                 })
                 .map_err(|error| {
                     anyhow!(
-                        "failed applying legacy explicit-mpv-IPC startup '--{name}={value}' override: {error}"
+                        "failed applying legacy explicit-mpv-IPC startup option {:?}: {error}",
+                        RedactedCommandArgs::from_option_names(std::iter::once(name))
                     )
                 })?;
             }
@@ -37,7 +38,8 @@ where
                 })
                 .map_err(|error| {
                     anyhow!(
-                        "failed applying legacy explicit-mpv-IPC startup '--profile={profile}' override: {error}"
+                        "failed applying legacy explicit-mpv-IPC startup profile argument {:?}: {error}",
+                        RedactedCommandArgs::from_count(1)
                     )
                 })?;
             }

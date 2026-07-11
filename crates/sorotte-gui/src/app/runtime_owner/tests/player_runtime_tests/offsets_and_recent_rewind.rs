@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_owner::GuiUpdateRuntime;
 
 #[test]
 fn gui_persisted_config_runtime_owner_keeps_offset_commands_on_global_timeline() {
@@ -32,6 +33,7 @@ fn gui_persisted_config_runtime_owner_keeps_offset_commands_on_global_timeline()
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
     let mut owner = GuiPersistedConfigRuntimeOwner {
         config_path: None,
+        legacy_projection: None,
         session: None,
         session_projects_to_shell: false,
         session_transport: None,
@@ -45,8 +47,7 @@ fn gui_persisted_config_runtime_owner_keeps_offset_commands_on_global_timeline()
         startup_saved_connect_attempted: false,
         startup_remote_actions_attempted: false,
         startup_remote_actions_rx: None,
-        background_update_check_rx: None,
-        background_update_check_next_due_at: None,
+        update_runtime: GuiUpdateRuntime::new(None),
         startup_stream_helper_probe_completed: false,
         startup_stream_helper_probe_rx: None,
         player: Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
@@ -105,9 +106,8 @@ fn gui_persisted_config_runtime_owner_keeps_offset_commands_on_global_timeline()
         plex_servers: Vec::new(),
         plex_server_reachability: std::collections::HashMap::new(),
         startup_plex_server_refresh_attempted: false,
-        startup_plex_server_refresh_rx: None,
-        plex_server_refresh_rx: None,
-        plex_server_refresh_context: None,
+        plex_server_discovery:
+            crate::app::runtime_owner::GuiPlexServerDiscoveryCoordinator::default(),
         plex_sync_engine: None,
         plex_sync_rx: None,
         plex_sync_next_tick_due_at: None,

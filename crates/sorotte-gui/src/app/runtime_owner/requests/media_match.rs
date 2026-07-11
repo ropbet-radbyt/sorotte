@@ -10,8 +10,8 @@ use std::{
 };
 
 use sorotte_media_match::{
-    MediaExtractionSettings, MediaMatchDecision, MediaMatchTier,
-    decide_media_match_against_wire_signature, media_match_wire_signature_from_value,
+    MediaExtractionSettings, MediaMatchDecision, MediaMatchTier, MediaMatchWireSignature,
+    decide_media_match_against_wire_signature,
 };
 
 use crate::app::media_match_support::{
@@ -31,7 +31,7 @@ const MEDIA_MATCH_BACKGROUND_EVENTS_PER_PUMP: usize = 64;
 #[derive(Debug, Clone)]
 struct GuiMediaMatchRemoteTarget {
     target_file_name: String,
-    media_match_signature: serde_json::Value,
+    media_match_signature: MediaMatchWireSignature,
 }
 
 #[derive(Debug)]
@@ -252,24 +252,19 @@ impl GuiPersistedConfigRuntimeOwner {
                 let mut summaries = Vec::new();
                 for peer_state in remote_peer_states {
                     let username = peer_state.username;
-                    let Some(value) = peer_state.media_match_signature else {
+                    let Some(signature) = peer_state.media_match_signature else {
                         summaries.push(format!("{username}: unavailable"));
                         continue;
                     };
-                    match media_match_wire_signature_from_value(&value) {
-                        Ok(signature) => {
-                            let decision = decide_media_match_against_wire_signature(
-                                &local_record,
-                                &signature,
-                                &projected_state.media_match.settings,
-                            );
-                            tiers.insert(username.clone(), decision.tier);
-                            summaries.push(Self::summarize_media_match_wire_decision(
-                                &username, &decision,
-                            ));
-                        }
-                        Err(_) => summaries.push(format!("{username}: incompatible")),
-                    }
+                    let decision = decide_media_match_against_wire_signature(
+                        &local_record,
+                        &signature,
+                        &projected_state.media_match.settings,
+                    );
+                    tiers.insert(username.clone(), decision.tier);
+                    summaries.push(Self::summarize_media_match_wire_decision(
+                        &username, &decision,
+                    ));
                 }
                 summaries.join(", ")
             }
@@ -818,7 +813,8 @@ impl GuiPersistedConfigRuntimeOwner {
             .map(|target| {
                 format!(
                     "{}\t{}",
-                    target.target_file_name, target.media_match_signature
+                    target.target_file_name,
+                    serde_json::to_string(&target.media_match_signature).unwrap_or_default()
                 )
             })
             .collect::<Vec<_>>();
@@ -882,11 +878,12 @@ impl GuiPersistedConfigRuntimeOwner {
             .collect::<Vec<_>>()
             .join("|");
         let candidate_source = Self::media_match_remote_lookup_candidate_source(candidate_paths);
+        let signature = serde_json::to_string(&remote.media_match_signature).unwrap_or_default();
         format!(
             "root={}\nroots={roots}\ncandidates={candidate_source}\ntarget={}\nsignature={}\nsettings={settings:?}",
             root.display(),
             remote.target_file_name,
-            remote.media_match_signature
+            signature
         )
     }
 
@@ -2518,25 +2515,17 @@ mod tests {
             .finish_media_match_background_index_backup(true)
             .expect("backup should be discarded");
 
-        let connection = rusqlite::Connection::open(
-            root.join("cache")
-                .join("media-match")
-                .join("index-v3.sqlite3"),
-        )
-        .expect("SQLite index should open");
-        let inventory = connection
-            .query_row("SELECT COUNT(*) FROM media_files_v3", [], |row| {
-                row.get::<_, i64>(0)
-            })
-            .expect("inventory count should load");
-        let fingerprints = connection
-            .query_row("SELECT COUNT(*) FROM fingerprints_v3", [], |row| {
-                row.get::<_, i64>(0)
-            })
-            .expect("fingerprint count should load");
+        let summary =
+            sorotte_media_match::MediaIndexService::new(root.join("cache").join("media-match"))
+                .open()
+                .expect("media index should open")
+                .summary(
+                    &sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3(),
+                )
+                .expect("media index summary should load");
 
-        assert_eq!(inventory, 1);
-        assert_eq!(fingerprints, 0);
+        assert_eq!(summary.inventory_count, 1);
+        assert_eq!(summary.v3_fingerprint_row_count, 0);
         assert_eq!(
             result.current_decision,
             Some("unknown: no resolved current local file".to_owned())
@@ -2734,7 +2723,12 @@ mod tests {
                     file_name: Some(remote_file_name.to_owned()),
                     file_size: None,
                     file_duration: None,
-                    media_match_signature: Some(remote_signature),
+                    media_match_signature: Some(
+                        sorotte_media_match::media_match_wire_signature_from_value(
+                            &remote_signature,
+                        )
+                        .expect("remote signature should validate"),
+                    ),
                 }],
             }));
         owner.active_shared_playlist_index = Some(0);

@@ -136,11 +136,12 @@ async fn connected_client_session_restores_playlist_after_reconnect_empty_snapsh
 
         writer
             .write_all(
-                br#"{"Set":{"playlistChange":{"files":[]}}}
+                br#"{"Hello":{"username":"cli-user","room":{"name":"cli-room"},"version":"1.7.5","features":{"sharedPlaylists":true}}}
+{"Set":{"playlistChange":{"files":[]}}}
 "#,
             )
             .await
-            .expect("server should write empty playlist snapshot");
+            .expect("server should write reconnect Hello and empty playlist snapshot");
         writer.flush().await.expect("server flush should succeed");
 
         let mut outbound_messages = Vec::new();

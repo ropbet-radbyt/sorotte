@@ -1,8 +1,9 @@
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use anyhow::anyhow;
 use serde_json::Value;
 use sorotte_client_app::app_boundary::{
+    application::{ClientApplication, ClientCommand, ClientEvent, PlexClientConfig},
     commands::{
         LocalInputCommandPlanningContext, PlannedLocalInputDispatch, parse_local_input_command,
         plan_local_input_command_legacy_compatible, plan_local_input_dispatch_legacy_compatible,
@@ -36,17 +37,13 @@ use sorotte_client_app::app_boundary::{
         connected_session_local_input_event_execution_plan_legacy_compatible,
         connected_session_runtime_step_actions_legacy_compatible,
     },
-    state::StoredClientSettingsMvp,
+    state::{ClientConfig, StoredClientSettingsMvp},
 };
 use sorotte_client_core::{
-    AUTOPLAY_TICK_INTERVAL_SECONDS, AutoplayCountdownNotification, ClientRuntime,
-    QueuedRuntimeControl, SYNCPLAY_COMPAT_VERSION_LEGACY, legacy_server_password_token,
+    AUTOPLAY_TICK_INTERVAL_SECONDS, AutoplayCountdownNotification, SYNCPLAY_COMPAT_VERSION_LEGACY,
+    legacy_server_password_token,
 };
-use sorotte_player_api::LocalFileUpdate;
 use sorotte_player_mpv::MpvAdapter;
-use sorotte_plex::{
-    PlexClientConfig, PlexHttpClient, PlexMatchCache, PlexSyncEngine, PlexWatchEvent,
-};
 use sorotte_protocol::{
     HelloPayload, ProtocolError, ProtocolMessage, StatePayload, decode_message_line,
     decode_message_line_items, encode_message_line,
@@ -111,44 +108,41 @@ pub(super) fn cli_plex_config_from_env_and_stored_settings(
     let mut config = PlexClientConfig {
         enabled: env_flag_enabled("SOROTTE_CLIENT_PLEX_SYNC"),
         streaming_enabled: env_flag_enabled("SOROTTE_CLIENT_PLEX_STREAMING"),
-        user_token: env_trimmed("SOROTTE_CLIENT_PLEX_TOKEN"),
+        user_token: env_trimmed("SOROTTE_CLIENT_PLEX_TOKEN").map(Into::into),
         selected_server_id: env_trimmed("SOROTTE_CLIENT_PLEX_SERVER_ID"),
         selected_server_url: env_trimmed("SOROTTE_CLIENT_PLEX_SERVER_URL"),
-        selected_server_token: env_trimmed("SOROTTE_CLIENT_PLEX_SERVER_TOKEN"),
+        selected_server_token: env_trimmed("SOROTTE_CLIENT_PLEX_SERVER_TOKEN").map(Into::into),
     };
 
     let Some(settings) = stored_settings else {
         return config;
     };
-    if env_trimmed("SOROTTE_CLIENT_PLEX_SYNC").is_none()
-        && let Some(value) = settings.plex_sync_enabled
-    {
-        config.enabled = value;
+    let plex = ClientConfig::resolve(settings).config.plex;
+    if env_trimmed("SOROTTE_CLIENT_PLEX_SYNC").is_none() {
+        config.enabled = plex.sync_enabled;
     }
-    if env_trimmed("SOROTTE_CLIENT_PLEX_STREAMING").is_none()
-        && let Some(value) = settings.plex_streaming_enabled
-    {
-        config.streaming_enabled = value;
+    if env_trimmed("SOROTTE_CLIENT_PLEX_STREAMING").is_none() {
+        config.streaming_enabled = plex.streaming_enabled;
     }
     if env_trimmed("SOROTTE_CLIENT_PLEX_TOKEN").is_none()
-        && let Some(value) = settings.plex_user_token.as_ref()
+        && let Some(value) = plex.user_token
     {
-        config.user_token = Some(value.clone());
+        config.user_token = Some(value);
     }
     if env_trimmed("SOROTTE_CLIENT_PLEX_SERVER_ID").is_none()
-        && let Some(value) = settings.plex_selected_server_id.as_ref()
+        && let Some(value) = plex.selected_server_id
     {
-        config.selected_server_id = Some(value.clone());
+        config.selected_server_id = Some(value);
     }
     if env_trimmed("SOROTTE_CLIENT_PLEX_SERVER_URL").is_none()
-        && let Some(value) = settings.plex_selected_server_url.as_ref()
+        && let Some(value) = plex.selected_server_url
     {
-        config.selected_server_url = Some(value.clone());
+        config.selected_server_url = Some(value);
     }
     if env_trimmed("SOROTTE_CLIENT_PLEX_SERVER_TOKEN").is_none()
-        && let Some(value) = settings.plex_selected_server_token.as_ref()
+        && let Some(value) = plex.selected_server_token
     {
-        config.selected_server_token = Some(value.clone());
+        config.selected_server_token = Some(value);
     }
     config
 }

@@ -17,7 +17,7 @@ fn gui_shell_app_state_projects_configuration_widget_trees() {
         label: "Host",
     }));
     assert!(state.apply(GuiShellAction::UpdateConfigurationTextEdit(
-        "widget.example".to_owned(),
+        "widget.example".to_owned().into(),
     )));
 
     let tree = state.configuration_widget_tree();
@@ -727,7 +727,7 @@ fn gui_shell_app_state_projects_plugin_enablement_gates_without_losing_subsettin
         media_match_wire_sharing_enabled: Some(true),
         plex_sync_enabled: Some(true),
         plex_streaming_enabled: Some(true),
-        plex_user_token: Some("user-token".to_owned()),
+        plex_user_token: Some("user-token".into()),
         plex_selected_server_url: Some("https://plex.example".to_owned()),
         ..StoredClientSettingsMvp::default()
     });

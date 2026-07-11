@@ -1,10 +1,10 @@
 use super::*;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct ClientLoopConfig {
     pub(crate) host: String,
     pub(crate) port: u16,
-    pub(crate) server_password: Option<String>,
+    pub(crate) server_password: Option<SecretValue>,
     pub(crate) username: String,
     pub(crate) room: String,
     pub(crate) version: String,
@@ -40,7 +40,26 @@ pub(crate) struct ClientLoopConfig {
     pub(crate) show_osd_warnings_override: Option<bool>,
     pub(crate) show_noncontroller_osd_override: Option<bool>,
     pub(crate) show_different_room_osd_override: Option<bool>,
-    pub(crate) controlled_room_password_override: Option<String>,
+    pub(crate) controlled_room_password_override: Option<SecretValue>,
+}
+
+impl std::fmt::Debug for ClientLoopConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ClientLoopConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("server_password", &self.server_password)
+            .field("username", &self.username)
+            .field("room_configured", &!self.room.is_empty())
+            .field("version", &self.version)
+            .field("max_retries", &self.max_retries)
+            .field(
+                "controlled_room_password_override",
+                &self.controlled_room_password_override,
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

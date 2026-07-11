@@ -66,7 +66,7 @@ impl eframe::App for GuiNativeApp {
                 GuiShellAction::RequestControllerAuth { room, password } => {
                     if let (Some(room), Some(password)) = (
                         nonempty_room_name_text(room),
-                        normalized_editable_text(password),
+                        normalized_editable_text(password.expose_secret()),
                     ) {
                         controller_auth_requests.push((room.to_owned(), password.to_owned()));
                     }

@@ -26,10 +26,10 @@ pub(in crate::tests) fn rust_file_payload_for_user(
                 file.insert("name".to_owned(), json!(name));
             }
             if let Some(size) = session.user_file_size(username) {
-                file.insert("size".to_owned(), size.clone());
+                file.insert("size".to_owned(), size.to_json_value());
             }
-            if let Some(duration) = session.user_file_duration(username) {
-                file.insert("duration".to_owned(), duration.clone());
+            if let Some(duration) = session.user_file_duration_wire(username) {
+                file.insert("duration".to_owned(), duration.to_json_value());
             }
             Some(Value::Object(file))
         }

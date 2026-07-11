@@ -5,6 +5,7 @@ mod diagnostics;
 mod extraction;
 mod identity;
 mod matching;
+mod media_index;
 mod report_compare;
 mod settings;
 mod timeline_v3;
@@ -43,6 +44,9 @@ pub use extraction::{
 };
 pub use identity::normalize_media_path;
 pub use matching::{MediaMatchCandidateDecision, decide_media_match, rank_media_match_candidates};
+pub use media_index::{
+    MediaIndexInventoryEntry, MediaIndexService, MediaIndexSession, MediaIndexSummary,
+};
 pub use report_compare::{
     MediaMatchV3ReportComparison, MediaMatchV3ReportComparisonSummary,
     MediaMatchV3ReportCompatibility, MediaMatchV3ReportCompatibilityOptions,
@@ -68,21 +72,11 @@ pub use types::{
     MediaTimelineAlignment, MediaTimelineMapV3, MetadataMatchEvidence, TimelinePositionMapResult,
     media_duration_compatibility_ms, media_duration_ratio_ms,
 };
-// The GUI/runtime owns cache location and rebuild lifecycle; these wrappers keep the SQL/index
-// implementation centralized in this crate while still letting runtime code maintain the cache.
+// These result types are part of public diagnostic and service responses. Raw SQLite/index
+// operations remain private behind `MediaIndexService` and `MediaIndexSession`.
 pub use v3_index::{
     MediaMatchV3RetrievalStats, MediaMatchV3RetrievedCandidate, MediaMatchV3SaveStats,
     MediaMatchV3SqliteObjectBytes, MediaMatchV3SqliteRowCount, MediaMatchV3SqliteSizeReport,
-    anchor_stats_v3_dirty, clear_all_anchor_stats_v3_dirty, clear_anchor_stats_v3_dirty,
-    delete_media_match_v3_file_and_fingerprints, delete_media_match_v3_fingerprints_and_anchors,
-    initialize_media_match_v3_index, load_media_match_v3_cache_for_settings,
-    load_media_match_v3_record_for_path, mark_anchor_stats_v3_dirty,
-    mark_anchor_stats_v3_dirty_for_file, media_match_v3_anchor_candidate_details_with_stats,
-    media_match_v3_anchor_candidate_paths_with_stats,
-    media_match_v3_incompatible_record_count_for_path, media_match_v3_index_path,
-    media_match_v3_sqlite_size_report, open_media_match_v3_index, refresh_all_anchor_stats_v3,
-    refresh_anchor_stats_v3, refresh_dirty_anchor_stats_v3_if_needed, save_media_match_v3_record,
-    save_media_match_v3_record_with_stats,
 };
 pub use wire::{
     MediaMatchWireAnchorBlock, MediaMatchWireProfile, MediaMatchWireSignature,

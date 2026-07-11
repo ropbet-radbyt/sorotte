@@ -1,4 +1,5 @@
 pub mod app_boundary;
+mod application;
 mod client_storage_paths;
 mod legacy_compat;
 mod legacy_ini_serde;
@@ -9,4 +10,5 @@ mod legacy_reconnect_diagnostics;
 mod legacy_runtime_config;
 mod legacy_session_loop;
 mod legacy_settings;
+mod runtime_config;
 mod sorotte_ini;

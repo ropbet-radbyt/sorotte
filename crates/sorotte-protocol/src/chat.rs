@@ -1,4 +1,5 @@
 use super::*;
+use crate::redacted_debug::{RedactedJsonMap, RedactedSensitiveText};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -17,12 +18,23 @@ impl ChatPayload {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatMessagePayload {
     pub username: String,
     pub message: String,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+impl std::fmt::Debug for ChatMessagePayload {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ChatMessagePayload")
+            .field("username", &self.username)
+            .field("message", &RedactedSensitiveText(&self.message))
+            .field("extra", &RedactedJsonMap(&self.extra))
+            .finish()
+    }
 }
 
 impl ChatMessagePayload {
@@ -35,11 +47,21 @@ impl ChatMessagePayload {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct ErrorPayload {
     pub message: String,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+impl std::fmt::Debug for ErrorPayload {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ErrorPayload")
+            .field("message", &sorotte_secret::REDACTED_SECRET)
+            .field("extra", &RedactedJsonMap(&self.extra))
+            .finish()
+    }
 }
 
 impl ErrorPayload {
@@ -51,12 +73,22 @@ impl ErrorPayload {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct TlsPayload {
     #[serde(rename = "startTLS")]
     pub start_tls: String,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+impl std::fmt::Debug for TlsPayload {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TlsPayload")
+            .field("start_tls", &self.start_tls)
+            .field("extra", &RedactedJsonMap(&self.extra))
+            .finish()
+    }
 }
 
 impl TlsPayload {
