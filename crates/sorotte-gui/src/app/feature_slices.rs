@@ -18,13 +18,14 @@ use super::shell_state::{
     PublicServerBrowserShellState, SorotteGuiShellAppState,
 };
 use super::ui_state::GuiUpdateCheckState;
-use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
+use sorotte_client_app::app_boundary::{
+    commands::LocalOffsetCommand, state::StoredClientSettingsMvp,
+};
 
 /// Feature routing for commands sent from the shell to the application layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum GuiFeature {
     Session,
-    Player,
     Playlist,
     MediaResolution,
     MediaMatch,
@@ -38,6 +39,7 @@ pub(super) enum GuiFeature {
 /// requests are classified once when they cross into the application layer.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum GuiClientCommand {
+    Player(player::Command),
     Updates(Box<updates::Command>),
     Legacy {
         feature: GuiFeature,
@@ -50,6 +52,23 @@ impl GuiClientCommand {
         use GuiRuntimeRequest as Request;
 
         match request {
+            Request::UndoSeek => Self::Player(player::Command::UndoSeek),
+            Request::SetOffset(command) => Self::Player(player::Command::SetOffset(command)),
+            Request::SetAutoplayEnabled(enabled) => {
+                Self::Player(player::Command::SetAutoplayEnabled(enabled))
+            }
+            Request::SetAutoplayThreshold(threshold) => {
+                Self::Player(player::Command::SetAutoplayThreshold(threshold))
+            }
+            Request::RetryPlayerLaunch => Self::Player(player::Command::RetryLaunch),
+            Request::SeekOffset(offset_seconds) => {
+                Self::Player(player::Command::SeekOffset(offset_seconds))
+            }
+            Request::SeekToPosition(position_seconds) => {
+                Self::Player(player::Command::SeekToPosition(position_seconds))
+            }
+            Request::SetPlaybackPaused(paused) => Self::Player(player::Command::SetPaused(paused)),
+            Request::TogglePlaybackPause => Self::Player(player::Command::TogglePause),
             Request::CheckForUpdates {
                 language,
                 update_channel,
@@ -105,7 +124,9 @@ impl GuiClientCommand {
             | Request::SeekOffset(_)
             | Request::SeekToPosition(_)
             | Request::SetPlaybackPaused(_)
-            | Request::TogglePlaybackPause => GuiFeature::Player,
+            | Request::TogglePlaybackPause => {
+                unreachable!("player requests are converted to typed player commands")
+            }
             Request::QueuePlaylistEntry { .. }
             | Request::SetPlaylistIndex(_)
             | Request::DeletePlaylistIndex(_)
@@ -148,6 +169,7 @@ impl GuiClientCommand {
 
     pub(super) fn into_compatibility_request(self) -> GuiRuntimeRequest {
         match self {
+            Self::Player(command) => command.into_compatibility_request(),
             Self::Updates(command) => (*command).into_compatibility_request(),
             Self::Legacy { request, .. } => *request,
         }
@@ -173,6 +195,39 @@ pub(super) mod session {
 
 pub(super) mod player {
     use super::*;
+
+    #[derive(Debug, Clone, PartialEq)]
+    pub(in crate::app) enum Command {
+        UndoSeek,
+        SetOffset(LocalOffsetCommand),
+        SetAutoplayEnabled(bool),
+        SetAutoplayThreshold(usize),
+        RetryLaunch,
+        SeekOffset(f64),
+        SeekToPosition(f64),
+        SetPaused(bool),
+        TogglePause,
+    }
+
+    impl Command {
+        pub(super) fn into_compatibility_request(self) -> GuiRuntimeRequest {
+            match self {
+                Self::UndoSeek => GuiRuntimeRequest::UndoSeek,
+                Self::SetOffset(command) => GuiRuntimeRequest::SetOffset(command),
+                Self::SetAutoplayEnabled(enabled) => GuiRuntimeRequest::SetAutoplayEnabled(enabled),
+                Self::SetAutoplayThreshold(threshold) => {
+                    GuiRuntimeRequest::SetAutoplayThreshold(threshold)
+                }
+                Self::RetryLaunch => GuiRuntimeRequest::RetryPlayerLaunch,
+                Self::SeekOffset(offset_seconds) => GuiRuntimeRequest::SeekOffset(offset_seconds),
+                Self::SeekToPosition(position_seconds) => {
+                    GuiRuntimeRequest::SeekToPosition(position_seconds)
+                }
+                Self::SetPaused(paused) => GuiRuntimeRequest::SetPlaybackPaused(paused),
+                Self::TogglePause => GuiRuntimeRequest::TogglePlaybackPause,
+            }
+        }
+    }
 
     #[derive(Debug, Clone, PartialEq)]
     pub(super) struct RuntimeView {
@@ -622,6 +677,27 @@ mod tests {
         for request in requests {
             let command = GuiClientCommand::from_compatibility_request(request.clone());
             assert!(matches!(command, GuiClientCommand::Updates(_)));
+            assert_eq!(command.into_compatibility_request(), request);
+        }
+    }
+
+    #[test]
+    fn every_player_request_uses_the_typed_player_route_and_round_trips() {
+        let requests = vec![
+            GuiRuntimeRequest::UndoSeek,
+            GuiRuntimeRequest::SetOffset(LocalOffsetCommand::Relative(2.5)),
+            GuiRuntimeRequest::SetAutoplayEnabled(true),
+            GuiRuntimeRequest::SetAutoplayThreshold(3),
+            GuiRuntimeRequest::RetryPlayerLaunch,
+            GuiRuntimeRequest::SeekOffset(-5.0),
+            GuiRuntimeRequest::SeekToPosition(42.0),
+            GuiRuntimeRequest::SetPlaybackPaused(true),
+            GuiRuntimeRequest::TogglePlaybackPause,
+        ];
+
+        for request in requests {
+            let command = GuiClientCommand::from_compatibility_request(request.clone());
+            assert!(matches!(command, GuiClientCommand::Player(_)));
             assert_eq!(command.into_compatibility_request(), request);
         }
     }

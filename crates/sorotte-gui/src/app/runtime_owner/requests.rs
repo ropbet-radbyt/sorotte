@@ -222,6 +222,17 @@ impl GuiPersistedConfigRuntimeOwner {
             | GuiRuntimeRequest::ApplyStagedUpdate(_) => {
                 unreachable!("update requests are routed through GuiClientCommand::Updates")
             }
+            GuiRuntimeRequest::UndoSeek
+            | GuiRuntimeRequest::SetOffset(_)
+            | GuiRuntimeRequest::SetAutoplayEnabled(_)
+            | GuiRuntimeRequest::SetAutoplayThreshold(_)
+            | GuiRuntimeRequest::RetryPlayerLaunch
+            | GuiRuntimeRequest::SeekOffset(_)
+            | GuiRuntimeRequest::SeekToPosition(_)
+            | GuiRuntimeRequest::SetPlaybackPaused(_)
+            | GuiRuntimeRequest::TogglePlaybackPause => {
+                unreachable!("player requests are routed through GuiClientCommand::Player")
+            }
             GuiRuntimeRequest::OpenMediaFiles {
                 paths,
                 load_into_shared_playlist: true,
@@ -270,9 +281,6 @@ impl GuiPersistedConfigRuntimeOwner {
                     projected_state,
                     target,
                 );
-            }
-            GuiRuntimeRequest::RetryPlayerLaunch => {
-                return self.handle_retry_player_launch_request(handle, projected_state);
             }
             GuiRuntimeRequest::SetPluginEnabled { plugin, enabled } => {
                 return self.handle_set_plugin_enabled_request(
@@ -423,32 +431,6 @@ impl GuiPersistedConfigRuntimeOwner {
                     rating_key,
                 );
             }
-            GuiRuntimeRequest::UndoSeek => {
-                return self.handle_undo_seek_request(handle, projected_state);
-            }
-            GuiRuntimeRequest::SetOffset(command) => {
-                return self.handle_set_offset_request(handle, projected_state, command);
-            }
-            GuiRuntimeRequest::SetAutoplayEnabled(enabled) => {
-                return self.handle_set_autoplay_enabled_request(handle, projected_state, enabled);
-            }
-            GuiRuntimeRequest::SetAutoplayThreshold(threshold) => {
-                return self.handle_set_autoplay_threshold_request(
-                    handle,
-                    projected_state,
-                    threshold,
-                );
-            }
-            GuiRuntimeRequest::SeekOffset(offset_seconds) => {
-                return self.handle_seek_offset_request(handle, projected_state, offset_seconds);
-            }
-            GuiRuntimeRequest::SeekToPosition(target_position_seconds) => {
-                return self.handle_seek_to_position_request(
-                    handle,
-                    projected_state,
-                    target_position_seconds,
-                );
-            }
             GuiRuntimeRequest::SetRoom(room) => {
                 self.request_room_join_runtime(handle, projected_state, room);
             }
@@ -524,12 +506,6 @@ impl GuiPersistedConfigRuntimeOwner {
             }
             GuiRuntimeRequest::SendChatMessage(message) => {
                 return self.handle_send_chat_message_request(handle, projected_state, message);
-            }
-            GuiRuntimeRequest::SetPlaybackPaused(paused) => {
-                return self.handle_set_playback_paused_request(handle, projected_state, paused);
-            }
-            GuiRuntimeRequest::TogglePlaybackPause => {
-                return self.handle_toggle_playback_pause_request(handle, projected_state);
             }
             GuiRuntimeRequest::CompletePendingOperation(
                 GuiPendingCompletionRequest::SetPlaybackPause(paused),

@@ -71,6 +71,9 @@ impl GuiPersistedConfigRuntimeOwner {
         }
         for command in handle.drain_client_commands() {
             let handled = match command {
+                GuiClientCommand::Player(command) => {
+                    self.handle_player_command(handle, &mut projected_state, command)
+                }
                 GuiClientCommand::Updates(command) => {
                     self.update_runtime.handle_command(handle, *command);
                     true
