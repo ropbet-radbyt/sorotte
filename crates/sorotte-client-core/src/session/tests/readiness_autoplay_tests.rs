@@ -85,6 +85,91 @@ fn client_ready_missing_username_targets_local_user() {
 }
 
 #[test]
+fn hello_assigned_username_migrates_provisional_identity_before_list() {
+    let mut session = ClientSession::default();
+    session.initialize_local_identity("alice".to_owned(), "provisional-room".to_owned());
+    session
+        .apply_message_json(
+            r#"{"Set":{"user":{"alice":{"room":{"name":"provisional-room"},"file":{"name":"episode.mkv"},"isReady":false}}}}"#,
+        )
+        .expect("provisional file and readiness should apply");
+    session.set_media_match_peer_tiers(BTreeMap::from([(
+        "alice".to_owned(),
+        MediaMatchTier::Strong,
+    )]));
+    session
+        .apply_message_json(r#"{"Set":{"ready":{"isReady":true,"username":"alice_2"}}}"#)
+        .expect("server-assigned readiness should apply before Hello");
+
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice_2","room":{"name":"server-room"},"version":"1.7.5","features":{"readiness":true}}}"#,
+        )
+        .expect("server Hello should migrate the provisional identity");
+
+    assert_eq!(session.username(), Some("alice_2"));
+    assert_eq!(session.room(), Some("server-room"));
+    assert_eq!(session.usernames_in_room("server-room"), vec!["alice_2"]);
+    assert_eq!(session.model.room.users.len(), 1);
+    assert!(!session.model.room.users.contains_key("alice"));
+    assert_eq!(session.user_file_name("alice_2"), Some("episode.mkv"));
+    assert_eq!(session.user_ready("alice_2"), Some(true));
+    assert!(session.media_match_peer_tiers().is_empty());
+
+    let domain_users = session
+        .model
+        .room
+        .domain
+        .users_in_room("server-room")
+        .expect("assigned user should join the server room");
+    assert_eq!(domain_users.len(), 1);
+    assert_eq!(domain_users[0].username, "alice_2");
+    assert_eq!(domain_users[0].ready, Some(true));
+    assert!(
+        session
+            .model
+            .room
+            .domain
+            .users_in_room("provisional-room")
+            .is_none(),
+        "the provisional and pre-Hello assigned memberships must both be removed"
+    );
+
+    assert_eq!(session.users_in_current_room_count_for_threshold(), 1);
+    assert_eq!(session.ready_user_count_in_current_room(), 1);
+    assert!(session.all_users_in_current_room_ready());
+    session.set_autoplay_enabled(true);
+    session.readiness_autoplay_config_mut().auto_play_threshold = Some(1);
+    session.model.playback.local_paused = Some(true);
+    assert!(
+        session.autoplay_conditions_met(true, true, false, false),
+        "the migrated local identity must satisfy autoplay before the first List snapshot"
+    );
+}
+
+#[test]
+fn hello_username_migration_does_not_replace_assigned_file() {
+    let mut session = ClientSession::default();
+    session.initialize_local_identity("alice".to_owned(), "room1".to_owned());
+    session
+        .apply_message_json(
+            r#"{"Set":{"user":{"alice":{"room":{"name":"room1"},"file":{"name":"provisional.mkv"},"isReady":false},"alice_2":{"room":{"name":"room1"},"file":{"name":"server.mkv"},"isReady":true}}}}"#,
+        )
+        .expect("provisional and assigned file state should apply");
+
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice_2","room":{"name":"room1"},"version":"1.7.5","features":{"readiness":true}}}"#,
+        )
+        .expect("server Hello should migrate the provisional identity");
+
+    assert_eq!(session.user_file_name("alice_2"), Some("server.mkv"));
+    assert_eq!(session.user_ready("alice_2"), Some(true));
+    assert_eq!(session.model.room.users.len(), 1);
+    assert!(!session.model.room.users.contains_key("alice"));
+}
+
+#[test]
 fn instaplay_conditions_met_respects_legacy_unpause_modes() {
     let mut session = ClientSession::default();
     session

@@ -1,6 +1,51 @@
 use super::*;
 
 impl ClientSession {
+    fn migrate_provisional_local_identity(&mut self, assigned_username: &str) -> bool {
+        let Some(provisional_username) = self.model.connection.username.clone() else {
+            return false;
+        };
+        if provisional_username == assigned_username {
+            return false;
+        }
+
+        let provisional_user = self.model.room.users.remove(&provisional_username);
+        let provisional_room = provisional_user
+            .as_ref()
+            .and_then(|user| user.room.clone())
+            .or_else(|| self.model.room.name.clone());
+        if let Some(room_name) = provisional_room.as_deref() {
+            let _ = self
+                .model
+                .room
+                .domain
+                .leave_room(&provisional_username, room_name);
+        }
+        let provisional_file = provisional_user.and_then(|user| user.file);
+        self.model
+            .room
+            .media_match_peer_tiers
+            .remove(&provisional_username);
+        self.model
+            .room
+            .media_match_peer_tiers
+            .remove(assigned_username);
+
+        if let Some(provisional_file) = provisional_file {
+            let assigned_user = self
+                .model
+                .room
+                .users
+                .entry(assigned_username.to_owned())
+                .or_default();
+            if assigned_user.file.is_none() {
+                assigned_user.file = Some(provisional_file);
+            }
+        }
+
+        true
+    }
+
     pub(super) fn apply_hello(&mut self, hello: ClientHello) {
         if self.model.reconnect.in_progress {
             self.model.reconnect.in_progress = false;
@@ -13,6 +58,16 @@ impl ClientSession {
 
         let username = hello.username;
         let room_name = hello.room;
+        let identity_migrated = self.migrate_provisional_local_identity(&username);
+        let server_assigned_ready = identity_migrated
+            .then(|| {
+                self.model
+                    .room
+                    .users
+                    .get(&username)
+                    .and_then(|user| user.ready)
+            })
+            .flatten();
 
         self.model.connection.username = Some(username.clone());
         self.update_local_room(room_name.clone());
@@ -26,7 +81,7 @@ impl ClientSession {
             .map(|password| (room_name.clone(), password));
 
         self.set_user_room(&username, Some(room_name));
-        self.set_user_ready(&username, false);
+        self.set_user_ready(&username, server_assigned_ready.unwrap_or(false));
 
         if let Some(current_room) = self.model.room.name.clone()
             && let Some(pending_playlist) = self.model.playlist.pending.take()
