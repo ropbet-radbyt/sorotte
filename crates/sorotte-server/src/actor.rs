@@ -9,6 +9,10 @@ pub enum ServerActorError {
     Runtime(#[from] ServerRuntimeError),
     #[error("server actor is unavailable")]
     Unavailable,
+    #[error("server actor task failed: {0}")]
+    TaskFailed(String),
+    #[error("server actor shutdown barrier failed: {barrier}; actor task also failed: {task}")]
+    ShutdownFailed { barrier: String, task: String },
 }
 
 enum ServerCommand {
@@ -197,20 +201,29 @@ impl ServerActorHandle {
     /// have been acknowledged, then joins its task and persistence workers.
     pub async fn shutdown(self) -> Result<(), ServerActorError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(ServerCommand::Shutdown { reply })
-            .await
-            .map_err(|_| ServerActorError::Unavailable)?;
-        let flush_result = response
-            .await
-            .map_err(|_| ServerActorError::Unavailable)?
-            .map_err(ServerActorError::from);
-        if let Some(join_handle) = self.join_handle.lock().await.take() {
-            join_handle
+        let barrier_result = match self.commands.send(ServerCommand::Shutdown { reply }).await {
+            Ok(()) => response
                 .await
-                .map_err(|_| ServerActorError::Unavailable)?;
+                .map_err(|_| ServerActorError::Unavailable)
+                .and_then(|result| result.map_err(ServerActorError::from)),
+            Err(_) => Err(ServerActorError::Unavailable),
+        };
+        let task_result = match self.join_handle.lock().await.take() {
+            Some(join_handle) => join_handle
+                .await
+                .map_err(|source| ServerActorError::TaskFailed(source.to_string())),
+            None => Ok(()),
+        };
+
+        match (barrier_result, task_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(barrier), Ok(())) => Err(barrier),
+            (Ok(()), Err(task)) => Err(task),
+            (Err(barrier), Err(task)) => Err(ServerActorError::ShutdownFailed {
+                barrier: barrier.to_string(),
+                task: task.to_string(),
+            }),
         }
-        flush_result
     }
 }
 

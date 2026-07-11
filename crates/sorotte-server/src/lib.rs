@@ -37,7 +37,7 @@ use tokio::{
         mpsc::{Receiver, Sender, UnboundedSender, channel},
         watch,
     },
-    task::JoinHandle,
+    task::{JoinHandle, JoinSet},
     time,
 };
 use tokio_rustls::{TlsAcceptor, server::TlsStream};
@@ -88,6 +88,7 @@ const CLIENT_OUTBOUND_QUEUE_CAPACITY: usize = 256;
 // capacity does not recover, the client is explicitly closed and cleaned up.
 const CLIENT_OUTBOUND_OVERLOAD_GRACE_MILLIS: u64 = 100;
 const ACCEPTED_CLIENT_QUEUE_CAPACITY: usize = 1024;
+const SERVER_NETWORK_SHUTDOWN_GRACE_SECONDS: f64 = 5.0;
 const SERVER_PERSISTENCE_EVENT_CAPACITY: usize = 256;
 const TLS_HANDSHAKE_TIMEOUT_SECONDS: f64 = IO_TIMEOUT_SECONDS;
 const SERVER_WRITE_TIMEOUT_SECONDS: f64 = IO_TIMEOUT_SECONDS;
@@ -120,7 +121,8 @@ pub use app::ServerApp;
 pub use backpressure::ServerOutboundBackpressureSnapshot;
 pub use inbound::{ServerClientCapabilities, ServerCompatibilityFallback};
 pub use network::{
-    run_server_network_loop_until_shutdown, run_server_network_loops_until_shutdown,
+    run_server_network_loop_until_shutdown, run_server_network_loops_and_shutdown_actor,
+    run_server_network_loops_until_shutdown,
 };
 pub use persistence::{RoomPersistenceError, StatsPersistenceError};
 pub use persistence_actor::{
@@ -191,6 +193,30 @@ pub enum ServerNetworkError {
     OutboundOverload {
         client_id: String,
         queue_depth: usize,
+    },
+    #[error(
+        "server network shutdown exceeded its {timeout_millis} ms grace period with {acceptor_tasks} acceptor task(s) and {session_tasks} client session task(s) still active"
+    )]
+    ShutdownTimeout {
+        timeout_millis: u64,
+        acceptor_tasks: usize,
+        session_tasks: usize,
+    },
+}
+
+/// Errors from the production lifecycle boundary. Network teardown and the
+/// actor durability barrier are both attempted, and a dual failure preserves
+/// both causes for diagnostics.
+#[derive(Debug, thiserror::Error)]
+pub enum ServerLifecycleError {
+    #[error("server network failed: {0}")]
+    Network(ServerNetworkError),
+    #[error("server actor shutdown failed: {0}")]
+    Shutdown(ServerActorError),
+    #[error("server network failed: {network}; server actor shutdown also failed: {shutdown}")]
+    NetworkAndShutdown {
+        network: ServerNetworkError,
+        shutdown: ServerActorError,
     },
 }
 

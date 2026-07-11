@@ -1,5 +1,6 @@
 use super::*;
 use std::{
+    future::Future,
     net::SocketAddr,
     sync::{
         Mutex as StdMutex,
@@ -273,6 +274,11 @@ pub(crate) struct ServerNetworkClientSessionTimeouts {
     write: std::time::Duration,
 }
 
+struct ServerNetworkClientIdentity {
+    peer_ip: Option<String>,
+    client_id: String,
+}
+
 impl ServerNetworkClientSessionTimeouts {
     pub(crate) fn new(
         pre_hello: std::time::Duration,
@@ -345,6 +351,7 @@ async fn dispatch_transport_actions_to_clients(
     }
 }
 
+#[cfg(test)]
 pub(crate) async fn prune_finished_session_tasks(session_tasks: &mut Vec<JoinHandle<()>>) {
     let mut index = 0;
     while index < session_tasks.len() {
@@ -621,15 +628,16 @@ async fn apply_local_transport_actions(
     Ok(())
 }
 
-pub(crate) async fn run_server_network_client_session_with_timeouts(
+async fn run_server_network_client_session_with_timeouts_until_shutdown(
     stream: TcpStream,
-    peer_ip: Option<String>,
-    client_id: String,
+    identity: ServerNetworkClientIdentity,
     runtime: ServerActorHandle,
     client_event_senders: SharedClientEventSenders,
     transport_action_sink: Option<UnboundedSender<DirectedTransportAction>>,
     timeouts: ServerNetworkClientSessionTimeouts,
+    mut shutdown_rx: watch::Receiver<bool>,
 ) -> Result<(), ServerNetworkError> {
+    let ServerNetworkClientIdentity { peer_ip, client_id } = identity;
     let (event_tx, mut event_rx) = client_event_queue(runtime.outbound_backpressure_metrics());
     {
         let mut senders = client_event_senders.lock().await;
@@ -644,8 +652,13 @@ pub(crate) async fn run_server_network_client_session_with_timeouts(
     let pre_hello_timer = time::sleep(timeouts.pre_hello);
     tokio::pin!(pre_hello_timer);
     let mut session_known = false;
+    let mut shutdown_requested = false;
     loop {
         tokio::select! {
+            _ = wait_for_shutdown(&mut shutdown_rx) => {
+                shutdown_requested = true;
+                break;
+            },
             _ = &mut pre_hello_timer, if !session_known => {
                 break;
             }
@@ -664,10 +677,15 @@ pub(crate) async fn run_server_network_client_session_with_timeouts(
                                     },
                                 ),
                             )
+                            && run_until_shutdown(
+                                &mut shutdown_rx,
+                                transport.write_line_with_timeout(&error_line, timeouts.write),
+                            )
+                            .await
+                            .is_none()
                         {
-                            let _ = transport
-                                .write_line_with_timeout(&error_line, timeouts.write)
-                                .await;
+                            shutdown_requested = true;
+                            break;
                         }
                         session_error = Some(ServerNetworkError::Io(source));
                         break;
@@ -677,21 +695,35 @@ pub(crate) async fn run_server_network_client_session_with_timeouts(
                 if inbound_line.is_empty() {
                     continue;
                 }
-                let (dispatch, session_exists) = runtime
-                    .handle_line(&client_id, inbound_line, peer_ip.as_deref())
-                    .await?;
+                let Some(handle_result) = run_until_shutdown(
+                    &mut shutdown_rx,
+                    runtime.handle_line(&client_id, inbound_line, peer_ip.as_deref()),
+                )
+                .await
+                else {
+                    shutdown_requested = true;
+                    break;
+                };
+                let (dispatch, session_exists) = handle_result?;
                 session_known = session_known || session_exists;
                 let close_after_dispatch =
                     transport_actions_close_client(&dispatch.transport_actions, &client_id);
-                if let Err(source) = route_outbound_lines_for_client_session(
-                    &mut transport,
-                    &client_id,
-                    &client_event_senders,
-                    dispatch.outbound_lines,
-                    timeouts.write,
+                let Some(route_result) = run_until_shutdown(
+                    &mut shutdown_rx,
+                    route_outbound_lines_for_client_session(
+                        &mut transport,
+                        &client_id,
+                        &client_event_senders,
+                        dispatch.outbound_lines,
+                        timeouts.write,
+                    ),
                 )
                 .await
-                {
+                else {
+                    shutdown_requested = true;
+                    break;
+                };
+                if let Err(source) = route_result {
                     session_error = Some(ServerNetworkError::Io(source));
                     break;
                 }
@@ -699,15 +731,22 @@ pub(crate) async fn run_server_network_client_session_with_timeouts(
                     transport_action_sink.as_ref(),
                     &dispatch.transport_actions,
                 );
-                if let Err(source) = apply_local_transport_actions(
-                    &mut transport,
-                    &client_id,
-                    &runtime,
-                    &dispatch.transport_actions,
-                    timeouts.tls_handshake,
+                let Some(action_result) = run_until_shutdown(
+                    &mut shutdown_rx,
+                    apply_local_transport_actions(
+                        &mut transport,
+                        &client_id,
+                        &runtime,
+                        &dispatch.transport_actions,
+                        timeouts.tls_handshake,
+                    ),
                 )
                 .await
-                {
+                else {
+                    shutdown_requested = true;
+                    break;
+                };
+                if let Err(source) = action_result {
                     session_error = Some(ServerNetworkError::Io(source));
                     break;
                 }
@@ -720,11 +759,16 @@ pub(crate) async fn run_server_network_client_session_with_timeouts(
                     break;
                 };
                 event_rx.metrics.dequeued();
-                if let Err(source) =
-                    transport
-                        .write_line_with_timeout(&outbound_line, timeouts.write)
-                        .await
-                {
+                let Some(write_result) = run_until_shutdown(
+                    &mut shutdown_rx,
+                    transport.write_line_with_timeout(&outbound_line, timeouts.write),
+                )
+                .await
+                else {
+                    shutdown_requested = true;
+                    break;
+                };
+                if let Err(source) = write_result {
                     session_error = Some(ServerNetworkError::Io(source));
                     break;
                 }
@@ -743,15 +787,22 @@ pub(crate) async fn run_server_network_client_session_with_timeouts(
                             &client_id,
                             ServerTransportAction::StartTls,
                         );
-                        if let Err(source) = apply_local_transport_actions(
-                            &mut transport,
-                            &client_id,
-                            &runtime,
-                            &[action],
-                            timeouts.tls_handshake,
+                        let Some(action_result) = run_until_shutdown(
+                            &mut shutdown_rx,
+                            apply_local_transport_actions(
+                                &mut transport,
+                                &client_id,
+                                &runtime,
+                                &[action],
+                                timeouts.tls_handshake,
+                            ),
                         )
                         .await
-                        {
+                        else {
+                            shutdown_requested = true;
+                            break;
+                        };
+                        if let Err(source) = action_result {
                             session_error = Some(ServerNetworkError::Io(source));
                             break;
                         }
@@ -767,11 +818,16 @@ pub(crate) async fn run_server_network_client_session_with_timeouts(
                     continue;
                 };
                 event_rx.periodic_state_delivered(update.generation);
-                if let Err(source) =
-                    transport
-                        .write_line_with_timeout(&update.line, timeouts.write)
-                        .await
-                {
+                let Some(write_result) = run_until_shutdown(
+                    &mut shutdown_rx,
+                    transport.write_line_with_timeout(&update.line, timeouts.write),
+                )
+                .await
+                else {
+                    shutdown_requested = true;
+                    break;
+                };
+                if let Err(source) = write_result {
                     session_error = Some(ServerNetworkError::Io(source));
                     break;
                 }
@@ -797,10 +853,19 @@ pub(crate) async fn run_server_network_client_session_with_timeouts(
         senders.remove(&client_id);
     }
     event_rx.close_and_record_discarded();
-    if let Err(source) = transport.shutdown().await
-        && session_error.is_none()
-    {
-        session_error = Some(ServerNetworkError::Io(source));
+    let transport_shutdown_timeout = timeouts.write.min(std::time::Duration::from_secs(1));
+    match time::timeout(transport_shutdown_timeout, transport.shutdown()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(source)) if !shutdown_requested && session_error.is_none() => {
+            session_error = Some(ServerNetworkError::Io(source));
+        }
+        Err(_) if !shutdown_requested && session_error.is_none() => {
+            session_error = Some(ServerNetworkError::Io(timeout_io_error(
+                "transport shutdown",
+                transport_shutdown_timeout,
+            )));
+        }
+        Ok(Err(_)) | Err(_) => {}
     }
 
     let disconnect_fanout = runtime.disconnect(&client_id).await;
@@ -821,6 +886,33 @@ pub(crate) async fn run_server_network_client_session_with_timeouts(
     Ok(())
 }
 
+#[cfg(test)]
+pub(crate) async fn run_server_network_client_session_with_timeouts(
+    stream: TcpStream,
+    peer_ip: Option<String>,
+    client_id: String,
+    runtime: ServerActorHandle,
+    client_event_senders: SharedClientEventSenders,
+    transport_action_sink: Option<UnboundedSender<DirectedTransportAction>>,
+    timeouts: ServerNetworkClientSessionTimeouts,
+) -> Result<(), ServerNetworkError> {
+    // Direct session callers retain the historical API and run until their
+    // transport closes. The production network owner supplies a real receiver
+    // through the internal helper below.
+    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+    run_server_network_client_session_with_timeouts_until_shutdown(
+        stream,
+        ServerNetworkClientIdentity { peer_ip, client_id },
+        runtime,
+        client_event_senders,
+        transport_action_sink,
+        timeouts,
+        shutdown_rx,
+    )
+    .await
+}
+
+#[cfg(test)]
 pub(crate) async fn run_server_network_client_session_with_pre_hello_timeout(
     stream: TcpStream,
     peer_ip: Option<String>,
@@ -893,15 +985,18 @@ async fn run_server_network_client_session(
     runtime: ServerActorHandle,
     client_event_senders: SharedClientEventSenders,
     transport_action_sink: Option<UnboundedSender<DirectedTransportAction>>,
+    shutdown_rx: watch::Receiver<bool>,
 ) -> Result<(), ServerNetworkError> {
-    run_server_network_client_session_with_pre_hello_timeout(
+    run_server_network_client_session_with_timeouts_until_shutdown(
         stream,
-        peer_ip,
-        client_id,
+        ServerNetworkClientIdentity { peer_ip, client_id },
         runtime,
         client_event_senders,
         transport_action_sink,
-        std::time::Duration::from_secs_f64(PROTOCOL_TIMEOUT_SECONDS),
+        ServerNetworkClientSessionTimeouts::production_with_pre_hello(
+            std::time::Duration::from_secs_f64(PROTOCOL_TIMEOUT_SECONDS),
+        ),
+        shutdown_rx,
     )
     .await
 }
@@ -913,11 +1008,7 @@ async fn accept_server_network_clients_until_shutdown(
 ) -> io::Result<()> {
     loop {
         tokio::select! {
-            changed = shutdown_rx.changed() => {
-                if changed.is_err() || *shutdown_rx.borrow() {
-                    break;
-                }
-            }
+            _ = wait_for_shutdown(&mut shutdown_rx) => break,
             accepted = listener.accept() => {
                 let accepted_client = accepted;
                 let accepted_error = accepted_client.is_err();
@@ -927,11 +1018,7 @@ async fn accept_server_network_clients_until_shutdown(
                             break;
                         }
                     }
-                    changed = shutdown_rx.changed() => {
-                        if changed.is_err() || *shutdown_rx.borrow() {
-                            break;
-                        }
-                    }
+                    _ = wait_for_shutdown(&mut shutdown_rx) => break,
                 }
                 if accepted_error {
                     break;
@@ -940,6 +1027,53 @@ async fn accept_server_network_clients_until_shutdown(
         }
     }
     Ok(())
+}
+
+async fn wait_for_shutdown(shutdown_rx: &mut watch::Receiver<bool>) {
+    loop {
+        if *shutdown_rx.borrow() || shutdown_rx.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+async fn run_until_shutdown<T>(
+    shutdown_rx: &mut watch::Receiver<bool>,
+    operation: impl Future<Output = T>,
+) -> Option<T> {
+    tokio::select! {
+        biased;
+        _ = wait_for_shutdown(shutdown_rx) => None,
+        result = operation => Some(result),
+    }
+}
+
+fn record_finished_tasks(tasks: &mut JoinSet<()>, task_kind: &str) {
+    while let Some(result) = tasks.try_join_next() {
+        if let Err(source) = result {
+            eprintln!("Sorotte server {task_kind} task ended unexpectedly: {source}");
+        }
+    }
+}
+
+async fn await_tasks_until_deadline(
+    tasks: &mut JoinSet<()>,
+    deadline: time::Instant,
+    task_kind: &str,
+) -> usize {
+    while !tasks.is_empty() {
+        match time::timeout_at(deadline, tasks.join_next()).await {
+            Ok(Some(Ok(()))) => {}
+            Ok(Some(Err(source))) => {
+                eprintln!("Sorotte server {task_kind} task ended unexpectedly: {source}");
+            }
+            Ok(None) => break,
+            Err(_) => {
+                return tasks.len();
+            }
+        }
+    }
+    0
 }
 
 pub async fn run_server_network_loops_until_shutdown(
@@ -958,22 +1092,26 @@ pub async fn run_server_network_loops_until_shutdown(
     let client_event_senders: SharedClientEventSenders = Arc::new(Mutex::new(BTreeMap::new()));
     let (accepted_tx, mut accepted_rx): (Sender<AcceptedClient>, Receiver<AcceptedClient>) =
         channel(ACCEPTED_CLIENT_QUEUE_CAPACITY);
-    let mut accept_tasks: Vec<JoinHandle<()>> = Vec::new();
+    let (local_shutdown_tx, local_shutdown_rx) = watch::channel(false);
+    let mut accept_tasks = JoinSet::new();
     for listener in listeners {
         let accepted_tx = accepted_tx.clone();
-        let listener_shutdown_rx = shutdown_rx.clone();
-        accept_tasks.push(tokio::spawn(async move {
-            let _ = accept_server_network_clients_until_shutdown(
+        let listener_shutdown_rx = local_shutdown_rx.clone();
+        accept_tasks.spawn(async move {
+            if let Err(source) = accept_server_network_clients_until_shutdown(
                 listener,
                 accepted_tx,
                 listener_shutdown_rx,
             )
-            .await;
-        }));
+            .await
+            {
+                eprintln!("Sorotte server acceptor ended with error: {source}");
+            }
+        });
     }
     drop(accepted_tx);
 
-    let mut session_tasks: Vec<JoinHandle<()>> = Vec::new();
+    let mut session_tasks = JoinSet::new();
     let mut next_client_number: u64 = 1;
     let mut tick = time::interval(std::time::Duration::from_secs_f64(
         SERVER_NETWORK_TICK_INTERVAL_SECONDS,
@@ -981,7 +1119,8 @@ pub async fn run_server_network_loops_until_shutdown(
     let mut loop_error: Option<ServerNetworkError> = None;
 
     loop {
-        prune_finished_session_tasks(&mut session_tasks).await;
+        record_finished_tasks(&mut session_tasks, "client session");
+        record_finished_tasks(&mut accept_tasks, "acceptor");
         tokio::select! {
             _ = tick.tick() => {
                 let dispatch = match runtime
@@ -1009,11 +1148,7 @@ pub async fn run_server_network_loops_until_shutdown(
                 )
                 .await;
             }
-            changed = shutdown_rx.changed() => {
-                if changed.is_err() || *shutdown_rx.borrow() {
-                    break;
-                }
-            }
+            _ = wait_for_shutdown(&mut shutdown_rx) => break,
             accepted = accepted_rx.recv() => {
                 let Some(accepted) = accepted else {
                     break;
@@ -1030,9 +1165,10 @@ pub async fn run_server_network_loops_until_shutdown(
                 let runtime = runtime.clone();
                 let client_event_senders = client_event_senders.clone();
                 let transport_action_sink = transport_action_sink.clone();
+                let session_shutdown_rx = local_shutdown_rx.clone();
                 let peer_ip = Some(address.ip().to_string());
                 let task_client_id = client_id.clone();
-                session_tasks.push(tokio::spawn(async move {
+                session_tasks.spawn(async move {
                     if let Err(source) = run_server_network_client_session(
                         stream,
                         peer_ip,
@@ -1040,6 +1176,7 @@ pub async fn run_server_network_loops_until_shutdown(
                         runtime,
                         client_event_senders,
                         transport_action_sink,
+                        session_shutdown_rx,
                     )
                     .await
                     {
@@ -1047,16 +1184,55 @@ pub async fn run_server_network_loops_until_shutdown(
                             "Sorotte server client session {task_client_id} ended with error: {source}"
                         );
                     }
-                }));
+                });
             }
         }
     }
 
-    for task in accept_tasks {
-        task.abort();
-    }
-    for task in session_tasks {
-        task.abort();
+    // Stop the listeners first, then let every active session run its normal
+    // transport shutdown and runtime-disconnect path. A single bounded grace
+    // period covers both phases; remaining tasks are explicitly aborted after
+    // the deadline rather than detached.
+    let _ = local_shutdown_tx.send(true);
+    drop(accepted_rx);
+    let shutdown_grace = std::time::Duration::from_secs_f64(SERVER_NETWORK_SHUTDOWN_GRACE_SECONDS);
+    let shutdown_deadline = time::Instant::now() + shutdown_grace;
+    // Reserve a small slice of the same bounded grace period for joining
+    // forced cancellations. This keeps actor shutdown from racing session
+    // futures in the normal timeout case without extending the deadline.
+    let forced_join_reserve = std::time::Duration::from_millis(100);
+    let graceful_deadline = shutdown_deadline - forced_join_reserve;
+    let timed_out_acceptors =
+        await_tasks_until_deadline(&mut accept_tasks, graceful_deadline, "acceptor").await;
+    let timed_out_sessions =
+        await_tasks_until_deadline(&mut session_tasks, graceful_deadline, "client session").await;
+
+    if timed_out_acceptors > 0 || timed_out_sessions > 0 {
+        accept_tasks.abort_all();
+        session_tasks.abort_all();
+        let undrained_acceptors =
+            await_tasks_until_deadline(&mut accept_tasks, shutdown_deadline, "acceptor").await;
+        let undrained_sessions =
+            await_tasks_until_deadline(&mut session_tasks, shutdown_deadline, "client session")
+                .await;
+        if undrained_acceptors > 0 || undrained_sessions > 0 {
+            // Dropping a JoinSet aborts every task still registered in it. The
+            // sets are locals and are dropped before this function returns to
+            // the lifecycle owner, so no task handle is silently detached.
+            eprintln!(
+                "Sorotte server forced shutdown could not join {undrained_acceptors} acceptor task(s) and {undrained_sessions} client session task(s) before the deadline"
+            );
+        }
+        let timeout_error = ServerNetworkError::ShutdownTimeout {
+            timeout_millis: shutdown_grace.as_millis().try_into().unwrap_or(u64::MAX),
+            acceptor_tasks: timed_out_acceptors,
+            session_tasks: timed_out_sessions,
+        };
+        if let Some(loop_error) = loop_error {
+            eprintln!("Sorotte server network teardown also failed: {timeout_error}");
+            return Err(loop_error);
+        }
+        return Err(timeout_error);
     }
 
     if let Some(loop_error) = loop_error {
@@ -1064,6 +1240,34 @@ pub async fn run_server_network_loops_until_shutdown(
     }
 
     Ok(())
+}
+
+/// Owns the production server lifecycle through the explicit durability
+/// barrier. Actor shutdown is attempted even when network startup or teardown
+/// fails, and dual failures retain both causes.
+pub async fn run_server_network_loops_and_shutdown_actor(
+    listeners: Vec<TcpListener>,
+    runtime: ServerActorHandle,
+    transport_action_sink: Option<UnboundedSender<DirectedTransportAction>>,
+    shutdown_rx: watch::Receiver<bool>,
+) -> Result<(), ServerLifecycleError> {
+    let network_result = run_server_network_loops_until_shutdown(
+        listeners,
+        runtime.clone(),
+        transport_action_sink,
+        shutdown_rx,
+    )
+    .await;
+    let shutdown_result = runtime.shutdown().await;
+
+    match (network_result, shutdown_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(network), Ok(())) => Err(ServerLifecycleError::Network(network)),
+        (Ok(()), Err(shutdown)) => Err(ServerLifecycleError::Shutdown(shutdown)),
+        (Err(network), Err(shutdown)) => {
+            Err(ServerLifecycleError::NetworkAndShutdown { network, shutdown })
+        }
+    }
 }
 
 pub async fn run_server_network_loop_until_shutdown(
@@ -1097,5 +1301,24 @@ mod credential_debug_tests {
 
         assert!(!format!("{event:?}").contains(secret));
         assert!(!format!("{periodic:?}").contains(secret));
+    }
+
+    #[tokio::test]
+    async fn session_shutdown_wait_is_bounded_and_reports_remaining_tasks() {
+        let mut tasks = JoinSet::new();
+        tasks.spawn(std::future::pending::<()>());
+
+        let remaining = await_tasks_until_deadline(
+            &mut tasks,
+            time::Instant::now() + std::time::Duration::from_millis(20),
+            "test session",
+        )
+        .await;
+
+        assert_eq!(remaining, 1);
+        tasks.abort_all();
+        time::timeout(std::time::Duration::from_secs(1), tasks.shutdown())
+            .await
+            .expect("aborted task should be joinable after the bounded deadline");
     }
 }

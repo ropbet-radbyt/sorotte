@@ -284,6 +284,151 @@ async fn server_network_tick_does_not_accumulate_simulated_time() {
     );
 }
 
+#[tokio::test]
+async fn server_network_shutdown_closes_and_awaits_active_sessions() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let address = listener
+        .local_addr()
+        .expect("listener should have local address");
+    let runtime = ServerActorHandle::spawn(ServerRuntime::new());
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let server_task = tokio::spawn(run_server_network_loop_until_shutdown(
+        listener,
+        runtime.clone(),
+        None,
+        shutdown_rx,
+    ));
+
+    let stream = TcpStream::connect(address)
+        .await
+        .expect("client should connect");
+    let (reader, mut writer) = stream.into_split();
+    writer
+        .write_all(br#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.0"}}"#)
+        .await
+        .expect("hello should write");
+    writer
+        .write_all(b"\n")
+        .await
+        .expect("hello newline should write");
+    writer.flush().await.expect("hello should flush");
+
+    let mut reader = BufReader::new(reader);
+    loop {
+        let mut line = String::new();
+        let read = timeout(Duration::from_secs(2), reader.read_line(&mut line))
+            .await
+            .expect("hello response should arrive before timeout")
+            .expect("hello response should read");
+        assert!(read > 0, "server should not close before Hello response");
+        if matches!(
+            decode_message_line(line.trim_end()).expect("response should decode"),
+            ProtocolMessage::Hello(_)
+        ) {
+            break;
+        }
+    }
+    assert!(
+        runtime
+            .session("client-1")
+            .await
+            .expect("actor should answer before shutdown")
+            .is_some(),
+        "active network client should own a runtime session"
+    );
+
+    shutdown_tx.send(true).expect("shutdown signal should send");
+    timeout(Duration::from_secs(2), server_task)
+        .await
+        .expect("network shutdown should stay within its grace deadline")
+        .expect("server network task should join")
+        .expect("server network shutdown should succeed");
+
+    timeout(Duration::from_secs(1), async {
+        loop {
+            let mut line = String::new();
+            if reader
+                .read_line(&mut line)
+                .await
+                .expect("shutdown read should succeed")
+                == 0
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("active client transport should receive EOF during shutdown");
+    assert!(
+        runtime
+            .session("client-1")
+            .await
+            .expect("actor should answer after network shutdown")
+            .is_none(),
+        "network owner must await the session's normal disconnect cleanup"
+    );
+    assert!(
+        TcpStream::connect(address).await.is_err(),
+        "listener must be closed before network shutdown returns"
+    );
+
+    runtime
+        .shutdown()
+        .await
+        .expect("test actor should shut down cleanly");
+}
+
+#[tokio::test]
+async fn server_lifecycle_explicitly_shuts_down_actor_after_network_teardown() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let runtime = ServerActorHandle::spawn(ServerRuntime::new());
+    let retained_probe = runtime.clone();
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    shutdown_tx.send(true).expect("shutdown signal should send");
+
+    run_server_network_loops_and_shutdown_actor(vec![listener], runtime, None, shutdown_rx)
+        .await
+        .expect("lifecycle should drain the network and actor");
+
+    assert!(
+        matches!(
+            retained_probe.session("probe").await,
+            Err(ServerActorError::Unavailable)
+        ),
+        "a retained sender clone proves the actor stopped explicitly rather than through Drop"
+    );
+}
+
+#[tokio::test]
+async fn server_lifecycle_preserves_network_and_actor_shutdown_failures() {
+    let runtime = ServerActorHandle::spawn(ServerRuntime::new());
+    runtime
+        .clone()
+        .shutdown()
+        .await
+        .expect("precondition actor shutdown should succeed");
+    let (_shutdown_tx, shutdown_rx) = watch::channel(true);
+
+    let error = run_server_network_loops_and_shutdown_actor(vec![], runtime, None, shutdown_rx)
+        .await
+        .expect_err("network and actor shutdown failures should be observable");
+
+    assert!(
+        matches!(
+            error,
+            ServerLifecycleError::NetworkAndShutdown {
+                network: ServerNetworkError::Io(_),
+                shutdown: ServerActorError::Unavailable,
+            }
+        ),
+        "lifecycle errors must retain both the network failure and durability-barrier failure"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn server_actor_remains_responsive_while_room_persistence_waits_on_sqlite() {
     let db_path = temporary_sqlite_path("actor-sqlite-contention");
