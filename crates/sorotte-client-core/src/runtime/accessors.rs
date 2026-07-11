@@ -14,8 +14,8 @@ impl<'a> ClientSessionUpdate<'a> {
     pub fn apply_player_playback_telemetry_update(
         &mut self,
         update: &PlayerPlaybackTelemetryUpdate,
-    ) {
-        self.session.apply_player_playback_telemetry_update(update);
+    ) -> bool {
+        self.session.apply_player_playback_telemetry_update(update)
     }
 
     pub fn initialize_local_identity(&mut self, username: String, room: String) {

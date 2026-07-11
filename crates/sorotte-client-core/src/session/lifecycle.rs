@@ -52,35 +52,61 @@ impl ClientSession {
     pub fn apply_player_playback_telemetry_update(
         &mut self,
         update: &PlayerPlaybackTelemetryUpdate,
-    ) {
+    ) -> bool {
+        let mut changed = false;
         let cache_pause_was_active = self.model.playback.local_paused_for_cache == Some(true);
         if let Some(paused_for_cache) = update.paused_for_cache {
-            self.model.playback.local_paused_for_cache = Some(paused_for_cache);
+            if self.model.playback.local_paused_for_cache != Some(paused_for_cache) {
+                self.model.playback.local_paused_for_cache = Some(paused_for_cache);
+                changed = true;
+            }
             if paused_for_cache || cache_pause_was_active {
-                self.model.playback.pending_cache_room_playstate_resync = true;
+                if !self.model.playback.pending_cache_room_playstate_resync {
+                    self.model.playback.pending_cache_room_playstate_resync = true;
+                    changed = true;
+                }
             }
         }
         if let Some(cache_buffering_percent) = update
             .cache_buffering_percent
-            .filter(|value| value.is_finite())
+            .filter(|value| value.is_finite() && (0.0..=100.0).contains(value))
+            && self.model.playback.local_cache_buffering_percent != Some(cache_buffering_percent)
         {
             self.model.playback.local_cache_buffering_percent = Some(cache_buffering_percent);
+            changed = true;
         }
         let cache_pause_active = self.model.playback.local_paused_for_cache == Some(true);
         if let Some(paused) = update.paused
             && !cache_pause_active
         {
-            self.model.playback.local_paused = Some(paused);
+            if self.model.playback.local_paused != Some(paused) {
+                self.model.playback.local_paused = Some(paused);
+                changed = true;
+            }
             if !paused {
-                self.model.playback.pending_cache_room_playstate_resync = false;
+                if self.model.playback.pending_cache_room_playstate_resync {
+                    self.model.playback.pending_cache_room_playstate_resync = false;
+                    changed = true;
+                }
             }
         }
-        if let Some(position_seconds) = update.position_seconds.filter(|value| value.is_finite()) {
+        if let Some(position_seconds) = update
+            .position_seconds
+            .filter(|value| value.is_finite() && *value >= 0.0)
+            && self.model.playback.local_position != Some(position_seconds)
+        {
             self.model.playback.local_position = Some(position_seconds);
+            changed = true;
         }
-        if let Some(playback_rate) = update.playback_rate.filter(|value| value.is_finite()) {
+        if let Some(playback_rate) = update
+            .playback_rate
+            .filter(|value| value.is_finite() && *value > 0.0)
+            && self.model.playback.local_playback_rate != Some(playback_rate)
+        {
             self.model.playback.local_playback_rate = Some(playback_rate);
+            changed = true;
         }
+        changed
     }
 
     pub fn initialize_local_identity(&mut self, username: String, room: String) {

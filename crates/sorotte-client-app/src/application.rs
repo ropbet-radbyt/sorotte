@@ -792,10 +792,11 @@ where
                     .map(|()| true),
             ),
             ClientCommand::PlayerPlaybackObserved(update) => {
-                self.runtime
+                let changed = self
+                    .runtime
                     .session_mut()
                     .apply_player_playback_telemetry_update(&update);
-                ("player-playback-observed", Ok(true))
+                ("player-playback-observed", Ok(changed))
             }
             ClientCommand::UpdateSettings(settings) => {
                 self.apply_settings(*settings);
@@ -1768,6 +1769,65 @@ mod tests {
         assert_eq!(application.session().local_playback_rate(), Some(0.95));
         application.session_mut().reset_sync_state_for_reconnect();
         assert_eq!(application.session().local_playback_rate(), None);
+    }
+
+    #[test]
+    fn application_reports_unchanged_for_empty_identical_and_invalid_player_telemetry() {
+        fn assert_unchanged(events: &[ClientEvent]) {
+            assert!(
+                !events
+                    .iter()
+                    .any(|event| matches!(event, ClientEvent::PlaybackChanged { .. }))
+            );
+            assert!(events.iter().any(|event| matches!(
+                event,
+                ClientEvent::CommandCompleted {
+                    command: "player-playback-observed",
+                    changed: false,
+                }
+            )));
+        }
+
+        let mut application =
+            ClientApplication::new(ClientSession::default(), TestPlayer::default());
+
+        assert_unchanged(&application.dispatch(ClientCommand::PlayerPlaybackObserved(
+            PlayerPlaybackTelemetryUpdate::default(),
+        )));
+
+        let accepted = PlayerPlaybackTelemetryUpdate::default()
+            .with_paused(false)
+            .with_position_seconds(42.5)
+            .with_playback_rate(0.95)
+            .with_paused_for_cache(false)
+            .with_cache_buffering_percent(37.5);
+        let _ = application.dispatch(ClientCommand::PlayerPlaybackObserved(accepted.clone()));
+        assert_unchanged(&application.dispatch(ClientCommand::PlayerPlaybackObserved(accepted)));
+
+        for invalid_update in [
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(f64::NAN)
+                .with_playback_rate(f64::INFINITY)
+                .with_cache_buffering_percent(f64::NEG_INFINITY),
+            PlayerPlaybackTelemetryUpdate::default().with_playback_rate(-1.0),
+            PlayerPlaybackTelemetryUpdate::default().with_playback_rate(0.0),
+            PlayerPlaybackTelemetryUpdate::default().with_cache_buffering_percent(-0.1),
+            PlayerPlaybackTelemetryUpdate::default().with_cache_buffering_percent(100.1),
+            PlayerPlaybackTelemetryUpdate::default().with_position_seconds(-0.1),
+        ] {
+            assert_unchanged(
+                &application.dispatch(ClientCommand::PlayerPlaybackObserved(invalid_update)),
+            );
+        }
+
+        assert_eq!(application.session().local_paused(), Some(false));
+        assert_eq!(application.session().local_position_seconds(), Some(42.5));
+        assert_eq!(application.session().local_playback_rate(), Some(0.95));
+        assert_eq!(application.session().local_paused_for_cache(), Some(false));
+        assert_eq!(
+            application.session().local_cache_buffering_percent(),
+            Some(37.5)
+        );
     }
 
     #[test]
