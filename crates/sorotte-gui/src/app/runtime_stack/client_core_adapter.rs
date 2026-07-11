@@ -38,6 +38,22 @@ pub(super) struct GuiStagedClientCoreProtocolDelivery {
 impl GuiClientCoreChatSessionRuntimeAdapter {
     const STATE_SYNC_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 
+    fn startup_protocol_delivery_is_staged(&self) -> bool {
+        self.staged_outbound_protocol_delivery
+            .as_ref()
+            .is_some_and(|delivery| delivery.source == GuiClientCoreProtocolDeliverySource::Startup)
+    }
+
+    fn replace_pending_startup_hello_if_unstaged(&mut self, line: String) {
+        if self.pending_startup_protocol_lines.is_empty()
+            || self.startup_protocol_delivery_is_staged()
+        {
+            return;
+        }
+        self.pending_startup_protocol_lines.clear();
+        self.pending_startup_protocol_lines.push_back(line);
+    }
+
     fn dispatch_command_to_application(
         runtime: &mut ClientApplication<GuiNoopClientRuntimePlayer>,
         command: ClientCommand,
@@ -168,9 +184,8 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             if !self.pending_startup_protocol_lines.is_empty() {
                 let username = self.current_username_for_next_hello();
                 let room = self.current_room_for_next_hello();
-                self.pending_startup_protocol_lines.clear();
-                self.pending_startup_protocol_lines
-                    .push_back(Self::hello_json(&username, &room, &self.runtime_settings));
+                let hello = Self::hello_json(&username, &room, &self.runtime_settings);
+                self.replace_pending_startup_hello_if_unstaged(hello);
             }
         }
         let (readiness_supported, local_can_control, is_playing_music, recently_advanced) =
@@ -604,6 +619,12 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     pub(in crate::app) fn flush_outbound_protocol_lines(&mut self) -> Result<Vec<String>, String> {
+        if let Some(staged) = self.staged_outbound_protocol_delivery.as_ref() {
+            return Err(format!(
+                "Cannot drain outbound protocol lines while delivery receipt {} is staged.",
+                staged.token
+            ));
+        }
         if !self.pending_startup_protocol_lines.is_empty() && !self.runtime.session().is_active() {
             let _ = Self::dispatch_command_to_application(
                 &mut self.runtime,
@@ -666,34 +687,37 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         &mut self,
         token: u64,
     ) -> Result<(), String> {
-        let Some(staged) = self.staged_outbound_protocol_delivery.take() else {
+        let Some(staged) = self.staged_outbound_protocol_delivery.as_ref() else {
             return Err(format!(
                 "Outbound protocol delivery receipt {token} had no staged session line."
             ));
         };
         if staged.token != token {
-            self.staged_outbound_protocol_delivery = Some(staged);
             return Err(format!(
                 "Outbound protocol delivery receipt {token} did not match staged receipt {}.",
-                self.staged_outbound_protocol_delivery
-                    .as_ref()
-                    .map(|delivery| delivery.token)
-                    .unwrap_or_default()
+                staged.token
             ));
         }
 
-        match staged.source {
+        let staged_source = staged.source;
+        let staged_line = staged.line.clone();
+
+        match staged_source {
             GuiClientCoreProtocolDeliverySource::Startup => {
-                if self.pending_startup_protocol_lines.front() == Some(&staged.line) {
-                    self.pending_startup_protocol_lines.pop_front();
+                if self.pending_startup_protocol_lines.front() != Some(&staged_line) {
+                    return Err(
+                        "Outbound startup protocol delivery receipt did not match the startup outbox front."
+                            .to_owned(),
+                    );
                 }
+                self.pending_startup_protocol_lines.pop_front();
             }
             GuiClientCoreProtocolDeliverySource::Runtime => {
                 let pending = self
                     .runtime
                     .pending_protocol_line()
                     .map_err(|error| format!("Queued protocol line encoding failed: {error}"))?;
-                if pending.as_deref() != Some(staged.line.as_str()) {
+                if pending.as_deref() != Some(staged_line.as_str()) {
                     return Err(
                         "Outbound protocol delivery receipt did not match the client-core outbox front."
                             .to_owned(),
@@ -702,6 +726,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                 let _ = self.runtime.acknowledge_protocol_line();
             }
         }
+        self.staged_outbound_protocol_delivery = None;
         Ok(())
     }
 

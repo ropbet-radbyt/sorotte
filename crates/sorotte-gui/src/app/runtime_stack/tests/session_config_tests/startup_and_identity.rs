@@ -1,6 +1,116 @@
 use super::*;
 
 #[test]
+fn staged_startup_hello_keeps_current_connection_ownership_across_settings_changes() {
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room-a")
+        .expect("client-core chat adapter should bootstrap");
+    let hello_a = adapter
+        .begin_outbound_protocol_delivery()
+        .expect("startup delivery should stage")
+        .expect("startup Hello A should be pending");
+    let ProtocolMessage::Hello(decoded_a) =
+        decode_message_line(hello_a.line()).expect("startup Hello A should decode")
+    else {
+        panic!("startup protocol line should be a Hello message");
+    };
+    assert_eq!(decoded_a.hello.username, "alice");
+    assert_eq!(decoded_a.hello.room.name, "room-a");
+
+    let settings_b =
+        stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {
+            username: Some("bob".to_owned()),
+            room: Some("room-b".to_owned()),
+            shared_playlist_enabled: Some(false),
+            ..StoredClientSettingsMvp::default()
+        });
+    GuiSessionRuntimeAdapter::sync_runtime_settings(&mut adapter, &settings_b)
+        .expect("settings B should become the next-connection template");
+
+    assert_eq!(
+        adapter
+            .pending_startup_protocol_lines
+            .front()
+            .map(String::as_str),
+        Some(hello_a.line()),
+        "settings B must not replace the startup frame already owned by the transport"
+    );
+    let mismatched_error = adapter
+        .acknowledge_outbound_protocol_delivery(hello_a.token().wrapping_add(1))
+        .expect_err("a mismatched startup receipt must fail");
+    assert!(mismatched_error.contains("did not match staged receipt"));
+    assert!(
+        adapter
+            .begin_outbound_protocol_delivery()
+            .expect("staged ownership probe should succeed")
+            .is_none(),
+        "a mismatched receipt must not release startup Hello A"
+    );
+
+    adapter
+        .acknowledge_outbound_protocol_delivery(hello_a.token())
+        .expect("the matching receipt should acknowledge startup Hello A");
+    assert!(adapter.pending_startup_protocol_lines.is_empty());
+    assert!(
+        adapter
+            .begin_outbound_protocol_delivery()
+            .expect("current-connection delivery probe should succeed")
+            .is_none(),
+        "settings B must not enqueue a second Hello on the current connection"
+    );
+
+    adapter.prepare_transport_reconnect();
+    let hello_b = adapter
+        .begin_outbound_protocol_delivery()
+        .expect("reconnect delivery should stage")
+        .expect("settings B should produce the reconnect Hello");
+    assert_ne!(hello_b.token(), hello_a.token());
+    let ProtocolMessage::Hello(decoded_b) =
+        decode_message_line(hello_b.line()).expect("reconnect Hello B should decode")
+    else {
+        panic!("reconnect protocol line should be a Hello message");
+    };
+    assert_eq!(decoded_b.hello.username, "bob");
+    assert_eq!(decoded_b.hello.room.name, "room-b");
+    assert_eq!(
+        decoded_b
+            .hello
+            .features
+            .as_ref()
+            .and_then(serde_json::Value::as_object)
+            .and_then(|features| features.get("sharedPlaylists"))
+            .and_then(serde_json::Value::as_bool),
+        Some(false)
+    );
+}
+
+#[test]
+fn startup_acknowledgement_rejects_an_outbox_front_mismatch_without_releasing_ownership() {
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+    let startup = adapter
+        .begin_outbound_protocol_delivery()
+        .expect("startup delivery should stage")
+        .expect("startup Hello should be pending");
+
+    adapter.pending_startup_protocol_lines.clear();
+    adapter
+        .pending_startup_protocol_lines
+        .push_back(r#"{"Hello":{"username":"replacement"}}"#.to_owned());
+
+    let error = adapter
+        .acknowledge_outbound_protocol_delivery(startup.token())
+        .expect_err("a receipt for a different startup outbox front must fail");
+    assert!(error.contains("did not match the startup outbox front"));
+    assert!(
+        adapter
+            .begin_outbound_protocol_delivery()
+            .expect("staged ownership probe should succeed")
+            .is_none(),
+        "a failed invariant check must retain the staged delivery owner"
+    );
+}
+
+#[test]
 fn gui_client_core_outbound_delivery_retains_front_until_matching_write_receipt() {
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
