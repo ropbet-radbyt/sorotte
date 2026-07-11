@@ -1,6 +1,10 @@
 use super::*;
+use crate::redacted_debug::{
+    RedactedJsonMap, RedactedOptionalJsonValue, RedactedOptionalSensitiveText,
+    RedactedOptionalText, RedactedTextList,
+};
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Clone, Serialize, Deserialize, Default)]
 pub struct SetPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub room: Option<RoomRef>,
@@ -40,6 +44,28 @@ pub struct SetPayload {
     pub command_order: Vec<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+impl std::fmt::Debug for SetPayload {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SetPayload")
+            .field("room", &self.room)
+            .field("file", &self.file)
+            .field("user", &self.user)
+            .field("controller_auth", &self.controller_auth)
+            .field("new_controlled_room", &self.new_controlled_room)
+            .field("ready", &self.ready)
+            .field("playlist_change", &self.playlist_change)
+            .field("playlist_index", &self.playlist_index)
+            .field(
+                "features",
+                &RedactedOptionalJsonValue(self.features.as_ref()),
+            )
+            .field("command_order", &self.command_order)
+            .field("extra", &RedactedJsonMap(&self.extra))
+            .finish()
+    }
 }
 
 impl PartialEq for SetPayload {
@@ -116,7 +142,7 @@ impl SetPayload {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct FilePayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -128,6 +154,19 @@ pub struct FilePayload {
     pub path: Option<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+impl std::fmt::Debug for FilePayload {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("FilePayload")
+            .field("name", &RedactedOptionalSensitiveText(self.name.as_deref()))
+            .field("duration", &self.duration)
+            .field("size", &RedactedOptionalJsonValue(self.size.as_ref()))
+            .field("path", &RedactedOptionalText(self.path.as_deref()))
+            .field("extra", &RedactedJsonMap(&self.extra))
+            .finish()
+    }
 }
 
 impl FilePayload {
@@ -156,7 +195,7 @@ impl FilePayload {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct UserSetPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub room: Option<RoomRef>,
@@ -172,6 +211,24 @@ pub struct UserSetPayload {
     pub is_ready: Option<bool>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+impl std::fmt::Debug for UserSetPayload {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("UserSetPayload")
+            .field("room", &self.room)
+            .field("file", &RedactedOptionalJsonValue(self.file.as_ref()))
+            .field("event", &RedactedOptionalJsonValue(self.event.as_ref()))
+            .field(
+                "features",
+                &RedactedOptionalJsonValue(self.features.as_ref()),
+            )
+            .field("controller", &self.controller)
+            .field("is_ready", &self.is_ready)
+            .field("extra", &RedactedJsonMap(&self.extra))
+            .finish()
+    }
 }
 
 impl UserSetPayload {
@@ -210,7 +267,7 @@ impl UserSetPayload {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ControllerAuthPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub room: Option<String>,
@@ -227,6 +284,19 @@ pub struct ControllerAuthPayload {
     pub success: Option<bool>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+impl std::fmt::Debug for ControllerAuthPayload {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ControllerAuthPayload")
+            .field("room", &self.room)
+            .field("password", &self.password)
+            .field("user", &self.user)
+            .field("success", &self.success)
+            .field("extra", &RedactedJsonMap(&self.extra))
+            .finish()
+    }
 }
 
 impl ControllerAuthPayload {
@@ -255,7 +325,7 @@ impl ControllerAuthPayload {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct NewControlledRoomPayload {
     #[serde(
         default,
@@ -268,6 +338,17 @@ pub struct NewControlledRoomPayload {
     pub room_name: Option<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+impl std::fmt::Debug for NewControlledRoomPayload {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NewControlledRoomPayload")
+            .field("password", &self.password)
+            .field("room_name", &self.room_name)
+            .field("extra", &RedactedJsonMap(&self.extra))
+            .finish()
+    }
 }
 
 impl NewControlledRoomPayload {
@@ -306,7 +387,7 @@ where
     Option::<String>::deserialize(deserializer).map(|value| value.map(SecretValue::from))
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReadyPayload {
     #[serde(default, rename = "isReady")]
     pub is_ready: Option<bool>,
@@ -322,6 +403,19 @@ pub struct ReadyPayload {
     pub set_by: Option<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+impl std::fmt::Debug for ReadyPayload {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ReadyPayload")
+            .field("is_ready", &self.is_ready)
+            .field("manually_initiated", &self.manually_initiated)
+            .field("username", &self.username)
+            .field("set_by", &self.set_by)
+            .field("extra", &RedactedJsonMap(&self.extra))
+            .finish()
+    }
 }
 
 impl ReadyPayload {
@@ -351,12 +445,24 @@ impl ReadyPayload {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct PlaylistChangePayload {
     pub files: Vec<String>,
     pub user: Option<String>,
     pub user_is_null: bool,
     pub extra: BTreeMap<String, Value>,
+}
+
+impl std::fmt::Debug for PlaylistChangePayload {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PlaylistChangePayload")
+            .field("files", &RedactedTextList(&self.files))
+            .field("user", &self.user)
+            .field("user_is_null", &self.user_is_null)
+            .field("extra", &RedactedJsonMap(&self.extra))
+            .finish()
+    }
 }
 
 impl PlaylistChangePayload {
@@ -580,13 +686,26 @@ impl<'de> Deserialize<'de> for PlaylistChangePayload {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct PlaylistIndexPayload {
     pub index: i64,
     pub index_is_null: bool,
     pub user: Option<String>,
     pub user_is_null: bool,
     pub extra: BTreeMap<String, Value>,
+}
+
+impl std::fmt::Debug for PlaylistIndexPayload {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PlaylistIndexPayload")
+            .field("index", &self.index)
+            .field("index_is_null", &self.index_is_null)
+            .field("user", &self.user)
+            .field("user_is_null", &self.user_is_null)
+            .field("extra", &RedactedJsonMap(&self.extra))
+            .finish()
+    }
 }
 
 impl PlaylistIndexPayload {

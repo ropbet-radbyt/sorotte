@@ -9,7 +9,7 @@ pub struct ClientUserView {
     pub controller: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Clone, PartialEq, Default)]
 pub struct ClientMediaMatchPeerFileState {
     pub username: String,
     pub has_file: bool,
@@ -19,11 +19,42 @@ pub struct ClientMediaMatchPeerFileState {
     pub media_match_signature: Option<MediaMatchWireSignature>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+impl std::fmt::Debug for ClientMediaMatchPeerFileState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ClientMediaMatchPeerFileState")
+            .field("username", &self.username)
+            .field("has_file", &self.has_file)
+            .field(
+                "file_name",
+                &self
+                    .file_name
+                    .as_ref()
+                    .map(|_| sorotte_secret::REDACTED_SECRET),
+            )
+            .field("file_size", &self.file_size)
+            .field("file_duration", &self.file_duration)
+            .field("media_match_signature", &self.media_match_signature)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Default)]
 pub struct RoomPlaylistView {
     pub files: Vec<String>,
     pub index: Option<i64>,
     pub set_by: Option<String>,
+}
+
+impl std::fmt::Debug for RoomPlaylistView {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RoomPlaylistView")
+            .field("files_count", &self.files.len())
+            .field("index", &self.index)
+            .field("set_by", &self.set_by)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

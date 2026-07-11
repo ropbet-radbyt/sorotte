@@ -582,6 +582,25 @@ fn protocol_error_dispatch_sends_not_json_error_and_close() {
 }
 
 #[test]
+fn reflected_malformed_line_debug_does_not_expose_credentials() {
+    let marker = "server-reflected-line-password-canary";
+    let malformed = format!("not-json password={marker}");
+    let mut runtime = ServerRuntime::new();
+
+    let dispatch = runtime
+        .handle_line_fanout_with_transport_actions("client-1", &malformed)
+        .expect("malformed protocol line should produce protocol error dispatch");
+
+    assert!(
+        dispatch_error_message(&dispatch)
+            .as_deref()
+            .is_some_and(|message| message.contains(marker)),
+        "wire-compatible error should retain the reflected input"
+    );
+    assert!(!format!("{dispatch:?}").contains(marker));
+}
+
+#[test]
 fn protocol_error_dispatch_sends_unknown_command_error_and_close() {
     let mut runtime = ServerRuntime::new();
 

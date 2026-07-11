@@ -4,6 +4,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::PathBuf;
 
 use anyhow::{Context, anyhow};
+use sorotte_secret::SecretValue;
 
 const DEFAULT_SERVER_PORT: u16 = 8999;
 
@@ -32,11 +33,11 @@ impl<T> OptionalCliValue<T> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Clone, PartialEq, Eq, Default)]
 pub(crate) struct ServerCliOverrides {
     port: OptionalCliValue<u16>,
-    password: OptionalCliValue<String>,
-    salt: OptionalCliValue<String>,
+    password: OptionalCliValue<SecretValue>,
+    salt: OptionalCliValue<SecretValue>,
     motd_file: OptionalCliValue<PathBuf>,
     rooms_db_file: OptionalCliValue<PathBuf>,
     permanent_rooms_file: OptionalCliValue<PathBuf>,
@@ -51,6 +52,30 @@ pub(crate) struct ServerCliOverrides {
     ipv6_only: bool,
     interface_ipv4: OptionalCliValue<String>,
     interface_ipv6: OptionalCliValue<String>,
+}
+
+impl std::fmt::Debug for ServerCliOverrides {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ServerCliOverrides")
+            .field("port", &self.port)
+            .field(
+                "password",
+                &matches!(self.password, OptionalCliValue::Value(_))
+                    .then_some(sorotte_secret::REDACTED_SECRET),
+            )
+            .field(
+                "salt",
+                &matches!(self.salt, OptionalCliValue::Value(_))
+                    .then_some(sorotte_secret::REDACTED_SECRET),
+            )
+            .field("disable_ready", &self.disable_ready)
+            .field("disable_chat", &self.disable_chat)
+            .field("isolate_rooms", &self.isolate_rooms)
+            .field("ipv4_only", &self.ipv4_only)
+            .field("ipv6_only", &self.ipv6_only)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,12 +97,12 @@ pub(crate) struct ServerBindEndpoint {
     pub(crate) host: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct ServerRunConfig {
     pub(crate) bind_endpoints: Vec<ServerBindEndpoint>,
     pub(crate) port: u16,
-    pub(crate) server_password_token: Option<String>,
-    pub(crate) room_password_salt: Option<String>,
+    pub(crate) server_password_token: Option<SecretValue>,
+    pub(crate) room_password_salt: Option<SecretValue>,
     pub(crate) motd_template: Option<String>,
     pub(crate) rooms_db_file: Option<PathBuf>,
     pub(crate) permanent_rooms_file: Option<PathBuf>,
@@ -89,6 +114,38 @@ pub(crate) struct ServerRunConfig {
     pub(crate) max_chat_message_length: Option<usize>,
     pub(crate) max_username_length: Option<usize>,
     pub(crate) isolate_rooms: bool,
+}
+
+impl std::fmt::Debug for ServerRunConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ServerRunConfig")
+            .field("bind_endpoints", &self.bind_endpoints)
+            .field("port", &self.port)
+            .field(
+                "server_password_token",
+                &self
+                    .server_password_token
+                    .as_ref()
+                    .map(|_| sorotte_secret::REDACTED_SECRET),
+            )
+            .field(
+                "room_password_salt",
+                &self
+                    .room_password_salt
+                    .as_ref()
+                    .map(|_| sorotte_secret::REDACTED_SECRET),
+            )
+            .field("rooms_db_file", &self.rooms_db_file)
+            .field("permanent_rooms_file", &self.permanent_rooms_file)
+            .field("stats_db_file", &self.stats_db_file)
+            .field("tls_cert_path", &self.tls_cert_path)
+            .field("persistent_rooms_enabled", &self.persistent_rooms_enabled)
+            .field("chat_enabled", &self.chat_enabled)
+            .field("readiness_enabled", &self.readiness_enabled)
+            .field("isolate_rooms", &self.isolate_rooms)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -260,10 +317,16 @@ where
                     })?;
             }
             "--password" => {
-                overrides.password = take_optional_option_value(inline_value, &args, &mut index);
+                overrides.password =
+                    parse_optional_option_value(inline_value, &args, &mut index, |value| {
+                        Ok(SecretValue::from(value))
+                    })?;
             }
             "--salt" => {
-                overrides.salt = take_optional_option_value(inline_value, &args, &mut index);
+                overrides.salt =
+                    parse_optional_option_value(inline_value, &args, &mut index, |value| {
+                        Ok(SecretValue::from(value))
+                    })?;
             }
             "--disable-ready" => {
                 if inline_value.is_some() {
@@ -464,10 +527,14 @@ pub(crate) fn resolve_run_config(
         .resolve_with_env(|| env_u16("SOROTTE_SERVER_PORT"))
         .unwrap_or(DEFAULT_SERVER_PORT);
     let room_password_salt = overrides.salt.resolve_with_env(|| {
-        env_trimmed("SOROTTE_SALT").or_else(|| env_trimmed("SOROTTE_SERVER_SALT"))
+        env_trimmed("SOROTTE_SALT")
+            .or_else(|| env_trimmed("SOROTTE_SERVER_SALT"))
+            .map(SecretValue::from)
     });
     let server_password_token = overrides.password.resolve_with_env(|| {
-        env_trimmed("SOROTTE_PASSWORD").or_else(|| env_trimmed("SOROTTE_SERVER_PASSWORD"))
+        env_trimmed("SOROTTE_PASSWORD")
+            .or_else(|| env_trimmed("SOROTTE_SERVER_PASSWORD"))
+            .map(SecretValue::from)
     });
 
     let motd_template = match overrides.motd_file {
@@ -615,9 +682,12 @@ mod tests {
         assert_eq!(overrides.port, OptionalCliValue::Value(9000));
         assert_eq!(
             overrides.password,
-            OptionalCliValue::Value("secret".to_owned())
+            OptionalCliValue::Value(SecretValue::new("secret"))
         );
-        assert_eq!(overrides.salt, OptionalCliValue::Value("pepper".to_owned()));
+        assert_eq!(
+            overrides.salt,
+            OptionalCliValue::Value(SecretValue::new("pepper"))
+        );
         assert!(overrides.disable_chat);
         assert!(overrides.disable_ready);
         assert!(!overrides.isolate_rooms);
@@ -680,9 +750,12 @@ mod tests {
         assert_eq!(overrides.port, OptionalCliValue::Value(9000));
         assert_eq!(
             overrides.password,
-            OptionalCliValue::Value("secret".to_owned())
+            OptionalCliValue::Value(SecretValue::new("secret"))
         );
-        assert_eq!(overrides.salt, OptionalCliValue::Value("pepper".to_owned()));
+        assert_eq!(
+            overrides.salt,
+            OptionalCliValue::Value(SecretValue::new("pepper"))
+        );
         assert!(overrides.disable_chat);
         assert!(overrides.disable_ready);
         assert!(overrides.isolate_rooms);
@@ -852,10 +925,19 @@ mod tests {
 
         let config = resolve_run_config(ServerCliOverrides::default()).unwrap();
         assert_eq!(
-            config.server_password_token.as_deref(),
+            config
+                .server_password_token
+                .as_ref()
+                .map(SecretValue::expose_secret),
             Some("legacy-password")
         );
-        assert_eq!(config.room_password_salt.as_deref(), Some("legacy-salt"));
+        assert_eq!(
+            config
+                .room_password_salt
+                .as_ref()
+                .map(SecretValue::expose_secret),
+            Some("legacy-salt")
+        );
     }
 
     #[test]
@@ -894,5 +976,45 @@ mod tests {
         assert_eq!(config.permanent_rooms_file, None);
         assert_eq!(config.stats_db_file, None);
         assert_eq!(config.tls_cert_path, None);
+    }
+
+    #[test]
+    fn server_cli_configuration_debug_redacts_password_and_salt() {
+        let password = "server-cli-password-canary";
+        let salt = "server-cli-salt-canary";
+        let overrides = ServerCliOverrides {
+            password: OptionalCliValue::Value(password.into()),
+            salt: OptionalCliValue::Value(salt.into()),
+            ..ServerCliOverrides::default()
+        };
+
+        let overrides_debug = format!("{overrides:?}");
+        assert!(overrides_debug.contains(sorotte_secret::REDACTED_SECRET));
+        assert!(!overrides_debug.contains(password));
+        assert!(!overrides_debug.contains(salt));
+
+        for field_debug in [
+            format!("{:?}", overrides.password),
+            format!("{:?}", overrides.salt),
+        ] {
+            assert!(field_debug.contains(sorotte_secret::REDACTED_SECRET));
+            assert!(!field_debug.contains(password));
+            assert!(!field_debug.contains(salt));
+        }
+
+        let config = resolve_run_config(overrides).expect("server configuration should resolve");
+        let config_debug = format!("{config:?}");
+        assert!(config_debug.contains(sorotte_secret::REDACTED_SECRET));
+        assert!(!config_debug.contains(password));
+        assert!(!config_debug.contains(salt));
+
+        for field_debug in [
+            format!("{:?}", config.server_password_token),
+            format!("{:?}", config.room_password_salt),
+        ] {
+            assert!(field_debug.contains(sorotte_secret::REDACTED_SECRET));
+            assert!(!field_debug.contains(password));
+            assert!(!field_debug.contains(salt));
+        }
     }
 }

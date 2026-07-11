@@ -226,24 +226,56 @@ pub(super) struct GuiPlexPlaylistResolveWorkerResult {
     pub(super) result: Result<String, String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(super) struct GuiPlexStreamResolveOutcome {
     pub(super) stream_target: Option<PlexStreamTarget>,
     pub(super) cache: PlexMatchCache,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+impl std::fmt::Debug for GuiPlexStreamResolveOutcome {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuiPlexStreamResolveOutcome")
+            .field("stream_target_resolved", &self.stream_target.is_some())
+            .field("cache", &sorotte_secret::REDACTED_SECRET)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq)]
 pub(super) struct GuiPlexStreamResolveWorkerResult {
     pub(super) trigger_key: String,
     pub(super) target: String,
     pub(super) result: Result<GuiPlexStreamResolveOutcome, String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl std::fmt::Debug for GuiPlexStreamResolveWorkerResult {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuiPlexStreamResolveWorkerResult")
+            .field("trigger_key", &sorotte_secret::REDACTED_SECRET)
+            .field("target", &sorotte_secret::REDACTED_SECRET)
+            .field("result_succeeded", &self.result.is_ok())
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub(super) struct GuiPendingPlaylistSourceResolution {
     pub(super) index: usize,
     pub(super) target: String,
     pub(super) provider_id: GuiMediaSourceProviderId,
+}
+
+impl std::fmt::Debug for GuiPendingPlaylistSourceResolution {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuiPendingPlaylistSourceResolution")
+            .field("index", &self.index)
+            .field("target", &sorotte_secret::REDACTED_SECRET)
+            .field("provider_id", &self.provider_id)
+            .finish()
+    }
 }
 
 #[derive(Debug)]
@@ -260,10 +292,26 @@ pub(super) enum GuiMediaMatchBackgroundWorkerEvent {
     Finished(Result<MediaMatchIndexRebuildResult, String>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) struct GuiMediaMatchRemoteLookupResult {
     pub(super) trigger_key: String,
     pub(super) candidate_path: Option<String>,
+}
+
+impl std::fmt::Debug for GuiMediaMatchRemoteLookupResult {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuiMediaMatchRemoteLookupResult")
+            .field("trigger_key", &sorotte_secret::REDACTED_SECRET)
+            .field(
+                "candidate_path",
+                &self
+                    .candidate_path
+                    .as_ref()
+                    .map(|_| sorotte_secret::REDACTED_SECRET),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -323,7 +371,7 @@ pub(super) enum GuiAttachedMediaSearchBuildStatus {
     Cancelled,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) enum GuiUserMediaTargetResolution {
     Resolved {
         path: String,
@@ -333,6 +381,20 @@ pub(super) enum GuiUserMediaTargetResolution {
     Missing,
 }
 
+impl std::fmt::Debug for GuiUserMediaTargetResolution {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Resolved { source, .. } => formatter
+                .debug_struct("Resolved")
+                .field("path", &sorotte_secret::REDACTED_SECRET)
+                .field("source", source)
+                .finish(),
+            Self::Pending => formatter.write_str("Pending"),
+            Self::Missing => formatter.write_str("Missing"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum GuiUserMediaTargetResolutionSource {
     QuickLocal,
@@ -340,7 +402,7 @@ pub(super) enum GuiUserMediaTargetResolutionSource {
     MediaSearchIndex,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) struct GuiAutomaticMediaResolutionTrigger {
     pub(super) target: String,
     pub(super) source_provider: String,
@@ -351,6 +413,30 @@ pub(super) struct GuiAutomaticMediaResolutionTrigger {
     pub(super) retry_due: bool,
 }
 
+impl std::fmt::Debug for GuiAutomaticMediaResolutionTrigger {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuiAutomaticMediaResolutionTrigger")
+            .field("target", &sorotte_secret::REDACTED_SECRET)
+            .field("source_provider", &self.source_provider)
+            .field("root_count", &self.roots.len())
+            .field(
+                "media_match_remote_targets",
+                &sorotte_secret::REDACTED_SECRET,
+            )
+            .field(
+                "current_player_path",
+                &self
+                    .current_player_path
+                    .as_ref()
+                    .map(|_| sorotte_secret::REDACTED_SECRET),
+            )
+            .field("index_revision", &self.index_revision)
+            .field("retry_due", &self.retry_due)
+            .finish()
+    }
+}
+
 pub(super) struct GuiPendingAttachedMediaResolution {
     pub(super) roots: Vec<String>,
     pub(super) cancel_flag: Arc<AtomicBool>,
@@ -358,10 +444,20 @@ pub(super) struct GuiPendingAttachedMediaResolution {
     pub(super) result_rx: std::sync::mpsc::Receiver<GuiAttachedMediaSearchBuildStatus>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) struct GuiPendingStreamLoadContext {
     pub(super) requested_target: String,
     pub(super) user_initiated: bool,
+}
+
+impl std::fmt::Debug for GuiPendingStreamLoadContext {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuiPendingStreamLoadContext")
+            .field("requested_target", &sorotte_secret::REDACTED_SECRET)
+            .field("user_initiated", &self.user_initiated)
+            .finish()
+    }
 }
 
 #[derive(Clone, PartialEq)]
@@ -375,9 +471,9 @@ pub(super) struct GuiPendingLogicalMediaOverride {
 impl std::fmt::Debug for GuiPendingLogicalMediaOverride {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GuiPendingLogicalMediaOverride")
-            .field("requested_target", &self.requested_target)
+            .field("requested_target", &sorotte_secret::REDACTED_SECRET)
             .field("loaded_target_secret", &self.loaded_target_secret)
-            .field("logical_file", &self.logical_file)
+            .field("logical_file", &sorotte_secret::REDACTED_SECRET)
             .field("user_initiated", &self.user_initiated)
             .finish()
     }
@@ -395,6 +491,59 @@ impl GuiAttachedMediaSearchIndex {
             roots,
             root_indexes_by_key: HashMap::new(),
             roots_requiring_refresh: BTreeSet::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod media_target_debug_tests {
+    use super::*;
+
+    #[test]
+    fn media_resolution_and_stream_contexts_redact_tokenized_targets() {
+        let secret = "https://media.example/item?token=runtime-owner-canary";
+        let trigger = GuiAutomaticMediaResolutionTrigger {
+            target: secret.to_owned(),
+            source_provider: "plex".to_owned(),
+            roots: vec![secret.to_owned()],
+            media_match_remote_targets: secret.to_owned(),
+            current_player_path: Some(secret.to_owned()),
+            index_revision: 7,
+            retry_due: true,
+        };
+        let stream_context = GuiPendingStreamLoadContext {
+            requested_target: secret.to_owned(),
+            user_initiated: true,
+        };
+        let pending_playlist = GuiPendingPlaylistSourceResolution {
+            index: 2,
+            target: secret.to_owned(),
+            provider_id: GuiMediaSourceProviderId::plex_stream(),
+        };
+        let resolved = GuiUserMediaTargetResolution::Resolved {
+            path: secret.to_owned(),
+            source: GuiUserMediaTargetResolutionSource::QuickLocal,
+        };
+        let remote_lookup = GuiMediaMatchRemoteLookupResult {
+            trigger_key: secret.to_owned(),
+            candidate_path: Some(secret.to_owned()),
+        };
+        let plex_worker = GuiPlexStreamResolveWorkerResult {
+            trigger_key: secret.to_owned(),
+            target: secret.to_owned(),
+            result: Err(secret.to_owned()),
+        };
+
+        for debug in [
+            format!("{trigger:?}"),
+            format!("{stream_context:?}"),
+            format!("{pending_playlist:?}"),
+            format!("{resolved:?}"),
+            format!("{remote_lookup:?}"),
+            format!("{plex_worker:?}"),
+        ] {
+            assert!(debug.contains(sorotte_secret::REDACTED_SECRET));
+            assert!(!debug.contains("runtime-owner-canary"));
         }
     }
 }

@@ -12,6 +12,7 @@ use sorotte_client_core::{
 use sorotte_player_mpv::MpvAdapter;
 #[cfg(test)]
 use sorotte_player_mpv::SimulatedPlayer;
+use sorotte_secret::SecretValue;
 
 #[cfg(test)]
 use crate::apply_legacy_syncplay_ui_settings_to_mpv_adapter_legacy_compatible;

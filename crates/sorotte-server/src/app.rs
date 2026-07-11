@@ -16,7 +16,7 @@ impl ServerApp {
         }
     }
 
-    pub fn with_room_password_salt(salt: impl Into<String>) -> Self {
+    pub fn with_room_password_salt(salt: impl Into<SecretValue>) -> Self {
         Self {
             runtime: ServerRuntime::with_room_password_salt(salt),
         }

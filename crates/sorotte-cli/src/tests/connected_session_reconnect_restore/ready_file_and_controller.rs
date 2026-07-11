@@ -251,7 +251,7 @@ async fn connected_client_session_reidentifies_controller_when_password_is_confi
         show_osd_warnings_override: None,
         show_noncontroller_osd_override: None,
         show_different_room_osd_override: None,
-        controlled_room_password_override: Some("ab-123-456".to_owned()),
+        controlled_room_password_override: Some("ab-123-456".into()),
     };
     let mut runtime = create_client_runtime(&config);
     let stream = TcpStream::connect(addr)

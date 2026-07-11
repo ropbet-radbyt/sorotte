@@ -235,12 +235,14 @@ where
         config.version.clone(),
     )
     .with_realversion(SYNCPLAY_COMPAT_VERSION_LEGACY);
-    if let Some(server_password) = config.server_password.as_deref()
+    if let Some(server_password) = config.server_password.as_ref()
         && !server_password.is_empty()
     {
         hello_payload.extra.insert(
             "password".to_owned(),
-            Value::String(legacy_server_password_token(server_password)),
+            Value::String(legacy_server_password_token(
+                server_password.expose_secret(),
+            )),
         );
     }
     hello_payload.features = Some(client_hello_features_legacy_compatible(config));

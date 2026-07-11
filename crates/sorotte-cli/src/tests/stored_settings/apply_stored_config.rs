@@ -227,7 +227,13 @@ fn apply_stored_client_settings_mvp_if_env_absent_applies_server_password() {
         },
     );
 
-    assert_eq!(config.server_password.as_deref(), Some("stored-secret"));
+    assert_eq!(
+        config
+            .server_password
+            .as_ref()
+            .map(sorotte_secret::SecretValue::expose_secret),
+        Some("stored-secret")
+    );
 
     match prior_server_password {
         Some(value) => env.set_var(key_server_password, value),
@@ -303,7 +309,10 @@ fn apply_stored_client_settings_mvp_if_env_absent_uses_room_list_when_room_missi
 
     assert_eq!(config.room, "+room:ABCDEF123456");
     assert_eq!(
-        config.controlled_room_password_override.as_deref(),
+        config
+            .controlled_room_password_override
+            .as_ref()
+            .map(sorotte_secret::SecretValue::expose_secret),
         Some("AB-123-456")
     );
 

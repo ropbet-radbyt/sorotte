@@ -12,6 +12,7 @@ use sorotte_client_app::app_boundary::{
 };
 use sorotte_media_match::{MediaMatchAutoplayPolicy, MediaMatchSettings};
 use sorotte_plex::{PlexMediaSearchResult, PlexMediaType, PlexServerConnectionKind};
+use sorotte_secret::SecretValue;
 
 use super::GuiLaunchMode;
 use super::remote_services;
@@ -41,9 +42,9 @@ pub(super) use self::browser_support::{
 };
 pub(super) use self::configuration_dialog::{
     FirstRunConfigurationDialogDraft, FirstRunConfigurationDialogState, GuiChatSection,
-    GuiConnectionSettingsSection, GuiDesyncSection, GuiDialogControl, GuiDialogControlKind,
-    GuiDialogSection, GuiMediaSearchSection, GuiOsdSection, GuiPrivacySection, GuiReadinessSection,
-    GuiSystemSection,
+    GuiConfigurationTextValue, GuiConnectionSettingsSection, GuiDesyncSection, GuiDialogControl,
+    GuiDialogControlKind, GuiDialogSection, GuiMediaSearchSection, GuiOsdSection,
+    GuiPrivacySection, GuiReadinessSection, GuiSystemSection,
 };
 #[cfg(any(test, feature = "gui-semantic-smoke"))]
 pub(super) use self::main_window::MainWindowRuntimeChatSnapshot;
@@ -204,7 +205,7 @@ impl GuiStreamHelperHealth {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) struct GuiStreamHelperState {
     pub(super) health: GuiStreamHelperHealth,
     pub(super) message: Option<String>,
@@ -216,6 +217,33 @@ pub(super) struct GuiStreamHelperState {
     pub(super) downloader_status: Option<String>,
     pub(super) js_runtime_status: Option<String>,
     pub(super) open_install_location_available: bool,
+}
+
+impl std::fmt::Debug for GuiStreamHelperState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuiStreamHelperState")
+            .field("health", &self.health)
+            .field("message_bytes", &self.message.as_ref().map(String::len))
+            .field(
+                "target",
+                &self
+                    .target
+                    .as_ref()
+                    .map(|_| sorotte_secret::REDACTED_SECRET),
+            )
+            .field("install_supported", &self.install_supported)
+            .field("integration_supported", &self.integration_supported)
+            .field("retry_available", &self.retry_available)
+            .field("install_location", &self.install_location)
+            .field("downloader_status", &self.downloader_status)
+            .field("js_runtime_status", &self.js_runtime_status)
+            .field(
+                "open_install_location_available",
+                &self.open_install_location_available,
+            )
+            .finish()
+    }
 }
 
 impl Default for GuiStreamHelperState {
@@ -235,7 +263,7 @@ impl Default for GuiStreamHelperState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) struct GuiStreamHelperRuntimeSnapshot {
     pub(super) health: GuiStreamHelperHealth,
     pub(super) message: Option<String>,
@@ -247,6 +275,33 @@ pub(super) struct GuiStreamHelperRuntimeSnapshot {
     pub(super) downloader_status: Option<String>,
     pub(super) js_runtime_status: Option<String>,
     pub(super) open_install_location_available: bool,
+}
+
+impl std::fmt::Debug for GuiStreamHelperRuntimeSnapshot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuiStreamHelperRuntimeSnapshot")
+            .field("health", &self.health)
+            .field("message_bytes", &self.message.as_ref().map(String::len))
+            .field(
+                "target",
+                &self
+                    .target
+                    .as_ref()
+                    .map(|_| sorotte_secret::REDACTED_SECRET),
+            )
+            .field("install_supported", &self.install_supported)
+            .field("integration_supported", &self.integration_supported)
+            .field("retry_available", &self.retry_available)
+            .field("install_location", &self.install_location)
+            .field("downloader_status", &self.downloader_status)
+            .field("js_runtime_status", &self.js_runtime_status)
+            .field(
+                "open_install_location_available",
+                &self.open_install_location_available,
+            )
+            .finish()
+    }
 }
 
 impl Default for GuiStreamHelperRuntimeSnapshot {
@@ -398,7 +453,7 @@ pub(super) struct GuiMediaMatchRemediationRuntimeSnapshot {
     pub(super) progress_fraction: f32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) struct GuiPlexServerRow {
     pub(super) name: String,
     pub(super) machine_identifier: String,
@@ -408,6 +463,22 @@ pub(super) struct GuiPlexServerRow {
     pub(super) has_local_connection: bool,
     pub(super) owned: bool,
     pub(super) selected: bool,
+}
+
+impl std::fmt::Debug for GuiPlexServerRow {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuiPlexServerRow")
+            .field("name", &self.name)
+            .field("machine_identifier", &self.machine_identifier)
+            .field("uri", &sorotte_secret::REDACTED_SECRET)
+            .field("reachability", &self.reachability)
+            .field("connection_kind", &self.connection_kind)
+            .field("has_local_connection", &self.has_local_connection)
+            .field("owned", &self.owned)
+            .field("selected", &self.selected)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -430,7 +501,7 @@ impl GuiPlexServerReachability {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) struct GuiPlexState {
     pub(super) enabled: bool,
     pub(super) streaming_enabled: bool,
@@ -445,6 +516,48 @@ pub(super) struct GuiPlexState {
     pub(super) current_item: Option<String>,
     pub(super) last_report: Option<String>,
     pub(super) last_error: Option<String>,
+}
+
+impl std::fmt::Debug for GuiPlexState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuiPlexState")
+            .field("enabled", &self.enabled)
+            .field("streaming_enabled", &self.streaming_enabled)
+            .field("authenticated", &self.authenticated)
+            .field("authenticating", &self.authenticating)
+            .field(
+                "auth_code",
+                &self
+                    .auth_code
+                    .as_ref()
+                    .map(|_| sorotte_secret::REDACTED_SECRET),
+            )
+            .field(
+                "auth_url",
+                &self
+                    .auth_url
+                    .as_ref()
+                    .map(|_| sorotte_secret::REDACTED_SECRET),
+            )
+            .field("selected_server_id", &self.selected_server_id)
+            .field(
+                "selected_server_url",
+                &self
+                    .selected_server_url
+                    .as_ref()
+                    .map(|_| sorotte_secret::REDACTED_SECRET),
+            )
+            .field("servers", &self.servers)
+            .field("status", &self.status)
+            .field("current_item", &self.current_item)
+            .field("last_report", &self.last_report)
+            .field(
+                "last_error_bytes",
+                &self.last_error.as_ref().map(String::len),
+            )
+            .finish()
+    }
 }
 
 impl GuiPlexState {
@@ -475,7 +588,7 @@ impl GuiPlexState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) struct GuiPlexRuntimeSnapshot {
     pub(super) enabled: bool,
     pub(super) streaming_enabled: bool,
@@ -490,6 +603,48 @@ pub(super) struct GuiPlexRuntimeSnapshot {
     pub(super) current_item: Option<String>,
     pub(super) last_report: Option<String>,
     pub(super) last_error: Option<String>,
+}
+
+impl std::fmt::Debug for GuiPlexRuntimeSnapshot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuiPlexRuntimeSnapshot")
+            .field("enabled", &self.enabled)
+            .field("streaming_enabled", &self.streaming_enabled)
+            .field("authenticated", &self.authenticated)
+            .field("authenticating", &self.authenticating)
+            .field(
+                "auth_code",
+                &self
+                    .auth_code
+                    .as_ref()
+                    .map(|_| sorotte_secret::REDACTED_SECRET),
+            )
+            .field(
+                "auth_url",
+                &self
+                    .auth_url
+                    .as_ref()
+                    .map(|_| sorotte_secret::REDACTED_SECRET),
+            )
+            .field("selected_server_id", &self.selected_server_id)
+            .field(
+                "selected_server_url",
+                &self
+                    .selected_server_url
+                    .as_ref()
+                    .map(|_| sorotte_secret::REDACTED_SECRET),
+            )
+            .field("servers", &self.servers)
+            .field("status", &self.status)
+            .field("current_item", &self.current_item)
+            .field("last_report", &self.last_report)
+            .field(
+                "last_error_bytes",
+                &self.last_error.as_ref().map(String::len),
+            )
+            .finish()
+    }
 }
 
 impl From<&GuiPlexState> for GuiPlexRuntimeSnapshot {
@@ -883,20 +1038,40 @@ pub(super) struct GuiMainWindowUserEditSessionRuntimeSnapshot {
 pub(super) struct GuiTextEditSessionRuntimeSnapshot {
     pub(super) section: String,
     pub(super) label: String,
-    pub(super) buffer: String,
+    pub(super) buffer: GuiConfigurationTextValue,
     pub(super) is_dirty: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) struct GuiPlaylistTextEditSessionRuntimeSnapshot {
     pub(super) buffer: String,
     pub(super) is_dirty: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl std::fmt::Debug for GuiPlaylistTextEditSessionRuntimeSnapshot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuiPlaylistTextEditSessionRuntimeSnapshot")
+            .field("buffer", &sorotte_secret::REDACTED_SECRET)
+            .field("is_dirty", &self.is_dirty)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub(super) struct GuiUrlEditSessionRuntimeSnapshot {
     pub(super) buffer: String,
     pub(super) is_dirty: bool,
+}
+
+impl std::fmt::Debug for GuiUrlEditSessionRuntimeSnapshot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuiUrlEditSessionRuntimeSnapshot")
+            .field("buffer", &sorotte_secret::REDACTED_SECRET)
+            .field("is_dirty", &self.is_dirty)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -997,7 +1172,7 @@ pub(super) struct GuiSavedSessionConnectTarget {
     pub(super) address: String,
     pub(super) username: String,
     pub(super) room: String,
-    pub(super) controlled_room_password_override: Option<String>,
+    pub(super) controlled_room_password_override: Option<SecretValue>,
 }
 
 impl GuiDialogControlKind {
@@ -1087,20 +1262,40 @@ pub(super) struct GuiMainWindowUserEditSessionState {
 pub(super) struct GuiTextEditSessionState {
     pub(super) section: &'static str,
     pub(super) label: &'static str,
-    pub(super) buffer: String,
+    pub(super) buffer: GuiConfigurationTextValue,
     pub(super) is_dirty: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) struct GuiPlaylistTextEditSessionState {
     pub(super) buffer: String,
     pub(super) is_dirty: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl std::fmt::Debug for GuiPlaylistTextEditSessionState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuiPlaylistTextEditSessionState")
+            .field("buffer", &sorotte_secret::REDACTED_SECRET)
+            .field("is_dirty", &self.is_dirty)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub(super) struct GuiUrlEditSessionState {
     pub(super) buffer: String,
     pub(super) is_dirty: bool,
+}
+
+impl std::fmt::Debug for GuiUrlEditSessionState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuiUrlEditSessionState")
+            .field("buffer", &sorotte_secret::REDACTED_SECRET)
+            .field("is_dirty", &self.is_dirty)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1112,7 +1307,7 @@ pub(super) struct GuiControlledRoomCreateSessionState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct GuiControllerAuthEditSessionState {
     pub(super) room_name: String,
-    pub(super) password_buffer: String,
+    pub(super) password_buffer: SecretValue,
     pub(super) is_dirty: bool,
 }
 

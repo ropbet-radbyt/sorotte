@@ -1,13 +1,14 @@
 use crate::legacy_settings::{AutoplayThresholdOverride, StoredClientSettingsMvp};
 use crate::runtime_config::{ClientConfig, ClientConfigIssue};
 use sorotte_client_core::{PrivacyMode, UnpauseActionMode};
+use sorotte_secret::SecretValue;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct StoredClientSettingsRuntimeSnapshot {
     pub settings: StoredClientSettingsMvp,
     pub config: ClientConfig,
     pub validation_issues: Vec<ClientConfigIssue>,
-    pub controlled_room_password_override: Option<String>,
+    pub controlled_room_password_override: Option<SecretValue>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -48,10 +49,10 @@ pub struct StoredClientSettingsEnvPresence {
 pub struct StoredClientSettingsConfigPlan {
     pub host: Option<String>,
     pub port: Option<u16>,
-    pub server_password: Option<String>,
+    pub server_password: Option<SecretValue>,
     pub username: Option<String>,
     pub room: Option<String>,
-    pub controlled_room_password_override: Option<String>,
+    pub controlled_room_password_override: Option<SecretValue>,
     pub autoplay_enabled: Option<bool>,
     pub autoplay_require_same_filenames: Option<bool>,
     pub ready_at_start_override: Option<bool>,
@@ -230,7 +231,7 @@ pub fn stored_client_settings_runtime_snapshot_legacy_compatible(
         settings: resolved,
         config: config_resolution.config,
         validation_issues: config_resolution.issues,
-        controlled_room_password_override,
+        controlled_room_password_override: controlled_room_password_override.map(Into::into),
     }
 }
 
@@ -257,11 +258,7 @@ pub fn stored_client_settings_config_plan_legacy_compatible(
             .or(resolved_settings.port);
     }
     if !env_presence.server_password {
-        plan.server_password = config
-            .connection
-            .server_password
-            .as_ref()
-            .map(|password| password.expose_secret().to_owned());
+        plan.server_password = config.connection.server_password.clone();
     }
     if !env_presence.username {
         plan.username = config
@@ -276,11 +273,7 @@ pub fn stored_client_settings_config_plan_legacy_compatible(
             .room
             .as_ref()
             .map(|room| room.as_str().to_owned());
-        plan.controlled_room_password_override = config
-            .connection
-            .controlled_room_password
-            .as_ref()
-            .map(|password| password.expose_secret().to_owned());
+        plan.controlled_room_password_override = config.connection.controlled_room_password.clone();
     }
     if !env_presence.autoplay && resolved_settings.autoplay_initial_state.is_some() {
         plan.autoplay_enabled = Some(config.readiness.autoplay_initial_state);
@@ -467,6 +460,28 @@ mod tests {
     }
 
     #[test]
+    fn legacy_runtime_config_debug_redacts_all_passwords() {
+        const SERVER_MARKER: &str = "SERVER-SECRET-CANARY-91A2";
+        const ROOM_MARKER: &str = "ROOM-SECRET-CANARY-73B4";
+        let settings = StoredClientSettingsMvp {
+            server_password: Some(SERVER_MARKER.into()),
+            room: Some(format!("+room:ABCDEF123456:{ROOM_MARKER}")),
+            ..StoredClientSettingsMvp::default()
+        };
+        let snapshot = stored_client_settings_runtime_snapshot_legacy_compatible(&settings);
+        let plan = stored_client_settings_config_plan_legacy_compatible(
+            &settings,
+            &StoredClientSettingsEnvPresence::default(),
+        );
+
+        for debug in [format!("{snapshot:?}"), format!("{plan:?}")] {
+            assert!(debug.contains("<redacted>"));
+            assert!(!debug.contains(SERVER_MARKER));
+            assert!(!debug.contains(ROOM_MARKER));
+        }
+    }
+
+    #[test]
     fn stored_client_settings_runtime_snapshot_legacy_compatible_uses_room_list_and_public_server_fallbacks()
      {
         let snapshot =
@@ -483,7 +498,10 @@ mod tests {
             Some("+room:ABCDEF123456")
         );
         assert_eq!(
-            snapshot.controlled_room_password_override.as_deref(),
+            snapshot
+                .controlled_room_password_override
+                .as_ref()
+                .map(|secret| secret.expose_secret()),
             Some("AB-123")
         );
     }
@@ -565,7 +583,9 @@ mod tests {
         assert_eq!(plan.port, Some(8999));
         assert_eq!(plan.room.as_deref(), Some("+room:ABCDEF123456"));
         assert_eq!(
-            plan.controlled_room_password_override.as_deref(),
+            plan.controlled_room_password_override
+                .as_ref()
+                .map(|secret| secret.expose_secret()),
             Some("AB-123")
         );
     }

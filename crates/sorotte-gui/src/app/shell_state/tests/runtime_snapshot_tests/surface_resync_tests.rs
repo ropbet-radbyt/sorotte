@@ -414,7 +414,7 @@ fn gui_shell_app_state_merges_runtime_main_window_users_with_configuration_room_
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         section: "Connection",
         label: "Room",
-        value: "MergedRoom".to_owned(),
+        value: "MergedRoom".to_owned().into(),
     }));
 
     assert_eq!(state.main_window.room_name, "MergedRoom");
@@ -483,7 +483,7 @@ fn gui_shell_app_state_preserves_connected_room_surface_across_configuration_roo
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         section: "Connection",
         label: "Room",
-        value: "DraftRoom".to_owned(),
+        value: "DraftRoom".to_owned().into(),
     }));
 
     assert_eq!(state.main_window.room_name, "RuntimeRoom");

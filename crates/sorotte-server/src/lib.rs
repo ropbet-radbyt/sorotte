@@ -209,11 +209,22 @@ impl DirectedProtocolMessage {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct DirectedOutboundLine {
     pub client_id: String,
     pub line: String,
     pub delivery: ServerOutboundDelivery,
+}
+
+impl std::fmt::Debug for DirectedOutboundLine {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DirectedOutboundLine")
+            .field("client_id", &self.client_id)
+            .field("line_bytes", &self.line.len())
+            .field("delivery", &self.delivery)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -264,7 +275,7 @@ pub struct ServerRuntime {
     client_next_periodic_state_at: BTreeMap<String, f64>,
     time_now_override_seconds: Option<f64>,
     room_password_provider: RoomPasswordProvider,
-    server_password_token: Option<String>,
+    server_password_token: Option<SecretValue>,
     motd_template: Option<String>,
     stats_persistence: Option<StatsPersistenceService>,
     stats_snapshot_start_delay_seconds: f64,
@@ -291,10 +302,20 @@ pub struct ServerRuntime {
     pending_compatibility_fallbacks: Vec<ServerCompatibilityFallback>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Clone, PartialEq, Eq, Default)]
 struct RoomPlaylistState {
     files: Vec<String>,
     index: Option<i64>,
+}
+
+impl std::fmt::Debug for RoomPlaylistState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RoomPlaylistState")
+            .field("files_count", &self.files.len())
+            .field("index", &self.index)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

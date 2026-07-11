@@ -1,11 +1,91 @@
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub enum PlayerError {
-    #[error("operation not supported: {0}")]
     Unsupported(&'static str),
-    #[error("player is not connected")]
     NotConnected,
-    #[error("operation failed: {0}")]
     OperationFailed(String),
+}
+
+impl std::fmt::Debug for PlayerError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unsupported(operation) => formatter
+                .debug_tuple("Unsupported")
+                .field(operation)
+                .finish(),
+            Self::NotConnected => formatter.write_str("NotConnected"),
+            Self::OperationFailed(message) => formatter
+                .debug_struct("OperationFailed")
+                .field("message_bytes", &message.len())
+                .finish(),
+        }
+    }
+}
+
+impl std::fmt::Display for PlayerError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unsupported(operation) => {
+                write!(formatter, "operation not supported: {operation}")
+            }
+            Self::NotConnected => formatter.write_str("player is not connected"),
+            Self::OperationFailed(message) => {
+                let message = if text_may_contain_credentials(message) {
+                    sorotte_secret::REDACTED_SECRET
+                } else {
+                    message
+                };
+                write!(formatter, "operation failed: {message}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PlayerError {}
+
+fn text_may_contain_credentials(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower
+        .match_indices(['=', ':'])
+        .any(|(delimiter_index, _)| credential_key_before(&lower, delimiter_index))
+        || lower
+            .match_indices("%3d")
+            .any(|(delimiter_index, _)| credential_key_before(&lower, delimiter_index))
+}
+
+fn credential_key_before(value: &str, delimiter_index: usize) -> bool {
+    let key = value[..delimiter_index]
+        .rsplit(['?', '&', ',', '{', '[', '\n', '\r', ':'])
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .trim_matches(|character| matches!(character, '\\' | '"' | '\''));
+    !key.is_empty()
+        && key
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+        && ["password", "token", "secret", "credential"]
+            .into_iter()
+            .any(|sensitive_word| key.contains(sensitive_word))
+}
+
+#[cfg(test)]
+mod error_display_redaction_tests {
+    use super::PlayerError;
+
+    #[test]
+    fn operation_failure_display_redacts_credentials_without_hiding_parser_diagnostics() {
+        const MARKER: &str = "player-error-secret-canary-985d7a";
+        let sensitive = PlayerError::OperationFailed(format!(
+            "failed URL https://media.example/video?X-Plex-Token={MARKER}"
+        ));
+        let ordinary = PlayerError::OperationFailed("unexpected token: EOF".to_owned());
+
+        assert!(!format!("{sensitive}").contains(MARKER));
+        assert_eq!(
+            format!("{ordinary}"),
+            "operation failed: unexpected token: EOF"
+        );
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -44,7 +124,7 @@ impl PlayerCapabilities {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum PlayerCommand {
     OpenFile(String),
     SetOptionString { name: String, value: String },
@@ -69,6 +149,37 @@ pub enum PlayerCommand {
     SetOsdBar(bool),
     SetWindowMaximized(bool),
     SetWindowMinimized(bool),
+}
+
+impl std::fmt::Debug for PlayerCommand {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let variant = match self {
+            Self::OpenFile(_) => "OpenFile(<redacted>)",
+            Self::SetOptionString { .. } => "SetOptionString(<redacted>)",
+            Self::ApplyProfile(_) => "ApplyProfile(<redacted>)",
+            Self::SetPaused(_) => "SetPaused",
+            Self::SetPosition(_) => "SetPosition",
+            Self::SetPlaybackRate(_) => "SetPlaybackRate",
+            Self::SetMuted(_) => "SetMuted",
+            Self::SetVolume(_) => "SetVolume",
+            Self::SetDeinterlace(_) => "SetDeinterlace",
+            Self::SetKeepaspect(_) => "SetKeepaspect",
+            Self::SetKeepaspectWindow(_) => "SetKeepaspectWindow",
+            Self::SetFullscreen(_) => "SetFullscreen",
+            Self::SetOntop(_) => "SetOntop",
+            Self::SetBorder(_) => "SetBorder",
+            Self::SetForceWindow(_) => "SetForceWindow",
+            Self::SetKeepOpen(_) => "SetKeepOpen",
+            Self::SetKeepOpenPause(_) => "SetKeepOpenPause",
+            Self::SetCursorAutohideFsOnly(_) => "SetCursorAutohideFsOnly",
+            Self::SetStopScreensaver(_) => "SetStopScreensaver",
+            Self::SetSubVisibility(_) => "SetSubVisibility",
+            Self::SetOsdBar(_) => "SetOsdBar",
+            Self::SetWindowMaximized(_) => "SetWindowMaximized",
+            Self::SetWindowMinimized(_) => "SetWindowMinimized",
+        };
+        formatter.write_str(variant)
+    }
 }
 
 impl PlayerCommand {
@@ -100,12 +211,32 @@ impl PlayerCommand {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct LocalFileUpdate {
     pub name: String,
     pub duration_seconds: Option<f64>,
     pub size_bytes: Option<u64>,
     pub path: Option<String>,
+}
+
+impl std::fmt::Debug for LocalFileUpdate {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name: &dyn std::fmt::Debug = if self.name.contains("://") {
+            &sorotte_secret::REDACTED_SECRET
+        } else {
+            &self.name
+        };
+        formatter
+            .debug_struct("LocalFileUpdate")
+            .field("name", name)
+            .field("duration_seconds", &self.duration_seconds)
+            .field("size_bytes", &self.size_bytes)
+            .field(
+                "path",
+                &self.path.as_ref().map(|_| sorotte_secret::REDACTED_SECRET),
+            )
+            .finish()
+    }
 }
 
 impl LocalFileUpdate {
@@ -180,17 +311,44 @@ pub enum PlayerMediaLoadFailureKind {
     Unknown,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PlayerMediaLoadFailure {
     pub kind: PlayerMediaLoadFailureKind,
     pub message: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl std::fmt::Debug for PlayerMediaLoadFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PlayerMediaLoadFailure")
+            .field("kind", &self.kind)
+            .field("message_bytes", &self.message.len())
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub struct PlayerMediaLoadOutcome {
     pub requested_target: String,
     pub loaded_target: Option<String>,
     pub failure: Option<PlayerMediaLoadFailure>,
+}
+
+impl std::fmt::Debug for PlayerMediaLoadOutcome {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PlayerMediaLoadOutcome")
+            .field("requested_target", &sorotte_secret::REDACTED_SECRET)
+            .field(
+                "loaded_target",
+                &self
+                    .loaded_target
+                    .as_ref()
+                    .map(|_| sorotte_secret::REDACTED_SECRET),
+            )
+            .field("failure", &self.failure)
+            .finish()
+    }
 }
 
 impl PlayerMediaLoadOutcome {
@@ -559,5 +717,33 @@ mod tests {
             failure.failure.as_ref().map(|item| item.message.as_str()),
             Some("yt-dlp was not found")
         );
+    }
+
+    #[test]
+    fn media_target_debug_canary_redacts_tokenized_urls() {
+        let secret = "player-media-token-canary";
+        let target = format!("https://plex.invalid/video?X-Plex-Token={secret}");
+        let command = PlayerCommand::OpenFile(target.clone());
+        let update = LocalFileUpdate::new(target.clone()).with_path(target.clone());
+        let outcome = PlayerMediaLoadOutcome::failure(
+            target.clone(),
+            Some(target.clone()),
+            PlayerMediaLoadFailureKind::Network,
+            format!("failed to load {target}"),
+        );
+        let error = PlayerError::OperationFailed(format!("failed to load {target}"));
+
+        for debug in [
+            format!("{command:?}"),
+            format!("{update:?}"),
+            format!("{outcome:?}"),
+        ] {
+            assert!(debug.contains(sorotte_secret::REDACTED_SECRET));
+            assert!(!debug.contains(secret));
+        }
+        for rendered in [format!("{error:?}"), error.to_string()] {
+            assert!(!rendered.contains(secret));
+        }
+        assert!(error.to_string().contains(sorotte_secret::REDACTED_SECRET));
     }
 }

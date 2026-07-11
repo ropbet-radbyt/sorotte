@@ -187,7 +187,7 @@ fn client_runtime_new_controlled_room_dispatches_creation_notification() {
         runtime.control().controlled_room_creation_notifications(),
         &[ControlledRoomCreationNotification::Created {
             room: "+room:ABCDEF123456".to_owned(),
-            password: "AB123456".to_owned(),
+            password: "AB123456".into(),
         }]
     );
 }
@@ -641,7 +641,7 @@ fn client_runtime_drain_controlled_room_creation_notifications_to_sink_dispatche
         captured,
         vec![ControlledRoomCreationNotification::Created {
             room: "+room:ABCDEF123456".to_owned(),
-            password: "AB123456".to_owned(),
+            password: "AB123456".into(),
         }]
     );
     assert!(

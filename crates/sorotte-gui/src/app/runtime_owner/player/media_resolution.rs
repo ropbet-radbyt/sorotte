@@ -33,11 +33,27 @@ pub(super) enum GuiMediaResolutionProviderKind {
     Plex,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(super) enum GuiMediaResolutionTarget {
     CurrentPlayer,
     LocalPath(String),
     PlexStream(Box<PlexStreamTarget>),
+}
+
+impl std::fmt::Debug for GuiMediaResolutionTarget {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CurrentPlayer => formatter.write_str("CurrentPlayer"),
+            Self::LocalPath(_) => formatter
+                .debug_tuple("LocalPath")
+                .field(&sorotte_secret::REDACTED_SECRET)
+                .finish(),
+            Self::PlexStream(_) => formatter
+                .debug_tuple("PlexStream")
+                .field(&sorotte_secret::REDACTED_SECRET)
+                .finish(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -57,11 +73,22 @@ struct GuiMediaResolutionPendingStep {
     execution: GuiMediaResolutionExecution,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(super) struct GuiMediaResolutionPlan {
     target: String,
     candidates: Vec<GuiMediaResolutionCandidate>,
     pending_steps: Vec<GuiMediaResolutionPendingStep>,
+}
+
+impl std::fmt::Debug for GuiMediaResolutionPlan {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuiMediaResolutionPlan")
+            .field("target", &sorotte_secret::REDACTED_SECRET)
+            .field("candidates", &self.candidates)
+            .field("pending_steps", &self.pending_steps)
+            .finish()
+    }
 }
 
 impl GuiMediaResolutionPlan {
@@ -213,5 +240,33 @@ impl GuiMediaResolutionCandidate {
 
     pub(super) fn target(&self) -> &GuiMediaResolutionTarget {
         &self.target
+    }
+}
+
+#[cfg(test)]
+mod credential_debug_tests {
+    use super::*;
+
+    #[test]
+    fn media_resolution_target_candidate_and_plan_redact_tokenized_paths() {
+        let secret = "https://media.example/video?access_token=resolution-canary";
+        let target = GuiMediaResolutionTarget::LocalPath(secret.to_owned());
+        let mut plan = GuiMediaResolutionPlan::new(secret);
+        plan.push_user_media_candidate(
+            secret.to_owned(),
+            GuiUserMediaTargetResolutionSource::QuickLocal,
+        );
+        let candidate = plan
+            .best_candidate()
+            .expect("media-resolution candidate should exist");
+
+        for debug in [
+            format!("{target:?}"),
+            format!("{candidate:?}"),
+            format!("{plan:?}"),
+        ] {
+            assert!(debug.contains(sorotte_secret::REDACTED_SECRET));
+            assert!(!debug.contains("resolution-canary"));
+        }
     }
 }

@@ -228,7 +228,7 @@ pub(in crate::app) struct MainWindowRoomRow {
     pub(in crate::app) has_named_users: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(in crate::app) struct MainWindowUserRow {
     pub(in crate::app) username: String,
     pub(in crate::app) room_name: String,
@@ -248,11 +248,52 @@ pub(in crate::app) struct MainWindowUserRow {
     pub(in crate::app) is_selected: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl std::fmt::Debug for MainWindowUserRow {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MainWindowUserRow")
+            .field("username", &self.username)
+            .field("room_name", &self.room_name)
+            .field("is_self", &self.is_self)
+            .field("is_ready", &self.is_ready)
+            .field("is_controller", &self.is_controller)
+            .field("has_file", &self.has_file)
+            .field(
+                "file_name",
+                &self
+                    .file_name
+                    .as_ref()
+                    .map(|_| sorotte_secret::REDACTED_SECRET),
+            )
+            .field("file_name_label", &sorotte_secret::REDACTED_SECRET)
+            .field("file_size_label", &self.file_size_label)
+            .field("file_duration_label", &self.file_duration_label)
+            .field("file_is_url", &self.file_is_url)
+            .field("file_is_trusted", &self.file_is_trusted)
+            .field("filename_differs", &self.filename_differs)
+            .field("filesize_differs", &self.filesize_differs)
+            .field("fileduration_differs", &self.fileduration_differs)
+            .field("is_selected", &self.is_selected)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub(in crate::app) struct MainWindowPlaylistRow {
     pub(in crate::app) label: String,
     pub(in crate::app) is_selected: bool,
     pub(in crate::app) source_state: GuiPlaylistSourceState,
+}
+
+impl std::fmt::Debug for MainWindowPlaylistRow {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MainWindowPlaylistRow")
+            .field("label", &sorotte_secret::REDACTED_SECRET)
+            .field("is_selected", &self.is_selected)
+            .field("source_state", &self.source_state)
+            .finish()
+    }
 }
 
 impl MainWindowPlaylistRow {
@@ -266,10 +307,20 @@ impl MainWindowPlaylistRow {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(in crate::app) struct MainWindowChatRow {
     pub(in crate::app) sender: String,
     pub(in crate::app) message: String,
+}
+
+impl std::fmt::Debug for MainWindowChatRow {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MainWindowChatRow")
+            .field("sender", &self.sender)
+            .field("message", &sorotte_secret::REDACTED_SECRET)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -285,7 +336,7 @@ pub(in crate::app) struct MainWindowPlaybackControls {
     pub(in crate::app) can_manage_playlist: bool,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(in crate::app) struct MainWindowShellState {
     pub(in crate::app) room_name: String,
     pub(in crate::app) room_control_status: String,
@@ -308,7 +359,36 @@ pub(in crate::app) struct MainWindowShellState {
     pub(in crate::app) show_autoplay_controls: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+impl std::fmt::Debug for MainWindowShellState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MainWindowShellState")
+            .field("room_name", &self.room_name)
+            .field("room_control_status", &self.room_control_status)
+            .field("shared_playlist_enabled", &self.shared_playlist_enabled)
+            .field("controlled_room_active", &self.controlled_room_active)
+            .field("hide_empty_rooms", &self.hide_empty_rooms)
+            .field("room_count", &self.rooms.len())
+            .field("users", &self.users)
+            .field("playlist", &self.playlist)
+            .field("active_playlist_index", &self.active_playlist_index)
+            .field("chat", &self.chat)
+            .field("playback", &self.playback)
+            .field("playback_paused", &self.playback_paused)
+            .field("autoplay_active", &self.autoplay_active)
+            .field("autoplay_threshold", &self.autoplay_threshold)
+            .field(
+                "autoplay_countdown_seconds",
+                &self.autoplay_countdown_seconds,
+            )
+            .field("user_offset_seconds", &self.user_offset_seconds)
+            .field("show_playback_buttons", &self.show_playback_buttons)
+            .field("show_autoplay_controls", &self.show_autoplay_controls)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Default)]
 pub(in crate::app) struct MainWindowRuntimeUserSnapshot {
     pub(in crate::app) username: String,
     pub(in crate::app) room_name: String,
@@ -326,6 +406,34 @@ pub(in crate::app) struct MainWindowRuntimeUserSnapshot {
     pub(in crate::app) fileduration_differs: bool,
 }
 
+impl std::fmt::Debug for MainWindowRuntimeUserSnapshot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MainWindowRuntimeUserSnapshot")
+            .field("username", &self.username)
+            .field("room_name", &self.room_name)
+            .field("is_self", &self.is_self)
+            .field("is_ready", &self.is_ready)
+            .field("is_controller", &self.is_controller)
+            .field("has_file", &self.has_file)
+            .field(
+                "file_name",
+                &self
+                    .file_name
+                    .as_ref()
+                    .map(|_| sorotte_secret::REDACTED_SECRET),
+            )
+            .field("file_size_label", &self.file_size_label)
+            .field("file_duration_label", &self.file_duration_label)
+            .field("file_is_url", &self.file_is_url)
+            .field("file_is_trusted", &self.file_is_trusted)
+            .field("filename_differs", &self.filename_differs)
+            .field("filesize_differs", &self.filesize_differs)
+            .field("fileduration_differs", &self.fileduration_differs)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(in crate::app) struct MainWindowRuntimeRoomSnapshot {
     pub(in crate::app) room_name: String,
@@ -333,13 +441,23 @@ pub(in crate::app) struct MainWindowRuntimeRoomSnapshot {
     pub(in crate::app) has_named_users: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Clone, PartialEq, Eq, Default)]
 pub(in crate::app) struct MainWindowRuntimeChatSnapshot {
     pub(in crate::app) sender: String,
     pub(in crate::app) message: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+impl std::fmt::Debug for MainWindowRuntimeChatSnapshot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MainWindowRuntimeChatSnapshot")
+            .field("sender", &self.sender)
+            .field("message", &sorotte_secret::REDACTED_SECRET)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq)]
 pub(in crate::app) struct MainWindowRuntimeSnapshot {
     pub(in crate::app) room_name: String,
     pub(in crate::app) room_control_status: String,
@@ -368,6 +486,47 @@ pub(in crate::app) struct MainWindowRuntimeSnapshot {
     pub(in crate::app) user_offset_seconds: f64,
     pub(in crate::app) show_playback_buttons: bool,
     pub(in crate::app) show_autoplay_controls: bool,
+}
+
+impl std::fmt::Debug for MainWindowRuntimeSnapshot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MainWindowRuntimeSnapshot")
+            .field("room_name", &self.room_name)
+            .field("room_control_status", &self.room_control_status)
+            .field("shared_playlist_enabled", &self.shared_playlist_enabled)
+            .field("controlled_room_active", &self.controlled_room_active)
+            .field("hide_empty_rooms", &self.hide_empty_rooms)
+            .field("rooms", &self.rooms)
+            .field("users", &self.users)
+            .field("playlist_count", &self.playlist.len())
+            .field("playlist_source_states", &self.playlist_source_states)
+            .field("active_playlist_index", &self.active_playlist_index)
+            .field("chat", &self.chat)
+            .field("can_toggle_pause", &self.can_toggle_pause)
+            .field("can_seek", &self.can_seek)
+            .field("can_undo_seek", &self.can_undo_seek)
+            .field("can_set_offset", &self.can_set_offset)
+            .field("can_toggle_autoplay", &self.can_toggle_autoplay)
+            .field(
+                "can_adjust_autoplay_threshold",
+                &self.can_adjust_autoplay_threshold,
+            )
+            .field("can_set_ready", &self.can_set_ready)
+            .field("can_set_others_ready", &self.can_set_others_ready)
+            .field("can_manage_playlist", &self.can_manage_playlist)
+            .field("playback_paused", &self.playback_paused)
+            .field("autoplay_active", &self.autoplay_active)
+            .field("autoplay_threshold", &self.autoplay_threshold)
+            .field(
+                "autoplay_countdown_seconds",
+                &self.autoplay_countdown_seconds,
+            )
+            .field("user_offset_seconds", &self.user_offset_seconds)
+            .field("show_playback_buttons", &self.show_playback_buttons)
+            .field("show_autoplay_controls", &self.show_autoplay_controls)
+            .finish()
+    }
 }
 
 impl Default for MainWindowRuntimeSnapshot {

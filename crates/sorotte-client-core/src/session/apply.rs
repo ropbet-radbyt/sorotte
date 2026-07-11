@@ -249,7 +249,7 @@ impl ClientSession {
                 self.pending_controlled_room_creation_notifications.push(
                     ControlledRoomCreationNotification::Created {
                         room: room_name.clone(),
-                        password: normalized_password.clone(),
+                        password: normalized_password.clone().into(),
                     },
                 );
 

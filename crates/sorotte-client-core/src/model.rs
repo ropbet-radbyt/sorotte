@@ -237,7 +237,7 @@ impl ClientModel {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct PlaylistState {
     pub(crate) rooms: BTreeMap<String, RoomPlaylistView>,
     pub(crate) pending: Option<RoomPlaylistView>,
@@ -249,6 +249,39 @@ pub struct PlaylistState {
     pub(crate) pending_index_reset_refresh_recently_advanced: bool,
     pub(crate) suppress_next_self_index_reset: bool,
     pub(crate) last_seek_position_before_manual_seek: Option<f64>,
+}
+
+impl std::fmt::Debug for PlaylistState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PlaylistState")
+            .field("rooms", &self.rooms)
+            .field("pending", &self.pending)
+            .field(
+                "active_targets_before_index_update_count",
+                &self.active_targets_before_index_update.len(),
+            )
+            .field("undo_snapshot_count", &self.undo_snapshots.len())
+            .field("shuffle_nonce", &self.shuffle_nonce)
+            .field("received_first_index", &self.received_first_index)
+            .field(
+                "pending_index_reset_pause_before_sync",
+                &self.pending_index_reset_pause_before_sync,
+            )
+            .field(
+                "pending_index_reset_refresh_recently_advanced",
+                &self.pending_index_reset_refresh_recently_advanced,
+            )
+            .field(
+                "suppress_next_self_index_reset",
+                &self.suppress_next_self_index_reset,
+            )
+            .field(
+                "last_seek_position_before_manual_seek",
+                &self.last_seek_position_before_manual_seek,
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug)]
@@ -403,5 +436,24 @@ mod tests {
         assert!(!debug.contains("reidentify-secret"));
         assert!(!debug.contains("attempt-secret"));
         assert!(!debug.contains("stored-secret"));
+    }
+
+    #[test]
+    fn playlist_state_debug_redacts_tokenized_media_history() {
+        const MARKER: &str = "playlist-state-token-canary";
+        let target = format!("https://media.example/video?X-Plex-Token={MARKER}");
+        let mut model = ClientModel::default();
+        model
+            .playlist
+            .active_targets_before_index_update
+            .insert("room".to_owned(), target.clone());
+        model
+            .playlist
+            .undo_snapshots
+            .insert("room".to_owned(), vec![target]);
+
+        let debug = format!("{model:?}");
+
+        assert!(!debug.contains(MARKER));
     }
 }

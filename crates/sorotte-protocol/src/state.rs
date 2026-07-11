@@ -1,6 +1,7 @@
 use super::*;
+use crate::redacted_debug::RedactedJsonMap;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct StatePayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub playstate: Option<PlaystatePayload>,
@@ -14,6 +15,18 @@ pub struct StatePayload {
     pub ignoring_on_the_fly: Option<IgnoringOnTheFlyPayload>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+impl std::fmt::Debug for StatePayload {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("StatePayload")
+            .field("playstate", &self.playstate)
+            .field("ping", &self.ping)
+            .field("ignoring_on_the_fly", &self.ignoring_on_the_fly)
+            .field("extra", &RedactedJsonMap(&self.extra))
+            .finish()
+    }
 }
 
 impl StatePayload {
@@ -40,7 +53,7 @@ impl StatePayload {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct PlaystatePayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<f64>,
@@ -52,6 +65,19 @@ pub struct PlaystatePayload {
     pub set_by: Option<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+impl std::fmt::Debug for PlaystatePayload {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PlaystatePayload")
+            .field("position", &self.position)
+            .field("paused", &self.paused)
+            .field("do_seek", &self.do_seek)
+            .field("set_by", &self.set_by)
+            .field("extra", &RedactedJsonMap(&self.extra))
+            .finish()
+    }
 }
 
 impl PlaystatePayload {
@@ -80,7 +106,7 @@ impl PlaystatePayload {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct PingPayload {
     #[serde(
         default,
@@ -100,6 +126,22 @@ pub struct PingPayload {
     pub server_rtt: Option<f64>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+impl std::fmt::Debug for PingPayload {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PingPayload")
+            .field("latency_calculation", &self.latency_calculation)
+            .field(
+                "client_latency_calculation",
+                &self.client_latency_calculation,
+            )
+            .field("client_rtt", &self.client_rtt)
+            .field("server_rtt", &self.server_rtt)
+            .field("extra", &RedactedJsonMap(&self.extra))
+            .finish()
+    }
 }
 
 impl PingPayload {
@@ -128,7 +170,7 @@ impl PingPayload {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct IgnoringOnTheFlyPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server: Option<u32>,
@@ -136,6 +178,17 @@ pub struct IgnoringOnTheFlyPayload {
     pub client: Option<u32>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+impl std::fmt::Debug for IgnoringOnTheFlyPayload {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("IgnoringOnTheFlyPayload")
+            .field("server", &self.server)
+            .field("client", &self.client)
+            .field("extra", &RedactedJsonMap(&self.extra))
+            .finish()
+    }
 }
 
 impl IgnoringOnTheFlyPayload {

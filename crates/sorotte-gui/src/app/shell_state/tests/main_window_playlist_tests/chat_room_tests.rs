@@ -141,7 +141,7 @@ fn gui_shell_app_state_handles_text_edits_and_room_switches() {
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         section: "Connection",
         label: "Username",
-        value: TEST_USERNAME.to_owned(),
+        value: TEST_USERNAME.to_owned().into(),
     }));
     assert!(state.apply(GuiShellAction::SetMainWindowRoom(
         "+room:ABCDEF123456".to_owned(),
@@ -163,7 +163,7 @@ fn gui_shell_app_state_preserves_whitespace_room_names_in_text_edits_and_room_jo
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         section: "Connection",
         label: "Room",
-        value: "  TeamRoom  ".to_owned(),
+        value: "  TeamRoom  ".to_owned().into(),
     }));
     assert!(state.apply(GuiShellAction::SetMainWindowRoom("  TeamRoom  ".to_owned(),)));
     assert!(state.apply(GuiShellAction::JoinMainWindowRoom("   ".to_owned(),)));
@@ -217,7 +217,10 @@ fn gui_shell_app_state_preserves_controlled_room_auth_for_saved_connect_target()
         .expect("startup state should produce a saved connect target");
     assert_eq!(target.room, "+Test:77F8DA30FB3E");
     assert_eq!(
-        target.controlled_room_password_override.as_deref(),
+        target
+            .controlled_room_password_override
+            .as_ref()
+            .map(|secret| secret.expose_secret()),
         Some("RH-273-303")
     );
 }

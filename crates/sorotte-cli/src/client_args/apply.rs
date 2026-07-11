@@ -17,12 +17,12 @@ pub(crate) fn apply_legacy_client_arg_overrides(
         let (normalized_room, normalized_password) =
             normalize_controlled_room_input_legacy_compatible(room.to_owned());
         config.room = normalized_room;
-        config.controlled_room_password_override = normalized_password;
+        config.controlled_room_password_override = normalized_password.map(SecretValue::from);
     }
-    if let Some(password) = overrides.controlled_room_password_override.as_deref()
+    if let Some(password) = overrides.controlled_room_password_override.as_ref()
         && !password.is_empty()
     {
-        config.controlled_room_password_override = Some(password.to_owned());
+        config.controlled_room_password_override = Some(password.clone());
     }
 }
 

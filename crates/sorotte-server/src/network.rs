@@ -10,17 +10,46 @@ use tokio::sync::mpsc::error::TrySendError;
 
 type AcceptedClient = io::Result<(TcpStream, SocketAddr)>;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum ClientOutboundEvent {
     ReliableLine(String),
     PeriodicStateLine(String),
     TransportAction(ServerTransportAction),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl std::fmt::Debug for ClientOutboundEvent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ReliableLine(line) => formatter
+                .debug_struct("ReliableLine")
+                .field("line_bytes", &line.len())
+                .finish(),
+            Self::PeriodicStateLine(line) => formatter
+                .debug_struct("PeriodicStateLine")
+                .field("line_bytes", &line.len())
+                .finish(),
+            Self::TransportAction(action) => formatter
+                .debug_tuple("TransportAction")
+                .field(action)
+                .finish(),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 struct PeriodicStateUpdate {
     generation: u64,
     line: String,
+}
+
+impl std::fmt::Debug for PeriodicStateUpdate {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PeriodicStateUpdate")
+            .field("generation", &self.generation)
+            .field("line_bytes", &self.line.len())
+            .finish()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1050,4 +1079,23 @@ pub async fn run_server_network_loop_until_shutdown(
         shutdown_rx,
     )
     .await
+}
+
+#[cfg(test)]
+mod credential_debug_tests {
+    use super::*;
+
+    #[test]
+    fn outbound_network_event_debug_never_prints_protocol_lines() {
+        let secret = "network-line-password-canary";
+        let line = format!(r#"{{\"Hello\":{{\"password\":\"{secret}\"}}}}"#);
+        let event = ClientOutboundEvent::ReliableLine(line.clone());
+        let periodic = PeriodicStateUpdate {
+            generation: 7,
+            line,
+        };
+
+        assert!(!format!("{event:?}").contains(secret));
+        assert!(!format!("{periodic:?}").contains(secret));
+    }
 }

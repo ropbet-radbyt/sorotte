@@ -31,7 +31,7 @@ fn gui_shell_app_state_preserves_runtime_public_server_and_media_search_flags_ac
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         section: "Connection",
         label: "Host",
-        value: "syncplay.example".to_owned(),
+        value: "syncplay.example".to_owned().into(),
     }));
 
     assert!(!state.public_servers.can_connect);
@@ -152,7 +152,7 @@ fn gui_shell_app_state_preserves_runtime_public_server_and_media_search_rows_acr
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         section: "Connection",
         label: "Host",
-        value: "syncplay.example".to_owned(),
+        value: "syncplay.example".to_owned().into(),
     }));
 
     assert_eq!(state.public_servers.servers[0].label, "Runtime Primary");

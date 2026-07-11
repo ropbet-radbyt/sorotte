@@ -357,7 +357,7 @@ impl ServerRuntime {
         if requested_username.is_empty() || room_name.is_empty() || version.is_empty() {
             return Err(ServerRuntimeError::InvalidHello);
         }
-        if let Some(required_password_token) = self.server_password_token.as_deref() {
+        if let Some(required_password_token) = self.server_password_token.as_ref() {
             let Some(server_password_token) = hello.password_token.as_ref() else {
                 self.pending_transport_actions
                     .push(DirectedTransportAction::new(
@@ -371,7 +371,7 @@ impl ServerRuntime {
             };
             if !server_password_token_matches_legacy_compatible(
                 server_password_token.expose_secret(),
-                required_password_token,
+                required_password_token.expose_secret(),
             ) {
                 self.pending_transport_actions
                     .push(DirectedTransportAction::new(

@@ -3442,6 +3442,7 @@ dependencies = [
  "sorotte-player-mpv",
  "sorotte-plex",
  "sorotte-protocol",
+ "sorotte-secret",
  "webpki-roots 0.26.11",
  "windows 0.61.3",
  "windows-sys 0.61.2",
@@ -3464,7 +3465,7 @@ dependencies = [
 name = "sorotte-player-api"
 version = "0.1.0"
 dependencies = [
- "thiserror 2.0.18",
+ "sorotte-secret",
 ]
 
 [[package]]
@@ -3474,6 +3475,7 @@ dependencies = [
  "anyhow",
  "serde_json",
  "sorotte-player-api",
+ "sorotte-secret",
  "windows-sys 0.61.2",
 ]
 
@@ -3497,7 +3499,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sorotte-secret",
- "thiserror 2.0.18",
 ]
 
 [[package]]

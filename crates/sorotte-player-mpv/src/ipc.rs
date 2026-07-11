@@ -32,12 +32,44 @@ const MPV_IPC_COMMAND_QUEUE_CAPACITY: usize = 1;
 const MPV_IPC_ACTOR_RESPONSE_GRACE: Duration = Duration::from_millis(100);
 static NEXT_MPV_IPC_GENERATION: AtomicU64 = AtomicU64::new(1);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum MpvIpcConnectionEvent {
     Connected { generation: u64 },
     CommandFailed { generation: u64, message: String },
     TimedOut { generation: u64, timeout: Duration },
     Disconnected { generation: u64, reason: String },
+}
+
+impl std::fmt::Debug for MpvIpcConnectionEvent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Connected { generation } => formatter
+                .debug_struct("Connected")
+                .field("generation", generation)
+                .finish(),
+            Self::CommandFailed {
+                generation,
+                message,
+            } => formatter
+                .debug_struct("CommandFailed")
+                .field("generation", generation)
+                .field("message_bytes", &message.len())
+                .finish(),
+            Self::TimedOut {
+                generation,
+                timeout,
+            } => formatter
+                .debug_struct("TimedOut")
+                .field("generation", generation)
+                .field("timeout", timeout)
+                .finish(),
+            Self::Disconnected { generation, reason } => formatter
+                .debug_struct("Disconnected")
+                .field("generation", generation)
+                .field("reason_bytes", &reason.len())
+                .finish(),
+        }
+    }
 }
 
 pub(crate) struct MpvJsonIpcClient {
@@ -461,7 +493,8 @@ impl MpvIpcWorker {
                 Err(err) => {
                     return MpvIpcCommandOutcome {
                         result: Err(MpvIpcCommandFailure::protocol_corruption(format!(
-                            "invalid mpv IPC JSON line '{trimmed}': {err}"
+                            "invalid mpv IPC JSON line ({} bytes): {err}",
+                            trimmed.len()
                         ))),
                         pending_events,
                     };

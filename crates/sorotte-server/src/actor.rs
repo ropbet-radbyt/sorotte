@@ -11,7 +11,6 @@ pub enum ServerActorError {
     Unavailable,
 }
 
-#[derive(Debug)]
 enum ServerCommand {
     HandleLine {
         client_id: String,

@@ -297,7 +297,7 @@ fn gui_shell_app_state_projects_validation_and_busy_command_status_into_widget_t
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         section: "Connection",
         label: "Port",
-        value: "70000".to_owned(),
+        value: "70000".to_owned().into(),
     }));
     let invalid_tree = state.shell_widget_tree();
     assert_eq!(
@@ -325,7 +325,7 @@ fn gui_shell_app_state_projects_validation_and_busy_command_status_into_widget_t
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         section: "Connection",
         label: "Port",
-        value: "8999".to_owned(),
+        value: "8999".to_owned().into(),
     }));
     assert!(state.apply(GuiShellAction::BeginConfigurationSave));
     let busy_tree = state.shell_widget_tree();

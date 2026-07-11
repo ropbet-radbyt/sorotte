@@ -283,7 +283,7 @@ fn gui_persisted_config_runtime_owner_saves_configuration_before_config_connect(
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         section: "Connection",
         label: "Room",
-        value: "room2".to_owned(),
+        value: "room2".to_owned().into(),
     }));
     assert!(state.apply(GuiShellAction::BeginSavedServerConnect));
     assert!(state.pending_saved_server_connect_saves_configuration);

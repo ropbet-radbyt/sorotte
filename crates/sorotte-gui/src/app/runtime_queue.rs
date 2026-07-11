@@ -397,7 +397,10 @@ impl GuiNativeRuntimeBridge for GuiQueuedRuntimeBridge {
         if nonempty_room_name_text(&room).is_some() && normalized_editable_text(&password).is_some()
         {
             self.handle
-                .push_request(GuiRuntimeRequest::RequestControllerAuth { room, password });
+                .push_request(GuiRuntimeRequest::RequestControllerAuth {
+                    room,
+                    password: password.into(),
+                });
         }
         Vec::new()
     }

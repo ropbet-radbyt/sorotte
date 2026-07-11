@@ -110,12 +110,27 @@ impl PartialEq<f64> for FileDuration {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Default, PartialEq)]
 pub struct SharedFile {
     pub name: Option<String>,
     pub duration: Option<FileDuration>,
     pub size: Option<FileSize>,
     pub media_match: Option<MediaMatchWireSignature>,
+}
+
+impl std::fmt::Debug for SharedFile {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SharedFile")
+            .field(
+                "name",
+                &self.name.as_ref().map(|_| sorotte_secret::REDACTED_SECRET),
+            )
+            .field("duration", &self.duration)
+            .field("size", &self.size)
+            .field("media_match", &self.media_match)
+            .finish()
+    }
 }
 
 impl SharedFile {
@@ -187,7 +202,7 @@ pub(crate) struct ClientReadyUpdate {
     pub(crate) username: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(crate) enum ClientSetCommand {
     Room(String),
     Users(Vec<ClientUserUpdate>),
@@ -206,6 +221,45 @@ pub(crate) enum ClientSetCommand {
         username: Option<String>,
         capabilities: PeerCapabilities,
     },
+}
+
+impl std::fmt::Debug for ClientSetCommand {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Room(_) => formatter.write_str("Room(<redacted>)"),
+            Self::Users(users) => formatter
+                .debug_struct("Users")
+                .field("users_count", &users.len())
+                .finish(),
+            Self::ControllerAuth(command) => formatter
+                .debug_tuple("ControllerAuth")
+                .field(command)
+                .finish(),
+            Self::NewControlledRoom(command) => formatter
+                .debug_tuple("NewControlledRoom")
+                .field(command)
+                .finish(),
+            Self::Ready(command) => formatter.debug_tuple("Ready").field(command).finish(),
+            Self::PlaylistChange { files, user } => formatter
+                .debug_struct("PlaylistChange")
+                .field("files_count", &files.len())
+                .field("has_user", &user.is_some())
+                .finish(),
+            Self::PlaylistIndex { index, user } => formatter
+                .debug_struct("PlaylistIndex")
+                .field("index", index)
+                .field("has_user", &user.is_some())
+                .finish(),
+            Self::Features {
+                username,
+                capabilities,
+            } => formatter
+                .debug_struct("Features")
+                .field("has_username", &username.is_some())
+                .field("capabilities", capabilities)
+                .finish(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -237,7 +291,7 @@ pub(crate) struct ClientStateUpdate {
     pub(crate) ignoring_on_the_fly: Option<ClientIgnoringOnTheFly>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(crate) enum ClientInboundCommand {
     Hello(ClientHello),
     Set(Vec<ClientSetCommand>),
@@ -247,6 +301,26 @@ pub(crate) enum ClientInboundCommand {
     ServerError(String),
     UnexpectedTls(String),
     Ignore,
+}
+
+impl std::fmt::Debug for ClientInboundCommand {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Hello(value) => formatter.debug_tuple("Hello").field(value).finish(),
+            Self::Set(value) => formatter.debug_tuple("Set").field(value).finish(),
+            Self::List(value) => formatter.debug_tuple("List").field(value).finish(),
+            Self::State(value) => formatter.debug_tuple("State").field(value).finish(),
+            Self::Chat(value) => formatter.debug_tuple("Chat").field(value).finish(),
+            Self::ServerError(_) => formatter
+                .debug_tuple("ServerError")
+                .field(&sorotte_secret::REDACTED_SECRET)
+                .finish(),
+            Self::UnexpectedTls(value) => {
+                formatter.debug_tuple("UnexpectedTls").field(value).finish()
+            }
+            Self::Ignore => formatter.write_str("Ignore"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -703,5 +777,17 @@ mod tests {
 
         assert!(debug.contains("<redacted>"));
         assert!(!debug.contains("normalized-client-secret"));
+    }
+
+    #[test]
+    fn normalized_server_error_debug_redacts_whitespace_reflected_password() {
+        const MARKER: &str = "normalized-reflected-password-canary";
+        let message =
+            ProtocolMessage::error_message(format!(r#"Not JSON: {{"password" : "{MARKER}"}}"#));
+
+        let debug = format!("{:?}", normalize_client_protocol_message(message));
+
+        assert!(debug.contains(sorotte_secret::REDACTED_SECRET));
+        assert!(!debug.contains(MARKER));
     }
 }

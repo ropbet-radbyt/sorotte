@@ -6,6 +6,7 @@ use super::shell_state::{
 };
 use super::support::normalized_editable_text;
 use super::ui_state::GuiUpdateCheckState;
+use sorotte_secret::SecretValue;
 
 impl SorotteGuiShellAppState {
     pub(super) fn append_chat_row(&mut self, sender: String, message: String) {
@@ -83,6 +84,20 @@ impl SorotteGuiShellAppState {
             return self.record_action_error("System chat messages must be non-empty.");
         };
         self.push_system_chat_message(message);
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    pub(super) fn announce_controlled_room_created(
+        &mut self,
+        room: String,
+        password: SecretValue,
+    ) -> bool {
+        let password = password.expose_secret();
+        let share_code = format!("{room}:{password}");
+        self.push_system_chat_message(format!(
+            "Created controlled room {room} with password {password} ({share_code})."
+        ));
         self.clear_action_error_and_refresh();
         true
     }

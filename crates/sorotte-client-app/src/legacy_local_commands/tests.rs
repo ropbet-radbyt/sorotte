@@ -104,17 +104,17 @@ fn plan_local_input_command_legacy_compatible_resolves_special_room_flows() {
         panic!("expected controller auth request");
     };
     assert_eq!(room, "watch-party");
-    assert_eq!(password.len(), 10);
+    assert_eq!(password.expose_secret().len(), 10);
 
     let auth = plan_local_input_command_legacy_compatible(
-        LocalInputCommand::AuthController("pw".to_owned()),
+        LocalInputCommand::AuthController("pw".into()),
         &context,
     );
     assert_eq!(
         auth,
         PlannedLocalInputCommand::RequestControllerAuth {
             room: "+watch-party:ABCDEF123456".to_owned(),
-            password: "pw".to_owned(),
+            password: "pw".into(),
         }
     );
 
@@ -128,6 +128,21 @@ fn plan_local_input_command_legacy_compatible_resolves_special_room_flows() {
         ),
         PlannedLocalInputCommand::SetRoomWithLegacyFallback("fallback-room".to_owned())
     );
+}
+
+#[test]
+fn local_controller_auth_command_debug_redacts_password() {
+    const MARKER: &str = "local-command-secret-canary-c84d";
+    let input = LocalInputCommand::AuthController(MARKER.into());
+    let planned = PlannedLocalRuntimeAction::RequestControllerAuth {
+        room: "+room:ABCDEF123456".to_owned(),
+        password: MARKER.into(),
+    };
+
+    for debug in [format!("{input:?}"), format!("{planned:?}")] {
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains(MARKER));
+    }
 }
 
 #[test]

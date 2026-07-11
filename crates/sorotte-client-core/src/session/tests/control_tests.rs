@@ -27,7 +27,7 @@ fn dispatch_runtime_actions_applies_player_and_control_operations() {
         ClientRuntimeAction::SetPlaylistIndex { index: 1 },
         ClientRuntimeAction::RequestControllerAuth {
             room: "+room:ABCDEF123456".to_owned(),
-            password: "AB-123-456".to_owned(),
+            password: "AB-123-456".into(),
         },
         ClientRuntimeAction::SendChat {
             message: "hello room".to_owned(),
@@ -39,7 +39,7 @@ fn dispatch_runtime_actions_applies_player_and_control_operations() {
         ClientRuntimeAction::NotifyControlledRoomCreation(
             ControlledRoomCreationNotification::Created {
                 room: "+room:ABCDEF123456".to_owned(),
-                password: "AB-123-456".to_owned(),
+                password: "AB-123-456".into(),
             },
         ),
         ClientRuntimeAction::NotifyControllerAuthTransition(
@@ -102,7 +102,7 @@ fn dispatch_runtime_actions_applies_player_and_control_operations() {
         control.controlled_room_creation_notifications,
         vec![ControlledRoomCreationNotification::Created {
             room: "+room:ABCDEF123456".to_owned(),
-            password: "AB-123-456".to_owned(),
+            password: "AB-123-456".into(),
         }]
     );
     assert_eq!(

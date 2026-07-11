@@ -22,7 +22,7 @@ macro_rules! notification_outbox_methods {
     };
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum ClientRuntimeAction {
     SetPaused(bool),
     RequestUserList,
@@ -49,7 +49,7 @@ pub enum ClientRuntimeAction {
     },
     RequestControllerAuth {
         room: String,
-        password: String,
+        password: SecretValue,
     },
     SendChat {
         message: String,
@@ -68,7 +68,77 @@ pub enum ClientRuntimeAction {
     StopReconnect,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+impl std::fmt::Debug for ClientRuntimeAction {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SetPaused(value) => formatter.debug_tuple("SetPaused").field(value).finish(),
+            Self::RequestUserList => formatter.write_str("RequestUserList"),
+            Self::SetRoom { .. } => formatter.write_str("SetRoom(<redacted>)"),
+            Self::SetReady {
+                ready,
+                manually_initiated,
+            } => formatter
+                .debug_struct("SetReady")
+                .field("ready", ready)
+                .field("manually_initiated", manually_initiated)
+                .finish(),
+            Self::SetReadyForUser {
+                ready,
+                manually_initiated,
+                ..
+            } => formatter
+                .debug_struct("SetReadyForUser")
+                .field("ready", ready)
+                .field("manually_initiated", manually_initiated)
+                .field("username", &sorotte_secret::REDACTED_SECRET)
+                .finish(),
+            Self::SetFile { file } => formatter.debug_tuple("SetFile").field(file).finish(),
+            Self::SetPlaylist { files } => formatter
+                .debug_struct("SetPlaylist")
+                .field("files_count", &files.len())
+                .finish(),
+            Self::SetPlaylistIndex { index } => formatter
+                .debug_struct("SetPlaylistIndex")
+                .field("index", index)
+                .finish(),
+            Self::RequestControllerAuth { password, .. } => formatter
+                .debug_struct("RequestControllerAuth")
+                .field("room", &sorotte_secret::REDACTED_SECRET)
+                .field("password", password)
+                .finish(),
+            Self::SendChat { .. } => formatter.write_str("SendChat(<redacted>)"),
+            Self::NotifyChat(_) => formatter.write_str("NotifyChat(<redacted>)"),
+            Self::NotifyControlledRoomCreation(notification) => formatter
+                .debug_tuple("NotifyControlledRoomCreation")
+                .field(notification)
+                .finish(),
+            Self::NotifyControllerAuthTransition(_) => {
+                formatter.write_str("NotifyControllerAuthTransition(<redacted>)")
+            }
+            Self::NotifyUserChange(_) => formatter.write_str("NotifyUserChange(<redacted>)"),
+            Self::NotifyReconnectTransition(notification) => formatter
+                .debug_tuple("NotifyReconnectTransition")
+                .field(notification)
+                .finish(),
+            Self::NotifyAutoplayCountdown(notification) => formatter
+                .debug_tuple("NotifyAutoplayCountdown")
+                .field(notification)
+                .finish(),
+            Self::SetPosition(value) => formatter.debug_tuple("SetPosition").field(value).finish(),
+            Self::SetPlaybackRate(value) => formatter
+                .debug_tuple("SetPlaybackRate")
+                .field(value)
+                .finish(),
+            Self::ScheduleReconnect { delay_seconds } => formatter
+                .debug_struct("ScheduleReconnect")
+                .field("delay_seconds", delay_seconds)
+                .finish(),
+            Self::StopReconnect => formatter.write_str("StopReconnect"),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq)]
 pub enum ClientEffect {
     SetPlayerPaused(bool),
     SetPlayerPosition(f64),
@@ -98,6 +168,82 @@ pub enum ClientEffect {
     NotifyAutoplayCountdown(AutoplayCountdownNotification),
     ScheduleReconnect(f64),
     StopReconnect,
+}
+
+impl std::fmt::Debug for ClientEffect {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SetPlayerPaused(value) => formatter
+                .debug_tuple("SetPlayerPaused")
+                .field(value)
+                .finish(),
+            Self::SetPlayerPosition(value) => formatter
+                .debug_tuple("SetPlayerPosition")
+                .field(value)
+                .finish(),
+            Self::SetPlayerPlaybackRate(value) => formatter
+                .debug_tuple("SetPlayerPlaybackRate")
+                .field(value)
+                .finish(),
+            Self::RequestUserList => formatter.write_str("RequestUserList"),
+            Self::SetRoom(_) => formatter.write_str("SetRoom(<redacted>)"),
+            Self::SetReady {
+                ready,
+                manually_initiated,
+            } => formatter
+                .debug_struct("SetReady")
+                .field("ready", ready)
+                .field("manually_initiated", manually_initiated)
+                .finish(),
+            Self::SetReadyForUser {
+                ready,
+                manually_initiated,
+                ..
+            } => formatter
+                .debug_struct("SetReadyForUser")
+                .field("ready", ready)
+                .field("manually_initiated", manually_initiated)
+                .field("username", &sorotte_secret::REDACTED_SECRET)
+                .finish(),
+            Self::SetFile(file) => formatter.debug_tuple("SetFile").field(file).finish(),
+            Self::SetPlaylist(files) => formatter
+                .debug_struct("SetPlaylist")
+                .field("files_count", &files.len())
+                .finish(),
+            Self::SetPlaylistIndex(index) => formatter
+                .debug_tuple("SetPlaylistIndex")
+                .field(index)
+                .finish(),
+            Self::SendState(state) => formatter.debug_tuple("SendState").field(state).finish(),
+            Self::RequestControllerAuth(payload) => formatter
+                .debug_tuple("RequestControllerAuth")
+                .field(payload)
+                .finish(),
+            Self::SendChat(_) => formatter.write_str("SendChat(<redacted>)"),
+            Self::NotifyChat(_) => formatter.write_str("NotifyChat(<redacted>)"),
+            Self::NotifyControlledRoomCreation(notification) => formatter
+                .debug_tuple("NotifyControlledRoomCreation")
+                .field(notification)
+                .finish(),
+            Self::NotifyControllerAuthTransition(_) => {
+                formatter.write_str("NotifyControllerAuthTransition(<redacted>)")
+            }
+            Self::NotifyUserChange(_) => formatter.write_str("NotifyUserChange(<redacted>)"),
+            Self::NotifyReconnectTransition(notification) => formatter
+                .debug_tuple("NotifyReconnectTransition")
+                .field(notification)
+                .finish(),
+            Self::NotifyAutoplayCountdown(notification) => formatter
+                .debug_tuple("NotifyAutoplayCountdown")
+                .field(notification)
+                .finish(),
+            Self::ScheduleReconnect(delay_seconds) => formatter
+                .debug_tuple("ScheduleReconnect")
+                .field(delay_seconds)
+                .finish(),
+            Self::StopReconnect => formatter.write_str("StopReconnect"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -393,5 +539,86 @@ impl ClientEffectSink for QueuedRuntimeControl {
             ClientEffect::StopReconnect => self.stop_reconnect_calls += 1,
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod credential_debug_tests {
+    use super::{
+        ChatNotification, ClientEffect, ClientMediaMatchPeerFileState, ClientRuntimeAction,
+        ControlledRoomCreationNotification, ReconnectPlaylistRestoreIntent, RoomPlaylistView,
+        SecretValue, SharedFile,
+    };
+
+    #[test]
+    fn controller_password_debug_canary_is_redacted_across_actions_and_notifications() {
+        const MARKER: &str = "client-core-secret-canary-0c96a1";
+        let action = ClientRuntimeAction::RequestControllerAuth {
+            room: "+room:ABCDEF123456".to_owned(),
+            password: SecretValue::new(MARKER),
+        };
+        let notification = ControlledRoomCreationNotification::Created {
+            room: "+room:ABCDEF123456".to_owned(),
+            password: SecretValue::new(MARKER),
+        };
+
+        for debug in [format!("{action:?}"), format!("{notification:?}")] {
+            assert!(debug.contains("<redacted>"));
+            assert!(!debug.contains(MARKER));
+        }
+    }
+
+    #[test]
+    fn tokenized_media_debug_canary_is_redacted_across_domain_carriers() {
+        const MARKER: &str = "client-core-media-secret-canary-4a8f62";
+        let target = format!("https://media.example/video?X-Plex-Token={MARKER}");
+        let debug_values = [
+            format!(
+                "{:?}",
+                SharedFile {
+                    name: Some(target.clone()),
+                    ..SharedFile::default()
+                }
+            ),
+            format!(
+                "{:?}",
+                ClientMediaMatchPeerFileState {
+                    file_name: Some(target.clone()),
+                    ..ClientMediaMatchPeerFileState::default()
+                }
+            ),
+            format!(
+                "{:?}",
+                RoomPlaylistView {
+                    files: vec![target.clone()],
+                    ..RoomPlaylistView::default()
+                }
+            ),
+            format!(
+                "{:?}",
+                ReconnectPlaylistRestoreIntent {
+                    files: vec![target.clone()],
+                    index: Some(0),
+                }
+            ),
+            format!(
+                "{:?}",
+                ClientRuntimeAction::SetPlaylist {
+                    files: vec![target.clone()],
+                }
+            ),
+            format!("{:?}", ClientEffect::SetPlaylist(vec![target.clone()])),
+            format!(
+                "{:?}",
+                ChatNotification::Message {
+                    username: None,
+                    message: target,
+                }
+            ),
+        ];
+
+        for debug in debug_values {
+            assert!(!debug.contains(MARKER), "leaky Debug output: {debug}");
+        }
     }
 }

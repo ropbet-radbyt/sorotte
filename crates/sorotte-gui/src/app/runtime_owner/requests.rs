@@ -528,7 +528,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     handle,
                     projected_state,
                     room,
-                    password,
+                    password.into_exposed_secret(),
                 );
             }
             GuiRuntimeRequest::QueuePlaylistEntry {

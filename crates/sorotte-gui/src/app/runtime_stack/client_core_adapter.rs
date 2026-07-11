@@ -1,4 +1,5 @@
 use super::*;
+use sorotte_secret::SecretValue;
 
 mod event_drain;
 mod runtime_adapter_impl;
@@ -48,7 +49,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     pub(in crate::app) fn new_with_control_password(
         username: impl Into<String>,
         room: impl Into<String>,
-        controlled_room_password_override: Option<String>,
+        controlled_room_password_override: Option<SecretValue>,
     ) -> Result<Self, String> {
         let username = username.into();
         let room = room.into();
@@ -59,7 +60,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         runtime_settings.config.connection.username = Username::new(username.clone()).ok();
         runtime_settings.config.connection.room = RoomName::new(room.clone()).ok();
         runtime_settings.config.connection.controlled_room_password =
-            controlled_room_password_override.map(Into::into);
+            controlled_room_password_override;
         let hello_json = Self::hello_json(&username, &room, &runtime_settings);
         let mut session = ClientSession::default();
         {

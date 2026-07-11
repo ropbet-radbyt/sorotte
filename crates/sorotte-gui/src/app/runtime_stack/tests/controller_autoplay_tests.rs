@@ -143,11 +143,15 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_controlled_room_creatio
         .position(|action| {
             matches!(
                 action,
-                GuiShellAction::AnnounceSystemChatEvent(message)
-                    if message == "Created controlled room +room:ABCDEF123456 with password AB123456 (+room:ABCDEF123456:AB123456)."
+                GuiShellAction::AnnounceControlledRoomCreated { room, password }
+                    if room == "+room:ABCDEF123456"
+                        && password.expose_secret() == "AB123456"
             )
         })
         .expect("new controlled room should surface a system chat entry");
+    let actions_debug = format!("{actions:?}");
+    assert!(!actions_debug.contains("AB123456"));
+    assert!(actions_debug.contains(sorotte_secret::REDACTED_SECRET));
     let reidentify_notice_index = actions
         .iter()
         .position(|action| {
@@ -187,6 +191,18 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_controlled_room_creatio
         )),
         "new controlled room should still refresh the main-window snapshot"
     );
+
+    assert!(state.apply(actions[created_chat_index].clone()));
+    let created_chat = state
+        .main_window
+        .chat
+        .last()
+        .expect("created-room action should remain visible in system chat");
+    assert_eq!(
+        created_chat.message,
+        "Created controlled room +room:ABCDEF123456 with password AB123456 (+room:ABCDEF123456:AB123456)."
+    );
+    assert!(!format!("{:?}", state.main_window).contains("AB123456"));
 }
 
 #[test]
@@ -201,7 +217,7 @@ fn gui_client_core_chat_session_runtime_adapter_auto_reidentifies_controlled_roo
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new_with_control_password(
         "alice",
         room,
-        Some("ab-123-456".to_owned()),
+        Some("ab-123-456".into()),
     )
     .expect("client-core chat adapter should bootstrap");
 

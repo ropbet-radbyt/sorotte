@@ -48,6 +48,31 @@ impl GuiPersistedConfigRuntimeOwner {
         .unwrap_or_else(|| "Plex Stream".to_owned())
     }
 
+    fn media_open_success_message(
+        player_name: &str,
+        selected_path: &str,
+        selection_count: usize,
+    ) -> String {
+        let selected_path = redact_plex_token(selected_path);
+        if browser_is_url(&selected_path) && selection_count == 1 {
+            format!(
+                "Started loading media URL through the attached {player_name} player: {selected_path}."
+            )
+        } else if browser_is_url(&selected_path) {
+            format!(
+                "Started loading the first selected media URL through the attached {player_name} player: {selected_path}. Ignored {} additional selections.",
+                selection_count - 1
+            )
+        } else if selection_count == 1 {
+            format!("Opened media file through the attached {player_name} player: {selected_path}.")
+        } else {
+            format!(
+                "Opened the first selected media file through the attached {player_name} player: {selected_path}. Ignored {} additional selections.",
+                selection_count - 1
+            )
+        }
+    }
+
     fn set_attached_player_forced_media_title(&mut self, title: &str) {
         let Some(title) = Self::normalized_forced_media_title(title) else {
             return;
@@ -365,25 +390,11 @@ impl GuiPersistedConfigRuntimeOwner {
                 {
                     let _ = session.mark_local_media_opened_not_ready();
                 }
-                if browser_is_url(&selected_path) && paths.len() == 1 {
-                    Ok(format!(
-                        "Started loading media URL through the attached {player_name} player: {selected_path}."
-                    ))
-                } else if browser_is_url(&selected_path) {
-                    Ok(format!(
-                        "Started loading the first selected media URL through the attached {player_name} player: {selected_path}. Ignored {} additional selections.",
-                        paths.len() - 1
-                    ))
-                } else if paths.len() == 1 {
-                    Ok(format!(
-                        "Opened media file through the attached {player_name} player: {selected_path}."
-                    ))
-                } else {
-                    Ok(format!(
-                        "Opened the first selected media file through the attached {player_name} player: {selected_path}. Ignored {} additional selections.",
-                        paths.len() - 1
-                    ))
-                }
+                Ok(Self::media_open_success_message(
+                    player_name,
+                    &selected_path,
+                    paths.len(),
+                ))
             }
             Err(error) => {
                 self.clear_pending_stream_load_context_for_target(&selected_path);
@@ -469,5 +480,27 @@ impl GuiPersistedConfigRuntimeOwner {
             Some(Err(message)) => Self::push_player_error_impl(handle, message),
             None => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod credential_feedback_tests {
+    use super::*;
+
+    #[test]
+    fn media_open_success_feedback_redacts_plex_tokens_without_changing_local_paths() {
+        let token = "stream-feedback-canary";
+        let target =
+            format!("https://media.example/video.m3u8?X-Plex-Token={token}&quality=original");
+        let message = GuiPersistedConfigRuntimeOwner::media_open_success_message("mpv", &target, 1);
+        assert!(message.contains("Started loading media URL"));
+        assert!(!message.contains(token));
+
+        let local = GuiPersistedConfigRuntimeOwner::media_open_success_message(
+            "mpv",
+            "C:/Media/movie.mkv",
+            1,
+        );
+        assert!(local.contains("C:/Media/movie.mkv"));
     }
 }

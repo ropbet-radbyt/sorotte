@@ -469,7 +469,7 @@ impl GuiWidgetEguiRenderer {
                     vec![
                         GuiShellAction::RequestControllerAuth {
                             room,
-                            password: generate_room_password_legacy_compatible(),
+                            password: generate_room_password_legacy_compatible().into(),
                         },
                         GuiShellAction::CancelCreateControlledRoomEdit,
                     ]
@@ -481,7 +481,9 @@ impl GuiWidgetEguiRenderer {
             "main-window:controller-auth:commit" => state
                 .controller_auth_edit_session
                 .as_ref()
-                .filter(|session| normalized_editable_text(&session.password_buffer).is_some())
+                .filter(|session| {
+                    normalized_editable_text(session.password_buffer.expose_secret()).is_some()
+                })
                 .map(|session| {
                     vec![
                         GuiShellAction::RequestControllerAuth {
@@ -625,7 +627,7 @@ impl GuiWidgetEguiRenderer {
             GuiShellAction::EditConfigurationText {
                 section: "Connection",
                 label: "Player Path",
-                value: path,
+                value: path.into(),
             },
             GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Info,
@@ -647,7 +649,7 @@ impl GuiWidgetEguiRenderer {
             GuiShellAction::EditConfigurationText {
                 section: "Connection",
                 label: "Player Path",
-                value: path,
+                value: path.into(),
             },
             GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Info,

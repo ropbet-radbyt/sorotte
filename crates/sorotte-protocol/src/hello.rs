@@ -1,6 +1,7 @@
 use super::*;
+use crate::redacted_debug::{RedactedJsonMap, RedactedOptionalJsonValue};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct HelloPayload {
     pub username: String,
     pub room: RoomRef,
@@ -11,6 +12,23 @@ pub struct HelloPayload {
     pub features: Option<Value>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+impl std::fmt::Debug for HelloPayload {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HelloPayload")
+            .field("username", &self.username)
+            .field("room", &self.room)
+            .field("version", &self.version)
+            .field("realversion", &self.realversion)
+            .field(
+                "features",
+                &RedactedOptionalJsonValue(self.features.as_ref()),
+            )
+            .field("extra", &RedactedJsonMap(&self.extra))
+            .finish()
+    }
 }
 
 impl HelloPayload {

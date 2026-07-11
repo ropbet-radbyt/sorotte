@@ -26,12 +26,27 @@ impl ServerFileSize {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Clone, PartialEq, Default)]
 pub(crate) struct ServerSharedFile {
     pub(crate) name: Option<String>,
     pub(crate) duration: Option<f64>,
     pub(crate) size: Option<ServerFileSize>,
     pub(crate) media_match: Option<MediaMatchWireSignature>,
+}
+
+impl std::fmt::Debug for ServerSharedFile {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ServerSharedFile")
+            .field(
+                "name",
+                &self.name.as_ref().map(|_| sorotte_secret::REDACTED_SECRET),
+            )
+            .field("duration", &self.duration)
+            .field("has_size", &self.size.is_some())
+            .field("media_match", &self.media_match)
+            .finish()
+    }
 }
 
 impl ServerSharedFile {
@@ -122,7 +137,7 @@ pub(crate) struct ServerHelloCommand {
     pub(crate) password_token: Option<SecretValue>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(crate) enum ServerSetCommand {
     Room(String),
     File(Option<ServerSharedFile>),
@@ -139,6 +154,43 @@ pub(crate) enum ServerSetCommand {
     PlaylistChange(Vec<String>),
     PlaylistIndex(Option<i64>),
     Features(ServerClientCapabilities),
+}
+
+impl std::fmt::Debug for ServerSetCommand {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Room(_) => formatter.write_str("Room(<redacted>)"),
+            Self::File(file) => formatter.debug_tuple("File").field(file).finish(),
+            Self::ControllerAuth { password, .. } => formatter
+                .debug_struct("ControllerAuth")
+                .field("room", &sorotte_secret::REDACTED_SECRET)
+                .field("password", password)
+                .finish(),
+            Self::Ready {
+                ready,
+                manually_initiated,
+                username,
+                set_by,
+            } => formatter
+                .debug_struct("Ready")
+                .field("ready", ready)
+                .field("manually_initiated", manually_initiated)
+                .field("has_username", &username.is_some())
+                .field("has_set_by", &set_by.is_some())
+                .finish(),
+            Self::PlaylistChange(files) => formatter
+                .debug_struct("PlaylistChange")
+                .field("files_count", &files.len())
+                .finish(),
+            Self::PlaylistIndex(index) => {
+                formatter.debug_tuple("PlaylistIndex").field(index).finish()
+            }
+            Self::Features(capabilities) => formatter
+                .debug_tuple("Features")
+                .field(capabilities)
+                .finish(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -164,7 +216,7 @@ pub(crate) struct ServerStateCommand {
     pub(crate) client_ignoring: Option<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(crate) enum ServerInboundCommand {
     Hello(ServerHelloCommand),
     Set(Vec<ServerSetCommand>),
@@ -173,6 +225,23 @@ pub(crate) enum ServerInboundCommand {
     Tls(String),
     Chat(String),
     Ignore,
+}
+
+impl std::fmt::Debug for ServerInboundCommand {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Hello(command) => formatter.debug_tuple("Hello").field(command).finish(),
+            Self::Set(commands) => formatter.debug_tuple("Set").field(commands).finish(),
+            Self::ListRequest => formatter.write_str("ListRequest"),
+            Self::State(command) => formatter.debug_tuple("State").field(command).finish(),
+            Self::Tls(_) => formatter.write_str("Tls(<redacted>)"),
+            Self::Chat(message) => formatter
+                .debug_struct("Chat")
+                .field("message_bytes", &message.len())
+                .finish(),
+            Self::Ignore => formatter.write_str("Ignore"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -66,6 +66,21 @@ use self::scenario_constants::*;
 use self::tls_fixture_support::*;
 mod assertions;
 use self::assertions::*;
+
+#[test]
+fn compatibility_scenario_debug_does_not_print_raw_protocol_lines() {
+    let secret = "compat-wire-password-canary";
+    let step = ServerRuntimeScenarioStep {
+        client_id: "client-1".to_owned(),
+        request_line: format!(r#"{{\"Hello\":{{\"password\":\"{secret}\"}}}}"#),
+        advance_seconds: 0.0,
+    };
+
+    let debug = format!("{step:?}");
+    assert!(debug.contains("request_line_bytes"));
+    assert!(!debug.contains(secret));
+}
+
 mod chat_fanout_tests;
 mod controlled_room_fanout_tests;
 mod fixture_tests;

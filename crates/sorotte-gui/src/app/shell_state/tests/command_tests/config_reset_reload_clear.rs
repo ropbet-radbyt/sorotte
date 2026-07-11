@@ -12,7 +12,7 @@ fn gui_shell_app_state_handles_configuration_reset_command_actions() {
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         section: "Connection",
         label: "Host",
-        value: "draft.example".to_owned(),
+        value: "draft.example".to_owned().into(),
     }));
     assert_eq!(
         state.configuration.to_stored_settings().host.as_deref(),
@@ -75,7 +75,7 @@ fn gui_shell_app_state_rejects_invalid_configuration_reset_command_actions() {
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         section: "Connection",
         label: "Host",
-        value: "dirty.example".to_owned(),
+        value: "dirty.example".to_owned().into(),
     }));
     assert!(state.apply(GuiShellAction::BeginConfigurationSave));
     assert!(!state.apply(GuiShellAction::BeginConfigurationReset));
@@ -102,7 +102,7 @@ fn gui_shell_app_state_handles_configuration_reload_command_actions() {
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         section: "Connection",
         label: "Host",
-        value: "dirty.example".to_owned(),
+        value: "dirty.example".to_owned().into(),
     }));
     assert!(state.commands.can_reset_configuration);
 

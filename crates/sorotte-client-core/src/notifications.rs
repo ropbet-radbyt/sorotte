@@ -1,3 +1,5 @@
+use sorotte_secret::SecretValue;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutoplayCountdownNotification {
     pub ready_user_count: usize,
@@ -40,7 +42,7 @@ pub enum ReconnectTransitionNotification {
     RestoringPlaylist,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum ControllerAuthTransitionNotification {
     Attempting {
         room: String,
@@ -57,12 +59,42 @@ pub enum ControllerAuthTransitionNotification {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ControlledRoomCreationNotification {
-    Created { room: String, password: String },
+impl std::fmt::Debug for ControllerAuthTransitionNotification {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Attempting { .. } => formatter.write_str("Attempting(<redacted>)"),
+            Self::Succeeded { hide_from_osd, .. } => formatter
+                .debug_struct("Succeeded")
+                .field("identity", &sorotte_secret::REDACTED_SECRET)
+                .field("hide_from_osd", hide_from_osd)
+                .finish(),
+            Self::Failed { hide_from_osd, .. } => formatter
+                .debug_struct("Failed")
+                .field("identity", &sorotte_secret::REDACTED_SECRET)
+                .field("hide_from_osd", hide_from_osd)
+                .finish(),
+        }
+    }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
+pub enum ControlledRoomCreationNotification {
+    Created { room: String, password: SecretValue },
+}
+
+impl std::fmt::Debug for ControlledRoomCreationNotification {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Created { password, .. } => formatter
+                .debug_struct("Created")
+                .field("room", &sorotte_secret::REDACTED_SECRET)
+                .field("password", password)
+                .finish(),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq)]
 pub enum UserChangeNotification {
     Joined {
         username: String,
@@ -83,12 +115,58 @@ pub enum UserChangeNotification {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl std::fmt::Debug for UserChangeNotification {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Joined { hide_from_osd, .. } => formatter
+                .debug_struct("Joined")
+                .field("identity", &sorotte_secret::REDACTED_SECRET)
+                .field("hide_from_osd", hide_from_osd)
+                .finish(),
+            Self::Playing {
+                file_name,
+                file_duration,
+                include_room_addendum,
+                hide_from_osd,
+                ..
+            } => formatter
+                .debug_struct("Playing")
+                .field("identity", &sorotte_secret::REDACTED_SECRET)
+                .field(
+                    "file_name",
+                    &file_name.as_ref().map(|_| sorotte_secret::REDACTED_SECRET),
+                )
+                .field("file_duration", file_duration)
+                .field("include_room_addendum", include_room_addendum)
+                .field("hide_from_osd", hide_from_osd)
+                .finish(),
+            Self::Left { hide_from_osd, .. } => formatter
+                .debug_struct("Left")
+                .field("username", &sorotte_secret::REDACTED_SECRET)
+                .field("hide_from_osd", hide_from_osd)
+                .finish(),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub enum ChatNotification {
     Message {
         username: Option<String>,
         message: String,
     },
+}
+
+impl std::fmt::Debug for ChatNotification {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Message { username, message } => formatter
+                .debug_struct("Message")
+                .field("has_username", &username.is_some())
+                .field("message_bytes", &message.len())
+                .finish(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -104,8 +182,18 @@ impl FileDifferenceSummary {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ReconnectPlaylistRestoreIntent {
     pub files: Vec<String>,
     pub index: Option<i64>,
+}
+
+impl std::fmt::Debug for ReconnectPlaylistRestoreIntent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ReconnectPlaylistRestoreIntent")
+            .field("files_count", &self.files.len())
+            .field("index", &self.index)
+            .finish()
+    }
 }

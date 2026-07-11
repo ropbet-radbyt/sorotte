@@ -15,7 +15,7 @@ fn gui_portable_smoke_regression_surfaces_first_run_player_setup_blocker() {
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         section: "Connection",
         label: "Host",
-        value: "first-run.example".to_owned(),
+        value: "first-run.example".to_owned().into(),
     }));
 
     let actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);

@@ -498,10 +498,10 @@ pub fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
         .or_else(|| trimmed.strip_prefix("a "))
     {
         let password = password.trim();
-        return Some(LocalInputCommand::AuthController(password.to_owned()));
+        return Some(LocalInputCommand::AuthController(password.into()));
     }
     if matches!(trimmed, "auth" | "a") {
-        return Some(LocalInputCommand::AuthController(String::new()));
+        return Some(LocalInputCommand::AuthController(String::new().into()));
     }
     if let Some(parameter) = input
         .strip_prefix("seek ")

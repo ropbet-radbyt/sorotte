@@ -17,7 +17,7 @@ fn gui_shell_app_state_projects_configuration_widget_trees() {
         label: "Host",
     }));
     assert!(state.apply(GuiShellAction::UpdateConfigurationTextEdit(
-        "widget.example".to_owned(),
+        "widget.example".to_owned().into(),
     )));
 
     let tree = state.configuration_widget_tree();

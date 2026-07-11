@@ -735,7 +735,7 @@ async fn connected_client_session_includes_hashed_server_password_in_hello_when_
     });
 
     let mut config = test_client_loop_config_with_addr(addr);
-    config.server_password = Some("server-secret".to_owned());
+    config.server_password = Some("server-secret".into());
     config.max_connected_runtime_seconds = 2.0;
 
     let mut runtime = create_client_runtime(&config);

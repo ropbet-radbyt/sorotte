@@ -1,28 +1,101 @@
 use super::*;
+use crate::redacted_debug::RedactedJsonValue;
 use std::collections::BTreeSet;
 
 pub const DEFAULT_MAX_PROTOCOL_LINE_BYTES: usize = 64 * 1024;
 
-#[derive(Debug)]
 pub struct DecodedMessageLineItem {
     pub command: Option<String>,
     pub payload: Value,
     pub message: Result<ProtocolMessage, ProtocolError>,
 }
 
-#[derive(Debug, thiserror::Error)]
+impl std::fmt::Debug for DecodedMessageLineItem {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DecodedMessageLineItem")
+            .field("command", &self.command)
+            .field("payload", &RedactedJsonValue(&self.payload))
+            .field("message", &self.message)
+            .finish()
+    }
+}
+
 pub enum ProtocolError {
-    #[error("invalid JSON payload: {0}")]
-    InvalidJson(#[from] serde_json::Error),
-    #[error("unexpected message kind: expected '{expected}', found '{found}'")]
+    InvalidJson(serde_json::Error),
     UnexpectedMessageKind {
         expected: &'static str,
         found: &'static str,
     },
-    #[error("server error: {message}")]
-    ServerError { message: String },
-    #[error("unexpected TLS negotiation frame: startTLS='{start_tls}'")]
-    UnexpectedTlsMessage { start_tls: String },
+    ServerError {
+        message: String,
+    },
+    UnexpectedTlsMessage {
+        start_tls: String,
+    },
+}
+
+impl std::fmt::Debug for ProtocolError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidJson(error) => formatter.debug_tuple("InvalidJson").field(error).finish(),
+            Self::UnexpectedMessageKind { expected, found } => formatter
+                .debug_struct("UnexpectedMessageKind")
+                .field("expected", expected)
+                .field("found", found)
+                .finish(),
+            Self::ServerError { message } => formatter
+                .debug_struct("ServerError")
+                .field("message_bytes", &message.len())
+                .finish(),
+            Self::UnexpectedTlsMessage { start_tls } => formatter
+                .debug_struct("UnexpectedTlsMessage")
+                .field("start_tls", start_tls)
+                .finish(),
+        }
+    }
+}
+
+impl std::fmt::Display for ProtocolError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidJson(error) => write!(formatter, "invalid JSON payload: {error}"),
+            Self::UnexpectedMessageKind { expected, found } => write!(
+                formatter,
+                "unexpected message kind: expected '{expected}', found '{found}'"
+            ),
+            // Server error text is untrusted and may contain a reflected raw
+            // protocol line. Keep the original value available through the
+            // typed variant, but never render it through the ordinary error
+            // formatting boundary.
+            Self::ServerError { .. } => write!(
+                formatter,
+                "server error: {}",
+                sorotte_secret::REDACTED_SECRET
+            ),
+            Self::UnexpectedTlsMessage { start_tls } => write!(
+                formatter,
+                "unexpected TLS negotiation frame: startTLS='{start_tls}'"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ProtocolError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidJson(error) => Some(error),
+            Self::UnexpectedMessageKind { .. }
+            | Self::ServerError { .. }
+            | Self::UnexpectedTlsMessage { .. } => None,
+        }
+    }
+}
+
+impl From<serde_json::Error> for ProtocolError {
+    fn from(value: serde_json::Error) -> Self {
+        Self::InvalidJson(value)
+    }
 }
 
 pub fn decode_line(line: &str) -> Result<Value, ProtocolError> {

@@ -15,8 +15,8 @@ pub(crate) fn create_client_runtime(config: &ClientLoopConfig) -> ClientApplicat
 pub(crate) fn create_client_session(config: &ClientLoopConfig) -> ClientSession {
     let mut session = ClientSession::default();
     session.set_autoplay_enabled(config.autoplay_enabled);
-    if let Some(control_password) = config.controlled_room_password_override.as_deref() {
-        session.remember_control_password_for_room(&config.room, control_password);
+    if let Some(control_password) = config.controlled_room_password_override.as_ref() {
+        session.remember_control_password_for_room(&config.room, control_password.expose_secret());
     }
     if let Some(show_same_room_osd) = config.show_same_room_osd_override {
         session.behavior_config_mut().show_same_room_osd = show_same_room_osd;

@@ -8,6 +8,19 @@ use crate::app::{
 use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
 
 #[test]
+fn gui_runtime_request_debug_redacts_controller_password() {
+    let secret = "gui-runtime-request-password-canary";
+    let request = GuiRuntimeRequest::RequestControllerAuth {
+        room: "room".to_owned(),
+        password: secret.into(),
+    };
+
+    let debug = format!("{request:?}");
+    assert!(debug.contains(sorotte_secret::REDACTED_SECRET));
+    assert!(!debug.contains(secret));
+}
+
+#[test]
 fn gui_preview_runtime_bridge_maps_selected_media_files_to_preview_actions() {
     let shared_playlist_state =
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
@@ -193,7 +206,7 @@ fn gui_preview_runtime_bridge_saves_configuration_before_config_view_connect_com
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         section: "Connection",
         label: "Room",
-        value: "room2".to_owned(),
+        value: "room2".to_owned().into(),
     }));
     assert_eq!(state.active_view, GuiShellView::Setup);
     assert!(state.apply(GuiShellAction::BeginSavedServerConnect));

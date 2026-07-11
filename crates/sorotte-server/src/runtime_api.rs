@@ -11,7 +11,7 @@ impl ServerRuntime {
         Self::with_room_password_salt(generate_server_salt_legacy_compatible())
     }
 
-    pub fn with_room_password_salt(salt: impl Into<String>) -> Self {
+    pub fn with_room_password_salt(salt: impl Into<SecretValue>) -> Self {
         let (persistence_events, _) = broadcast::channel(SERVER_PERSISTENCE_EVENT_CAPACITY);
         Self {
             domain: SyncDomain::default(),
@@ -26,7 +26,7 @@ impl ServerRuntime {
             client_last_state_update_at: BTreeMap::new(),
             client_next_periodic_state_at: BTreeMap::new(),
             time_now_override_seconds: None,
-            room_password_provider: RoomPasswordProvider::new(salt),
+            room_password_provider: RoomPasswordProvider::new(salt.into()),
             server_password_token: None,
             motd_template: None,
             stats_persistence: None,
@@ -79,7 +79,7 @@ impl ServerRuntime {
         });
     }
 
-    pub fn set_server_password_token(&mut self, token: Option<String>) {
+    pub fn set_server_password_token(&mut self, token: Option<SecretValue>) {
         self.server_password_token = token.filter(|token| !token.is_empty());
     }
 

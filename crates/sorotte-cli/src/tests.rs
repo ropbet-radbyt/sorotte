@@ -234,6 +234,39 @@ fn test_client_loop_config_with_addr(addr: std::net::SocketAddr) -> ClientLoopCo
     }
 }
 
+#[test]
+fn cli_runtime_configuration_debug_redacts_all_passwords() {
+    let server_password = "cli-server-password-canary";
+    let room_password = "cli-room-password-canary";
+    let config = ClientLoopConfig {
+        server_password: Some(server_password.into()),
+        controlled_room_password_override: Some(room_password.into()),
+        room: format!("+room:{room_password}"),
+        ..test_client_loop_config()
+    };
+    let overrides = LegacyClientArgOverrides {
+        room: Some(format!("+room:{room_password}")),
+        controlled_room_password_override: Some(room_password.into()),
+        ..LegacyClientArgOverrides::default()
+    };
+
+    for debug in [format!("{config:?}"), format!("{overrides:?}")] {
+        assert!(debug.contains(sorotte_secret::REDACTED_SECRET));
+        assert!(!debug.contains(server_password));
+        assert!(!debug.contains(room_password));
+    }
+
+    for field_debug in [
+        format!("{:?}", config.server_password),
+        format!("{:?}", config.controlled_room_password_override),
+        format!("{:?}", overrides.controlled_room_password_override),
+    ] {
+        assert!(field_debug.contains(sorotte_secret::REDACTED_SECRET));
+        assert!(!field_debug.contains(server_password));
+        assert!(!field_debug.contains(room_password));
+    }
+}
+
 type TestServerLines = tokio::io::Lines<BufReader<OwnedReadHalf>>;
 
 async fn expect_client_hello_and_send_standard_test_server_hello(

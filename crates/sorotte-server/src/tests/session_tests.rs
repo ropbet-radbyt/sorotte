@@ -997,7 +997,7 @@ fn hello_response_features_reflect_isolate_rooms() {
 #[test]
 fn hello_requires_server_password_token_when_configured() {
     let mut runtime = ServerRuntime::default();
-    runtime.set_server_password_token(Some("secret".to_owned()));
+    runtime.set_server_password_token(Some("secret".into()));
 
     let directed_lines = runtime
         .handle_line_fanout(
@@ -1027,7 +1027,7 @@ fn hello_requires_server_password_token_when_configured() {
 #[test]
 fn hello_password_error_dispatch_schedules_close_after_error() {
     let mut runtime = ServerRuntime::default();
-    runtime.set_server_password_token(Some("secret".to_owned()));
+    runtime.set_server_password_token(Some("secret".into()));
 
     let dispatch = runtime
         .handle_line_fanout_with_transport_actions(
@@ -1049,7 +1049,7 @@ fn hello_password_error_dispatch_schedules_close_after_error() {
 #[test]
 fn hello_server_password_token_accepts_exact_match_and_username_is_truncated() {
     let mut runtime = ServerRuntime::default();
-    runtime.set_server_password_token(Some("secret".to_owned()));
+    runtime.set_server_password_token(Some("secret".into()));
     runtime.set_max_username_length(4);
 
     runtime
@@ -1070,7 +1070,7 @@ fn hello_server_password_token_accepts_exact_match_and_username_is_truncated() {
 #[test]
 fn hello_server_password_token_accepts_legacy_python_md5_hash() {
     let mut runtime = ServerRuntime::default();
-    runtime.set_server_password_token(Some("secret".to_owned()));
+    runtime.set_server_password_token(Some("secret".into()));
 
     runtime
         .handle_line(
@@ -1087,7 +1087,7 @@ fn hello_server_password_token_accepts_legacy_python_md5_hash() {
 #[test]
 fn hello_server_password_token_rejects_non_matching_token() {
     let mut runtime = ServerRuntime::default();
-    runtime.set_server_password_token(Some("secret".to_owned()));
+    runtime.set_server_password_token(Some("secret".into()));
 
     let directed_lines = runtime
         .handle_line_fanout(
@@ -1112,6 +1112,24 @@ fn hello_server_password_token_rejects_non_matching_token() {
         runtime.session("client-1").is_none(),
         "session should not be created after wrong password"
     );
+}
+
+#[test]
+fn server_runtime_and_outbound_line_debug_redact_credentials() {
+    const MARKER: &str = "server-runtime-secret-canary-582f";
+    const SALT_MARKER: &str = "server-room-salt-canary-a193";
+    let mut runtime = ServerRuntime::with_room_password_salt(SALT_MARKER);
+    runtime.set_server_password_token(Some(MARKER.into()));
+    let line = DirectedOutboundLine {
+        client_id: "client-1".to_owned(),
+        line: format!(r#"{{"Set":{{"controllerAuth":{{"password":"{MARKER}"}}}}}}"#),
+        delivery: ServerOutboundDelivery::Reliable,
+    };
+
+    for debug in [format!("{runtime:?}"), format!("{line:?}")] {
+        assert!(!debug.contains(MARKER));
+        assert!(!debug.contains(SALT_MARKER));
+    }
 }
 
 #[test]

@@ -165,8 +165,7 @@ impl SorotteGuiShellAppState {
             controlled_room_password_override: runtime_settings
                 .config
                 .connection
-                .controlled_room_password
-                .map(|password| password.expose_secret().to_owned()),
+                .controlled_room_password,
         })
     }
 

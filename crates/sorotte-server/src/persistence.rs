@@ -1,10 +1,21 @@
 use super::*;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(crate) struct PersistedRoomState {
     pub(crate) files: Vec<String>,
     pub(crate) index: Option<i64>,
     pub(crate) position: f64,
+}
+
+impl std::fmt::Debug for PersistedRoomState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PersistedRoomState")
+            .field("files_count", &self.files.len())
+            .field("index", &self.index)
+            .field("position", &self.position)
+            .finish()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

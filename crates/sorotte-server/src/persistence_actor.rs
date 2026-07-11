@@ -23,7 +23,7 @@ pub enum ServerPersistenceWorkerKind {
     Stats,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum ServerPersistenceEffect {
     SaveRoom {
         room_name: String,
@@ -40,6 +40,40 @@ pub enum ServerPersistenceEffect {
         snapshot_time: i64,
         versions: Vec<String>,
     },
+}
+
+impl std::fmt::Debug for ServerPersistenceEffect {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SaveRoom {
+                files,
+                playlist_index,
+                position,
+                version,
+                ..
+            } => formatter
+                .debug_struct("SaveRoom")
+                .field("room_name", &sorotte_secret::REDACTED_SECRET)
+                .field("files_count", &files.len())
+                .field("playlist_index", playlist_index)
+                .field("position", position)
+                .field("version", version)
+                .finish(),
+            Self::DeleteRoom { version, .. } => formatter
+                .debug_struct("DeleteRoom")
+                .field("room_name", &sorotte_secret::REDACTED_SECRET)
+                .field("version", version)
+                .finish(),
+            Self::RecordStatsSnapshot {
+                snapshot_time,
+                versions,
+            } => formatter
+                .debug_struct("RecordStatsSnapshot")
+                .field("snapshot_time", snapshot_time)
+                .field("versions_count", &versions.len())
+                .finish(),
+        }
+    }
 }
 
 /// Persistence failures put only the affected worker into degraded mode. The

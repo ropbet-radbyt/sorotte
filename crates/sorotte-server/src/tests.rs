@@ -24,13 +24,14 @@ use super::{
     DEFAULT_PLAYLIST_MAX_ITEMS, DirectedOutboundLine, DirectedTransportAction,
     INITIAL_SERVER_STATE_DELAY_SECONDS, LEGACY_PERSISTENT_ROOMS_NOTICE,
     LEGACY_SERVER_LINE_DECODE_ERROR, LEGACY_SERVER_PASSWORD_REQUIRED_ERROR,
-    LEGACY_SERVER_WRONG_PASSWORD_ERROR, LEGACY_UI_MODE_UNKNOWN, RoomPasswordCheckError,
-    RoomPasswordProvider, SERVER_REAL_VERSION, SERVER_STATE_INTERVAL_SECONDS, ServerActorHandle,
-    ServerApp, ServerNetworkError, ServerOutboundDelivery, ServerRuntime, ServerRuntimeDispatch,
-    ServerRuntimeError, ServerTransportAction, TLS_CERT_ROTATION_MAX_RETRIES,
-    default_motd_for_client_version, generate_server_salt_legacy_compatible,
-    motd_for_client_context, motd_for_client_version, read_network_line_from_stream,
-    run_server_network_loop_until_shutdown,
+    LEGACY_SERVER_WRONG_PASSWORD_ERROR, LEGACY_UI_MODE_UNKNOWN, PersistedRoomState,
+    RoomPasswordCheckError, RoomPasswordProvider, RoomPlaylistState, SERVER_REAL_VERSION,
+    SERVER_STATE_INTERVAL_SECONDS, ServerActorHandle, ServerApp, ServerInboundCommand,
+    ServerNetworkError, ServerOutboundDelivery, ServerPersistenceEffect, ServerRuntime,
+    ServerRuntimeDispatch, ServerRuntimeError, ServerSetCommand, ServerSharedFile,
+    ServerTransportAction, TLS_CERT_ROTATION_MAX_RETRIES, default_motd_for_client_version,
+    generate_server_salt_legacy_compatible, motd_for_client_context, motd_for_client_version,
+    read_network_line_from_stream, run_server_network_loop_until_shutdown,
 };
 use sorotte_protocol::{
     ChatPayload, ListPayload, PlaylistChangePayload, ProtocolMessage, SetPayload,
@@ -40,6 +41,58 @@ use sorotte_protocol::{
 const TEST_TLS_CERT_PEM: &str = include_str!("../../../fixtures/tls/test_cert.pem");
 const TEST_TLS_CHAIN_PEM: &str = include_str!("../../../fixtures/tls/test_chain.pem");
 const TEST_TLS_PRIVATE_KEY_PEM: &str = include_str!("../../../fixtures/tls/test_privkey.pem");
+
+#[test]
+fn tokenized_media_debug_canary_is_redacted_across_server_domain_carriers() {
+    const MARKER: &str = "server-media-secret-canary-817c25";
+    let target = format!("https://media.example/video?X-Plex-Token={MARKER}");
+    let mut runtime = ServerRuntime::default();
+    runtime.room_playlists.insert(
+        "room".to_owned(),
+        RoomPlaylistState {
+            files: vec![target.clone()],
+            index: Some(0),
+        },
+    );
+    let shared_file = ServerSharedFile {
+        name: Some(target.clone()),
+        ..ServerSharedFile::default()
+    };
+    let debug_values = [
+        format!("{runtime:?}"),
+        format!("{shared_file:?}"),
+        format!(
+            "{:?}",
+            ServerInboundCommand::Set(vec![ServerSetCommand::PlaylistChange(vec![target.clone()])])
+        ),
+        format!(
+            "{:?}",
+            ServerInboundCommand::Set(vec![ServerSetCommand::File(Some(shared_file))])
+        ),
+        format!(
+            "{:?}",
+            ServerPersistenceEffect::SaveRoom {
+                room_name: "room".to_owned(),
+                files: vec![target.clone()],
+                playlist_index: Some(0),
+                position: 0.0,
+                version: 1,
+            }
+        ),
+        format!(
+            "{:?}",
+            PersistedRoomState {
+                files: vec![target],
+                index: Some(0),
+                position: 0.0,
+            }
+        ),
+    ];
+
+    for debug in debug_values {
+        assert!(!debug.contains(MARKER), "leaky Debug output: {debug}");
+    }
+}
 
 fn decode_directed_lines(lines: &[DirectedOutboundLine]) -> Vec<(String, ProtocolMessage)> {
     lines

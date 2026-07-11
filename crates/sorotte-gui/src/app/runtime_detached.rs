@@ -68,8 +68,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     .config
                     .connection
                     .controlled_room_password
-                    .as_ref()
-                    .map(|password| password.expose_secret().to_owned()),
+                    .clone(),
             )?;
             session.apply_runtime_settings_snapshot(&runtime_settings);
             self.session = Some(Box::new(session));

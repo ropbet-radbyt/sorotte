@@ -305,7 +305,7 @@ fn gui_shell_app_state_applies_gui_feedback_runtime_snapshots() {
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         section: "Connection",
         label: "Port",
-        value: "70000".to_owned(),
+        value: "70000".to_owned().into(),
     }));
     assert!(state.apply(GuiShellAction::ApplyGuiFeedbackRuntimeSnapshot(
         GuiFeedbackRuntimeSnapshot {

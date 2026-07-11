@@ -112,8 +112,8 @@ impl fmt::Debug for StoredClientSettingsV1 {
             .field("port", &self.port)
             .field("server_password", &self.server_password)
             .field("username", &self.username)
-            .field("room", &self.room)
-            .field("room_list", &self.room_list)
+            .field("room_configured", &self.room.is_some())
+            .field("room_list_entries", &self.room_list.as_ref().map(Vec::len))
             .field("player_path", &self.player_path)
             .field("per_player_arguments", &self.per_player_arguments)
             .field("media_search_directories", &self.media_search_directories)
@@ -131,7 +131,13 @@ impl fmt::Debug for StoredClientSettingsV1 {
             .field("plex_streaming_enabled", &self.plex_streaming_enabled)
             .field("plex_user_token", &self.plex_user_token)
             .field("plex_selected_server_id", &self.plex_selected_server_id)
-            .field("plex_selected_server_url", &self.plex_selected_server_url)
+            .field(
+                "plex_selected_server_url",
+                &self
+                    .plex_selected_server_url
+                    .as_ref()
+                    .map(|_| sorotte_secret::REDACTED_SECRET),
+            )
             .field(
                 "plex_selected_server_token",
                 &self.plex_selected_server_token,
@@ -328,8 +334,11 @@ mod tests {
 
     #[test]
     fn stored_client_settings_debug_redacts_all_credentials() {
+        let room_password = "stored-room-password-secret";
         let settings = StoredClientSettingsMvp {
             server_password: Some("server-password-secret".into()),
+            room: Some(format!("+room:ABCDEF123456:{room_password}")),
+            room_list: Some(vec![format!("+history:012345ABCDEF:{room_password}")]),
             plex_user_token: Some("plex-user-token-secret".into()),
             plex_selected_server_token: Some("plex-server-token-secret".into()),
             ..StoredClientSettingsMvp::default()
@@ -338,6 +347,7 @@ mod tests {
         let debug = format!("{settings:?}");
         assert!(debug.contains("<redacted>"));
         assert!(!debug.contains("server-password-secret"));
+        assert!(!debug.contains(room_password));
         assert!(!debug.contains("plex-user-token-secret"));
         assert!(!debug.contains("plex-server-token-secret"));
     }

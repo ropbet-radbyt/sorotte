@@ -555,11 +555,15 @@ pub fn resolve_client_config(settings: &StoredClientSettingsV1) -> ClientConfigR
         .filter(|room| !room.is_empty())
         .map(str::to_owned)
         .or_else(|| {
-            config
-                .connection
-                .room_history
-                .first()
-                .map(|room| room.as_str().to_owned())
+            settings
+                .room_list
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .map(String::as_str)
+                .map(str::trim)
+                .find(|room| !room.is_empty())
+                .map(str::to_owned)
         });
     if settings
         .room
@@ -939,15 +943,18 @@ fn resolve_room_history(
         .unwrap_or_default()
         .iter()
         .enumerate()
-        .filter_map(|(index, room)| match RoomName::new(room.clone()) {
-            Ok(room) if seen.insert(room.clone()) => Some(room),
-            Ok(_) => None,
-            Err(message) => {
-                issues.push(ClientConfigIssue::new(
-                    format!("room_list[{index}]"),
-                    message,
-                ));
-                None
+        .filter_map(|(index, room)| {
+            let (room, _) = normalize_controlled_room_input_legacy_compatible(room.clone());
+            match RoomName::new(room) {
+                Ok(room) if seen.insert(room.clone()) => Some(room),
+                Ok(_) => None,
+                Err(message) => {
+                    issues.push(ClientConfigIssue::new(
+                        format!("room_list[{index}]"),
+                        message,
+                    ));
+                    None
+                }
             }
         })
         .collect()
@@ -1248,9 +1255,11 @@ mod tests {
             "server-password-config-secret",
             "plex-user-config-secret",
             "plex-server-config-secret",
+            "ROOM-HISTORY-CONFIG-SECRET",
         ];
         let settings = StoredClientSettingsV1 {
             server_password: Some(secrets[0].into()),
+            room_list: Some(vec![format!("+history:ABC123DEF456:{}", secrets[3])]),
             plex_user_token: Some(secrets[1].into()),
             plex_selected_server_token: Some(secrets[2].into()),
             ..StoredClientSettingsV1::default()
@@ -1261,5 +1270,22 @@ mod tests {
             assert!(!rendered.contains(secret));
         }
         assert!(rendered.contains("<redacted>"));
+        assert_eq!(
+            ClientConfig::resolve(&settings)
+                .config
+                .connection
+                .room_history[0]
+                .as_str(),
+            "+history:ABC123DEF456"
+        );
+        assert_eq!(
+            ClientConfig::resolve(&settings)
+                .config
+                .connection
+                .controlled_room_password
+                .as_ref()
+                .map(SecretValue::expose_secret),
+            Some(secrets[3])
+        );
     }
 }

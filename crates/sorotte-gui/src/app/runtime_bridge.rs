@@ -4,6 +4,7 @@ mod tests;
 use sorotte_client_app::app_boundary::{
     commands::LocalOffsetCommand, state::StoredClientSettingsMvp,
 };
+use sorotte_secret::SecretValue;
 
 use super::render_io::GuiDroppedFilesRequest;
 use super::runtime_owner::GuiPersistedConfigRuntimeOwner;

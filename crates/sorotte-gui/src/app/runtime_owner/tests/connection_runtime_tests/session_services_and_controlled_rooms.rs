@@ -517,7 +517,8 @@ fn gui_persisted_config_runtime_owner_startup_saved_connect_preserves_controlled
         state
             .saved_session_connect_target()
             .and_then(|target| target.controlled_room_password_override)
-            .as_deref(),
+            .as_ref()
+            .map(|secret| secret.expose_secret()),
         Some("RH-273-303")
     );
 

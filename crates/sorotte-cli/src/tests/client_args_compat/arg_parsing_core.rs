@@ -54,7 +54,7 @@ fn parse_legacy_client_arg_overrides_parses_legacy_client_flags() {
             port: Some(12345),
             username: Some("alice".to_owned()),
             room: Some("room1".to_owned()),
-            controlled_room_password_override: Some("AB-123-456".to_owned()),
+            controlled_room_password_override: Some("AB-123-456".into()),
             show_help: false,
             show_version: false,
             unknown_options: vec![],

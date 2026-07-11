@@ -10,7 +10,7 @@ fn gui_shell_app_state_tracks_configuration_text_edit_session_lifecycle() {
         label: "Host",
     }));
     assert!(state.apply(GuiShellAction::UpdateConfigurationTextEdit(
-        "syncplay.example".to_owned(),
+        "syncplay.example".to_owned().into(),
     )));
     let rendered = state.render_lines().join("\n");
     assert!(
@@ -36,7 +36,7 @@ fn gui_shell_app_state_tracks_configuration_text_edit_session_lifecycle() {
         label: "Host",
     }));
     assert!(state.apply(GuiShellAction::UpdateConfigurationTextEdit(
-        "syncplay.cancelled".to_owned(),
+        "syncplay.cancelled".to_owned().into(),
     )));
     assert!(state.apply(GuiShellAction::CancelConfigurationTextEdit));
     assert!(state.text_edit_session.is_none());
@@ -159,7 +159,7 @@ fn gui_shell_app_state_rejects_invalid_configuration_text_edit_sessions() {
     );
 
     assert!(!state.apply(GuiShellAction::UpdateConfigurationTextEdit(
-        "orphan".to_owned(),
+        "orphan".to_owned().into(),
     )));
     assert_eq!(
         state.validation.last_action_error.as_deref(),

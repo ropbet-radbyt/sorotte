@@ -30,11 +30,23 @@ impl GuiDroppedFilesTarget {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) struct GuiDroppedFilesRequest {
     pub(super) target: GuiDroppedFilesTarget,
     pub(super) paths: Vec<String>,
     pub(super) playlist_insert_slot: Option<usize>,
+}
+
+impl std::fmt::Debug for GuiDroppedFilesRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuiDroppedFilesRequest")
+            .field("target", &self.target)
+            .field("paths", &sorotte_secret::REDACTED_SECRET)
+            .field("path_count", &self.paths.len())
+            .field("playlist_insert_slot", &self.playlist_insert_slot)
+            .finish()
+    }
 }
 
 impl GuiWidgetEguiRenderer {
@@ -418,4 +430,21 @@ fn hovered_playlist_insert_slot(
     hovered_playlist_target
         .then_some(playlist_drop_target_slot)
         .flatten()
+}
+
+#[cfg(test)]
+mod credential_debug_tests {
+    use super::*;
+
+    #[test]
+    fn dropped_media_request_debug_redacts_paths() {
+        let request = GuiDroppedFilesRequest {
+            target: GuiDroppedFilesTarget::Playlist,
+            paths: vec!["https://media.example/item?token=dropped-files-canary".to_owned()],
+            playlist_insert_slot: Some(1),
+        };
+        let debug = format!("{request:?}");
+        assert!(debug.contains(sorotte_secret::REDACTED_SECRET));
+        assert!(!debug.contains("dropped-files-canary"));
+    }
 }

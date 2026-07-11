@@ -341,6 +341,27 @@ fn mpv_command_failure_is_observable_without_killing_connection() {
 }
 
 #[test]
+fn malformed_mpv_response_does_not_leak_tokenized_target() {
+    let secret = "mpv-malformed-response-token-canary";
+    let malformed = format!("not-json X-Plex-Token={secret}");
+    let (transport, _state) = fake_transport_with_reads(&[&malformed]);
+    let mut client = MpvJsonIpcClient::new(Box::new(transport));
+
+    let error = client
+        .get_property_string("path")
+        .expect_err("malformed response should fail and disconnect");
+    let events = client.take_connection_events();
+
+    assert!(!error.contains(secret));
+    assert!(!format!("{events:?}").contains(secret));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, MpvIpcConnectionEvent::Disconnected { .. }))
+    );
+}
+
+#[test]
 fn mpv_ipc_request_id_mismatch_marks_connection_dead() {
     let (transport, _state) = fake_transport_with_reads(&[
         r#"{"request_id":999,"error":"success","data":"old.mkv"}"#,

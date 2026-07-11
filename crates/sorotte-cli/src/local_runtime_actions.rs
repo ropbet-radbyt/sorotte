@@ -5,7 +5,6 @@ use sorotte_client_app::app_boundary::commands::{
     PlannedLocalRuntimeAction, plan_local_runtime_dispatch_legacy_compatible,
 };
 use sorotte_player_mpv::MpvAdapter;
-use sorotte_secret::SecretValue;
 
 use crate::client_config::ClientLoopConfig;
 use crate::language_support::current_legacy_runtime_language_tag_legacy_compatible;
@@ -126,10 +125,7 @@ pub(super) fn run_planned_local_runtime_action_legacy_compatible(
             })
         }
         Some(PlannedLocalRuntimeAction::RequestControllerAuth { room, password }) => {
-            Some(ClientCommand::RequestControllerAuth {
-                room,
-                password: SecretValue::new(password),
-            })
+            Some(ClientCommand::RequestControllerAuth { room, password })
         }
         Some(PlannedLocalRuntimeAction::SetRoomWithLegacyFallback(room)) => {
             Some(ClientCommand::SetRoom {

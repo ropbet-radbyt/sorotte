@@ -44,7 +44,7 @@ pub struct ClientApplicationSettings {
     pub autoplay_enabled: Option<bool>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum ClientCommand {
     Connect {
         endpoint: String,
@@ -100,6 +100,52 @@ pub enum ClientCommand {
     },
 }
 
+impl std::fmt::Debug for ClientCommand {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ReceiveProtocolLine {
+                line,
+                received_at_seconds,
+            } => formatter
+                .debug_struct("ReceiveProtocolLine")
+                .field("line_bytes", &line.len())
+                .field("received_at_seconds", received_at_seconds)
+                .finish(),
+            Self::OpenMedia { .. } => formatter
+                .debug_struct("OpenMedia")
+                .field("path", &sorotte_secret::REDACTED_SECRET)
+                .finish(),
+            Self::RequestControllerAuth { room, password } => formatter
+                .debug_struct("RequestControllerAuth")
+                .field("room", room)
+                .field("password", password)
+                .finish(),
+            Self::Connect { .. } => formatter.write_str("Connect"),
+            Self::TransportConnected => formatter.write_str("TransportConnected"),
+            Self::Reconnect { .. } => formatter.write_str("Reconnect"),
+            Self::Disconnect { .. } => formatter.write_str("Disconnect"),
+            Self::SetRoom { .. } => formatter.write_str("SetRoom"),
+            Self::SetReady { .. } => formatter.write_str("SetReady"),
+            Self::PlayerPlaybackObserved { .. } => formatter.write_str("PlayerPlaybackObserved"),
+            Self::UpdateSettings(_) => formatter.write_str("UpdateSettings"),
+            Self::SendChat(_) => formatter.write_str("SendChat"),
+            Self::RequestUserList => formatter.write_str("RequestUserList"),
+            Self::SetPlaylistIndex(_) => formatter.write_str("SetPlaylistIndex"),
+            Self::AdvancePlaylistIndex => formatter.write_str("AdvancePlaylistIndex"),
+            Self::QueuePlaylistItem { .. } => formatter.write_str("QueuePlaylistItem"),
+            Self::DeletePlaylistIndex(_) => formatter.write_str("DeletePlaylistIndex"),
+            Self::UndoPlaylistChange => formatter.write_str("UndoPlaylistChange"),
+            Self::ShuffleRemainingPlaylist => formatter.write_str("ShuffleRemainingPlaylist"),
+            Self::ShuffleEntirePlaylist => formatter.write_str("ShuffleEntirePlaylist"),
+            Self::UndoSeek => formatter.write_str("UndoSeek"),
+            Self::SeekToPosition(_) => formatter.write_str("SeekToPosition"),
+            Self::SeekByOffset(_) => formatter.write_str("SeekByOffset"),
+            Self::TogglePause => formatter.write_str("TogglePause"),
+            Self::SetPaused(_) => formatter.write_str("SetPaused"),
+        }
+    }
+}
+
 impl ClientCommand {
     pub fn request_controller_auth(room: impl Into<String>, password: impl Into<String>) -> Self {
         Self::RequestControllerAuth {
@@ -109,7 +155,7 @@ impl ClientCommand {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum ClientEvent {
     ConnectionChanged(ConnectionPhase),
     RoomChanged {
@@ -133,6 +179,49 @@ pub enum ClientEvent {
         operation: &'static str,
         message: String,
     },
+}
+
+impl std::fmt::Debug for ClientEvent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ConnectionChanged(value) => formatter
+                .debug_tuple("ConnectionChanged")
+                .field(value)
+                .finish(),
+            Self::RoomChanged { previous, current } => formatter
+                .debug_struct("RoomChanged")
+                .field("previous", previous)
+                .field("current", current)
+                .finish(),
+            Self::PlaybackChanged {
+                paused,
+                position_seconds,
+            } => formatter
+                .debug_struct("PlaybackChanged")
+                .field("paused", paused)
+                .field("position_seconds", position_seconds)
+                .finish(),
+            Self::ReadinessChanged { username, ready } => formatter
+                .debug_struct("ReadinessChanged")
+                .field("username", username)
+                .field("ready", ready)
+                .finish(),
+            Self::CommandCompleted { command, changed } => formatter
+                .debug_struct("CommandCompleted")
+                .field("command", command)
+                .field("changed", changed)
+                .finish(),
+            Self::Notification(message) => formatter
+                .debug_tuple("Notification")
+                .field(message)
+                .finish(),
+            Self::OperationFailed { operation, .. } => formatter
+                .debug_struct("OperationFailed")
+                .field("operation", operation)
+                .field("message", &sorotte_secret::REDACTED_SECRET)
+                .finish(),
+        }
+    }
 }
 
 impl ClientEvent {
@@ -1159,6 +1248,7 @@ mod tests {
     struct TestPlayer {
         opened: Vec<String>,
         paused: bool,
+        open_error: Option<String>,
     }
 
     impl PlayerAdapter for TestPlayer {
@@ -1168,7 +1258,10 @@ mod tests {
 
         fn open_file(&mut self, path: &str) -> Result<(), PlayerError> {
             self.opened.push(path.to_owned());
-            Ok(())
+            match self.open_error.as_ref() {
+                Some(message) => Err(PlayerError::OperationFailed(message.clone())),
+                None => Ok(()),
+            }
         }
 
         fn set_paused(&mut self, paused: bool) -> Result<(), PlayerError> {
@@ -1263,12 +1356,60 @@ mod tests {
     }
 
     #[test]
-    fn application_commands_redact_controller_credentials() {
-        let command = ClientCommand::request_controller_auth("room-a", "never-print-this");
-        let debug = format!("{command:?}");
+    fn application_commands_redact_all_credential_bearing_inputs() {
+        let secret = "never-print-this";
+        let commands = [
+            ClientCommand::request_controller_auth("room-a", secret),
+            ClientCommand::ReceiveProtocolLine {
+                line: format!(r#"{{\"Hello\":{{\"password\":\"{secret}\"}}}}"#),
+                received_at_seconds: 1.0,
+            },
+            ClientCommand::OpenMedia {
+                path: format!("https://plex.invalid/video?X-Plex-Token={secret}"),
+            },
+        ];
 
-        assert!(!debug.contains("never-print-this"));
-        assert!(debug.contains("<redacted>"));
+        for debug in commands.iter().map(|command| format!("{command:?}")) {
+            assert!(!debug.contains(secret));
+        }
+        assert!(format!("{:?}", &commands[0]).contains("<redacted>"));
+        assert!(format!("{:?}", &commands[2]).contains("<redacted>"));
+    }
+
+    #[test]
+    fn application_failure_event_redacts_tokenized_media_target() {
+        let secret = "application-player-error-token-canary";
+        let target = format!("https://plex.invalid/video?X-Plex-Token={secret}");
+        let player = TestPlayer {
+            open_error: Some(format!("mpv could not load {target}")),
+            ..TestPlayer::default()
+        };
+        let mut application = ClientApplication::new(ClientSession::default(), player);
+
+        let events = application.dispatch(ClientCommand::OpenMedia { path: target });
+        let debug = format!("{events:?}");
+        assert!(debug.contains(sorotte_secret::REDACTED_SECRET));
+        assert!(!debug.contains(secret));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ClientEvent::OperationFailed { message, .. }
+                if message.contains(sorotte_secret::REDACTED_SECRET)
+                    && !message.contains(secret)
+        )));
+    }
+
+    #[test]
+    fn application_failure_event_debug_redacts_whitespace_reflected_password() {
+        const MARKER: &str = "application-reflected-password-canary";
+        let event = ClientEvent::OperationFailed {
+            operation: "receive-protocol-line",
+            message: format!(r#"server error: Not JSON: {{"password" : "{MARKER}"}}"#),
+        };
+
+        let debug = format!("{event:?}");
+
+        assert!(debug.contains(sorotte_secret::REDACTED_SECRET));
+        assert!(!debug.contains(MARKER));
     }
 
     #[tokio::test]

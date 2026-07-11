@@ -1,4 +1,5 @@
 use sorotte_client_app::app_boundary::commands::controlled_room_base_name_legacy_compatible;
+use sorotte_secret::SecretValue;
 
 use super::shell_state::{
     GuiControlledRoomCreateSessionState, GuiControllerAuthEditSessionState,
@@ -413,14 +414,14 @@ impl SorotteGuiShellAppState {
         self.active_view = GuiShellView::Room;
         self.controller_auth_edit_session = Some(GuiControllerAuthEditSessionState {
             room_name,
-            password_buffer: String::new(),
+            password_buffer: SecretValue::default(),
             is_dirty: false,
         });
         self.clear_action_error_and_refresh();
         true
     }
 
-    pub(super) fn update_controller_auth_password_edit(&mut self, buffer: String) -> bool {
+    pub(super) fn update_controller_auth_password_edit(&mut self, buffer: SecretValue) -> bool {
         let Some(session) = self.controller_auth_edit_session.as_mut() else {
             return self.record_action_error("No controller-auth editor is currently active.");
         };

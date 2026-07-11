@@ -10,6 +10,7 @@ mod envelope;
 mod hello;
 mod list;
 mod message;
+mod redacted_debug;
 mod room;
 mod set;
 mod state;

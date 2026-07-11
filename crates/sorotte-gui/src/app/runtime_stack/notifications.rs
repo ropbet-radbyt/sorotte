@@ -190,17 +190,13 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     ) -> Vec<GuiShellAction> {
         match notification {
             ControlledRoomCreationNotification::Created { room, password } => {
-                let share_code = format!("{room}:{password}");
                 let transient_message = format!("Controlled room created: {room}.");
-                let chat_message = format!(
-                    "Created controlled room {room} with password {password} ({share_code})."
-                );
                 vec![
                     GuiShellAction::PushTransientNotification {
                         level: GuiTransientNotificationLevel::Success,
                         message: transient_message,
                     },
-                    GuiShellAction::AnnounceSystemChatEvent(chat_message),
+                    GuiShellAction::AnnounceControlledRoomCreated { room, password },
                 ]
             }
         }

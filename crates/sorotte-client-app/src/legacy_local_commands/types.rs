@@ -1,3 +1,5 @@
+use sorotte_secret::SecretValue;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum LocalOffsetCommand {
     Absolute(f64),
@@ -35,7 +37,7 @@ pub enum LocalInputCommand {
         ready: bool,
     },
     CreateControlledRoom(Option<String>),
-    AuthController(String),
+    AuthController(SecretValue),
     SetRoomWithLegacyFallback,
     SetRoom(String),
 }
@@ -72,7 +74,7 @@ pub enum PlannedLocalRuntimeAction {
     },
     RequestControllerAuth {
         room: String,
-        password: String,
+        password: SecretValue,
     },
     SetRoomWithLegacyFallback(String),
     SetRoom(String),
@@ -125,7 +127,7 @@ pub enum PlannedLocalInputCommand {
     },
     RequestControllerAuth {
         room: String,
-        password: String,
+        password: SecretValue,
     },
     SetRoomWithLegacyFallback(String),
     SetRoom(String),
