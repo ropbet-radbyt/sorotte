@@ -127,7 +127,7 @@ fn gui_semantic_scenarios_expose_named_catalog_and_parse_scripts() {
     assert!(
         descriptors[2]
             .script
-            .contains("menus:update:message\tSorotte est a jour")
+            .contains("menus:update:message\tChecking for updates")
     );
     assert_eq!(descriptors[4].name, "runtime-transport-churn-flow");
     assert!(
