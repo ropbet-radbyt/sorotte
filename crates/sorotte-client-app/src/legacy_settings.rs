@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, fmt};
 
 use sorotte_client_core::{PrivacyMode, UnpauseActionMode};
-use sorotte_secret::SecretValue;
+use sorotte_secret::{RedactedCommandArgs, SecretValue};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AutoplayThresholdOverride {
@@ -115,7 +115,16 @@ impl fmt::Debug for StoredClientSettingsV1 {
             .field("room_configured", &self.room.is_some())
             .field("room_list_entries", &self.room_list.as_ref().map(Vec::len))
             .field("player_path", &self.player_path)
-            .field("per_player_arguments", &self.per_player_arguments)
+            .field(
+                "per_player_argument_player_count",
+                &self.per_player_arguments.as_ref().map(BTreeMap::len),
+            )
+            .field(
+                "per_player_arguments",
+                &self.per_player_arguments.as_ref().map(|arguments| {
+                    RedactedCommandArgs::from_args(arguments.values().flat_map(|args| args.iter()))
+                }),
+            )
             .field("media_search_directories", &self.media_search_directories)
             .field("public_servers", &self.public_servers)
             .field(

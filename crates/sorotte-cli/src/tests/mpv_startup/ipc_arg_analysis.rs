@@ -265,8 +265,8 @@ fn legacy_explicit_mpv_ipc_startup_player_arg_diagnostic_lines_report_summary_an
             lines,
             vec![
                 "info: explicit-mpv-IPC startup _args summary: applied=2 ignored=2 (recognized-supported-tokens=6, malformed=1, unsupported=1)".to_owned(),
-                "warning: explicit-mpv-IPC malformed _args were ignored: --pause=maybe".to_owned(),
-                "warning: explicit-mpv-IPC launch-only _args were ignored in attach mode: --untouchable".to_owned(),
+                "warning: explicit-mpv-IPC malformed _args were ignored: 1 command argument(s)".to_owned(),
+                "warning: explicit-mpv-IPC launch-only _args were ignored in attach mode: 1 command argument(s)".to_owned(),
             ]
         );
 }

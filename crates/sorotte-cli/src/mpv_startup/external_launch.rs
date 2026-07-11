@@ -123,7 +123,7 @@ pub(crate) fn spawn_legacy_external_player_from_spec_legacy_compatible(
         anyhow!(
             "failed to launch legacy external player '{}' with args {:?}: {error}",
             spec.program.display(),
-            spec.args
+            RedactedCommandArgs::from_args(&spec.args)
         )
     })
 }

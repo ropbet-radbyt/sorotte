@@ -11,6 +11,7 @@ use sorotte_player_api::{PlayerAdapter, PlayerError};
 use sorotte_player_mpv::MpvAdapter;
 #[cfg(test)]
 use sorotte_player_mpv::SimulatedPlayer;
+use sorotte_secret::RedactedCommandArgs;
 
 use crate::client_args::LegacyClientArgOverrides;
 use crate::client_config::{ClientLoopConfig, create_client_session};

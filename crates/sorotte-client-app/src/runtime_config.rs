@@ -8,7 +8,7 @@ use sorotte_client_core::{
     DesyncCorrectionConfig, PrivacyMode, ReadinessAutoplayConfig, SessionBehaviorConfig,
     UnpauseActionMode,
 };
-use sorotte_secret::SecretValue;
+use sorotte_secret::{RedactedCommandArgs, SecretValue};
 
 use crate::{
     legacy_language::normalized_legacy_runtime_language_tag_legacy_compatible,
@@ -295,7 +295,7 @@ impl Default for SyncConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct PlaybackConfig {
     pub player_path: Option<PathBuf>,
     pub per_player_arguments: BTreeMap<PathBuf, Vec<String>>,
@@ -314,6 +314,51 @@ pub struct PlaybackConfig {
     pub trusted_domains: Vec<String>,
     pub filename_privacy_mode: PrivacyMode,
     pub filesize_privacy_mode: PrivacyMode,
+}
+
+impl fmt::Debug for PlaybackConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PlaybackConfig")
+            .field("player_path", &self.player_path)
+            .field(
+                "per_player_argument_player_count",
+                &self.per_player_arguments.len(),
+            )
+            .field(
+                "per_player_arguments",
+                &RedactedCommandArgs::from_args(
+                    self.per_player_arguments
+                        .values()
+                        .flat_map(|args| args.iter()),
+                ),
+            )
+            .field("media_search_directories", &self.media_search_directories)
+            .field("first_file_timeout", &self.first_file_timeout)
+            .field("folder_search_timeout", &self.folder_search_timeout)
+            .field(
+                "folder_search_double_check_interval",
+                &self.folder_search_double_check_interval,
+            )
+            .field(
+                "folder_search_warning_threshold",
+                &self.folder_search_warning_threshold,
+            )
+            .field("default_rate", &self.default_rate)
+            .field("default_volume", &self.default_volume)
+            .field("shared_playlist_enabled", &self.shared_playlist_enabled)
+            .field("pause_on_leave", &self.pause_on_leave)
+            .field("loop_at_end_of_playlist", &self.loop_at_end_of_playlist)
+            .field("loop_single_files", &self.loop_single_files)
+            .field(
+                "only_switch_to_trusted_domains",
+                &self.only_switch_to_trusted_domains,
+            )
+            .field("trusted_domains", &self.trusted_domains)
+            .field("filename_privacy_mode", &self.filename_privacy_mode)
+            .field("filesize_privacy_mode", &self.filesize_privacy_mode)
+            .finish()
+    }
 }
 
 impl Default for PlaybackConfig {
