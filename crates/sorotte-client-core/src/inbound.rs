@@ -116,6 +116,11 @@ pub struct SharedFile {
     pub duration: Option<FileDuration>,
     pub size: Option<FileSize>,
     pub media_match: Option<MediaMatchWireSignature>,
+    /// Wire fields unknown to this version of the client.
+    ///
+    /// Retaining these fields keeps a non-empty forward-compatible payload
+    /// distinct from the legacy no-file values (`null` and `{}`).
+    pub extra: BTreeMap<String, Value>,
 }
 
 impl std::fmt::Debug for SharedFile {
@@ -129,6 +134,7 @@ impl std::fmt::Debug for SharedFile {
             .field("duration", &self.duration)
             .field("size", &self.size)
             .field("media_match", &self.media_match)
+            .field("extra_fields_count", &self.extra.len())
             .finish()
     }
 }
@@ -139,6 +145,7 @@ impl SharedFile {
             && self.duration.is_none()
             && self.size.is_none()
             && self.media_match.is_none()
+            && self.extra.is_empty()
     }
 }
 
@@ -438,6 +445,7 @@ fn normalize_file_value(
             ..SharedFile::default()
         }),
         Value::Object(mut fields) => {
+            let was_nonempty = !fields.is_empty();
             let file = SharedFile {
                 name: fields
                     .remove("name")
@@ -452,8 +460,12 @@ fn normalize_file_value(
                     context,
                     fallbacks,
                 ),
+                extra: fields.into_iter().collect(),
             };
-            (!file.is_empty()).then_some(file)
+            // Legacy clients use the raw object's truthiness for presence.
+            // Keep that decision separate from whether this version could
+            // normalize any of the object's metadata.
+            was_nonempty.then_some(file)
         }
         _ => None,
     }

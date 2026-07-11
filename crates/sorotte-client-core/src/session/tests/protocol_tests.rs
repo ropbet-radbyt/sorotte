@@ -770,3 +770,68 @@ fn list_snapshot_empty_file_payload_does_not_block_readiness_checks() {
         "non-ready users with file metadata should block readiness checks"
     );
 }
+
+#[test]
+fn forward_compatible_file_presence_is_distinct_from_known_metadata() {
+    let cases: Value = serde_json::from_str(include_str!(
+        "../../../../../fixtures/compatibility/file_presence.json"
+    ))
+    .expect("file-presence compatibility fixture should decode");
+
+    for case in cases
+        .as_array()
+        .expect("file-presence fixture should be an array")
+    {
+        let label = case["label"]
+            .as_str()
+            .expect("file-presence case should have a label");
+        let payload = case["payload"].clone();
+        let expected_has_file = case["hasFile"]
+            .as_bool()
+            .expect("file-presence case should have hasFile");
+        let expected_name = case["name"].as_str();
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+
+        let message = json!({
+            "Set": {
+                "user": {
+                    "bob": {
+                        "room": {"name": "room1"},
+                        "file": payload
+                    }
+                }
+            }
+        });
+        session
+            .apply_message_json(&message.to_string())
+            .unwrap_or_else(|error| panic!("{label} should apply: {error}"));
+
+        assert_eq!(
+            session.user_has_file("bob"),
+            Some(expected_has_file),
+            "wrong presence for {label}"
+        );
+        assert_eq!(
+            session.user_file_name("bob"),
+            expected_name,
+            "wrong known metadata for {label}"
+        );
+        if expected_name.is_none() {
+            assert_eq!(
+                session.user_file_size("bob"),
+                None,
+                "{label} should not synthesize a known size"
+            );
+            assert_eq!(
+                session.user_file_duration("bob"),
+                None,
+                "{label} should not synthesize a known duration"
+            );
+        }
+    }
+}

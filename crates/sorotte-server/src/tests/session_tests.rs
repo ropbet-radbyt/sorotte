@@ -200,6 +200,72 @@ fn set_file_broadcasts_user_file_update_and_list_filters_media_match_by_recipien
 }
 
 #[test]
+fn set_file_preserves_unknown_fields_and_presence_through_fanout() {
+    let cases: Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/compatibility/file_presence.json"
+    ))
+    .expect("file-presence compatibility fixture should decode");
+    let object_cases = cases
+        .as_array()
+        .expect("file-presence fixture should be an array")
+        .iter()
+        .filter(|case| case["hasFile"] == Value::Bool(true) && case["payload"].is_object());
+
+    for case in object_cases {
+        let label = case["label"]
+            .as_str()
+            .expect("file-presence case should have a label");
+        let mut runtime = ServerRuntime::default();
+        runtime
+            .handle_line(
+                "client-1",
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("alice hello should establish session");
+        runtime
+            .handle_line(
+                "client-2",
+                r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("bob hello should establish session");
+        let request = json!({"Set": {"file": case["payload"].clone()}}).to_string();
+
+        let messages = decode_directed_lines(
+            &runtime
+                .handle_line_fanout("client-1", &request)
+                .unwrap_or_else(|error| panic!("{label} should fan out: {error}")),
+        );
+        let file = messages
+            .iter()
+            .find_map(|(recipient, message)| {
+                if recipient != "client-2" {
+                    return None;
+                }
+                let ProtocolMessage::Set(payload) = message else {
+                    return None;
+                };
+                payload
+                    .set
+                    .user
+                    .as_ref()
+                    .and_then(|users| users.get("alice"))
+                    .and_then(|user| user.file.as_ref())
+            })
+            .unwrap_or_else(|| panic!("{label} should remain a present file in fanout"));
+
+        assert!(
+            file.as_object().is_some_and(|fields| !fields.is_empty()),
+            "{label} must not collapse to the legacy empty-object no-file sentinel"
+        );
+        assert_eq!(
+            file.get("vendorExtension"),
+            case["payload"].get("vendorExtension"),
+            "{label} should preserve its unknown field"
+        );
+    }
+}
+
+#[test]
 fn set_file_keeps_media_match_self_echo_compact_for_large_signatures() {
     let mut runtime = ServerRuntime::default();
     runtime

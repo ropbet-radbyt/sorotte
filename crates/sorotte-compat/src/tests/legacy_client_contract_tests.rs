@@ -1,6 +1,49 @@
 use super::*;
 
 #[test]
+fn forward_compatible_file_presence_fixture_matches_legacy_truthiness() {
+    let cases: Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/compatibility/file_presence.json"
+    ))
+    .expect("file-presence compatibility fixture should decode");
+
+    for case in cases
+        .as_array()
+        .expect("file-presence fixture should be an array")
+    {
+        let label = case["label"]
+            .as_str()
+            .expect("file-presence case should have a label");
+        let expected_has_file = case["hasFile"]
+            .as_bool()
+            .expect("file-presence case should have hasFile");
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        let message = json!({
+            "List": {
+                "room1": {
+                    "alice": {"file": {"name": "alice.mkv"}},
+                    "bob": {"file": case["payload"].clone()}
+                }
+            }
+        });
+
+        session
+            .apply_message_json(&message.to_string())
+            .unwrap_or_else(|error| panic!("{label} should apply: {error}"));
+        assert_eq!(
+            session.user_has_file("bob"),
+            Some(expected_has_file),
+            "wrong legacy-compatible presence for {label}"
+        );
+    }
+}
+
+#[test]
 fn legacy_python_same_filename_matches_client_core_on_edge_cases() {
     let pairs = [
         ("**Hidden filename**", "anything.mkv"),

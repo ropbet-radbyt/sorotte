@@ -8,11 +8,11 @@ impl ClientSession {
             Some(Value::String(text)) => Some(FileSize::Text(text.clone())),
             _ => None,
         };
-        let media_match = file
-            .extra
-            .get(MEDIA_MATCH_FILE_PAYLOAD_KEY)
+        let mut extra = file.extra.clone();
+        let media_match = extra
+            .remove(MEDIA_MATCH_FILE_PAYLOAD_KEY)
             .and_then(|value| {
-                sorotte_media_match::media_match_wire_signature_from_value(value).ok()
+                sorotte_media_match::media_match_wire_signature_from_value(&value).ok()
             });
         let file = SharedFile {
             name: file.name.clone(),
@@ -22,6 +22,7 @@ impl ClientSession {
                 .map(FileDuration::Float),
             size,
             media_match,
+            extra,
         };
         (!file.is_empty()).then_some(file)
     }
@@ -353,7 +354,7 @@ impl ClientSession {
     }
 
     pub(super) fn file_payload_from_shared_file(file: &SharedFile) -> FilePayload {
-        let mut extra = BTreeMap::new();
+        let mut extra = file.extra.clone();
         if let Some(media_match_signature) = file.media_match.as_ref()
             && let Ok(value) = serde_json::to_value(media_match_signature)
         {

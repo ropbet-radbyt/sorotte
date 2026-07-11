@@ -32,6 +32,7 @@ pub(crate) struct ServerSharedFile {
     pub(crate) duration: Option<f64>,
     pub(crate) size: Option<ServerFileSize>,
     pub(crate) media_match: Option<MediaMatchWireSignature>,
+    pub(crate) extra: BTreeMap<String, Value>,
 }
 
 impl std::fmt::Debug for ServerSharedFile {
@@ -45,13 +46,14 @@ impl std::fmt::Debug for ServerSharedFile {
             .field("duration", &self.duration)
             .field("has_size", &self.size.is_some())
             .field("media_match", &self.media_match)
+            .field("extra_fields_count", &self.extra.len())
             .finish()
     }
 }
 
 impl ServerSharedFile {
     pub(crate) fn to_wire_value(&self, include_media_match: bool) -> Value {
-        let mut fields = serde_json::Map::new();
+        let mut fields: serde_json::Map<String, Value> = self.extra.clone().into_iter().collect();
         if let Some(name) = &self.name {
             fields.insert("name".to_owned(), Value::String(name.clone()));
         }
@@ -75,6 +77,7 @@ impl ServerSharedFile {
             && self.duration.is_none()
             && self.size.is_none()
             && self.media_match.is_none()
+            && self.extra.is_empty()
     }
 }
 
@@ -350,8 +353,9 @@ fn normalize_file(
             None
         }
     };
-    let media_match = file.extra.get("mediaMatch").and_then(|value| {
-        match serde_json::from_value::<MediaMatchWireSignature>(value.clone()) {
+    let mut extra = file.extra;
+    let media_match = extra.remove("mediaMatch").and_then(|value| {
+        match serde_json::from_value::<MediaMatchWireSignature>(value) {
             Ok(signature) => Some(signature),
             Err(reason) => {
                 fallbacks.push(ServerCompatibilityFallback::IgnoredInvalidMediaMatch {
@@ -369,6 +373,7 @@ fn normalize_file(
         duration: file.duration.filter(|value| value.is_finite()),
         size,
         media_match,
+        extra,
     };
     (!file.is_empty()).then_some(file)
 }
