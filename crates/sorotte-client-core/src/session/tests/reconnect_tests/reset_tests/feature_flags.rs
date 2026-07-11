@@ -49,7 +49,7 @@ fn reset_sync_state_for_reconnect_clears_managed_rooms_support_until_next_hello(
         session
             .runtime_actions_for_local_controller_auth_request(
                 "+room:ABCDEF123456".to_owned(),
-                "AB-123-456".to_owned(),
+                "AB-123-456".into(),
             )
             .is_empty()
     );

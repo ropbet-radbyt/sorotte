@@ -67,7 +67,7 @@ where
     pub fn run_request_controller_auth(
         &mut self,
         room: impl Into<String>,
-        password: impl Into<String>,
+        password: impl Into<SecretValue>,
     ) -> Result<bool, PlayerError> {
         let actions = self
             .session

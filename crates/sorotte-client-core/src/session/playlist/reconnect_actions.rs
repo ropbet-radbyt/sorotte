@@ -425,10 +425,7 @@ impl ClientSession {
             actions.push(ClientRuntimeAction::NotifyControllerAuthTransition(
                 ControllerAuthTransitionNotification::Attempting { room: room.clone() },
             ));
-            actions.push(ClientRuntimeAction::RequestControllerAuth {
-                room,
-                password: password.into(),
-            });
+            actions.push(ClientRuntimeAction::RequestControllerAuth { room, password });
         }
         actions
     }

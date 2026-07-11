@@ -348,10 +348,9 @@ fn flush_reconnect_correction_diagnostics_to_sink_dedupes_snapshot_and_emits_on_
         "unchanged reconnect correction metrics/state should not emit duplicate diagnostics"
     );
 
-    runtime
-        .session_mut()
-        .behavior_config_mut()
-        .reconnect_state_restore_auto_correct = false;
+    let mut behavior = runtime.session().behavior_config().clone();
+    behavior.reconnect_state_restore_auto_correct = false;
+    runtime.session_mut().set_behavior_config(behavior);
 
     flush_reconnect_correction_diagnostics_to_sink(
         &runtime,

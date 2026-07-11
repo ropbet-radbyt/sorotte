@@ -194,10 +194,13 @@ impl ClientCommand {
         Self::UpdateSettings(Box::new(settings))
     }
 
-    pub fn request_controller_auth(room: impl Into<String>, password: impl Into<String>) -> Self {
+    pub fn request_controller_auth(
+        room: impl Into<String>,
+        password: impl Into<SecretValue>,
+    ) -> Self {
         Self::RequestControllerAuth {
             room: room.into(),
-            password: SecretValue::new(password),
+            password: password.into(),
         }
     }
 }
@@ -662,15 +665,15 @@ where
         let autoplay_enabled = config.readiness.autoplay_initial_state;
         let controlled_room_password = config.connection.controlled_room_password;
         let mut session = self.runtime.session_mut();
-        *session.behavior_config_mut() = behavior;
-        *session.desync_config_mut() = desync;
-        *session.readiness_autoplay_config_mut() = readiness;
+        session.set_behavior_config(behavior);
+        session.set_desync_config(desync);
+        session.set_readiness_autoplay_config(readiness);
         session.set_autoplay_enabled(autoplay_enabled);
         if let (Some(room), Some(password)) = (settings.active_room, controlled_room_password) {
             // An absent configured password intentionally does not erase credentials
             // learned during this live session. A fresh application/session, including
             // the GUI's reset reconnect path, naturally starts with an empty cache.
-            session.remember_control_password_for_room(&room, password.expose_secret());
+            session.remember_control_password_for_room(&room, password);
         }
     }
 
@@ -848,8 +851,7 @@ where
             ClientCommand::SetPaused(paused) => ("set-paused", self.runtime.run_set_paused(paused)),
             ClientCommand::RequestControllerAuth { room, password } => (
                 "request-controller-auth",
-                self.runtime
-                    .run_request_controller_auth(room, password.expose_secret()),
+                self.runtime.run_request_controller_auth(room, password),
             ),
         };
 
@@ -1159,7 +1161,7 @@ where
     pub fn run_request_controller_auth(
         &mut self,
         room: impl Into<String>,
-        password: impl Into<String>,
+        password: impl Into<SecretValue>,
     ) -> Result<bool, PlayerError> {
         self.runtime.run_request_controller_auth(room, password)
     }
@@ -1832,10 +1834,9 @@ mod tests {
             ..TestPlayer::default()
         };
         let mut application = ClientApplication::new(ClientSession::default(), player);
-        application
-            .session_mut()
-            .behavior_config_mut()
-            .pause_on_leave = true;
+        let mut behavior = application.session().behavior_config().clone();
+        behavior.pause_on_leave = true;
+        application.session_mut().set_behavior_config(behavior);
         let _ = application.dispatch(ClientCommand::Connect {
             endpoint: "sync.example:8999".to_owned(),
         });
@@ -1874,14 +1875,17 @@ mod tests {
         let mut application =
             ClientApplication::new(ClientSession::default(), TestPlayer::default());
         {
+            let mut behavior = application.session().behavior_config().clone();
+            let mut desync = application.session().desync_config().clone();
+            let mut readiness = application.session().readiness_autoplay_config().clone();
+            behavior.reconnect_state_restore_correction_retry_max_attempts = 91;
+            desync.slowdown_rate = 0.8125;
+            readiness.autoplay_delay_seconds = 17.25;
+
             let mut session = application.session_mut();
-            session
-                .behavior_config_mut()
-                .reconnect_state_restore_correction_retry_max_attempts = 91;
-            session.desync_config_mut().slowdown_rate = 0.8125;
-            session
-                .readiness_autoplay_config_mut()
-                .autoplay_delay_seconds = 17.25;
+            session.set_behavior_config(behavior);
+            session.set_desync_config(desync);
+            session.set_readiness_autoplay_config(readiness);
         }
         let config = configured_runtime_settings();
 

@@ -20,7 +20,7 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_controller_auth_transit
     adapter
         .runtime
         .session_mut()
-        .remember_control_password_for_room(room, "ab-123-456");
+        .remember_control_password_for_room(room, "ab-123-456".into());
     adapter
         .apply_message_json(
             r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.7.5","features":{"chat":true}}}"#,
@@ -275,11 +275,16 @@ fn gui_client_core_chat_session_runtime_adapter_set_room_preserves_autoplay_stat
         )
         .expect("remote ready user should apply");
     adapter.runtime.session_mut().set_autoplay_enabled(true);
+    let mut readiness = adapter
+        .runtime
+        .session()
+        .readiness_autoplay_config()
+        .clone();
+    readiness.auto_play_threshold = Some(2);
     adapter
         .runtime
         .session_mut()
-        .readiness_autoplay_config_mut()
-        .auto_play_threshold = Some(2);
+        .set_readiness_autoplay_config(readiness);
     adapter
         .runtime
         .session_mut()
@@ -341,11 +346,16 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_autoplay_countdown_noti
         )
         .expect("remote ready user should apply");
     adapter.runtime.session_mut().set_autoplay_enabled(true);
+    let mut readiness = adapter
+        .runtime
+        .session()
+        .readiness_autoplay_config()
+        .clone();
+    readiness.auto_play_threshold = Some(2);
     adapter
         .runtime
         .session_mut()
-        .readiness_autoplay_config_mut()
-        .auto_play_threshold = Some(2);
+        .set_readiness_autoplay_config(readiness);
     adapter
         .runtime
         .session_mut()
@@ -431,11 +441,16 @@ fn gui_client_core_chat_session_runtime_adapter_queues_attached_player_unpause_w
         )
         .expect("remote ready user should apply");
     adapter.runtime.session_mut().set_autoplay_enabled(true);
+    let mut readiness = adapter
+        .runtime
+        .session()
+        .readiness_autoplay_config()
+        .clone();
+    readiness.auto_play_threshold = Some(2);
     adapter
         .runtime
         .session_mut()
-        .readiness_autoplay_config_mut()
-        .auto_play_threshold = Some(2);
+        .set_readiness_autoplay_config(readiness);
     adapter
         .runtime
         .session_mut()

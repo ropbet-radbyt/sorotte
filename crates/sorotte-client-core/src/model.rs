@@ -552,9 +552,9 @@ pub struct ReconnectState {
 pub struct ControllerState {
     pub(crate) controlled_room_switch_intent: Option<String>,
     pub(crate) pending_local_room_switch_target: Option<String>,
-    pub(crate) reidentify_intent: Option<(String, String)>,
-    pub(crate) last_auth_password_attempt: Option<String>,
-    pub(crate) room_passwords: BTreeMap<String, String>,
+    pub(crate) reidentify_intent: Option<(String, SecretValue)>,
+    pub(crate) last_auth_password_attempt: Option<SecretValue>,
+    pub(crate) room_passwords: BTreeMap<String, SecretValue>,
 }
 
 impl std::fmt::Debug for ControllerState {
@@ -824,15 +824,13 @@ mod tests {
     #[test]
     fn controller_state_debug_redacts_stored_passwords() {
         let mut model = ClientModel::default();
-        model.controller.reidentify_intent = Some((
-            "+room:ABCDEF123456".to_owned(),
-            "reidentify-secret".to_owned(),
-        ));
-        model.controller.last_auth_password_attempt = Some("attempt-secret".to_owned());
+        model.controller.reidentify_intent =
+            Some(("+room:ABCDEF123456".to_owned(), "reidentify-secret".into()));
+        model.controller.last_auth_password_attempt = Some("attempt-secret".into());
         model
             .controller
             .room_passwords
-            .insert("+room:ABCDEF123456".to_owned(), "stored-secret".to_owned());
+            .insert("+room:ABCDEF123456".to_owned(), "stored-secret".into());
 
         let debug = format!("{model:?}");
         assert!(!debug.contains("reidentify-secret"));

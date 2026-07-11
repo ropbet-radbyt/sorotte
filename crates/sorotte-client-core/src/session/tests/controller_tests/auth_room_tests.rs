@@ -418,7 +418,7 @@ fn manual_controller_auth_success_stores_password_for_future_reidentify() {
         !session
             .runtime_actions_for_local_controller_auth_request(
                 "+room:ABCDEF123456".to_owned(),
-                "ab_123-456!".to_owned(),
+                "ab_123-456!".into(),
             )
             .is_empty(),
         "manual controller auth should record the attempted password"

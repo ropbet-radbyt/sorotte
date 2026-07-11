@@ -73,24 +73,24 @@ impl<'a> ClientSessionUpdate<'a> {
         self.session.reset_sync_state_for_reconnect();
     }
 
-    pub fn reconnect_policy_mut(&mut self) -> &mut ReconnectPolicyConfig {
-        self.session.reconnect_policy_mut()
+    pub fn set_reconnect_policy(&mut self, policy: ReconnectPolicyConfig) {
+        self.session.set_reconnect_policy(policy);
     }
 
-    pub fn behavior_config_mut(&mut self) -> &mut SessionBehaviorConfig {
-        self.session.behavior_config_mut()
+    pub fn set_behavior_config(&mut self, config: SessionBehaviorConfig) {
+        self.session.set_behavior_config(config);
     }
 
-    pub fn desync_config_mut(&mut self) -> &mut DesyncCorrectionConfig {
-        self.session.desync_config_mut()
+    pub fn set_desync_config(&mut self, config: DesyncCorrectionConfig) {
+        self.session.set_desync_config(config);
     }
 
-    pub fn readiness_autoplay_config_mut(&mut self) -> &mut ReadinessAutoplayConfig {
-        self.session.readiness_autoplay_config_mut()
+    pub fn set_readiness_autoplay_config(&mut self, config: ReadinessAutoplayConfig) {
+        self.session.set_readiness_autoplay_config(config);
     }
 
-    pub fn chat_config_mut(&mut self) -> &mut ChatConfig {
-        self.session.chat_config_mut()
+    pub fn set_chat_config(&mut self, config: ChatConfig) {
+        self.session.set_chat_config(config);
     }
 
     pub fn begin_local_playlist_index_reset_intent(
@@ -134,7 +134,7 @@ impl<'a> ClientSessionUpdate<'a> {
         self.session.set_media_match_peer_tiers(tiers);
     }
 
-    pub fn remember_control_password_for_room(&mut self, room_name: &str, password: &str) {
+    pub fn remember_control_password_for_room(&mut self, room_name: &str, password: SecretValue) {
         self.session
             .remember_control_password_for_room(room_name, password);
     }

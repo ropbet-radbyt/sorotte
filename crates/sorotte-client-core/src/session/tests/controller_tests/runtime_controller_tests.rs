@@ -479,8 +479,9 @@ fn client_runtime_set_room_with_inline_controlled_room_password_canonicalizes_an
             .model
             .controller
             .room_passwords
-            .get("+room:ABCDEF123456"),
-        Some(&"AB-123-456".to_owned()),
+            .get("+room:ABCDEF123456")
+            .map(|password| password.expose_secret()),
+        Some("AB-123-456"),
         "inline controlled-room password should be cached for future reidentify flows"
     );
     assert_eq!(control.outbound_messages().len(), 3);
@@ -521,6 +522,25 @@ fn client_runtime_set_room_with_inline_controlled_room_password_canonicalizes_an
             room: "+room:ABCDEF123456".to_owned()
         }]
     );
+}
+
+#[test]
+fn cached_control_password_is_typed_and_redacted_after_normalization() {
+    const RAW_PASSWORD: &str = "stored_canary-9123!";
+    const NORMALIZED_PASSWORD: &str = "STOREDCANARY-9123";
+    let mut session = ClientSession::default();
+
+    session.remember_control_password_for_room("+room:ABCDEF123456", RAW_PASSWORD);
+
+    let stored = session
+        .model
+        .controller
+        .room_passwords
+        .get("+room:ABCDEF123456")
+        .expect("controlled-room password should be cached");
+    assert_eq!(stored.expose_secret(), NORMALIZED_PASSWORD);
+    assert_eq!(format!("{stored:?}"), sorotte_secret::REDACTED_SECRET);
+    assert!(!format!("{:?}", session.model.controller).contains(NORMALIZED_PASSWORD));
 }
 
 #[test]

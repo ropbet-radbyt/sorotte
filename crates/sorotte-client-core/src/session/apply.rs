@@ -254,7 +254,10 @@ impl ClientSession {
                                 self.model.controller.last_auth_password_attempt.clone(),
                             )
                         {
-                            self.remember_control_password_for_room(target_room, &password);
+                            self.remember_normalized_control_password_for_room(
+                                target_room,
+                                password,
+                            );
                         }
                         if target_room_matches_local_room
                             && let (Some(target_username), Some(target_room)) =
@@ -295,16 +298,19 @@ impl ClientSession {
                 && let (Some(room_name), Some(password)) =
                     (new_controlled_room.room_name, new_controlled_room.password)
             {
-                let password = password.expose_secret();
-                let normalized_password =
-                    Self::normalize_control_password_legacy_compatible(password);
+                let normalized_password = SecretValue::new(
+                    Self::normalize_control_password_legacy_compatible(password.expose_secret()),
+                );
                 self.model.readiness.autoplay_enabled = false;
                 self.stop_autoplay_countdown();
-                self.remember_control_password_for_room(&room_name, password);
+                self.remember_normalized_control_password_for_room(
+                    &room_name,
+                    normalized_password.clone(),
+                );
                 self.pending_controlled_room_creation_notifications.push(
                     ControlledRoomCreationNotification::Created {
                         room: room_name.clone(),
-                        password: normalized_password.clone().into(),
+                        password: normalized_password.clone(),
                     },
                 );
 

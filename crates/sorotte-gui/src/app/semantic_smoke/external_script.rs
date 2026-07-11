@@ -156,7 +156,7 @@ fn apply_external_semantic_setting_line(
             if fields.next().is_some() {
                 return Err("setting server-password accepts exactly one value".to_owned());
             }
-            settings.server_password = parse_external_optional_text(value);
+            settings.server_password = parse_external_optional_text(value).map(Into::into);
         }
         "player-path" => {
             let value = fields
@@ -207,10 +207,10 @@ fn apply_external_semantic_setting_line(
             if fields.next().is_some() {
                 return Err("setting plex-selected-server accepts exactly three values".to_owned());
             }
-            settings.plex_user_token = Some(token.to_owned());
+            settings.plex_user_token = Some(token.into());
             settings.plex_selected_server_id = Some(machine_identifier.to_owned());
             settings.plex_selected_server_url = Some(uri.to_owned());
-            settings.plex_selected_server_token = Some(token.to_owned());
+            settings.plex_selected_server_token = Some(token.into());
         }
         "plex-sync-enabled" => {
             let value = fields

@@ -448,6 +448,10 @@ impl ClientSession {
         &mut self.model.playback.desync_config
     }
 
+    pub(crate) fn set_desync_config(&mut self, config: DesyncCorrectionConfig) {
+        self.model.playback.desync_config = config;
+    }
+
     pub fn reconnect_policy(&self) -> &ReconnectPolicyConfig {
         &self.model.reconnect.policy
     }
@@ -456,12 +460,20 @@ impl ClientSession {
         &mut self.model.reconnect.policy
     }
 
+    pub(crate) fn set_reconnect_policy(&mut self, policy: ReconnectPolicyConfig) {
+        self.model.reconnect.policy = policy;
+    }
+
     pub fn behavior_config(&self) -> &SessionBehaviorConfig {
         &self.behavior_config
     }
 
     pub fn behavior_config_mut(&mut self) -> &mut SessionBehaviorConfig {
         &mut self.behavior_config
+    }
+
+    pub(crate) fn set_behavior_config(&mut self, config: SessionBehaviorConfig) {
+        self.behavior_config = config;
     }
 
     pub fn reconnect_state_restore_correction_metrics(
@@ -524,12 +536,20 @@ impl ClientSession {
         &mut self.model.readiness.config
     }
 
+    pub(crate) fn set_readiness_autoplay_config(&mut self, config: ReadinessAutoplayConfig) {
+        self.model.readiness.config = config;
+    }
+
     pub fn chat_config(&self) -> &ChatConfig {
         &self.chat_config
     }
 
     pub fn chat_config_mut(&mut self) -> &mut ChatConfig {
         &mut self.chat_config
+    }
+
+    pub(crate) fn set_chat_config(&mut self, config: ChatConfig) {
+        self.chat_config = config;
     }
 
     pub fn last_paused_on_leave_at_seconds(&self) -> Option<f64> {
@@ -745,20 +765,33 @@ impl ClientSession {
         }
     }
 
-    pub fn remember_control_password_for_room(&mut self, room_name: &str, password: &str) {
-        if !Self::is_controlled_room_name(room_name) {
-            return;
-        }
+    pub fn remember_control_password_for_room(
+        &mut self,
+        room_name: &str,
+        password: impl Into<SecretValue>,
+    ) {
+        let password = password.into();
+        let normalized_password =
+            Self::normalize_control_password_legacy_compatible(password.expose_secret());
+        self.remember_normalized_control_password_for_room(
+            room_name,
+            SecretValue::new(normalized_password),
+        );
+    }
 
-        let normalized_password = Self::normalize_control_password_legacy_compatible(password);
-        if normalized_password.is_empty() {
+    pub(super) fn remember_normalized_control_password_for_room(
+        &mut self,
+        room_name: &str,
+        password: SecretValue,
+    ) {
+        if !Self::is_controlled_room_name(room_name) || password.is_empty() {
             return;
         }
 
         self.model
             .controller
             .room_passwords
-            .insert(room_name.to_owned(), normalized_password);
+            .insert(room_name.to_owned(), password);
     }
 
     pub fn autoplay_enabled(&self) -> bool {

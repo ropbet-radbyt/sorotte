@@ -179,11 +179,9 @@ fn gui_client_core_chat_session_runtime_adapter_marks_single_item_loop_playlist_
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
         )
         .expect("inbound server hello should apply");
-    adapter
-        .runtime
-        .session_mut()
-        .behavior_config_mut()
-        .loop_single_files = true;
+    let mut behavior = adapter.runtime.session().behavior_config().clone();
+    behavior.loop_single_files = true;
+    adapter.runtime.session_mut().set_behavior_config(behavior);
     adapter
         .apply_message_json(
             r#"{"Set":{"playlistChange":{"files":["episode1.mkv"],"user":"alice"}}}"#,

@@ -119,10 +119,11 @@ fn flush_file_difference_notifications_to_sink_dedupes_and_honors_duration_overr
     .expect("identical summary should not emit duplicate notification");
     assert_eq!(captured, vec!["duration"]);
 
+    let mut readiness = runtime.session().readiness_autoplay_config().clone();
+    readiness.show_duration_notification = false;
     runtime
         .session_mut()
-        .readiness_autoplay_config_mut()
-        .show_duration_notification = false;
+        .set_readiness_autoplay_config(readiness);
     flush_file_difference_notifications_to_sink(&runtime, &mut state, &mut |summary| {
         captured.push(summary.to_owned());
         Ok(())

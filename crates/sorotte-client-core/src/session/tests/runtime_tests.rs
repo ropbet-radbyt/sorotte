@@ -1,6 +1,44 @@
 use super::*;
 
 #[test]
+fn client_session_update_replaces_owned_configuration_slices() {
+    let session = ClientSession::default();
+    let player = RecordingPlayer::default();
+    let control = QueuedRuntimeControl::default();
+    let mut runtime = ClientRuntime::new(session, player, control);
+
+    let mut reconnect = runtime.session().reconnect_policy().clone();
+    reconnect.max_retries = 7;
+    let mut behavior = runtime.session().behavior_config().clone();
+    behavior.pause_on_leave = false;
+    let mut desync = runtime.session().desync_config().clone();
+    desync.slowdown_rate = 0.75;
+    let mut readiness = runtime.session().readiness_autoplay_config().clone();
+    readiness.auto_play_threshold = Some(3);
+    let mut chat = runtime.session().chat_config().clone();
+    chat.max_chat_message_length = 42;
+
+    let mut update = runtime.session_mut();
+    update.set_reconnect_policy(reconnect);
+    update.set_behavior_config(behavior);
+    update.set_desync_config(desync);
+    update.set_readiness_autoplay_config(readiness);
+    update.set_chat_config(chat);
+
+    assert_eq!(runtime.session().reconnect_policy().max_retries, 7);
+    assert!(!runtime.session().behavior_config().pause_on_leave);
+    assert_eq!(runtime.session().desync_config().slowdown_rate, 0.75);
+    assert_eq!(
+        runtime
+            .session()
+            .readiness_autoplay_config()
+            .auto_play_threshold,
+        Some(3)
+    );
+    assert_eq!(runtime.session().chat_config().max_chat_message_length, 42);
+}
+
+#[test]
 fn client_runtime_local_media_open_dispatches_not_ready_protocol_message() {
     let mut session = ClientSession::default();
     session

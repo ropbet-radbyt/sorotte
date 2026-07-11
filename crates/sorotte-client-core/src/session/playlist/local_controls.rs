@@ -66,7 +66,7 @@ impl ClientSession {
     pub fn runtime_actions_for_local_controller_auth_request(
         &mut self,
         room: String,
-        password: String,
+        password: SecretValue,
     ) -> Vec<ClientRuntimeAction> {
         if self.model.connection.username.is_none() {
             return Vec::new();
@@ -77,16 +77,15 @@ impl ClientSession {
         if room.is_empty() {
             return Vec::new();
         }
-        let password = Self::normalize_control_password_legacy_compatible(&password);
+        let password = SecretValue::new(Self::normalize_control_password_legacy_compatible(
+            password.expose_secret(),
+        ));
         self.model.controller.last_auth_password_attempt = Some(password.clone());
         vec![
             ClientRuntimeAction::NotifyControllerAuthTransition(
                 ControllerAuthTransitionNotification::Attempting { room: room.clone() },
             ),
-            ClientRuntimeAction::RequestControllerAuth {
-                room,
-                password: password.into(),
-            },
+            ClientRuntimeAction::RequestControllerAuth { room, password },
         ]
     }
 
@@ -121,6 +120,7 @@ impl ClientSession {
         ];
         let controller_password = inline_password
             .filter(|password| !password.is_empty())
+            .map(SecretValue::from)
             .or_else(|| self.model.controller.room_passwords.get(&room).cloned());
         if self.server_managed_rooms_supported()
             && let Some(password) = controller_password
@@ -129,10 +129,7 @@ impl ClientSession {
             actions.push(ClientRuntimeAction::NotifyControllerAuthTransition(
                 ControllerAuthTransitionNotification::Attempting { room: room.clone() },
             ));
-            actions.push(ClientRuntimeAction::RequestControllerAuth {
-                room,
-                password: password.into(),
-            });
+            actions.push(ClientRuntimeAction::RequestControllerAuth { room, password });
         }
         actions
     }

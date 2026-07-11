@@ -60,10 +60,11 @@ fn flush_autoplay_notifications_to_sink_dispatches_notifications() {
                 r#"{"Set":{"user":{"bob":{"room":{"name":"room1"},"file":{"name":"bob.mp4"},"isReady":true}}}}"#,
             )
             .expect("other user ready should apply");
+    let mut readiness = runtime.session().readiness_autoplay_config().clone();
+    readiness.auto_play_threshold = Some(2);
     runtime
         .session_mut()
-        .readiness_autoplay_config_mut()
-        .auto_play_threshold = Some(2);
+        .set_readiness_autoplay_config(readiness);
 
     runtime
         .run_disconnect(0.0)

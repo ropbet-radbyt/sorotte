@@ -122,7 +122,9 @@ fn flush_reconnect_notifications_to_sink_dispatches_disconnected_notification() 
         controlled_room_password_override: None,
     };
     let mut runtime = create_client_runtime(&config);
-    runtime.session_mut().reconnect_policy_mut().max_retries = 0;
+    let mut reconnect_policy = runtime.session().reconnect_policy().clone();
+    reconnect_policy.max_retries = 0;
+    runtime.session_mut().set_reconnect_policy(reconnect_policy);
     runtime
         .run_reconnect_retry(1)
         .expect("terminal reconnect retry should queue disconnected notification");
