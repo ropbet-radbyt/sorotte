@@ -1,6 +1,6 @@
 use super::super::{
     GuiPendingCompletionRequest, GuiPersistedConfigRuntimeOwner, GuiQueuedRuntimeBridgeHandle,
-    GuiQueuedRuntimeOwner, GuiRuntimeRequest, GuiShellAction, SorotteGuiShellAppState,
+    GuiRuntimeRequest, GuiShellAction, SorotteGuiShellAppState,
 };
 use super::LivePythonPeerInteropError;
 
@@ -9,7 +9,7 @@ pub(in crate::app::live_python_interop) fn pump_and_apply(
     handle: &GuiQueuedRuntimeBridgeHandle,
     state: &mut SorotteGuiShellAppState,
 ) {
-    GuiQueuedRuntimeOwner::pump(owner, handle, state);
+    owner.pump_compatibility_state(handle, state);
     for action in handle.drain_actions() {
         state.apply(action);
     }

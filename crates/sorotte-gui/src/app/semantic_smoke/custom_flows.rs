@@ -2,10 +2,9 @@ use std::path::PathBuf;
 
 use super::super::{
     GuiAppHost, GuiLaunchMode, GuiPendingCompletionRequest, GuiPersistedConfigRuntimeOwner,
-    GuiPersistedUiState, GuiQueuedRuntimeBridgeHandle, GuiQueuedRuntimeOwner, GuiRuntimeRequest,
-    GuiShellAction, GuiShellView, SorotteGuiShellAppState, StoredClientSettingsMvp,
-    load_gui_ui_state_from_root, persist_gui_ui_state_at_root,
-    run_gui_host_with_startup_actions_and_gui_state,
+    GuiPersistedUiState, GuiQueuedRuntimeBridgeHandle, GuiRuntimeRequest, GuiShellAction,
+    GuiShellView, SorotteGuiShellAppState, StoredClientSettingsMvp, load_gui_ui_state_from_root,
+    persist_gui_ui_state_at_root, run_gui_host_with_startup_actions_and_gui_state,
     upsert_sorotte_ini_stored_client_settings_mvp_at_path,
 };
 use super::GuiSemanticScenarioReport;
@@ -170,7 +169,7 @@ pub(super) fn run_gui_semantic_persistence_reset_flow() -> Result<GuiSemanticSce
         handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
             GuiPendingCompletionRequest::ClearGuiData,
         ));
-        GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &clear_state);
+        owner.pump_compatibility_state(&handle, &clear_state);
         let actions = handle.drain_actions();
         if !actions
             .iter()
@@ -271,7 +270,7 @@ pub(super) fn run_gui_semantic_detached_runtime_ownership_flow()
     ) -> Result<T, String> {
         let deadline = Instant::now() + timeout;
         loop {
-            GuiQueuedRuntimeOwner::pump(owner, handle, state);
+            owner.pump_compatibility_state(handle, state);
             let actions = handle.drain_actions();
             for action in actions {
                 if !state.apply(action) {
@@ -367,7 +366,7 @@ pub(super) fn run_gui_semantic_detached_runtime_ownership_flow()
         connect_handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
             GuiPendingCompletionRequest::ConnectPublicServer,
         ));
-        GuiQueuedRuntimeOwner::pump(&mut connect_owner, &connect_handle, &connect_state);
+        connect_owner.pump_compatibility_state(&connect_handle, &connect_state);
         let connect_actions = connect_handle.drain_actions();
         if !connect_actions
             .iter()
@@ -403,7 +402,7 @@ pub(super) fn run_gui_semantic_detached_runtime_ownership_flow()
             ));
         }
 
-        GuiQueuedRuntimeOwner::pump(&mut connect_owner, &connect_handle, &connect_state);
+        connect_owner.pump_compatibility_state(&connect_handle, &connect_state);
         for action in connect_handle.drain_actions() {
             if !connect_state.apply(action) {
                 return Err(
@@ -439,7 +438,7 @@ pub(super) fn run_gui_semantic_detached_runtime_ownership_flow()
                 ),
             ]),
         ));
-        GuiQueuedRuntimeOwner::pump(&mut refresh_owner, &refresh_handle, &refresh_state);
+        refresh_owner.pump_compatibility_state(&refresh_handle, &refresh_state);
         let refresh_actions = refresh_handle.drain_actions();
         if !refresh_actions.iter().any(|action| {
             matches!(
@@ -485,7 +484,7 @@ pub(super) fn run_gui_semantic_detached_runtime_ownership_flow()
         search_handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
             GuiPendingCompletionRequest::SearchMissingMedia,
         ));
-        GuiQueuedRuntimeOwner::pump(&mut search_owner, &search_handle, &search_state);
+        search_owner.pump_compatibility_state(&search_handle, &search_state);
         let search_actions = search_handle.drain_actions();
         if !search_actions.iter().any(|action| {
             matches!(
