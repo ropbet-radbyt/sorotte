@@ -307,7 +307,7 @@ where
             line = read_inbound_protocol_line(&mut reader) => {
                 match line? {
                     Some(line) => {
-                        let (decoded_inbound_messages, trailing_decode_error) =
+                        let (decoded_inbound_messages, predecoded_inbound_error) =
                             decode_inbound_message_prefix_legacy_compatible(&line);
                         let inbound_is_server_hello = pending_ready_at_start_on_server_hello.is_some()
                             && decoded_inbound_messages
@@ -327,7 +327,7 @@ where
                                     outbound_state_sync_enabled,
                                 },
                             );
-                        run_connected_session_event_plan_legacy_compatible(
+                        let event_result = run_connected_session_event_plan_legacy_compatible(
                             runtime,
                             Some(&line),
                             now_seconds,
@@ -349,8 +349,12 @@ where
                                 },
                             },
                         )
-                        .await?;
-                        if let Some(error) = trailing_decode_error {
+                        .await;
+                        if let Err(error) = event_result {
+                            emit_application_service_events(runtime.shutdown_plex_service().await);
+                            return Err(error);
+                        }
+                        if let Some(error) = predecoded_inbound_error {
                             emit_application_service_events(runtime.shutdown_plex_service().await);
                             return Err(error.into());
                         }

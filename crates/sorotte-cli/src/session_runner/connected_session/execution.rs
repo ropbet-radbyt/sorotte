@@ -110,15 +110,25 @@ fn apply_connected_session_inbound_message_legacy_compatible(
     now_seconds: f64,
     dont_slow_down_with_me: bool,
     plan: ConnectedSessionInboundApplyPlan,
-) -> anyhow::Result<bool> {
-    let state_sync_emitted = application.apply_protocol_line(
+) -> anyhow::Result<ConnectedSessionInboundApplyOutcome> {
+    let outcome = application.apply_protocol_line_prefix(
         line,
         now_seconds,
         plan.reconcile_inbound_state,
         dont_slow_down_with_me,
         plan.apply_message_json_at,
     )?;
-    Ok(state_sync_emitted || plan.outbound_state_sync_enabled)
+    Ok(ConnectedSessionInboundApplyOutcome {
+        outbound_state_sync_enabled: outcome.state_sync_emitted || plan.outbound_state_sync_enabled,
+        applied_message_count: outcome.applied_message_count,
+        trailing_decode_error: outcome.trailing_decode_error,
+    })
+}
+
+struct ConnectedSessionInboundApplyOutcome {
+    outbound_state_sync_enabled: bool,
+    applied_message_count: usize,
+    trailing_decode_error: Option<ProtocolError>,
 }
 
 async fn apply_connected_session_protocol_plan_legacy_compatible(
@@ -320,17 +330,28 @@ where
         outbound_state_sync_enabled,
         branch,
     } = context;
+    let mut trailing_decode_error = None;
     if let Some(inbound_apply) = event_execution_plan.inbound_apply {
         let inbound_message_line = inbound_message_line.ok_or_else(|| {
             anyhow::anyhow!("inbound apply plan requires an inbound message line")
         })?;
-        *outbound_state_sync_enabled = apply_connected_session_inbound_message_legacy_compatible(
+        let outcome = apply_connected_session_inbound_message_legacy_compatible(
             runtime,
             inbound_message_line,
             now_seconds,
             dont_slow_down_with_me,
             inbound_apply,
         )?;
+        let ConnectedSessionInboundApplyOutcome {
+            outbound_state_sync_enabled: next_outbound_state_sync_enabled,
+            applied_message_count,
+            trailing_decode_error: outcome_trailing_decode_error,
+        } = outcome;
+        *outbound_state_sync_enabled = next_outbound_state_sync_enabled;
+        match (applied_message_count, outcome_trailing_decode_error) {
+            (0, Some(error)) => return Err(error.into()),
+            (_, error) => trailing_decode_error = error,
+        }
     }
     if let Some(inbound_post_apply) = event_execution_plan.event.inbound_post_apply {
         run_connected_session_inbound_post_apply_legacy_compatible(
@@ -349,6 +370,10 @@ where
         branch,
     )
     .await?;
+
+    if let Some(error) = trailing_decode_error {
+        return Err(error.into());
+    }
 
     Ok(())
 }

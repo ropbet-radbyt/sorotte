@@ -44,6 +44,18 @@ pub struct ClientApplicationSettings {
     pub autoplay_enabled: Option<bool>,
 }
 
+/// Result of applying the decodable prefix of one transport line.
+///
+/// A command-level decode error is retained separately so adapters can publish
+/// effects produced by earlier commands before they surface the error. Errors
+/// while parsing the line itself or applying a decoded command are still
+/// returned immediately.
+pub struct ProtocolLineApplyOutcome {
+    pub state_sync_emitted: bool,
+    pub applied_message_count: usize,
+    pub trailing_decode_error: Option<ProtocolError>,
+}
+
 #[derive(Clone, PartialEq)]
 pub enum ClientCommand {
     Connect {
@@ -721,6 +733,29 @@ where
         dont_slow_down_with_me: bool,
         apply_fallback_json: bool,
     ) -> Result<bool, ProtocolError> {
+        let outcome = self.apply_protocol_line_prefix(
+            line,
+            received_at_seconds,
+            reconcile_inbound_state,
+            dont_slow_down_with_me,
+            apply_fallback_json,
+        )?;
+        if let Some(error) = outcome.trailing_decode_error {
+            return Err(error);
+        }
+        Ok(outcome.state_sync_emitted)
+    }
+
+    /// Applies commands in wire order until the first command-level decode
+    /// error, returning that error alongside the effects of the valid prefix.
+    pub fn apply_protocol_line_prefix(
+        &mut self,
+        line: &str,
+        received_at_seconds: f64,
+        reconcile_inbound_state: bool,
+        dont_slow_down_with_me: bool,
+        apply_fallback_json: bool,
+    ) -> Result<ProtocolLineApplyOutcome, ProtocolError> {
         let messages = decode_message_line_items(line)?;
         if messages.is_empty() {
             if apply_fallback_json {
@@ -728,12 +763,26 @@ where
                     .session_mut()
                     .apply_message_json_at(line, received_at_seconds)?;
             }
-            return Ok(false);
+            return Ok(ProtocolLineApplyOutcome {
+                state_sync_emitted: false,
+                applied_message_count: 0,
+                trailing_decode_error: None,
+            });
         }
 
         let mut state_sync_emitted = false;
+        let mut applied_message_count = 0;
         for item in messages {
-            let message = item.message?;
+            let message = match item.message {
+                Ok(message) => message,
+                Err(error) => {
+                    return Ok(ProtocolLineApplyOutcome {
+                        state_sync_emitted,
+                        applied_message_count,
+                        trailing_decode_error: Some(error),
+                    });
+                }
+            };
             match message {
                 ProtocolMessage::State(state) if reconcile_inbound_state => {
                     state_sync_emitted |= self
@@ -748,8 +797,13 @@ where
                     .session_mut()
                     .apply_protocol_message_at(other, received_at_seconds)?,
             }
+            applied_message_count += 1;
         }
-        Ok(state_sync_emitted)
+        Ok(ProtocolLineApplyOutcome {
+            state_sync_emitted,
+            applied_message_count,
+            trailing_decode_error: None,
+        })
     }
 
     pub fn acknowledge_protocol_line(&mut self) -> Option<ProtocolMessage> {

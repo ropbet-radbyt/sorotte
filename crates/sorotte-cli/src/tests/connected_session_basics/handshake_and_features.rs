@@ -1,4 +1,5 @@
 use super::*;
+use sorotte_protocol::ProtocolError;
 
 #[tokio::test]
 async fn connected_client_session_sends_hello_and_applies_inbound_set_ready() {
@@ -431,7 +432,7 @@ async fn connected_client_session_processes_valid_batched_prefix_before_unknown_
         assert!(hello_line.contains("\"Hello\""));
         writer
             .write_all(
-                br#"{"Hello":{"username":"cli-user","room":{"name":"cli-room"},"version":"1.7.5","features":{"readiness":true}},"State":{"ping":{"latencyCalculation":1.25},"playstate":{"position":5.0,"paused":true,"doSeek":true}},"Bogus":{"x":1}}
+                br#"{"Hello":{"username":"cli-user","room":{"name":"cli-room"},"version":"1.7.5","features":{"readiness":true}},"State":{"ping":{"latencyCalculation":1.25},"playstate":{"position":5.0,"paused":true,"doSeek":true}},"Bogus":{"x":1},"Set":{"room":{"name":"must-not-apply"}}}
 "#,
             )
             .await
@@ -508,9 +509,18 @@ async fn connected_client_session_processes_valid_batched_prefix_before_unknown_
         &mut file_difference_sink,
     )
     .await;
+    let error = result.expect_err("client should report the trailing unknown command");
     assert!(
-        result.is_err(),
-        "client should drop after reaching the trailing unknown command"
+        matches!(
+            error.downcast_ref::<ProtocolError>(),
+            Some(ProtocolError::InvalidJson(_))
+        ),
+        "client should surface the protocol decode error, got: {error:#}"
+    );
+    assert_eq!(
+        runtime.session().room(),
+        Some("cli-room"),
+        "commands after the decode error must remain unapplied"
     );
     server_task.await.expect("server task join should succeed");
 }

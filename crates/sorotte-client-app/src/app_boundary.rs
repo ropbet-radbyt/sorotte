@@ -1,7 +1,7 @@
 pub mod application {
     pub use crate::application::{
         ClientApplication, ClientApplicationSettings, ClientCommand, ClientEvent, ConnectionPhase,
-        PlexClientConfig,
+        PlexClientConfig, ProtocolLineApplyOutcome,
     };
 }
 
