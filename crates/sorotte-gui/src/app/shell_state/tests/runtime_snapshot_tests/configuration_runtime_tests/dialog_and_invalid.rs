@@ -51,6 +51,37 @@ fn gui_shell_app_state_preserves_runtime_dialog_expectations_across_configuratio
 }
 
 #[test]
+fn gui_shell_app_state_tracks_explicit_tls_policy_after_resolved_default_round_trip() {
+    let mut state =
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+    assert_eq!(
+        state
+            .configuration
+            .control_value("Privacy", "Trusted Domains Only"),
+        Some("yes")
+    );
+    assert!(!state.menus.tls_prompt_expected);
+
+    for value in [false, true] {
+        assert!(state.apply(GuiShellAction::EditConfigurationBool {
+            section: "Privacy",
+            label: "Trusted Domains Only",
+            value,
+        }));
+        assert_eq!(state.menus.tls_prompt_expected, value);
+    }
+
+    assert_eq!(
+        state
+            .configuration
+            .to_stored_settings()
+            .only_switch_to_trusted_domains,
+        Some(true)
+    );
+}
+
+#[test]
 fn gui_shell_app_state_rejects_invalid_gui_configuration_runtime_snapshots() {
     let mut state =
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
