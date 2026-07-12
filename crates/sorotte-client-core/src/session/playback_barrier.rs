@@ -1,8 +1,8 @@
 use serde_json::{Map, Value};
 use sorotte_protocol::{
-    CommitStartPayload, MediaReadyPayload, PlaybackBarrierPhase, PlaybackBarrierSetExtension,
-    PlaybackBarrierStateExtension, PlaybackBarrierStatusPayload, PrepareMediaPayload,
-    RoomBufferingPhase, RoomBufferingPolicy, RoomBufferingPolicyPayload,
+    CommitStartPayload, MediaLoadIntent, MediaReadyPayload, PlaybackBarrierPhase,
+    PlaybackBarrierSetExtension, PlaybackBarrierStateExtension, PlaybackBarrierStatusPayload,
+    PrepareMediaPayload, RoomBufferingPhase, RoomBufferingPolicy, RoomBufferingPolicyPayload,
     RoomBufferingStatusPayload, SOROTTE_PLAYBACK_BARRIER_V1, StartedAckPayload, StatePayload,
     TransportBufferingReportPayload,
 };
@@ -45,6 +45,18 @@ impl ClientSession {
             .flatten()
     }
 
+    /// Returns a commit only while the server status says that commit is the
+    /// active authority for desired playback. Retained commits remain
+    /// available through `playback_barrier_commit` for diagnostics.
+    pub fn playback_barrier_active_commit(&self) -> Option<&CommitStartPayload> {
+        let commit = self.playback_barrier_commit()?;
+        let status = self.playback_barrier_status()?;
+        (status.phase == PlaybackBarrierPhase::Committed
+            && status.media_generation == commit.media_generation
+            && status.state_revision == Some(commit.state_revision))
+        .then_some(commit)
+    }
+
     pub fn playback_barrier_status(&self) -> Option<&PlaybackBarrierStatusPayload> {
         self.playback_barrier_v1_negotiated()
             .then_some(self.playback_barrier.status.as_ref())
@@ -81,7 +93,9 @@ impl ClientSession {
         let prepare = self.playback_barrier_prepare()?;
         if media_generation == 0
             || prepare.media_generation != media_generation
-            || self.playback_barrier.commit.is_some()
+            || self
+                .playback_barrier_status()
+                .is_none_or(|status| status.phase != PlaybackBarrierPhase::Preparing)
         {
             return None;
         }
@@ -115,19 +129,10 @@ impl ClientSession {
         {
             return None;
         }
-        let commit = self.playback_barrier_commit()?;
+        let commit = self.playback_barrier_active_commit()?;
         if commit.media_generation != media_generation || commit.state_revision != state_revision {
             return None;
         }
-        if self
-            .playback_barrier
-            .status
-            .as_ref()
-            .is_some_and(|status| status.phase != PlaybackBarrierPhase::Committed)
-        {
-            return None;
-        }
-
         let mut started =
             StartedAckPayload::new(media_generation, state_revision, observed_position);
         if let Some(observed_at) = observed_at {
@@ -220,6 +225,8 @@ impl ClientSession {
 
     fn apply_playback_barrier_prepare(&mut self, prepare: PrepareMediaPayload) {
         if prepare.media_generation == 0
+            || prepare.request_nonce == 0
+            || prepare.load_intent == MediaLoadIntent::TransportRefresh
             || prepare.logical_media_id.trim().is_empty()
             || !prepare.target_position.is_finite()
             || prepare.target_position < 0.0
@@ -310,8 +317,7 @@ impl ClientSession {
             .is_some_and(|current| {
                 current.media_generation == status.media_generation
                     && current.state_revision == status.state_revision
-                    && playback_barrier_phase_rank(current.phase)
-                        > playback_barrier_phase_rank(status.phase)
+                    && !playback_barrier_status_transition_allowed(current.phase, status.phase)
             })
         {
             return;
@@ -363,12 +369,27 @@ impl ClientSession {
     }
 }
 
-fn playback_barrier_phase_rank(phase: PlaybackBarrierPhase) -> u8 {
-    match phase {
-        PlaybackBarrierPhase::Preparing => 0,
-        PlaybackBarrierPhase::Committed => 1,
-        PlaybackBarrierPhase::Complete | PlaybackBarrierPhase::Degraded => 2,
-    }
+fn playback_barrier_status_transition_allowed(
+    current: PlaybackBarrierPhase,
+    incoming: PlaybackBarrierPhase,
+) -> bool {
+    current == incoming
+        || matches!(
+            (current, incoming),
+            (
+                PlaybackBarrierPhase::Preparing,
+                PlaybackBarrierPhase::Committed
+                    | PlaybackBarrierPhase::AwaitingDecision
+                    | PlaybackBarrierPhase::Complete
+                    | PlaybackBarrierPhase::Degraded
+            ) | (
+                PlaybackBarrierPhase::Committed,
+                PlaybackBarrierPhase::Complete | PlaybackBarrierPhase::Degraded
+            ) | (
+                PlaybackBarrierPhase::AwaitingDecision,
+                PlaybackBarrierPhase::Degraded
+            )
+        )
 }
 
 fn valid_room_buffering_policy(policy: &RoomBufferingPolicyPayload) -> bool {

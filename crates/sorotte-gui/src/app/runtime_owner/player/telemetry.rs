@@ -196,6 +196,8 @@ impl GuiPersistedConfigRuntimeOwner {
                 &update,
             );
             if file_changed {
+                let _ = self
+                    .interrupt_attached_playback_recovery_impl("observed media transport change");
                 let logical_id = logical_media_id_for_local_file_update(&update);
                 let kind = if update.path.as_deref().is_some_and(browser_is_url)
                     || browser_is_url(&update.name)
@@ -208,6 +210,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     && let Err(error) = session.prepare_attached_playback_media(
                         logical_id,
                         kind,
+                        MediaLoadIntent::TransportRefresh,
                         system_time_seconds(),
                     )
                 {
@@ -223,11 +226,12 @@ impl GuiPersistedConfigRuntimeOwner {
             }
         }
         for update in transport_updates {
+            let update = transport_update_on_room_timeline(update, user_offset_seconds);
             if let Some(paused_for_cache) = update.paused_for_cache {
                 self.player_paused_for_cache = Some(paused_for_cache);
             }
             if let Some(position_seconds) = update.position_seconds {
-                self.player_position_seconds = Some(position_seconds - user_offset_seconds);
+                self.player_position_seconds = Some(position_seconds);
             }
             if let Some(logical_pause) = update.logical_pause
                 && self.player_paused_for_cache != Some(true)
@@ -314,5 +318,67 @@ impl GuiPersistedConfigRuntimeOwner {
             return None;
         }
         Some(pending.logical_file.clone())
+    }
+}
+
+fn transport_update_on_room_timeline(
+    mut update: sorotte_player_api::PlayerTransportTelemetryUpdate,
+    user_offset_seconds: f64,
+) -> sorotte_player_api::PlayerTransportTelemetryUpdate {
+    update.position_seconds = update
+        .position_seconds
+        .map(|position| position - user_offset_seconds);
+    update.seekable_ranges = update.seekable_ranges.map(|ranges| {
+        ranges
+            .into_iter()
+            .map(|range| range.shifted(-user_offset_seconds))
+            .collect()
+    });
+    update
+}
+
+#[cfg(test)]
+mod transport_timeline_tests {
+    use super::transport_update_on_room_timeline;
+    use sorotte_player_api::{
+        PlayerMediaGeneration, PlayerObservationTimestamp, PlayerSeekableRange,
+        PlayerTransportPhase, PlayerTransportTelemetryUpdate,
+    };
+    use std::time::Duration;
+
+    fn update(phase: PlayerTransportPhase, player_position: f64) -> PlayerTransportTelemetryUpdate {
+        let mut update = PlayerTransportTelemetryUpdate::new(
+            PlayerMediaGeneration::new(1),
+            PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(1)),
+        )
+        .with_phase(phase)
+        .with_position_seconds(player_position);
+        update.seekable_ranges = Some(vec![PlayerSeekableRange::new(
+            player_position - 10.0,
+            player_position + 30.0,
+        )]);
+        update
+    }
+
+    #[test]
+    fn positive_offset_is_removed_for_barrier_and_normal_sync_observations() {
+        let normalized =
+            transport_update_on_room_timeline(update(PlayerTransportPhase::ReadyPaused, 15.0), 5.0);
+        assert_eq!(normalized.position_seconds, Some(10.0));
+        assert_eq!(
+            normalized.seekable_ranges,
+            Some(vec![PlayerSeekableRange::new(0.0, 40.0)])
+        );
+    }
+
+    #[test]
+    fn negative_offset_is_removed_for_rebuffer_recovery_observations() {
+        let normalized =
+            transport_update_on_room_timeline(update(PlayerTransportPhase::Rebuffering, 5.0), -5.0);
+        assert_eq!(normalized.position_seconds, Some(10.0));
+        assert_eq!(
+            normalized.seekable_ranges,
+            Some(vec![PlayerSeekableRange::new(0.0, 40.0)])
+        );
     }
 }

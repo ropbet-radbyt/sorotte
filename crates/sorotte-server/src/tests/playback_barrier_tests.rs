@@ -1,9 +1,10 @@
 use super::*;
 use crate::ServerCompatibilityFallback;
 use sorotte_protocol::{
-    PlaybackBarrierDegradedReason, PlaybackBarrierParticipantPhase, PlaybackBarrierPhase,
-    PlaybackBarrierSetExtension, RoomBufferingPhase, RoomBufferingPolicy,
-    RoomBufferingStatusPayload, SOROTTE_PLAYBACK_BARRIER_V1,
+    MediaLoadIntent, PlaybackBarrierDegradedReason, PlaybackBarrierParticipantPhase,
+    PlaybackBarrierPhase, PlaybackBarrierSetExtension, PlaybackBarrierStatusPayload,
+    RoomBufferingPhase, RoomBufferingPolicy, RoomBufferingStatusPayload,
+    SOROTTE_PLAYBACK_BARRIER_V1,
 };
 
 const CAPABILITY: &str = r#""sorottePlaybackBarrierV1":true"#;
@@ -35,6 +36,13 @@ fn buffering_status(lines: &[DirectedOutboundLine]) -> Option<RoomBufferingStatu
         .into_iter()
         .filter_map(|(_, message)| barrier_extension(&message))
         .find_map(|extension| extension.buffering_status)
+}
+
+fn playback_barrier_status(lines: &[DirectedOutboundLine]) -> Option<PlaybackBarrierStatusPayload> {
+    messages(lines)
+        .into_iter()
+        .filter_map(|(_, message)| barrier_extension(&message))
+        .find_map(|extension| extension.status)
 }
 
 fn recipient_has_pause(lines: &[DirectedOutboundLine], recipient: &str, paused: bool) -> bool {
@@ -92,7 +100,7 @@ fn hello_advertises_playback_barrier_and_prepare_is_hidden_from_legacy_clients()
     let lines = runtime
         .handle_line_fanout(
             "alice-client",
-            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":1,"logicalMediaId":"youtube:video","targetPosition":12.0,"policy":"allEligible","timeoutMs":5000}}}}"#,
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":1,"loadIntent":"newPlayback","logicalMediaId":"youtube:video","targetPosition":12.0,"policy":"allEligible","timeoutMs":5000}}}}"#,
         )
         .expect("authorized prepare should succeed");
     let decoded = messages(&lines);
@@ -107,6 +115,8 @@ fn hello_advertises_playback_barrier_and_prepare_is_hidden_from_legacy_clients()
             })
             .expect("capable participant should receive prepare extension");
         let prepare = extension.prepare.expect("prepare should be present");
+        assert_eq!(prepare.media_generation, 1, "the server assigns generation");
+        assert_eq!(prepare.request_nonce, 1, "the request nonce is echoed");
         assert_eq!(prepare.deadline, Some(105.0));
         let status = extension.status.expect("status should accompany prepare");
         assert_eq!(
@@ -143,14 +153,14 @@ fn authenticated_readiness_commits_once_and_started_acks_complete_status() {
     runtime
         .handle_line_fanout(
             "alice-client",
-            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":4,"logicalMediaId":"plex:item","targetPosition":30.0,"policy":"allEligible","timeoutMs":20000}}}}"#,
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":4,"loadIntent":"newPlayback","logicalMediaId":"plex:item","targetPosition":30.0,"policy":"allEligible","timeoutMs":20000}}}}"#,
         )
         .expect("prepare should succeed");
 
     let bob_ready = runtime
         .handle_line_fanout(
             "bob-client",
-            r#"{"State":{"sorottePlaybackBarrierV1":{"ready":{"mediaGeneration":4,"loaded":true,"seekable":true,"bufferReady":true,"username":"alice"}}}}"#,
+            r#"{"State":{"sorottePlaybackBarrierV1":{"ready":{"mediaGeneration":1,"loaded":true,"seekable":true,"bufferReady":true,"username":"alice"}}}}"#,
         )
         .expect("bob readiness should succeed");
     let bob_status = messages(&bob_ready)
@@ -171,7 +181,7 @@ fn authenticated_readiness_commits_once_and_started_acks_complete_status() {
     let commit_lines = runtime
         .handle_line_fanout(
             "alice-client",
-            r#"{"State":{"playstate":{"position":30.0,"paused":true,"doSeek":false},"sorottePlaybackBarrierV1":{"ready":{"mediaGeneration":4,"loaded":true,"seekable":true,"bufferReady":true}}}}"#,
+            r#"{"State":{"playstate":{"position":30.0,"paused":true,"doSeek":false},"sorottePlaybackBarrierV1":{"ready":{"mediaGeneration":1,"loaded":true,"seekable":true,"bufferReady":true}}}}"#,
         )
         .expect("alice readiness should commit the barrier");
     let commit_messages = messages(&commit_lines);
@@ -181,7 +191,7 @@ fn authenticated_readiness_commits_once_and_started_acks_complete_status() {
         .collect();
     assert_eq!(commits.len(), 2, "each capable participant gets one commit");
     assert!(commits.iter().all(|commit| {
-        commit.media_generation == 4 && commit.state_revision == 1 && commit.anchor_position == 30.0
+        commit.media_generation == 1 && commit.state_revision == 1 && commit.anchor_position == 30.0
     }));
     assert!(
         commit_messages.iter().all(|(_, message)| {
@@ -199,7 +209,7 @@ fn authenticated_readiness_commits_once_and_started_acks_complete_status() {
     let alice_started = runtime
         .handle_line_fanout(
             "alice-client",
-            r#"{"State":{"sorottePlaybackBarrierV1":{"started":{"mediaGeneration":4,"stateRevision":1,"observedPosition":30.1}}}}"#,
+            r#"{"State":{"sorottePlaybackBarrierV1":{"started":{"mediaGeneration":1,"stateRevision":1,"observedPosition":30.1}}}}"#,
         )
         .expect("alice StartedAck should succeed");
     let alice_status = messages(&alice_started)
@@ -212,7 +222,7 @@ fn authenticated_readiness_commits_once_and_started_acks_complete_status() {
     let bob_started = runtime
         .handle_line_fanout(
             "bob-client",
-            r#"{"State":{"sorottePlaybackBarrierV1":{"started":{"mediaGeneration":4,"stateRevision":1,"observedPosition":30.2}}}}"#,
+            r#"{"State":{"sorottePlaybackBarrierV1":{"started":{"mediaGeneration":1,"stateRevision":1,"observedPosition":30.2}}}}"#,
         )
         .expect("bob StartedAck should succeed");
     let final_status = messages(&bob_started)
@@ -245,7 +255,7 @@ fn prepare_quorum_percent_is_normalized_after_capable_cohort_capture() {
     let prepared = runtime
         .handle_line_fanout(
             "alice-client",
-            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":5,"logicalMediaId":"youtube:item","targetPosition":0.0,"policy":"quorum","quorum":1,"quorumPercent":34}}}}"#,
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":5,"loadIntent":"newPlayback","logicalMediaId":"youtube:item","targetPosition":0.0,"policy":"quorum","quorum":1,"quorumPercent":34}}}}"#,
         )
         .expect("percentage quorum prepare should succeed");
     let extension = messages(&prepared)
@@ -265,7 +275,7 @@ fn prepare_quorum_percent_is_normalized_after_capable_cohort_capture() {
     let first_ready = runtime
         .handle_line_fanout(
             "alice-client",
-            r#"{"State":{"sorottePlaybackBarrierV1":{"ready":{"mediaGeneration":5,"loaded":true,"bufferReady":true}}}}"#,
+            r#"{"State":{"sorottePlaybackBarrierV1":{"ready":{"mediaGeneration":1,"loaded":true,"bufferReady":true}}}}"#,
         )
         .expect("first readiness should succeed");
     assert!(
@@ -278,7 +288,7 @@ fn prepare_quorum_percent_is_normalized_after_capable_cohort_capture() {
     let second_ready = runtime
         .handle_line_fanout(
             "bob-client",
-            r#"{"State":{"sorottePlaybackBarrierV1":{"ready":{"mediaGeneration":5,"loaded":true,"bufferReady":true}}}}"#,
+            r#"{"State":{"sorottePlaybackBarrierV1":{"ready":{"mediaGeneration":1,"loaded":true,"bufferReady":true}}}}"#,
         )
         .expect("second readiness should commit");
     assert!(messages(&second_ready).iter().any(|(_, message)| {
@@ -313,7 +323,7 @@ fn controlled_room_rejects_prepare_from_non_controller() {
     let unauthorized = runtime
         .handle_line_fanout(
             "bob-client",
-            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":1,"logicalMediaId":"youtube:item","targetPosition":0.0,"policy":"controller"}}}}"#,
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":1,"loadIntent":"newPlayback","logicalMediaId":"youtube:item","targetPosition":0.0,"policy":"controller"}}}}"#,
         )
         .expect("unauthorized prepare should be safely ignored");
     assert!(unauthorized.is_empty());
@@ -322,7 +332,7 @@ fn controlled_room_rejects_prepare_from_non_controller() {
     let authorized = runtime
         .handle_line_fanout(
             "alice-client",
-            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":1,"logicalMediaId":"youtube:item","targetPosition":0.0,"policy":"controller"}}}}"#,
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":1,"loadIntent":"newPlayback","logicalMediaId":"youtube:item","targetPosition":0.0,"policy":"controller"}}}}"#,
         )
         .expect("controller prepare should succeed");
     assert!(messages(&authorized).iter().any(|(_, message)| {
@@ -343,14 +353,14 @@ fn peer_load_of_active_logical_media_cannot_replace_the_start_initiator() {
     runtime
         .handle_line_fanout(
             "alice-client",
-            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":1,"logicalMediaId":"media-sha256:item","targetPosition":0.0,"policy":"allEligible"}}}}"#,
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":1,"loadIntent":"newPlayback","logicalMediaId":"media-sha256:item","targetPosition":0.0,"policy":"allEligible"}}}}"#,
         )
         .expect("first prepare should succeed");
 
     let duplicate = runtime
         .handle_line_fanout(
             "bob-client",
-            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":2,"logicalMediaId":"media-sha256:item","targetPosition":0.0,"policy":"allEligible"}}}}"#,
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":2,"loadIntent":"replay","logicalMediaId":"media-sha256:item","targetPosition":0.0,"policy":"allEligible"}}}}"#,
         )
         .expect("peer duplicate should be safely ignored");
     assert!(duplicate.is_empty());
@@ -360,6 +370,384 @@ fn peer_load_of_active_logical_media_cannot_replace_the_start_initiator() {
         .expect("original barrier should remain");
     assert_eq!(barrier.initiator_client_id, "alice-client");
     assert_eq!(barrier.prepare.media_generation, 1);
+}
+
+#[test]
+fn server_generations_are_monotonic_and_terminal_requests_are_idempotent() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_time_now_override_seconds(Some(10.0));
+    runtime
+        .handle_line("alice-client", &hello("alice", "room", true))
+        .expect("hello should succeed");
+
+    let client_claim = runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":18446744073709551615,"requestNonce":40,"loadIntent":"newPlayback","logicalMediaId":"item","targetPosition":2.0,"policy":"controller"}}}}"#,
+        )
+        .expect("a client generation claim should be safely rejected");
+    assert!(client_claim.is_empty());
+
+    let request = r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":41,"loadIntent":"newPlayback","logicalMediaId":"item","targetPosition":2.0,"policy":"controller"}}}}"#;
+    let first = runtime
+        .handle_line_fanout("alice-client", request)
+        .expect("first playback request should succeed");
+    let first_extension = messages(&first)
+        .into_iter()
+        .filter_map(|(_, message)| barrier_extension(&message))
+        .find(|extension| extension.prepare.is_some())
+        .expect("server should publish canonical prepare");
+    assert_eq!(
+        first_extension
+            .prepare
+            .as_ref()
+            .map(|prepare| prepare.media_generation),
+        Some(1)
+    );
+
+    let active_retry = runtime
+        .handle_line_fanout("alice-client", request)
+        .expect("active retry should replay canonical state");
+    let active_retry_extension = messages(&active_retry)
+        .into_iter()
+        .filter_map(|(_, message)| barrier_extension(&message))
+        .next()
+        .expect("active retry should receive a snapshot");
+    assert_eq!(
+        active_retry_extension
+            .prepare
+            .as_ref()
+            .map(|prepare| prepare.media_generation),
+        Some(1)
+    );
+    assert_eq!(
+        active_retry_extension.status.map(|status| status.phase),
+        Some(PlaybackBarrierPhase::Preparing)
+    );
+    assert!(active_retry_extension.commit.is_none());
+
+    runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"State":{"sorottePlaybackBarrierV1":{"ready":{"mediaGeneration":1,"loaded":true,"bufferReady":true}}}}"#,
+        )
+        .expect("controller readiness should commit");
+    let completed = runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"State":{"sorottePlaybackBarrierV1":{"started":{"mediaGeneration":1,"stateRevision":1,"observedPosition":2.1}}}}"#,
+        )
+        .expect("started ack should complete barrier");
+    assert_eq!(
+        playback_barrier_status(&completed).map(|status| status.phase),
+        Some(PlaybackBarrierPhase::Complete)
+    );
+
+    let terminal_retry = runtime
+        .handle_line_fanout("alice-client", request)
+        .expect("terminal retry should replay, not allocate");
+    let terminal_extension = messages(&terminal_retry)
+        .into_iter()
+        .filter_map(|(_, message)| barrier_extension(&message))
+        .next()
+        .expect("terminal retry should receive retained history");
+    assert_eq!(
+        terminal_extension
+            .prepare
+            .as_ref()
+            .map(|prepare| prepare.media_generation),
+        Some(1)
+    );
+    assert_eq!(
+        terminal_extension
+            .commit
+            .as_ref()
+            .map(|commit| commit.state_revision),
+        Some(1)
+    );
+    assert_eq!(
+        terminal_extension.status.map(|status| status.phase),
+        Some(PlaybackBarrierPhase::Complete)
+    );
+
+    runtime
+        .handle_line("bob-client", &hello("bob", "room", true))
+        .expect("replacement controller should join");
+    let refresh = runtime
+        .handle_line_fanout(
+            "bob-client",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":99,"loadIntent":"transportRefresh","logicalMediaId":"item","targetPosition":2.0,"policy":"controller"}}}}"#,
+        )
+        .expect("transport refresh should retain canonical generation");
+    let refresh_extension = messages(&refresh)
+        .into_iter()
+        .filter_map(|(_, message)| barrier_extension(&message))
+        .next()
+        .expect("refresh should replay canonical lifecycle identity");
+    assert_eq!(
+        refresh_extension
+            .prepare
+            .as_ref()
+            .map(|prepare| prepare.media_generation),
+        Some(1)
+    );
+    assert_eq!(
+        refresh_extension
+            .commit
+            .as_ref()
+            .map(|commit| commit.state_revision),
+        Some(1)
+    );
+    assert_eq!(
+        refresh_extension
+            .status
+            .as_ref()
+            .and_then(|status| status.state_revision),
+        Some(1)
+    );
+    assert!(!runtime.room_playback_state("room").paused);
+
+    let inferred_replay = runtime
+        .handle_line_fanout(
+            "bob-client",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":100,"loadIntent":"newPlayback","logicalMediaId":"item","targetPosition":2.0,"policy":"controller"}}}}"#,
+        )
+        .expect("replacement controller should infer replay from terminal identity");
+    let replay_prepare = messages(&inferred_replay)
+        .into_iter()
+        .filter_map(|(_, message)| barrier_extension(&message))
+        .find_map(|extension| extension.prepare)
+        .expect("inferred replay should allocate a new canonical generation");
+    assert_eq!(replay_prepare.media_generation, 2);
+    assert_eq!(replay_prepare.load_intent, MediaLoadIntent::Replay);
+    assert_eq!(replay_prepare.request_nonce, 100);
+
+    runtime
+        .handle_line_fanout(
+            "bob-client",
+            r#"{"State":{"sorottePlaybackBarrierV1":{"ready":{"mediaGeneration":2,"loaded":true,"bufferReady":true}}}}"#,
+        )
+        .expect("replay controller should commit generation two");
+    runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"State":{"sorottePlaybackBarrierV1":{"started":{"mediaGeneration":2,"stateRevision":2,"observedPosition":0.1}}}}"#,
+        )
+        .expect("alice should acknowledge replay start");
+    runtime
+        .handle_line_fanout(
+            "bob-client",
+            r#"{"State":{"sorottePlaybackBarrierV1":{"started":{"mediaGeneration":2,"stateRevision":2,"observedPosition":0.1}}}}"#,
+        )
+        .expect("bob should complete generation two");
+    assert_eq!(
+        runtime
+            .room_playback_barriers
+            .get("room")
+            .map(|barrier| (barrier.prepare.media_generation, barrier.phase)),
+        Some((2, PlaybackBarrierPhase::Complete))
+    );
+
+    let superseded_retry = runtime
+        .handle_line_fanout("alice-client", request)
+        .expect("superseded request retry should be safely suppressed");
+    assert!(
+        superseded_retry.is_empty(),
+        "an old nonce must not become fresh playback intent after a newer terminal generation"
+    );
+    assert_eq!(
+        runtime
+            .room_playback_barriers
+            .get("room")
+            .map(|barrier| (barrier.prepare.media_generation, barrier.phase)),
+        Some((2, PlaybackBarrierPhase::Complete))
+    );
+    assert!(!runtime.room_playback_state("room").paused);
+}
+
+#[test]
+fn barrier_disabled_new_media_supersedes_retained_terminal_generation() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_time_now_override_seconds(Some(10.0));
+    runtime
+        .handle_line("alice-client", &hello("alice", "room", true))
+        .expect("hello should succeed");
+    runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":1,"loadIntent":"newPlayback","logicalMediaId":"first","targetPosition":0.0,"policy":"controller"}}}}"#,
+        )
+        .expect("first prepare should succeed");
+    runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"State":{"sorottePlaybackBarrierV1":{"ready":{"mediaGeneration":1,"loaded":true,"bufferReady":true}}}}"#,
+        )
+        .expect("first barrier should commit");
+    runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"State":{"sorottePlaybackBarrierV1":{"started":{"mediaGeneration":1,"stateRevision":1,"observedPosition":0.1}}}}"#,
+        )
+        .expect("first barrier should complete");
+    assert_eq!(
+        runtime
+            .room_playback_barriers
+            .get("room")
+            .map(|barrier| barrier.phase),
+        Some(PlaybackBarrierPhase::Complete)
+    );
+
+    let policy_only_request = r#"{"Set":{"sorottePlaybackBarrierV1":{"bufferingPolicy":{"mediaGeneration":0,"requestNonce":2,"loadIntent":"newPlayback","policy":"independent"}}}}"#;
+    let next_media = runtime
+        .handle_line_fanout("alice-client", policy_only_request)
+        .expect("barrier-disabled media should still allocate server generation");
+    let config = buffering_status(&next_media)
+        .expect("server should publish canonical buffering generation")
+        .config;
+    assert_eq!(config.media_generation, 2);
+    assert_eq!(config.request_nonce, 2);
+    assert_eq!(config.load_intent, MediaLoadIntent::NewPlayback);
+    assert!(
+        !runtime.room_playback_barriers.contains_key("room"),
+        "the terminal generation must not remain the current room-media lifecycle"
+    );
+
+    let retry = runtime
+        .handle_line_fanout("alice-client", policy_only_request)
+        .expect("policy-only retry should replay canonical config");
+    assert_eq!(
+        buffering_status(&retry).map(|status| status.config.media_generation),
+        Some(2)
+    );
+
+    let third = runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":3,"loadIntent":"newPlayback","logicalMediaId":"third","targetPosition":0.0,"policy":"controller"}}}}"#,
+        )
+        .expect("later start barrier should continue monotonic generation");
+    assert_eq!(
+        messages(&third)
+            .into_iter()
+            .filter_map(|(_, message)| barrier_extension(&message))
+            .find_map(|extension| extension.prepare)
+            .map(|prepare| prepare.media_generation),
+        Some(3)
+    );
+}
+
+#[test]
+fn prepare_timeout_pause_actions_are_atomic_and_server_enforced() {
+    for (wire_action, expected_phase) in [
+        ("remainPaused", PlaybackBarrierPhase::Degraded),
+        ("askController", PlaybackBarrierPhase::AwaitingDecision),
+    ] {
+        let mut runtime = ServerRuntime::default();
+        runtime.set_time_now_override_seconds(Some(100.0));
+        runtime
+            .handle_line("alice-client", &hello("alice", "room", true))
+            .expect("hello should succeed");
+        runtime
+            .handle_line_fanout(
+                "alice-client",
+                r#"{"State":{"playstate":{"position":4.0,"paused":false,"doSeek":false}}}"#,
+            )
+            .expect("room should start playing");
+        runtime
+            .handle_line_fanout(
+                "alice-client",
+                &format!(
+                    r#"{{"Set":{{"sorottePlaybackBarrierV1":{{"prepare":{{"mediaGeneration":0,"requestNonce":1,"loadIntent":"newPlayback","logicalMediaId":"item","targetPosition":4.0,"policy":"controller","timeoutMs":1000,"timeoutAction":"{wire_action}"}}}}}}}}"#
+                ),
+            )
+            .expect("prepare should succeed");
+        assert!(runtime.room_playback_state("room").paused);
+
+        let deadline = runtime
+            .collect_dispatch_at(101.0)
+            .expect("prepare timeout should be enforced by server");
+        assert!(
+            runtime.room_playback_state("room").paused,
+            "{wire_action} must never transiently unpause the canonical room"
+        );
+        let decoded = messages(&deadline.outbound_lines);
+        assert!(decoded.iter().all(|(_, message)| {
+            barrier_extension(message).is_none_or(|extension| extension.commit.is_none())
+        }));
+        assert!(!recipient_has_pause(
+            &deadline.outbound_lines,
+            "alice-client",
+            false
+        ));
+        let status = playback_barrier_status(&deadline.outbound_lines)
+            .expect("timeout should publish terminal server status");
+        assert_eq!(status.phase, expected_phase);
+        assert!(status.participants.values().all(|participant| {
+            participant.phase == PlaybackBarrierParticipantPhase::PrepareTimedOut
+                && participant.degraded_reason
+                    == Some(PlaybackBarrierDegradedReason::PrepareTimeout)
+        }));
+        if wire_action == "askController" {
+            let forced_pause_counter = runtime.server_ignoring_counter("alice-client");
+            runtime.acknowledge_server_ignoring_counter("alice-client", forced_pause_counter);
+            runtime.set_time_now_override_seconds(Some(101.1));
+            let decision = runtime
+                .handle_line_fanout(
+                    "alice-client",
+                    r#"{"State":{"playstate":{"position":4.0,"paused":false,"doSeek":false}}}"#,
+                )
+                .expect("ordinary controller play should resolve awaiting decision");
+            assert!(!runtime.room_playback_state("room").paused);
+            assert_eq!(
+                playback_barrier_status(&decision).map(|status| status.phase),
+                Some(PlaybackBarrierPhase::Degraded),
+                "the manual decision must retire server-barrier authority"
+            );
+        }
+    }
+}
+
+#[test]
+fn started_ack_timeout_is_distinct_and_cannot_apply_prepare_timeout_policy() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_time_now_override_seconds(Some(20.0));
+    runtime
+        .handle_line("alice-client", &hello("alice", "room", true))
+        .expect("hello should succeed");
+    runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":7,"loadIntent":"newPlayback","logicalMediaId":"item","targetPosition":1.0,"policy":"controller","timeoutMs":1000,"timeoutAction":"remainPaused"}}}}"#,
+        )
+        .expect("prepare should succeed");
+    runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"State":{"sorottePlaybackBarrierV1":{"ready":{"mediaGeneration":1,"loaded":true,"bufferReady":true}}}}"#,
+        )
+        .expect("readiness should commit before prepare timeout");
+    assert!(!runtime.room_playback_state("room").paused);
+
+    let started_timeout = runtime
+        .collect_dispatch_at(30.0)
+        .expect("started acknowledgement timeout should degrade");
+    assert!(
+        !runtime.room_playback_state("room").paused,
+        "post-commit timeout must not reuse remain-paused prepare policy"
+    );
+    assert!(!recipient_has_pause(
+        &started_timeout.outbound_lines,
+        "alice-client",
+        true
+    ));
+    let status = playback_barrier_status(&started_timeout.outbound_lines)
+        .expect("started timeout should publish status");
+    assert_eq!(status.phase, PlaybackBarrierPhase::Degraded);
+    assert!(status.participants.values().all(|participant| {
+        participant.phase == PlaybackBarrierParticipantPhase::StartedAckTimedOut
+            && participant.degraded_reason == Some(PlaybackBarrierDegradedReason::StartedTimeout)
+    }));
 }
 
 #[test]
@@ -374,7 +762,7 @@ fn preparation_and_started_deadlines_degrade_stalled_clients_without_holding_roo
     let prepare_lines = runtime
         .handle_line_fanout(
             "alice-client",
-            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":8,"logicalMediaId":"stream:item","targetPosition":7.0,"policy":"allEligible","timeoutMs":999999}}}}"#,
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":8,"loadIntent":"newPlayback","logicalMediaId":"stream:item","targetPosition":7.0,"policy":"allEligible","timeoutMs":999999}}}}"#,
         )
         .expect("prepare should succeed");
     let prepare = messages(&prepare_lines)
@@ -396,7 +784,7 @@ fn preparation_and_started_deadlines_degrade_stalled_clients_without_holding_roo
         .expect("timeout commit should publish status");
     assert_eq!(timeout_status.phase, PlaybackBarrierPhase::Committed);
     assert!(timeout_status.participants.values().all(|participant| {
-        participant.phase == PlaybackBarrierParticipantPhase::TimedOut
+        participant.phase == PlaybackBarrierParticipantPhase::PrepareTimedOut
             && participant.degraded_reason == Some(PlaybackBarrierDegradedReason::PrepareTimeout)
     }));
     assert!(!runtime.room_playback_state("room").paused);
@@ -435,7 +823,7 @@ fn unadvertised_and_malformed_barrier_extensions_are_compatibly_ignored() {
     let unadvertised = runtime
         .handle_line_fanout(
             "legacy-client",
-            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":1,"logicalMediaId":"item","targetPosition":0.0,"policy":"controller"}}}}"#,
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":1,"loadIntent":"newPlayback","logicalMediaId":"item","targetPosition":0.0,"policy":"controller"}}}}"#,
         )
         .expect("valid but unadvertised extension should be ignored");
     assert!(unadvertised.is_empty());
@@ -475,13 +863,13 @@ fn disconnected_participant_is_degraded_and_does_not_hold_all_eligible_barrier()
     runtime
         .handle_line_fanout(
             "alice-client",
-            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":12,"logicalMediaId":"item","targetPosition":3.0,"policy":"allEligible"}}}}"#,
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":12,"loadIntent":"newPlayback","logicalMediaId":"item","targetPosition":3.0,"policy":"allEligible"}}}}"#,
         )
         .expect("prepare should succeed");
     runtime
         .handle_line_fanout(
             "alice-client",
-            r#"{"State":{"sorottePlaybackBarrierV1":{"ready":{"mediaGeneration":12,"loaded":true,"bufferReady":true}}}}"#,
+            r#"{"State":{"sorottePlaybackBarrierV1":{"ready":{"mediaGeneration":1,"loaded":true,"bufferReady":true}}}}"#,
         )
         .expect("alice readiness should succeed");
 

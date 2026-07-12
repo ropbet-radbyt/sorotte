@@ -6,6 +6,7 @@ impl fmt::Debug for MpvAdapter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MpvAdapter")
             .field("paused", &self.paused)
+            .field("logical_pause_explicit", &self.logical_pause_explicit)
             .field("position_seconds", &self.position_seconds)
             .field("playback_rate", &self.playback_rate)
             .field("paused_for_cache", &self.paused_for_cache)
@@ -116,6 +117,7 @@ impl Default for MpvAdapter {
     fn default() -> Self {
         Self {
             paused: false,
+            logical_pause_explicit: false,
             position_seconds: 0.0,
             playback_rate: 0.0,
             paused_for_cache: false,

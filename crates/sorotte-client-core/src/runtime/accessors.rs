@@ -195,15 +195,39 @@ where
         kind: MediaTransportKind,
         now_seconds: f64,
     ) -> Result<MediaLoadPlan, PlayerError> {
+        let cleanup_actions = self.playback_coordination.interrupt_recovery();
+        for action in cleanup_actions {
+            if let PlaybackCoordinatorAction::Execute {
+                command_id,
+                command: CoordinatorPlayerCommand::SetPlaybackRate(rate),
+            } = action
+            {
+                // Best effort: opening the requested source remains
+                // authoritative even if the outgoing transport is gone.
+                match self.player.execute(PlayerCommand::SetPlaybackRate(rate)) {
+                    Ok(()) => self
+                        .playback_coordination
+                        .command_dispatch_succeeded(command_id),
+                    Err(_) => {
+                        let now_seconds = self.playback_coordination.coordinator_now(now_seconds);
+                        self.playback_coordination
+                            .command_dispatch_failed(command_id, now_seconds);
+                    }
+                }
+            }
+        }
         let command = PlayerCommand::OpenFile(path.to_owned());
         match self.player.execute_tracked(command.clone()) {
             Ok(_) => {}
             Err(PlayerError::Unsupported("execute_tracked")) => self.player.execute(command)?,
             Err(error) => return Err(error),
         }
-        let plan = self
-            .playback_coordination
-            .prepare_media(logical_id, kind, now_seconds);
+        let plan = self.playback_coordination.prepare_media_with_intent(
+            logical_id,
+            kind,
+            MediaLoadIntent::NewPlayback,
+            now_seconds,
+        );
         if let Some(extension) = self
             .playback_coordination
             .playback_barrier_set_for_new_media(&plan, self.session, now_seconds)

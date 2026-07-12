@@ -1,7 +1,7 @@
 use super::*;
 use sorotte_player_api::{
     PlayerCommandFailureKind, PlayerCommandProgress, PlayerCommandProgressState,
-    PlayerCommandResult,
+    PlayerCommandResult, PlayerPlayIntent, PlayerTransportTelemetryUpdate,
 };
 
 fn adapter_with_registered_observers(lines: &[&str]) -> MpvAdapter {
@@ -174,7 +174,7 @@ fn tracked_seek_requires_both_seek_end_and_position_tolerance() {
 }
 
 #[test]
-fn tracked_play_waits_for_logical_play_cache_release_and_restart() {
+fn tracked_start_after_load_waits_for_logical_play_cache_release_restart_and_advancement() {
     let mut adapter = adapter_with_registered_observers(&[
         r#"{"event":"start-file","playlist_entry_id":3}"#,
         r#"{"event":"property-change","name":"paused-for-cache","data":false}"#,
@@ -195,7 +195,9 @@ fn tracked_play_waits_for_logical_play_cache_release_and_restart() {
         .expect("setup state should be observed");
 
     let command_id = adapter
-        .execute_tracked(PlayerCommand::SetPaused(false))
+        .execute_tracked(PlayerCommand::Play(PlayerPlayIntent::StartAfterLoad {
+            baseline_restart_sequence: 0,
+        }))
         .expect("play should be accepted");
     assert_accepted(
         adapter.take_command_progress().expect("accepted progress"),
@@ -221,7 +223,7 @@ fn tracked_play_waits_for_logical_play_cache_release_and_restart() {
 }
 
 #[test]
-fn tracked_play_requires_restart_and_forward_position_advancement() {
+fn tracked_start_after_seek_requires_restart_followed_by_forward_position_advancement() {
     let mut adapter = adapter_with_registered_observers(&[
         r#"{"event":"start-file","playlist_entry_id":4}"#,
         r#"{"event":"property-change","name":"paused-for-cache","data":false}"#,
@@ -240,7 +242,9 @@ fn tracked_play_requires_restart_and_forward_position_advancement() {
         .expect("setup state should be observed");
 
     let command_id = adapter
-        .execute_tracked(PlayerCommand::SetPaused(false))
+        .execute_tracked(PlayerCommand::Play(PlayerPlayIntent::StartAfterSeek {
+            baseline_restart_sequence: 0,
+        }))
         .expect("play should be accepted");
     assert_accepted(
         adapter.take_command_progress().expect("accepted progress"),
@@ -262,6 +266,121 @@ fn tracked_play_requires_restart_and_forward_position_advancement() {
     adapter
         .set_playback_rate(1.0)
         .expect("restart followed by forward movement should be observed");
+    assert_completed(
+        adapter.take_command_progress().expect("completed progress"),
+        command_id,
+    );
+}
+
+#[test]
+fn tracked_resume_completes_without_playback_restart_after_fresh_advancement() {
+    let mut adapter = adapter_with_registered_observers(&[
+        r#"{"event":"start-file","playlist_entry_id":8}"#,
+        r#"{"event":"file-loaded"}"#,
+        r#"{"event":"property-change","name":"paused-for-cache","data":false}"#,
+        r#"{"event":"property-change","name":"pause","data":true}"#,
+        r#"{"event":"property-change","name":"core-idle","data":true}"#,
+        r#"{"event":"property-change","name":"time-pos","data":40.0}"#,
+        r#"{"request_id":1,"error":"success"}"#,
+        r#"{"request_id":2,"error":"success"}"#,
+        r#"{"event":"property-change","name":"pause","data":false}"#,
+        r#"{"event":"property-change","name":"core-idle","data":false}"#,
+        r#"{"request_id":3,"error":"success"}"#,
+        r#"{"event":"property-change","name":"time-pos","data":40.02}"#,
+        r#"{"request_id":4,"error":"success"}"#,
+    ]);
+    adapter
+        .set_playback_rate(1.0)
+        .expect("ready-paused setup observations should be drained");
+
+    let mut latest = PlayerTransportTelemetryUpdate::default();
+    while let Some(update) = adapter.take_transport_telemetry_update() {
+        latest.merge_from(update);
+    }
+    assert_eq!(latest.phase, Some(PlayerTransportPhase::ReadyPaused));
+    assert_eq!(latest.logical_pause, Some(true));
+    assert_eq!(latest.paused_for_cache, Some(false));
+    assert_eq!(latest.core_idle, Some(true));
+    assert_eq!(latest.playback_restart_sequence, None);
+
+    let command_id = adapter
+        .execute_tracked(PlayerCommand::Play(PlayerPlayIntent::Resume))
+        .expect("resume should be accepted");
+    assert_accepted(
+        adapter.take_command_progress().expect("accepted progress"),
+        command_id,
+    );
+    assert_eq!(adapter.take_command_progress(), None);
+
+    adapter
+        .set_playback_rate(1.0)
+        .expect("logical resume should be observed");
+    assert_eq!(
+        adapter.take_command_progress(),
+        None,
+        "logical resume without fresh advancement must remain pending"
+    );
+
+    adapter
+        .set_playback_rate(1.0)
+        .expect("fresh position advancement should be observed");
+    assert_completed(
+        adapter.take_command_progress().expect("completed progress"),
+        command_id,
+    );
+
+    let mut restart_observed = false;
+    while let Some(update) = adapter.take_transport_telemetry_update() {
+        restart_observed |= update.playback_restart_sequence.is_some();
+    }
+    assert!(
+        !restart_observed,
+        "ordinary resume must not manufacture or require playback-restart"
+    );
+}
+
+#[test]
+fn tracked_start_after_load_honors_restart_observed_before_later_play_command() {
+    let mut adapter = adapter_with_registered_observers(&[
+        r#"{"event":"start-file","playlist_entry_id":9}"#,
+        r#"{"event":"file-loaded"}"#,
+        r#"{"event":"property-change","name":"paused-for-cache","data":false}"#,
+        r#"{"event":"property-change","name":"pause","data":true}"#,
+        r#"{"event":"property-change","name":"time-pos","data":50.0}"#,
+        r#"{"event":"playback-restart"}"#,
+        r#"{"request_id":1,"error":"success"}"#,
+        r#"{"request_id":2,"error":"success"}"#,
+        r#"{"event":"property-change","name":"pause","data":false}"#,
+        r#"{"request_id":3,"error":"success"}"#,
+        r#"{"event":"property-change","name":"time-pos","data":50.02}"#,
+        r#"{"request_id":4,"error":"success"}"#,
+    ]);
+    adapter
+        .set_playback_rate(1.0)
+        .expect("paused load and its restart should be observed");
+
+    let command_id = adapter
+        .execute_tracked(PlayerCommand::Play(PlayerPlayIntent::StartAfterLoad {
+            baseline_restart_sequence: 0,
+        }))
+        .expect("start after load should be accepted");
+    assert_accepted(
+        adapter.take_command_progress().expect("accepted progress"),
+        command_id,
+    );
+
+    adapter
+        .set_playback_rate(1.0)
+        .expect("logical play should be observed");
+    assert_eq!(
+        adapter.take_command_progress(),
+        None,
+        "the pre-command restart still requires fresh post-command advancement"
+    );
+
+    adapter
+        .set_playback_rate(1.0)
+        .expect("post-command advancement should be observed");
     assert_completed(
         adapter.take_command_progress().expect("completed progress"),
         command_id,
@@ -373,23 +492,31 @@ fn simulated_player_reports_observed_completion_for_tracked_commands() {
 
     for command in [
         PlayerCommand::OpenFile("movie.mkv".to_owned()),
-        PlayerCommand::SetPosition(12.0),
+        PlayerCommand::Play(PlayerPlayIntent::StartAfterLoad {
+            baseline_restart_sequence: 0,
+        }),
         PlayerCommand::SetPaused(true),
-        PlayerCommand::SetPaused(false),
+        PlayerCommand::Play(PlayerPlayIntent::Resume),
+        PlayerCommand::SetPaused(true),
+        PlayerCommand::SetPosition(12.0),
+        PlayerCommand::Play(PlayerPlayIntent::StartAfterSeek {
+            baseline_restart_sequence: 1,
+        }),
     ] {
+        let command_debug = format!("{command:?}");
         let command_id = player
             .execute_tracked(command)
-            .expect("simulated tracked command should execute");
+            .unwrap_or_else(|error| panic!("{command_debug} should execute: {error}"));
         assert_accepted(
             player
                 .take_command_progress()
-                .expect("simulated acceptance"),
+                .unwrap_or_else(|| panic!("{command_debug} should be accepted")),
             command_id,
         );
         assert_completed(
             player
                 .take_command_progress()
-                .expect("simulated observed completion"),
+                .unwrap_or_else(|| panic!("{command_debug} should complete from observation")),
             command_id,
         );
     }

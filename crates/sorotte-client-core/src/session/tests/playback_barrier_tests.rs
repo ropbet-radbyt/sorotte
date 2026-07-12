@@ -28,6 +28,7 @@ fn prepare(media_generation: u64) -> PrepareMediaPayload {
         12.5,
         PlaybackBarrierPolicy::AllEligible,
     )
+    .with_request_nonce(media_generation.saturating_add(1))
     .with_timeout_ms(10_000)
     .with_deadline(110.0)
 }
@@ -129,7 +130,9 @@ fn prepare_allows_only_active_generation_media_ready_without_touching_user_readi
         .expect("user readiness should apply");
     apply_extension(
         &mut session,
-        PlaybackBarrierSetExtension::new().with_prepare(prepare(7)),
+        PlaybackBarrierSetExtension::new()
+            .with_prepare(prepare(7))
+            .with_status(status(7, None, PlaybackBarrierPhase::Preparing)),
     );
 
     assert_eq!(
@@ -174,6 +177,12 @@ fn commit_is_retained_across_status_updates_and_rejects_revision_regression() {
             .with_commit(commit(4, 9))
             .with_status(status(4, Some(9), PlaybackBarrierPhase::Committed)),
     );
+    assert_eq!(
+        session
+            .playback_barrier_active_commit()
+            .map(|commit| commit.state_revision),
+        Some(9)
+    );
 
     apply_extension(
         &mut session,
@@ -193,6 +202,10 @@ fn commit_is_retained_across_status_updates_and_rejects_revision_regression() {
     assert_eq!(
         session.playback_barrier_status().map(|status| status.phase),
         Some(PlaybackBarrierPhase::Complete)
+    );
+    assert!(
+        session.playback_barrier_active_commit().is_none(),
+        "a retained terminal commit is diagnostic history, not playback authority"
     );
 
     apply_extension(
@@ -217,6 +230,102 @@ fn commit_is_retained_across_status_updates_and_rejects_revision_regression() {
             .playback_barrier_media_ready_observation(4, true, Some(true), true)
             .is_none(),
         "MediaReady is a prepare-phase observation"
+    );
+}
+
+#[test]
+fn terminal_barrier_phases_reject_delayed_awaiting_decision_updates() {
+    let mut session = barrier_session();
+    apply_extension(
+        &mut session,
+        PlaybackBarrierSetExtension::new()
+            .with_prepare(prepare(7))
+            .with_status(status(7, None, PlaybackBarrierPhase::AwaitingDecision)),
+    );
+    apply_extension(
+        &mut session,
+        PlaybackBarrierSetExtension::new().with_status(status(
+            7,
+            None,
+            PlaybackBarrierPhase::Degraded,
+        )),
+    );
+    apply_extension(
+        &mut session,
+        PlaybackBarrierSetExtension::new().with_status(status(
+            7,
+            None,
+            PlaybackBarrierPhase::AwaitingDecision,
+        )),
+    );
+    assert_eq!(
+        session.playback_barrier_status().map(|status| status.phase),
+        Some(PlaybackBarrierPhase::Degraded),
+        "a delayed decision-phase update must not revive a degraded lifecycle"
+    );
+
+    apply_extension(
+        &mut session,
+        PlaybackBarrierSetExtension::new()
+            .with_prepare(prepare(8))
+            .with_commit(commit(8, 12))
+            .with_status(status(8, Some(12), PlaybackBarrierPhase::Complete)),
+    );
+    apply_extension(
+        &mut session,
+        PlaybackBarrierSetExtension::new().with_status(status(
+            8,
+            Some(12),
+            PlaybackBarrierPhase::AwaitingDecision,
+        )),
+    );
+    assert_eq!(
+        session.playback_barrier_status().map(|status| status.phase),
+        Some(PlaybackBarrierPhase::Complete),
+        "a delayed decision-phase update must not replace completion"
+    );
+}
+
+#[test]
+fn degraded_barrier_deactivates_retained_commit_before_ordinary_pause() {
+    let mut session = barrier_session();
+    apply_extension(
+        &mut session,
+        PlaybackBarrierSetExtension::new().with_prepare(prepare(6)),
+    );
+    apply_extension(
+        &mut session,
+        PlaybackBarrierSetExtension::new()
+            .with_commit(commit(6, 10))
+            .with_status(status(6, Some(10), PlaybackBarrierPhase::Committed)),
+    );
+    apply_extension(
+        &mut session,
+        PlaybackBarrierSetExtension::new().with_status(status(
+            6,
+            Some(10),
+            PlaybackBarrierPhase::Degraded,
+        )),
+    );
+    session
+        .apply_protocol_message(ProtocolMessage::state(
+            StatePayload::new().with_playstate(
+                PlaystatePayload::new()
+                    .with_position(14.0)
+                    .with_paused(true)
+                    .with_do_seek(false)
+                    .with_set_by("bob"),
+            ),
+        ))
+        .expect("ordinary pause should apply after terminal barrier status");
+
+    assert!(session.playback_barrier_commit().is_some());
+    assert!(session.playback_barrier_active_commit().is_none());
+    assert_eq!(
+        session
+            .current_room_playstate()
+            .and_then(|playstate| playstate.paused),
+        Some(true)
     );
 }
 
@@ -323,7 +432,9 @@ fn runtime_reports_only_valid_barrier_observations_as_state_extensions() {
     let mut session = barrier_session();
     apply_extension(
         &mut session,
-        PlaybackBarrierSetExtension::new().with_prepare(prepare(24)),
+        PlaybackBarrierSetExtension::new()
+            .with_prepare(prepare(24))
+            .with_status(status(24, None, PlaybackBarrierPhase::Preparing)),
     );
     let mut runtime = ClientRuntime::new(
         session,

@@ -11,7 +11,7 @@ use crate::app::{
 };
 use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
 use sorotte_client_core::{
-    ConnectionPhase, CoordinatorPlayerCommand, LogicalMediaId, MediaTransportKind,
+    ConnectionPhase, CoordinatorPlayerCommand, LogicalMediaId, MediaLoadIntent, MediaTransportKind,
     ReconnectTransitionNotification,
 };
 use sorotte_player_api::{
@@ -21,6 +21,7 @@ use sorotte_player_api::{
 
 mod chat_projection_tests;
 mod controller_autoplay_tests;
+mod playback_barrier_integration_tests;
 mod playlist_tests;
 mod public_server_tests;
 mod session_config_tests;

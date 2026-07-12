@@ -26,6 +26,14 @@ pub enum RoomBufferingPolicy {
 #[serde(rename_all = "camelCase")]
 pub struct RoomBufferingPolicyPayload {
     pub media_generation: u64,
+    /// Strictly increasing connection-scoped request nonce when
+    /// `media_generation` is zero. The server echoes it on canonical config.
+    #[serde(default)]
+    pub request_nonce: u64,
+    /// Whether a zero-generation request starts a new playback episode or is
+    /// merely refreshing transport for the current episode.
+    #[serde(default)]
+    pub load_intent: MediaLoadIntent,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_revision: Option<u64>,
     pub policy: RoomBufferingPolicy,
@@ -43,6 +51,8 @@ impl RoomBufferingPolicyPayload {
     pub fn new(media_generation: u64, policy: RoomBufferingPolicy) -> Self {
         Self {
             media_generation,
+            request_nonce: 0,
+            load_intent: MediaLoadIntent::NewPlayback,
             state_revision: None,
             policy,
             quorum_percent: None,
@@ -50,6 +60,16 @@ impl RoomBufferingPolicyPayload {
             resume_hysteresis_ms: None,
             max_pause_ms: None,
         }
+    }
+
+    pub fn with_request_nonce(mut self, request_nonce: u64) -> Self {
+        self.request_nonce = request_nonce;
+        self
+    }
+
+    pub fn with_load_intent(mut self, load_intent: MediaLoadIntent) -> Self {
+        self.load_intent = load_intent;
+        self
     }
 
     pub fn with_state_revision(mut self, state_revision: u64) -> Self {
@@ -153,10 +173,39 @@ pub enum PlaybackBarrierPolicy {
     Quorum,
 }
 
+/// Why a media load is being requested. Only new playback episodes allocate
+/// a new authoritative room generation; transport refreshes retain it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum MediaLoadIntent {
+    #[default]
+    NewPlayback,
+    Replay,
+    TransportRefresh,
+}
+
+/// Server-enforced behavior when the prepare cohort misses its deadline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum PlaybackBarrierTimeoutAction {
+    #[default]
+    Continue,
+    RemainPaused,
+    AskController,
+}
+
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrepareMediaPayload {
+    /// Zero in a client request and assigned monotonically by the server in
+    /// the canonical prepare broadcast.
     pub media_generation: u64,
+    /// Strictly increasing, connection-scoped idempotency key. This is
+    /// deliberately independent of the client's wall clock.
+    #[serde(default)]
+    pub request_nonce: u64,
+    #[serde(default)]
+    pub load_intent: MediaLoadIntent,
     pub logical_media_id: String,
     pub target_position: f64,
     pub policy: PlaybackBarrierPolicy,
@@ -169,6 +218,8 @@ pub struct PrepareMediaPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_action: Option<PlaybackBarrierTimeoutAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deadline: Option<f64>,
 }
 
@@ -177,12 +228,15 @@ impl std::fmt::Debug for PrepareMediaPayload {
         formatter
             .debug_struct("PrepareMediaPayload")
             .field("media_generation", &self.media_generation)
+            .field("request_nonce", &self.request_nonce)
+            .field("load_intent", &self.load_intent)
             .field("logical_media_id", &"<redacted>")
             .field("target_position", &self.target_position)
             .field("policy", &self.policy)
             .field("quorum", &self.quorum)
             .field("quorum_percent", &self.quorum_percent)
             .field("timeout_ms", &self.timeout_ms)
+            .field("timeout_action", &self.timeout_action)
             .field("deadline", &self.deadline)
             .finish()
     }
@@ -197,14 +251,39 @@ impl PrepareMediaPayload {
     ) -> Self {
         Self {
             media_generation,
+            request_nonce: 0,
+            load_intent: MediaLoadIntent::NewPlayback,
             logical_media_id: logical_media_id.into(),
             target_position,
             policy,
             quorum: None,
             quorum_percent: None,
             timeout_ms: None,
+            timeout_action: None,
             deadline: None,
         }
+    }
+
+    pub fn request(
+        request_nonce: u64,
+        logical_media_id: impl Into<String>,
+        target_position: f64,
+        policy: PlaybackBarrierPolicy,
+        load_intent: MediaLoadIntent,
+    ) -> Self {
+        Self::new(0, logical_media_id, target_position, policy)
+            .with_request_nonce(request_nonce)
+            .with_load_intent(load_intent)
+    }
+
+    pub fn with_request_nonce(mut self, request_nonce: u64) -> Self {
+        self.request_nonce = request_nonce;
+        self
+    }
+
+    pub fn with_load_intent(mut self, load_intent: MediaLoadIntent) -> Self {
+        self.load_intent = load_intent;
+        self
     }
 
     pub fn with_quorum(mut self, quorum: u32) -> Self {
@@ -219,6 +298,11 @@ impl PrepareMediaPayload {
 
     pub fn with_timeout_ms(mut self, timeout_ms: u64) -> Self {
         self.timeout_ms = Some(timeout_ms);
+        self
+    }
+
+    pub fn with_timeout_action(mut self, timeout_action: PlaybackBarrierTimeoutAction) -> Self {
+        self.timeout_action = Some(timeout_action);
         self
     }
 
@@ -325,6 +409,7 @@ impl StartedAckPayload {
 pub enum PlaybackBarrierPhase {
     Preparing,
     Committed,
+    AwaitingDecision,
     Complete,
     Degraded,
 }
@@ -336,7 +421,8 @@ pub enum PlaybackBarrierParticipantPhase {
     Ready,
     Started,
     Degraded,
-    TimedOut,
+    PrepareTimedOut,
+    StartedAckTimedOut,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

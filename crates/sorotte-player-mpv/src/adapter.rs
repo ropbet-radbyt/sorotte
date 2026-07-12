@@ -13,8 +13,9 @@ use serde_json::{Value, json};
 use sorotte_player_api::{
     LocalFileUpdate, PlayerCommandFailureKind, PlayerCommandId, PlayerCommandProgress,
     PlayerCommandResult, PlayerError, PlayerMediaGeneration, PlayerMediaLoadFailureKind,
-    PlayerMediaLoadOutcome, PlayerObservationTimestamp, PlayerPlaybackTelemetryUpdate,
-    PlayerSeekableRange, PlayerTransportPhase, PlayerTransportTelemetryUpdate,
+    PlayerMediaLoadOutcome, PlayerObservationTimestamp, PlayerPlayIntent,
+    PlayerPlaybackTelemetryUpdate, PlayerSeekableRange, PlayerTransportPhase,
+    PlayerTransportTelemetryUpdate,
 };
 
 use crate::constants::*;
@@ -59,6 +60,7 @@ enum TrackedCommandKind {
         logical_pause_observed: bool,
     },
     Play {
+        intent: PlayerPlayIntent,
         restart_sequence_baseline: u64,
         position_baseline: Option<f64>,
         logical_play_observed: bool,
@@ -88,15 +90,18 @@ impl TrackedCommandKind {
                 logical_pause_observed,
             } => *logical_pause_observed,
             Self::Play {
+                intent,
                 logical_play_observed,
                 cache_clear_observed,
                 restart_observed,
                 forward_advancement_observed,
                 ..
             } => {
+                let restart_satisfied =
+                    matches!(intent, PlayerPlayIntent::Resume) || *restart_observed;
                 *logical_play_observed
                     && *cache_clear_observed
-                    && *restart_observed
+                    && restart_satisfied
                     && *forward_advancement_observed
             }
         }
@@ -130,6 +135,7 @@ enum TrackedCommandSupersession {
 
 pub struct MpvAdapter {
     paused: bool,
+    logical_pause_explicit: bool,
     position_seconds: f64,
     playback_rate: f64,
     paused_for_cache: bool,
@@ -950,6 +956,7 @@ impl MpvAdapter {
                 }
                 (
                     TrackedCommandKind::Play {
+                        intent,
                         position_baseline,
                         restart_observed,
                         forward_advancement_observed,
@@ -958,7 +965,7 @@ impl MpvAdapter {
                     TrackedCommandObservation::Position(position_seconds),
                 ) => match position_baseline {
                     Some(baseline) => {
-                        if *restart_observed
+                        if (matches!(intent, PlayerPlayIntent::Resume) || *restart_observed)
                             && position_seconds > *baseline + PLAYBACK_ADVANCEMENT_EPSILON_SECONDS
                         {
                             *forward_advancement_observed = true;
@@ -1320,6 +1327,20 @@ impl MpvAdapter {
                 if let Some(paused) = data.and_then(Value::as_bool) {
                     self.paused = paused;
                     self.observed_state.paused = Some(paused);
+                    if !paused {
+                        self.logical_pause_explicit = false;
+                    } else if matches!(
+                        self.transport_phase,
+                        PlayerTransportPhase::Empty
+                            | PlayerTransportPhase::Loading
+                            | PlayerTransportPhase::ReadyPaused
+                    ) || self
+                        .pending_tracked_commands
+                        .iter()
+                        .any(|command| matches!(command.kind, TrackedCommandKind::Pause { .. }))
+                    {
+                        self.logical_pause_explicit = true;
+                    }
                     let logical_pause = (!paused
                         || self.observed_state.paused_for_cache != Some(true))
                     .then_some(paused);
@@ -1382,9 +1403,13 @@ impl MpvAdapter {
                 if let Some(paused_for_cache) = data.and_then(Value::as_bool) {
                     self.paused_for_cache = paused_for_cache;
                     self.observed_state.paused_for_cache = Some(paused_for_cache);
-                    if paused_for_cache && self.observed_state.paused == Some(true) {
-                        self.observed_state.logical_pause = None;
-                    }
+                    let logical_pause = match self.observed_state.paused {
+                        Some(true) if paused_for_cache => None,
+                        Some(true) if self.logical_pause_explicit => Some(true),
+                        Some(true) => None,
+                        paused => paused,
+                    };
+                    self.observed_state.logical_pause = logical_pause;
                     self.queue_playback_telemetry_update(
                         PlayerPlaybackTelemetryUpdate::default()
                             .with_paused_for_cache(paused_for_cache),
@@ -1393,11 +1418,18 @@ impl MpvAdapter {
                     self.transport_phase = phase;
                     let mut update = self.transport_update().with_phase(phase);
                     update.paused_for_cache = Some(paused_for_cache);
+                    update.logical_pause = logical_pause;
                     self.queue_transport_telemetry_update(update);
                     self.observe_tracked_commands(
                         self.observation_media_generation(),
                         TrackedCommandObservation::CachePause(paused_for_cache),
                     );
+                    if let Some(logical_pause) = logical_pause {
+                        self.observe_tracked_commands(
+                            self.observation_media_generation(),
+                            TrackedCommandObservation::LogicalPause(logical_pause),
+                        );
+                    }
                     self.observe_tracked_commands(
                         self.observation_media_generation(),
                         TrackedCommandObservation::Phase(phase),
@@ -1511,6 +1543,14 @@ impl MpvAdapter {
     }
 
     fn handle_start_file_event(&mut self, event: &Value) {
+        // `pause`, `speed`, and `core-idle` are player/core properties rather
+        // than file metadata. mpv does not necessarily emit another property
+        // change when an already-paused player begins a new file, so retain
+        // their last observations across the media-generation boundary.
+        let retained_paused = self.observed_state.paused;
+        let retained_logical_pause = self.observed_state.logical_pause;
+        let retained_playback_rate = self.observed_state.playback_rate;
+        let retained_core_idle = self.observed_state.core_idle;
         let playlist_entry_id = event.get("playlist_entry_id").and_then(Value::as_u64);
         let generation = playlist_entry_id
             .and_then(|entry_id| self.playlist_entry_generations.get(&entry_id).copied())
@@ -1527,15 +1567,15 @@ impl MpvAdapter {
         self.active_generation_has_restarted = false;
         self.paused_for_cache = false;
         self.cache_buffering_percent = None;
-        self.observed_state.paused = None;
-        self.observed_state.logical_pause = None;
+        self.observed_state.paused = retained_paused;
+        self.observed_state.logical_pause = retained_logical_pause;
         self.observed_state.position_seconds = None;
-        self.observed_state.playback_rate = None;
+        self.observed_state.playback_rate = retained_playback_rate;
         self.observed_state.paused_for_cache = None;
         self.observed_state.cache_buffering_percent = None;
         self.observed_state.seeking = None;
         self.observed_state.seekable = None;
-        self.observed_state.core_idle = None;
+        self.observed_state.core_idle = retained_core_idle;
         self.observed_state.demuxer_cache_idle = None;
         self.observed_state.eof_reached = Some(false);
         self.transport_phase = PlayerTransportPhase::Loading;
@@ -1543,6 +1583,9 @@ impl MpvAdapter {
         let mut update = self
             .transport_update_for(generation)
             .with_phase(PlayerTransportPhase::Loading);
+        update.logical_pause = retained_logical_pause;
+        update.playback_rate = retained_playback_rate;
+        update.core_idle = retained_core_idle;
         update.eof_reached = Some(false);
         self.queue_transport_telemetry_update(update);
     }
@@ -1571,14 +1614,12 @@ impl MpvAdapter {
         self.active_generation_has_restarted = true;
         self.playback_restart_sequence = self.playback_restart_sequence.wrapping_add(1).max(1);
         self.observed_state.seeking = Some(false);
-        self.observed_state.core_idle = Some(false);
         self.observed_state.eof_reached = Some(false);
         let phase = self.inferred_transport_phase();
         self.transport_phase = phase;
 
         let mut update = self.transport_update().with_phase(phase);
         update.seeking = Some(false);
-        update.core_idle = Some(false);
         update.eof_reached = Some(false);
         update.playback_restart_sequence = Some(self.playback_restart_sequence);
         self.queue_transport_telemetry_update(update);

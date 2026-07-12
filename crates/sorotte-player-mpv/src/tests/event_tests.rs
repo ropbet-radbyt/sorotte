@@ -1,4 +1,5 @@
 use super::*;
+use sorotte_player_api::PlayerTransportTelemetryUpdate;
 
 #[test]
 fn take_local_file_update_polls_mpv_properties_and_emits_changes_once() {
@@ -472,6 +473,69 @@ fn transport_lifecycle_and_cache_hints_are_generation_correlated() {
             "request_id": 13
         })
     );
+}
+
+#[test]
+fn playback_restart_preserves_observed_core_idle_for_intentionally_paused_media() {
+    let (transport, _) = fake_transport_with_reads(&[
+        r#"{"event":"start-file","playlist_entry_id":42}"#,
+        r#"{"event":"file-loaded"}"#,
+        r#"{"event":"property-change","name":"paused-for-cache","data":false}"#,
+        r#"{"event":"property-change","name":"pause","data":true}"#,
+        r#"{"event":"property-change","name":"core-idle","data":true}"#,
+        r#"{"event":"playback-restart"}"#,
+        r#"{"request_id":1,"error":"success"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport_and_registered_observers(transport);
+
+    adapter
+        .set_playback_rate(1.0)
+        .expect("paused playback lifecycle should be observed");
+
+    let mut latest = PlayerTransportTelemetryUpdate::default();
+    while let Some(update) = adapter.take_transport_telemetry_update() {
+        latest.merge_from(update);
+    }
+    assert_eq!(latest.phase, Some(PlayerTransportPhase::ReadyPaused));
+    assert_eq!(latest.logical_pause, Some(true));
+    assert_eq!(latest.paused_for_cache, Some(false));
+    assert_eq!(latest.core_idle, Some(true));
+    assert_eq!(latest.playback_restart_sequence, Some(1));
+}
+
+#[test]
+fn paused_load_binds_global_pause_and_core_idle_and_restores_pause_after_cache_release() {
+    let (transport, _) = fake_transport_with_reads(&[
+        r#"{"event":"property-change","name":"pause","data":true}"#,
+        r#"{"event":"property-change","name":"core-idle","data":true}"#,
+        r#"{"event":"start-file","playlist_entry_id":43}"#,
+        r#"{"event":"file-loaded"}"#,
+        r#"{"event":"property-change","name":"paused-for-cache","data":false}"#,
+        r#"{"event":"playback-restart"}"#,
+        r#"{"event":"property-change","name":"paused-for-cache","data":true}"#,
+        r#"{"event":"property-change","name":"paused-for-cache","data":false}"#,
+        r#"{"request_id":1,"error":"success"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport_and_registered_observers(transport);
+
+    adapter
+        .set_playback_rate(1.0)
+        .expect("paused load and cache lifecycle should be observed");
+
+    let generation = adapter
+        .media_generation()
+        .expect("start-file should bind a media generation");
+    let mut latest = PlayerTransportTelemetryUpdate::default();
+    while let Some(update) = adapter.take_transport_telemetry_update() {
+        if update.media_generation == Some(generation) {
+            latest.merge_from(update);
+        }
+    }
+    assert_eq!(latest.phase, Some(PlayerTransportPhase::ReadyPaused));
+    assert_eq!(latest.logical_pause, Some(true));
+    assert_eq!(latest.paused_for_cache, Some(false));
+    assert_eq!(latest.core_idle, Some(true));
+    assert_eq!(latest.playback_restart_sequence, Some(1));
 }
 
 #[test]

@@ -1,1 +1,1 @@
-{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":7,"logicalMediaId":"youtube:example","targetPosition":12.5,"policy":"quorum","quorum":2,"quorumPercent":75,"timeoutMs":15000,"deadline":115.0}}}}
+{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":7,"requestNonce":55,"loadIntent":"newPlayback","logicalMediaId":"youtube:example","targetPosition":12.5,"policy":"quorum","quorum":2,"quorumPercent":75,"timeoutMs":15000,"timeoutAction":"continue","deadline":115.0}}}}

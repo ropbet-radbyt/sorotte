@@ -1,6 +1,7 @@
 use std::fmt;
 
-use sorotte_player_api::{PlayerSeekableRange, PlayerTransportPhase};
+use sorotte_player_api::{PlayerPlayIntent, PlayerSeekableRange, PlayerTransportPhase};
+pub use sorotte_protocol::MediaLoadIntent;
 
 const MIN_ADVANCEMENT_SECONDS: f64 = 0.01;
 const NORMAL_PLAYBACK_RATE: f64 = 1.0;
@@ -58,6 +59,8 @@ pub struct MediaLoadPlan {
     pub media_generation: u64,
     pub load_attempt: u64,
     pub logical_media_changed: bool,
+    pub playback_episode_changed: bool,
+    pub load_intent: MediaLoadIntent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,6 +205,11 @@ impl PlayerTransportObservation {
         self
     }
 
+    pub fn with_playback_rate(mut self, playback_rate: f64) -> Self {
+        self.playback_rate = Some(playback_rate);
+        self
+    }
+
     pub fn with_logical_pause(mut self, logical_pause: bool) -> Self {
         self.logical_pause = Some(logical_pause);
         self
@@ -231,12 +239,21 @@ impl PlayerTransportObservation {
         self.playback_restart_sequence = Some(sequence);
         self
     }
+
+    pub fn with_core_idle(mut self, core_idle: bool) -> Self {
+        self.core_idle = Some(core_idle);
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CoordinatorCommandId(u64);
 
 impl CoordinatorCommandId {
+    pub const fn new(value: u64) -> Self {
+        Self(if value == 0 { 1 } else { value })
+    }
+
     pub const fn get(self) -> u64 {
         self.0
     }
@@ -245,6 +262,7 @@ impl CoordinatorCommandId {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CoordinatorPlayerCommand {
     SetPaused(bool),
+    Play(PlayerPlayIntent),
     SetPosition(f64),
     SetPlaybackRate(f64),
 }
@@ -338,6 +356,7 @@ struct MediaState {
     load_attempt: u64,
     kind: MediaTransportKind,
     prepared_at_seconds: f64,
+    load_restart_baseline: u64,
 }
 
 impl fmt::Debug for MediaState {
@@ -349,6 +368,7 @@ impl fmt::Debug for MediaState {
             .field("load_attempt", &self.load_attempt)
             .field("kind", &self.kind)
             .field("prepared_at_seconds", &self.prepared_at_seconds)
+            .field("load_restart_baseline", &self.load_restart_baseline)
             .finish()
     }
 }
@@ -373,10 +393,11 @@ enum PendingCommandKind {
     Pause,
     Play {
         baseline_position: Option<f64>,
-        baseline_restart_sequence: u64,
+        intent: PlayerPlayIntent,
     },
     Seek {
         target_position_seconds: f64,
+        baseline_restart_sequence: u64,
     },
     Rate {
         target_rate: f64,
@@ -407,6 +428,13 @@ struct RecoveryEpisode {
     degraded: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RateOverride {
+    episode_id: u64,
+    reset_requested: bool,
+    reset_command_observation_sequence: Option<u64>,
+}
+
 #[derive(Debug, Clone)]
 pub struct PlaybackCoordinator {
     config: PlaybackCoordinatorConfig,
@@ -421,6 +449,10 @@ pub struct PlaybackCoordinator {
     last_applied_revision: Option<u64>,
     last_started_revision: Option<u64>,
     desired_seek_satisfied_revision: Option<u64>,
+    completed_seek_restart_baseline: Option<u64>,
+    rate_override: Option<RateOverride>,
+    observation_sequence: u64,
+    last_playback_rate_observation_sequence: Option<u64>,
     retry_not_before_seconds: f64,
     failed_command_attempts: u32,
     command_budget_degraded: bool,
@@ -449,6 +481,10 @@ impl PlaybackCoordinator {
             last_applied_revision: None,
             last_started_revision: None,
             desired_seek_satisfied_revision: None,
+            completed_seek_restart_baseline: None,
+            rate_override: None,
+            observation_sequence: 0,
+            last_playback_rate_observation_sequence: None,
             retry_not_before_seconds: 0.0,
             failed_command_attempts: 0,
             command_budget_degraded: false,
@@ -465,6 +501,10 @@ impl PlaybackCoordinator {
         self.observed = None;
         self.pending_commands.clear();
         self.close_recovery_without_metrics();
+        self.completed_seek_restart_baseline = None;
+        if let Some(media) = self.media.as_mut() {
+            media.load_restart_baseline = 0;
+        }
         self.retry_not_before_seconds = 0.0;
         self.failed_command_attempts = 0;
         self.command_budget_degraded = false;
@@ -488,19 +528,50 @@ impl PlaybackCoordinator {
             .media
             .as_ref()
             .is_some_and(|media| media.logical_id == logical_id);
-        if same_logical_media {
+        let inferred_intent = if same_logical_media {
+            MediaLoadIntent::TransportRefresh
+        } else {
+            MediaLoadIntent::NewPlayback
+        };
+        self.prepare_media_with_intent(logical_id, kind, inferred_intent, now_seconds)
+    }
+
+    pub fn prepare_media_with_intent(
+        &mut self,
+        logical_id: LogicalMediaId,
+        kind: MediaTransportKind,
+        requested_intent: MediaLoadIntent,
+        now_seconds: f64,
+    ) -> MediaLoadPlan {
+        let load_restart_baseline = self
+            .observed
+            .map_or(0, |observed| observed.playback_restart_sequence);
+        let same_logical_media = self
+            .media
+            .as_ref()
+            .is_some_and(|media| media.logical_id == logical_id);
+        let load_intent = match (same_logical_media, requested_intent) {
+            (true, MediaLoadIntent::TransportRefresh) => MediaLoadIntent::TransportRefresh,
+            (true, MediaLoadIntent::NewPlayback | MediaLoadIntent::Replay) => {
+                MediaLoadIntent::Replay
+            }
+            (false, _) => MediaLoadIntent::NewPlayback,
+        };
+        if load_intent == MediaLoadIntent::TransportRefresh {
+            self.close_recovery_without_metrics();
             let media = self.media.as_mut().expect("media existence was checked");
             media.load_attempt = media.load_attempt.saturating_add(1);
             media.kind = kind;
             media.prepared_at_seconds = now_seconds;
+            media.load_restart_baseline = load_restart_baseline;
             self.observed = None;
             self.pending_commands.clear();
-            self.recovery = None;
             // A refreshed URL (for example, an expiring Plex URL) represents
             // a new local transport attempt even though room identity stays
             // stable. The retained desired level must be re-observed against
             // that transport; an earlier seek/play acknowledgment is invalid.
             self.desired_seek_satisfied_revision = None;
+            self.completed_seek_restart_baseline = None;
             self.last_applied_revision = None;
             self.last_started_revision = None;
             self.retry_not_before_seconds = 0.0;
@@ -514,9 +585,13 @@ impl PlaybackCoordinator {
                 media_generation: media.generation,
                 load_attempt: media.load_attempt,
                 logical_media_changed: false,
+                playback_episode_changed: false,
+                load_intent,
             };
         }
 
+        let logical_media_changed = !same_logical_media;
+        self.close_recovery_without_metrics();
         self.next_media_generation = self.next_media_generation.saturating_add(1).max(1);
         let generation = self.next_media_generation;
         self.media = Some(MediaState {
@@ -525,26 +600,45 @@ impl PlaybackCoordinator {
             load_attempt: 1,
             kind,
             prepared_at_seconds: now_seconds,
+            load_restart_baseline,
         });
         self.desired = None;
         self.observed = None;
-        self.recovery = None;
         self.pending_commands.clear();
         self.last_applied_revision = None;
         self.last_started_revision = None;
         self.desired_seek_satisfied_revision = None;
+        self.completed_seek_restart_baseline = None;
         self.failed_command_attempts = 0;
         self.command_budget_degraded = false;
         self.diagnostic = PlaybackDiagnostic::Loading;
         MediaLoadPlan {
             media_generation: generation,
             load_attempt: 1,
-            logical_media_changed: true,
+            logical_media_changed,
+            playback_episode_changed: true,
+            load_intent,
         }
+    }
+
+    /// Interrupts transport recovery for a user/lifecycle action while
+    /// retaining ownership of any catch-up rate until baseline telemetry is
+    /// observed.
+    pub fn interrupt_recovery(&mut self) -> Vec<PlaybackCoordinatorAction> {
+        self.close_recovery_without_metrics();
+        let mut actions = Vec::new();
+        if let Some(observed) = self.observed {
+            self.reconcile_rate_override(observed, observed.observed_at_seconds, &mut actions);
+        }
+        actions
     }
 
     pub fn current_media_generation(&self) -> Option<u64> {
         self.media.as_ref().map(|media| media.generation)
+    }
+
+    pub fn current_load_attempt(&self) -> Option<u64> {
+        self.media.as_ref().map(|media| media.load_attempt)
     }
 
     pub fn current_logical_media_id(&self) -> Option<&LogicalMediaId> {
@@ -577,6 +671,7 @@ impl PlaybackCoordinator {
             self.desired_seek_satisfied_revision =
                 (!desired.force_seek).then_some(desired.state_revision);
             if desired.force_seek {
+                self.completed_seek_restart_baseline = None;
                 self.close_recovery_without_metrics();
             }
             self.retry_not_before_seconds = 0.0;
@@ -587,7 +682,11 @@ impl PlaybackCoordinator {
             self.close_recovery_without_metrics();
         }
         self.desired = Some(desired);
-        Vec::new()
+        let mut actions = Vec::new();
+        if let Some(observed) = self.observed {
+            self.reconcile_rate_override(observed, observed.observed_at_seconds, &mut actions);
+        }
+        actions
     }
 
     pub fn observe(
@@ -611,6 +710,7 @@ impl PlaybackCoordinator {
                 self.metrics.stale_timestamp_observations.saturating_add(1);
             return Vec::new();
         }
+        self.observation_sequence = self.observation_sequence.saturating_add(1);
 
         self.metrics.last_buffered_ahead_seconds = observation
             .buffered_ahead_seconds
@@ -652,6 +752,7 @@ impl PlaybackCoordinator {
             .filter(|value| value.is_finite() && *value > 0.0)
         {
             observed.playback_rate = Some(value);
+            self.last_playback_rate_observation_sequence = Some(self.observation_sequence);
         }
         if let Some(value) = observation.logical_pause {
             observed.logical_pause = Some(value);
@@ -693,6 +794,7 @@ impl PlaybackCoordinator {
         }
         self.complete_observed_commands(observed, advancing);
         self.coordinate_desired_state(observed, advancing, &mut actions);
+        self.reconcile_rate_override(observed, observed.observed_at_seconds, &mut actions);
         actions
     }
 
@@ -766,6 +868,14 @@ impl PlaybackCoordinator {
             if let Some(recovery) = self.recovery.as_mut() {
                 recovery.degraded = true;
             }
+            // A recovery command budget is allowed to stop further recovery
+            // attempts, but it must never strand a coordinator-owned speed
+            // override on the player. Baseline restoration has a separate
+            // safety obligation and is retried outside that budget.
+            self.request_rate_reset();
+        }
+        if let Some(observed) = self.observed {
+            self.reconcile_rate_override(observed, now_seconds, &mut actions);
         }
         actions
     }
@@ -805,6 +915,9 @@ impl PlaybackCoordinator {
     /// interval must remain exclusively owned by this coordinator.
     pub fn ordinary_correction_blocked(&self) -> bool {
         self.recovery.is_some()
+            || self.rate_override.is_some()
+            || !self.pending_commands.is_empty()
+            || self.desired_revision_pending().is_some()
             || self
                 .observed
                 .is_some_and(|observed| self.transport_blocks_correction(observed))
@@ -816,6 +929,9 @@ impl PlaybackCoordinator {
             PlayerTransportPhase::Loading => PlaybackDiagnostic::Loading,
             PlayerTransportPhase::Prebuffering => PlaybackDiagnostic::Prebuffering,
             PlayerTransportPhase::ReadyPaused => PlaybackDiagnostic::ReadyWaitingForRoom,
+            PlayerTransportPhase::Playing if observed.core_idle == Some(true) => {
+                PlaybackDiagnostic::Starting
+            }
             PlayerTransportPhase::Playing => PlaybackDiagnostic::Playing,
             PlayerTransportPhase::Rebuffering => PlaybackDiagnostic::Rebuffering,
             PlayerTransportPhase::Seeking => PlaybackDiagnostic::Starting,
@@ -894,26 +1010,38 @@ impl PlaybackCoordinator {
     fn complete_observed_commands(&mut self, observed: ObservedState, advancing: bool) {
         let tolerance = self.config.position_tolerance_seconds;
         let mut recovery_seek_completed = false;
+        let mut play_completed = false;
         self.pending_commands.retain(|command| match command.kind {
             PendingCommandKind::Pause => observed.logical_pause != Some(true),
             PendingCommandKind::Play {
                 baseline_position,
-                baseline_restart_sequence,
+                intent,
             } => {
-                let restarted = observed.playback_restart_sequence > baseline_restart_sequence;
+                let restart_satisfied = match intent {
+                    PlayerPlayIntent::Resume => true,
+                    PlayerPlayIntent::StartAfterLoad {
+                        baseline_restart_sequence,
+                    }
+                    | PlayerPlayIntent::StartAfterSeek {
+                        baseline_restart_sequence,
+                    } => observed.playback_restart_sequence > baseline_restart_sequence,
+                };
                 let advanced_from_baseline = baseline_position
                     .zip(observed.position_seconds)
                     .is_some_and(|(baseline, current)| {
                         current - baseline > MIN_ADVANCEMENT_SECONDS
                     });
-                !(observed.logical_pause == Some(false)
+                let completed = observed.logical_pause == Some(false)
                     && !observed.paused_for_cache
                     && !observed.seeking
-                    && restarted
-                    && (advancing || advanced_from_baseline))
+                    && restart_satisfied
+                    && (advancing || advanced_from_baseline);
+                play_completed |= completed;
+                !completed
             }
             PendingCommandKind::Seek {
                 target_position_seconds,
+                baseline_restart_sequence,
             } => {
                 let completed = !observed.seeking
                     && observed.position_seconds.is_some_and(|position| {
@@ -921,6 +1049,9 @@ impl PlaybackCoordinator {
                     });
                 if completed {
                     self.desired_seek_satisfied_revision = Some(command.revision);
+                    if observed.logical_pause == Some(true) {
+                        self.completed_seek_restart_baseline = Some(baseline_restart_sequence);
+                    }
                     recovery_seek_completed = true;
                 }
                 !completed
@@ -929,6 +1060,9 @@ impl PlaybackCoordinator {
                 .playback_rate
                 .is_none_or(|rate| (rate - target_rate).abs() > 0.001),
         });
+        if play_completed {
+            self.completed_seek_restart_baseline = None;
+        }
         if recovery_seek_completed
             && let Some(episode) = self.recovery.as_mut()
             && episode.seek_active
@@ -957,6 +1091,13 @@ impl PlaybackCoordinator {
         }
 
         if desired.paused {
+            if self.transport_blocks_correction(observed) {
+                return;
+            }
+            self.issue_desired_seek_if_needed(desired, observed, actions);
+            if !self.desired_seek_is_satisfied(desired) {
+                return;
+            }
             if observed.logical_pause != Some(true) {
                 self.issue_command(
                     desired.state_revision,
@@ -965,11 +1106,9 @@ impl PlaybackCoordinator {
                     CoordinatorPlayerCommand::SetPaused(true),
                     actions,
                 );
+                return;
             }
-            if !self.transport_blocks_correction(observed) {
-                self.issue_desired_seek_if_needed(desired, observed, actions);
-            }
-            if observed.logical_pause == Some(true) && self.desired_seek_is_satisfied(desired) {
+            if observed.logical_pause == Some(true) {
                 self.mark_revision_applied(desired, observed, false, actions);
             }
             return;
@@ -985,14 +1124,29 @@ impl PlaybackCoordinator {
         }
 
         if observed.logical_pause != Some(false) {
+            let intent =
+                if let Some(baseline_restart_sequence) = self.completed_seek_restart_baseline {
+                    PlayerPlayIntent::StartAfterSeek {
+                        baseline_restart_sequence,
+                    }
+                } else if self.last_started_revision.is_none() {
+                    PlayerPlayIntent::StartAfterLoad {
+                        baseline_restart_sequence: self
+                            .media
+                            .as_ref()
+                            .map_or(0, |media| media.load_restart_baseline),
+                    }
+                } else {
+                    PlayerPlayIntent::Resume
+                };
             self.issue_command(
                 desired.state_revision,
                 observed.observed_at_seconds,
                 PendingCommandKind::Play {
                     baseline_position: observed.position_seconds,
-                    baseline_restart_sequence: observed.playback_restart_sequence,
+                    intent,
                 },
-                CoordinatorPlayerCommand::SetPaused(false),
+                CoordinatorPlayerCommand::Play(intent),
                 actions,
             );
             return;
@@ -1026,6 +1180,9 @@ impl PlaybackCoordinator {
             return;
         }
         if !self.observed_seekable(observed) {
+            // Position alignment is impossible, but pause/play intent must not
+            // deadlock behind an unsatisfiable seek prerequisite.
+            self.desired_seek_satisfied_revision = Some(desired.state_revision);
             return;
         }
         self.issue_command(
@@ -1033,6 +1190,7 @@ impl PlaybackCoordinator {
             observed.observed_at_seconds,
             PendingCommandKind::Seek {
                 target_position_seconds: target,
+                baseline_restart_sequence: observed.playback_restart_sequence,
             },
             CoordinatorPlayerCommand::SetPosition(target),
             actions,
@@ -1109,11 +1267,21 @@ impl PlaybackCoordinator {
                             episode.catchup_deadline_seconds =
                                 Some(observed.observed_at_seconds + deadline_after);
                         }
+                        self.rate_override = Some(RateOverride {
+                            episode_id: episode_snapshot.id,
+                            reset_requested: false,
+                            reset_command_observation_sequence: None,
+                        });
                         self.issue_command(
                             desired.state_revision,
                             observed.observed_at_seconds,
                             PendingCommandKind::Rate { target_rate },
                             CoordinatorPlayerCommand::SetPlaybackRate(target_rate),
+                            actions,
+                        );
+                    } else {
+                        self.enter_degraded_recovery(
+                            DegradedPlaybackReason::NonSeekableLag,
                             actions,
                         );
                     }
@@ -1140,6 +1308,7 @@ impl PlaybackCoordinator {
                             observed.observed_at_seconds,
                             PendingCommandKind::Seek {
                                 target_position_seconds: target,
+                                baseline_restart_sequence: observed.playback_restart_sequence,
                             },
                             CoordinatorPlayerCommand::SetPosition(target),
                             actions,
@@ -1179,15 +1348,6 @@ impl PlaybackCoordinator {
         });
         if catchup_timed_out && !converged {
             self.enter_degraded_recovery(DegradedPlaybackReason::CatchupDidNotConverge, actions);
-            self.issue_command(
-                desired.state_revision,
-                observed.observed_at_seconds,
-                PendingCommandKind::Rate {
-                    target_rate: NORMAL_PLAYBACK_RATE,
-                },
-                CoordinatorPlayerCommand::SetPlaybackRate(NORMAL_PLAYBACK_RATE),
-                actions,
-            );
             return;
         }
         if stable_interval_elapsed && !converged {
@@ -1211,22 +1371,7 @@ impl PlaybackCoordinator {
             }
         }
         if converged && stable_interval_elapsed {
-            let catchup_active = self
-                .recovery
-                .as_ref()
-                .is_some_and(|episode| episode.catchup_active);
             self.close_recovery_with_metrics(observed.observed_at_seconds);
-            if catchup_active {
-                self.issue_command(
-                    desired.state_revision,
-                    observed.observed_at_seconds,
-                    PendingCommandKind::Rate {
-                        target_rate: NORMAL_PLAYBACK_RATE,
-                    },
-                    CoordinatorPlayerCommand::SetPlaybackRate(NORMAL_PLAYBACK_RATE),
-                    actions,
-                );
-            }
         }
     }
 
@@ -1238,8 +1383,17 @@ impl PlaybackCoordinator {
         command: CoordinatorPlayerCommand,
         actions: &mut Vec<PlaybackCoordinatorAction>,
     ) {
-        if self.command_budget_degraded
-            || self.failed_command_attempts > self.config.command_retry_budget
+        let baseline_rate_reset = matches!(
+            kind,
+            PendingCommandKind::Rate { target_rate }
+                if (target_rate - NORMAL_PLAYBACK_RATE).abs() <= 0.001
+                    && self
+                        .rate_override
+                        .is_some_and(|rate_override| rate_override.reset_requested)
+        );
+        if (!baseline_rate_reset
+            && (self.command_budget_degraded
+                || self.failed_command_attempts > self.config.command_retry_budget))
             || now_seconds < self.retry_not_before_seconds
             || self.pending_commands.iter().any(|pending| {
                 matches!(
@@ -1271,6 +1425,9 @@ impl PlaybackCoordinator {
             accepted: false,
             kind,
         });
+        if baseline_rate_reset && let Some(rate_override) = self.rate_override.as_mut() {
+            rate_override.reset_command_observation_sequence = Some(self.observation_sequence);
+        }
         actions.push(PlaybackCoordinatorAction::Execute {
             command_id,
             command,
@@ -1327,6 +1484,7 @@ impl PlaybackCoordinator {
         }
         self.metrics.degraded_recovery_count =
             self.metrics.degraded_recovery_count.saturating_add(1);
+        self.request_rate_reset();
         self.diagnostic = PlaybackDiagnostic::Degraded;
         actions.push(PlaybackCoordinatorAction::Degraded {
             media_generation: self.current_media_generation().unwrap_or_default(),
@@ -1349,26 +1507,27 @@ impl PlaybackCoordinator {
 
     fn clamp_seek_target(&self, target: f64, observed: ObservedState) -> f64 {
         let target = target.max(0.0);
+        if self
+            .media
+            .as_ref()
+            .is_none_or(|media| media.kind != MediaTransportKind::LiveSliding)
+        {
+            // mpv's VOD demuxer ranges describe cached data, not the full
+            // source. A seek outside them performs a valid low-level demuxer
+            // seek and must not be silently rewritten to the cache edge.
+            return target;
+        }
         let Some((start, end)) = observed.seekable_window else {
             return target;
         };
-        let end = if self
-            .media
-            .as_ref()
-            .is_some_and(|media| media.kind == MediaTransportKind::LiveSliding)
-        {
-            // Avoid targeting a point still being written at the live edge.
-            (end - 1.0_f64.min((end - start).max(0.0) / 4.0)).max(start)
-        } else {
-            end
-        };
+        // Avoid targeting a point still being written at the live edge.
+        let end = (end - 1.0_f64.min((end - start).max(0.0) / 4.0)).max(start);
         target.clamp(start, end)
     }
 
     fn transport_blocks_correction(&self, observed: ObservedState) -> bool {
         observed.paused_for_cache
             || observed.seeking
-            || observed.core_idle == Some(true)
             || matches!(
                 observed.phase,
                 PlayerTransportPhase::Empty
@@ -1382,6 +1541,7 @@ impl PlaybackCoordinator {
     }
 
     fn close_recovery_with_metrics(&mut self, now_seconds: f64) {
+        self.request_rate_reset();
         if let Some(episode) = self.recovery.take() {
             self.metrics.total_buffer_duration_seconds +=
                 (now_seconds - episode.entered_at_seconds).max(0.0);
@@ -1390,7 +1550,79 @@ impl PlaybackCoordinator {
     }
 
     fn close_recovery_without_metrics(&mut self) {
+        self.request_rate_reset();
         self.recovery = None;
+    }
+
+    fn request_rate_reset(&mut self) {
+        let Some(rate_override) = self.rate_override.as_mut() else {
+            return;
+        };
+        if !rate_override.reset_requested {
+            rate_override.reset_requested = true;
+            rate_override.reset_command_observation_sequence = None;
+            // A baseline reset supersedes an in-flight catch-up command. Once
+            // that reset is pending, repeated pause/lifecycle reconciliation
+            // must leave it tracked instead of replacing it every tick.
+            self.pending_commands.retain(|command| {
+                !matches!(
+                    command.kind,
+                    PendingCommandKind::Rate { target_rate }
+                        if (target_rate - NORMAL_PLAYBACK_RATE).abs() > 0.001
+                )
+            });
+        }
+    }
+
+    fn reconcile_rate_override(
+        &mut self,
+        observed: ObservedState,
+        command_now_seconds: f64,
+        actions: &mut Vec<PlaybackCoordinatorAction>,
+    ) {
+        let Some(rate_override) = self.rate_override else {
+            return;
+        };
+        let owning_episode_active = self
+            .recovery
+            .as_ref()
+            .is_some_and(|episode| episode.id == rate_override.episode_id);
+        if !rate_override.reset_requested && owning_episode_active {
+            // The override is still intentionally owned by this recovery
+            // episode, whether mpv currently reports the old baseline or the
+            // requested target. In particular, the observation that decides
+            // to start catch-up commonly still carries speed=1.0.
+            return;
+        }
+        if !rate_override.reset_requested {
+            self.request_rate_reset();
+        }
+        let Some(rate_override) = self.rate_override else {
+            return;
+        };
+        let baseline_confirmed_after_reset_command = rate_override
+            .reset_command_observation_sequence
+            .is_some_and(|issued_after_sequence| {
+                self.last_playback_rate_observation_sequence
+                    .is_some_and(|observed_sequence| observed_sequence > issued_after_sequence)
+                    && observed
+                        .playback_rate
+                        .is_some_and(|rate| (rate - NORMAL_PLAYBACK_RATE).abs() <= 0.001)
+            });
+        if baseline_confirmed_after_reset_command {
+            self.rate_override = None;
+            return;
+        }
+        let revision = self.desired.map_or(0, |desired| desired.state_revision);
+        self.issue_command(
+            revision,
+            command_now_seconds,
+            PendingCommandKind::Rate {
+                target_rate: NORMAL_PLAYBACK_RATE,
+            },
+            CoordinatorPlayerCommand::SetPlaybackRate(NORMAL_PLAYBACK_RATE),
+            actions,
+        );
     }
 }
 
@@ -1400,11 +1632,11 @@ fn latest_valid_seekable_window(ranges: &[PlayerSeekableRange]) -> Option<(f64, 
         .filter(|range| {
             range.start_seconds.is_finite()
                 && range.end_seconds.is_finite()
-                && range.start_seconds >= 0.0
                 && range.end_seconds >= range.start_seconds
+                && range.end_seconds >= 0.0
         })
         .max_by(|left, right| left.end_seconds.total_cmp(&right.end_seconds))
-        .map(|range| (range.start_seconds, range.end_seconds))
+        .map(|range| (range.start_seconds.max(0.0), range.end_seconds))
 }
 
 fn observation_has_catchup_headroom(metrics: &PlaybackCoordinatorMetrics) -> bool {
@@ -1444,6 +1676,64 @@ mod tests {
             .with_cache_pause(false)
             .with_seeking(false)
             .with_seekable(true)
+    }
+
+    fn begin_catchup_override(
+        config: PlaybackCoordinatorConfig,
+    ) -> (PlaybackCoordinator, u64, f64, CoordinatorCommandId) {
+        begin_catchup_override_with_decision_rate(config, None)
+    }
+
+    fn begin_catchup_override_with_decision_rate(
+        config: PlaybackCoordinatorConfig,
+        decision_playback_rate: Option<f64>,
+    ) -> (PlaybackCoordinator, u64, f64, CoordinatorCommandId) {
+        let mut coordinator = PlaybackCoordinator::new(config);
+        let generation = coordinator
+            .prepare_media(
+                LogicalMediaId::new("catchup-override").unwrap(),
+                MediaTransportKind::NetworkVod,
+                0.0,
+            )
+            .media_generation;
+        coordinator.update_desired_room_state(DesiredRoomPlayback {
+            anchor_observed_at_seconds: 10.0,
+            ..desired(generation, 1, false, 25.0)
+        });
+        coordinator.observe(
+            PlayerTransportObservation::new(generation, 10.0)
+                .with_phase(PlayerTransportPhase::Rebuffering)
+                .with_position(20.0)
+                .with_logical_pause(false)
+                .with_cache_pause(true),
+        );
+        coordinator.observe(playing(generation, 11.0, 20.5));
+        let mut decision = playing(generation, 12.0, 21.0);
+        if let Some(playback_rate) = decision_playback_rate {
+            decision = decision.with_playback_rate(playback_rate);
+        }
+        let actions = coordinator.observe(decision);
+        let (command_id, target_rate) = actions
+            .iter()
+            .find_map(|action| match action {
+                PlaybackCoordinatorAction::Execute {
+                    command_id,
+                    command: CoordinatorPlayerCommand::SetPlaybackRate(rate),
+                } if *rate > NORMAL_PLAYBACK_RATE => Some((*command_id, *rate)),
+                _ => None,
+            })
+            .expect("moderate post-buffer lag should start rate catch-up");
+        (coordinator, generation, target_rate, command_id)
+    }
+
+    fn observe_catchup_override(
+        coordinator: &mut PlaybackCoordinator,
+        generation: u64,
+        target_rate: f64,
+        command_id: CoordinatorCommandId,
+    ) {
+        assert!(coordinator.command_accepted(command_id));
+        coordinator.observe(playing(generation, 13.0, 21.5).with_playback_rate(target_rate));
     }
 
     #[test]
@@ -1644,6 +1934,14 @@ mod tests {
                 .recovery_episode()
                 .is_some_and(|episode| episode.degraded)
         );
+        coordinator.observe(
+            playing(generation, deadline + 0.2, 22.1 + (deadline + 0.1 - 13.0))
+                .with_playback_rate(NORMAL_PLAYBACK_RATE),
+        );
+        assert!(
+            coordinator.rate_override.is_none(),
+            "degraded recovery must release rate ownership only after baseline telemetry"
+        );
     }
 
     #[test]
@@ -1812,7 +2110,7 @@ mod tests {
             .find_map(|action| match action {
                 PlaybackCoordinatorAction::Execute {
                     command_id,
-                    command: CoordinatorPlayerCommand::SetPaused(false),
+                    command: CoordinatorPlayerCommand::Play(_),
                 } => Some(*command_id),
                 _ => None,
             })
@@ -1830,6 +2128,244 @@ mod tests {
             }
         )));
         assert_eq!(coordinator.desired_revision_pending(), None);
+    }
+
+    #[test]
+    fn ready_paused_core_idle_allows_prepare_seek_and_play() {
+        let (mut paused_coordinator, paused_generation) =
+            coordinator(MediaTransportKind::NetworkVod);
+        paused_coordinator.update_desired_room_state(DesiredRoomPlayback {
+            force_seek: true,
+            ..desired(paused_generation, 1, true, 12.0)
+        });
+        let seek_actions = paused_coordinator.observe(
+            PlayerTransportObservation::new(paused_generation, 1.0)
+                .with_phase(PlayerTransportPhase::ReadyPaused)
+                .with_position(0.0)
+                .with_logical_pause(true)
+                .with_seekable(true)
+                .with_core_idle(true),
+        );
+        assert!(seek_actions.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPosition(position),
+                ..
+            } if (*position - 12.0).abs() < f64::EPSILON
+        )));
+
+        let (mut playing_coordinator, playing_generation) =
+            coordinator(MediaTransportKind::NetworkVod);
+        playing_coordinator.update_desired_room_state(desired(playing_generation, 1, false, 0.0));
+        let play_actions = playing_coordinator.observe(
+            PlayerTransportObservation::new(playing_generation, 1.0)
+                .with_phase(PlayerTransportPhase::ReadyPaused)
+                .with_position(0.0)
+                .with_logical_pause(true)
+                .with_seekable(true)
+                .with_core_idle(true),
+        );
+        assert!(play_actions.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::Play(PlayerPlayIntent::StartAfterLoad { .. }),
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn authoritative_pause_aligns_position_before_sending_pause() {
+        let (mut coordinator, generation) = coordinator(MediaTransportKind::NetworkVod);
+        coordinator.update_desired_room_state(desired(generation, 1, false, 10.0));
+        coordinator.observe(playing(generation, 1.0, 10.0).with_restart_sequence(1));
+        coordinator.observe(playing(generation, 1.1, 10.1).with_restart_sequence(1));
+
+        coordinator.update_desired_room_state(DesiredRoomPlayback {
+            media_generation: generation,
+            state_revision: 2,
+            paused: true,
+            anchor_position_seconds: 12.0,
+            anchor_observed_at_seconds: 2.0,
+            force_seek: true,
+        });
+        let seek_first = coordinator.observe(playing(generation, 2.0, 10.2));
+        assert!(seek_first.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPosition(position),
+                ..
+            } if (*position - 12.0).abs() < f64::EPSILON
+        )));
+        assert!(!seek_first.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPaused(true),
+                ..
+            }
+        )));
+
+        let pause_second = coordinator.observe(
+            playing(generation, 2.1, 12.0)
+                .with_seeking(false)
+                .with_restart_sequence(2),
+        );
+        assert!(pause_second.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPaused(true),
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn ordinary_resume_completes_without_a_new_playback_restart() {
+        let (mut coordinator, generation) = coordinator(MediaTransportKind::NetworkVod);
+        coordinator.update_desired_room_state(desired(generation, 1, false, 0.0));
+        let initial = coordinator.observe(
+            PlayerTransportObservation::new(generation, 0.1)
+                .with_phase(PlayerTransportPhase::ReadyPaused)
+                .with_position(0.0)
+                .with_logical_pause(true)
+                .with_seekable(true)
+                .with_core_idle(true),
+        );
+        assert!(initial.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::Play(PlayerPlayIntent::StartAfterLoad { .. }),
+                ..
+            }
+        )));
+        coordinator.observe(playing(generation, 0.2, 0.0).with_restart_sequence(1));
+        coordinator.observe(playing(generation, 0.3, 0.1).with_restart_sequence(1));
+
+        coordinator.update_desired_room_state(desired(generation, 2, true, 0.1));
+        coordinator.observe(playing(generation, 0.4, 0.2).with_restart_sequence(1));
+        coordinator.observe(
+            PlayerTransportObservation::new(generation, 0.5)
+                .with_phase(PlayerTransportPhase::ReadyPaused)
+                .with_position(0.2)
+                .with_logical_pause(true)
+                .with_cache_pause(false)
+                .with_seekable(true)
+                .with_core_idle(true)
+                .with_restart_sequence(1),
+        );
+
+        coordinator.update_desired_room_state(desired(generation, 3, false, 0.2));
+        let resume = coordinator.observe(
+            PlayerTransportObservation::new(generation, 0.6)
+                .with_phase(PlayerTransportPhase::ReadyPaused)
+                .with_position(0.2)
+                .with_logical_pause(true)
+                .with_cache_pause(false)
+                .with_seekable(true)
+                .with_core_idle(true)
+                .with_restart_sequence(1),
+        );
+        assert!(resume.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::Play(PlayerPlayIntent::Resume),
+                ..
+            }
+        )));
+        let resumed = coordinator.observe(
+            playing(generation, 0.7, 0.3)
+                .with_restart_sequence(1)
+                .with_core_idle(false),
+        );
+        assert!(resumed.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::RevisionApplied {
+                state_revision: 3,
+                ..
+            } | PlaybackCoordinatorAction::Started {
+                state_revision: 3,
+                ..
+            }
+        )));
+        assert_eq!(coordinator.desired_revision_pending(), None);
+    }
+
+    #[test]
+    fn play_after_paused_seek_uses_the_seek_start_restart_baseline() {
+        let (mut coordinator, generation) = coordinator(MediaTransportKind::NetworkVod);
+        coordinator.update_desired_room_state(DesiredRoomPlayback {
+            force_seek: true,
+            ..desired(generation, 1, true, 10.0)
+        });
+        let seek = coordinator.observe(
+            PlayerTransportObservation::new(generation, 1.0)
+                .with_phase(PlayerTransportPhase::ReadyPaused)
+                .with_position(0.0)
+                .with_logical_pause(true)
+                .with_seekable(true)
+                .with_core_idle(true)
+                .with_restart_sequence(5),
+        );
+        assert!(seek.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPosition(position),
+                ..
+            } if (*position - 10.0).abs() < f64::EPSILON
+        )));
+        coordinator.observe(
+            PlayerTransportObservation::new(generation, 1.1)
+                .with_phase(PlayerTransportPhase::Seeking)
+                .with_position(10.0)
+                .with_logical_pause(true)
+                .with_seeking(true)
+                .with_seekable(true)
+                .with_restart_sequence(5),
+        );
+        coordinator.observe(
+            PlayerTransportObservation::new(generation, 1.2)
+                .with_phase(PlayerTransportPhase::ReadyPaused)
+                .with_position(10.0)
+                .with_logical_pause(true)
+                .with_cache_pause(false)
+                .with_seeking(false)
+                .with_seekable(true)
+                .with_core_idle(true)
+                .with_restart_sequence(6),
+        );
+
+        coordinator.update_desired_room_state(desired(generation, 2, false, 10.0));
+        let play = coordinator.observe(
+            PlayerTransportObservation::new(generation, 1.3)
+                .with_phase(PlayerTransportPhase::ReadyPaused)
+                .with_position(10.0)
+                .with_logical_pause(true)
+                .with_cache_pause(false)
+                .with_seekable(true)
+                .with_core_idle(true)
+                .with_restart_sequence(6),
+        );
+        assert!(play.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::Play(PlayerPlayIntent::StartAfterSeek {
+                    baseline_restart_sequence: 5,
+                }),
+                ..
+            }
+        )));
+        let started = coordinator.observe(
+            playing(generation, 1.4, 10.1)
+                .with_core_idle(false)
+                .with_restart_sequence(6),
+        );
+        assert!(started.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Started {
+                state_revision: 2,
+                ..
+            }
+        )));
     }
 
     #[test]
@@ -1908,6 +2444,133 @@ mod tests {
     }
 
     #[test]
+    fn pending_desired_revision_and_command_both_block_legacy_correction() {
+        let (mut coordinator, generation) = coordinator(MediaTransportKind::NetworkVod);
+        coordinator.update_desired_room_state(desired(generation, 1, true, 0.0));
+        assert!(coordinator.ordinary_correction_blocked());
+
+        coordinator.observe(
+            PlayerTransportObservation::new(generation, 0.1)
+                .with_phase(PlayerTransportPhase::ReadyPaused)
+                .with_position(0.0)
+                .with_logical_pause(true)
+                .with_seekable(true)
+                .with_core_idle(true),
+        );
+        assert!(!coordinator.ordinary_correction_blocked());
+
+        coordinator.update_desired_room_state(desired(generation, 2, false, 0.0));
+        let play = coordinator.observe(
+            PlayerTransportObservation::new(generation, 0.2)
+                .with_phase(PlayerTransportPhase::ReadyPaused)
+                .with_position(0.0)
+                .with_logical_pause(true)
+                .with_seekable(true)
+                .with_core_idle(true),
+        );
+        assert!(play.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::Play(_),
+                ..
+            }
+        )));
+        assert!(coordinator.ordinary_correction_blocked());
+
+        coordinator.observe(
+            playing(generation, 0.3, 0.1)
+                .with_restart_sequence(1)
+                .with_core_idle(false),
+        );
+        assert!(!coordinator.ordinary_correction_blocked());
+    }
+
+    #[test]
+    fn newer_forced_revision_supersedes_pending_barrier_seek() {
+        let (mut coordinator, generation) = coordinator(MediaTransportKind::NetworkVod);
+        coordinator.update_desired_room_state(DesiredRoomPlayback {
+            force_seek: true,
+            ..desired(generation, 1, true, 10.0)
+        });
+        let first = coordinator.observe(
+            PlayerTransportObservation::new(generation, 0.1)
+                .with_phase(PlayerTransportPhase::ReadyPaused)
+                .with_position(0.0)
+                .with_logical_pause(true)
+                .with_seekable(true)
+                .with_core_idle(true),
+        );
+        assert!(first.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPosition(position),
+                ..
+            } if (*position - 10.0).abs() < f64::EPSILON
+        )));
+
+        coordinator.update_desired_room_state(DesiredRoomPlayback {
+            force_seek: true,
+            ..desired(generation, 2, true, 20.0)
+        });
+        let superseding = coordinator.observe(
+            PlayerTransportObservation::new(generation, 0.2)
+                .with_phase(PlayerTransportPhase::ReadyPaused)
+                .with_position(0.0)
+                .with_logical_pause(true)
+                .with_seekable(true)
+                .with_core_idle(true),
+        );
+        assert!(superseding.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPosition(position),
+                ..
+            } if (*position - 20.0).abs() < f64::EPSILON
+        )));
+        assert!(!superseding.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPosition(position),
+                ..
+            } if (*position - 10.0).abs() < f64::EPSILON
+        )));
+
+        let stale_target = coordinator.observe(
+            PlayerTransportObservation::new(generation, 0.3)
+                .with_phase(PlayerTransportPhase::ReadyPaused)
+                .with_position(10.0)
+                .with_logical_pause(true)
+                .with_seekable(true)
+                .with_core_idle(true),
+        );
+        assert!(!stale_target.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::RevisionApplied {
+                state_revision: 2,
+                ..
+            }
+        )));
+        assert_eq!(coordinator.desired_revision_pending(), Some(2));
+
+        let applied = coordinator.observe(
+            PlayerTransportObservation::new(generation, 0.4)
+                .with_phase(PlayerTransportPhase::ReadyPaused)
+                .with_position(20.0)
+                .with_logical_pause(true)
+                .with_seekable(true)
+                .with_core_idle(true),
+        );
+        assert!(applied.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::RevisionApplied {
+                state_revision: 2,
+                ..
+            }
+        )));
+        assert_eq!(coordinator.desired_revision_pending(), None);
+    }
+
+    #[test]
     fn accepted_command_without_matching_observation_times_out_and_stays_pending() {
         let config = PlaybackCoordinatorConfig {
             command_timeout_seconds: 1.0,
@@ -1935,7 +2598,7 @@ mod tests {
             .find_map(|action| match action {
                 PlaybackCoordinatorAction::Execute {
                     command_id,
-                    command: CoordinatorPlayerCommand::SetPaused(false),
+                    command: CoordinatorPlayerCommand::Play(_),
                 } => Some(*command_id),
                 _ => None,
             })
@@ -2050,7 +2713,7 @@ mod tests {
             .find_map(|action| match action {
                 PlaybackCoordinatorAction::Execute {
                     command_id,
-                    command: CoordinatorPlayerCommand::SetPaused(false),
+                    command: CoordinatorPlayerCommand::Play(_),
                 } => Some(*command_id),
                 _ => None,
             })
@@ -2112,6 +2775,46 @@ mod tests {
             }
         )));
         assert_eq!(coordinator.metrics().hard_seek_count, 0);
+    }
+
+    #[test]
+    fn non_seekable_moderate_lag_terminates_recovery_explicitly() {
+        let (mut coordinator, generation) = coordinator(MediaTransportKind::NonSeekable);
+        coordinator.update_desired_room_state(DesiredRoomPlayback {
+            anchor_observed_at_seconds: 10.0,
+            ..desired(generation, 1, false, 25.0)
+        });
+        coordinator.observe(
+            PlayerTransportObservation::new(generation, 10.0)
+                .with_phase(PlayerTransportPhase::Rebuffering)
+                .with_position(20.0)
+                .with_logical_pause(false)
+                .with_cache_pause(true)
+                .with_seekable(false),
+        );
+        coordinator.observe(playing(generation, 11.0, 20.5).with_seekable(false));
+        let actions = coordinator.observe(playing(generation, 12.0, 21.0).with_seekable(false));
+
+        assert!(actions.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Degraded {
+                reason: DegradedPlaybackReason::NonSeekableLag,
+                ..
+            }
+        )));
+        assert!(
+            coordinator
+                .recovery_episode()
+                .is_some_and(|episode| episode.degraded)
+        );
+        assert!(!actions.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPosition(_)
+                    | CoordinatorPlayerCommand::SetPlaybackRate(_),
+                ..
+            }
+        )));
     }
 
     #[test]
@@ -2249,6 +2952,41 @@ mod tests {
     }
 
     #[test]
+    fn offset_shifted_seekable_window_keeps_its_nonnegative_portion() {
+        assert_eq!(
+            latest_valid_seekable_window(&[PlayerSeekableRange::new(-5.0, 95.0)]),
+            Some((0.0, 95.0))
+        );
+    }
+
+    #[test]
+    fn vod_forced_seek_is_not_clamped_to_the_current_cache_range() {
+        let (mut coordinator, generation) = coordinator(MediaTransportKind::NetworkVod);
+        coordinator.update_desired_room_state(DesiredRoomPlayback {
+            force_seek: true,
+            ..desired(generation, 2, true, 5.0)
+        });
+
+        let actions = coordinator.observe(
+            PlayerTransportObservation::new(generation, 1.0)
+                .with_phase(PlayerTransportPhase::ReadyPaused)
+                .with_position(1.0)
+                .with_logical_pause(true)
+                .with_seekable(true)
+                .with_seekable_ranges(vec![PlayerSeekableRange::new(0.0, 2.0)])
+                .with_core_idle(true),
+        );
+
+        assert!(actions.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPosition(position),
+                ..
+            } if (*position - 5.0).abs() < f64::EPSILON
+        )));
+    }
+
+    #[test]
     fn stale_generation_observation_cannot_mutate_current_state() {
         let (mut coordinator, old_generation) = coordinator(MediaTransportKind::NetworkVod);
         let current_generation = coordinator
@@ -2298,6 +3036,408 @@ mod tests {
                 command: CoordinatorPlayerCommand::SetPosition(position),
                 ..
             } if (*position - 10.0).abs() < f64::EPSILON
+        )));
+    }
+
+    #[test]
+    fn replay_of_same_logical_media_allocates_a_new_playback_generation() {
+        let (mut coordinator, generation) = coordinator(MediaTransportKind::NetworkVod);
+        let replay = coordinator.prepare_media_with_intent(
+            LogicalMediaId::new("episode-1").unwrap(),
+            MediaTransportKind::NetworkVod,
+            MediaLoadIntent::Replay,
+            10.0,
+        );
+
+        assert_ne!(replay.media_generation, generation);
+        assert_eq!(replay.load_attempt, 1);
+        assert!(!replay.logical_media_changed);
+        assert!(replay.playback_episode_changed);
+        assert_eq!(replay.load_intent, MediaLoadIntent::Replay);
+    }
+
+    #[test]
+    fn adapter_epoch_reset_retains_rate_ownership_until_baseline_is_observed() {
+        let (mut coordinator, generation) = coordinator(MediaTransportKind::NetworkVod);
+        coordinator.update_desired_room_state(DesiredRoomPlayback {
+            anchor_observed_at_seconds: 10.0,
+            ..desired(generation, 1, false, 25.0)
+        });
+        coordinator.observe(
+            PlayerTransportObservation::new(generation, 10.0)
+                .with_phase(PlayerTransportPhase::Rebuffering)
+                .with_position(20.0)
+                .with_logical_pause(false)
+                .with_cache_pause(true),
+        );
+        coordinator.observe(playing(generation, 11.0, 20.5));
+        coordinator.observe(playing(generation, 12.0, 21.0));
+        coordinator.observe(
+            playing(generation, 13.0, 21.5)
+                .with_playback_rate(CONSERVATIVE_CATCHUP_RATE_WITHOUT_HEADROOM),
+        );
+
+        coordinator.reset_transport_adapter_epoch(14.0);
+        let reset = coordinator.observe(
+            PlayerTransportObservation::new(generation, 14.1)
+                .with_phase(PlayerTransportPhase::Loading)
+                .with_playback_rate(CONSERVATIVE_CATCHUP_RATE_WITHOUT_HEADROOM)
+                .with_core_idle(true),
+        );
+        assert!(reset.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPlaybackRate(rate),
+                ..
+            } if (*rate - NORMAL_PLAYBACK_RATE).abs() < f64::EPSILON
+        )));
+        assert!(coordinator.ordinary_correction_blocked());
+
+        coordinator.observe(
+            PlayerTransportObservation::new(generation, 14.2)
+                .with_phase(PlayerTransportPhase::Loading)
+                .with_playback_rate(NORMAL_PLAYBACK_RATE)
+                .with_core_idle(true),
+        );
+        assert!(coordinator.rate_override.is_none());
+    }
+
+    #[test]
+    fn failed_rate_reset_retries_without_reenabling_legacy_correction() {
+        let config = PlaybackCoordinatorConfig {
+            command_retry_cooldown_seconds: 0.1,
+            ..PlaybackCoordinatorConfig::default()
+        };
+        let (mut coordinator, generation, target_rate, catchup_command_id) =
+            begin_catchup_override(config);
+        observe_catchup_override(
+            &mut coordinator,
+            generation,
+            target_rate,
+            catchup_command_id,
+        );
+
+        let reset = coordinator.interrupt_recovery();
+        let reset_command_id = reset
+            .iter()
+            .find_map(|action| match action {
+                PlaybackCoordinatorAction::Execute {
+                    command_id,
+                    command: CoordinatorPlayerCommand::SetPlaybackRate(rate),
+                } if (*rate - NORMAL_PLAYBACK_RATE).abs() <= 0.001 => Some(*command_id),
+                _ => None,
+            })
+            .expect("interrupting catch-up should restore the baseline rate");
+        assert!(coordinator.command_failed(reset_command_id, 13.01));
+        assert!(
+            coordinator.ordinary_correction_blocked(),
+            "failed cleanup must retain exclusive coordinator ownership"
+        );
+
+        assert!(coordinator.tick(13.05).is_empty());
+        let retry = coordinator.tick(13.12);
+        assert!(retry.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPlaybackRate(rate),
+                ..
+            } if (*rate - NORMAL_PLAYBACK_RATE).abs() <= 0.001
+        )));
+    }
+
+    #[test]
+    fn timed_out_rate_reset_retries_after_its_cooldown() {
+        let config = PlaybackCoordinatorConfig {
+            command_timeout_seconds: 0.2,
+            command_retry_budget: 5,
+            command_retry_cooldown_seconds: 0.1,
+            ..PlaybackCoordinatorConfig::default()
+        };
+        let (mut coordinator, generation, target_rate, catchup_command_id) =
+            begin_catchup_override(config);
+        observe_catchup_override(
+            &mut coordinator,
+            generation,
+            target_rate,
+            catchup_command_id,
+        );
+
+        let reset = coordinator.interrupt_recovery();
+        let reset_command_id = reset
+            .iter()
+            .find_map(|action| match action {
+                PlaybackCoordinatorAction::Execute {
+                    command_id,
+                    command: CoordinatorPlayerCommand::SetPlaybackRate(rate),
+                } if (*rate - NORMAL_PLAYBACK_RATE).abs() <= 0.001 => Some(*command_id),
+                _ => None,
+            })
+            .expect("interrupting catch-up should restore the baseline rate");
+        assert!(coordinator.command_accepted(reset_command_id));
+
+        let timed_out = coordinator.tick(13.21);
+        assert!(timed_out.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::CommandTimedOut { command_id }
+                if *command_id == reset_command_id
+        )));
+        assert!(coordinator.ordinary_correction_blocked());
+        let retry = coordinator.tick(13.32);
+        assert!(retry.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPlaybackRate(rate),
+                ..
+            } if (*rate - NORMAL_PLAYBACK_RATE).abs() <= 0.001
+        )));
+    }
+
+    #[test]
+    fn command_budget_degradation_cannot_strand_a_catchup_rate() {
+        let config = PlaybackCoordinatorConfig {
+            command_timeout_seconds: 0.2,
+            command_retry_budget: 0,
+            command_retry_cooldown_seconds: 0.1,
+            ..PlaybackCoordinatorConfig::default()
+        };
+        let (mut coordinator, _generation, _target_rate, catchup_command_id) =
+            begin_catchup_override(config);
+        assert!(coordinator.command_accepted(catchup_command_id));
+
+        let degraded = coordinator.tick(12.21);
+        assert!(degraded.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Degraded {
+                reason: DegradedPlaybackReason::RecoveryCommandTimedOut,
+                ..
+            }
+        )));
+        assert!(coordinator.command_budget_degraded);
+        assert!(
+            coordinator
+                .rate_override
+                .is_some_and(|rate| rate.reset_requested)
+        );
+
+        let reset = coordinator.tick(12.32);
+        assert!(
+            reset.iter().any(|action| matches!(
+                action,
+                PlaybackCoordinatorAction::Execute {
+                    command: CoordinatorPlayerCommand::SetPlaybackRate(rate),
+                    ..
+                } if (*rate - NORMAL_PLAYBACK_RATE).abs() <= 0.001
+            )),
+            "baseline reset must bypass the exhausted recovery-command budget"
+        );
+    }
+
+    #[test]
+    fn decision_time_baseline_does_not_release_catchup_or_its_later_cleanup() {
+        let (mut coordinator, generation, target_rate, catchup_command_id) =
+            begin_catchup_override_with_decision_rate(
+                PlaybackCoordinatorConfig::default(),
+                Some(NORMAL_PLAYBACK_RATE),
+            );
+        assert!(
+            coordinator.rate_override.is_some(),
+            "the pre-command baseline sample must not discard catch-up ownership"
+        );
+        assert!(coordinator.ordinary_correction_blocked());
+        observe_catchup_override(
+            &mut coordinator,
+            generation,
+            target_rate,
+            catchup_command_id,
+        );
+
+        let reset = coordinator.interrupt_recovery();
+        let reset_command_id = reset
+            .iter()
+            .find_map(|action| match action {
+                PlaybackCoordinatorAction::Execute {
+                    command_id,
+                    command: CoordinatorPlayerCommand::SetPlaybackRate(rate),
+                } if (*rate - NORMAL_PLAYBACK_RATE).abs() <= 0.001 => Some(*command_id),
+                _ => None,
+            })
+            .expect("interrupting catch-up should restore the baseline rate");
+        assert!(coordinator.command_accepted(reset_command_id));
+        assert!(coordinator.ordinary_correction_blocked());
+
+        coordinator.observe(playing(generation, 13.1, 21.6));
+        assert!(
+            coordinator.ordinary_correction_blocked(),
+            "a sparse post-command sample must not reuse the pre-command baseline rate"
+        );
+
+        coordinator.observe(playing(generation, 13.2, 21.7).with_playback_rate(target_rate));
+        assert!(
+            coordinator.ordinary_correction_blocked(),
+            "target-rate telemetry cannot release cleanup ownership"
+        );
+
+        coordinator
+            .observe(playing(generation, 13.3, 21.8).with_playback_rate(NORMAL_PLAYBACK_RATE));
+        assert!(coordinator.rate_override.is_none());
+        assert!(
+            !coordinator.ordinary_correction_blocked(),
+            "only a fresh post-reset baseline observation releases ownership"
+        );
+    }
+
+    #[test]
+    fn repeated_recovery_interruption_keeps_the_existing_baseline_reset_tracked() {
+        let (mut coordinator, generation, target_rate, catchup_command_id) =
+            begin_catchup_override(PlaybackCoordinatorConfig::default());
+        observe_catchup_override(
+            &mut coordinator,
+            generation,
+            target_rate,
+            catchup_command_id,
+        );
+
+        let first_reset = coordinator.interrupt_recovery();
+        let reset_command_id = first_reset
+            .iter()
+            .find_map(|action| match action {
+                PlaybackCoordinatorAction::Execute {
+                    command_id,
+                    command: CoordinatorPlayerCommand::SetPlaybackRate(rate),
+                } if (*rate - NORMAL_PLAYBACK_RATE).abs() <= 0.001 => Some(*command_id),
+                _ => None,
+            })
+            .expect("the first interruption should request baseline speed");
+
+        assert!(
+            coordinator.interrupt_recovery().is_empty(),
+            "repeated lifecycle reconciliation must not replace a pending reset"
+        );
+        assert!(coordinator.pending_commands.iter().any(|command| {
+            command.id == reset_command_id
+                && matches!(
+                    command.kind,
+                    PendingCommandKind::Rate { target_rate }
+                        if (target_rate - NORMAL_PLAYBACK_RATE).abs() <= 0.001
+                )
+        }));
+
+        coordinator
+            .observe(playing(generation, 13.1, 21.6).with_playback_rate(NORMAL_PLAYBACK_RATE));
+        assert!(coordinator.rate_override.is_none());
+    }
+
+    #[test]
+    fn barrier_supersession_resets_catchup_before_applying_its_forced_seek() {
+        let (mut coordinator, generation, target_rate, catchup_command_id) =
+            begin_catchup_override(PlaybackCoordinatorConfig::default());
+        observe_catchup_override(
+            &mut coordinator,
+            generation,
+            target_rate,
+            catchup_command_id,
+        );
+
+        let cleanup = coordinator.update_desired_room_state(DesiredRoomPlayback {
+            media_generation: generation,
+            state_revision: 2,
+            paused: true,
+            anchor_position_seconds: 30.0,
+            anchor_observed_at_seconds: 14.0,
+            force_seek: true,
+        });
+        assert!(cleanup.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPlaybackRate(rate),
+                ..
+            } if (*rate - NORMAL_PLAYBACK_RATE).abs() <= 0.001
+        )));
+        assert!(coordinator.recovery_episode().is_none());
+        assert!(coordinator.rate_override.is_some());
+
+        let forced_seek =
+            coordinator.observe(playing(generation, 14.1, 21.8).with_playback_rate(target_rate));
+        assert!(forced_seek.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPosition(position),
+                ..
+            } if (*position - 30.0).abs() <= f64::EPSILON
+        )));
+    }
+
+    #[test]
+    fn pause_and_transport_refresh_reset_owned_catchup_rate() {
+        let (mut pause_coordinator, generation) = coordinator(MediaTransportKind::NetworkVod);
+        pause_coordinator.update_desired_room_state(DesiredRoomPlayback {
+            anchor_observed_at_seconds: 10.0,
+            ..desired(generation, 1, false, 25.0)
+        });
+        pause_coordinator.observe(
+            PlayerTransportObservation::new(generation, 10.0)
+                .with_phase(PlayerTransportPhase::Rebuffering)
+                .with_position(20.0)
+                .with_logical_pause(false)
+                .with_cache_pause(true),
+        );
+        pause_coordinator.observe(playing(generation, 11.0, 20.5));
+        pause_coordinator.observe(playing(generation, 12.0, 21.0));
+        pause_coordinator.observe(
+            playing(generation, 13.0, 21.5)
+                .with_playback_rate(CONSERVATIVE_CATCHUP_RATE_WITHOUT_HEADROOM),
+        );
+
+        let pause_actions = pause_coordinator.update_desired_room_state(DesiredRoomPlayback {
+            anchor_observed_at_seconds: 13.0,
+            ..desired(generation, 2, true, 26.5)
+        });
+        assert!(pause_actions.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPlaybackRate(rate),
+                ..
+            } if (*rate - NORMAL_PLAYBACK_RATE).abs() < f64::EPSILON
+        )));
+
+        // Re-enter catch-up, then refresh the same transport identity. The
+        // new attempt must still restore the baseline before it can resume.
+        let (mut coordinator, generation) = coordinator(MediaTransportKind::NetworkVod);
+        coordinator.update_desired_room_state(DesiredRoomPlayback {
+            anchor_observed_at_seconds: 10.0,
+            ..desired(generation, 1, false, 25.0)
+        });
+        coordinator.observe(
+            PlayerTransportObservation::new(generation, 10.0)
+                .with_phase(PlayerTransportPhase::Rebuffering)
+                .with_position(20.0)
+                .with_logical_pause(false)
+                .with_cache_pause(true),
+        );
+        coordinator.observe(playing(generation, 11.0, 20.5));
+        coordinator.observe(playing(generation, 12.0, 21.0));
+        coordinator.observe(
+            playing(generation, 13.0, 21.5)
+                .with_playback_rate(CONSERVATIVE_CATCHUP_RATE_WITHOUT_HEADROOM),
+        );
+        let refresh = coordinator.prepare_media_with_intent(
+            LogicalMediaId::new("episode-1").unwrap(),
+            MediaTransportKind::NetworkVod,
+            MediaLoadIntent::TransportRefresh,
+            14.0,
+        );
+        let refresh_actions = coordinator.observe(
+            PlayerTransportObservation::new(refresh.media_generation, 14.1)
+                .with_phase(PlayerTransportPhase::Loading)
+                .with_playback_rate(CONSERVATIVE_CATCHUP_RATE_WITHOUT_HEADROOM)
+                .with_core_idle(true),
+        );
+        assert!(refresh_actions.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPlaybackRate(rate),
+                ..
+            } if (*rate - NORMAL_PLAYBACK_RATE).abs() < f64::EPSILON
         )));
     }
 

@@ -19,7 +19,7 @@ impl PlayerAdapter for MpvAdapter {
     fn execute_tracked(&mut self, command: PlayerCommand) -> Result<PlayerCommandId, PlayerError> {
         self.ensure_transport_observers_registered_if_attached();
 
-        let (command_id, supersession) = match &command {
+        let (command_id, supersession, play_intent) = match &command {
             PlayerCommand::OpenFile(_) => {
                 let generation = PlayerMediaGeneration::new(self.next_media_generation.max(1));
                 let command_id = self.register_tracked_command(
@@ -29,7 +29,7 @@ impl PlayerAdapter for MpvAdapter {
                         ready: false,
                     },
                 );
-                (command_id, TrackedCommandSupersession::Load)
+                (command_id, TrackedCommandSupersession::Load, None)
             }
             PlayerCommand::SetPosition(target_seconds) => {
                 let command_id = self.register_tracked_command(
@@ -40,7 +40,7 @@ impl PlayerAdapter for MpvAdapter {
                         position_in_tolerance: false,
                     },
                 );
-                (command_id, TrackedCommandSupersession::Seek)
+                (command_id, TrackedCommandSupersession::Seek, None)
             }
             PlayerCommand::SetPaused(true) => {
                 let command_id = self.register_tracked_command(
@@ -49,12 +49,14 @@ impl PlayerAdapter for MpvAdapter {
                         logical_pause_observed: false,
                     },
                 );
-                (command_id, TrackedCommandSupersession::PauseOrPlay)
+                (command_id, TrackedCommandSupersession::PauseOrPlay, None)
             }
-            PlayerCommand::SetPaused(false) => {
+            PlayerCommand::SetPaused(false) | PlayerCommand::Play(PlayerPlayIntent::Resume) => {
+                let intent = PlayerPlayIntent::Resume;
                 let command_id = self.register_tracked_command(
                     self.media_generation(),
                     TrackedCommandKind::Play {
+                        intent,
                         restart_sequence_baseline: self.playback_restart_sequence,
                         position_baseline: self.observed_state.position_seconds,
                         logical_play_observed: false,
@@ -63,7 +65,40 @@ impl PlayerAdapter for MpvAdapter {
                         forward_advancement_observed: false,
                     },
                 );
-                (command_id, TrackedCommandSupersession::PauseOrPlay)
+                (
+                    command_id,
+                    TrackedCommandSupersession::PauseOrPlay,
+                    Some(intent),
+                )
+            }
+            PlayerCommand::Play(intent) => {
+                let restart_sequence_baseline = match intent {
+                    PlayerPlayIntent::Resume => self.playback_restart_sequence,
+                    PlayerPlayIntent::StartAfterLoad {
+                        baseline_restart_sequence,
+                    }
+                    | PlayerPlayIntent::StartAfterSeek {
+                        baseline_restart_sequence,
+                    } => *baseline_restart_sequence,
+                };
+                let command_id = self.register_tracked_command(
+                    self.media_generation(),
+                    TrackedCommandKind::Play {
+                        intent: *intent,
+                        restart_sequence_baseline,
+                        position_baseline: self.observed_state.position_seconds,
+                        logical_play_observed: false,
+                        cache_clear_observed: self.observed_state.paused_for_cache == Some(false),
+                        restart_observed: self.playback_restart_sequence
+                            > restart_sequence_baseline,
+                        forward_advancement_observed: false,
+                    },
+                );
+                (
+                    command_id,
+                    TrackedCommandSupersession::PauseOrPlay,
+                    Some(*intent),
+                )
             }
             _ => return Err(PlayerError::Unsupported("execute_tracked command")),
         };
@@ -89,6 +124,17 @@ impl PlayerAdapter for MpvAdapter {
                 ]));
                 if result.is_ok() && self.simulation_mode {
                     self.paused = paused;
+                }
+                result
+            }
+            PlayerCommand::Play(_) => {
+                let result = self.send_ipc_command_if_attached(json!([
+                    MPV_COMMAND_SET_PROPERTY,
+                    MPV_PROPERTY_PAUSE,
+                    false
+                ]));
+                if result.is_ok() && self.simulation_mode {
+                    self.paused = false;
                 }
                 result
             }
@@ -141,8 +187,6 @@ impl PlayerAdapter for MpvAdapter {
                     self.observed_state.paused = Some(false);
                     self.observed_state.logical_pause = Some(false);
                     self.observed_state.paused_for_cache = Some(false);
-                    self.playback_restart_sequence =
-                        self.playback_restart_sequence.wrapping_add(1).max(1);
                     self.observe_tracked_commands(
                         media_generation,
                         TrackedCommandObservation::LogicalPause(false),
@@ -151,9 +195,34 @@ impl PlayerAdapter for MpvAdapter {
                         media_generation,
                         TrackedCommandObservation::CachePause(false),
                     );
+                    if let Some(intent) = play_intent
+                        && !matches!(intent, PlayerPlayIntent::Resume)
+                    {
+                        let baseline_restart_sequence = match intent {
+                            PlayerPlayIntent::Resume => unreachable!("resume was filtered above"),
+                            PlayerPlayIntent::StartAfterLoad {
+                                baseline_restart_sequence,
+                            }
+                            | PlayerPlayIntent::StartAfterSeek {
+                                baseline_restart_sequence,
+                            } => baseline_restart_sequence,
+                        };
+                        if self.playback_restart_sequence <= baseline_restart_sequence {
+                            self.playback_restart_sequence =
+                                self.playback_restart_sequence.wrapping_add(1).max(1);
+                        }
+                        self.observe_tracked_commands(
+                            media_generation,
+                            TrackedCommandObservation::PlaybackRestart(
+                                self.playback_restart_sequence,
+                            ),
+                        );
+                    }
+                    self.position_seconds += PLAYBACK_ADVANCEMENT_EPSILON_SECONDS * 2.0;
+                    self.observed_state.position_seconds = Some(self.position_seconds);
                     self.observe_tracked_commands(
                         media_generation,
-                        TrackedCommandObservation::PlaybackRestart(self.playback_restart_sequence),
+                        TrackedCommandObservation::Position(self.position_seconds),
                     );
                     self.position_seconds += PLAYBACK_ADVANCEMENT_EPSILON_SECONDS * 2.0;
                     self.observed_state.position_seconds = Some(self.position_seconds);
@@ -274,6 +343,11 @@ impl PlayerAdapter for MpvAdapter {
             paused
         ]))?;
         self.paused = paused;
+        // This records requested user/room intent only; command application is
+        // still acknowledged exclusively by later property observations. It
+        // lets a cache release distinguish an intentional pause from mpv's
+        // transient cache-induced `pause=true`.
+        self.logical_pause_explicit = paused;
         Ok(())
     }
 

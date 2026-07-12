@@ -53,9 +53,17 @@ enter-text	config:Streaming:Recovery Policy	false	balanced
 enter-text	config:Streaming:Maximum Catchup Rate	false	1.06
 enter-text	config:Streaming:Hard Seek Threshold Seconds	false	9
 enter-text	config:Streaming:Maximum Hard Seeks	false	1
+enter-text	config:Streaming:Stability Interval Seconds	false	6
+enter-text	config:Streaming:Recovery Retry Budget	false	2
+enter-text	config:Streaming:Recovery Cooldown Seconds	false	12
 enter-text	config:Streaming:Room Buffering Policy	false	quorum
+enter-text	config:Streaming:Room Quorum Percent	false	80
+enter-text	config:Streaming:Room Maximum Pause Seconds	false	25
 enter-text	config:Streaming:Start Synchronization	false	wait-all
+enter-text	config:Streaming:Start Quorum Percent	false	80
+enter-text	config:Streaming:Start Timeout Seconds	false	20
 enter-text	config:Streaming:Start Timeout Action	false	remain-paused
+activate	config:Streaming:Quality Downgrade Suggestions
 enter-text	config:Media Search:Directories	false	C:/Media\nD:/Archive
 enter-text	config:Media Search:First File Timeout	false	3.0
 enter-text	config:Media Search:Search Timeout	false	30.0
@@ -155,10 +163,19 @@ assert-value	config:Streaming:Memory Cache MiB	256
 assert-value	config:Streaming:Disk Cache	yes
 assert-value	config:Streaming:Recovery Policy	balanced
 assert-value	config:Streaming:Maximum Catchup Rate	1.06
+assert-value	config:Streaming:Hard Seek Threshold Seconds	9
 assert-value	config:Streaming:Maximum Hard Seeks	1
+assert-value	config:Streaming:Stability Interval Seconds	6
+assert-value	config:Streaming:Recovery Retry Budget	2
+assert-value	config:Streaming:Recovery Cooldown Seconds	12
 assert-value	config:Streaming:Room Buffering Policy	quorum
+assert-value	config:Streaming:Room Quorum Percent	80
+assert-value	config:Streaming:Room Maximum Pause Seconds	25
 assert-value	config:Streaming:Start Synchronization	wait-all
+assert-value	config:Streaming:Start Quorum Percent	80
+assert-value	config:Streaming:Start Timeout Seconds	20
 assert-value	config:Streaming:Start Timeout Action	remain-paused
+assert-value	config:Streaming:Quality Downgrade Suggestions	no
 assert-value	config:Streaming:Effective mpv Options	cache=auto; cache-pause=yes; cache-pause-initial=yes; cache-pause-wait=8; cache-secs=45; demuxer-max-bytes=256MiB; cache-on-disk=yes; ytdl-format=bestvideo*[height<=720]+bestaudio/best[height<=720]
 assert-value	config:Media Search:First File Timeout	3.0
 assert-value	config:Media Search:Search Timeout	30.0

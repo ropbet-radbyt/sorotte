@@ -144,6 +144,7 @@ fn rich_transport_keeps_steady_state_attached_drift_correction() {
         .prepare_attached_playback_media(
             LogicalMediaId::new("episode.mkv").unwrap(),
             MediaTransportKind::LocalFile,
+            MediaLoadIntent::NewPlayback,
             now,
         )
         .unwrap();
@@ -165,6 +166,40 @@ fn rich_transport_keeps_steady_state_attached_drift_correction() {
             now + 2.0,
         )
         .unwrap();
+
+    // The first room-state handoff for a media generation belongs solely to
+    // the coordinator. Complete its forced seek before exercising the legacy
+    // steady-state drift policy below.
+    let bootstrap_actions = adapter.attached_player_runtime_actions(now + 2.0).unwrap();
+    assert!(
+        !bootstrap_actions
+            .iter()
+            .any(|action| matches!(action, GuiAttachedPlayerRuntimeAction::Position(_)))
+    );
+    let (bootstrap_command_id, bootstrap_target) = bootstrap_actions
+        .iter()
+        .find_map(|action| match action {
+            GuiAttachedPlayerRuntimeAction::Coordinator {
+                command_id,
+                command: CoordinatorPlayerCommand::SetPosition(position),
+            } => Some((*command_id, *position)),
+            _ => None,
+        })
+        .expect("initial media handoff should emit one coordinator-owned seek");
+    adapter.report_attached_coordinator_command_dispatch(bootstrap_command_id, true, now + 2.0);
+    adapter
+        .sync_attached_player_transport_telemetry(
+            observed(3.5, PlayerTransportPhase::Playing, bootstrap_target, false),
+            now + 2.5,
+        )
+        .unwrap();
+    assert!(
+        !adapter
+            .runtime
+            .playback_coordination_snapshot()
+            .ordinary_correction_blocked,
+        "fresh seek confirmation should release steady-state correction"
+    );
 
     adapter
         .sync_local_playback_telemetry(Some(false), Some(40.0))

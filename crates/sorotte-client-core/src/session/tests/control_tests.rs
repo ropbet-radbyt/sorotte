@@ -1,6 +1,7 @@
 use super::*;
 use sorotte_protocol::{
-    PlaybackBarrierPolicy, PrepareMediaPayload, RoomBufferingPolicy, RoomBufferingPolicyPayload,
+    MediaLoadIntent, PlaybackBarrierPolicy, PrepareMediaPayload, RoomBufferingPolicy,
+    RoomBufferingPolicyPayload,
 };
 
 #[test]
@@ -253,14 +254,15 @@ fn queued_runtime_control_can_drain_encoded_protocol_lines() {
 fn playback_barrier_set_effect_is_reliable_and_precedes_coalescible_state() {
     const PRIVATE_MEDIA_ID: &str = "private-youtube-logical-id";
     let extension = PlaybackBarrierSetExtension::new()
-        .with_prepare(PrepareMediaPayload::new(
+        .with_prepare(PrepareMediaPayload::request(
             7,
             PRIVATE_MEDIA_ID,
             12.0,
             PlaybackBarrierPolicy::Controller,
+            MediaLoadIntent::NewPlayback,
         ))
         .with_buffering_policy(RoomBufferingPolicyPayload::new(
-            7,
+            0,
             RoomBufferingPolicy::Independent,
         ));
     let effect = ClientEffect::send_playback_barrier_set(extension.clone());

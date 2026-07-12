@@ -1017,6 +1017,10 @@ impl ServerRuntime {
         let pause_changed = playstate
             .paused
             .is_some_and(|paused| paused != room_state_before.paused);
+        if can_control_room && pause_changed {
+            barrier_outbound
+                .extend(self.retire_awaiting_playback_barrier_decision(client_id, &session.room));
+        }
         let sample_paused = playstate.paused.unwrap_or(room_state_before.paused);
         let playback_sample_position = playstate.position.map(|mut position| {
             if !sample_paused {

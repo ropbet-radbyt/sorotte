@@ -306,6 +306,7 @@ impl ServerRuntime {
         self.client_state_counters.remove(client_id);
         self.client_playback_states.remove(client_id);
         self.client_room_join_sequence.remove(client_id);
+        self.playback_barrier_request_nonces.remove(client_id);
         self.client_last_state_update_at.remove(client_id);
         self.client_next_periodic_state_at.remove(client_id);
         Some(session)

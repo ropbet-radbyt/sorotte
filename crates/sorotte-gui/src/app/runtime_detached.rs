@@ -705,6 +705,7 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) {
+        let _ = self.interrupt_attached_playback_recovery_impl("session disconnect");
         let disconnect_error = if let Some(session) = self.session.as_mut() {
             let sync_result = session
                 .sync_local_playback_telemetry(self.player_paused, self.player_position_seconds);

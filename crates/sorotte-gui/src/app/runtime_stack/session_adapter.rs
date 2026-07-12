@@ -182,6 +182,7 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         &mut self,
         _logical_id: LogicalMediaId,
         _kind: MediaTransportKind,
+        _intent: MediaLoadIntent,
         _now_seconds: f64,
     ) -> Result<Option<MediaLoadPlan>, String> {
         Ok(None)
@@ -218,6 +219,12 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
     }
 
     fn reset_playback_transport_adapter_epoch(&mut self, _now_seconds: f64) {}
+
+    fn interrupt_attached_playback_recovery(
+        &mut self,
+    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        Ok(Vec::new())
+    }
 
     fn set_playback_paused(&mut self, _paused: bool) -> Result<bool, String> {
         Err("Attached session runtime does not support playback pause changes.".to_owned())

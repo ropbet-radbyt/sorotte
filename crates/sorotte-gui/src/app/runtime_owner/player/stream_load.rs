@@ -363,6 +363,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
         let selected_path = paths[0].clone();
         self.pending_logical_media_override = None;
+        let _ = self.interrupt_attached_playback_recovery_impl("media change");
         let (player_name, open_result) = {
             let player = self.player.as_mut()?;
             (player.name(), player.open_file_tracked(&selected_path))
@@ -380,6 +381,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     && let Err(error) = session.prepare_attached_playback_media(
                         logical_id,
                         kind,
+                        MediaLoadIntent::NewPlayback,
                         system_time_seconds(),
                     )
                 {
@@ -436,6 +438,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let logical_file = stream_target.logical_file.clone();
         let logical_name = logical_file.name.clone();
         let media_title = Self::media_title_for_plex_stream(&stream_target);
+        let _ = self.interrupt_attached_playback_recovery_impl("Plex transport change");
         let (player_name, open_result) = {
             let player = self.player.as_mut()?;
             (
@@ -450,6 +453,11 @@ impl GuiPersistedConfigRuntimeOwner {
                     && let Err(error) = session.prepare_attached_playback_media(
                         logical_id,
                         MediaTransportKind::NetworkVod,
+                        if user_initiated {
+                            MediaLoadIntent::NewPlayback
+                        } else {
+                            MediaLoadIntent::TransportRefresh
+                        },
                         system_time_seconds(),
                     )
                 {

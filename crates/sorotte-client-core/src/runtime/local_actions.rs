@@ -128,6 +128,12 @@ where
         if !sent {
             return Ok(false);
         }
+        if planned_paused == Some(true) {
+            // A user pause owns the transport immediately; do not wait for
+            // the reflected room state before restoring a catch-up rate.
+            let _ =
+                self.interrupt_playback_recovery(unix_wall_clock_time_seconds_legacy_compatible());
+        }
         let effects = Self::local_pause_effects(&actions)?;
         self.run_model_event(ClientEvent::LocalPauseChangeRequested {
             original_paused,
@@ -148,6 +154,10 @@ where
             ));
         }
         self.sync_player_playback_telemetry_into_session_and_buffer();
+        if paused {
+            let _ =
+                self.interrupt_playback_recovery(unix_wall_clock_time_seconds_legacy_compatible());
+        }
         let original_paused = self.session.model.playback.local_paused;
         let original_ready = self
             .session
@@ -311,6 +321,9 @@ where
 
     pub fn run_seek_to_position(&mut self, target_position: f64) -> Result<bool, PlayerError> {
         self.sync_player_playback_telemetry_into_session_and_buffer();
+        // Cleanup is retried from subsequent observations if the adapter
+        // rejects it; a failed rate reset must not swallow the user's seek.
+        let _ = self.interrupt_playback_recovery(unix_wall_clock_time_seconds_legacy_compatible());
         let session_snapshot = self.session.snapshot_local_action_state();
         let actions = self.session.runtime_actions_for_local_seek(target_position);
         let sent = !actions.is_empty();
@@ -320,6 +333,7 @@ where
 
     pub fn run_seek_by_offset(&mut self, offset_seconds: f64) -> Result<bool, PlayerError> {
         self.sync_player_playback_telemetry_into_session_and_buffer();
+        let _ = self.interrupt_playback_recovery(unix_wall_clock_time_seconds_legacy_compatible());
         let session_snapshot = self.session.snapshot_local_action_state();
         let actions = self
             .session
@@ -331,6 +345,7 @@ where
 
     pub fn run_undo_seek(&mut self) -> Result<bool, PlayerError> {
         self.sync_player_playback_telemetry_into_session_and_buffer();
+        let _ = self.interrupt_playback_recovery(unix_wall_clock_time_seconds_legacy_compatible());
         let session_snapshot = self.session.snapshot_local_action_state();
         let actions = self.session.runtime_actions_for_local_seek_undo();
         let sent = !actions.is_empty();
@@ -340,6 +355,9 @@ where
 
     pub fn run_disconnect(&mut self, now_seconds: f64) -> Result<(), PlayerError> {
         self.sync_player_playback_telemetry_into_session_and_buffer();
+        // Disconnect remains authoritative even if the player has already
+        // gone away and cannot acknowledge the best-effort rate cleanup.
+        let _ = self.interrupt_playback_recovery(now_seconds);
         let session_snapshot = self.session.snapshot_local_action_state();
         let actions = self.session.handle_disconnect(now_seconds);
         self.dispatch_runtime_actions_with_session_rollback(session_snapshot, &actions)
@@ -391,9 +409,10 @@ where
         // Queue the compatible file announcement before an optional Sorotte
         // start barrier so peers learn the source before their preparation
         // deadline begins.
-        self.prepare_playback_media(
+        self.prepare_playback_media_with_intent(
             logical_id,
             transport_kind,
+            MediaLoadIntent::TransportRefresh,
             unix_wall_clock_time_seconds_legacy_compatible(),
         );
         Ok(true)

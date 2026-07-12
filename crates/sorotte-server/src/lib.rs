@@ -23,10 +23,11 @@ use sorotte_core::{DomainError, SyncDomain};
 use sorotte_protocol::{
     ChatPayload, CommitStartPayload, ControllerAuthPayload, DEFAULT_MAX_PROTOCOL_LINE_BYTES,
     FilePayload, HelloPayload, IgnoringOnTheFlyPayload, ListPayload, ListUserEntry,
-    MediaReadyPayload, NewControlledRoomPayload, PingPayload, PlaybackBarrierDegradedReason,
-    PlaybackBarrierParticipantPhase, PlaybackBarrierParticipantStatus, PlaybackBarrierPhase,
-    PlaybackBarrierPolicy, PlaybackBarrierSetExtension, PlaybackBarrierStateExtension,
-    PlaybackBarrierStatusPayload, PlaylistIndexPayload, PlaystatePayload, PrepareMediaPayload,
+    MediaLoadIntent, MediaReadyPayload, NewControlledRoomPayload, PingPayload,
+    PlaybackBarrierDegradedReason, PlaybackBarrierParticipantPhase,
+    PlaybackBarrierParticipantStatus, PlaybackBarrierPhase, PlaybackBarrierPolicy,
+    PlaybackBarrierSetExtension, PlaybackBarrierStateExtension, PlaybackBarrierStatusPayload,
+    PlaybackBarrierTimeoutAction, PlaylistIndexPayload, PlaystatePayload, PrepareMediaPayload,
     ProtocolError, ProtocolMessage, ReadyPayload, RoomBufferingPhase, RoomBufferingPolicy,
     RoomBufferingPolicyPayload, RoomBufferingStatusPayload, RoomRef, SOROTTE_PLAYBACK_BARRIER_V1,
     SOROTTE_PLEX_PLAYLIST_URIS_FEATURE, SetPayload, StartedAckPayload, StatePayload,
@@ -314,6 +315,12 @@ pub struct ServerRuntime {
     room_playback_states: BTreeMap<String, RoomPlaybackState>,
     room_playback_barriers: BTreeMap<String, RoomPlaybackBarrier>,
     room_buffering_controls: BTreeMap<String, RoomBufferingControl>,
+    /// Highest accepted/consumed request nonce for each live connection.
+    /// This bounds duplicate suppression to live sessions and prevents
+    /// delayed requests from older room generations replaying as fresh user
+    /// intent, including after a room switch.
+    playback_barrier_request_nonces: BTreeMap<String, u64>,
+    next_playback_barrier_generation: u64,
     next_playback_barrier_revision: u64,
     client_playback_states: BTreeMap<String, ClientPlaybackState>,
     client_room_join_sequence: BTreeMap<String, u64>,
@@ -458,7 +465,11 @@ struct RoomPlaybackBarrierParticipant {
 #[derive(Debug, Clone, PartialEq)]
 struct RoomPlaybackBarrier {
     prepare: PrepareMediaPayload,
+    /// Retained after the barrier becomes terminal so an idempotent retry can
+    /// replay the canonical lifecycle without making the commit active again.
+    commit: Option<CommitStartPayload>,
     initiator_client_id: String,
+    initiator_session_sequence: u64,
     initiator_username: String,
     participants: BTreeMap<String, RoomPlaybackBarrierParticipant>,
     excluded_legacy_clients: BTreeSet<String>,

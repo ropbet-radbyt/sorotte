@@ -565,11 +565,13 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         &mut self,
         logical_id: LogicalMediaId,
         kind: MediaTransportKind,
+        intent: MediaLoadIntent,
         now_seconds: f64,
     ) -> Result<Option<MediaLoadPlan>, String> {
-        Ok(Some(self.runtime.prepare_playback_media(
+        Ok(Some(self.runtime.prepare_playback_media_with_intent(
             logical_id,
             kind,
+            intent,
             now_seconds,
         )))
     }
@@ -628,6 +630,14 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         self.playback_transport_adapter_epoch = self
             .runtime
             .reset_playback_transport_adapter_epoch(now_seconds);
+    }
+
+    fn interrupt_attached_playback_recovery(
+        &mut self,
+    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        Ok(gui_actions_from_playback_coordinator(
+            self.runtime.interrupt_external_playback_recovery(),
+        ))
     }
 
     fn set_playback_paused(&mut self, paused: bool) -> Result<bool, String> {

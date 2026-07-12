@@ -25,7 +25,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cargo fmt
-        run: cargo fmt --check
+        run: cargo fmt --all --check
 
       - name: Cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
@@ -66,6 +66,30 @@ jobs:
           SYNCPLAY_REQUIRE_LEGACY_TLS_PARITY: "1"
         run: cargo test -p sorotte-compat legacy_server_live_tls_ -- --nocapture
 
+  mpv-pr-semantics:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.96.0
+
+      - name: Install deterministic media-test player
+        run: sudo apt-get update && sudo apt-get install --yes mpv
+
+      - name: Required real mpv pause, seek, and resume semantics
+        run: >-
+          cargo test -p sorotte-sim --test mpv_rebuffer_harness
+          real_mpv_pause_seek_resume_semantics -- --ignored --exact --nocapture
+
   nightly-deep:
     if: github.event_name == 'schedule'
     strategy:
@@ -96,7 +120,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install --yes mpv
 
       - name: Real mpv rebuffer recovery harness
-        run: cargo test -p sorotte-sim --test mpv_rebuffer_harness -- --ignored --nocapture
+        run: >-
+          cargo test -p sorotte-sim --test mpv_rebuffer_harness
+          real_mpv_clients_keep_seek_recovery_bounded_during_an_http_stall
+          -- --ignored --exact --nocapture
 
       - name: Setup Python
         uses: actions/setup-python@v5

@@ -6,16 +6,17 @@ use serde_json::json;
 
 use super::{
     ChatMessagePayload, ChatPayload, ControllerAuthPayload, ErrorPayload, FilePayload,
-    HelloPayload, IgnoringOnTheFlyPayload, ListPayload, ListUserEntry, MediaReadyPayload,
-    NewControlledRoomPayload, PingPayload, PlaybackBarrierPolicy, PlaybackBarrierSetExtension,
-    PlaybackBarrierStateExtension, PlaylistChangePayload, PlaylistIndexPayload, PlaystatePayload,
-    PrepareMediaPayload, ProtocolError, ProtocolMessage, ReadyPayload, RoomBufferingPhase,
-    RoomBufferingPolicy, RoomBufferingPolicyPayload, RoomBufferingStatusPayload, RoomRef,
-    SOROTTE_PLAYBACK_BARRIER_V1, SOROTTE_PLEX_PLAYLIST_URIS_KEY, SetPayload, StartedAckPayload,
-    StatePayload, TlsPayload, TransportBufferingReportPayload, UserSetPayload,
-    canonical_playlist_files_from_change, decode_line, decode_message_line,
-    decode_message_line_items, decode_message_lines, encode_line, encode_message_line,
-    extract_hello, extract_hello_from_message, playlist_change_with_plex_sidecar,
+    HelloPayload, IgnoringOnTheFlyPayload, ListPayload, ListUserEntry, MediaLoadIntent,
+    MediaReadyPayload, NewControlledRoomPayload, PingPayload, PlaybackBarrierPolicy,
+    PlaybackBarrierSetExtension, PlaybackBarrierStateExtension, PlaybackBarrierTimeoutAction,
+    PlaylistChangePayload, PlaylistIndexPayload, PlaystatePayload, PrepareMediaPayload,
+    ProtocolError, ProtocolMessage, ReadyPayload, RoomBufferingPhase, RoomBufferingPolicy,
+    RoomBufferingPolicyPayload, RoomBufferingStatusPayload, RoomRef, SOROTTE_PLAYBACK_BARRIER_V1,
+    SOROTTE_PLEX_PLAYLIST_URIS_KEY, SetPayload, StartedAckPayload, StatePayload, TlsPayload,
+    TransportBufferingReportPayload, UserSetPayload, canonical_playlist_files_from_change,
+    decode_line, decode_message_line, decode_message_line_items, decode_message_lines, encode_line,
+    encode_message_line, extract_hello, extract_hello_from_message,
+    playlist_change_with_plex_sidecar,
 };
 
 fn fixture_dir() -> PathBuf {
@@ -107,10 +108,16 @@ fn playback_barrier_fixtures_decode_from_nested_extension_maps() {
         .and_then(|extension| extension.prepare)
         .expect("prepare extension should contain PrepareMedia");
     assert_eq!(prepare.media_generation, 7);
+    assert_eq!(prepare.request_nonce, 55);
+    assert_eq!(prepare.load_intent, MediaLoadIntent::NewPlayback);
     assert_eq!(prepare.logical_media_id, "youtube:example");
     assert_eq!(prepare.policy, PlaybackBarrierPolicy::Quorum);
     assert_eq!(prepare.quorum, Some(2));
     assert_eq!(prepare.quorum_percent, Some(75));
+    assert_eq!(
+        prepare.timeout_action,
+        Some(PlaybackBarrierTimeoutAction::Continue)
+    );
     assert_eq!(prepare.deadline, Some(115.0));
 
     let observations =
@@ -139,9 +146,16 @@ fn playback_barrier_builders_remain_additive_and_roundtrip() {
     let prepare = ProtocolMessage::set(
         SetPayload::new().with_playback_barrier_v1(
             PlaybackBarrierSetExtension::new().with_prepare(
-                PrepareMediaPayload::new(9, "logical-media", 42.0, PlaybackBarrierPolicy::Quorum)
-                    .with_quorum_percent(75)
-                    .with_timeout_ms(20_000),
+                PrepareMediaPayload::request(
+                    91,
+                    "logical-media",
+                    42.0,
+                    PlaybackBarrierPolicy::Quorum,
+                    MediaLoadIntent::Replay,
+                )
+                .with_quorum_percent(75)
+                .with_timeout_ms(20_000)
+                .with_timeout_action(PlaybackBarrierTimeoutAction::AskController),
             ),
         ),
     );
@@ -181,6 +195,8 @@ fn playback_barrier_builders_remain_additive_and_roundtrip() {
 #[test]
 fn room_buffering_policy_and_transport_reports_roundtrip_inside_capability_extension() {
     let policy = RoomBufferingPolicyPayload::new(9, RoomBufferingPolicy::Quorum)
+        .with_request_nonce(12)
+        .with_load_intent(MediaLoadIntent::Replay)
         .with_state_revision(3)
         .with_quorum_percent(75)
         .with_debounce_ms(800)
@@ -216,6 +232,18 @@ fn room_buffering_policy_and_transport_reports_roundtrip_inside_capability_exten
             .pointer("/Set/sorottePlaybackBarrierV1/bufferingPolicy/policy")
             .and_then(serde_json::Value::as_str),
         Some("quorum")
+    );
+    assert_eq!(
+        set_json
+            .pointer("/Set/sorottePlaybackBarrierV1/bufferingPolicy/requestNonce")
+            .and_then(serde_json::Value::as_u64),
+        Some(12)
+    );
+    assert_eq!(
+        set_json
+            .pointer("/Set/sorottePlaybackBarrierV1/bufferingPolicy/loadIntent")
+            .and_then(serde_json::Value::as_str),
+        Some("replay")
     );
     assert_eq!(
         decode_message_line(&encoded_set).expect("policy should roundtrip"),

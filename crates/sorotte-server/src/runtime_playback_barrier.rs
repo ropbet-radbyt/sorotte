@@ -7,17 +7,96 @@ enum RoomBufferingTransition {
 }
 
 impl ServerRuntime {
+    fn allocate_playback_barrier_generation(&mut self) -> Option<u64> {
+        let generation = self.next_playback_barrier_generation.checked_add(1)?;
+        self.next_playback_barrier_generation = generation;
+        Some(generation)
+    }
+
+    /// Replays the server-authored lifecycle for an idempotent request. This
+    /// never mutates room playback and deliberately includes a retained
+    /// terminal commit only as history; clients scope its authority through
+    /// the accompanying status phase.
+    fn playback_barrier_snapshot_for_client(
+        &self,
+        room_name: &str,
+        client_id: &str,
+    ) -> Vec<DirectedProtocolMessage> {
+        let Some(barrier) = self.room_playback_barriers.get(room_name) else {
+            return Vec::new();
+        };
+        let Some(session) = self.sessions.get(client_id) else {
+            return Vec::new();
+        };
+        if session.room != room_name || !session.capabilities.playback_barrier_v1 {
+            return Vec::new();
+        }
+
+        let mut extension = PlaybackBarrierSetExtension::new()
+            .with_prepare(barrier.prepare.clone())
+            .with_status(
+                self.playback_barrier_status(room_name)
+                    .expect("stored playback barrier should have status"),
+            );
+        if let Some(commit) = barrier.commit.clone() {
+            extension = extension.with_commit(commit);
+        }
+        if let Some(control) = self.room_buffering_controls.get(room_name) {
+            extension = extension.with_buffering_policy(control.config.clone());
+            if let Some(status) = self.room_buffering_status(room_name) {
+                extension = extension.with_buffering_status(status);
+            }
+        }
+        vec![DirectedProtocolMessage::new(
+            client_id,
+            playback_barrier_set_message(extension),
+        )]
+    }
+
+    fn room_buffering_snapshot_for_client(
+        &self,
+        room_name: &str,
+        client_id: &str,
+    ) -> Vec<DirectedProtocolMessage> {
+        let Some(control) = self.room_buffering_controls.get(room_name) else {
+            return Vec::new();
+        };
+        let Some(session) = self.sessions.get(client_id) else {
+            return Vec::new();
+        };
+        if session.room != room_name || !session.capabilities.playback_barrier_v1 {
+            return Vec::new();
+        }
+        let mut extension =
+            PlaybackBarrierSetExtension::new().with_buffering_policy(control.config.clone());
+        if let Some(status) = self.room_buffering_status(room_name) {
+            extension = extension.with_buffering_status(status);
+        }
+        vec![DirectedProtocolMessage::new(
+            client_id,
+            playback_barrier_set_message(extension),
+        )]
+    }
+
     pub(crate) fn handle_playback_barrier_set(
         &mut self,
         client_id: &str,
         extension: PlaybackBarrierSetExtension,
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
         let mut outbound = Vec::new();
+        let had_prepare = extension.prepare.is_some();
+        let mut apply_buffering_policy = extension.prepare.is_none();
         if let Some(prepare) = extension.prepare {
+            let generation_before = self.next_playback_barrier_generation;
             outbound.extend(self.start_playback_barrier(client_id, prepare)?);
+            apply_buffering_policy = self.next_playback_barrier_generation > generation_before;
         }
-        if let Some(policy) = extension.buffering_policy {
-            outbound.extend(self.configure_room_buffering_policy(client_id, policy)?);
+        if apply_buffering_policy && let Some(policy) = extension.buffering_policy {
+            outbound.extend(self.configure_room_buffering_policy(
+                client_id,
+                policy,
+                had_prepare,
+            )?);
         }
         // Commit, barrier status, and buffering status are server-owned.
         Ok(outbound)
@@ -45,6 +124,7 @@ impl ServerRuntime {
         &mut self,
         client_id: &str,
         mut config: RoomBufferingPolicyPayload,
+        paired_with_new_prepare: bool,
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
         let session = self
             .sessions
@@ -59,10 +139,76 @@ impl ServerRuntime {
         if !session.capabilities.playback_barrier_v1
             || (controlled_room && !authenticated_controller)
             || (!controlled_room && config.policy != RoomBufferingPolicy::Independent)
-            || config.media_generation == 0
             || config.state_revision == Some(0)
         {
             return Ok(Vec::new());
+        }
+        if config.media_generation == 0 {
+            if config.request_nonce == 0 {
+                return Ok(Vec::new());
+            }
+            if paired_with_new_prepare {
+                let Some(barrier) = self.room_playback_barriers.get(&session.room) else {
+                    return Ok(Vec::new());
+                };
+                let same_request = barrier.initiator_client_id == client_id
+                    && self
+                        .client_room_join_sequence
+                        .get(client_id)
+                        .is_some_and(|sequence| *sequence == barrier.initiator_session_sequence)
+                    && barrier.prepare.request_nonce == config.request_nonce;
+                if !same_request {
+                    return Ok(Vec::new());
+                }
+                config.media_generation = barrier.prepare.media_generation;
+                config.state_revision = barrier.state_revision;
+                config.load_intent = barrier.prepare.load_intent;
+            } else {
+                if self
+                    .playback_barrier_request_nonces
+                    .get(client_id)
+                    .is_some_and(|highest_nonce| config.request_nonce <= *highest_nonce)
+                {
+                    let exact_current_retry = self
+                        .room_buffering_controls
+                        .get(&session.room)
+                        .is_some_and(|control| {
+                            control.configured_by_client_id == client_id
+                                && control.config.request_nonce == config.request_nonce
+                        });
+                    return Ok(if exact_current_retry {
+                        self.room_buffering_snapshot_for_client(&session.room, client_id)
+                    } else {
+                        Vec::new()
+                    });
+                }
+                self.playback_barrier_request_nonces
+                    .insert(client_id.to_owned(), config.request_nonce);
+                if config.load_intent == MediaLoadIntent::TransportRefresh {
+                    return Ok(self.room_buffering_snapshot_for_client(&session.room, client_id));
+                }
+                if self
+                    .room_playback_barriers
+                    .get(&session.room)
+                    .is_some_and(|barrier| {
+                        matches!(
+                            barrier.phase,
+                            PlaybackBarrierPhase::Preparing | PlaybackBarrierPhase::Committed
+                        )
+                    })
+                {
+                    return Ok(Vec::new());
+                }
+                let Some(generation) = self.allocate_playback_barrier_generation() else {
+                    return Ok(Vec::new());
+                };
+                config.media_generation = generation;
+                config.state_revision = None;
+                // A barrier from a previous playback episode is no longer the
+                // current room-media lifecycle, even though its terminal
+                // diagnostics may have been retained until this request.
+                self.room_playback_barriers.remove(&session.room);
+            }
         }
         if let Some(barrier) = self.room_playback_barriers.get(&session.room)
             && (config.media_generation < barrier.prepare.media_generation
@@ -473,44 +619,94 @@ impl ServerRuntime {
             .ok_or_else(|| ServerRuntimeError::MissingSession(client_id.to_owned()))?;
         if !session.capabilities.playback_barrier_v1
             || !self.user_can_control_playlist(&session.username, &session.room)
-            || prepare.media_generation == 0
+            || prepare.media_generation != 0
+            || prepare.request_nonce == 0
             || prepare.logical_media_id.trim().is_empty()
             || !prepare.target_position.is_finite()
         {
             return Ok(Vec::new());
         }
+        prepare.logical_media_id = truncate_text_to_max_chars(
+            prepare.logical_media_id.trim(),
+            PLAYBACK_BARRIER_MAX_LOGICAL_MEDIA_ID_CHARS,
+        );
+        let Some(initiator_session_sequence) =
+            self.client_room_join_sequence.get(client_id).copied()
+        else {
+            return Ok(Vec::new());
+        };
+
         if self
-            .room_playback_barriers
-            .get(&session.room)
-            .is_some_and(|barrier| {
-                barrier.prepare.logical_media_id.trim() == prepare.logical_media_id.trim()
-                    && (barrier.initiator_client_id != client_id
-                        || matches!(
-                            barrier.phase,
-                            PlaybackBarrierPhase::Preparing | PlaybackBarrierPhase::Committed
-                        ))
-            })
+            .playback_barrier_request_nonces
+            .get(client_id)
+            .is_some_and(|highest_nonce| prepare.request_nonce <= *highest_nonce)
         {
+            let exact_current_retry =
+                self.room_playback_barriers
+                    .get(&session.room)
+                    .is_some_and(|barrier| {
+                        barrier.initiator_client_id == client_id
+                            && barrier.initiator_session_sequence == initiator_session_sequence
+                            && barrier.prepare.request_nonce == prepare.request_nonce
+                    });
+            return Ok(if exact_current_retry {
+                self.playback_barrier_snapshot_for_client(&session.room, client_id)
+            } else {
+                Vec::new()
+            });
+        }
+        // Consume every authorized, structurally valid nonce, including a
+        // request rejected by the active lifecycle. Retrying that stale user
+        // intent after the active generation terminates must not start it.
+        self.playback_barrier_request_nonces
+            .insert(client_id.to_owned(), prepare.request_nonce);
+
+        if let Some(barrier) = self.room_playback_barriers.get(&session.room) {
+            let same_logical_media = barrier.prepare.logical_media_id == prepare.logical_media_id;
+            if prepare.load_intent == MediaLoadIntent::TransportRefresh {
+                return Ok(if same_logical_media {
+                    self.playback_barrier_snapshot_for_client(&session.room, client_id)
+                } else {
+                    Vec::new()
+                });
+            }
+            if matches!(
+                barrier.phase,
+                PlaybackBarrierPhase::Preparing | PlaybackBarrierPhase::Committed
+            ) {
+                // An active generation cannot be superseded by a second
+                // controller, a reconnect, or a nonce change.
+                return Ok(Vec::new());
+            }
+            if prepare.load_intent == MediaLoadIntent::NewPlayback
+                && same_logical_media
+                && (barrier.initiator_client_id != client_id
+                    || barrier.initiator_session_sequence != initiator_session_sequence)
+            {
+                // A replacement controller or reconnected transport has no
+                // trustworthy local episode history. Its fresh, authorized
+                // nonce is nevertheless explicit playback intent, and the
+                // retained terminal identity makes Replay unambiguous.
+                prepare.load_intent = MediaLoadIntent::Replay;
+            }
+            match prepare.load_intent {
+                MediaLoadIntent::NewPlayback if same_logical_media => return Ok(Vec::new()),
+                MediaLoadIntent::Replay if !same_logical_media => return Ok(Vec::new()),
+                MediaLoadIntent::NewPlayback | MediaLoadIntent::Replay => {}
+                MediaLoadIntent::TransportRefresh => unreachable!("handled above"),
+            }
+        } else if prepare.load_intent == MediaLoadIntent::TransportRefresh {
             return Ok(Vec::new());
         }
-        if self
-            .room_playback_barriers
-            .get(&session.room)
-            .is_some_and(|barrier| prepare.media_generation <= barrier.prepare.media_generation)
-        {
+
+        let Some(generation) = self.allocate_playback_barrier_generation() else {
             return Ok(Vec::new());
-        }
+        };
+        prepare.media_generation = generation;
         if self
             .room_buffering_controls
             .get(&session.room)
-            .is_some_and(|control| control.config.media_generation > prepare.media_generation)
-        {
-            return Ok(Vec::new());
-        }
-        if self
-            .room_buffering_controls
-            .get(&session.room)
-            .is_some_and(|control| control.config.media_generation < prepare.media_generation)
+            .is_some_and(|control| control.config.media_generation != prepare.media_generation)
         {
             self.room_buffering_controls.remove(&session.room);
         } else if let Some(control) = self.room_buffering_controls.get_mut(&session.room) {
@@ -535,11 +731,8 @@ impl ServerRuntime {
             PLAYBACK_BARRIER_MAX_TIMEOUT_SECONDS,
         );
         let deadline = now_seconds + timeout_seconds;
-        prepare.logical_media_id = truncate_text_to_max_chars(
-            prepare.logical_media_id.trim(),
-            PLAYBACK_BARRIER_MAX_LOGICAL_MEDIA_ID_CHARS,
-        );
         prepare.target_position = prepare.target_position.max(0.0);
+        prepare.timeout_action = Some(prepare.timeout_action.unwrap_or_default());
         prepare.timeout_ms = Some((timeout_seconds * 1_000.0) as u64);
         prepare.deadline = Some(deadline);
 
@@ -596,7 +789,9 @@ impl ServerRuntime {
             room_name.clone(),
             RoomPlaybackBarrier {
                 prepare: prepare.clone(),
+                commit: None,
                 initiator_client_id: client_id.to_owned(),
+                initiator_session_sequence,
                 initiator_username: session.username.clone(),
                 participants,
                 excluded_legacy_clients,
@@ -766,7 +961,7 @@ impl ServerRuntime {
                 continue;
             }
             participant.status.phase = if timed_out {
-                PlaybackBarrierParticipantPhase::TimedOut
+                PlaybackBarrierParticipantPhase::PrepareTimedOut
             } else {
                 PlaybackBarrierParticipantPhase::Degraded
             };
@@ -804,6 +999,9 @@ impl ServerRuntime {
             now_seconds,
             started_deadline,
         );
+        if let Some(barrier) = self.room_playback_barriers.get_mut(room_name) {
+            barrier.commit = Some(commit.clone());
+        }
         let status = self
             .playback_barrier_status(room_name)
             .expect("committed playback barrier should have status");
@@ -826,6 +1024,62 @@ impl ServerRuntime {
         Ok(outbound)
     }
 
+    fn finish_prepare_timeout_without_commit(
+        &mut self,
+        room_name: &str,
+        awaiting_controller_decision: bool,
+    ) -> Vec<DirectedProtocolMessage> {
+        let Some(barrier) = self.room_playback_barriers.get_mut(room_name) else {
+            return Vec::new();
+        };
+        if barrier.phase != PlaybackBarrierPhase::Preparing {
+            return Vec::new();
+        }
+        for participant in barrier.participants.values_mut() {
+            if participant.status.phase == PlaybackBarrierParticipantPhase::Ready {
+                continue;
+            }
+            participant.status.phase = PlaybackBarrierParticipantPhase::PrepareTimedOut;
+            participant.status.degraded_reason =
+                Some(PlaybackBarrierDegradedReason::PrepareTimeout);
+        }
+        barrier.phase = if awaiting_controller_decision {
+            PlaybackBarrierPhase::AwaitingDecision
+        } else {
+            PlaybackBarrierPhase::Degraded
+        };
+        // The canonical room state intentionally remains paused. No commit or
+        // transient unpause is emitted for either policy.
+        self.playback_barrier_status_fanout(room_name)
+    }
+
+    /// Retires an `AskController` timeout once an authorized ordinary
+    /// play/pause transition supplies the requested decision. The ordinary
+    /// playstate remains the canonical control path; no stale barrier commit
+    /// is manufactured or reactivated.
+    pub(crate) fn retire_awaiting_playback_barrier_decision(
+        &mut self,
+        client_id: &str,
+        room_name: &str,
+    ) -> Vec<DirectedProtocolMessage> {
+        let authorized = self.sessions.get(client_id).is_some_and(|session| {
+            session.room == room_name
+                && session.capabilities.playback_barrier_v1
+                && self.user_can_control_playlist(&session.username, room_name)
+        });
+        if !authorized {
+            return Vec::new();
+        }
+        let Some(barrier) = self.room_playback_barriers.get_mut(room_name) else {
+            return Vec::new();
+        };
+        if barrier.phase != PlaybackBarrierPhase::AwaitingDecision {
+            return Vec::new();
+        }
+        barrier.phase = PlaybackBarrierPhase::Degraded;
+        self.playback_barrier_status_fanout(room_name)
+    }
+
     pub(crate) fn collect_due_playback_barrier_updates_at(
         &mut self,
         now_seconds: f64,
@@ -840,7 +1094,22 @@ impl ServerRuntime {
             .collect();
         let mut outbound = Vec::new();
         for room_name in due_prepare {
-            outbound.extend(self.commit_playback_barrier(&room_name, true, now_seconds)?);
+            let timeout_action = self
+                .room_playback_barriers
+                .get(&room_name)
+                .and_then(|barrier| barrier.prepare.timeout_action)
+                .unwrap_or_default();
+            match timeout_action {
+                PlaybackBarrierTimeoutAction::Continue => {
+                    outbound.extend(self.commit_playback_barrier(&room_name, true, now_seconds)?)
+                }
+                PlaybackBarrierTimeoutAction::RemainPaused => {
+                    outbound.extend(self.finish_prepare_timeout_without_commit(&room_name, false))
+                }
+                PlaybackBarrierTimeoutAction::AskController => {
+                    outbound.extend(self.finish_prepare_timeout_without_commit(&room_name, true))
+                }
+            }
         }
 
         let due_started: Vec<String> = self
@@ -859,14 +1128,19 @@ impl ServerRuntime {
                 continue;
             };
             for participant in barrier.participants.values_mut() {
-                if participant.status.phase == PlaybackBarrierParticipantPhase::Started {
-                    continue;
+                match participant.status.phase {
+                    PlaybackBarrierParticipantPhase::Pending
+                    | PlaybackBarrierParticipantPhase::Ready => {
+                        participant.status.phase =
+                            PlaybackBarrierParticipantPhase::StartedAckTimedOut;
+                        participant.status.degraded_reason =
+                            Some(PlaybackBarrierDegradedReason::StartedTimeout);
+                    }
+                    PlaybackBarrierParticipantPhase::Started
+                    | PlaybackBarrierParticipantPhase::Degraded
+                    | PlaybackBarrierParticipantPhase::PrepareTimedOut
+                    | PlaybackBarrierParticipantPhase::StartedAckTimedOut => {}
                 }
-                participant.status.phase = PlaybackBarrierParticipantPhase::TimedOut;
-                participant
-                    .status
-                    .degraded_reason
-                    .get_or_insert(PlaybackBarrierDegradedReason::StartedTimeout);
             }
             barrier.phase = PlaybackBarrierPhase::Degraded;
             outbound.extend(self.playback_barrier_status_fanout(&room_name));

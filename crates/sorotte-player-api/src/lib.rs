@@ -130,6 +130,7 @@ pub enum PlayerCommand {
     SetOptionString { name: String, value: String },
     ApplyProfile(String),
     SetPaused(bool),
+    Play(PlayerPlayIntent),
     SetPosition(f64),
     SetPlaybackRate(f64),
     SetMuted(bool),
@@ -158,6 +159,7 @@ impl std::fmt::Debug for PlayerCommand {
             Self::SetOptionString { .. } => "SetOptionString(<redacted>)",
             Self::ApplyProfile(_) => "ApplyProfile(<redacted>)",
             Self::SetPaused(_) => "SetPaused",
+            Self::Play(_) => "Play",
             Self::SetPosition(_) => "SetPosition",
             Self::SetPlaybackRate(_) => "SetPlaybackRate",
             Self::SetMuted(_) => "SetMuted",
@@ -182,15 +184,32 @@ impl std::fmt::Debug for PlayerCommand {
     }
 }
 
+/// Observation requirements for an unpause command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayerPlayIntent {
+    /// Resume an already-started file. mpv does not emit `playback-restart`
+    /// for this transition, so fresh position advancement is the completion
+    /// signal.
+    Resume,
+    /// Start playback after a new file load. The baseline is captured when
+    /// loading begins, because a paused load can emit `playback-restart`
+    /// before the later unpause command is sent.
+    StartAfterLoad { baseline_restart_sequence: u64 },
+    /// Start playback after a seek operation. The baseline is captured when
+    /// seeking begins for the same reason: the restart can precede unpause.
+    StartAfterSeek { baseline_restart_sequence: u64 },
+}
+
 impl PlayerCommand {
     pub const fn required_capability(&self) -> PlayerCapability {
         match self {
             Self::OpenFile(_) => PlayerCapability::OpenFile,
             Self::SetOptionString { .. } => PlayerCapability::SetOption,
             Self::ApplyProfile(_) => PlayerCapability::ApplyProfile,
-            Self::SetPaused(_) | Self::SetPosition(_) | Self::SetPlaybackRate(_) => {
-                PlayerCapability::Playback
-            }
+            Self::SetPaused(_)
+            | Self::Play(_)
+            | Self::SetPosition(_)
+            | Self::SetPlaybackRate(_) => PlayerCapability::Playback,
             Self::SetMuted(_) | Self::SetVolume(_) => PlayerCapability::Audio,
             Self::SetDeinterlace(_) | Self::SetKeepaspect(_) | Self::SetKeepaspectWindow(_) => {
                 PlayerCapability::Video
@@ -481,6 +500,13 @@ impl PlayerSeekableRange {
             end_seconds,
         }
     }
+
+    pub fn shifted(self, delta_seconds: f64) -> Self {
+        Self {
+            start_seconds: self.start_seconds + delta_seconds,
+            end_seconds: self.end_seconds + delta_seconds,
+        }
+    }
 }
 
 /// Generation-aware observations used for transport readiness and recovery.
@@ -556,17 +582,16 @@ impl PlayerTransportTelemetryUpdate {
         if let Some(playback_rate) = newer.playback_rate {
             self.playback_rate = Some(playback_rate);
         }
-        if let Some(logical_pause) = newer.logical_pause
-            && !(logical_pause
-                && (newer.paused_for_cache == Some(true) || self.paused_for_cache == Some(true)))
-        {
-            self.logical_pause = Some(logical_pause);
-        }
         if let Some(paused_for_cache) = newer.paused_for_cache {
             self.paused_for_cache = Some(paused_for_cache);
             if paused_for_cache && self.logical_pause == Some(true) {
                 self.logical_pause = None;
             }
+        }
+        if let Some(logical_pause) = newer.logical_pause
+            && !(logical_pause && self.paused_for_cache == Some(true))
+        {
+            self.logical_pause = Some(logical_pause);
         }
         if let Some(cache_buffering_percent) = newer.cache_buffering_percent {
             self.cache_buffering_percent = Some(cache_buffering_percent);
@@ -698,6 +723,7 @@ pub trait PlayerAdapter: Send + Sync {
             PlayerCommand::SetOptionString { name, value } => self.set_option_string(&name, &value),
             PlayerCommand::ApplyProfile(profile) => self.apply_profile(&profile),
             PlayerCommand::SetPaused(paused) => self.set_paused(paused),
+            PlayerCommand::Play(_) => self.set_paused(false),
             PlayerCommand::SetPosition(position) => self.set_position(position),
             PlayerCommand::SetPlaybackRate(rate) => self.set_playback_rate(rate),
             PlayerCommand::SetMuted(muted) => self.set_muted(muted),
@@ -1108,6 +1134,22 @@ mod tests {
 
         assert_eq!(pending.logical_pause, None);
         assert_eq!(pending.paused_for_cache, Some(true));
+    }
+
+    #[test]
+    fn cache_release_update_can_restore_an_explicit_logical_pause() {
+        let mut pending = PlayerTransportTelemetryUpdate {
+            paused_for_cache: Some(true),
+            ..PlayerTransportTelemetryUpdate::default()
+        };
+        pending.merge_from(PlayerTransportTelemetryUpdate {
+            logical_pause: Some(true),
+            paused_for_cache: Some(false),
+            ..PlayerTransportTelemetryUpdate::default()
+        });
+
+        assert_eq!(pending.logical_pause, Some(true));
+        assert_eq!(pending.paused_for_cache, Some(false));
     }
 
     #[test]

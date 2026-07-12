@@ -147,6 +147,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     };
                     let result = match command {
                         CoordinatorPlayerCommand::SetPaused(paused) => player.set_paused(paused),
+                        CoordinatorPlayerCommand::Play(_) => player.set_paused(false),
                         CoordinatorPlayerCommand::SetPosition(position_seconds) => {
                             player.set_position((position_seconds + user_offset_seconds).max(0.0))
                         }
@@ -174,6 +175,31 @@ impl GuiPersistedConfigRuntimeOwner {
             }
         }
         state_changed
+    }
+
+    /// Ends any coordinator-owned catch-up episode on the real attached
+    /// player before a user or lifecycle action takes ownership. GUI client
+    /// sessions use a no-op player internally, so cleanup commands must cross
+    /// this external-player seam explicitly.
+    pub(in crate::app) fn interrupt_attached_playback_recovery_impl(
+        &mut self,
+        action_description: &str,
+    ) -> bool {
+        let actions = match self
+            .session
+            .as_mut()
+            .map(|session| session.interrupt_attached_playback_recovery())
+        {
+            Some(Ok(actions)) => actions,
+            Some(Err(error)) => {
+                eprintln!(
+                    "warning: failed to prepare attached-player recovery cleanup for {action_description}: {error}"
+                );
+                return false;
+            }
+            None => return false,
+        };
+        self.apply_attached_player_runtime_actions_impl(actions, action_description)
     }
 
     pub(in crate::app::runtime_owner) fn sync_session_playstate_to_attached_player_impl(
@@ -213,25 +239,6 @@ impl GuiPersistedConfigRuntimeOwner {
             }
             None => false,
         };
-        let Some((playstate, raw_playstate, local_username)) =
-            self.session.as_ref().and_then(|session| {
-                session
-                    .current_room_playstate_for_attached_player_sync()
-                    .map(|playstate| {
-                        (
-                            playstate,
-                            session.current_room_playstate(),
-                            session.local_username().map(str::to_owned),
-                        )
-                    })
-            })
-        else {
-            self.last_applied_attached_room_playstate = None;
-            if state_changed {
-                self.refresh_player_state_impl();
-            }
-            return;
-        };
         let coordinator_owns_sync = self
             .session
             .as_ref()
@@ -254,14 +261,34 @@ impl GuiPersistedConfigRuntimeOwner {
                 ),
                 None => {}
             }
-            // Coordinator revisions are acknowledged only by transport
-            // observations; the legacy optimistic playstate cache is disabled.
+            // The coordinator consumes the canonical room state, including
+            // server-owned transitions attributed to the local controller.
+            // Legacy self-echo filtering is intentionally below this branch.
             self.last_applied_attached_room_playstate = None;
             if state_changed {
                 self.refresh_player_state_impl();
             }
             return;
         }
+        let Some((playstate, raw_playstate, local_username)) =
+            self.session.as_ref().and_then(|session| {
+                session
+                    .current_room_playstate_for_attached_player_sync()
+                    .map(|playstate| {
+                        (
+                            playstate,
+                            session.current_room_playstate(),
+                            session.local_username().map(str::to_owned),
+                        )
+                    })
+            })
+        else {
+            self.last_applied_attached_room_playstate = None;
+            if state_changed {
+                self.refresh_player_state_impl();
+            }
+            return;
+        };
         if let Some(suppressed_playstate) = self
             .suppressed_attached_room_playstate_after_playlist_reset
             .as_ref()

@@ -113,7 +113,86 @@ where
     }
 
     pub fn run_reconnect_state_restore_validation_if_needed(&mut self) -> Result<(), PlayerError> {
+        self.run_reconnect_state_restore_validation_if_needed_at(
+            unix_wall_clock_time_seconds_legacy_compatible(),
+        )
+    }
+
+    pub fn run_reconnect_state_restore_validation_if_needed_at(
+        &mut self,
+        now_seconds: f64,
+    ) -> Result<(), PlayerError> {
         self.sync_player_playback_telemetry_into_session_and_buffer();
+        let validation_pending = self
+            .session
+            .model
+            .reconnect
+            .state_restore_validation_pending;
+        if !validation_pending {
+            self.playback_coordination.finish_reconnect_reconciliation();
+            return Ok(());
+        }
+        if validation_pending {
+            if self
+                .player
+                .capabilities()
+                .contains(sorotte_player_api::PlayerCapability::Telemetry)
+            {
+                self.playback_coordination
+                    .mark_transport_telemetry_available();
+            }
+            // Discover and drain rich transport telemetry before choosing a
+            // correction owner. Once this runtime has seen generation-aware
+            // telemetry, reconnect correction remains coordinator-owned even
+            // during a later load attempt where no fresh sample has arrived
+            // yet. This prevents a transient telemetry gap from re-enabling
+            // unsafe direct seeks/unpauses.
+            self.drain_player_transport_coordination(now_seconds)?;
+            if self.playback_coordination.reconnect_coordinator_available() {
+                let reconciliation_started =
+                    self.playback_coordination.begin_reconnect_reconciliation();
+                if reconciliation_started {
+                    self.session
+                        .model
+                        .reconnect
+                        .state_restore_correction_metrics
+                        .correction_actions_attempted = self
+                        .session
+                        .model
+                        .reconnect
+                        .state_restore_correction_metrics
+                        .correction_actions_attempted
+                        .saturating_add(1);
+                }
+
+                // Beginning reconciliation forces a new desired revision. A
+                // second drain applies that revision through the same tracked,
+                // transport-safe coordinator command seam used during normal
+                // synchronization.
+                self.drain_player_transport_coordination(now_seconds)?;
+                if self
+                    .playback_coordination
+                    .reconnect_reconciliation_complete()
+                {
+                    self.session
+                        .model
+                        .reconnect
+                        .state_restore_correction_metrics
+                        .correction_actions_succeeded = self
+                        .session
+                        .model
+                        .reconnect
+                        .state_restore_correction_metrics
+                        .correction_actions_succeeded
+                        .saturating_add(1);
+                    self.session
+                        .complete_reconnect_state_restore_validation_after_success();
+                    self.playback_coordination.finish_reconnect_reconciliation();
+                }
+                return Ok(());
+            }
+        }
+
         let actions = self
             .session
             .runtime_actions_for_reconnect_state_restore_validation_if_needed();
@@ -205,7 +284,13 @@ where
         &mut self,
         now_seconds: f64,
     ) -> Result<(), PlayerError> {
-        // Reconnect validation owns correction immediately after reconnect state restore.
+        self.sync_player_playback_telemetry_into_session_and_buffer();
+        self.drain_player_transport_coordination(now_seconds)?;
+
+        // Reconnect validation owns correction immediately after reconnect
+        // state restore. Transport telemetry is deliberately drained first so
+        // the coordinator can still observe unsafe loading/cache/seeking
+        // phases while legacy room synchronization remains suspended.
         if self
             .session
             .model
@@ -215,9 +300,6 @@ where
             return Ok(());
         }
 
-        self.sync_player_playback_telemetry_into_session_and_buffer();
-
-        self.drain_player_transport_coordination(now_seconds)?;
         if self
             .playback_coordination_snapshot()
             .transport_telemetry_observed
@@ -325,7 +407,12 @@ where
         dont_slow_down_with_me: bool,
         speed_supported: bool,
     ) -> Result<(), PlayerError> {
-        // Reconnect validation owns the correction window immediately after reconnect restore.
+        self.sync_player_playback_telemetry_into_session_and_buffer();
+        self.drain_player_transport_coordination(now_seconds)?;
+
+        // Reconnect validation owns the correction window immediately after
+        // reconnect restore, but transport observations must continue flowing
+        // so coordinator-owned correction can make progress safely.
         if self
             .session
             .model
@@ -335,8 +422,6 @@ where
             return Ok(());
         }
 
-        self.sync_player_playback_telemetry_into_session_and_buffer();
-        self.drain_player_transport_coordination(now_seconds)?;
         let coordination = self.playback_coordination_snapshot();
         if coordination.transport_telemetry_observed && coordination.ordinary_correction_blocked {
             self.session.model.playback.behind_first_detected_at_seconds = None;

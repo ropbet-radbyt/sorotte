@@ -4,7 +4,7 @@ use sorotte_client_core::{
     AutoplayCountdownNotification, ChatNotification, ClientEffect, ClientEffectError,
     ClientPlayerIo, ClientRuntime, ClientSession, ClientSessionUpdate,
     ControlledRoomCreationNotification, ControllerAuthTransitionNotification, CoordinatorCommandId,
-    FileSize, LogicalMediaId, MediaLoadPlan, MediaTransportKind,
+    FileSize, LogicalMediaId, MediaLoadIntent, MediaLoadPlan, MediaTransportKind,
     PlaybackBarrierRoomBufferingConfig, PlaybackBarrierStartConfig, PlaybackBarrierTimeoutAction,
     PlaybackCoordinationSnapshot, PlaybackCoordinatorAction, PlaybackCoordinatorConfig,
     PrivacyMode, QueuedRuntimeControl, ReconnectStateRestoreCorrectionMetrics,
@@ -1370,6 +1370,17 @@ where
             .prepare_playback_media(logical_id, kind, now_seconds)
     }
 
+    pub fn prepare_playback_media_with_intent(
+        &mut self,
+        logical_id: LogicalMediaId,
+        kind: MediaTransportKind,
+        intent: MediaLoadIntent,
+        now_seconds: f64,
+    ) -> MediaLoadPlan {
+        self.runtime
+            .prepare_playback_media_with_intent(logical_id, kind, intent, now_seconds)
+    }
+
     pub fn observe_external_player_transport(
         &mut self,
         update: PlayerTransportTelemetryUpdate,
@@ -1394,6 +1405,10 @@ where
         now_seconds: f64,
     ) -> Vec<PlaybackCoordinatorAction> {
         self.runtime.reconcile_external_player_playback(now_seconds)
+    }
+
+    pub fn interrupt_external_playback_recovery(&mut self) -> Vec<PlaybackCoordinatorAction> {
+        self.runtime.interrupt_external_playback_recovery()
     }
 
     pub fn report_external_coordinator_command_dispatch(

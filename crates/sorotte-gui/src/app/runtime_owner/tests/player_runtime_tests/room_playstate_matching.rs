@@ -1,4 +1,231 @@
 use super::*;
+use sorotte_client_core::{CoordinatorPlayerCommand, PlaybackCoordinationSnapshot};
+
+#[derive(Debug, Default)]
+struct CoordinatorAuthorityPlayerState {
+    paused: Vec<bool>,
+    positions: Vec<f64>,
+    playback_rates: Vec<f64>,
+}
+
+struct CoordinatorAuthorityPlayer {
+    state: std::sync::Arc<std::sync::Mutex<CoordinatorAuthorityPlayerState>>,
+}
+
+impl PlayerAdapter for CoordinatorAuthorityPlayer {
+    fn name(&self) -> &'static str {
+        "coordinator-authority"
+    }
+
+    fn set_paused(&mut self, paused: bool) -> Result<(), sorotte_player_api::PlayerError> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .paused
+            .push(paused);
+        Ok(())
+    }
+
+    fn set_position(
+        &mut self,
+        position_seconds: f64,
+    ) -> Result<(), sorotte_player_api::PlayerError> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .positions
+            .push(position_seconds);
+        Ok(())
+    }
+
+    fn set_playback_rate(
+        &mut self,
+        playback_rate: f64,
+    ) -> Result<(), sorotte_player_api::PlayerError> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .playback_rates
+            .push(playback_rate);
+        Ok(())
+    }
+}
+
+struct CoordinatorAuthoritySession {
+    actions: Vec<GuiAttachedPlayerRuntimeAction>,
+    recovery_cleanup_actions: Vec<GuiAttachedPlayerRuntimeAction>,
+}
+
+impl GuiSessionRuntimeAdapter for CoordinatorAuthoritySession {
+    fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn connect_public_server(
+        &mut self,
+        _selected_server: Option<(String, String)>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn refresh_public_servers(
+        &mut self,
+        current_servers: Vec<(String, String)>,
+        _language: Option<&str>,
+    ) -> Result<Vec<(String, String)>, String> {
+        Ok(current_servers)
+    }
+
+    fn search_missing_media(
+        &mut self,
+        _directories: Vec<String>,
+    ) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+
+    fn playback_coordination_snapshot(&self) -> Option<PlaybackCoordinationSnapshot> {
+        Some(PlaybackCoordinationSnapshot {
+            media_generation: Some(1),
+            diagnostic: sorotte_client_core::PlaybackDiagnostic::ReadyWaitingForRoom,
+            recovery_episode: None,
+            metrics: Default::default(),
+            transport_telemetry_observed: true,
+            ordinary_correction_blocked: false,
+            last_applied_revision: None,
+            last_started_revision: None,
+            last_degraded_reason: None,
+        })
+    }
+
+    fn attached_player_runtime_actions(
+        &mut self,
+        _now_seconds: f64,
+    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        Ok(std::mem::take(&mut self.actions))
+    }
+
+    fn interrupt_attached_playback_recovery(
+        &mut self,
+    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        Ok(std::mem::take(&mut self.recovery_cleanup_actions))
+    }
+
+    // Model the old GUI adapter's self-origin filter. Coordinator authority
+    // must be checked before this legacy accessor is consulted.
+    fn current_room_playstate_for_attached_player_sync(&self) -> Option<GuiSessionRoomPlaystate> {
+        None
+    }
+}
+
+fn run_self_attributed_coordinator_actions(
+    actions: Vec<GuiAttachedPlayerRuntimeAction>,
+) -> std::sync::Arc<std::sync::Mutex<CoordinatorAuthorityPlayerState>> {
+    let state = std::sync::Arc::new(std::sync::Mutex::new(
+        CoordinatorAuthorityPlayerState::default(),
+    ));
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.session = Some(Box::new(CoordinatorAuthoritySession {
+        actions,
+        recovery_cleanup_actions: Vec::new(),
+    }));
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(
+        CoordinatorAuthorityPlayer {
+            state: state.clone(),
+        },
+    )));
+    owner.player_local_file = Some(
+        sorotte_player_api::LocalFileUpdate::new("episode1.mkv")
+            .with_path("C:/Media/episode1.mkv".to_owned()),
+    );
+    let shell = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    owner.sync_session_playstate_to_attached_player_impl(&shell, false);
+    state
+}
+
+#[test]
+fn gui_controller_barrier_reconciles_before_legacy_self_origin_filter() {
+    let state = run_self_attributed_coordinator_actions(vec![
+        GuiAttachedPlayerRuntimeAction::Coordinator {
+            command_id: sorotte_client_core::CoordinatorCommandId::new(1),
+            command: CoordinatorPlayerCommand::SetPosition(12.0),
+        },
+    ]);
+    assert_eq!(
+        state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .positions,
+        vec![12.0]
+    );
+}
+
+#[test]
+fn gui_all_eligible_controller_participation_obeys_server_commit() {
+    let state = run_self_attributed_coordinator_actions(vec![
+        GuiAttachedPlayerRuntimeAction::Coordinator {
+            command_id: sorotte_client_core::CoordinatorCommandId::new(2),
+            command: CoordinatorPlayerCommand::Play(sorotte_player_api::PlayerPlayIntent::Resume),
+        },
+    ]);
+    assert_eq!(
+        state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .paused,
+        vec![false]
+    );
+}
+
+#[test]
+fn gui_controller_obeys_server_owned_room_buffering_pause_and_resume() {
+    let state = run_self_attributed_coordinator_actions(vec![
+        GuiAttachedPlayerRuntimeAction::Coordinator {
+            command_id: sorotte_client_core::CoordinatorCommandId::new(3),
+            command: CoordinatorPlayerCommand::SetPaused(true),
+        },
+        GuiAttachedPlayerRuntimeAction::Coordinator {
+            command_id: sorotte_client_core::CoordinatorCommandId::new(4),
+            command: CoordinatorPlayerCommand::Play(sorotte_player_api::PlayerPlayIntent::Resume),
+        },
+    ]);
+    assert_eq!(
+        state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .paused,
+        vec![true, false]
+    );
+}
+
+#[test]
+fn gui_recovery_interrupt_resets_rate_on_the_real_attached_player() {
+    let state = std::sync::Arc::new(std::sync::Mutex::new(
+        CoordinatorAuthorityPlayerState::default(),
+    ));
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.session = Some(Box::new(CoordinatorAuthoritySession {
+        actions: Vec::new(),
+        recovery_cleanup_actions: vec![GuiAttachedPlayerRuntimeAction::Coordinator {
+            command_id: sorotte_client_core::CoordinatorCommandId::new(5),
+            command: CoordinatorPlayerCommand::SetPlaybackRate(1.0),
+        }],
+    }));
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(
+        CoordinatorAuthorityPlayer {
+            state: state.clone(),
+        },
+    )));
+
+    assert!(owner.interrupt_attached_playback_recovery_impl("test interruption"));
+    assert_eq!(
+        state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .playback_rates,
+        vec![1.0],
+        "recovery cleanup must cross the GUI's external-player seam instead of the no-op runtime player"
+    );
+}
 
 #[test]
 fn gui_persisted_config_runtime_owner_skips_self_origin_room_position_sync_for_attached_player() {
