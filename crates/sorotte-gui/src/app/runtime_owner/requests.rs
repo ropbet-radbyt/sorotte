@@ -117,15 +117,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.plex_auth_start_rx = None;
                 self.plex_auth_poll_rx = None;
                 self.plex_auth_poll_due_at = None;
-                self.plex_server_discovery.invalidate();
-                self.plex_sync_engine = None;
-                self.plex_sync_rx = None;
-                self.plex_sync_next_tick_due_at = None;
-                self.plex_playlist_search_rx = None;
-                self.plex_playlist_resolve_rx = None;
-                self.plex_stream_resolve_rx = None;
-                self.plex_stream_resolve_trigger_key = None;
-                self.plex_stream_resolve_result = None;
+                self.invalidate_plex_operation_context(handle, projected_state);
                 self.clear_pending_playlist_source_resolution_for_provider(
                     &GuiMediaSourceProviderId::plex_stream(),
                 );
@@ -161,6 +153,9 @@ impl GuiPersistedConfigRuntimeOwner {
         projected_state
             .plugin_enablement
             .apply_to_stored_settings(&mut projected_state.configuration.settings);
+        if !enabled {
+            self.stop_disabled_plugin_runtime_work(handle, projected_state, plugin);
+        }
         let Some(config_path) = self.plugin_enablement_config_path_for_request(projected_state)
         else {
             Self::push_runtime_error_notification(
@@ -187,11 +182,6 @@ impl GuiPersistedConfigRuntimeOwner {
             );
             return false;
         }
-
-        if !enabled {
-            self.stop_disabled_plugin_runtime_work(handle, projected_state, plugin);
-        }
-
         let settings = projected_state.configuration.settings.clone();
         let mut actions = vec![
             GuiShellAction::SetPluginEnabled { plugin, enabled },
@@ -416,6 +406,10 @@ impl GuiPersistedConfigRuntimeOwner {
             }
             GuiRuntimeRequest::DisconnectPlex => {
                 return self.handle_disconnect_plex_request(handle, projected_state);
+            }
+            GuiRuntimeRequest::CancelPlexPlaylistJobs { reason } => {
+                self.cancel_plex_playlist_jobs(handle, projected_state, reason);
+                return true;
             }
             GuiRuntimeRequest::SearchSelectedPlexServerMedia { query } => {
                 return self.handle_search_selected_plex_server_media_request(

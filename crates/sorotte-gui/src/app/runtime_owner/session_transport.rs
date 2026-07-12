@@ -405,6 +405,13 @@ impl GuiPersistedConfigRuntimeOwner {
             if let Err(error) = pump_result {
                 session_transport.fail_pending_outbound_protocol_delivery(0, error.clone());
                 self.apply_session_transport_outbound_delivery_results(handle, projected_state);
+                // Complete frames received before FIN belong to the current
+                // connection and remain valid. Apply them before disconnect
+                // advances the generation so any State response is then
+                // cleared with that failed generation.
+                if self.drain_session_transport_inbound(handle, projected_state) {
+                    return;
+                }
                 self.handle_session_transport_failure(handle, projected_state, error);
                 return;
             }
@@ -479,18 +486,18 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
-    ) {
+    ) -> bool {
         let Some(session_transport) = self.session_transport.as_ref() else {
-            return;
+            return false;
         };
         let inbound_protocol_lines = session_transport.drain_inbound_protocol_lines();
         if inbound_protocol_lines.is_empty() {
-            return;
+            return false;
         }
         for inbound_protocol_line in inbound_protocol_lines {
             let apply_result = {
                 let Some(session) = self.session.as_mut() else {
-                    return;
+                    return false;
                 };
                 session.apply_message_json(&inbound_protocol_line)
             };
@@ -505,7 +512,7 @@ impl GuiPersistedConfigRuntimeOwner {
                         projected_state,
                         error,
                     );
-                    break;
+                    return true;
                 }
                 Self::push_actions_and_project(
                     handle,
@@ -517,6 +524,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 );
             }
         }
+        false
     }
 
     fn drain_session_runtime_actions(

@@ -159,6 +159,39 @@ impl GuiQueuedRuntimeBridgeHandle {
         queue.drain(..).collect()
     }
 
+    /// Linearizes an asynchronous result commit with command submission.
+    ///
+    /// The callback runs only while the command queue is empty and while its
+    /// mutex remains held. It must not submit commands through this handle.
+    /// Commands returned by the callback are appended before the mutex is
+    /// released, so a concurrently submitted cancellation or replacement is
+    /// ordered entirely before or entirely after the commit.
+    pub(super) fn commit_if_client_command_queue_idle<R>(
+        &self,
+        commit: impl FnOnce() -> (R, Vec<GuiRuntimeRequest>),
+    ) -> Option<R> {
+        let mut queue = self
+            .queued_commands
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !queue.is_empty() {
+            return None;
+        }
+        let (result, requests) = commit();
+        let previous_len = queue.len();
+        queue.extend(
+            requests
+                .into_iter()
+                .map(GuiClientCommand::from_compatibility_request),
+        );
+        let queued_commands = queue.len().saturating_sub(previous_len);
+        drop(queue);
+        if queued_commands != 0 {
+            self.notify_threaded_runtime_owner();
+        }
+        Some(result)
+    }
+
     #[cfg(test)]
     pub(super) fn drain_preview_response_actions(&self) -> Vec<GuiShellAction> {
         self.drain_requests()

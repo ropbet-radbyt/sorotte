@@ -1,7 +1,7 @@
 use super::*;
 use std::collections::VecDeque;
 
-use crate::outbox::EffectOutbox;
+use crate::outbox::{EffectOutbox, ProtocolOutbox};
 
 macro_rules! notification_outbox_methods {
     ($front:ident, $acknowledge:ident, $flush:ident, $field:ident, $notification:ty) => {
@@ -266,6 +266,15 @@ impl ClientEffect {
 
 pub trait ClientEffectSink {
     fn emit(&mut self, effect: ClientEffect) -> Result<(), ClientEffectError>;
+
+    /// Starts a fresh transport generation. Reliable commands remain owned by
+    /// the sink, while connection-scoped effects from the previous transport
+    /// are discarded.
+    fn begin_protocol_connection_generation(&mut self) {}
+
+    /// Allows connection-scoped effects for the current generation after the
+    /// server handshake has made the session active.
+    fn activate_protocol_connection_generation(&mut self) {}
 }
 
 pub(crate) fn client_effect_player_error(error: ClientEffectError) -> PlayerError {
@@ -274,7 +283,7 @@ pub(crate) fn client_effect_player_error(error: ClientEffectError) -> PlayerErro
 
 #[derive(Debug, Default)]
 pub struct QueuedRuntimeControl {
-    pub(crate) outbound_messages: EffectOutbox<ProtocolMessage>,
+    pub(crate) outbound_messages: ProtocolOutbox,
     reconnect_delays: Vec<f64>,
     stop_reconnect_calls: usize,
     chat_notifications: EffectOutbox<ChatNotification>,
@@ -324,6 +333,11 @@ impl QueuedRuntimeControl {
         self.reconnect_notifications.pending()
     }
 
+    pub(crate) fn queue_connection_scoped_state(&mut self, state: StatePayload) -> bool {
+        self.outbound_messages
+            .push_connection_scoped_state(ProtocolMessage::state(state))
+    }
+
     pub fn drain_outbound_messages(&mut self) -> Vec<ProtocolMessage> {
         self.outbound_messages.drain()
     }
@@ -341,7 +355,7 @@ impl QueuedRuntimeControl {
 
     pub(crate) fn front_outbound_message_line(&self) -> Result<Option<String>, ProtocolError> {
         self.outbound_messages
-            .front()
+            .front_for_delivery()
             .map(encode_message_line)
             .transpose()
     }
@@ -446,6 +460,14 @@ impl QueuedRuntimeControl {
 }
 
 impl ClientEffectSink for QueuedRuntimeControl {
+    fn begin_protocol_connection_generation(&mut self) {
+        self.outbound_messages.begin_connection_generation();
+    }
+
+    fn activate_protocol_connection_generation(&mut self) {
+        self.outbound_messages.activate_connection_generation();
+    }
+
     fn emit(&mut self, effect: ClientEffect) -> Result<(), ClientEffectError> {
         match effect {
             ClientEffect::SetPlayerPaused(_) => {
@@ -504,9 +526,9 @@ impl ClientEffectSink for QueuedRuntimeControl {
                 self.outbound_messages
                     .push_back(ProtocolMessage::set(set_payload));
             }
-            ClientEffect::SendState(state) => self
-                .outbound_messages
-                .push_back(ProtocolMessage::state(state)),
+            ClientEffect::SendState(state) => {
+                let _ = self.queue_connection_scoped_state(state);
+            }
             ClientEffect::RequestControllerAuth(payload) => {
                 let set_payload = SetPayload::new().with_controller_auth(payload);
                 self.outbound_messages

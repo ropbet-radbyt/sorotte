@@ -15,7 +15,7 @@ mod startup_player;
 mod updates;
 
 use std::{
-    collections::{BTreeSet, HashMap, VecDeque},
+    collections::{BTreeSet, HashMap, VecDeque, hash_map::RandomState},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -26,6 +26,7 @@ use std::{
 };
 
 use sorotte_client_app::app_boundary::{
+    language::normalized_legacy_runtime_language_tag_legacy_compatible,
     persistence::{
         clear_sorotte_ini_stored_client_settings_mvp_at_path,
         load_sorotte_ini_stored_client_settings_mvp_from_path,
@@ -38,7 +39,7 @@ use sorotte_client_app::app_boundary::{
 use sorotte_player_api::{LocalFileUpdate, PlayerAdapter};
 use sorotte_player_mpv::MpvAdapter;
 use sorotte_plex::{
-    PlexClientConfig, SecretPlexPlaybackUrl,
+    PlexClientConfig, PlexMatchCacheStagedWrite, SecretPlexPlaybackUrl,
     auth::{PlexAuthPollResult, PlexAuthService, PlexAuthSession},
     cache::PlexMatchCache,
     discovery::{PlexDiscoveryService, PlexServerConnection},
@@ -78,7 +79,8 @@ use super::shell_state::{
     GuiTransientNotificationLevel, SorotteGuiShellAppState,
 };
 use super::startup::{
-    explicit_mpv_ipc_path_from_lookup, gui_startup_public_server_actions_with_fetcher,
+    StartupPublicServerOutcome, explicit_mpv_ipc_path_from_lookup,
+    gui_startup_public_server_outcome_with_fetcher,
     resolve_sorotte_gui_config_path_legacy_compatible,
 };
 use super::startup_support::{env_flag_enabled_lookup, env_trimmed};
@@ -89,6 +91,43 @@ use super::stream_support::{
 };
 use super::support::system_time_seconds;
 use super::ui_state::clear_legacy_gui_qsettings_files_at_root;
+
+const STARTUP_PUBLIC_SERVER_MAX_ATTEMPTS: u8 = 3;
+const STARTUP_PUBLIC_SERVER_RETRY_BASE_DELAY: Duration = Duration::from_secs(1);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct StartupPublicServerHydrationContext {
+    language: String,
+}
+
+impl StartupPublicServerHydrationContext {
+    fn from_settings(settings: &StoredClientSettingsMvp) -> Option<Self> {
+        if settings.check_for_updates_automatically != Some(true)
+            || settings
+                .public_servers
+                .as_ref()
+                .is_some_and(|servers| !servers.is_empty())
+        {
+            return None;
+        }
+        let language = settings
+            .language
+            .as_deref()
+            .and_then(normalized_legacy_runtime_language_tag_legacy_compatible)
+            .unwrap_or("en")
+            .to_owned();
+        Some(Self { language })
+    }
+}
+
+#[derive(Debug, Default)]
+pub(super) struct StartupPublicServerHydrationState {
+    pub(super) attempts_started: u8,
+    pub(super) next_retry_at: Option<Instant>,
+    pub(super) last_warning: Option<String>,
+    pub(super) completed: bool,
+    pub(super) context: Option<StartupPublicServerHydrationContext>,
+}
 
 pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) config_path: Option<PathBuf>,
@@ -105,7 +144,8 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) pending_room_change_request: Option<GuiPendingRoomChangeRequest>,
     pub(super) startup_saved_connect_attempted: bool,
     pub(super) startup_remote_actions_attempted: bool,
-    pub(super) startup_remote_actions_rx: Option<mpsc::Receiver<Vec<GuiShellAction>>>,
+    pub(super) startup_remote_actions_rx: Option<mpsc::Receiver<StartupPublicServerOutcome>>,
+    pub(super) startup_public_server_hydration: StartupPublicServerHydrationState,
     pub(super) update_runtime: GuiUpdateRuntime,
     pub(super) startup_stream_helper_probe_completed: bool,
     pub(super) startup_stream_helper_probe_rx:
@@ -175,10 +215,12 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) plex_sync_rx: Option<mpsc::Receiver<GuiPlexSyncWorkerResult>>,
     pub(super) plex_sync_next_tick_due_at: Option<Instant>,
     pub(super) plex_runtime_snapshot: GuiPlexRuntimeSnapshot,
-    pub(super) plex_playlist_search_rx: Option<mpsc::Receiver<GuiPlexPlaylistSearchWorkerResult>>,
-    pub(super) plex_playlist_resolve_rx: Option<mpsc::Receiver<GuiPlexPlaylistResolveWorkerResult>>,
+    pub(super) plex_playlist_job_generation: u64,
+    pub(super) plex_playlist_search_job: Option<GuiActivePlexPlaylistSearchJob>,
+    pub(super) plex_playlist_resolve_job: Option<GuiActivePlexPlaylistResolveJob>,
     pub(super) plex_stream_resolve_rx: Option<mpsc::Receiver<GuiPlexStreamResolveWorkerResult>>,
     pub(super) plex_stream_resolve_trigger_key: Option<String>,
+    pub(super) plex_stream_resolve_context: Option<GuiPlexOperationContext>,
     pub(super) plex_stream_resolve_result: Option<GuiPlexStreamResolveWorkerResult>,
     pub(super) pending_playlist_source_resolution: Option<GuiPendingPlaylistSourceResolution>,
     pub(super) pending_stream_retry_target: Option<String>,
@@ -211,35 +253,90 @@ pub(super) enum GuiPlexServerRefreshContext {
 #[derive(Default)]
 pub(super) struct GuiPlexServerDiscoveryCoordinator {
     pub(super) generation: u64,
+    pub(super) identity_generation: u64,
+    token_fingerprint_state: RandomState,
     pub(super) active: Option<GuiPlexServerDiscoveryJob>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(super) struct GuiPlexOperationContext {
+    pub(super) identity_generation: u64,
+    user_token_fingerprint: Option<u64>,
+    selected_server_token_fingerprint: Option<u64>,
+    pub(super) selected_server_id: Option<String>,
+    pub(super) selected_server_url: Option<String>,
+    pub(super) plugin_enabled: bool,
+    pub(super) sync_enabled: bool,
+    pub(super) streaming_enabled: bool,
+}
+
+impl std::fmt::Debug for GuiPlexOperationContext {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuiPlexOperationContext")
+            .field("identity_generation", &self.identity_generation)
+            .field("authenticated", &self.user_token_fingerprint.is_some())
+            .field(
+                "has_selected_server_token",
+                &self.selected_server_token_fingerprint.is_some(),
+            )
+            .field("selected_server_id", &self.selected_server_id)
+            .field(
+                "selected_server_url_configured",
+                &self.selected_server_url.is_some(),
+            )
+            .field("plugin_enabled", &self.plugin_enabled)
+            .field("sync_enabled", &self.sync_enabled)
+            .field("streaming_enabled", &self.streaming_enabled)
+            .finish()
+    }
 }
 
 pub(super) struct GuiPlexServerDiscoveryJob {
     pub(super) generation: u64,
-    pub(super) token: sorotte_secret::SecretValue,
+    pub(super) operation_context: GuiPlexOperationContext,
     pub(super) context: GuiPlexServerRefreshContext,
     pub(super) receiver: mpsc::Receiver<GuiPlexServerDiscoveryWorkerResult>,
 }
 
 pub(super) struct GuiPlexServerDiscoveryWorkerResult {
     pub(super) generation: u64,
-    pub(super) token: sorotte_secret::SecretValue,
+    pub(super) operation_context: GuiPlexOperationContext,
     pub(super) context: GuiPlexServerRefreshContext,
     pub(super) result: Result<GuiPlexServerRefreshOutcome, String>,
 }
 
 pub(super) struct GuiPlexSyncWorkerResult {
+    pub(super) operation_context: GuiPlexOperationContext,
     pub(super) engine: PlexSyncEngine<PlexHttpClient>,
     pub(super) status: PlexSyncStatus,
-    pub(super) cache_save_error: Option<String>,
+    pub(super) staged_cache_write: Option<Result<PlexMatchCacheStagedWrite, String>>,
+}
+
+pub(super) struct GuiActivePlexPlaylistSearchJob {
+    pub(super) id: u64,
+    pub(super) operation_context: GuiPlexOperationContext,
+    pub(super) query: String,
+    pub(super) result_rx: mpsc::Receiver<GuiPlexPlaylistSearchWorkerResult>,
 }
 
 pub(super) struct GuiPlexPlaylistSearchWorkerResult {
+    pub(super) id: u64,
+    pub(super) operation_context: GuiPlexOperationContext,
     pub(super) query: String,
     pub(super) result: Result<Vec<GuiPlexPlaylistSearchResult>, String>,
 }
 
+pub(super) struct GuiActivePlexPlaylistResolveJob {
+    pub(super) id: u64,
+    pub(super) operation_context: GuiPlexOperationContext,
+    pub(super) rating_key: String,
+    pub(super) result_rx: mpsc::Receiver<GuiPlexPlaylistResolveWorkerResult>,
+}
+
 pub(super) struct GuiPlexPlaylistResolveWorkerResult {
+    pub(super) id: u64,
+    pub(super) operation_context: GuiPlexOperationContext,
     pub(super) rating_key: String,
     pub(super) result: Result<String, String>,
 }
@@ -260,11 +357,11 @@ impl std::fmt::Debug for GuiPlexStreamResolveOutcome {
     }
 }
 
-#[derive(Clone, PartialEq)]
 pub(super) struct GuiPlexStreamResolveWorkerResult {
+    pub(super) operation_context: GuiPlexOperationContext,
     pub(super) trigger_key: String,
-    pub(super) target: String,
     pub(super) result: Result<GuiPlexStreamResolveOutcome, String>,
+    pub(super) staged_cache_write: Option<Result<PlexMatchCacheStagedWrite, String>>,
 }
 
 impl std::fmt::Debug for GuiPlexStreamResolveWorkerResult {
@@ -272,8 +369,8 @@ impl std::fmt::Debug for GuiPlexStreamResolveWorkerResult {
         formatter
             .debug_struct("GuiPlexStreamResolveWorkerResult")
             .field("trigger_key", &sorotte_secret::REDACTED_SECRET)
-            .field("target", &sorotte_secret::REDACTED_SECRET)
             .field("result_succeeded", &self.result.is_ok())
+            .field("cache_write_staged", &self.staged_cache_write.is_some())
             .finish()
     }
 }
@@ -547,9 +644,19 @@ mod media_target_debug_tests {
             candidate_path: Some(secret.to_owned()),
         };
         let plex_worker = GuiPlexStreamResolveWorkerResult {
+            operation_context: GuiPlexOperationContext {
+                identity_generation: 1,
+                user_token_fingerprint: Some(7),
+                selected_server_token_fingerprint: Some(8),
+                selected_server_id: Some("machine".to_owned()),
+                selected_server_url: Some(secret.to_owned()),
+                plugin_enabled: true,
+                sync_enabled: true,
+                streaming_enabled: true,
+            },
             trigger_key: secret.to_owned(),
-            target: secret.to_owned(),
             result: Err(secret.to_owned()),
+            staged_cache_write: None,
         };
 
         for debug in [

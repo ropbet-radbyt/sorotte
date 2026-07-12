@@ -106,6 +106,9 @@ impl ClientSession {
     pub fn runtime_actions_for_user_change_notifications_if_needed(
         &mut self,
     ) -> Vec<ClientRuntimeAction> {
+        if !self.is_active() {
+            return Vec::new();
+        }
         self.pending_user_change_notifications
             .drain(..)
             .map(ClientRuntimeAction::NotifyUserChange)

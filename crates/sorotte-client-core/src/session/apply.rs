@@ -30,6 +30,15 @@ impl ClientSession {
             .room
             .media_match_peer_tiers
             .remove(assigned_username);
+        self.pending_user_change_notifications
+            .retain(|notification| {
+                let username = match notification {
+                    UserChangeNotification::Joined { username, .. }
+                    | UserChangeNotification::Playing { username, .. }
+                    | UserChangeNotification::Left { username, .. } => username,
+                };
+                username != &provisional_username && username != assigned_username
+            });
 
         if let Some(provisional_file) = provisional_file {
             let assigned_user = self

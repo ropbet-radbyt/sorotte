@@ -6,7 +6,7 @@ use sorotte_client_app::app_boundary::commands::{
 };
 use sorotte_client_core::ClientSession;
 
-use super::runtime_bridge::GuiRuntimeRequest;
+use super::runtime_bridge::{GuiPlexPlaylistJobCancellationReason, GuiRuntimeRequest};
 use super::shell_state::{GuiDraftRuntimeSnapshot, GuiShellAction, SorotteGuiShellAppState};
 use super::support::{configured_room_name_text, joined_room_name_text, normalized_editable_text};
 use super::ui_state::GuiUpdateIndicatorAction;
@@ -19,6 +19,7 @@ mod tests;
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub(super) struct GuiShellDispatchPlan {
+    pub(super) pre_shell_runtime_requests: Vec<GuiRuntimeRequest>,
     pub(super) shell_actions: Vec<GuiShellAction>,
     pub(super) runtime_requests: Vec<GuiRuntimeRequest>,
 }
@@ -120,7 +121,7 @@ impl GuiShellDispatchPlan {
                 GuiShellAction::SetPluginEnabled { plugin, enabled } => {
                     plan.shell_actions
                         .push(GuiShellAction::SetPluginEnabled { plugin, enabled });
-                    plan.runtime_requests
+                    plan.pre_shell_runtime_requests
                         .push(GuiRuntimeRequest::SetPluginEnabled { plugin, enabled });
                 }
                 GuiShellAction::InstallStreamHelper => {
@@ -230,22 +231,22 @@ impl GuiShellDispatchPlan {
                     machine_identifier,
                     uri,
                 } => {
-                    plan.runtime_requests
+                    plan.pre_shell_runtime_requests
                         .push(GuiRuntimeRequest::SelectPlexServer {
                             machine_identifier,
                             uri,
                         });
                 }
                 GuiShellAction::TogglePlexSync(enabled) => {
-                    plan.runtime_requests
+                    plan.pre_shell_runtime_requests
                         .push(GuiRuntimeRequest::TogglePlexSync(enabled));
                 }
                 GuiShellAction::TogglePlexStreaming(enabled) => {
-                    plan.runtime_requests
+                    plan.pre_shell_runtime_requests
                         .push(GuiRuntimeRequest::TogglePlexStreaming(enabled));
                 }
                 GuiShellAction::DisconnectPlex => {
-                    plan.runtime_requests
+                    plan.pre_shell_runtime_requests
                         .push(GuiRuntimeRequest::DisconnectPlex);
                 }
                 GuiShellAction::SubmitPlexPlaylistSearch { query } => {
@@ -253,7 +254,7 @@ impl GuiShellDispatchPlan {
                         .push(GuiShellAction::SubmitPlexPlaylistSearch {
                             query: query.clone(),
                         });
-                    plan.runtime_requests
+                    plan.pre_shell_runtime_requests
                         .push(GuiRuntimeRequest::SearchSelectedPlexServerMedia { query });
                 }
                 GuiShellAction::SelectPlexPlaylistSearchResult(index) => {
@@ -268,9 +269,18 @@ impl GuiShellDispatchPlan {
                         .and_then(|index| state.plex_playlist_search.as_ref()?.results.get(index))
                         .map(|result| result.rating_key.clone())
                     {
-                        plan.runtime_requests
+                        plan.pre_shell_runtime_requests
                             .push(GuiRuntimeRequest::ResolvePlexPlaylistItem { rating_key });
                     }
+                }
+                GuiShellAction::CancelPlexPlaylistSearch => {
+                    plan.shell_actions
+                        .push(GuiShellAction::CancelPlexPlaylistSearch);
+                    plan.pre_shell_runtime_requests.push(
+                        GuiRuntimeRequest::CancelPlexPlaylistJobs {
+                            reason: GuiPlexPlaylistJobCancellationReason::PickerClosed,
+                        },
+                    );
                 }
                 GuiShellAction::SelectMainWindowPlaylistSource { index, provider_id } => {
                     let enabled = state
@@ -301,6 +311,8 @@ impl GuiShellDispatchPlan {
     }
 
     fn extend(&mut self, other: Self) {
+        self.pre_shell_runtime_requests
+            .extend(other.pre_shell_runtime_requests);
         self.shell_actions.extend(other.shell_actions);
         self.runtime_requests.extend(other.runtime_requests);
     }
@@ -350,6 +362,7 @@ fn plan_chat_submit(state: &SorotteGuiShellAppState, message: String) -> GuiShel
     let command_text = command_text.to_owned();
 
     let mut plan = GuiShellDispatchPlan {
+        pre_shell_runtime_requests: Vec::new(),
         shell_actions: vec![
             clear_chat_draft_action(),
             GuiShellAction::AnnounceSystemChatEvent(message),
@@ -379,12 +392,14 @@ fn plan_chat_submit(state: &SorotteGuiShellAppState, message: String) -> GuiShel
 fn plan_direct_chat_send(message: String) -> GuiShellDispatchPlan {
     let Some(message) = normalized_editable_text(&message) else {
         return GuiShellDispatchPlan {
+            pre_shell_runtime_requests: Vec::new(),
             shell_actions: vec![GuiShellAction::BeginLocalChatSend(message)],
             runtime_requests: Vec::new(),
         };
     };
 
     GuiShellDispatchPlan {
+        pre_shell_runtime_requests: Vec::new(),
         shell_actions: vec![clear_chat_draft_action()],
         runtime_requests: vec![GuiRuntimeRequest::SendChatMessage(message)],
     }

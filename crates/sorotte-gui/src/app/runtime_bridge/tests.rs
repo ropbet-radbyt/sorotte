@@ -2,8 +2,9 @@ use super::{GuiNativeRuntimeBridge, GuiPreviewRuntimeBridge};
 
 use crate::app::testing::support::test_temp_root;
 use crate::app::{
-    GuiPendingOperationKind, GuiRuntimeRequest, GuiSavedConfigurationRuntimeSnapshot,
-    GuiShellAction, GuiShellView, MainWindowPlaylistRow, SorotteGuiShellAppState,
+    GuiPendingOperationKind, GuiPlexPlaylistJobCancellationReason, GuiRuntimeRequest,
+    GuiSavedConfigurationRuntimeSnapshot, GuiShellAction, GuiShellView, MainWindowPlaylistRow,
+    SorotteGuiShellAppState,
 };
 use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
 
@@ -61,6 +62,15 @@ fn gui_preview_runtime_bridge_maps_selected_media_files_to_preview_actions() {
         runtime.dispatch_runtime_request(
             &fallback_state,
             GuiRuntimeRequest::SendChatMessage("preview hello".to_owned()),
+        ),
+        Vec::new()
+    );
+    assert_eq!(
+        runtime.dispatch_runtime_request(
+            &fallback_state,
+            GuiRuntimeRequest::CancelPlexPlaylistJobs {
+                reason: GuiPlexPlaylistJobCancellationReason::PickerClosed,
+            },
         ),
         Vec::new()
     );

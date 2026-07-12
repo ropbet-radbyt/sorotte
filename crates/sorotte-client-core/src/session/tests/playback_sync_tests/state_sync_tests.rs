@@ -259,6 +259,133 @@ fn client_runtime_state_sync_heartbeat_emits_when_active_even_if_chat_is_disable
 }
 
 #[test]
+fn blocked_state_write_coalesces_repeated_heartbeats_to_the_latest_pending_state() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":0.0,"paused":false,"setBy":"bob"}}}"#,
+        )
+        .expect("room playback state should apply");
+    let player = RecordingPlayer {
+        pending_playback_telemetry_update: Some(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(10.0)
+                .with_paused(false),
+        ),
+        ..RecordingPlayer::default()
+    };
+    let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+
+    assert!(runtime.run_state_sync_heartbeat_legacy_ping_compatible(false));
+    runtime
+        .flush_queued_protocol_lines_to_transport(|_| {
+            Err(ProtocolError::ServerError {
+                message: "blocked writer".to_owned(),
+            })
+        })
+        .expect_err("blocked writer should leave State pending");
+
+    for position in [20.0, 30.0, 40.0] {
+        runtime
+            .player_mut_for_test()
+            .pending_playback_telemetry_update = Some(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(position)
+                .with_paused(false),
+        );
+        assert!(runtime.run_state_sync_heartbeat_legacy_ping_compatible(false));
+    }
+
+    assert_eq!(
+        runtime.control().outbound_messages().len(),
+        1,
+        "blocked heartbeats should keep only one coalesced pending State"
+    );
+    let ProtocolMessage::State(state) = &runtime.control().outbound_messages()[0] else {
+        panic!("coalesced protocol message should be State");
+    };
+    assert_eq!(
+        state
+            .state
+            .playstate
+            .as_ref()
+            .and_then(|playstate| playstate.position),
+        Some(40.0),
+        "the coalesced State should contain the newest playback telemetry"
+    );
+}
+
+#[test]
+fn leased_state_keeps_staged_bytes_stable_while_newer_heartbeats_coalesce() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":0.0,"paused":false,"setBy":"bob"}}}"#,
+        )
+        .expect("room playback state should apply");
+    let player = RecordingPlayer {
+        pending_playback_telemetry_update: Some(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(10.0)
+                .with_paused(false),
+        ),
+        ..RecordingPlayer::default()
+    };
+    let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+
+    assert!(runtime.run_state_sync_heartbeat_legacy_ping_compatible(false));
+    let staged_line = runtime
+        .pending_protocol_line()
+        .expect("State should encode")
+        .expect("State should be pending");
+
+    for position in [20.0, 30.0] {
+        runtime
+            .player_mut_for_test()
+            .pending_playback_telemetry_update = Some(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(position)
+                .with_paused(false),
+        );
+        assert!(runtime.run_state_sync_heartbeat_legacy_ping_compatible(false));
+    }
+
+    assert_eq!(
+        runtime
+            .pending_protocol_line()
+            .expect("leased State should still encode")
+            .as_deref(),
+        Some(staged_line.as_str()),
+        "new heartbeats must not mutate bytes already staged with a transport"
+    );
+    assert!(matches!(
+        runtime.acknowledge_protocol_line(),
+        Some(ProtocolMessage::State(_))
+    ));
+    let ProtocolMessage::State(latest) = &runtime.control().outbound_messages()[0] else {
+        panic!("the message after the leased State should be the latest State");
+    };
+    assert_eq!(
+        latest
+            .state
+            .playstate
+            .as_ref()
+            .and_then(|playstate| playstate.position),
+        Some(30.0)
+    );
+}
+
+#[test]
 fn client_runtime_state_sync_heartbeat_reports_room_position_when_dont_slow_down_with_me_is_enabled()
  {
     let mut session = ClientSession::default();

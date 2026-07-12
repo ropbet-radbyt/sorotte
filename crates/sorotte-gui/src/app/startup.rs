@@ -427,15 +427,27 @@ fn gui_startup_actions_from_messages(messages: Vec<String>) -> Vec<GuiShellActio
         .collect()
 }
 
-pub(super) fn gui_startup_public_server_actions_with_fetcher<FPublicServers>(
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum StartupPublicServerOutcome {
+    Loaded(Vec<(String, String)>),
+    AlreadyCached,
+    Failed(String),
+}
+
+pub(super) fn gui_startup_public_server_outcome_with_fetcher<FPublicServers>(
     settings: &StoredClientSettingsMvp,
     fetch_public_servers: FPublicServers,
-) -> Vec<GuiShellAction>
+) -> StartupPublicServerOutcome
 where
     FPublicServers: Fn(&str) -> Result<Vec<(String, String)>, String>,
 {
-    if settings.check_for_updates_automatically != Some(true) {
-        return Vec::new();
+    if settings
+        .public_servers
+        .as_ref()
+        .is_some_and(|servers| !servers.is_empty())
+        || settings.check_for_updates_automatically != Some(true)
+    {
+        return StartupPublicServerOutcome::AlreadyCached;
     }
 
     let language = settings
@@ -444,16 +456,13 @@ where
         .and_then(normalized_legacy_runtime_language_tag_legacy_compatible)
         .unwrap_or("en");
 
-    if settings.public_servers.as_ref().is_none_or(Vec::is_empty) {
-        let servers = fetch_public_servers(language);
-        if let Ok(servers) = servers
-            && !servers.is_empty()
-        {
-            return vec![GuiShellAction::ApplyStartupPublicServerCache(servers)];
-        }
+    match fetch_public_servers(language) {
+        Ok(servers) if !servers.is_empty() => StartupPublicServerOutcome::Loaded(servers),
+        Ok(_) => StartupPublicServerOutcome::Failed(
+            "The public server service returned an empty list.".to_owned(),
+        ),
+        Err(error) => StartupPublicServerOutcome::Failed(error),
     }
-
-    Vec::new()
 }
 
 #[cfg(test)]

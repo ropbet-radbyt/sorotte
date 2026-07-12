@@ -119,20 +119,20 @@ fn gui_shell_app_state_tracks_plex_playlist_picker_lifecycle() {
 
     assert!(state.apply(GuiShellAction::AddSelectedPlexPlaylistSearchResult));
     assert!(
-        state.apply(GuiShellAction::CompletePlexPlaylistItemResolve {
+        !state.apply(GuiShellAction::CompletePlexPlaylistItemResolve {
             rating_key: "stale-worker-result".to_owned(),
             error: None,
         }),
-        "successful stale resolve completion should clear the pending add state so the picker cannot stay disabled"
+        "a stale successful resolve must not clear a newer pending add"
     );
-    assert!(
+    assert_eq!(
         state
             .plex_playlist_search
             .as_ref()
-            .is_some_and(|search| search.adding_rating_key.is_none())
+            .and_then(|search| search.adding_rating_key.as_deref()),
+        Some("14452")
     );
 
-    assert!(state.apply(GuiShellAction::AddSelectedPlexPlaylistSearchResult));
     assert!(
         state.apply(GuiShellAction::CompletePlexPlaylistItemResolve {
             rating_key: "14452".to_owned(),
@@ -149,6 +149,73 @@ fn gui_shell_app_state_tracks_plex_playlist_picker_lifecycle() {
 
     assert!(state.apply(GuiShellAction::CancelPlexPlaylistSearch));
     assert!(state.plex_playlist_search.is_none());
+}
+
+#[test]
+fn gui_shell_app_state_rejects_stale_plex_search_completion_after_picker_reopens() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        plex_user_token: Some("user-token".into()),
+        plex_selected_server_url: Some("https://plex.example".to_owned()),
+        plex_selected_server_token: Some("server-token".into()),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.main_window.playback.can_manage_playlist = true;
+
+    assert!(state.apply(GuiShellAction::BeginPlexPlaylistSearch));
+    assert!(state.apply(GuiShellAction::SubmitPlexPlaylistSearch {
+        query: "first".to_owned(),
+    }));
+    assert!(state.apply(GuiShellAction::CancelPlexPlaylistSearch));
+    assert!(state.apply(GuiShellAction::BeginPlexPlaylistSearch));
+    assert!(state.apply(GuiShellAction::SubmitPlexPlaylistSearch {
+        query: "second".to_owned(),
+    }));
+
+    assert!(
+        !state.apply(GuiShellAction::CompletePlexPlaylistSearch {
+            query: "first".to_owned(),
+            results: vec![GuiPlexPlaylistSearchResult {
+                rating_key: "stale".to_owned(),
+                title: "Stale result".to_owned(),
+                parent_title: None,
+                grandparent_title: None,
+                media_type: PlexMediaType::Movie,
+                duration_millis: None,
+                file_name: None,
+            }],
+            error: None,
+        }),
+        "a stale completion must not overwrite a reopened picker"
+    );
+    let search = state
+        .plex_playlist_search
+        .as_ref()
+        .expect("reopened picker should remain active");
+    assert!(search.searching);
+    assert_eq!(search.query, "second");
+    assert!(search.results.is_empty());
+
+    assert!(state.apply(GuiShellAction::CompletePlexPlaylistSearch {
+        query: "second".to_owned(),
+        results: vec![GuiPlexPlaylistSearchResult {
+            rating_key: "current".to_owned(),
+            title: "Current result".to_owned(),
+            parent_title: None,
+            grandparent_title: None,
+            media_type: PlexMediaType::Movie,
+            duration_millis: None,
+            file_name: None,
+        }],
+        error: None,
+    }));
+    let search = state
+        .plex_playlist_search
+        .as_ref()
+        .expect("picker should remain open after current completion");
+    assert!(!search.searching);
+    assert_eq!(search.query, "second");
+    assert_eq!(search.results[0].rating_key, "current");
 }
 
 #[test]

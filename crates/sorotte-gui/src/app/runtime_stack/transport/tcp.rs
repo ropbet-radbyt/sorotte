@@ -101,6 +101,7 @@ pub(in crate::app) struct GuiTcpSessionTransportDriver {
     pending_transport_outbound_lines: VecDeque<Vec<u8>>,
     pending_transport_outbound_offset: usize,
     pending_outbound_lines: VecDeque<GuiTcpPendingOutboundFrame>,
+    pending_outbound_liveness_lines: VecDeque<GuiTcpPendingOutboundFrame>,
     transport_handle: Option<GuiQueuedSessionTransportHandle>,
     inbound_buffer: Vec<u8>,
     inbound_idle_timeout: Duration,
@@ -218,6 +219,7 @@ impl GuiTcpSessionTransportDriver {
             pending_transport_outbound_lines: VecDeque::new(),
             pending_transport_outbound_offset: 0,
             pending_outbound_lines: VecDeque::new(),
+            pending_outbound_liveness_lines: VecDeque::new(),
             transport_handle: None,
             inbound_buffer: Vec::new(),
             inbound_idle_timeout: Self::INBOUND_IDLE_TIMEOUT,
@@ -274,6 +276,7 @@ impl GuiTcpSessionTransportDriver {
         self.pending_transport_outbound_lines.clear();
         self.pending_transport_outbound_offset = 0;
         self.pending_outbound_lines.clear();
+        self.pending_outbound_liveness_lines.clear();
         self.inbound_buffer.clear();
         Err(message)
     }
@@ -302,6 +305,7 @@ impl GuiTcpSessionTransportDriver {
         self.pending_transport_outbound_lines.clear();
         self.pending_transport_outbound_offset = 0;
         self.pending_outbound_lines.clear();
+        self.pending_outbound_liveness_lines.clear();
         self.inbound_buffer.clear();
 
         let stream = Self::connect_stream(&self.host, self.port)?;
@@ -337,7 +341,7 @@ impl GuiTcpSessionTransportDriver {
                     offset: 0,
                 });
         }
-        for line in transport.drain_outbound_protocol_lines() {
+        for line in transport.drain_untracked_outbound_protocol_lines_for_driver() {
             let mut encoded_line = line.into_bytes();
             encoded_line.extend_from_slice(b"\r\n");
             self.pending_outbound_lines
@@ -347,6 +351,26 @@ impl GuiTcpSessionTransportDriver {
                     offset: 0,
                 });
         }
+        Self::queue_outbound_liveness_line(&mut self.pending_outbound_liveness_lines, transport);
+    }
+
+    fn queue_outbound_liveness_line(
+        pending_liveness_lines: &mut VecDeque<GuiTcpPendingOutboundFrame>,
+        transport: &GuiQueuedSessionTransportHandle,
+    ) {
+        if !pending_liveness_lines.is_empty() {
+            return;
+        }
+        let Some(line) = transport.take_outbound_liveness_protocol_line_for_driver() else {
+            return;
+        };
+        let mut encoded_line = line.into_bytes();
+        encoded_line.extend_from_slice(b"\r\n");
+        pending_liveness_lines.push_back(GuiTcpPendingOutboundFrame {
+            token: None,
+            bytes: encoded_line,
+            offset: 0,
+        });
     }
 
     fn flush_transport_queue(
@@ -408,6 +432,29 @@ impl GuiTcpSessionTransportDriver {
         Ok(())
     }
 
+    fn flush_ordered_protocol_frame_queues(
+        pending_outbound_lines: &mut VecDeque<GuiTcpPendingOutboundFrame>,
+        pending_liveness_lines: &mut VecDeque<GuiTcpPendingOutboundFrame>,
+        transport: &mut impl Write,
+        mut frame_written: impl FnMut(u64),
+    ) -> Result<(), String> {
+        if pending_liveness_lines
+            .front()
+            .is_some_and(|frame| frame.offset > 0)
+        {
+            Self::flush_outbound_frame_queue(pending_liveness_lines, transport, |_| {})?;
+            if !pending_liveness_lines.is_empty() {
+                return Ok(());
+            }
+        }
+
+        Self::flush_outbound_frame_queue(pending_outbound_lines, transport, &mut frame_written)?;
+        if !pending_outbound_lines.is_empty() {
+            return Ok(());
+        }
+        Self::flush_outbound_frame_queue(pending_liveness_lines, transport, |_| {})
+    }
+
     fn flush_outbound_lines(&mut self) -> Result<(), String> {
         let Some(transport) = self.transport.as_mut() else {
             return Ok(());
@@ -425,15 +472,18 @@ impl GuiTcpSessionTransportDriver {
             return Ok(());
         }
         let transport_handle = self.transport_handle.clone();
-        if let Err(error) =
-            Self::flush_outbound_frame_queue(&mut self.pending_outbound_lines, transport, |token| {
+        if let Err(error) = Self::flush_ordered_protocol_frame_queues(
+            &mut self.pending_outbound_lines,
+            &mut self.pending_outbound_liveness_lines,
+            transport,
+            |token| {
                 if let Some(transport_handle) = transport_handle.as_ref() {
                     transport_handle.publish_outbound_protocol_delivery_result(
                         GuiOutboundProtocolDeliveryResult::FrameWritten { token },
                     );
                 }
-            })
-        {
+            },
+        ) {
             return self.disconnect_with_error(error);
         }
         Ok(())
@@ -847,6 +897,7 @@ impl GuiThreadedTcpSessionTransportDriver {
             worker.stop();
         }
         if let Some(transport_handle) = self.transport_handle.as_ref() {
+            transport_handle.clear_outbound_liveness_protocol_line();
             transport_handle.fail_pending_outbound_protocol_delivery(
                 0,
                 "Outbound protocol delivery was interrupted while stopping the TCP transport worker.",
@@ -912,11 +963,17 @@ impl GuiSessionTransportDriver for GuiThreadedTcpSessionTransportDriver {
 
     fn set_protocol_liveness_enabled(&mut self, enabled: bool) {
         self.liveness_enabled.store(enabled, Ordering::Relaxed);
+        if !enabled && let Some(transport_handle) = self.transport_handle.as_ref() {
+            transport_handle.clear_outbound_liveness_protocol_line();
+        }
     }
 
     fn reconnect(&mut self) -> Result<(), String> {
         self.set_protocol_liveness_enabled(false);
         self.stop_worker();
+        if let Some(transport_handle) = self.transport_handle.as_ref() {
+            transport_handle.clear_outbound_liveness_protocol_line();
+        }
         self.worker_failed = false;
         let driver = GuiTcpSessionTransportDriver::connect_from_host_arg(&self.host_arg)?;
         if let Some(transport) = self.transport_handle.clone() {
@@ -961,6 +1018,28 @@ mod tests {
         prefix_bytes: usize,
         calls: usize,
         written: Vec<u8>,
+    }
+
+    struct PartialThenWouldBlockWriter {
+        prefix_bytes: usize,
+        calls: usize,
+        written: Vec<u8>,
+    }
+
+    impl Write for PartialThenWouldBlockWriter {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            self.calls += 1;
+            if self.calls > 1 {
+                return Err(io::Error::from(io::ErrorKind::WouldBlock));
+            }
+            let written = self.prefix_bytes.min(buffer.len());
+            self.written.extend_from_slice(&buffer[..written]);
+            Ok(written)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     impl Write for PartialThenErrorWriter {
@@ -1085,5 +1164,136 @@ mod tests {
             transport.drain_outbound_protocol_delivery_results(),
             vec![GuiOutboundProtocolDeliveryResult::FrameWritten { token: 42 }]
         );
+    }
+
+    #[test]
+    fn blocked_tcp_writer_keeps_only_one_pending_and_one_latest_liveness_state() {
+        let transport = GuiQueuedSessionTransportHandle::default();
+        let mut pending_liveness_lines = VecDeque::new();
+
+        transport.push_outbound_liveness_protocol_line("first");
+        GuiTcpSessionTransportDriver::queue_outbound_liveness_line(
+            &mut pending_liveness_lines,
+            &transport,
+        );
+        transport.push_outbound_liveness_protocol_line("second");
+        transport.push_outbound_liveness_protocol_line("latest");
+        GuiTcpSessionTransportDriver::queue_outbound_liveness_line(
+            &mut pending_liveness_lines,
+            &transport,
+        );
+
+        assert_eq!(pending_liveness_lines.len(), 1);
+        assert_eq!(pending_liveness_lines[0].bytes, b"first\r\n");
+
+        pending_liveness_lines.clear();
+        GuiTcpSessionTransportDriver::queue_outbound_liveness_line(
+            &mut pending_liveness_lines,
+            &transport,
+        );
+        assert_eq!(pending_liveness_lines.len(), 1);
+        assert_eq!(pending_liveness_lines[0].bytes, b"latest\r\n");
+        assert!(
+            transport
+                .take_outbound_liveness_protocol_line_for_driver()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn partially_written_liveness_frame_finishes_before_new_reliable_frame() {
+        let liveness = b"liveness\r\n".to_vec();
+        let reliable = b"reliable\r\n".to_vec();
+        let mut pending_liveness_lines = VecDeque::from([GuiTcpPendingOutboundFrame {
+            token: None,
+            bytes: liveness.clone(),
+            offset: 0,
+        }]);
+        let mut pending_outbound_lines = VecDeque::new();
+        let mut blocked_writer = PartialThenWouldBlockWriter {
+            prefix_bytes: 4,
+            calls: 0,
+            written: Vec::new(),
+        };
+
+        GuiTcpSessionTransportDriver::flush_ordered_protocol_frame_queues(
+            &mut pending_outbound_lines,
+            &mut pending_liveness_lines,
+            &mut blocked_writer,
+            |_| {},
+        )
+        .expect("WouldBlock should retain the partial liveness frame");
+        assert_eq!(pending_liveness_lines[0].offset, 4);
+
+        pending_outbound_lines.push_back(GuiTcpPendingOutboundFrame {
+            token: Some(7),
+            bytes: reliable.clone(),
+            offset: 0,
+        });
+        let mut resumed_wire = Vec::new();
+        let mut written_tokens = Vec::new();
+        GuiTcpSessionTransportDriver::flush_ordered_protocol_frame_queues(
+            &mut pending_outbound_lines,
+            &mut pending_liveness_lines,
+            &mut resumed_wire,
+            |token| written_tokens.push(token),
+        )
+        .expect("resumed writer should finish both complete frames");
+
+        let mut complete_wire = blocked_writer.written;
+        complete_wire.extend(resumed_wire);
+        assert_eq!(complete_wire, [liveness, reliable].concat());
+        assert_eq!(written_tokens, vec![7]);
+        assert!(pending_liveness_lines.is_empty());
+        assert!(pending_outbound_lines.is_empty());
+    }
+
+    #[test]
+    fn partially_written_reliable_frame_finishes_before_liveness_frame() {
+        let reliable = b"reliable\r\n".to_vec();
+        let liveness = b"liveness\r\n".to_vec();
+        let mut pending_outbound_lines = VecDeque::from([GuiTcpPendingOutboundFrame {
+            token: Some(7),
+            bytes: reliable.clone(),
+            offset: 0,
+        }]);
+        let mut pending_liveness_lines = VecDeque::from([GuiTcpPendingOutboundFrame {
+            token: None,
+            bytes: liveness.clone(),
+            offset: 0,
+        }]);
+        let mut blocked_writer = PartialThenWouldBlockWriter {
+            prefix_bytes: 4,
+            calls: 0,
+            written: Vec::new(),
+        };
+        let mut written_tokens = Vec::new();
+
+        GuiTcpSessionTransportDriver::flush_ordered_protocol_frame_queues(
+            &mut pending_outbound_lines,
+            &mut pending_liveness_lines,
+            &mut blocked_writer,
+            |token| written_tokens.push(token),
+        )
+        .expect("WouldBlock should retain the partial reliable frame");
+        assert_eq!(pending_outbound_lines[0].offset, 4);
+        assert_eq!(pending_liveness_lines[0].offset, 0);
+        assert!(written_tokens.is_empty());
+
+        let mut resumed_wire = Vec::new();
+        GuiTcpSessionTransportDriver::flush_ordered_protocol_frame_queues(
+            &mut pending_outbound_lines,
+            &mut pending_liveness_lines,
+            &mut resumed_wire,
+            |token| written_tokens.push(token),
+        )
+        .expect("resumed writer should finish both complete frames");
+
+        let mut complete_wire = blocked_writer.written;
+        complete_wire.extend(resumed_wire);
+        assert_eq!(complete_wire, [reliable, liveness].concat());
+        assert_eq!(written_tokens, vec![7]);
+        assert!(pending_outbound_lines.is_empty());
+        assert!(pending_liveness_lines.is_empty());
     }
 }

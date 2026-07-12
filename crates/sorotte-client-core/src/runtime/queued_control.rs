@@ -95,6 +95,11 @@ where
         dont_slow_down_with_me: bool,
         local_state_change_global_playstate: Option<RoomPlaystateView>,
     ) -> bool {
+        // Legacy peers may send State before their authoritative Hello. The
+        // inbound message itself proves which live transport generation owns
+        // the response, so activate that generation while periodic heartbeats
+        // remain gated on an active session below.
+        self.control.activate_protocol_connection_generation();
         self.sync_player_playback_telemetry_into_session_and_buffer();
         let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
 
@@ -107,10 +112,7 @@ where
                 client_latency_calculation,
                 client_rtt,
             );
-            self.control
-                .outbound_messages
-                .push_back(ProtocolMessage::state(outbound_state));
-            return true;
+            return self.control.queue_connection_scoped_state(outbound_state);
         };
 
         let outbound_state = self
@@ -123,10 +125,7 @@ where
                 client_rtt,
                 local_state_change_global_playstate,
             );
-        self.control
-            .outbound_messages
-            .push_back(ProtocolMessage::state(outbound_state));
-        true
+        self.control.queue_connection_scoped_state(outbound_state)
     }
 
     pub(crate) fn adjusted_inbound_playstate_for_local_state_change_legacy_ping_compatible(
@@ -160,6 +159,7 @@ where
         if !self.session.is_active() {
             return false;
         }
+        self.control.activate_protocol_connection_generation();
 
         self.sync_player_playback_telemetry_into_session_and_buffer();
         let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
@@ -188,10 +188,7 @@ where
             )
         };
 
-        self.control
-            .outbound_messages
-            .push_back(ProtocolMessage::state(outbound_state));
-        true
+        self.control.queue_connection_scoped_state(outbound_state)
     }
 
     /// Transfers ownership of every queued protocol message to the caller.

@@ -1124,15 +1124,20 @@ fn gui_persisted_config_runtime_owner_retries_selected_plex_source_when_worker_f
         .plex_stream_resolve_trigger_key
         .clone()
         .expect("selected Plex source should have queued a stream worker");
+    let operation_context = owner
+        .plex_stream_resolve_context
+        .clone()
+        .expect("selected Plex source should capture its operation context");
     let (result_tx, result_rx) = std::sync::mpsc::channel();
     result_tx
         .send(GuiPlexStreamResolveWorkerResult {
+            operation_context,
             trigger_key,
-            target: local_entry.to_owned(),
             result: Ok(GuiPlexStreamResolveOutcome {
                 stream_target: Some(stream_target),
                 cache: sorotte_plex::PlexMatchCache::default(),
             }),
+            staged_cache_write: None,
         })
         .expect("fake Plex stream result should queue");
     drop(result_tx);

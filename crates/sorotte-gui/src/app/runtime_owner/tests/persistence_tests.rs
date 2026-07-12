@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_owner::{GuiActivePlexPlaylistResolveJob, GuiActivePlexPlaylistSearchJob};
 
 #[test]
 fn gui_persisted_config_runtime_owner_persists_save_and_reload_requests() {
@@ -103,17 +104,39 @@ fn gui_persisted_config_runtime_owner_disables_plex_without_clearing_credentials
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+    state.main_window.playback.can_manage_playlist = true;
+    assert!(state.apply(GuiShellAction::BeginPlexPlaylistSearch));
+    assert!(state.apply(GuiShellAction::SubmitPlexPlaylistSearch {
+        query: "stale-query".to_owned(),
+    }));
+    state
+        .plex_playlist_search
+        .as_mut()
+        .expect("Plex picker should be open")
+        .adding_rating_key = Some("stale-rating-key".to_owned());
     let (_auth_start_tx, auth_start_rx) = mpsc::channel();
     let (_sync_tx, sync_rx) = mpsc::channel();
     let (_search_tx, search_rx) = mpsc::channel();
     let (_resolve_tx, resolve_rx) = mpsc::channel();
     let (_stream_tx, stream_rx) = mpsc::channel();
+    let operation_context = owner.plex_operation_context(&saved_settings);
     owner.plex_auth_start_rx = Some(auth_start_rx);
     owner.plex_auth_poll_due_at = Some(std::time::Instant::now());
     owner.plex_sync_rx = Some(sync_rx);
     owner.plex_sync_next_tick_due_at = Some(std::time::Instant::now());
-    owner.plex_playlist_search_rx = Some(search_rx);
-    owner.plex_playlist_resolve_rx = Some(resolve_rx);
+    owner.plex_playlist_job_generation = 41;
+    owner.plex_playlist_search_job = Some(GuiActivePlexPlaylistSearchJob {
+        id: 40,
+        operation_context: operation_context.clone(),
+        query: "stale-query".to_owned(),
+        result_rx: search_rx,
+    });
+    owner.plex_playlist_resolve_job = Some(GuiActivePlexPlaylistResolveJob {
+        id: 41,
+        operation_context,
+        rating_key: "stale-rating-key".to_owned(),
+        result_rx: resolve_rx,
+    });
     owner.plex_stream_resolve_rx = Some(stream_rx);
     owner.plex_stream_resolve_trigger_key = Some("stale-stream".to_owned());
 
@@ -127,10 +150,12 @@ fn gui_persisted_config_runtime_owner_disables_plex_without_clearing_credentials
     assert!(owner.plex_auth_poll_due_at.is_none());
     assert!(owner.plex_sync_rx.is_none());
     assert!(owner.plex_sync_next_tick_due_at.is_none());
-    assert!(owner.plex_playlist_search_rx.is_none());
-    assert!(owner.plex_playlist_resolve_rx.is_none());
+    assert_eq!(owner.plex_playlist_job_generation, 42);
+    assert!(owner.plex_playlist_search_job.is_none());
+    assert!(owner.plex_playlist_resolve_job.is_none());
     assert!(owner.plex_stream_resolve_rx.is_none());
     assert!(owner.plex_stream_resolve_trigger_key.is_none());
+    assert!(state.plex_playlist_search.is_none());
     assert!(
         !state
             .plugin_enablement
@@ -167,6 +192,137 @@ fn gui_persisted_config_runtime_owner_disables_plex_without_clearing_credentials
     );
     assert_eq!(settings.plex_sync_enabled, Some(true));
     assert_eq!(settings.plex_streaming_enabled, Some(true));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_cancels_plex_jobs_when_plugin_disable_persistence_fails() {
+    let root = test_temp_root("plugin-disable-plex-persist-failure");
+    std::fs::create_dir_all(&root).expect("test directory should be created");
+    let settings = StoredClientSettingsMvp {
+        plex_plugin_enabled: Some(true),
+        shared_playlist_enabled: Some(true),
+        plex_user_token: Some("user-token".into()),
+        plex_selected_server_id: Some("machine-id".to_owned()),
+        plex_selected_server_url: Some("https://plex.example.invalid:32400".to_owned()),
+        plex_selected_server_token: Some("server-token".into()),
+        ..StoredClientSettingsMvp::default()
+    };
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(root.clone()));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&settings);
+    state.main_window.playback.can_manage_playlist = true;
+    assert!(state.apply(GuiShellAction::BeginPlexPlaylistSearch));
+    assert!(state.apply(GuiShellAction::SubmitPlexPlaylistSearch {
+        query: "stale-query".to_owned(),
+    }));
+    state
+        .plex_playlist_search
+        .as_mut()
+        .expect("Plex picker should be open")
+        .adding_rating_key = Some("stale-rating-key".to_owned());
+    let operation_context = owner.plex_operation_context(&settings);
+    let (_search_tx, search_rx) = mpsc::channel();
+    let (_resolve_tx, resolve_rx) = mpsc::channel();
+    owner.plex_playlist_job_generation = 9;
+    owner.plex_playlist_search_job = Some(GuiActivePlexPlaylistSearchJob {
+        id: 8,
+        operation_context: operation_context.clone(),
+        query: "stale-query".to_owned(),
+        result_rx: search_rx,
+    });
+    owner.plex_playlist_resolve_job = Some(GuiActivePlexPlaylistResolveJob {
+        id: 9,
+        operation_context,
+        rating_key: "stale-rating-key".to_owned(),
+        result_rx: resolve_rx,
+    });
+
+    assert!(state.apply(GuiShellAction::SetPluginEnabled {
+        plugin: GuiPluginSelection::Plex,
+        enabled: false,
+    }));
+    handle.push_request(GuiRuntimeRequest::SetPluginEnabled {
+        plugin: GuiPluginSelection::Plex,
+        enabled: false,
+    });
+    let actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert_eq!(owner.plex_playlist_job_generation, 10);
+    assert!(owner.plex_playlist_search_job.is_none());
+    assert!(owner.plex_playlist_resolve_job.is_none());
+    assert!(state.plex_playlist_search.is_none());
+    assert!(actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::PushTransientNotification {
+            level: GuiTransientNotificationLevel::Error,
+            message,
+        } if message.contains("Could not persist Plex plugin setting")
+    )));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_configuration_save_invalidates_plex_jobs_against_saved_settings() {
+    let root = test_temp_root("configuration-save-plex-context");
+    let config_path = root.join("sorotte.ini");
+    let saved_settings = StoredClientSettingsMvp {
+        plex_plugin_enabled: Some(true),
+        shared_playlist_enabled: Some(true),
+        plex_user_token: Some("user-token".into()),
+        plex_selected_server_id: Some("old-machine".to_owned()),
+        plex_selected_server_url: Some("https://old.example:32400".to_owned()),
+        plex_selected_server_token: Some("old-server-token".into()),
+        ..StoredClientSettingsMvp::default()
+    };
+    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &saved_settings)
+        .expect("initial settings should persist");
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+    state.main_window.playback.can_manage_playlist = true;
+    assert!(state.apply(GuiShellAction::BeginPlexPlaylistSearch));
+    assert!(state.apply(GuiShellAction::SubmitPlexPlaylistSearch {
+        query: "stale-query".to_owned(),
+    }));
+    state
+        .plex_playlist_search
+        .as_mut()
+        .expect("Plex picker should be open")
+        .adding_rating_key = Some("stale-rating-key".to_owned());
+    let operation_context = owner.plex_operation_context(&saved_settings);
+    let (_search_tx, search_rx) = mpsc::channel();
+    let (_resolve_tx, resolve_rx) = mpsc::channel();
+    owner.plex_playlist_search_job = Some(GuiActivePlexPlaylistSearchJob {
+        id: 1,
+        operation_context: operation_context.clone(),
+        query: "stale-query".to_owned(),
+        result_rx: search_rx,
+    });
+    owner.plex_playlist_resolve_job = Some(GuiActivePlexPlaylistResolveJob {
+        id: 2,
+        operation_context,
+        rating_key: "stale-rating-key".to_owned(),
+        result_rx: resolve_rx,
+    });
+    state.configuration.settings.plex_selected_server_id = Some("new-machine".to_owned());
+    state.configuration.settings.plex_selected_server_url =
+        Some("https://new.example:32400".to_owned());
+    state.configuration.settings.plex_selected_server_token = Some("new-server-token".into());
+    let submitted_settings = state.configuration.to_stored_settings();
+    assert_ne!(state.saved_configuration, submitted_settings);
+
+    assert!(state.apply(GuiShellAction::BeginConfigurationSave));
+    handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+        GuiPendingCompletionRequest::SaveConfiguration(submitted_settings),
+    ));
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert!(owner.plex_playlist_search_job.is_none());
+    assert!(owner.plex_playlist_resolve_job.is_none());
+    assert!(state.plex_playlist_search.is_none());
 
     let _ = std::fs::remove_dir_all(&root);
 }

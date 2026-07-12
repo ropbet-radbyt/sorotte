@@ -6,6 +6,8 @@
 //! actions are moved into feature reducers.
 
 use super::remote_services;
+#[cfg(test)]
+use super::runtime_bridge::GuiPlexPlaylistJobCancellationReason;
 use super::runtime_bridge::GuiRuntimeRequest;
 use super::shell_state::{
     FirstRunConfigurationDialogDraft, GuiCommandAvailabilityRuntimeOverride,
@@ -157,7 +159,8 @@ impl GuiClientCommand {
             | Request::TogglePlexStreaming(_)
             | Request::DisconnectPlex
             | Request::SearchSelectedPlexServerMedia { .. }
-            | Request::ResolvePlexPlaylistItem { .. } => GuiFeature::Plex,
+            | Request::ResolvePlexPlaylistItem { .. }
+            | Request::CancelPlexPlaylistJobs { .. } => GuiFeature::Plex,
             Request::SetPluginEnabled { .. }
             | Request::InstallStreamHelper
             | Request::IntegrateStreamHelperDownloader(_)
@@ -615,6 +618,17 @@ mod tests {
         ));
         assert!(matches!(
             GuiClientCommand::from_compatibility_request(GuiRuntimeRequest::StartPlexAuth),
+            GuiClientCommand::Legacy {
+                feature: GuiFeature::Plex,
+                ..
+            }
+        ));
+        assert!(matches!(
+            GuiClientCommand::from_compatibility_request(
+                GuiRuntimeRequest::CancelPlexPlaylistJobs {
+                    reason: GuiPlexPlaylistJobCancellationReason::PickerClosed,
+                },
+            ),
             GuiClientCommand::Legacy {
                 feature: GuiFeature::Plex,
                 ..

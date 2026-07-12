@@ -431,6 +431,7 @@ impl GuiRuntimeRequest {
             | Self::ResolvePlaylistSource { .. }
             | Self::SetRoom(_)
             | Self::ReturnToDefaultRoom
+            | Self::CancelPlexPlaylistJobs { .. }
             | Self::SendChatMessage(_)
             | Self::SetPlaybackPaused(_)
             | Self::TogglePlaybackPause => Vec::new(),
