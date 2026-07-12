@@ -945,6 +945,9 @@ impl SorotteGuiShellAppState {
         let Some(search) = self.plex_playlist_search.as_mut() else {
             return false;
         };
+        if !search.searching || search.query.as_str() != query.as_str() {
+            return false;
+        }
         search.query = query;
         search.searching = false;
         search.adding_rating_key = None;
@@ -1009,12 +1012,7 @@ impl SorotteGuiShellAppState {
             return false;
         };
         if search.adding_rating_key.as_deref() != Some(rating_key.as_str()) {
-            if error.is_some() {
-                return false;
-            }
-            if search.adding_rating_key.is_none() {
-                return false;
-            }
+            return false;
         }
         search.adding_rating_key = None;
         search.error = error.and_then(|message| normalized_editable_text(&message));

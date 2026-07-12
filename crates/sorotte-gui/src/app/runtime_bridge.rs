@@ -26,7 +26,7 @@ pub(in crate::app) use pending::{
     GuiPendingCompletionRequest, GuiPendingRoomChangeRequest, GuiSharedPlaylistOpenDispatch,
 };
 pub(in crate::app) use preview_bridge::GuiPreviewRuntimeBridge;
-pub(in crate::app) use requests::GuiRuntimeRequest;
+pub(in crate::app) use requests::{GuiPlexPlaylistJobCancellationReason, GuiRuntimeRequest};
 #[cfg(test)]
 pub(in crate::app) use traits::GuiPreviewRuntimeOwner;
 pub(in crate::app) use traits::{

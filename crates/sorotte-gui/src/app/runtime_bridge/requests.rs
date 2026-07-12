@@ -1,6 +1,12 @@
 use super::super::remote_services;
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::app) enum GuiPlexPlaylistJobCancellationReason {
+    PickerClosed,
+    OperationContextInvalidated,
+}
+
 #[allow(
     clippy::large_enum_variant,
     reason = "GUI runtime requests are intentionally centralized until the runtime bridge is split by domain."
@@ -97,6 +103,9 @@ pub(in crate::app) enum GuiRuntimeRequest {
     },
     ResolvePlexPlaylistItem {
         rating_key: String,
+    },
+    CancelPlexPlaylistJobs {
+        reason: GuiPlexPlaylistJobCancellationReason,
     },
     SendChatMessage(String),
     SeekOffset(f64),

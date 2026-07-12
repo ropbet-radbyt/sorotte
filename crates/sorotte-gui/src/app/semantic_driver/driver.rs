@@ -67,8 +67,15 @@ impl GuiSemanticDriver {
 
     fn dispatch_shell_actions(&mut self, actions: Vec<GuiShellAction>) {
         let dispatch_plan = GuiShellDispatchPlan::from_shell_actions(&self.state, actions);
-        self.apply_actions(dispatch_plan.shell_actions);
         let mut runtime = GuiPreviewRuntimeBridge;
+        for request in dispatch_plan.pre_shell_runtime_requests {
+            self.apply_actions(GuiNativeRuntimeBridge::dispatch_runtime_request(
+                &mut runtime,
+                &self.state,
+                request,
+            ));
+        }
+        self.apply_actions(dispatch_plan.shell_actions);
         for request in dispatch_plan.runtime_requests {
             self.apply_actions(GuiNativeRuntimeBridge::dispatch_runtime_request(
                 &mut runtime,

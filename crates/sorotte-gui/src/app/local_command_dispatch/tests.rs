@@ -4,9 +4,9 @@ use super::super::remote_services::{
     LegacyUpdateCheckStatus, StagedUpdate, UpdateCandidate, UpdateCandidateSource, UpdateChannel,
 };
 use crate::app::{
-    GuiDraftRuntimeSnapshot, GuiPlexPlaylistSearchResult, GuiPluginSelection, GuiRuntimeRequest,
-    GuiShellAction, MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot,
-    SorotteGuiShellAppState, StoredClientSettingsMvp,
+    GuiDraftRuntimeSnapshot, GuiPlexPlaylistJobCancellationReason, GuiPlexPlaylistSearchResult,
+    GuiPluginSelection, GuiRuntimeRequest, GuiShellAction, MainWindowRuntimeSnapshot,
+    MainWindowRuntimeUserSnapshot, SorotteGuiShellAppState, StoredClientSettingsMvp,
 };
 use sorotte_plex::PlexMediaType;
 
@@ -131,12 +131,13 @@ fn gui_shell_dispatch_plan_routes_plugin_enablement_to_runtime_owner() {
 
     assert_eq!(plan.shell_actions, vec![action]);
     assert_eq!(
-        plan.runtime_requests,
+        plan.pre_shell_runtime_requests,
         vec![GuiRuntimeRequest::SetPluginEnabled {
             plugin: GuiPluginSelection::Plex,
             enabled: false,
         }]
     );
+    assert!(plan.runtime_requests.is_empty());
 }
 
 #[test]
@@ -172,11 +173,12 @@ fn gui_shell_dispatch_plan_routes_plex_playlist_picker_requests_to_runtime_owner
         }]
     );
     assert_eq!(
-        search_plan.runtime_requests,
+        search_plan.pre_shell_runtime_requests,
         vec![GuiRuntimeRequest::SearchSelectedPlexServerMedia {
             query: "zero".to_owned(),
         }]
     );
+    assert!(search_plan.runtime_requests.is_empty());
 
     let add_plan = GuiShellDispatchPlan::from_shell_actions(
         &state,
@@ -186,11 +188,28 @@ fn gui_shell_dispatch_plan_routes_plex_playlist_picker_requests_to_runtime_owner
         ],
     );
     assert_eq!(
-        add_plan.runtime_requests,
+        add_plan.pre_shell_runtime_requests,
         vec![GuiRuntimeRequest::ResolvePlexPlaylistItem {
             rating_key: "14452".to_owned(),
         }]
     );
+    assert!(add_plan.runtime_requests.is_empty());
+
+    let cancel_plan = GuiShellDispatchPlan::from_shell_actions(
+        &state,
+        vec![GuiShellAction::CancelPlexPlaylistSearch],
+    );
+    assert_eq!(
+        cancel_plan.shell_actions,
+        vec![GuiShellAction::CancelPlexPlaylistSearch]
+    );
+    assert_eq!(
+        cancel_plan.pre_shell_runtime_requests,
+        vec![GuiRuntimeRequest::CancelPlexPlaylistJobs {
+            reason: GuiPlexPlaylistJobCancellationReason::PickerClosed,
+        }]
+    );
+    assert!(cancel_plan.runtime_requests.is_empty());
 }
 
 #[test]

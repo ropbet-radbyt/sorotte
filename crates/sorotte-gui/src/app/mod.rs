@@ -51,6 +51,8 @@ use self::runtime_bridge::GuiNativeRuntimeBridge;
 #[cfg(test)]
 use self::runtime_bridge::GuiPendingRoomChangeRequest;
 #[cfg(test)]
+use self::runtime_bridge::GuiPlexPlaylistJobCancellationReason;
+#[cfg(test)]
 use self::runtime_bridge::GuiQueuedRuntimeOwner;
 #[cfg(any(test, feature = "gui-semantic-smoke"))]
 use self::runtime_bridge::{

@@ -223,6 +223,9 @@ fn gui_widget_egui_renderer_maps_plex_playlist_picker_controls() {
     assert!(state.apply(GuiShellAction::UpdatePlexPlaylistSearchQuery(
         "zero".to_owned()
     )));
+    assert!(state.apply(GuiShellAction::SubmitPlexPlaylistSearch {
+        query: "zero".to_owned(),
+    }));
     assert!(state.apply(GuiShellAction::CompletePlexPlaylistSearch {
         query: "zero".to_owned(),
         results: vec![GuiPlexPlaylistSearchResult {

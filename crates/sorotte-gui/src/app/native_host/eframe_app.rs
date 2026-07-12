@@ -130,6 +130,11 @@ impl eframe::App for GuiNativeApp {
             self.open_playback_prompt(prompt);
         }
         let mut state_changed = false;
+        for request in dispatch_plan.pre_shell_runtime_requests {
+            for action in self.runtime.dispatch_runtime_request(&self.state, request) {
+                state_changed |= self.state.apply(action);
+            }
+        }
         for action in dispatch_plan.shell_actions {
             state_changed |= self.state.apply(action);
         }

@@ -215,8 +215,9 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) plex_sync_rx: Option<mpsc::Receiver<GuiPlexSyncWorkerResult>>,
     pub(super) plex_sync_next_tick_due_at: Option<Instant>,
     pub(super) plex_runtime_snapshot: GuiPlexRuntimeSnapshot,
-    pub(super) plex_playlist_search_rx: Option<mpsc::Receiver<GuiPlexPlaylistSearchWorkerResult>>,
-    pub(super) plex_playlist_resolve_rx: Option<mpsc::Receiver<GuiPlexPlaylistResolveWorkerResult>>,
+    pub(super) plex_playlist_job_generation: u64,
+    pub(super) plex_playlist_search_job: Option<GuiActivePlexPlaylistSearchJob>,
+    pub(super) plex_playlist_resolve_job: Option<GuiActivePlexPlaylistResolveJob>,
     pub(super) plex_stream_resolve_rx: Option<mpsc::Receiver<GuiPlexStreamResolveWorkerResult>>,
     pub(super) plex_stream_resolve_trigger_key: Option<String>,
     pub(super) plex_stream_resolve_context: Option<GuiPlexOperationContext>,
@@ -312,13 +313,29 @@ pub(super) struct GuiPlexSyncWorkerResult {
     pub(super) staged_cache_write: Option<Result<PlexMatchCacheStagedWrite, String>>,
 }
 
+pub(super) struct GuiActivePlexPlaylistSearchJob {
+    pub(super) id: u64,
+    pub(super) operation_context: GuiPlexOperationContext,
+    pub(super) query: String,
+    pub(super) result_rx: mpsc::Receiver<GuiPlexPlaylistSearchWorkerResult>,
+}
+
 pub(super) struct GuiPlexPlaylistSearchWorkerResult {
+    pub(super) id: u64,
     pub(super) operation_context: GuiPlexOperationContext,
     pub(super) query: String,
     pub(super) result: Result<Vec<GuiPlexPlaylistSearchResult>, String>,
 }
 
+pub(super) struct GuiActivePlexPlaylistResolveJob {
+    pub(super) id: u64,
+    pub(super) operation_context: GuiPlexOperationContext,
+    pub(super) rating_key: String,
+    pub(super) result_rx: mpsc::Receiver<GuiPlexPlaylistResolveWorkerResult>,
+}
+
 pub(super) struct GuiPlexPlaylistResolveWorkerResult {
+    pub(super) id: u64,
     pub(super) operation_context: GuiPlexOperationContext,
     pub(super) rating_key: String,
     pub(super) result: Result<String, String>,
