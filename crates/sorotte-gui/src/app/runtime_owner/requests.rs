@@ -117,15 +117,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.plex_auth_start_rx = None;
                 self.plex_auth_poll_rx = None;
                 self.plex_auth_poll_due_at = None;
-                self.plex_server_discovery.invalidate();
-                self.plex_sync_engine = None;
-                self.plex_sync_rx = None;
-                self.plex_sync_next_tick_due_at = None;
-                self.plex_playlist_search_rx = None;
-                self.plex_playlist_resolve_rx = None;
-                self.plex_stream_resolve_rx = None;
-                self.plex_stream_resolve_trigger_key = None;
-                self.plex_stream_resolve_result = None;
+                self.invalidate_plex_operation_context();
                 self.clear_pending_playlist_source_resolution_for_provider(
                     &GuiMediaSourceProviderId::plex_stream(),
                 );

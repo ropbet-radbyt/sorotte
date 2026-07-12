@@ -47,6 +47,8 @@ fn gui_persisted_config_runtime_owner_keeps_offset_commands_on_global_timeline()
         startup_saved_connect_attempted: false,
         startup_remote_actions_attempted: false,
         startup_remote_actions_rx: None,
+        startup_public_server_hydration:
+            crate::app::runtime_owner::StartupPublicServerHydrationState::default(),
         update_runtime: GuiUpdateRuntime::new(None),
         startup_stream_helper_probe_completed: false,
         startup_stream_helper_probe_rx: None,
@@ -116,6 +118,7 @@ fn gui_persisted_config_runtime_owner_keeps_offset_commands_on_global_timeline()
         plex_playlist_resolve_rx: None,
         plex_stream_resolve_rx: None,
         plex_stream_resolve_trigger_key: None,
+        plex_stream_resolve_context: None,
         plex_stream_resolve_result: None,
         pending_playlist_source_resolution: None,
         pending_stream_retry_target: None,

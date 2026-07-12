@@ -9,8 +9,12 @@ pub mod timeline;
 use std::{
     collections::BTreeMap,
     fmt, fs,
-    path::Path,
-    sync::OnceLock,
+    io::Write,
+    path::{Path, PathBuf},
+    sync::{
+        OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, SystemTime},
 };
 
@@ -27,7 +31,9 @@ const DEFAULT_CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_TIMELINE_INTERVAL: Duration = Duration::from_secs(10);
 const MATCH_RETRY_INTERVAL: Duration = Duration::from_secs(10);
 const SEEK_REPORT_THRESHOLD_MILLIS: i64 = 15_000;
+const PLEX_CACHE_ABANDONED_TEMP_FILE_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 static RUSTLS_PROVIDER_INIT: OnceLock<()> = OnceLock::new();
+static PLEX_CACHE_TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub type PlexResult<T> = Result<T, PlexError>;
 
@@ -579,11 +585,52 @@ impl PlexMatchCache {
     }
 
     pub fn save_to_path(&self, path: &Path) -> PlexResult<()> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(path, serde_json::to_string_pretty(self)?)?;
-        Ok(())
+        self.stage_to_path(path)?.commit()
+    }
+
+    pub fn stage_to_path(&self, path: &Path) -> PlexResult<PlexMatchCacheStagedWrite> {
+        self.stage_to_path_with(path, |file, serialized| {
+            file.write_all(serialized)?;
+            file.flush()?;
+            file.sync_all()
+        })
+    }
+
+    #[cfg(test)]
+    fn save_to_path_with<F>(&self, path: &Path, write_temporary_file: F) -> PlexResult<()>
+    where
+        F: FnOnce(&mut fs::File, &[u8]) -> std::io::Result<()>,
+    {
+        self.stage_to_path_with(path, write_temporary_file)?
+            .commit()
+    }
+
+    fn stage_to_path_with<F>(
+        &self,
+        path: &Path,
+        write_temporary_file: F,
+    ) -> PlexResult<PlexMatchCacheStagedWrite>
+    where
+        F: FnOnce(&mut fs::File, &[u8]) -> std::io::Result<()>,
+    {
+        let serialized = serde_json::to_vec_pretty(self)?;
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent)?;
+
+        let temporary_prefix = plex_cache_temporary_file_prefix(path)?;
+        cleanup_abandoned_plex_cache_temporary_files(parent, &temporary_prefix);
+        let (temporary_path, mut temporary_file) =
+            create_unique_plex_cache_temporary_file(parent, &temporary_prefix)?;
+        let cleanup = PlexCacheTemporaryFileCleanup::new(temporary_path.clone());
+        write_temporary_file(&mut temporary_file, &serialized)?;
+        drop(temporary_file);
+        Ok(PlexMatchCacheStagedWrite {
+            destination: path.to_path_buf(),
+            temporary_file: cleanup,
+        })
     }
 
     pub fn get_for_file(&self, file: &LocalFileUpdate) -> Option<PlexMatchedItem> {
@@ -600,6 +647,146 @@ impl PlexMatchCache {
         self.entries.insert(key.clone(), item.into());
         Some(key)
     }
+}
+
+#[derive(Debug)]
+pub struct PlexMatchCacheStagedWrite {
+    destination: PathBuf,
+    temporary_file: PlexCacheTemporaryFileCleanup,
+}
+
+impl PlexMatchCacheStagedWrite {
+    pub fn commit(mut self) -> PlexResult<()> {
+        replace_plex_cache_file(&self.temporary_file.path, &self.destination)?;
+        self.temporary_file.disarm();
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct PlexCacheTemporaryFileCleanup {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl PlexCacheTemporaryFileCleanup {
+    fn new(path: PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PlexCacheTemporaryFileCleanup {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+fn plex_cache_temporary_file_prefix(path: &Path) -> std::io::Result<String> {
+    let file_name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Plex cache path must include a file name",
+        )
+    })?;
+    Ok(format!(".{}.sorotte-tmp-", file_name.to_string_lossy()))
+}
+
+fn cleanup_abandoned_plex_cache_temporary_files(parent: &Path, prefix: &str) {
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+        let Some(timestamp) = file_name
+            .strip_prefix(prefix)
+            .and_then(|suffix| suffix.split('-').next())
+            .and_then(|timestamp| timestamp.parse::<u64>().ok())
+        else {
+            continue;
+        };
+        if now.saturating_sub(timestamp) >= PLEX_CACHE_ABANDONED_TEMP_FILE_AGE.as_secs() {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+fn create_unique_plex_cache_temporary_file(
+    parent: &Path,
+    prefix: &str,
+) -> std::io::Result<(PathBuf, fs::File)> {
+    for _ in 0..128 {
+        let sequence = PLEX_CACHE_TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let timestamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let path = parent.join(format!(
+            "{prefix}{timestamp}-{}-{sequence}",
+            std::process::id()
+        ));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not allocate a unique Plex cache temporary file",
+    ))
+}
+
+#[cfg(windows)]
+fn replace_plex_cache_file(temporary_path: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::{iter, os::windows::ffi::OsStrExt};
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+
+    let temporary_wide = temporary_path
+        .as_os_str()
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect::<Vec<_>>();
+    let destination_wide = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect::<Vec<_>>();
+    // SAFETY: Both pointers reference NUL-terminated UTF-16 buffers that remain alive for the
+    // duration of the call. The source and destination are files in the same directory.
+    let replaced = unsafe {
+        MoveFileExW(
+            temporary_wide.as_ptr(),
+            destination_wide.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if replaced == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_plex_cache_file(temporary_path: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::rename(temporary_path, destination)
 }
 
 #[derive(Clone)]
@@ -3309,6 +3496,7 @@ mod tests {
         cell::RefCell,
         io::{Read, Write},
         net::TcpListener,
+        path::PathBuf,
         rc::Rc,
         sync::mpsc,
         thread,
@@ -3316,6 +3504,164 @@ mod tests {
     };
 
     use super::*;
+
+    fn plex_cache_test_path(label: &str) -> PathBuf {
+        let sequence = PLEX_CACHE_TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let directory = std::env::temp_dir().join(format!(
+            "sorotte-plex-cache-{label}-{}-{sequence}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).expect("cache test directory should be created");
+        directory.join("plex-cache.json")
+    }
+
+    fn plex_cache_with_rating_key(rating_key: &str) -> PlexMatchCache {
+        PlexMatchCache {
+            entries: BTreeMap::from([(
+                "movie-key".to_owned(),
+                PlexCachedMatch {
+                    rating_key: rating_key.to_owned(),
+                    title: format!("Movie {rating_key}"),
+                    media_type: PlexMediaType::Movie,
+                    duration_millis: Some(90_000),
+                },
+            )]),
+        }
+    }
+
+    fn plex_cache_temporary_paths(path: &Path) -> Vec<PathBuf> {
+        let parent = path.parent().expect("cache path should have a parent");
+        let prefix = plex_cache_temporary_file_prefix(path)
+            .expect("cache path should provide a temporary prefix");
+        fs::read_dir(parent)
+            .expect("cache test directory should be readable")
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+            .map(|entry| entry.path())
+            .collect()
+    }
+
+    #[test]
+    fn plex_match_cache_atomically_replaces_corrupted_existing_file() {
+        let path = plex_cache_test_path("corrupted-replacement");
+        fs::write(&path, "{truncated").expect("corrupted cache should be written");
+        assert!(PlexMatchCache::load_from_path(&path).is_err());
+
+        let replacement = plex_cache_with_rating_key("replacement");
+        replacement
+            .save_to_path(&path)
+            .expect("corrupted cache should be replaced");
+
+        assert_eq!(
+            PlexMatchCache::load_from_path(&path).expect("replacement should load"),
+            replacement
+        );
+        assert!(plex_cache_temporary_paths(&path).is_empty());
+        let _ = fs::remove_dir_all(path.parent().expect("cache path should have a parent"));
+    }
+
+    #[test]
+    fn plex_match_cache_failed_temporary_write_preserves_last_known_good_file() {
+        let path = plex_cache_test_path("failed-temporary-write");
+        let original = plex_cache_with_rating_key("original");
+        original
+            .save_to_path(&path)
+            .expect("original cache should be saved");
+        let replacement = plex_cache_with_rating_key("replacement");
+
+        let error = replacement
+            .save_to_path_with(&path, |file, _serialized| {
+                file.write_all(b"{\"entries\":")?;
+                Err(std::io::Error::other("injected temporary write failure"))
+            })
+            .expect_err("injected temporary write should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("injected temporary write failure")
+        );
+        assert_eq!(
+            PlexMatchCache::load_from_path(&path).expect("original cache should remain valid"),
+            original
+        );
+        assert!(plex_cache_temporary_paths(&path).is_empty());
+        let _ = fs::remove_dir_all(path.parent().expect("cache path should have a parent"));
+    }
+
+    #[test]
+    fn plex_match_cache_replaces_existing_cache_without_leaving_temporary_files() {
+        let path = plex_cache_test_path("existing-replacement");
+        let original = plex_cache_with_rating_key("original");
+        let replacement = plex_cache_with_rating_key("replacement");
+        original
+            .save_to_path(&path)
+            .expect("original cache should be saved");
+
+        replacement
+            .save_to_path(&path)
+            .expect("existing cache should be replaced");
+
+        assert_eq!(
+            PlexMatchCache::load_from_path(&path).expect("replacement cache should load"),
+            replacement
+        );
+        assert!(plex_cache_temporary_paths(&path).is_empty());
+        let _ = fs::remove_dir_all(path.parent().expect("cache path should have a parent"));
+    }
+
+    #[test]
+    fn plex_match_cache_staging_defers_atomic_replacement_until_commit() {
+        let path = plex_cache_test_path("staged-commit");
+        let original = plex_cache_with_rating_key("original");
+        let replacement = plex_cache_with_rating_key("replacement");
+        original
+            .save_to_path(&path)
+            .expect("original cache should be saved");
+
+        let staged = replacement
+            .stage_to_path(&path)
+            .expect("replacement cache should stage");
+        assert_eq!(
+            PlexMatchCache::load_from_path(&path).expect("original cache should still load"),
+            original,
+            "reversible staging must not touch the accepted destination"
+        );
+        assert_eq!(plex_cache_temporary_paths(&path).len(), 1);
+
+        staged.commit().expect("staged cache should commit");
+        assert_eq!(
+            PlexMatchCache::load_from_path(&path).expect("replacement cache should load"),
+            replacement
+        );
+        assert!(plex_cache_temporary_paths(&path).is_empty());
+        let _ = fs::remove_dir_all(path.parent().expect("cache path should have a parent"));
+    }
+
+    #[test]
+    fn plex_match_cache_save_cleans_abandoned_temporary_files() {
+        let path = plex_cache_test_path("abandoned-cleanup");
+        let parent = path.parent().expect("cache path should have a parent");
+        let prefix = plex_cache_temporary_file_prefix(&path)
+            .expect("cache path should provide a temporary prefix");
+        let abandoned = parent.join(format!("{prefix}0-abandoned"));
+        let current_timestamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let concurrent = parent.join(format!("{prefix}{current_timestamp}-other-process-0"));
+        fs::write(&abandoned, "partial").expect("abandoned temporary file should be written");
+        fs::write(&concurrent, "active").expect("concurrent temporary file should be written");
+
+        plex_cache_with_rating_key("saved")
+            .save_to_path(&path)
+            .expect("cache should save after abandoned cleanup");
+
+        assert!(!abandoned.exists());
+        assert!(concurrent.exists());
+        assert_eq!(plex_cache_temporary_paths(&path), vec![concurrent]);
+        let _ = fs::remove_dir_all(parent);
+    }
 
     #[test]
     fn plex_auth_poll_result_debug_redacts_auth_token() {

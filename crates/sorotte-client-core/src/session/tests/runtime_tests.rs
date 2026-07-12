@@ -656,6 +656,99 @@ fn client_runtime_protocol_transport_failure_preserves_failed_message_and_tail()
 }
 
 #[test]
+fn reconnect_discards_failed_state_but_retains_reliable_chat_and_playlist_commands() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("initial Hello should apply");
+    session
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":0.0,"paused":false,"setBy":"bob"}}}"#,
+        )
+        .expect("initial room State should apply");
+    let player = RecordingPlayer {
+        pending_playback_telemetry_update: Some(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(10.0)
+                .with_paused(false),
+        ),
+        ..RecordingPlayer::default()
+    };
+    let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+
+    assert!(runtime.run_state_sync_heartbeat_legacy_ping_compatible(false));
+    runtime
+        .flush_queued_protocol_lines_to_transport(|_| {
+            Err(ProtocolError::ServerError {
+                message: "state write failed".to_owned(),
+            })
+        })
+        .expect_err("failed State write should remain owned by the old connection");
+    runtime
+        .emit_effect(ClientEffect::SendChat("retain-chat".to_owned()))
+        .expect("chat should queue");
+    runtime
+        .emit_effect(ClientEffect::SetPlaylist(vec!["episode.mkv".to_owned()]))
+        .expect("playlist command should queue");
+
+    runtime
+        .run_reconnect_retry(0)
+        .expect("reconnect retry should reset connection-scoped effects");
+    runtime
+        .session_mut_for_test()
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("replacement connection Hello should apply");
+    runtime
+        .session_mut_for_test()
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":90.0,"paused":false,"setBy":"bob"}}}"#,
+        )
+        .expect("replacement connection room State should apply");
+
+    let retained = runtime.control().outbound_messages();
+    assert_eq!(retained.len(), 2);
+    assert!(matches!(
+        &retained[0],
+        ProtocolMessage::Chat(message)
+            if message.chat == ChatPayload::Text("retain-chat".to_owned())
+    ));
+    assert!(matches!(
+        &retained[1],
+        ProtocolMessage::Set(message) if message.set.playlist_change.is_some()
+    ));
+    assert!(
+        retained
+            .iter()
+            .all(|message| !matches!(message, ProtocolMessage::State(_))),
+        "the failed State from the previous transport must not replay after the new Hello"
+    );
+
+    runtime
+        .player_mut_for_test()
+        .pending_playback_telemetry_update = Some(
+        PlayerPlaybackTelemetryUpdate::default()
+            .with_position_seconds(99.0)
+            .with_paused(false),
+    );
+    assert!(runtime.run_state_sync_heartbeat_legacy_ping_compatible(false));
+    let ProtocolMessage::State(new_state) = &runtime.control().outbound_messages()[2] else {
+        panic!("replacement connection should queue a fresh State after reliable commands");
+    };
+    assert_eq!(
+        new_state
+            .state
+            .playstate
+            .as_ref()
+            .and_then(|playstate| playstate.position),
+        Some(99.0)
+    );
+}
+
+#[test]
 fn client_runtime_drain_user_change_notifications_to_sink_dispatches_callback() {
     let mut session = ClientSession::default();
     session

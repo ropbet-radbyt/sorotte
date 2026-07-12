@@ -199,6 +199,10 @@ where
                 .with_paused(true)
                 .with_position_seconds(0.0),
         );
+        if !self.session.is_active() {
+            return Ok(());
+        }
+        self.control.activate_protocol_connection_generation();
         self.control
             .emit(ClientEffect::SendState(StatePayload::new().with_playstate(
                 PlaystatePayload::new().with_position(0.0).with_paused(true),

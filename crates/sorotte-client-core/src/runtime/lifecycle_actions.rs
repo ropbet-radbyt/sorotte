@@ -6,6 +6,10 @@ where
     P: PlayerAdapter,
     C: ClientEffectSink,
 {
+    pub fn begin_protocol_connection_generation(&mut self) {
+        self.control.begin_protocol_connection_generation();
+    }
+
     pub fn run_readiness_unpause_attempt(
         &mut self,
         now_seconds: f64,
@@ -59,6 +63,7 @@ where
     }
 
     pub fn run_reconnect_retry(&mut self, retries: u32) -> Result<(), PlayerError> {
+        self.begin_protocol_connection_generation();
         let actions = self.session.runtime_actions_for_reconnect_retry(retries);
         ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
     }

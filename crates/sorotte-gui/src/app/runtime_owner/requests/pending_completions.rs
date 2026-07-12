@@ -240,6 +240,10 @@ impl GuiPersistedConfigRuntimeOwner {
         settings: sorotte_client_app::app_boundary::state::StoredClientSettingsMvp,
     ) -> bool {
         let Some(path) = self.config_path.as_ref() else {
+            self.invalidate_plex_operation_context_if_settings_changed(
+                &projected_state.configuration.to_stored_settings(),
+                &settings,
+            );
             self.sync_player_from_lookup_and_settings(&env_trimmed, Some(&settings), true);
             Self::push_actions_and_project(
                 handle,
@@ -250,6 +254,10 @@ impl GuiPersistedConfigRuntimeOwner {
         };
         match upsert_sorotte_ini_stored_client_settings_mvp_at_path(path, &settings) {
             Ok(()) => {
+                self.invalidate_plex_operation_context_if_settings_changed(
+                    &projected_state.configuration.to_stored_settings(),
+                    &settings,
+                );
                 self.sync_player_from_lookup_and_settings(&env_trimmed, Some(&settings), true);
                 Self::push_actions_and_project(
                     handle,
@@ -278,6 +286,7 @@ impl GuiPersistedConfigRuntimeOwner {
         projected_state: &mut SorotteGuiShellAppState,
         settings: sorotte_client_app::app_boundary::state::StoredClientSettingsMvp,
     ) -> bool {
+        self.invalidate_plex_operation_context();
         Self::push_actions_and_project(
             handle,
             projected_state,
@@ -293,6 +302,7 @@ impl GuiPersistedConfigRuntimeOwner {
         fallback_settings: sorotte_client_app::app_boundary::state::StoredClientSettingsMvp,
     ) -> bool {
         let Some(path) = self.config_path.as_ref() else {
+            self.invalidate_plex_operation_context();
             Self::push_actions_and_project(
                 handle,
                 projected_state,
@@ -304,6 +314,7 @@ impl GuiPersistedConfigRuntimeOwner {
         };
         match load_sorotte_ini_stored_client_settings_mvp_from_path(path) {
             Ok(Some(settings)) => {
+                self.invalidate_plex_operation_context();
                 self.sync_player_from_lookup_and_settings(&env_trimmed, Some(&settings), true);
                 Self::push_actions_and_project(
                     handle,
@@ -312,6 +323,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 );
             }
             Ok(None) => {
+                self.invalidate_plex_operation_context();
                 self.sync_player_from_lookup_and_settings(
                     &env_trimmed,
                     Some(&fallback_settings),
@@ -347,6 +359,7 @@ impl GuiPersistedConfigRuntimeOwner {
     ) -> bool {
         match self.clear_gui_data() {
             Ok(()) => {
+                self.invalidate_plex_operation_context();
                 self.sync_player_from_lookup_and_settings(&env_trimmed, None, true);
                 Self::push_actions_and_project(
                     handle,
@@ -418,6 +431,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
         let copy_warnings =
             Self::copy_known_storage_entries_best_effort(old_root.as_deref(), &paths.storage_root);
+        self.invalidate_plex_operation_context();
         self.config_path = Some(paths.config_path.clone());
         self.clear_attached_media_search_runtime_cache();
         let stream_helper_snapshot = self.refresh_stream_helper_runtime_snapshot_for_target(None);

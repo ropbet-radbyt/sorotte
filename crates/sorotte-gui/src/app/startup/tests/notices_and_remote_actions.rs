@@ -69,22 +69,60 @@ fn startup_preview_includes_shell_summary_and_widget_tree_preview() {
 }
 
 #[test]
-fn gui_startup_public_server_actions_seed_cache_when_it_is_empty() {
+fn gui_startup_public_server_outcome_loads_cache_when_it_is_empty() {
     let settings = StoredClientSettingsMvp {
         check_for_updates_automatically: Some(true),
         last_checked_for_updates: Some("2027-01-14 09:10:11.123".to_owned()),
         ..StoredClientSettingsMvp::default()
     };
 
-    let actions = super::super::gui_startup_public_server_actions_with_fetcher(&settings, |_| {
+    let outcome = super::super::gui_startup_public_server_outcome_with_fetcher(&settings, |_| {
         Ok(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())])
     });
 
     assert_eq!(
-        actions,
-        vec![GuiShellAction::ApplyStartupPublicServerCache(vec![(
+        outcome,
+        super::super::StartupPublicServerOutcome::Loaded(vec![(
             "Primary".to_owned(),
             "syncplay.pl:8999".to_owned(),
-        )])]
+        )])
+    );
+}
+
+#[test]
+fn gui_startup_public_server_outcome_reports_empty_service_response() {
+    let settings = StoredClientSettingsMvp {
+        check_for_updates_automatically: Some(true),
+        ..StoredClientSettingsMvp::default()
+    };
+
+    let outcome =
+        super::super::gui_startup_public_server_outcome_with_fetcher(&settings, |_| Ok(Vec::new()));
+
+    assert!(matches!(
+        outcome,
+        super::super::StartupPublicServerOutcome::Failed(message)
+            if message.contains("empty list")
+    ));
+}
+
+#[test]
+fn gui_startup_public_server_outcome_preserves_existing_cache_without_fetching() {
+    let settings = StoredClientSettingsMvp {
+        check_for_updates_automatically: Some(true),
+        public_servers: Some(vec![(
+            "Cached".to_owned(),
+            "cached.example:8999".to_owned(),
+        )]),
+        ..StoredClientSettingsMvp::default()
+    };
+
+    let outcome = super::super::gui_startup_public_server_outcome_with_fetcher(&settings, |_| {
+        panic!("an existing cache must prevent startup hydration")
+    });
+
+    assert_eq!(
+        outcome,
+        super::super::StartupPublicServerOutcome::AlreadyCached
     );
 }

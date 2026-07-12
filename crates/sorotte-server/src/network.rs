@@ -413,25 +413,62 @@ pub(crate) async fn read_network_line_from_stream_with_buffer<S>(
 where
     S: AsyncRead + Unpin,
 {
-    let mut byte = [0_u8; 1];
+    const READ_CHUNK_BYTES: usize = 8 * 1024;
+    let mut newline_search_start = 0;
+
     loop {
-        let bytes_read = stream.read(&mut byte).await?;
+        if let Some(relative_newline_index) = bytes[newline_search_start..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+        {
+            let newline_index = newline_search_start + relative_newline_index;
+            let payload_bytes =
+                newline_index - usize::from(newline_index > 0 && bytes[newline_index - 1] == b'\r');
+            if payload_bytes > MAX_PROTOCOL_LINE_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    PROTOCOL_LINE_TOO_LONG_ERROR,
+                ));
+            }
+
+            let mut line_bytes = bytes.drain(..=newline_index).collect::<Vec<_>>();
+            line_bytes.pop();
+            if line_bytes.last() == Some(&b'\r') {
+                line_bytes.pop();
+            }
+            return String::from_utf8(line_bytes).map(Some).map_err(|source| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("inbound protocol line is not valid utf-8: {source}"),
+                )
+            });
+        }
+
+        let buffered_payload_bytes = bytes.len() - usize::from(bytes.last() == Some(&b'\r'));
+        if buffered_payload_bytes > MAX_PROTOCOL_LINE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                PROTOCOL_LINE_TOO_LONG_ERROR,
+            ));
+        }
+
+        // Allow one optional CR plus the LF framing beyond the payload limit.
+        // Any other byte in those slots is rejected on the next iteration, so
+        // a peer still cannot grow this buffer without bound.
+        newline_search_start = bytes.len();
+        let remaining_capacity = MAX_PROTOCOL_LINE_BYTES + 2 - bytes.len();
+        let mut chunk = [0_u8; READ_CHUNK_BYTES];
+        let bytes_read = stream
+            .read(&mut chunk[..remaining_capacity.min(READ_CHUNK_BYTES)])
+            .await?;
         if bytes_read == 0 {
             if bytes.is_empty() {
                 return Ok(None);
             }
             break;
         }
-        if byte[0] == b'\n' {
-            break;
-        }
-        bytes.push(byte[0]);
-        if bytes.len() > MAX_PROTOCOL_LINE_BYTES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                PROTOCOL_LINE_TOO_LONG_ERROR,
-            ));
-        }
+
+        bytes.extend_from_slice(&chunk[..bytes_read]);
     }
 
     if bytes.last() == Some(&b'\r') {
@@ -457,13 +494,75 @@ where
 }
 
 #[derive(Debug)]
+struct PrefixedTcpStream {
+    stream: TcpStream,
+    prefix: Vec<u8>,
+    prefix_offset: usize,
+}
+
+impl PrefixedTcpStream {
+    fn new(stream: TcpStream, prefix: Vec<u8>) -> Self {
+        Self {
+            stream,
+            prefix,
+            prefix_offset: 0,
+        }
+    }
+}
+
+impl AsyncRead for PrefixedTcpStream {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        let this = self.get_mut();
+        if this.prefix_offset < this.prefix.len() {
+            let end = (this.prefix_offset + buffer.remaining()).min(this.prefix.len());
+            buffer.put_slice(&this.prefix[this.prefix_offset..end]);
+            this.prefix_offset = end;
+            if this.prefix_offset == this.prefix.len() {
+                this.prefix.clear();
+                this.prefix_offset = 0;
+            }
+            return std::task::Poll::Ready(Ok(()));
+        }
+        std::pin::Pin::new(&mut this.stream).poll_read(context, buffer)
+    }
+}
+
+impl AsyncWrite for PrefixedTcpStream {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+        buffer: &[u8],
+    ) -> std::task::Poll<io::Result<usize>> {
+        std::pin::Pin::new(&mut self.get_mut().stream).poll_write(context, buffer)
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(&mut self.get_mut().stream).poll_flush(context)
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(&mut self.get_mut().stream).poll_shutdown(context)
+    }
+}
+
+#[derive(Debug)]
 enum ServerNetworkTransport {
     Plain {
         stream: TcpStream,
         read_buffer: Vec<u8>,
     },
     Tls {
-        stream: Box<TlsStream<TcpStream>>,
+        stream: Box<TlsStream<PrefixedTcpStream>>,
         read_buffer: Vec<u8>,
     },
     Closed,
@@ -535,10 +634,15 @@ impl ServerNetworkTransport {
                 stream,
                 read_buffer,
             } => {
-                let tls_stream = acceptor.accept(stream).await?;
+                // A chunked plaintext read may also receive the beginning of an
+                // optimistic TLS handshake. Replay those prefetched bytes into
+                // rustls so buffering does not change StartTLS behavior.
+                let tls_stream = acceptor
+                    .accept(PrefixedTcpStream::new(stream, read_buffer))
+                    .await?;
                 Ok(Self::Tls {
                     stream: Box::new(tls_stream),
-                    read_buffer,
+                    read_buffer: Vec::new(),
                 })
             }
             Self::Tls {

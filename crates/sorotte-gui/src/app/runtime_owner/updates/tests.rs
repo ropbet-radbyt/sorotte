@@ -67,6 +67,7 @@ struct FakeUpdateService {
     blocked_check_language: Option<String>,
     check_gate: Option<Arc<BlockGate>>,
     download_gate: Option<Arc<BlockGate>>,
+    launch_gate: Option<Arc<BlockGate>>,
 }
 
 impl GuiUpdateService for FakeUpdateService {
@@ -116,6 +117,9 @@ impl GuiUpdateService for FakeUpdateService {
     }
 
     fn launch_staged_update(&self, staged_update: &StagedUpdate) -> UpdateApplyLaunchResult {
+        if let Some(gate) = self.launch_gate.as_ref() {
+            gate.block();
+        }
         self.calls
             .lock()
             .expect("fake update calls should remain available")
@@ -181,6 +185,7 @@ fn fake_service(calls: Arc<Mutex<Vec<String>>>) -> FakeUpdateService {
         blocked_check_language: None,
         check_gate: None,
         download_gate: None,
+        launch_gate: None,
     }
 }
 
@@ -257,9 +262,12 @@ fn typed_update_commands_run_asynchronously_and_emit_ordered_actions() {
         pump_until_actions(&mut runtime, &handle).as_slice(),
         [
             GuiShellAction::ApplyUpdateDownloadResult(_),
-            GuiShellAction::BeginStagedUpdateApply,
-            GuiShellAction::ApplyStagedUpdateLaunchResult(_)
+            GuiShellAction::BeginStagedUpdateApply
         ]
+    ));
+    assert!(matches!(
+        pump_until_actions(&mut runtime, &handle).as_slice(),
+        [GuiShellAction::ApplyStagedUpdateLaunchResult(_)]
     ));
 
     runtime.handle_command(&handle, Command::ApplyStaged(staged_update()));
@@ -768,10 +776,130 @@ fn duplicate_download_and_install_is_rejected_while_first_job_is_active() {
         pump_until_actions(&mut runtime, &handle).as_slice(),
         [
             GuiShellAction::ApplyUpdateDownloadResult(_),
-            GuiShellAction::BeginStagedUpdateApply,
-            GuiShellAction::ApplyStagedUpdateLaunchResult(_)
+            GuiShellAction::BeginStagedUpdateApply
         ]
     ));
+    assert!(matches!(
+        pump_until_actions(&mut runtime, &handle).as_slice(),
+        [GuiShellAction::ApplyStagedUpdateLaunchResult(_)]
+    ));
+}
+
+#[test]
+fn cancelled_download_and_install_never_launches_staged_update() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let gate = Arc::new(BlockGate::default());
+    let mut service = fake_service(calls.clone());
+    service.download_gate = Some(gate.clone());
+    let mut runtime = runtime_with_service(service);
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    runtime.reconcile(&update_view(false, "en", Some("stable")));
+
+    runtime.handle_command(&handle, Command::DownloadAndInstall(candidate()));
+    gate.wait_until_entered();
+
+    runtime.reconcile(&update_view(false, "en", Some("dev")));
+    runtime.pump_background_check(&handle);
+    assert!(matches!(
+        handle.drain_actions().as_slice(),
+        [GuiShellAction::ApplyUpdateDownloadResult(result)]
+            if result.state == UpdateDownloadState::Failed
+                && result.message.contains("settings changed")
+    ));
+
+    runtime.handle_command(&handle, Command::DownloadAndInstall(candidate()));
+    assert!(matches!(
+        handle.drain_actions().as_slice(),
+        [GuiShellAction::AnnounceSystemChatEvent(message)]
+            if message.contains("another update operation is in progress")
+    ));
+    assert_eq!(
+        calls
+            .lock()
+            .expect("fake update calls should remain available")
+            .iter()
+            .filter(|call| call.starts_with("download:"))
+            .count(),
+        1,
+        "a replacement must not enter the shared staging directory while cancellation drains"
+    );
+    assert!(matches!(
+        runtime.active_job.as_ref(),
+        Some(active)
+            if active.kind == UpdateJobKind::DownloadAndInstall
+                && active.cancelled_by_config
+    ));
+
+    gate.release();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while runtime.active_job.is_some() {
+        assert!(
+            Instant::now() < deadline,
+            "cancelled download worker should finish after its gate is released"
+        );
+        runtime.pump_background_check(&handle);
+        std::thread::yield_now();
+    }
+
+    assert!(handle.drain_actions().is_empty());
+    runtime.handle_command(&handle, Command::Download(candidate()));
+    assert!(matches!(
+        pump_until_actions(&mut runtime, &handle).as_slice(),
+        [GuiShellAction::ApplyUpdateDownloadResult(result)]
+            if result.state == UpdateDownloadState::Staged
+    ));
+    assert_eq!(
+        calls
+            .lock()
+            .expect("fake update calls should remain available")
+            .iter()
+            .filter(|call| call.starts_with("download:"))
+            .count(),
+        2,
+        "the replacement may start only after the cancelled staging worker exits"
+    );
+    assert!(
+        calls
+            .lock()
+            .expect("fake update calls should remain available")
+            .iter()
+            .all(|call| !call.starts_with("launch:")),
+        "a staged result from the cancelled generation must not launch the helper"
+    );
+}
+
+#[test]
+fn apply_staged_remains_owned_across_update_configuration_changes() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let gate = Arc::new(BlockGate::default());
+    let mut service = fake_service(calls.clone());
+    service.launch_gate = Some(gate.clone());
+    let mut runtime = runtime_with_service(service);
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    runtime.reconcile(&update_view(false, "en", Some("stable")));
+
+    runtime.handle_command(&handle, Command::ApplyStaged(staged_update()));
+    gate.wait_until_entered();
+
+    runtime.reconcile(&update_view(false, "fr", Some("dev")));
+    runtime.pump_background_check(&handle);
+    assert!(handle.drain_actions().is_empty());
+    assert!(matches!(
+        runtime.active_job.as_ref(),
+        Some(active) if active.kind == UpdateJobKind::ApplyStaged
+    ));
+
+    gate.release();
+    assert!(matches!(
+        pump_until_actions(&mut runtime, &handle).as_slice(),
+        [GuiShellAction::ApplyStagedUpdateLaunchResult(result)] if result.success
+    ));
+    assert_eq!(
+        *calls
+            .lock()
+            .expect("fake update calls should remain available"),
+        vec!["launch:9.8.7".to_owned()]
+    );
 }
 
 #[test]

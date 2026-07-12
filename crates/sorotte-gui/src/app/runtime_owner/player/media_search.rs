@@ -6,8 +6,8 @@ use super::media_resolution::{
     GuiMediaResolutionCandidate, GuiMediaResolutionPlan, GuiMediaResolutionTarget,
 };
 use sorotte_plex::{
-    PlexClientConfig, cache::PlexMatchCache, http::PlexHttpClient, is_plex_playlist_uri,
-    library::PlexStreamTarget, parse_plex_playlist_uri, redact_plex_token,
+    PlexClientConfig, PlexMatchCacheStagedWrite, cache::PlexMatchCache, http::PlexHttpClient,
+    is_plex_playlist_uri, library::PlexStreamTarget, parse_plex_playlist_uri, redact_plex_token,
     resolver::PlexMediaResolver,
 };
 
@@ -480,34 +480,52 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         config: PlexClientConfig,
         cache: PlexMatchCache,
+        staged_cache_write: Option<Result<PlexMatchCacheStagedWrite, String>>,
     ) -> Result<(), String> {
+        debug_assert!(
+            self.plex_sync_rx.is_none(),
+            "stream cache results must not apply while watch sync owns the Plex engine"
+        );
         let mut engine = self.take_plex_sync_engine(config)?;
-        let cache_changed = engine.cache() != &cache;
-        *engine.cache_mut() = cache.clone();
+        *engine.cache_mut() = cache;
         self.plex_sync_engine = Some(engine);
-        if cache_changed
-            && let Some(cache_path) = self.plex_cache_path()
-            && let Err(error) = cache.save_to_path(&cache_path)
-        {
-            eprintln!("warning: failed to save Plex match cache after stream resolution: {error}");
+        let cache_save_error = staged_cache_write.and_then(|staged| match staged {
+            Ok(staged) => staged
+                .commit()
+                .err()
+                .map(|error| format!("Failed to commit Plex match cache: {error}")),
+            Err(error) => Some(error),
+        });
+        if let Some(error) = cache_save_error {
+            eprintln!("warning: {error}");
         }
         Ok(())
     }
 
-    pub(in crate::app::runtime_owner) fn pump_plex_stream_resolution_worker(&mut self) -> bool {
+    pub(in crate::app::runtime_owner) fn pump_plex_stream_resolution_worker(
+        &mut self,
+        state: &SorotteGuiShellAppState,
+    ) -> bool {
         let Some(rx) = self.plex_stream_resolve_rx.take() else {
             return false;
         };
+        let current_context =
+            self.plex_operation_context(&state.configuration.to_stored_settings());
         match rx.try_recv() {
             Ok(result) => {
                 if self.plex_stream_resolve_trigger_key.as_deref()
                     == Some(result.trigger_key.as_str())
+                    && result.operation_context == current_context
+                    && self.plex_stream_resolve_context.as_ref() == Some(&current_context)
                 {
                     self.plex_stream_resolve_trigger_key = None;
+                    self.plex_stream_resolve_context = None;
                     self.plex_stream_resolve_result = Some(result);
                     self.last_attached_media_resolution_trigger = None;
                     return true;
                 }
+                self.plex_stream_resolve_trigger_key = None;
+                self.plex_stream_resolve_context = None;
                 false
             }
             Err(TryRecvError::Empty) => {
@@ -515,14 +533,20 @@ impl GuiPersistedConfigRuntimeOwner {
                 false
             }
             Err(TryRecvError::Disconnected) => {
-                if let Some(trigger_key) = self.plex_stream_resolve_trigger_key.take() {
+                let operation_context = self.plex_stream_resolve_context.take();
+                if let (Some(trigger_key), Some(operation_context)) = (
+                    self.plex_stream_resolve_trigger_key.take(),
+                    operation_context,
+                ) && operation_context == current_context
+                {
                     self.plex_stream_resolve_result = Some(GuiPlexStreamResolveWorkerResult {
+                        operation_context,
                         trigger_key,
-                        target: String::new(),
                         result: Err(
                             "Plex stream resolution worker stopped before returning a result."
                                 .to_owned(),
                         ),
+                        staged_cache_write: None,
                     });
                     self.last_attached_media_resolution_trigger = None;
                     return true;
@@ -535,7 +559,36 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn clear_plex_stream_resolution_state(&mut self) {
         self.plex_stream_resolve_rx = None;
         self.plex_stream_resolve_trigger_key = None;
+        self.plex_stream_resolve_context = None;
         self.plex_stream_resolve_result = None;
+    }
+
+    pub(in crate::app::runtime_owner) fn discard_unconsumed_plex_stream_resolution_result(
+        &mut self,
+    ) {
+        self.plex_stream_resolve_result = None;
+    }
+
+    pub(in crate::app::runtime_owner) fn plex_stream_resolution_owns_cache_snapshot(&self) -> bool {
+        self.plex_stream_resolve_rx.is_some()
+            || self.plex_stream_resolve_trigger_key.is_some()
+            || self.plex_stream_resolve_context.is_some()
+            || self.plex_stream_resolve_result.is_some()
+    }
+
+    pub(in crate::app::runtime_owner) fn take_plex_stream_resolution_waiting_for_sync(
+        &mut self,
+    ) -> bool {
+        if self.plex_stream_resolve_rx.is_some() || self.plex_stream_resolve_result.is_some() {
+            return false;
+        }
+        let waiting = self.plex_stream_resolve_trigger_key.is_some()
+            || self.plex_stream_resolve_context.is_some();
+        if waiting {
+            self.plex_stream_resolve_trigger_key = None;
+            self.plex_stream_resolve_context = None;
+        }
+        waiting
     }
 
     fn cached_or_queue_plex_stream_target_for_media_target(
@@ -547,12 +600,23 @@ impl GuiPersistedConfigRuntimeOwner {
             self.clear_plex_stream_resolution_state();
             return Ok(GuiPlexStreamResolutionState::Disabled);
         };
+        let operation_context =
+            self.plex_operation_context(&state.configuration.to_stored_settings());
         let trigger_key = Self::plex_stream_resolution_trigger_key(&config, target);
+
+        if self.plex_stream_resolve_context.as_ref() != Some(&operation_context)
+            && (self.plex_stream_resolve_rx.is_some()
+                || self.plex_stream_resolve_trigger_key.is_some())
+        {
+            self.clear_plex_stream_resolution_state();
+        }
 
         if self
             .plex_stream_resolve_result
             .as_ref()
-            .is_some_and(|result| result.trigger_key != trigger_key)
+            .is_some_and(|result| {
+                result.trigger_key != trigger_key || result.operation_context != operation_context
+            })
         {
             self.plex_stream_resolve_result = None;
         }
@@ -566,8 +630,13 @@ impl GuiPersistedConfigRuntimeOwner {
                 .plex_stream_resolve_result
                 .take()
                 .expect("checked plex stream resolve result should exist");
-            let outcome = result.result?;
-            self.apply_plex_stream_resolution_cache(config, outcome.cache)?;
+            let GuiPlexStreamResolveWorkerResult {
+                result,
+                staged_cache_write,
+                ..
+            } = result;
+            let outcome = result?;
+            self.apply_plex_stream_resolution_cache(config, outcome.cache, staged_cache_write)?;
             return Ok(GuiPlexStreamResolutionState::Ready(
                 outcome.stream_target.map(Box::new),
             ));
@@ -577,12 +646,21 @@ impl GuiPersistedConfigRuntimeOwner {
             return Ok(GuiPlexStreamResolutionState::Pending);
         }
 
+        if self.plex_sync_rx.is_some() {
+            self.plex_stream_resolve_trigger_key = Some(trigger_key);
+            self.plex_stream_resolve_context = Some(operation_context);
+            return Ok(GuiPlexStreamResolutionState::Pending);
+        }
+
         let engine = self.take_plex_sync_engine(config.clone())?;
         let cache = engine.cache().clone();
         self.plex_sync_engine = Some(engine);
         let client = self.ensure_plex_client()?.clone();
+        let cache_before = cache.clone();
+        let cache_path = self.plex_cache_path();
         let worker_target = target.to_owned();
         let worker_trigger_key = trigger_key.clone();
+        let worker_operation_context = operation_context.clone();
         let (tx, rx) = mpsc::channel();
         std::thread::Builder::new()
             .name("sorotte-gui-plex-stream-resolve".to_owned())
@@ -597,15 +675,29 @@ impl GuiPersistedConfigRuntimeOwner {
                     stream_target,
                     cache,
                 });
+                let staged_cache_write = result.as_ref().ok().and_then(|outcome| {
+                    if outcome.cache == cache_before {
+                        return None;
+                    }
+                    cache_path.map(|path| {
+                        outcome.cache.stage_to_path(&path).map_err(|error| {
+                            format!(
+                                "Failed to stage Plex match cache after stream resolution: {error}"
+                            )
+                        })
+                    })
+                });
                 let _ = tx.send(GuiPlexStreamResolveWorkerResult {
+                    operation_context: worker_operation_context,
                     trigger_key: worker_trigger_key,
-                    target: worker_target,
                     result,
+                    staged_cache_write,
                 });
             })
             .map_err(|error| format!("Failed to start Plex stream resolution worker: {error}"))?;
         self.plex_stream_resolve_rx = Some(rx);
         self.plex_stream_resolve_trigger_key = Some(trigger_key);
+        self.plex_stream_resolve_context = Some(operation_context);
         Ok(GuiPlexStreamResolutionState::Pending)
     }
 
@@ -1584,5 +1676,225 @@ impl GuiPersistedConfigRuntimeOwner {
             return SelectedPlaylistMediaSyncOutcome::OpenedNewMedia;
         }
         SelectedPlaylistMediaSyncOutcome::NoChange
+    }
+}
+
+#[cfg(test)]
+mod plex_cache_coordination_tests {
+    use std::{collections::BTreeMap, sync::mpsc};
+
+    use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
+    use sorotte_plex::{PlexCachedMatch, PlexMediaType, PlexSyncStatus};
+
+    use super::*;
+    use crate::app::runtime_owner::GuiPlexSyncWorkerResult;
+
+    fn streaming_settings() -> StoredClientSettingsMvp {
+        StoredClientSettingsMvp {
+            plex_plugin_enabled: Some(true),
+            plex_streaming_enabled: Some(true),
+            plex_sync_enabled: Some(true),
+            plex_user_token: Some("user-token".into()),
+            plex_selected_server_id: Some("machine".to_owned()),
+            plex_selected_server_url: Some("https://plex.example:32400".to_owned()),
+            plex_selected_server_token: Some("server-token".into()),
+            ..StoredClientSettingsMvp::default()
+        }
+    }
+
+    fn cache_with_rating_key(rating_key: &str) -> PlexMatchCache {
+        PlexMatchCache {
+            entries: BTreeMap::from([(
+                "server:id:machine:path:movie.mkv".to_owned(),
+                PlexCachedMatch {
+                    rating_key: rating_key.to_owned(),
+                    title: format!("Movie {rating_key}"),
+                    media_type: PlexMediaType::Movie,
+                    duration_millis: Some(90_000),
+                },
+            )]),
+        }
+    }
+
+    #[test]
+    fn sync_and_stream_resolution_handoff_the_engine_without_competing_workers() {
+        let settings = streaming_settings();
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&settings);
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        let handle = GuiQueuedRuntimeBridgeHandle::default();
+        let config = super::super::super::plex::plex_config_from_settings(&settings);
+        let sync_engine = owner
+            .take_plex_sync_engine(config)
+            .expect("test sync engine should be created");
+        let operation_context = owner.plex_operation_context(&settings);
+        let (sync_tx, sync_rx) = mpsc::channel::<GuiPlexSyncWorkerResult>();
+        owner.plex_sync_rx = Some(sync_rx);
+
+        let resolution = owner
+            .cached_or_queue_plex_stream_target_for_media_target(&state, "plex://")
+            .expect("Plex stream resolution should defer without failing");
+
+        assert!(matches!(resolution, GuiPlexStreamResolutionState::Pending));
+        assert!(owner.plex_stream_resolve_rx.is_none());
+        assert!(owner.plex_sync_engine.is_none());
+        assert!(owner.plex_stream_resolution_owns_cache_snapshot());
+
+        sync_tx
+            .send(GuiPlexSyncWorkerResult {
+                operation_context,
+                engine: sync_engine,
+                status: PlexSyncStatus::ready(),
+                staged_cache_write: None,
+            })
+            .expect("watch-sync completion should queue");
+        assert!(owner.sync_plex_watch_state(&handle, &mut state));
+        assert!(owner.plex_sync_rx.is_none());
+        assert!(owner.plex_sync_engine.is_some());
+        assert!(owner.take_plex_stream_resolution_waiting_for_sync());
+        assert!(!owner.plex_stream_resolution_owns_cache_snapshot());
+
+        let retry = owner
+            .cached_or_queue_plex_stream_target_for_media_target(&state, "plex://")
+            .expect("deferred stream resolution should retry after sync completion");
+        assert!(matches!(retry, GuiPlexStreamResolutionState::Pending));
+        assert!(owner.plex_stream_resolve_rx.is_some());
+        assert!(owner.plex_sync_engine.is_some());
+        assert!(owner.plex_sync_rx.is_none());
+
+        owner.plex_sync_next_tick_due_at = None;
+        assert!(!owner.sync_plex_watch_state(&handle, &mut state));
+        assert!(
+            owner.plex_sync_rx.is_none(),
+            "watch sync must stay suspended until the stream snapshot applies"
+        );
+    }
+
+    #[test]
+    fn accepted_stream_result_commits_its_prepared_cache_only_when_consumed() {
+        let sequence = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "sorotte-gui-plex-stream-stage-{}-{sequence}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let settings = streaming_settings();
+        let state = SorotteGuiShellAppState::from_stored_settings(&settings);
+        let mut owner =
+            GuiPersistedConfigRuntimeOwner::with_config_path(Some(root.join("sorotte.ini")));
+        let cache_path = owner
+            .plex_cache_path()
+            .expect("configured owner should provide a Plex cache path");
+        let original = cache_with_rating_key("original");
+        let replacement = cache_with_rating_key("replacement");
+        original
+            .save_to_path(&cache_path)
+            .expect("original cache should persist");
+        let staged_cache_write = replacement
+            .stage_to_path(&cache_path)
+            .expect("replacement cache should stage off the owner thread");
+
+        let config = super::super::super::plex::plex_config_from_settings(&settings);
+        let target = "plex://machine/library/metadata/movie";
+        let trigger_key =
+            GuiPersistedConfigRuntimeOwner::plex_stream_resolution_trigger_key(&config, target);
+        let operation_context = owner.plex_operation_context(&settings);
+        let (result_tx, result_rx) = mpsc::channel();
+        result_tx
+            .send(GuiPlexStreamResolveWorkerResult {
+                operation_context: operation_context.clone(),
+                trigger_key: trigger_key.clone(),
+                result: Ok(GuiPlexStreamResolveOutcome {
+                    stream_target: None,
+                    cache: replacement.clone(),
+                }),
+                staged_cache_write: Some(Ok(staged_cache_write)),
+            })
+            .expect("prepared stream result should queue");
+        owner.plex_stream_resolve_rx = Some(result_rx);
+        owner.plex_stream_resolve_trigger_key = Some(trigger_key);
+        owner.plex_stream_resolve_context = Some(operation_context);
+
+        assert!(owner.pump_plex_stream_resolution_worker(&state));
+        assert_eq!(
+            PlexMatchCache::load_from_path(&cache_path)
+                .expect("original cache should remain readable before consumption"),
+            original,
+            "receiving the worker result must not replace the accepted cache yet"
+        );
+
+        let resolution = owner
+            .cached_or_queue_plex_stream_target_for_media_target(&state, target)
+            .expect("current-context stream result should apply");
+        assert!(matches!(
+            resolution,
+            GuiPlexStreamResolutionState::Ready(None)
+        ));
+        assert_eq!(
+            PlexMatchCache::load_from_path(&cache_path)
+                .expect("accepted replacement cache should remain readable"),
+            replacement
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unconsumed_stream_result_releases_its_cache_snapshot_and_staged_temp() {
+        let sequence = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "sorotte-gui-plex-stream-orphan-{}-{sequence}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let cache_path = root.join("plex-match-cache.json");
+        let original = cache_with_rating_key("original");
+        let replacement = cache_with_rating_key("orphan");
+        original
+            .save_to_path(&cache_path)
+            .expect("original cache should persist");
+        let staged_cache_write = replacement
+            .stage_to_path(&cache_path)
+            .expect("orphan cache should stage off the owner thread");
+        let settings = streaming_settings();
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        owner.plex_stream_resolve_result = Some(GuiPlexStreamResolveWorkerResult {
+            operation_context: owner.plex_operation_context(&settings),
+            trigger_key: "orphan-trigger".to_owned(),
+            result: Ok(GuiPlexStreamResolveOutcome {
+                stream_target: None,
+                cache: replacement,
+            }),
+            staged_cache_write: Some(Ok(staged_cache_write)),
+        });
+        assert!(owner.plex_stream_resolution_owns_cache_snapshot());
+        assert!(
+            std::fs::read_dir(&root)
+                .expect("cache directory should remain readable")
+                .count()
+                > 1,
+            "the prepared replacement should exist until the retry window closes"
+        );
+
+        owner.discard_unconsumed_plex_stream_resolution_result();
+
+        assert!(!owner.plex_stream_resolution_owns_cache_snapshot());
+        assert_eq!(
+            PlexMatchCache::load_from_path(&cache_path)
+                .expect("unconsumed result must preserve the accepted cache"),
+            original
+        );
+        assert_eq!(
+            std::fs::read_dir(&root)
+                .expect("cache directory should remain readable")
+                .count(),
+            1,
+            "dropping the unconsumed staged write should remove its temporary file"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 }

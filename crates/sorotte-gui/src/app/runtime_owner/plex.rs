@@ -1,4 +1,5 @@
 use std::{
+    hash::BuildHasher,
     process::Command,
     time::{Duration, Instant, SystemTime},
 };
@@ -13,6 +14,37 @@ const PLEX_WATCH_SYNC_PUMP_INTERVAL: Duration = Duration::from_secs(1);
 const PLEX_WATCH_CACHE_FILE_NAME: &str = "plex-watch-cache.json";
 
 impl GuiPlexServerDiscoveryCoordinator {
+    fn operation_context(&self, settings: &StoredClientSettingsMvp) -> GuiPlexOperationContext {
+        let resolved = ClientConfig::resolve(settings).config;
+        let plugin_enabled = resolved.plugins.plex_enabled;
+        let config = resolved.plex;
+        GuiPlexOperationContext {
+            identity_generation: self.identity_generation,
+            user_token_fingerprint: config
+                .user_token
+                .as_ref()
+                .map(|token| self.token_fingerprint(token)),
+            selected_server_token_fingerprint: config
+                .selected_server_token
+                .as_ref()
+                .map(|token| self.token_fingerprint(token)),
+            selected_server_id: config.selected_server_id,
+            selected_server_url: config.selected_server_url,
+            plugin_enabled,
+            sync_enabled: config.sync_enabled,
+            streaming_enabled: config.streaming_enabled,
+        }
+    }
+
+    fn token_fingerprint(&self, token: &sorotte_secret::SecretValue) -> u64 {
+        self.token_fingerprint_state.hash_one(token)
+    }
+
+    fn invalidate_operation_context(&mut self) {
+        self.identity_generation = self.identity_generation.wrapping_add(1).max(1);
+        self.invalidate();
+    }
+
     fn begin_generation(&mut self) -> u64 {
         self.generation = self.generation.wrapping_add(1).max(1);
         self.active = None;
@@ -22,14 +54,14 @@ impl GuiPlexServerDiscoveryCoordinator {
     fn install(
         &mut self,
         generation: u64,
-        token: sorotte_secret::SecretValue,
+        operation_context: GuiPlexOperationContext,
         context: GuiPlexServerRefreshContext,
         receiver: mpsc::Receiver<GuiPlexServerDiscoveryWorkerResult>,
     ) {
         if generation == self.generation {
             self.active = Some(GuiPlexServerDiscoveryJob {
                 generation,
-                token,
+                operation_context,
                 context,
                 receiver,
             });
@@ -50,13 +82,13 @@ impl GuiPlexServerDiscoveryCoordinator {
         &self,
         job: &GuiPlexServerDiscoveryJob,
         result: &GuiPlexServerDiscoveryWorkerResult,
-        current_token: Option<&sorotte_secret::SecretValue>,
+        current_operation_context: &GuiPlexOperationContext,
     ) -> bool {
         job.generation == self.generation
             && result.generation == job.generation
-            && result.token == job.token
+            && result.operation_context == job.operation_context
+            && &result.operation_context == current_operation_context
             && result.context == job.context
-            && current_token == Some(&result.token)
     }
 
     pub(super) fn invalidate(&mut self) {
@@ -69,7 +101,7 @@ impl std::fmt::Debug for GuiPlexServerDiscoveryWorkerResult {
         formatter
             .debug_struct("GuiPlexServerDiscoveryWorkerResult")
             .field("generation", &self.generation)
-            .field("token", &self.token)
+            .field("operation_context", &self.operation_context)
             .field("context", &self.context)
             .field("succeeded", &self.result.is_ok())
             .finish()
@@ -77,6 +109,53 @@ impl std::fmt::Debug for GuiPlexServerDiscoveryWorkerResult {
 }
 
 impl GuiPersistedConfigRuntimeOwner {
+    pub(super) fn plex_operation_context(
+        &self,
+        settings: &StoredClientSettingsMvp,
+    ) -> GuiPlexOperationContext {
+        self.plex_server_discovery.operation_context(settings)
+    }
+
+    pub(super) fn invalidate_plex_operation_context(&mut self) {
+        self.plex_server_discovery.invalidate_operation_context();
+        self.plex_sync_engine = None;
+        self.plex_sync_rx = None;
+        self.plex_sync_next_tick_due_at = None;
+        self.plex_playlist_search_rx = None;
+        self.plex_playlist_resolve_rx = None;
+        self.clear_plex_stream_resolution_state();
+    }
+
+    pub(super) fn invalidate_plex_operation_context_if_settings_changed(
+        &mut self,
+        previous: &StoredClientSettingsMvp,
+        next: &StoredClientSettingsMvp,
+    ) {
+        if self.plex_operation_context(previous) != self.plex_operation_context(next) {
+            self.invalidate_plex_operation_context();
+        }
+    }
+
+    fn apply_authenticated_plex_account(
+        &mut self,
+        settings: &mut StoredClientSettingsMvp,
+        token: sorotte_secret::SecretValue,
+    ) {
+        let account_changed = settings.plex_user_token.as_ref() != Some(&token);
+        settings.plex_user_token = Some(token);
+        settings.plex_sync_enabled.get_or_insert(false);
+        if account_changed {
+            // A selected server token is scoped to the account that supplied
+            // it. Keep server-scoped work suspended until login discovery has
+            // selected a server visible to the newly authenticated account.
+            settings.plex_selected_server_id = None;
+            settings.plex_selected_server_url = None;
+            settings.plex_selected_server_token = None;
+            self.plex_servers.clear();
+            self.plex_server_reachability.clear();
+        }
+    }
+
     pub(super) fn handle_start_plex_auth_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
@@ -273,14 +352,12 @@ impl GuiPersistedConfigRuntimeOwner {
         match job.receiver.try_recv() {
             Ok(worker_result) => {
                 let mut settings = projected_state.configuration.to_stored_settings();
-                let current_token = settings
-                    .plex_user_token
-                    .as_ref()
-                    .filter(|token| !token.is_blank());
-                if !self
-                    .plex_server_discovery
-                    .accepts(&job, &worker_result, current_token)
-                {
+                let current_operation_context = self.plex_operation_context(&settings);
+                if !self.plex_server_discovery.accepts(
+                    &job,
+                    &worker_result,
+                    &current_operation_context,
+                ) {
                     return;
                 }
                 match worker_result.result {
@@ -294,6 +371,7 @@ impl GuiPersistedConfigRuntimeOwner {
                         );
                         let has_selected_server = settings.plex_selected_server_url.is_some();
                         if selection_changed {
+                            self.invalidate_plex_operation_context();
                             self.persist_plex_settings_and_project(
                                 handle,
                                 projected_state,
@@ -360,13 +438,9 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.plex_server_discovery.restore_if_current(job);
             }
             Err(mpsc::TryRecvError::Disconnected) => {
+                let current_settings = projected_state.configuration.to_stored_settings();
                 if job.generation == self.plex_server_discovery.generation
-                    && projected_state
-                        .configuration
-                        .to_stored_settings()
-                        .plex_user_token
-                        .as_ref()
-                        == Some(&job.token)
+                    && job.operation_context == self.plex_operation_context(&current_settings)
                 {
                     let message = match job.context {
                         GuiPlexServerRefreshContext::Startup => {
@@ -500,8 +574,9 @@ impl GuiPersistedConfigRuntimeOwner {
         self.plex_auth_session = None;
         self.plex_auth_poll_due_at = None;
         let mut settings = projected_state.configuration.to_stored_settings();
-        settings.plex_user_token = Some(token);
-        settings.plex_sync_enabled.get_or_insert(false);
+        let previous_settings = settings.clone();
+        self.apply_authenticated_plex_account(&mut settings, token);
+        self.invalidate_plex_operation_context_if_settings_changed(&previous_settings, &settings);
         let refresh_start_error = self
             .start_plex_server_refresh_worker(&settings, GuiPlexServerRefreshContext::Login)
             .err();
@@ -591,13 +666,9 @@ impl GuiPersistedConfigRuntimeOwner {
             return true;
         };
         let mut settings = projected_state.configuration.to_stored_settings();
+        let previous_settings = settings.clone();
         apply_plex_server_to_settings(&mut settings, &server);
-        self.plex_sync_engine = None;
-        self.plex_sync_rx = None;
-        self.plex_sync_next_tick_due_at = None;
-        self.plex_playlist_search_rx = None;
-        self.plex_playlist_resolve_rx = None;
-        self.clear_plex_stream_resolution_state();
+        self.invalidate_plex_operation_context_if_settings_changed(&previous_settings, &settings);
         self.persist_plex_settings_and_project(handle, projected_state, settings);
         self.sync_plex_runtime_snapshot(handle, projected_state, None);
         true
@@ -621,6 +692,9 @@ impl GuiPersistedConfigRuntimeOwner {
             return true;
         }
         let mut settings = projected_state.configuration.to_stored_settings();
+        if settings.plex_sync_enabled != Some(enabled) {
+            self.invalidate_plex_operation_context();
+        }
         settings.plex_sync_enabled = Some(enabled);
         self.persist_plex_settings_and_project(handle, projected_state, settings);
         self.sync_plex_runtime_snapshot(handle, projected_state, None);
@@ -645,7 +719,9 @@ impl GuiPersistedConfigRuntimeOwner {
             return true;
         }
         let mut settings = projected_state.configuration.to_stored_settings();
+        let previous_settings = settings.clone();
         settings.plex_streaming_enabled = Some(enabled);
+        self.invalidate_plex_operation_context_if_settings_changed(&previous_settings, &settings);
         self.persist_plex_settings_and_project(handle, projected_state, settings);
         self.sync_plex_runtime_snapshot(handle, projected_state, None);
         true
@@ -662,12 +738,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.plex_auth_poll_due_at = None;
         self.plex_servers.clear();
         self.plex_server_reachability.clear();
-        self.plex_server_discovery.invalidate();
-        self.plex_sync_engine = None;
-        self.plex_sync_rx = None;
-        self.plex_sync_next_tick_due_at = None;
-        self.plex_playlist_search_rx = None;
-        self.plex_playlist_resolve_rx = None;
+        self.invalidate_plex_operation_context();
         let mut settings = projected_state.configuration.to_stored_settings();
         settings.plex_sync_enabled = Some(false);
         settings.plex_streaming_enabled = Some(false);
@@ -716,7 +787,9 @@ impl GuiPersistedConfigRuntimeOwner {
                 return true;
             }
         };
-        let config = plex_config_from_settings(&projected_state.configuration.to_stored_settings());
+        let settings = projected_state.configuration.to_stored_settings();
+        let operation_context = self.plex_operation_context(&settings);
+        let config = plex_config_from_settings(&settings);
         let worker_query = query.clone();
         let (tx, rx) = mpsc::channel();
         match std::thread::Builder::new()
@@ -732,6 +805,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     })
                     .map_err(|error| error.to_string());
                 let _ = tx.send(GuiPlexPlaylistSearchWorkerResult {
+                    operation_context,
                     query: worker_query,
                     result,
                 });
@@ -781,7 +855,9 @@ impl GuiPersistedConfigRuntimeOwner {
                 return true;
             }
         };
-        let config = plex_config_from_settings(&projected_state.configuration.to_stored_settings());
+        let settings = projected_state.configuration.to_stored_settings();
+        let operation_context = self.plex_operation_context(&settings);
+        let config = plex_config_from_settings(&settings);
         let worker_rating_key = rating_key.clone();
         let (tx, rx) = mpsc::channel();
         match std::thread::Builder::new()
@@ -792,6 +868,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     .map(|uri| format_plex_playlist_uri(&uri))
                     .map_err(|error| error.to_string());
                 let _ = tx.send(GuiPlexPlaylistResolveWorkerResult {
+                    operation_context,
                     rating_key: worker_rating_key,
                     result,
                 });
@@ -813,20 +890,25 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
-    ) {
+    ) -> bool {
         if !projected_state
             .plugin_enablement
             .enabled_for(GuiPluginSelection::Plex)
         {
             self.plex_sync_rx = None;
             self.plex_sync_next_tick_due_at = None;
-            return;
+            return false;
         }
-        self.drain_plex_sync_worker(handle, projected_state);
+        if self.drain_plex_sync_worker(handle, projected_state) {
+            // Give a stream resolution that was waiting on this engine a chance
+            // to start before the periodic sync loop takes ownership again.
+            return true;
+        }
         if self.plex_sync_rx.is_some() {
-            return;
+            return false;
         }
         let settings = projected_state.configuration.to_stored_settings();
+        let operation_context = self.plex_operation_context(&settings);
         let config = plex_config_from_settings(&settings);
         if !config.enabled || !config.has_selected_server() {
             self.plex_sync_next_tick_due_at = None;
@@ -834,13 +916,16 @@ impl GuiPersistedConfigRuntimeOwner {
                 engine.set_config(config);
             }
             self.sync_plex_runtime_snapshot(handle, projected_state, None);
-            return;
+            return false;
         }
         let now = Instant::now();
         if let Some(due_at) = self.plex_sync_next_tick_due_at
             && now < due_at
         {
-            return;
+            return false;
+        }
+        if self.plex_stream_resolution_owns_cache_snapshot() {
+            return false;
         }
 
         let event = self.player_local_file.clone().map(|file| {
@@ -858,7 +943,7 @@ impl GuiPersistedConfigRuntimeOwner {
             Ok(engine) => engine,
             Err(message) => {
                 self.apply_plex_error(handle, projected_state, message);
-                return;
+                return false;
             }
         };
         let (tx, rx) = mpsc::channel();
@@ -868,21 +953,21 @@ impl GuiPersistedConfigRuntimeOwner {
                 let mut engine = engine;
                 let before = engine.cache().clone();
                 let status = engine.tick(event, SystemTime::now());
-                let cache_save_error = if engine.cache() != &before {
-                    cache_path.and_then(|path| {
+                let staged_cache_write = if engine.cache() != &before {
+                    cache_path.map(|path| {
                         engine
                             .cache()
-                            .save_to_path(&path)
-                            .err()
-                            .map(|error| format!("Failed to save Plex match cache: {error}"))
+                            .stage_to_path(&path)
+                            .map_err(|error| format!("Failed to stage Plex match cache: {error}"))
                     })
                 } else {
                     None
                 };
                 let _ = tx.send(GuiPlexSyncWorkerResult {
+                    operation_context,
+                    staged_cache_write,
                     engine,
                     status,
-                    cache_save_error,
                 });
             }) {
             Ok(_thread) => {
@@ -897,6 +982,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 );
             }
         }
+        false
     }
 
     pub(super) fn pump_plex_playlist_workers(
@@ -949,27 +1035,45 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
-    ) {
+    ) -> bool {
         let Some(rx) = self.plex_sync_rx.take() else {
-            return;
+            return false;
         };
         match rx.try_recv() {
-            Ok(result) => {
+            Ok(result)
+                if result.operation_context
+                    == self.plex_operation_context(
+                        &projected_state.configuration.to_stored_settings(),
+                    ) =>
+            {
+                let cache_save_error = result.staged_cache_write.and_then(|staged| match staged {
+                    Ok(staged) => staged
+                        .commit()
+                        .err()
+                        .map(|error| format!("Failed to commit Plex match cache: {error}")),
+                    Err(error) => Some(error),
+                });
                 self.plex_sync_engine = Some(result.engine);
-                if let Some(error) = result.cache_save_error {
+                if let Some(error) = cache_save_error {
                     self.apply_plex_error(handle, projected_state, error);
                 } else {
                     self.sync_plex_runtime_snapshot(handle, projected_state, Some(result.status));
                 }
+                true
             }
+            Ok(_stale_result) => true,
             Err(mpsc::TryRecvError::Empty) => {
                 self.plex_sync_rx = Some(rx);
+                false
             }
-            Err(mpsc::TryRecvError::Disconnected) => self.apply_plex_error(
-                handle,
-                projected_state,
-                "Plex sync worker stopped before returning a result.".to_owned(),
-            ),
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.apply_plex_error(
+                    handle,
+                    projected_state,
+                    "Plex sync worker stopped before returning a result.".to_owned(),
+                );
+                true
+            }
         }
     }
 
@@ -982,7 +1086,12 @@ impl GuiPersistedConfigRuntimeOwner {
             return;
         };
         match rx.try_recv() {
-            Ok(result) => {
+            Ok(result)
+                if result.operation_context
+                    == self.plex_operation_context(
+                        &projected_state.configuration.to_stored_settings(),
+                    ) =>
+            {
                 let (results, error) = match result.result {
                     Ok(results) => (results, None),
                     Err(error) => (Vec::new(), Some(error)),
@@ -997,6 +1106,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     }],
                 );
             }
+            Ok(_stale_result) => {}
             Err(mpsc::TryRecvError::Empty) => {
                 self.plex_playlist_search_rx = Some(rx);
             }
@@ -1025,37 +1135,45 @@ impl GuiPersistedConfigRuntimeOwner {
             return;
         };
         match rx.try_recv() {
-            Ok(result) => match result.result {
-                Ok(playlist_uri) => {
-                    if !projected_state
-                        .current_shared_playlist_entries()
-                        .iter()
-                        .any(|entry| entry == &playlist_uri)
-                    {
-                        handle.push_request(GuiRuntimeRequest::QueuePlaylistEntry {
-                            entry: playlist_uri.clone(),
-                            select_after_queue: false,
-                        });
+            Ok(result)
+                if result.operation_context
+                    == self.plex_operation_context(
+                        &projected_state.configuration.to_stored_settings(),
+                    ) =>
+            {
+                match result.result {
+                    Ok(playlist_uri) => {
+                        if !projected_state
+                            .current_shared_playlist_entries()
+                            .iter()
+                            .any(|entry| entry == &playlist_uri)
+                        {
+                            handle.push_request(GuiRuntimeRequest::QueuePlaylistEntry {
+                                entry: playlist_uri.clone(),
+                                select_after_queue: false,
+                            });
+                        }
+                        Self::push_actions_and_project(
+                            handle,
+                            projected_state,
+                            vec![
+                                GuiShellAction::AppendSharedPlaylistEntries(vec![playlist_uri]),
+                                GuiShellAction::CompletePlexPlaylistItemResolve {
+                                    rating_key: result.rating_key,
+                                    error: None,
+                                },
+                            ],
+                        );
                     }
-                    Self::push_actions_and_project(
+                    Err(error) => self.complete_plex_playlist_resolve_with_error(
                         handle,
                         projected_state,
-                        vec![
-                            GuiShellAction::AppendSharedPlaylistEntries(vec![playlist_uri]),
-                            GuiShellAction::CompletePlexPlaylistItemResolve {
-                                rating_key: result.rating_key,
-                                error: None,
-                            },
-                        ],
-                    );
+                        result.rating_key,
+                        error,
+                    ),
                 }
-                Err(error) => self.complete_plex_playlist_resolve_with_error(
-                    handle,
-                    projected_state,
-                    result.rating_key,
-                    error,
-                ),
-            },
+            }
+            Ok(_stale_result) => {}
             Err(mpsc::TryRecvError::Empty) => {
                 self.plex_playlist_resolve_rx = Some(rx);
             }
@@ -1119,16 +1237,16 @@ impl GuiPersistedConfigRuntimeOwner {
             self.startup_plex_server_refresh_attempted = true;
         }
         let generation = self.plex_server_discovery.begin_generation();
-        let token = settings
+        let operation_context = self.plex_operation_context(settings);
+        settings
             .plex_user_token
             .as_ref()
             .filter(|token| !token.is_blank())
-            .cloned()
             .ok_or_else(|| "Plex login is required before servers can be refreshed.".to_owned())?;
         let client = self.ensure_plex_client().cloned()?;
         let settings = settings.clone();
         let (tx, rx) = mpsc::channel();
-        let worker_token = token.clone();
+        let worker_operation_context = operation_context.clone();
         std::thread::Builder::new()
             .name("sorotte-gui-plex-server-refresh".to_owned())
             .spawn(move || {
@@ -1138,14 +1256,14 @@ impl GuiPersistedConfigRuntimeOwner {
                 );
                 let _ = tx.send(GuiPlexServerDiscoveryWorkerResult {
                     generation,
-                    token: worker_token,
+                    operation_context: worker_operation_context,
                     context,
                     result,
                 });
             })
             .map_err(|error| error.to_string())?;
         self.plex_server_discovery
-            .install(generation, token, context, rx);
+            .install(generation, operation_context, context, rx);
         Ok(())
     }
 
@@ -1434,14 +1552,18 @@ fn reconcile_plex_server_selection(
     }
     let selected_id = settings.plex_selected_server_id.as_deref();
     let selected_url = settings.plex_selected_server_url.as_deref();
-    if selected_id.is_some_and(|id| {
-        selected_url.is_some_and(|url| {
+    if let Some(selected_server) = selected_id.and_then(|id| {
+        selected_url.and_then(|url| {
             servers
                 .iter()
-                .any(|server| server.machine_identifier == id && server.uri == url)
+                .find(|server| server.machine_identifier == id && server.uri == url)
         })
     }) {
-        return false;
+        if settings.plex_selected_server_token.as_ref() == Some(&selected_server.access_token) {
+            return false;
+        }
+        apply_plex_server_to_settings(settings, selected_server);
+        return true;
     }
     if let Some(id) = selected_id
         && let Some(server) = servers
@@ -1660,6 +1782,38 @@ mod tests {
     }
 
     #[test]
+    fn reconcile_plex_server_selection_refreshes_token_for_same_server_identity() {
+        let mut settings = StoredClientSettingsMvp {
+            plex_selected_server_id: Some("raptor-machine".to_owned()),
+            plex_selected_server_url: Some("https://raptor.example:32400".to_owned()),
+            plex_selected_server_token: Some("old-token".into()),
+            ..StoredClientSettingsMvp::default()
+        };
+        let servers = vec![PlexServerConnection {
+            name: "Raptor".to_owned(),
+            machine_identifier: "raptor-machine".to_owned(),
+            uri: "https://raptor.example:32400".to_owned(),
+            access_token: "new-token".into(),
+            owned: true,
+            has_local_connection: false,
+            connection_kind: PlexServerConnectionKind::Remote,
+        }];
+
+        assert!(reconcile_plex_server_selection(
+            &mut settings,
+            &servers,
+            true
+        ));
+        assert_eq!(
+            settings
+                .plex_selected_server_token
+                .as_ref()
+                .map(|token| token.expose_secret()),
+            Some("new-token")
+        );
+    }
+
+    #[test]
     fn plex_snapshot_surfaces_saved_server_reachability_before_discovery_finishes() {
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         owner.plex_server_reachability.insert(
@@ -1729,21 +1883,24 @@ mod tests {
     fn manual_discovery_generation_supersedes_startup_without_accepting_its_result() {
         let mut coordinator = GuiPlexServerDiscoveryCoordinator::default();
         let startup_token = sorotte_secret::SecretValue::from("same-account-token");
+        let operation_context = coordinator.operation_context(&StoredClientSettingsMvp {
+            plex_user_token: Some(startup_token.clone()),
+            ..StoredClientSettingsMvp::default()
+        });
         let startup_generation = coordinator.begin_generation();
         let (startup_tx, startup_rx) = mpsc::channel();
         coordinator.install(
             startup_generation,
-            startup_token.clone(),
+            operation_context.clone(),
             GuiPlexServerRefreshContext::Startup,
             startup_rx,
         );
 
-        let manual_token = startup_token.clone();
         let manual_generation = coordinator.begin_generation();
         let (manual_tx, manual_rx) = mpsc::channel();
         coordinator.install(
             manual_generation,
-            manual_token.clone(),
+            operation_context.clone(),
             GuiPlexServerRefreshContext::Manual,
             manual_rx,
         );
@@ -1752,7 +1909,7 @@ mod tests {
             startup_tx
                 .send(GuiPlexServerDiscoveryWorkerResult {
                     generation: startup_generation,
-                    token: startup_token,
+                    operation_context: operation_context.clone(),
                     context: GuiPlexServerRefreshContext::Startup,
                     result: Ok(GuiPlexServerRefreshOutcome {
                         servers: Vec::new(),
@@ -1765,7 +1922,7 @@ mod tests {
         manual_tx
             .send(GuiPlexServerDiscoveryWorkerResult {
                 generation: manual_generation,
-                token: manual_token.clone(),
+                operation_context: operation_context.clone(),
                 context: GuiPlexServerRefreshContext::Manual,
                 result: Ok(GuiPlexServerRefreshOutcome {
                     servers: Vec::new(),
@@ -1780,20 +1937,28 @@ mod tests {
             .receiver
             .recv()
             .expect("manual result should arrive");
-        assert!(coordinator.accepts(&manual_job, &current, Some(&manual_token)));
+        assert!(coordinator.accepts(&manual_job, &current, &operation_context));
     }
 
     #[test]
-    fn login_token_generation_invalidates_old_discovery_results_and_redacts_records() {
+    fn login_token_generation_invalidates_old_discovery_results_without_storing_raw_tokens() {
         const OLD_TOKEN: &str = "OLD_DISCOVERY_TOKEN_CANARY";
         const LOGIN_TOKEN: &str = "LOGIN_DISCOVERY_TOKEN_CANARY";
         let mut coordinator = GuiPlexServerDiscoveryCoordinator::default();
+        let old_operation_context = coordinator.operation_context(&StoredClientSettingsMvp {
+            plex_user_token: Some(OLD_TOKEN.into()),
+            ..StoredClientSettingsMvp::default()
+        });
+        coordinator.invalidate_operation_context();
+        let login_operation_context = coordinator.operation_context(&StoredClientSettingsMvp {
+            plex_user_token: Some(LOGIN_TOKEN.into()),
+            ..StoredClientSettingsMvp::default()
+        });
         let old_generation = coordinator.begin_generation();
         let login_generation = coordinator.begin_generation();
-        let login_token = sorotte_secret::SecretValue::from(LOGIN_TOKEN);
         let stale = GuiPlexServerDiscoveryWorkerResult {
             generation: old_generation,
-            token: OLD_TOKEN.into(),
+            operation_context: old_operation_context,
             context: GuiPlexServerRefreshContext::Manual,
             result: Ok(GuiPlexServerRefreshOutcome {
                 servers: Vec::new(),
@@ -1802,16 +1967,20 @@ mod tests {
         };
         let current = GuiPlexServerDiscoveryWorkerResult {
             generation: login_generation,
-            token: login_token.clone(),
+            operation_context: login_operation_context.clone(),
             context: GuiPlexServerRefreshContext::Login,
             result: Ok(GuiPlexServerRefreshOutcome {
                 servers: Vec::new(),
                 reachability: HashMap::new(),
             }),
         };
+        let wrong_token_context = coordinator.operation_context(&StoredClientSettingsMvp {
+            plex_user_token: Some("WRONG_DISCOVERY_TOKEN_CANARY".into()),
+            ..StoredClientSettingsMvp::default()
+        });
         let wrong_token = GuiPlexServerDiscoveryWorkerResult {
             generation: login_generation,
-            token: "WRONG_DISCOVERY_TOKEN_CANARY".into(),
+            operation_context: wrong_token_context,
             context: GuiPlexServerRefreshContext::Login,
             result: Ok(GuiPlexServerRefreshOutcome {
                 servers: Vec::new(),
@@ -1820,7 +1989,7 @@ mod tests {
         };
         let wrong_context = GuiPlexServerDiscoveryWorkerResult {
             generation: login_generation,
-            token: login_token.clone(),
+            operation_context: login_operation_context.clone(),
             context: GuiPlexServerRefreshContext::Manual,
             result: Ok(GuiPlexServerRefreshOutcome {
                 servers: Vec::new(),
@@ -1830,20 +1999,314 @@ mod tests {
         let (_login_tx, login_rx) = mpsc::channel();
         let login_job = GuiPlexServerDiscoveryJob {
             generation: login_generation,
-            token: login_token.clone(),
+            operation_context: login_operation_context.clone(),
             context: GuiPlexServerRefreshContext::Login,
             receiver: login_rx,
         };
 
-        assert!(!coordinator.accepts(&login_job, &stale, Some(&login_token)));
-        assert!(!coordinator.accepts(&login_job, &wrong_token, Some(&login_token)));
-        assert!(!coordinator.accepts(&login_job, &wrong_context, Some(&login_token)));
-        assert!(coordinator.accepts(&login_job, &current, Some(&login_token)));
+        assert!(!coordinator.accepts(&login_job, &stale, &login_operation_context));
+        assert!(!coordinator.accepts(&login_job, &wrong_token, &login_operation_context));
+        assert!(!coordinator.accepts(&login_job, &wrong_context, &login_operation_context));
+        assert!(coordinator.accepts(&login_job, &current, &login_operation_context));
         let debug = format!("{stale:?} {current:?} {wrong_token:?}");
         assert!(!debug.contains(OLD_TOKEN));
         assert!(!debug.contains(LOGIN_TOKEN));
         assert!(!debug.contains("WRONG_DISCOVERY_TOKEN_CANARY"));
-        assert!(debug.contains(sorotte_secret::REDACTED_SECRET));
+        assert!(debug.contains("authenticated"));
+    }
+
+    fn test_plex_search_result(rating_key: &str, title: &str) -> GuiPlexPlaylistSearchResult {
+        GuiPlexPlaylistSearchResult {
+            rating_key: rating_key.to_owned(),
+            title: title.to_owned(),
+            parent_title: None,
+            grandparent_title: None,
+            media_type: sorotte_plex::PlexMediaType::Movie,
+            duration_millis: Some(90_000),
+            file_name: Some(format!("{title}.mkv")),
+        }
+    }
+
+    #[test]
+    fn auth_completion_clears_old_account_server_identity_before_discovery() {
+        let mut settings = StoredClientSettingsMvp {
+            plex_plugin_enabled: Some(true),
+            plex_sync_enabled: Some(true),
+            plex_streaming_enabled: Some(true),
+            plex_user_token: Some("old-account-token".into()),
+            plex_selected_server_id: Some("old-machine".to_owned()),
+            plex_selected_server_url: Some("https://old.example:32400".to_owned()),
+            plex_selected_server_token: Some("old-server-token".into()),
+            ..StoredClientSettingsMvp::default()
+        };
+        let previous_settings = settings.clone();
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        owner.plex_servers.push(PlexServerConnection {
+            name: "Old Server".to_owned(),
+            machine_identifier: "old-machine".to_owned(),
+            uri: "https://old.example:32400".to_owned(),
+            access_token: "old-server-token".into(),
+            owned: true,
+            has_local_connection: false,
+            connection_kind: PlexServerConnectionKind::Remote,
+        });
+        owner.plex_server_reachability.insert(
+            plex_server_reachability_key("https://old.example:32400"),
+            GuiPlexServerReachability::Reachable,
+        );
+        let (_search_tx, search_rx) = mpsc::channel();
+        owner.plex_playlist_search_rx = Some(search_rx);
+        let previous_context = owner.plex_operation_context(&settings);
+
+        owner.apply_authenticated_plex_account(&mut settings, "new-account-token".into());
+        owner.invalidate_plex_operation_context_if_settings_changed(&previous_settings, &settings);
+
+        assert_eq!(
+            settings.plex_user_token.as_ref(),
+            Some(&sorotte_secret::SecretValue::from("new-account-token"))
+        );
+        assert!(settings.plex_selected_server_id.is_none());
+        assert!(settings.plex_selected_server_url.is_none());
+        assert!(settings.plex_selected_server_token.is_none());
+        assert!(settings.plex_sync_enabled == Some(true));
+        assert!(settings.plex_streaming_enabled == Some(true));
+        assert!(owner.plex_servers.is_empty());
+        assert!(owner.plex_server_reachability.is_empty());
+        assert!(owner.plex_playlist_search_rx.is_none());
+        assert!(!plex_config_from_settings(&settings).has_selected_server());
+        assert_ne!(owner.plex_operation_context(&settings), previous_context);
+    }
+
+    #[test]
+    fn new_account_search_completion_wins_before_old_account_worker_finishes() {
+        let old_settings = StoredClientSettingsMvp {
+            plex_plugin_enabled: Some(true),
+            plex_user_token: Some("old-account-token".into()),
+            plex_selected_server_id: Some("old-machine".to_owned()),
+            plex_selected_server_url: Some("https://old.example:32400".to_owned()),
+            plex_selected_server_token: Some("old-server-token".into()),
+            ..StoredClientSettingsMvp::default()
+        };
+        let new_settings = StoredClientSettingsMvp {
+            plex_user_token: Some("new-account-token".into()),
+            plex_selected_server_id: Some("new-machine".to_owned()),
+            plex_selected_server_url: Some("https://new.example:32400".to_owned()),
+            plex_selected_server_token: Some("new-server-token".into()),
+            ..old_settings.clone()
+        };
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        let old_context = owner.plex_operation_context(&old_settings);
+        let (old_tx, old_rx) = mpsc::channel();
+        owner.plex_playlist_search_rx = Some(old_rx);
+
+        owner.invalidate_plex_operation_context_if_settings_changed(&old_settings, &new_settings);
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&new_settings);
+        assert!(state.apply(GuiShellAction::BeginPlexPlaylistSearch));
+        assert!(state.apply(GuiShellAction::SubmitPlexPlaylistSearch {
+            query: "movie".to_owned(),
+        }));
+        let new_context = owner.plex_operation_context(&new_settings);
+        let (new_tx, new_rx) = mpsc::channel();
+        new_tx
+            .send(GuiPlexPlaylistSearchWorkerResult {
+                operation_context: new_context,
+                query: "movie".to_owned(),
+                result: Ok(vec![test_plex_search_result("new", "New Account Movie")]),
+            })
+            .expect("new account search result should queue");
+        owner.plex_playlist_search_rx = Some(new_rx);
+
+        let handle = GuiQueuedRuntimeBridgeHandle::default();
+        owner.drain_plex_playlist_search_worker(&handle, &mut state);
+
+        assert_eq!(
+            state
+                .plex_playlist_search
+                .as_ref()
+                .and_then(|search| search.results.first())
+                .map(|result| result.rating_key.as_str()),
+            Some("new")
+        );
+        assert!(
+            old_tx
+                .send(GuiPlexPlaylistSearchWorkerResult {
+                    operation_context: old_context,
+                    query: "movie".to_owned(),
+                    result: Ok(vec![test_plex_search_result("old", "Old Account Movie")]),
+                })
+                .is_err(),
+            "reauthentication must release the old account search receiver"
+        );
+    }
+
+    #[test]
+    fn stale_server_resolve_cannot_append_after_new_server_result_completed_first() {
+        let old_settings = StoredClientSettingsMvp {
+            plex_plugin_enabled: Some(true),
+            shared_playlist_enabled: Some(true),
+            plex_user_token: Some("user-token".into()),
+            plex_selected_server_id: Some("old-machine".to_owned()),
+            plex_selected_server_url: Some("https://old.example:32400".to_owned()),
+            plex_selected_server_token: Some("old-server-token".into()),
+            ..StoredClientSettingsMvp::default()
+        };
+        let new_settings = StoredClientSettingsMvp {
+            plex_selected_server_id: Some("new-machine".to_owned()),
+            plex_selected_server_url: Some("https://new.example:32400".to_owned()),
+            plex_selected_server_token: Some("new-server-token".into()),
+            ..old_settings.clone()
+        };
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        let old_context = owner.plex_operation_context(&old_settings);
+        owner.invalidate_plex_operation_context_if_settings_changed(&old_settings, &new_settings);
+        let new_context = owner.plex_operation_context(&new_settings);
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&new_settings);
+        let handle = GuiQueuedRuntimeBridgeHandle::default();
+
+        let (new_tx, new_rx) = mpsc::channel();
+        new_tx
+            .send(GuiPlexPlaylistResolveWorkerResult {
+                operation_context: new_context,
+                rating_key: "new-rating".to_owned(),
+                result: Ok("plex://new-machine/library/metadata/new-rating".to_owned()),
+            })
+            .expect("new server resolve result should queue");
+        owner.plex_playlist_resolve_rx = Some(new_rx);
+        owner.drain_plex_playlist_resolve_worker(&handle, &mut state);
+        assert_eq!(handle.drain_requests().len(), 1);
+
+        let (old_tx, old_rx) = mpsc::channel();
+        old_tx
+            .send(GuiPlexPlaylistResolveWorkerResult {
+                operation_context: old_context,
+                rating_key: "old-rating".to_owned(),
+                result: Ok("plex://old-machine/library/metadata/old-rating".to_owned()),
+            })
+            .expect("stale server resolve result should queue for validation");
+        owner.plex_playlist_resolve_rx = Some(old_rx);
+        owner.drain_plex_playlist_resolve_worker(&handle, &mut state);
+
+        assert!(handle.drain_requests().is_empty());
+        assert_eq!(
+            state
+                .current_shared_playlist_entries()
+                .last()
+                .map(String::as_str),
+            Some("plex://new-machine/library/metadata/new-rating")
+        );
+        assert!(
+            !state
+                .current_shared_playlist_entries()
+                .iter()
+                .any(|entry| entry.contains("old-rating"))
+        );
+    }
+
+    #[test]
+    fn stale_sync_tick_cannot_reinstall_engine_after_plex_disconnect() {
+        let test_root = std::env::temp_dir().join(format!(
+            "sorotte-gui-stale-plex-sync-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&test_root);
+        let old_settings = StoredClientSettingsMvp {
+            plex_plugin_enabled: Some(true),
+            plex_sync_enabled: Some(true),
+            plex_user_token: Some("user-token".into()),
+            plex_selected_server_id: Some("machine".to_owned()),
+            plex_selected_server_url: Some("https://plex.example:32400".to_owned()),
+            plex_selected_server_token: Some("server-token".into()),
+            ..StoredClientSettingsMvp::default()
+        };
+        let mut owner =
+            GuiPersistedConfigRuntimeOwner::with_config_path(Some(test_root.join("sorotte.ini")));
+        let cache_path = owner
+            .plex_cache_path()
+            .expect("configured owner should provide a Plex cache path");
+        let old_context = owner.plex_operation_context(&old_settings);
+        let engine = owner
+            .take_plex_sync_engine(plex_config_from_settings(&old_settings))
+            .expect("test sync engine should be created");
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&old_settings);
+        let handle = GuiQueuedRuntimeBridgeHandle::default();
+
+        assert!(owner.handle_disconnect_plex_request(&handle, &mut state));
+        let _ = handle.drain_actions();
+        let staged_cache_write = engine
+            .cache()
+            .stage_to_path(&cache_path)
+            .expect("stale sync cache should stage for acceptance testing");
+        let (old_tx, old_rx) = mpsc::channel();
+        old_tx
+            .send(GuiPlexSyncWorkerResult {
+                operation_context: old_context,
+                engine,
+                status: PlexSyncStatus::ready(),
+                staged_cache_write: Some(Ok(staged_cache_write)),
+            })
+            .expect("stale sync result should queue for validation");
+        owner.plex_sync_rx = Some(old_rx);
+
+        owner.drain_plex_sync_worker(&handle, &mut state);
+
+        assert!(owner.plex_sync_engine.is_none());
+        assert!(!cache_path.exists());
+        assert!(handle.drain_actions().is_empty());
+        let _ = std::fs::remove_dir_all(test_root);
+    }
+
+    #[test]
+    fn stale_stream_resolution_is_discarded_after_streaming_is_disabled() {
+        let test_root = std::env::temp_dir().join(format!(
+            "sorotte-gui-stale-plex-stream-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&test_root);
+        let settings = StoredClientSettingsMvp {
+            plex_plugin_enabled: Some(true),
+            plex_streaming_enabled: Some(true),
+            plex_user_token: Some("user-token".into()),
+            plex_selected_server_id: Some("machine".to_owned()),
+            plex_selected_server_url: Some("https://plex.example:32400".to_owned()),
+            plex_selected_server_token: Some("server-token".into()),
+            ..StoredClientSettingsMvp::default()
+        };
+        let mut owner =
+            GuiPersistedConfigRuntimeOwner::with_config_path(Some(test_root.join("sorotte.ini")));
+        let cache_path = owner
+            .plex_cache_path()
+            .expect("configured owner should provide a Plex cache path");
+        let old_context = owner.plex_operation_context(&settings);
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&settings);
+        let handle = GuiQueuedRuntimeBridgeHandle::default();
+
+        assert!(owner.handle_toggle_plex_streaming_request(&handle, &mut state, false));
+        let _ = handle.drain_actions();
+        let staged_cache_write = PlexMatchCache::default()
+            .stage_to_path(&cache_path)
+            .expect("stale stream cache should stage for acceptance testing");
+        let (old_tx, old_rx) = mpsc::channel();
+        old_tx
+            .send(GuiPlexStreamResolveWorkerResult {
+                operation_context: old_context.clone(),
+                trigger_key: "old-stream-trigger".to_owned(),
+                result: Ok(GuiPlexStreamResolveOutcome {
+                    stream_target: None,
+                    cache: PlexMatchCache::default(),
+                }),
+                staged_cache_write: Some(Ok(staged_cache_write)),
+            })
+            .expect("stale stream result should queue for validation");
+        owner.plex_stream_resolve_rx = Some(old_rx);
+        owner.plex_stream_resolve_trigger_key = Some("old-stream-trigger".to_owned());
+        owner.plex_stream_resolve_context = Some(old_context);
+
+        assert!(!owner.pump_plex_stream_resolution_worker(&state));
+        assert!(owner.plex_stream_resolve_result.is_none());
+        assert!(owner.plex_stream_resolve_trigger_key.is_none());
+        assert!(owner.plex_stream_resolve_context.is_none());
+        assert!(!cache_path.exists());
+        let _ = std::fs::remove_dir_all(test_root);
     }
 
     #[test]

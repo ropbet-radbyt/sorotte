@@ -16,3 +16,6 @@ serde_json.workspace = true
 sorotte-player-api = { path = "../sorotte-player-api" }
 sorotte-secret = { path = "../sorotte-secret" }
 thiserror.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true

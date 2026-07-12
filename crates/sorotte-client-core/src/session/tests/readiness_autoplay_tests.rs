@@ -148,6 +148,57 @@ fn hello_assigned_username_migrates_provisional_identity_before_list() {
 }
 
 #[test]
+fn pre_hello_assigned_username_notification_is_removed_while_real_peer_notification_is_preserved() {
+    let mut session = ClientSession::default();
+    session.initialize_local_identity("alice".to_owned(), "room1".to_owned());
+    session
+        .apply_message_json(
+            r#"{"Set":{"user":{"alice_2":{"room":{"name":"room1"},"isReady":true},"bob":{"room":{"name":"room1"},"isReady":false}}}}"#,
+        )
+        .expect("pre-Hello assigned and remote user state should apply");
+
+    assert!(
+        session
+            .runtime_actions_for_user_change_notifications_if_needed()
+            .is_empty(),
+        "user-change notifications should remain deferred until Hello establishes local identity"
+    );
+
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice_2","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("Hello should migrate the provisional identity");
+
+    assert_eq!(session.username(), Some("alice_2"));
+    assert!(!session.model.room.users.contains_key("alice"));
+    assert_eq!(
+        session
+            .model
+            .room
+            .users
+            .keys()
+            .filter(|username| username.as_str() == session.username().unwrap_or_default())
+            .count(),
+        1,
+        "the user model should contain exactly one local identity"
+    );
+    let notifications = session.runtime_actions_for_user_change_notifications_if_needed();
+    assert_eq!(notifications.len(), 1);
+    assert!(
+        matches!(
+            &notifications[0],
+            ClientRuntimeAction::NotifyUserChange(UserChangeNotification::Joined {
+                username,
+                room,
+                ..
+            }) if username == "bob" && room == "room1"
+        ),
+        "identity migration should remove local-name notifications without dropping real pre-Hello peers"
+    );
+}
+
+#[test]
 fn hello_username_migration_does_not_replace_assigned_file() {
     let mut session = ClientSession::default();
     session.initialize_local_identity("alice".to_owned(), "room1".to_owned());

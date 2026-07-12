@@ -86,6 +86,63 @@ impl GuiSessionTransportDriver for ScriptedPartialWriteTransportDriver {
     }
 }
 
+#[derive(Default)]
+struct QueueInboundThenFailTransportDriver {
+    failed: bool,
+}
+
+impl GuiSessionTransportDriver for QueueInboundThenFailTransportDriver {
+    fn pump(&mut self, transport: &GuiQueuedSessionTransportHandle) -> Result<(), String> {
+        if self.failed {
+            return Ok(());
+        }
+        self.failed = true;
+        transport.push_inbound_protocol_lines([
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#
+                .to_owned(),
+            r#"{"State":{"ping":{"latencyCalculation":4.2}}}"#.to_owned(),
+        ]);
+        Err("scripted EOF after queued inbound lines".to_owned())
+    }
+}
+
+#[test]
+fn gui_runtime_owner_applies_queued_lines_before_transport_failure_advances_generation() {
+    let (owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
+    let mut owner = owner
+        .with_session_transport_driver(Box::new(QueueInboundThenFailTransportDriver::default()));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert!(session_transport.drain_inbound_protocol_lines().is_empty());
+    assert!(
+        session_transport
+            .drain_outbound_protocol_lines()
+            .iter()
+            .all(|line| !line.contains("\"State\"")),
+        "State derived from the failed connection must not survive its generation reset"
+    );
+    assert!(
+        owner
+            .session
+            .as_ref()
+            .is_some_and(|session| !session.server_handshake_completed()),
+        "the failed connection must remain inactive after applying its final complete frames"
+    );
+    assert!(
+        owner.session_transport_reconnect_due_at.is_some(),
+        "stale inbound lines must not cancel the scheduled reconnect"
+    );
+}
+
 #[test]
 fn gui_runtime_owner_retries_partially_written_chat_only_after_reconnect_hello() {
     const SERVER_HELLO: &str = r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#;
@@ -655,6 +712,7 @@ fn gui_persisted_config_runtime_owner_reconnects_after_tcp_inbound_idle_timeout(
     let (first_hello_tx, first_hello_rx) = mpsc::channel();
     let (first_server_ready_tx, first_server_ready_rx) = mpsc::channel();
     let (reconnect_hello_tx, reconnect_hello_rx) = mpsc::channel();
+    let (reconnect_server_release_tx, reconnect_server_release_rx) = mpsc::channel();
     let server_thread = std::thread::spawn(move || {
         let (mut first_stream, _) = listener
             .accept()
@@ -706,6 +764,9 @@ fn gui_persisted_config_runtime_owner_reconnects_after_tcp_inbound_idle_timeout(
         second_stream.write_all(b"\n").expect(
             "idle-timeout test session transport server should terminate the reconnect hello",
         );
+        reconnect_server_release_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("idle-timeout test server should remain connected through Hello application");
     });
 
     let (owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
@@ -787,6 +848,9 @@ fn gui_persisted_config_runtime_owner_reconnects_after_tcp_inbound_idle_timeout(
             .iter()
             .any(|notification| notification.message == "Session reconnected.")
     );
+    reconnect_server_release_tx
+        .send(())
+        .expect("idle-timeout test should release the reconnected server");
 
     server_thread
         .join()

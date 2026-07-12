@@ -118,20 +118,34 @@ impl UpdateJobKind {
             Self::ApplyStaged => "staged update launch",
         }
     }
+
+    fn is_config_cancellable(self) -> bool {
+        !matches!(self, Self::ApplyStaged)
+    }
+
+    fn owns_staging_side_effects(self) -> bool {
+        matches!(self, Self::Download | Self::DownloadAndInstall)
+    }
+}
+
+enum UpdateWorkerOutput {
+    Actions(Vec<GuiShellAction>),
+    DownloadAndInstall(Box<UpdateDownloadResult>),
 }
 
 struct UpdateWorkerResult {
     id: u64,
     config_generation: u64,
-    actions: Vec<GuiShellAction>,
+    output: UpdateWorkerOutput,
 }
 
-type UpdateJobWork = Box<dyn FnOnce() -> Vec<GuiShellAction> + Send>;
+type UpdateJobWork = Box<dyn FnOnce() -> UpdateWorkerOutput + Send>;
 
 struct ActiveUpdateJob {
     id: u64,
     kind: UpdateJobKind,
     config_generation: u64,
+    cancelled_by_config: bool,
     result_rx: mpsc::Receiver<UpdateWorkerResult>,
 }
 
@@ -184,23 +198,44 @@ impl GuiUpdateRuntime {
     pub(in crate::app) fn reconcile(&mut self, view: &RuntimeView) {
         let next_job_configuration = UpdateJobConfiguration::from(&view.policy);
         if self.job_configuration != next_job_configuration {
-            if let Some(active) = self.active_job.take() {
-                let checked_at_utc = self
-                    .policy
-                    .last_checked_for_updates
-                    .clone()
-                    .unwrap_or_else(|| "1970-01-01 00:00:00.000".to_owned());
-                self.pending_actions.extend(self.failure_actions_at(
-                    active.kind,
-                    "Update operation cancelled because update settings changed.".to_owned(),
-                    checked_at_utc,
-                ));
+            if let Some(kind) = self
+                .active_job
+                .as_ref()
+                .filter(|active| active.kind.is_config_cancellable())
+                .map(|active| active.kind)
+            {
+                let first_cancellation = if kind.owns_staging_side_effects() {
+                    let active = self
+                        .active_job
+                        .as_mut()
+                        .expect("cancellable update job should still be active");
+                    let first_cancellation = !active.cancelled_by_config;
+                    active.cancelled_by_config = true;
+                    first_cancellation
+                } else {
+                    self.active_job = None;
+                    true
+                };
+                if first_cancellation {
+                    let checked_at_utc = self
+                        .policy
+                        .last_checked_for_updates
+                        .clone()
+                        .unwrap_or_else(|| "1970-01-01 00:00:00.000".to_owned());
+                    self.pending_actions.extend(self.failure_actions_at(
+                        kind,
+                        "Update operation cancelled because update settings changed.".to_owned(),
+                        checked_at_utc,
+                    ));
+                }
             }
             self.job_configuration = next_job_configuration;
             self.config_generation = self.config_generation.wrapping_add(1);
-            // Dropping the receiver makes every result from the previous configuration
-            // generation unobservable. The detached worker may finish, but it cannot
-            // mutate the current runtime model.
+            // Checks have no persistent side effects and can be detached. Downloads retain
+            // their active slot until their staging worker exits so a replacement cannot race
+            // the old worker in the deterministic staging directory. ApplyStaged is also
+            // retained: once helper launch has been accepted, settings changes cannot cancel
+            // that irreversible operation or hide its result.
             self.background_check_next_due_at = None;
         }
         self.model = view.model.clone();
@@ -230,13 +265,13 @@ impl GuiUpdateRuntime {
                         user_initiated,
                     },
                     Box::new(move || {
-                        vec![GuiShellAction::ApplyUpdateCheckResult(
+                        UpdateWorkerOutput::Actions(vec![GuiShellAction::ApplyUpdateCheckResult(
                             service.check_for_updates(
                                 &language,
                                 user_initiated,
                                 update_channel.as_deref(),
                             ),
-                        )]
+                        )])
                     }),
                 )
             }
@@ -246,9 +281,12 @@ impl GuiUpdateRuntime {
                 (
                     UpdateJobKind::Download,
                     Box::new(move || {
-                        vec![GuiShellAction::ApplyUpdateDownloadResult(
-                            service.download_and_stage_update(&candidate, config_root.as_deref()),
-                        )]
+                        UpdateWorkerOutput::Actions(vec![
+                            GuiShellAction::ApplyUpdateDownloadResult(
+                                service
+                                    .download_and_stage_update(&candidate, config_root.as_deref()),
+                            ),
+                        ])
                     }),
                 )
             }
@@ -258,17 +296,9 @@ impl GuiUpdateRuntime {
                 (
                     UpdateJobKind::DownloadAndInstall,
                     Box::new(move || {
-                        let result =
-                            service.download_and_stage_update(&candidate, config_root.as_deref());
-                        let staged_update = result.staged_update.clone();
-                        let mut actions = vec![GuiShellAction::ApplyUpdateDownloadResult(result)];
-                        if let Some(staged_update) = staged_update {
-                            actions.push(GuiShellAction::BeginStagedUpdateApply);
-                            actions.push(GuiShellAction::ApplyStagedUpdateLaunchResult(
-                                service.launch_staged_update(&staged_update),
-                            ));
-                        }
-                        actions
+                        UpdateWorkerOutput::DownloadAndInstall(Box::new(
+                            service.download_and_stage_update(&candidate, config_root.as_deref()),
+                        ))
                     }),
                 )
             }
@@ -277,9 +307,11 @@ impl GuiUpdateRuntime {
                 (
                     UpdateJobKind::ApplyStaged,
                     Box::new(move || {
-                        vec![GuiShellAction::ApplyStagedUpdateLaunchResult(
-                            service.launch_staged_update(&staged_update),
-                        )]
+                        UpdateWorkerOutput::Actions(vec![
+                            GuiShellAction::ApplyStagedUpdateLaunchResult(
+                                service.launch_staged_update(&staged_update),
+                            ),
+                        ])
                     }),
                 )
             }
@@ -434,9 +466,9 @@ impl GuiUpdateRuntime {
                 user_initiated,
             },
             Box::new(move || {
-                vec![GuiShellAction::ApplyUpdateCheckResult(
+                UpdateWorkerOutput::Actions(vec![GuiShellAction::ApplyUpdateCheckResult(
                     service.check_for_updates(&language, user_initiated, update_channel.as_deref()),
-                )]
+                )])
             }),
         );
     }
@@ -454,11 +486,11 @@ impl GuiUpdateRuntime {
         let spawn_result = std::thread::Builder::new()
             .name(kind.thread_name().to_owned())
             .spawn(move || {
-                let actions = work();
+                let output = work();
                 let _ = tx.send(UpdateWorkerResult {
                     id,
                     config_generation,
-                    actions,
+                    output,
                 });
             });
 
@@ -468,6 +500,7 @@ impl GuiUpdateRuntime {
                     id,
                     kind,
                     config_generation,
+                    cancelled_by_config: false,
                     result_rx,
                 });
             }
@@ -497,15 +530,19 @@ impl GuiUpdateRuntime {
                 }
                 if result.id == active.id
                     && result.config_generation == active.config_generation
-                    && result.config_generation == self.config_generation
+                    && (!active.kind.is_config_cancellable()
+                        || result.config_generation == self.config_generation)
                 {
-                    self.emit_actions(handle, result.actions);
+                    self.accept_worker_output(handle, active.kind, result.output);
                 }
             }
             Err(mpsc::TryRecvError::Empty) => {
                 self.active_job = Some(active);
             }
             Err(mpsc::TryRecvError::Disconnected) => {
+                if active.cancelled_by_config {
+                    return;
+                }
                 if active.kind.is_automatic() {
                     self.background_check_next_due_at =
                         Some(Instant::now() + BACKGROUND_UPDATE_CHECK_RETRY_INTERVAL);
@@ -517,6 +554,42 @@ impl GuiUpdateRuntime {
                         "Update worker stopped before returning a result.".to_owned(),
                     ),
                 );
+            }
+        }
+    }
+
+    fn accept_worker_output(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        kind: UpdateJobKind,
+        output: UpdateWorkerOutput,
+    ) {
+        match output {
+            UpdateWorkerOutput::Actions(actions) => self.emit_actions(handle, actions),
+            UpdateWorkerOutput::DownloadAndInstall(result) => {
+                debug_assert_eq!(kind, UpdateJobKind::DownloadAndInstall);
+                let result = *result;
+                let staged_update = result.staged_update.clone();
+                let mut actions = vec![GuiShellAction::ApplyUpdateDownloadResult(result)];
+                if staged_update.is_some() {
+                    actions.push(GuiShellAction::BeginStagedUpdateApply);
+                }
+                self.emit_actions(handle, actions);
+
+                if let Some(staged_update) = staged_update {
+                    let service = self.service.clone();
+                    self.spawn_job(
+                        handle,
+                        UpdateJobKind::ApplyStaged,
+                        Box::new(move || {
+                            UpdateWorkerOutput::Actions(vec![
+                                GuiShellAction::ApplyStagedUpdateLaunchResult(
+                                    service.launch_staged_update(&staged_update),
+                                ),
+                            ])
+                        }),
+                    );
+                }
             }
         }
     }

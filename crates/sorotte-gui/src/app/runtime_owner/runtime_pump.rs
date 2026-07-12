@@ -105,17 +105,30 @@ impl GuiPersistedConfigRuntimeOwner {
         media_resolution_completed |= self.pump_media_match_remote_lookup_worker();
         let _ = self.maybe_sync_media_match_wire_decisions(handle, &mut projected_state);
         self.maybe_queue_media_match_background_warmup(handle, &mut projected_state);
-        media_resolution_completed |= self.pump_plex_stream_resolution_worker();
+        let plex_stream_resolution_completed =
+            self.pump_plex_stream_resolution_worker(&projected_state);
+        media_resolution_completed |= plex_stream_resolution_completed;
         if media_resolution_completed {
             let _ = self.retry_pending_playlist_source_resolution(handle, &mut projected_state);
             self.sync_active_shared_playlist_media_and_playstate_impl(&projected_state);
+        }
+        if plex_stream_resolution_completed {
+            // The immediate retry paths above are the only consumers of an
+            // asynchronous stream result. If neither still owns its trigger,
+            // release the cache snapshot and staged temporary file before
+            // periodic watch sync is allowed to run again.
+            self.discard_unconsumed_plex_stream_resolution_result();
         }
         self.sync_player_runtime_state(handle, &projected_state);
         self.pump_startup_plex_server_refresh(handle, &mut projected_state);
         self.pump_plex_server_refresh(handle, &mut projected_state);
         self.pump_plex_auth_poll(handle, &mut projected_state);
         self.pump_plex_playlist_workers(handle, &mut projected_state);
-        self.sync_plex_watch_state(handle, &mut projected_state);
+        let plex_sync_worker_completed = self.sync_plex_watch_state(handle, &mut projected_state);
+        if plex_sync_worker_completed && self.take_plex_stream_resolution_waiting_for_sync() {
+            let _ = self.retry_pending_playlist_source_resolution(handle, &mut projected_state);
+            self.sync_active_shared_playlist_media_and_playstate_impl(&projected_state);
+        }
         self.run_deferred_startup_remote_actions(handle, &mut projected_state);
         self.update_runtime.pump_background_check(handle);
         self.run_deferred_startup_stream_helper_probe(handle, &mut projected_state);
@@ -142,6 +155,7 @@ impl GuiPersistedConfigRuntimeOwner {
     ) where
         FPublicServers: Fn(&str) -> Result<Vec<(String, String)>, String> + Send + 'static,
     {
+        let now = Instant::now();
         if !self.startup_remote_actions_attempted {
             self.startup_remote_actions_attempted = true;
             let settings = projected_state.configuration.to_stored_settings();
@@ -152,52 +166,154 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.update_runtime.start_startup_check(handle);
             }
 
-            if settings.check_for_updates_automatically != Some(true)
-                || settings
-                    .public_servers
-                    .as_ref()
-                    .is_some_and(|rows| !rows.is_empty())
-            {
+            if StartupPublicServerHydrationContext::from_settings(&settings).is_none() {
+                self.startup_public_server_hydration.completed = true;
                 return;
-            }
-
-            let (tx, rx) = mpsc::channel();
-            match std::thread::Builder::new()
-                .name("sorotte-gui-startup-remote".to_owned())
-                .spawn(move || {
-                    let actions =
-                        gui_startup_public_server_actions_with_fetcher(&settings, |language| {
-                            fetch_public_servers(language)
-                        });
-                    let _ = tx.send(actions);
-                }) {
-                Ok(_thread) => {
-                    self.startup_remote_actions_rx = Some(rx);
-                }
-                Err(error) => {
-                    Self::push_actions_and_project(
-                        handle,
-                        projected_state,
-                        vec![GuiShellAction::AnnounceSystemChatEvent(format!(
-                            "Unable to start startup remote-service worker: {error}"
-                        ))],
-                    );
-                }
             }
         }
 
+        let settings = projected_state.configuration.to_stored_settings();
+        let current_context = StartupPublicServerHydrationContext::from_settings(&settings);
+        self.reconcile_startup_public_server_hydration_context(current_context.clone(), now);
+        self.pump_startup_public_server_outcome(handle, projected_state, now);
+        if self.startup_remote_actions_rx.is_some()
+            || self.startup_public_server_hydration.completed
+        {
+            return;
+        }
+
+        let Some(current_context) = current_context else {
+            self.startup_public_server_hydration.completed = true;
+            self.startup_public_server_hydration.next_retry_at = None;
+            return;
+        };
+
+        if self
+            .startup_public_server_hydration
+            .next_retry_at
+            .is_some_and(|retry_at| retry_at > now)
+        {
+            return;
+        }
+        if self.startup_public_server_hydration.attempts_started
+            >= STARTUP_PUBLIC_SERVER_MAX_ATTEMPTS
+        {
+            self.startup_public_server_hydration.completed = true;
+            self.startup_public_server_hydration.next_retry_at = None;
+            return;
+        }
+
+        self.startup_public_server_hydration.attempts_started += 1;
+        self.startup_public_server_hydration.next_retry_at = None;
+        let worker_context = current_context.clone();
+        let (tx, rx) = mpsc::channel();
+        match std::thread::Builder::new()
+            .name("sorotte-gui-startup-remote".to_owned())
+            .spawn(move || {
+                let outcome =
+                    gui_startup_public_server_outcome_with_fetcher(&settings, |language| {
+                        debug_assert_eq!(language, worker_context.language.as_str());
+                        fetch_public_servers(language)
+                    });
+                let _ = tx.send(outcome);
+            }) {
+            Ok(_thread) => {
+                self.startup_remote_actions_rx = Some(rx);
+            }
+            Err(error) => {
+                self.handle_startup_public_server_failure(
+                    handle,
+                    projected_state,
+                    format!("Unable to start startup remote-service worker: {error}"),
+                    now,
+                );
+            }
+        }
+    }
+
+    fn pump_startup_public_server_outcome(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        now: Instant,
+    ) {
         let Some(rx) = self.startup_remote_actions_rx.take() else {
             return;
         };
         match rx.try_recv() {
-            Ok(actions) => {
-                self.update_runtime.observe_actions(&actions);
-                Self::push_actions_and_project(handle, projected_state, actions);
+            Ok(StartupPublicServerOutcome::Loaded(servers)) => {
+                self.startup_public_server_hydration.completed = true;
+                self.startup_public_server_hydration.next_retry_at = None;
+                if projected_state.public_servers.servers.is_empty() {
+                    let actions = vec![GuiShellAction::ApplyStartupPublicServerCache(servers)];
+                    self.update_runtime.observe_actions(&actions);
+                    Self::push_actions_and_project(handle, projected_state, actions);
+                }
+            }
+            Ok(StartupPublicServerOutcome::AlreadyCached) => {
+                self.startup_public_server_hydration.completed = true;
+                self.startup_public_server_hydration.next_retry_at = None;
+            }
+            Ok(StartupPublicServerOutcome::Failed(error)) => {
+                self.handle_startup_public_server_failure(handle, projected_state, error, now);
             }
             Err(mpsc::TryRecvError::Empty) => {
                 self.startup_remote_actions_rx = Some(rx);
             }
-            Err(mpsc::TryRecvError::Disconnected) => {}
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.handle_startup_public_server_failure(
+                    handle,
+                    projected_state,
+                    "Startup public-server worker ended before returning a result.".to_owned(),
+                    now,
+                );
+            }
+        }
+    }
+
+    fn reconcile_startup_public_server_hydration_context(
+        &mut self,
+        context: Option<StartupPublicServerHydrationContext>,
+        now: Instant,
+    ) {
+        if self.startup_public_server_hydration.context == context {
+            return;
+        }
+        self.startup_remote_actions_rx = None;
+        self.startup_public_server_hydration.context = context.clone();
+        self.startup_public_server_hydration.attempts_started = 0;
+        self.startup_public_server_hydration.last_warning = None;
+        self.startup_public_server_hydration.completed = context.is_none();
+        self.startup_public_server_hydration.next_retry_at = context.map(|_| now);
+    }
+
+    fn handle_startup_public_server_failure(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        error: String,
+        now: Instant,
+    ) {
+        if self.startup_public_server_hydration.last_warning.as_deref() != Some(error.as_str()) {
+            self.startup_public_server_hydration.last_warning = Some(error.clone());
+            let actions = vec![GuiShellAction::AnnounceSystemChatEvent(format!(
+                "Startup public-server hydration failed: {error}"
+            ))];
+            self.update_runtime.observe_actions(&actions);
+            Self::push_actions_and_project(handle, projected_state, actions);
+        }
+
+        if self.startup_public_server_hydration.attempts_started
+            < STARTUP_PUBLIC_SERVER_MAX_ATTEMPTS
+        {
+            let completed_attempts =
+                u32::from(self.startup_public_server_hydration.attempts_started.max(1));
+            let multiplier = 1_u32 << completed_attempts.saturating_sub(1);
+            self.startup_public_server_hydration.next_retry_at =
+                Some(now + STARTUP_PUBLIC_SERVER_RETRY_BASE_DELAY.saturating_mul(multiplier));
+        } else {
+            self.startup_public_server_hydration.completed = true;
+            self.startup_public_server_hydration.next_retry_at = None;
         }
     }
 

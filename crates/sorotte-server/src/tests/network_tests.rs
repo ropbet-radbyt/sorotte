@@ -1,5 +1,47 @@
 use super::*;
 
+#[derive(Debug)]
+struct FragmentedAsyncReader {
+    bytes: Vec<u8>,
+    offset: usize,
+    max_fragment_bytes: usize,
+    read_calls: usize,
+}
+
+impl FragmentedAsyncReader {
+    fn new(bytes: impl Into<Vec<u8>>, max_fragment_bytes: usize) -> Self {
+        assert!(max_fragment_bytes > 0);
+        Self {
+            bytes: bytes.into(),
+            offset: 0,
+            max_fragment_bytes,
+            read_calls: 0,
+        }
+    }
+}
+
+impl tokio::io::AsyncRead for FragmentedAsyncReader {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        self.read_calls += 1;
+        if self.offset == self.bytes.len() {
+            return std::task::Poll::Ready(Ok(()));
+        }
+
+        let bytes_to_copy = self
+            .max_fragment_bytes
+            .min(buffer.remaining())
+            .min(self.bytes.len() - self.offset);
+        let end = self.offset + bytes_to_copy;
+        buffer.put_slice(&self.bytes[self.offset..end]);
+        self.offset = end;
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
 async fn connected_tcp_pair() -> (TcpStream, TcpStream) {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -175,6 +217,122 @@ async fn server_network_buffered_line_reader_keeps_partial_line_after_cancel() {
         read_buffer.is_empty(),
         "successful reads should clear the persistent line buffer"
     );
+}
+
+#[tokio::test]
+async fn server_network_buffered_line_reader_accepts_one_byte_fragmentation() {
+    let input = b"fragmented\r\n";
+    let mut stream = FragmentedAsyncReader::new(input, 1);
+    let mut read_buffer = Vec::new();
+
+    let line =
+        crate::network::read_network_line_from_stream_with_buffer(&mut stream, &mut read_buffer)
+            .await
+            .expect("fragmented line read should succeed")
+            .expect("fragmented line should be present");
+
+    assert_eq!(line, "fragmented");
+    assert_eq!(stream.read_calls, input.len());
+    assert!(read_buffer.is_empty());
+}
+
+#[tokio::test]
+async fn server_network_buffered_line_reader_retains_multiple_lines_from_one_read() {
+    let input = b"bare-lf\ncrlf\r\n";
+    let mut stream = FragmentedAsyncReader::new(input, input.len());
+    let mut read_buffer = Vec::new();
+
+    let first =
+        crate::network::read_network_line_from_stream_with_buffer(&mut stream, &mut read_buffer)
+            .await
+            .expect("first buffered line read should succeed");
+    assert_eq!(first.as_deref(), Some("bare-lf"));
+    assert_eq!(stream.read_calls, 1);
+    assert_eq!(read_buffer, b"crlf\r\n");
+
+    let second =
+        crate::network::read_network_line_from_stream_with_buffer(&mut stream, &mut read_buffer)
+            .await
+            .expect("second buffered line read should succeed");
+    assert_eq!(second.as_deref(), Some("crlf"));
+    assert_eq!(
+        stream.read_calls, 1,
+        "a complete buffered line must not perform another asynchronous read"
+    );
+    assert!(read_buffer.is_empty());
+}
+
+#[tokio::test]
+async fn server_network_buffered_line_reader_enforces_hard_limit() {
+    let mut at_limit = vec![b'x'; crate::MAX_PROTOCOL_LINE_BYTES];
+    at_limit.push(b'\n');
+    let mut at_limit_stream = FragmentedAsyncReader::new(at_limit, usize::MAX);
+    let mut read_buffer = Vec::new();
+    let line = crate::network::read_network_line_from_stream_with_buffer(
+        &mut at_limit_stream,
+        &mut read_buffer,
+    )
+    .await
+    .expect("line exactly at the hard limit should succeed")
+    .expect("line exactly at the hard limit should be present");
+    assert_eq!(line.len(), crate::MAX_PROTOCOL_LINE_BYTES);
+
+    let mut at_limit_crlf = vec![b'y'; crate::MAX_PROTOCOL_LINE_BYTES];
+    at_limit_crlf.extend_from_slice(b"\r\n");
+    let mut at_limit_crlf_stream = FragmentedAsyncReader::new(at_limit_crlf, usize::MAX);
+    let line = crate::network::read_network_line_from_stream_with_buffer(
+        &mut at_limit_crlf_stream,
+        &mut read_buffer,
+    )
+    .await
+    .expect("CRLF line exactly at the hard limit should succeed")
+    .expect("CRLF line exactly at the hard limit should be present");
+    assert_eq!(line.len(), crate::MAX_PROTOCOL_LINE_BYTES);
+    assert!(line.bytes().all(|byte| byte == b'y'));
+
+    let mut over_limit = vec![b'x'; crate::MAX_PROTOCOL_LINE_BYTES + 1];
+    over_limit.push(b'\n');
+    let mut over_limit_stream = FragmentedAsyncReader::new(over_limit, usize::MAX);
+    let error = crate::network::read_network_line_from_stream_with_buffer(
+        &mut over_limit_stream,
+        &mut read_buffer,
+    )
+    .await
+    .expect_err("line over the hard limit should fail");
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(error.to_string(), crate::PROTOCOL_LINE_TOO_LONG_ERROR);
+    assert!(
+        read_buffer.len() <= crate::MAX_PROTOCOL_LINE_BYTES + 2,
+        "the bounded reader must not accumulate beyond framing and one sentinel byte"
+    );
+}
+
+#[tokio::test]
+async fn server_network_buffered_line_reader_accepts_final_line_at_eof() {
+    let input = b"final line without newline";
+    let mut stream = FragmentedAsyncReader::new(input, input.len());
+    let mut read_buffer = Vec::new();
+
+    let line =
+        crate::network::read_network_line_from_stream_with_buffer(&mut stream, &mut read_buffer)
+            .await
+            .expect("final unterminated line read should succeed");
+    assert_eq!(line.as_deref(), Some("final line without newline"));
+    assert!(read_buffer.is_empty());
+}
+
+#[tokio::test]
+async fn server_network_buffered_line_reader_rejects_invalid_utf8() {
+    let mut stream = FragmentedAsyncReader::new(vec![0xff, b'\n'], 2);
+    let mut read_buffer = Vec::new();
+
+    let error =
+        crate::network::read_network_line_from_stream_with_buffer(&mut stream, &mut read_buffer)
+            .await
+            .expect_err("invalid UTF-8 should fail");
+
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert!(error.to_string().contains("not valid utf-8"));
 }
 
 #[tokio::test]

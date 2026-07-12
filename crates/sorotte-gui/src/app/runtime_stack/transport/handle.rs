@@ -100,6 +100,7 @@ struct GuiTrackedOutboundProtocolDelivery {
 pub(in crate::app) struct GuiQueuedSessionTransportHandle {
     queued_inbound_protocol_lines: Arc<Mutex<VecDeque<String>>>,
     queued_outbound_protocol_lines: Arc<Mutex<VecDeque<String>>>,
+    queued_outbound_liveness_protocol_line: Arc<Mutex<Option<String>>>,
     tracked_outbound_protocol_delivery: Arc<Mutex<GuiTrackedOutboundProtocolDeliveryState>>,
     queued_outbound_protocol_activity_revision: Arc<AtomicU64>,
 }
@@ -254,10 +255,32 @@ impl GuiQueuedSessionTransportHandle {
     }
 
     pub(in crate::app) fn push_outbound_liveness_protocol_line(&self, line: impl Into<String>) {
+        *self
+            .queued_outbound_liveness_protocol_line
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(line.into());
+    }
+
+    pub(in crate::app) fn take_outbound_liveness_protocol_line_for_driver(&self) -> Option<String> {
+        self.queued_outbound_liveness_protocol_line
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+    }
+
+    pub(in crate::app) fn clear_outbound_liveness_protocol_line(&self) {
+        *self
+            .queued_outbound_liveness_protocol_line
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+
+    pub(in crate::app) fn drain_untracked_outbound_protocol_lines_for_driver(&self) -> Vec<String> {
         self.queued_outbound_protocol_lines
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push_back(line.into());
+            .drain(..)
+            .collect()
     }
 
     pub(in crate::app) fn outbound_protocol_activity_revision(&self) -> u64 {
@@ -267,11 +290,7 @@ impl GuiQueuedSessionTransportHandle {
 
     pub(in crate::app) fn drain_outbound_protocol_lines(&self) -> Vec<String> {
         let tracked_delivery = self.take_outbound_protocol_delivery_for_driver();
-        let mut queue = self
-            .queued_outbound_protocol_lines
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mut lines = Vec::with_capacity(queue.len() + usize::from(tracked_delivery.is_some()));
+        let mut lines = Vec::new();
         if let Some(delivery) = tracked_delivery {
             lines.push(delivery.line);
             self.publish_outbound_protocol_delivery_result(
@@ -280,7 +299,10 @@ impl GuiQueuedSessionTransportHandle {
                 },
             );
         }
-        lines.extend(queue.drain(..));
+        lines.extend(self.drain_untracked_outbound_protocol_lines_for_driver());
+        if let Some(liveness_line) = self.take_outbound_liveness_protocol_line_for_driver() {
+            lines.push(liveness_line);
+        }
         lines
     }
 
@@ -290,6 +312,7 @@ impl GuiQueuedSessionTransportHandle {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
+        self.clear_outbound_liveness_protocol_line();
         self.fail_pending_outbound_protocol_delivery(
             0,
             "Outbound protocol delivery was discarded while closing the session transport.",

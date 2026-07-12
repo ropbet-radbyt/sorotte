@@ -682,6 +682,7 @@ where
         let (operation, result) = match command {
             ClientCommand::Connect { endpoint } => {
                 self.endpoint = Some(endpoint);
+                self.runtime.begin_protocol_connection_generation();
                 return self.set_connection_phase(ConnectionPhase::Connecting);
             }
             ClientCommand::BeginConnecting => {
@@ -689,6 +690,7 @@ where
                     ConnectionPhase::Disconnected
                     | ConnectionPhase::AwaitingHello
                     | ConnectionPhase::Reconnecting { .. } => {
+                        self.runtime.begin_protocol_connection_generation();
                         self.set_connection_phase(ConnectionPhase::Connecting)
                     }
                     ConnectionPhase::Connecting => Vec::new(),
@@ -715,6 +717,7 @@ where
                 };
             }
             ClientCommand::Reconnect { attempt } => {
+                self.runtime.begin_protocol_connection_generation();
                 return self.set_connection_phase(ConnectionPhase::Reconnecting { attempt });
             }
             ClientCommand::Disconnect { now_seconds } => {
@@ -2013,6 +2016,117 @@ mod tests {
         assert!(matches!(
             application.connection_phase(),
             ConnectionPhase::Active(_)
+        ));
+    }
+
+    #[test]
+    fn application_reconnect_drops_staged_state_and_retains_reliable_commands_until_new_hello() {
+        let mut application =
+            ClientApplication::new(ClientSession::default(), TestPlayer::default());
+        let _ = application.dispatch(ClientCommand::ReceiveProtocolLine {
+            line: r#"{"Hello":{"username":"alice","room":{"name":"room-a"},"version":"1.7.5"}}"#
+                .to_owned(),
+            received_at_seconds: 1.0,
+        });
+        assert!(
+            application
+                .runtime
+                .run_state_sync_heartbeat_legacy_ping_compatible(false)
+        );
+        let staged_state = application
+            .pending_protocol_line()
+            .expect("State should encode")
+            .expect("State should be staged");
+        assert!(staged_state.contains("\"State\""));
+        application
+            .runtime
+            .emit_effect(ClientEffect::SendChat("retain-chat".to_owned()))
+            .expect("chat should queue");
+        application
+            .runtime
+            .emit_effect(ClientEffect::SetPlaylist(vec!["episode.mkv".to_owned()]))
+            .expect("playlist command should queue");
+
+        let _ = application.dispatch(ClientCommand::Reconnect { attempt: 1 });
+        assert!(
+            application
+                .pending_protocol_messages()
+                .iter()
+                .all(|message| !matches!(message, ProtocolMessage::State(_)))
+        );
+        assert_eq!(application.pending_protocol_message_count(), 2);
+
+        let _ = application.dispatch(ClientCommand::TransportConnected);
+        let _ = application.dispatch(ClientCommand::ReceiveProtocolLine {
+            line: r#"{"Hello":{"username":"alice","room":{"name":"room-a"},"version":"1.7.5"}}"#
+                .to_owned(),
+            received_at_seconds: 2.0,
+        });
+        assert!(
+            application
+                .pending_protocol_messages()
+                .iter()
+                .all(|message| !matches!(message, ProtocolMessage::State(_)))
+        );
+        assert!(matches!(
+            &application.pending_protocol_messages()[0],
+            ProtocolMessage::Chat(message)
+                if message.chat == sorotte_protocol::ChatPayload::Text("retain-chat".to_owned())
+        ));
+        assert!(matches!(
+            &application.pending_protocol_messages()[1],
+            ProtocolMessage::Set(message) if message.set.playlist_change.is_some()
+        ));
+    }
+
+    #[test]
+    fn application_begin_connecting_after_disconnect_starts_fresh_protocol_generation() {
+        let mut application =
+            ClientApplication::new(ClientSession::default(), TestPlayer::default());
+        let _ = application.dispatch(ClientCommand::ReceiveProtocolLine {
+            line: r#"{"Hello":{"username":"alice","room":{"name":"room-a"},"version":"1.7.5"}}"#
+                .to_owned(),
+            received_at_seconds: 1.0,
+        });
+        assert!(
+            application
+                .runtime
+                .run_state_sync_heartbeat_legacy_ping_compatible(false)
+        );
+        let staged_state = application
+            .pending_protocol_line()
+            .expect("State should encode")
+            .expect("State should be staged");
+        assert!(staged_state.contains("\"State\""));
+        application
+            .runtime
+            .emit_effect(ClientEffect::SendChat("retain-chat".to_owned()))
+            .expect("chat should queue");
+
+        let _ = application.dispatch(ClientCommand::Disconnect { now_seconds: 2.0 });
+        assert!(matches!(
+            application.connection_phase(),
+            ConnectionPhase::Disconnected
+        ));
+        assert!(
+            application
+                .pending_protocol_messages()
+                .iter()
+                .any(|message| matches!(message, ProtocolMessage::State(_)))
+        );
+
+        let _ = application.dispatch(ClientCommand::BeginConnecting);
+
+        assert!(matches!(
+            application.connection_phase(),
+            ConnectionPhase::Connecting
+        ));
+        assert_eq!(application.pending_protocol_message_count(), 1);
+        assert!(matches!(
+            application.pending_protocol_messages().front(),
+            Some(ProtocolMessage::Chat(message))
+                if message.chat
+                    == sorotte_protocol::ChatPayload::Text("retain-chat".to_owned())
         ));
     }
 
