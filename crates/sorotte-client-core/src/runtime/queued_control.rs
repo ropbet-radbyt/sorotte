@@ -195,22 +195,48 @@ where
     /// Fallible transports must use [`Self::flush_queued_protocol_lines_to_transport`]
     /// or the pending-line acknowledgement API instead.
     pub fn flush_queued_protocol_messages(&mut self) -> Vec<ProtocolMessage> {
-        self.control.drain_outbound_messages()
+        let messages = self.control.drain_outbound_messages();
+        for message in &messages {
+            self.playback_coordination
+                .confirm_protocol_message_delivered(message);
+        }
+        messages
     }
 
     /// Transfers an encoded batch to an infallible in-memory owner.
     /// Fallible transports must use [`Self::flush_queued_protocol_lines_to_transport`]
     /// or [`Self::pending_protocol_line`] plus [`Self::acknowledge_protocol_line`].
     pub fn flush_queued_protocol_lines(&mut self) -> Result<Vec<String>, ProtocolError> {
-        self.control.drain_outbound_message_lines()
+        let messages = self
+            .control
+            .outbound_messages()
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        let lines = self.control.drain_outbound_message_lines()?;
+        for message in &messages {
+            self.playback_coordination
+                .confirm_protocol_message_delivered(message);
+        }
+        Ok(lines)
     }
 
-    pub fn pending_protocol_line(&self) -> Result<Option<String>, ProtocolError> {
+    pub fn pending_protocol_line(&self) -> Result<Option<PendingProtocolLine>, ProtocolError> {
         self.control.front_outbound_message_line()
     }
 
-    pub fn acknowledge_protocol_line(&mut self) -> Option<ProtocolMessage> {
-        self.control.acknowledge_outbound_message()
+    pub fn acknowledge_protocol_line(
+        &mut self,
+        lease: ProtocolLineLease,
+    ) -> Option<ProtocolMessage> {
+        let message = self.control.acknowledge_outbound_message(lease)?;
+        self.playback_coordination
+            .confirm_protocol_message_delivered(&message);
+        Some(message)
+    }
+
+    pub fn release_protocol_line(&mut self, lease: ProtocolLineLease) -> bool {
+        self.control.release_outbound_message(lease)
     }
 
     pub fn drain_reconnect_requests(&mut self) -> Vec<f64> {
@@ -276,12 +302,20 @@ where
     /// only after `send_line` succeeds; on failure, that line and its tail stay queued.
     pub fn flush_queued_protocol_lines_to_transport<F>(
         &mut self,
-        send_line: F,
+        mut send_line: F,
     ) -> Result<(), ProtocolError>
     where
         F: FnMut(&str) -> Result<(), ProtocolError>,
     {
-        self.control.flush_outbound_message_lines(send_line)
+        while let Some(pending) = self.pending_protocol_line()? {
+            if let Err(error) = send_line(pending.line()) {
+                let _ = self.release_protocol_line(pending.lease());
+                return Err(error);
+            }
+            self.acknowledge_protocol_line(pending.lease())
+                .expect("a delivered pending protocol line must remain acknowledgeable");
+        }
+        Ok(())
     }
 
     pub fn drain_reconnect_intents<FS, FT>(

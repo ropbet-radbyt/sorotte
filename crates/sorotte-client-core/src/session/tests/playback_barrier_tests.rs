@@ -674,7 +674,7 @@ fn transport_observation_requires_exact_policy_identity_and_deduplicates() {
     let active_policy = buffering_policy(50, Some(8), RoomBufferingPolicy::PauseAnyEligible);
     apply_extension(
         &mut session,
-        PlaybackBarrierSetExtension::new().with_buffering_policy(active_policy),
+        PlaybackBarrierSetExtension::new().with_buffering_policy(active_policy.clone()),
     );
 
     assert!(
@@ -712,6 +712,16 @@ fn transport_observation_requires_exact_policy_identity_and_deduplicates() {
             .playback_barrier_transport_observation(50, Some(8), true, Some(0.25), Some(100.0),)
             .is_none(),
         "an exact duplicate must not enqueue another State obligation"
+    );
+    apply_extension(
+        &mut session,
+        PlaybackBarrierSetExtension::new().with_buffering_policy(active_policy),
+    );
+    assert!(
+        session
+            .playback_barrier_transport_observation(50, Some(8), true, Some(0.25), Some(100.0),)
+            .is_some(),
+        "an authoritative policy snapshot must rearm the current transport report"
     );
     assert!(
         session

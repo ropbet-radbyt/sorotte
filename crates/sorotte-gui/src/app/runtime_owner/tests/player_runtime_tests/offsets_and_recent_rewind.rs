@@ -17,6 +17,7 @@ use std::time::Duration;
 struct OffsetTimelinePlayerState {
     transport_updates: VecDeque<PlayerTransportTelemetryUpdate>,
     set_positions: Vec<f64>,
+    set_paused: Vec<bool>,
 }
 
 struct OffsetTimelinePlayer {
@@ -37,6 +38,15 @@ impl PlayerAdapter for OffsetTimelinePlayer {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .set_positions
             .push(position_seconds);
+        Ok(())
+    }
+
+    fn set_paused(&mut self, paused: bool) -> Result<(), sorotte_player_api::PlayerError> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_paused
+            .push(paused);
         Ok(())
     }
 
@@ -320,6 +330,14 @@ fn real_gui_negative_offset_normalizes_recovery_and_shifts_coordinator_seek_once
             .set_positions
             .is_empty(),
         "Rebuffering must block the forced correction until transport becomes safe"
+    );
+    assert_eq!(
+        player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_paused,
+        vec![true],
+        "the authoritative pause must latch immediately while the forced seek remains deferred"
     );
 
     player_state

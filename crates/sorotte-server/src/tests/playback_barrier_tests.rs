@@ -1,10 +1,16 @@
 use super::*;
 use crate::ServerCompatibilityFallback;
+use sorotte_client_core::{
+    ClientEffect, ClientEffectSink, ClientRuntime, ClientSession, LogicalMediaId,
+    MediaTransportKind, PlaybackBarrierStartConfig, QueuedRuntimeControl,
+};
+use sorotte_player_api::DisconnectedPlayer;
 use sorotte_protocol::{
-    MediaLoadIntent, PlaybackBarrierDegradedReason, PlaybackBarrierParticipantPhase,
-    PlaybackBarrierPhase, PlaybackBarrierSetExtension, PlaybackBarrierStatusPayload,
-    RoomBufferingPhase, RoomBufferingPolicy, RoomBufferingStatusPayload,
-    SOROTTE_PLAYBACK_BARRIER_V1,
+    MediaLoadIntent, MediaReadyPayload, PlaybackBarrierDegradedReason,
+    PlaybackBarrierParticipantPhase, PlaybackBarrierPhase, PlaybackBarrierSetExtension,
+    PlaybackBarrierStateExtension, PlaybackBarrierStatusPayload, RoomBufferingPhase,
+    RoomBufferingPolicy, RoomBufferingStatusPayload, SOROTTE_PLAYBACK_BARRIER_V1, StatePayload,
+    TransportBufferingReportPayload, encode_message_line,
 };
 
 const CAPABILITY: &str = r#""sorottePlaybackBarrierV1":true"#;
@@ -36,6 +42,22 @@ fn buffering_status(lines: &[DirectedOutboundLine]) -> Option<RoomBufferingStatu
         .into_iter()
         .filter_map(|(_, message)| barrier_extension(&message))
         .find_map(|extension| extension.buffering_status)
+}
+
+fn buffering_snapshot_for(
+    lines: &[DirectedOutboundLine],
+    recipient: &str,
+) -> Option<PlaybackBarrierSetExtension> {
+    messages(lines)
+        .into_iter()
+        .find_map(|(client_id, message)| {
+            if client_id != recipient {
+                return None;
+            }
+            let extension = barrier_extension(&message)?;
+            (extension.buffering_policy.is_some() && extension.buffering_status.is_some())
+                .then_some(extension)
+        })
 }
 
 fn playback_barrier_status(lines: &[DirectedOutboundLine]) -> Option<PlaybackBarrierStatusPayload> {
@@ -240,6 +262,145 @@ fn authenticated_readiness_commits_once_and_started_acks_complete_status() {
 }
 
 #[test]
+fn coalesced_client_ready_and_initial_transport_report_both_reach_server() {
+    let room = controlled_room_name_for_test("room", "AB-123-456");
+    let mut runtime = ServerRuntime::with_room_password_salt(DEFAULT_CONTROLLED_ROOM_HASH_SALT);
+    for (client_id, username) in [("alice-client", "alice"), ("bob-client", "bob")] {
+        runtime
+            .handle_line(client_id, &hello(username, &room, true))
+            .expect("barrier-aware hello should succeed");
+    }
+    authenticate_policy_controller(&mut runtime, "alice-client");
+    runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":41,"loadIntent":"newPlayback","logicalMediaId":"coalesced-observations","targetPosition":0.0,"policy":"allEligible","timeoutMs":5000},"bufferingPolicy":{"mediaGeneration":0,"requestNonce":41,"loadIntent":"newPlayback","policy":"pauseAnyEligible","debounceMs":750,"resumeHysteresisMs":1500,"maxPauseMs":5000}}}}"#,
+        )
+        .expect("combined start and buffering policy should configure");
+
+    let mut client_outbox = QueuedRuntimeControl::default();
+    client_outbox.begin_protocol_connection_generation();
+    client_outbox.activate_protocol_connection_generation();
+    client_outbox
+        .emit(ClientEffect::SendState(
+            StatePayload::new().with_playback_barrier_v1(
+                PlaybackBarrierStateExtension::new()
+                    .with_ready(MediaReadyPayload::new(1, true, true).with_seekable(true)),
+            ),
+        ))
+        .expect("readiness should queue");
+    client_outbox
+        .emit(ClientEffect::SendState(
+            StatePayload::new().with_playback_barrier_v1(
+                PlaybackBarrierStateExtension::new()
+                    .with_transport(TransportBufferingReportPayload::new(1, false)),
+            ),
+        ))
+        .expect("initial transport report should queue");
+
+    let coalesced = client_outbox.drain_outbound_messages();
+    assert_eq!(coalesced.len(), 1, "the pending States should coalesce");
+    let line = encode_message_line(&coalesced[0]).expect("coalesced State should encode");
+    runtime
+        .handle_line_fanout("alice-client", &line)
+        .expect("server should accept both coalesced observations");
+
+    let barrier = runtime
+        .room_playback_barriers
+        .get(&room)
+        .expect("start barrier should remain active while bob is pending");
+    assert_eq!(
+        barrier.participants["alice-client"].status.phase,
+        PlaybackBarrierParticipantPhase::Ready,
+        "the readiness acknowledgement must survive State coalescing"
+    );
+    let buffering = runtime
+        .room_buffering_controls
+        .get(&room)
+        .expect("room buffering policy should remain active");
+    assert!(
+        !buffering.reports["alice-client"].buffering,
+        "the initial transport report must survive alongside readiness"
+    );
+}
+
+#[test]
+fn reconnect_rebuilds_undelivered_start_before_server_acceptance() {
+    let mut server = ServerRuntime::default();
+    server
+        .handle_line("alice-client", &hello("alice", "room", true))
+        .expect("server hello should succeed");
+
+    let mut client_session = ClientSession::default();
+    client_session
+        .apply_message_json(&hello("alice", "room", true))
+        .expect("client hello should apply");
+    let mut client = ClientRuntime::new(
+        client_session,
+        DisconnectedPlayer,
+        QueuedRuntimeControl::default(),
+    );
+    client.set_playback_barrier_start_config(PlaybackBarrierStartConfig {
+        policy: Some(sorotte_protocol::PlaybackBarrierPolicy::Controller),
+        ..PlaybackBarrierStartConfig::default()
+    });
+    client.prepare_playback_media(
+        LogicalMediaId::new("undelivered-server-media").unwrap(),
+        MediaTransportKind::NetworkVod,
+        1.0,
+    );
+    let ProtocolMessage::Set(initial) = &client.control().outbound_messages()[0] else {
+        panic!("initial request should use a Set envelope");
+    };
+    let initial_nonce = initial
+        .set
+        .playback_barrier_v1()
+        .expect("initial extension should decode")
+        .and_then(|extension| extension.prepare)
+        .expect("initial start request should be present")
+        .request_nonce;
+
+    // The first Set was never transferred to the server. Starting a new
+    // connection generation must discard its bytes without discarding the
+    // still-current media intent.
+    client.begin_protocol_connection_generation();
+    client.session_mut().mark_reconnecting(1);
+    client.session_mut().reset_sync_state_for_reconnect();
+    client
+        .session_mut()
+        .apply_message_json(&hello("alice", "room", true))
+        .expect("replacement Hello should apply");
+    client
+        .run_controller_auth_notifications_if_needed()
+        .expect("current intent should rebuild after replacement Hello");
+
+    let rebuilt = client.flush_queued_protocol_messages();
+    assert_eq!(rebuilt.len(), 1);
+    let ProtocolMessage::Set(rebuilt_set) = &rebuilt[0] else {
+        panic!("rebuilt request should use a Set envelope");
+    };
+    let rebuilt_prepare = rebuilt_set
+        .set
+        .playback_barrier_v1()
+        .expect("rebuilt extension should decode")
+        .and_then(|extension| extension.prepare)
+        .expect("undelivered semantic start should be rebuilt");
+    assert!(rebuilt_prepare.request_nonce > initial_nonce);
+    assert_eq!(rebuilt_prepare.load_intent, MediaLoadIntent::NewPlayback);
+
+    let rebuilt_line = encode_message_line(&rebuilt[0]).expect("rebuilt request should encode");
+    server
+        .handle_line_fanout("alice-client", &rebuilt_line)
+        .expect("server should accept the fresh semantic request");
+    let barrier = server
+        .room_playback_barriers
+        .get("room")
+        .expect("fresh request should create the room barrier");
+    assert_eq!(barrier.prepare.request_nonce, rebuilt_prepare.request_nonce);
+    assert_eq!(barrier.prepare.logical_media_id, "undelivered-server-media");
+}
+
+#[test]
 fn prepare_quorum_percent_is_normalized_after_capable_cohort_capture() {
     let mut runtime = ServerRuntime::default();
     for (client_id, username, capable) in [
@@ -370,6 +531,113 @@ fn peer_load_of_active_logical_media_cannot_replace_the_start_initiator() {
         .expect("original barrier should remain");
     assert_eq!(barrier.initiator_client_id, "alice-client");
     assert_eq!(barrier.prepare.media_generation, 1);
+}
+
+#[test]
+fn active_barriers_are_superseded_only_by_the_same_session_with_a_higher_nonce() {
+    let mut runtime = ServerRuntime::default();
+    for (client_id, username) in [("alice-client", "alice"), ("bob-client", "bob")] {
+        runtime
+            .handle_line(client_id, &hello(username, "room", true))
+            .expect("hello should succeed");
+    }
+    let first_request = r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":1,"loadIntent":"newPlayback","logicalMediaId":"media-a","targetPosition":0.0,"policy":"allEligible"}}}}"#;
+    runtime
+        .handle_line_fanout("alice-client", first_request)
+        .expect("media A should start preparing");
+
+    let other_controller = runtime
+        .handle_line_fanout(
+            "bob-client",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":20,"loadIntent":"newPlayback","logicalMediaId":"media-b","targetPosition":4.0,"policy":"allEligible"}}}}"#,
+        )
+        .expect("another controller's replacement should be safely rejected");
+    assert!(other_controller.is_empty());
+    assert_eq!(
+        runtime.room_playback_barriers["room"]
+            .prepare
+            .media_generation,
+        1
+    );
+
+    let replacement = runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":2,"loadIntent":"newPlayback","logicalMediaId":"media-b","targetPosition":4.0,"policy":"allEligible"}}}}"#,
+        )
+        .expect("the initiating session should supersede its preparing barrier");
+    let replacement_extensions: Vec<_> = messages(&replacement)
+        .into_iter()
+        .filter_map(|(_, message)| barrier_extension(&message))
+        .collect();
+    let superseded = replacement_extensions
+        .iter()
+        .filter_map(|extension| extension.status.as_ref())
+        .find(|status| status.media_generation == 1)
+        .expect("participants should receive terminal status for media A");
+    assert_eq!(superseded.phase, PlaybackBarrierPhase::Degraded);
+    assert!(superseded.participants.values().all(|participant| {
+        participant.phase == PlaybackBarrierParticipantPhase::Degraded
+            && participant.degraded_reason == Some(PlaybackBarrierDegradedReason::Superseded)
+    }));
+    assert!(replacement_extensions.iter().any(|extension| {
+        extension.prepare.as_ref().is_some_and(|prepare| {
+            prepare.media_generation == 2
+                && prepare.request_nonce == 2
+                && prepare.logical_media_id == "media-b"
+        })
+    }));
+
+    let stale_first = runtime
+        .handle_line_fanout("alice-client", first_request)
+        .expect("a stale media A retry should be safely ignored");
+    assert!(stale_first.is_empty());
+    assert_eq!(
+        runtime.room_playback_barriers["room"]
+            .prepare
+            .media_generation,
+        2
+    );
+
+    for client_id in ["alice-client", "bob-client"] {
+        runtime
+            .handle_line_fanout(
+                client_id,
+                r#"{"State":{"sorottePlaybackBarrierV1":{"ready":{"mediaGeneration":2,"loaded":true,"bufferReady":true}}}}"#,
+            )
+            .expect("media B readiness should succeed");
+    }
+    assert_eq!(
+        runtime.room_playback_barriers["room"].phase,
+        PlaybackBarrierPhase::Committed
+    );
+
+    let replay = runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":3,"loadIntent":"replay","logicalMediaId":"media-b","targetPosition":0.0,"policy":"allEligible"}}}}"#,
+        )
+        .expect("the owner should supersede a committed barrier before StartedAck completion");
+    let replay_extensions: Vec<_> = messages(&replay)
+        .into_iter()
+        .filter_map(|(_, message)| barrier_extension(&message))
+        .collect();
+    let superseded_commit = replay_extensions
+        .iter()
+        .filter_map(|extension| extension.status.as_ref())
+        .find(|status| status.media_generation == 2)
+        .expect("participants should receive terminal status for the committed generation");
+    assert_eq!(superseded_commit.phase, PlaybackBarrierPhase::Degraded);
+    assert!(superseded_commit.participants.values().all(|participant| {
+        participant.degraded_reason == Some(PlaybackBarrierDegradedReason::Superseded)
+    }));
+    assert!(replay_extensions.iter().any(|extension| {
+        extension.prepare.as_ref().is_some_and(|prepare| {
+            prepare.media_generation == 3
+                && prepare.request_nonce == 3
+                && prepare.load_intent == MediaLoadIntent::Replay
+        })
+    }));
 }
 
 #[test]
@@ -976,6 +1244,152 @@ fn controlled_room_authorizes_policy_and_keeps_legacy_clients_wire_compatible() 
 }
 
 #[test]
+fn late_join_and_reconnect_receive_active_pause_any_and_quorum_snapshots() {
+    for (policy_name, expected_policy) in [
+        ("pauseAnyEligible", RoomBufferingPolicy::PauseAnyEligible),
+        ("quorum", RoomBufferingPolicy::Quorum),
+    ] {
+        let room = controlled_room_name_for_test("room", "AB-123-456");
+        let mut runtime = ServerRuntime::with_room_password_salt(DEFAULT_CONTROLLED_ROOM_HASH_SALT);
+        runtime
+            .handle_line("alice-client", &hello("alice", &room, true))
+            .expect("controller hello should succeed");
+        authenticate_policy_controller(&mut runtime, "alice-client");
+        runtime
+            .handle_line_fanout(
+                "alice-client",
+                r#"{"State":{"playstate":{"position":0.0,"paused":false,"doSeek":false}}}"#,
+            )
+            .expect("room should start playing");
+        runtime
+            .handle_line_fanout(
+                "alice-client",
+                &format!(
+                    r#"{{"Set":{{"sorottePlaybackBarrierV1":{{"bufferingPolicy":{{"mediaGeneration":7,"policy":"{policy_name}","quorumPercent":50,"debounceMs":0,"resumeHysteresisMs":0,"maxPauseMs":5000}}}}}}}}"#
+                ),
+            )
+            .expect("active buffering policy should configure");
+
+        let late_join = runtime
+            .handle_line_fanout("bob-client", &hello("bob", &room, true))
+            .expect("late join should succeed");
+        let decoded = messages(&late_join);
+        let hello_index = decoded
+            .iter()
+            .position(|(recipient, message)| {
+                recipient == "bob-client" && matches!(message, ProtocolMessage::Hello(_))
+            })
+            .expect("late joiner should receive Hello");
+        let snapshot_index = decoded
+            .iter()
+            .position(|(recipient, message)| {
+                recipient == "bob-client"
+                    && barrier_extension(message).is_some_and(|extension| {
+                        extension.buffering_policy.is_some() && extension.buffering_status.is_some()
+                    })
+            })
+            .expect("late joiner should receive active policy and status");
+        assert!(snapshot_index > hello_index, "snapshot must follow Hello");
+        let snapshot = buffering_snapshot_for(&late_join, "bob-client")
+            .expect("late joiner should receive a complete snapshot");
+        assert_eq!(
+            snapshot
+                .buffering_policy
+                .as_ref()
+                .map(|policy| policy.policy),
+            Some(expected_policy)
+        );
+        assert_eq!(
+            snapshot
+                .buffering_status
+                .as_ref()
+                .map(|status| status.eligible_clients),
+            Some(2)
+        );
+
+        runtime
+            .handle_line_fanout(
+                "bob-client",
+                r#"{"State":{"sorottePlaybackBarrierV1":{"transport":{"mediaGeneration":7,"buffering":true}}}}"#,
+            )
+            .expect("late joiner's current transport report should be accepted");
+        assert!(runtime.room_playback_state(&room).paused);
+        let reconnect = runtime
+            .handle_line_fanout("bob-client", &hello("bob", &room, true))
+            .expect("reconnect should succeed");
+        assert!(
+            !runtime.room_playback_state(&room).paused,
+            "the old transport's buffering pressure must not survive reconnect"
+        );
+        let snapshot = buffering_snapshot_for(&reconnect, "bob-client")
+            .expect("reconnected participant should receive the active snapshot");
+        assert_eq!(
+            snapshot
+                .buffering_policy
+                .as_ref()
+                .map(|policy| policy.policy),
+            Some(expected_policy)
+        );
+        assert_eq!(
+            snapshot
+                .buffering_status
+                .as_ref()
+                .map(|status| status.eligible_clients),
+            Some(2)
+        );
+    }
+}
+
+#[test]
+fn room_switch_and_capability_upgrade_receive_active_buffering_snapshot() {
+    let room = controlled_room_name_for_test("room", "AB-123-456");
+    let mut runtime = ServerRuntime::with_room_password_salt(DEFAULT_CONTROLLED_ROOM_HASH_SALT);
+    runtime
+        .handle_line("alice-client", &hello("alice", &room, true))
+        .expect("controller hello should succeed");
+    authenticate_policy_controller(&mut runtime, "alice-client");
+    runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"bufferingPolicy":{"mediaGeneration":9,"policy":"pauseAnyEligible","debounceMs":0,"resumeHysteresisMs":0,"maxPauseMs":5000}}}}"#,
+        )
+        .expect("active policy should configure");
+
+    runtime
+        .handle_line("bob-client", &hello("bob", "lobby", true))
+        .expect("bob should join another room");
+    let switch = runtime
+        .handle_line_fanout(
+            "bob-client",
+            &format!(r#"{{"Set":{{"room":{{"name":"{room}"}}}}}}"#),
+        )
+        .expect("room switch should succeed");
+    assert!(
+        buffering_snapshot_for(&switch, "bob-client").is_some(),
+        "capable room switcher should receive the destination policy and status"
+    );
+
+    runtime
+        .handle_line("charlie-client", &hello("charlie", &room, false))
+        .expect("legacy-capability hello should succeed");
+    let upgraded = runtime
+        .handle_line_fanout(
+            "charlie-client",
+            r#"{"Set":{"features":{"sorottePlaybackBarrierV1":true}}}"#,
+        )
+        .expect("capability upgrade should succeed");
+    let snapshot = buffering_snapshot_for(&upgraded, "charlie-client")
+        .expect("newly capable participant should receive policy and status");
+    assert_eq!(
+        snapshot
+            .buffering_status
+            .as_ref()
+            .map(|status| status.eligible_clients),
+        Some(3)
+    );
+}
+
+#[test]
 fn public_room_clients_cannot_enable_coordinated_buffering_pauses() {
     let mut runtime = ServerRuntime::default();
     for (client_id, username) in [("alice-client", "alice"), ("bob-client", "bob")] {
@@ -1352,4 +1766,100 @@ fn disconnect_clears_participant_pressure_and_controller_disconnect_fails_open()
         .expect("remaining capable client should receive disabled status");
     assert_eq!(status.config.policy, RoomBufferingPolicy::Independent);
     assert_eq!(status.phase, RoomBufferingPhase::Independent);
+}
+
+#[test]
+fn authenticated_policy_owner_reconnect_restores_coordination_with_fresh_nonce() {
+    let room = controlled_room_name_for_test("room", "AB-123-456");
+    let mut runtime = ServerRuntime::with_room_password_salt(DEFAULT_CONTROLLED_ROOM_HASH_SALT);
+    for (client_id, username) in [("alice-client", "alice"), ("bob-client", "bob")] {
+        runtime
+            .handle_line(client_id, &hello(username, &room, true))
+            .expect("hello should succeed");
+    }
+    authenticate_policy_controller(&mut runtime, "alice-client");
+    runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"bufferingPolicy":{"mediaGeneration":5,"requestNonce":1,"loadIntent":"newPlayback","policy":"pauseAnyEligible","debounceMs":250,"resumeHysteresisMs":750,"maxPauseMs":5000}}}}"#,
+        )
+        .expect("policy owner should configure coordinated buffering");
+    let generation_before_reconnect = runtime.next_playback_barrier_generation;
+
+    runtime
+        .handle_transport_disconnect_fanout("alice-client")
+        .expect("owner disconnect should fail open");
+    assert_eq!(
+        runtime.room_buffering_controls[&room].config.policy,
+        RoomBufferingPolicy::Independent
+    );
+
+    authenticate_policy_controller(&mut runtime, "bob-client");
+    let replacement_controller = runtime
+        .handle_line_fanout(
+            "bob-client",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"bufferingPolicy":{"mediaGeneration":0,"requestNonce":50,"loadIntent":"transportRefresh","policy":"quorum","quorumPercent":50,"debounceMs":0,"resumeHysteresisMs":0,"maxPauseMs":5000}}}}"#,
+        )
+        .expect("another authenticated controller's refresh should be safely rejected");
+    assert!(replacement_controller.is_empty());
+    assert_eq!(
+        runtime.room_buffering_controls[&room].config.policy,
+        RoomBufferingPolicy::Independent,
+        "controller authorization alone must not transfer policy ownership"
+    );
+    let forged_canonical_refresh = runtime
+        .handle_line_fanout(
+            "bob-client",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"bufferingPolicy":{"mediaGeneration":5,"requestNonce":51,"loadIntent":"transportRefresh","policy":"pauseController"}}}}"#,
+        )
+        .expect("a refresh cannot bypass ownership with a client-supplied generation");
+    assert!(forged_canonical_refresh.is_empty());
+
+    runtime
+        .handle_line("alice-reconnected", &hello("alice", &room, true))
+        .expect("policy owner should reconnect");
+    authenticate_policy_controller(&mut runtime, "alice-reconnected");
+    let refresh = r#"{"Set":{"sorottePlaybackBarrierV1":{"bufferingPolicy":{"mediaGeneration":0,"requestNonce":2,"loadIntent":"transportRefresh","policy":"pauseAnyEligible","debounceMs":250,"resumeHysteresisMs":750,"maxPauseMs":5000}}}}"#;
+    let restored = runtime
+        .handle_line_fanout("alice-reconnected", refresh)
+        .expect("fresh authenticated owner intent should restore the policy");
+    let snapshot = buffering_snapshot_for(&restored, "alice-reconnected")
+        .expect("the restored canonical policy should be acknowledged");
+    let restored_policy = snapshot
+        .buffering_policy
+        .expect("restoration snapshot should contain policy");
+    assert_eq!(
+        restored_policy.policy,
+        RoomBufferingPolicy::PauseAnyEligible
+    );
+    assert_eq!(restored_policy.media_generation, 5);
+    assert_eq!(restored_policy.request_nonce, 2);
+    assert_eq!(
+        restored_policy.load_intent,
+        MediaLoadIntent::TransportRefresh
+    );
+    let control = &runtime.room_buffering_controls[&room];
+    assert_eq!(control.configured_by_client_id, "alice-reconnected");
+    assert_eq!(control.configured_by_username, "alice");
+    assert_eq!(
+        runtime.next_playback_barrier_generation, generation_before_reconnect,
+        "policy restoration must not allocate a new media barrier generation"
+    );
+    assert!(!runtime.room_playback_barriers.contains_key(&room));
+
+    let retry = runtime
+        .handle_line_fanout("alice-reconnected", refresh)
+        .expect("an exact fresh-nonce retry should replay the canonical snapshot");
+    assert!(buffering_snapshot_for(&retry, "alice-reconnected").is_some());
+    let stale = runtime
+        .handle_line_fanout(
+            "alice-reconnected",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"bufferingPolicy":{"mediaGeneration":0,"requestNonce":1,"loadIntent":"transportRefresh","policy":"pauseController"}}}}"#,
+        )
+        .expect("older reconnect intent should be safely ignored");
+    assert!(stale.is_empty());
+    assert_eq!(
+        runtime.room_buffering_controls[&room].config.policy,
+        RoomBufferingPolicy::PauseAnyEligible
+    );
 }

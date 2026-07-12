@@ -432,6 +432,7 @@ pub enum PlaybackBarrierDegradedReason {
     NotReadyAtCommit,
     StartedTimeout,
     Disconnected,
+    Superseded,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -386,7 +386,19 @@ impl ServerRuntime {
         }
 
         let capabilities = hello.capabilities;
-        if let Some(previous_session) = self.remove_session_tracking(client_id) {
+        let mut replacement_outbound = Vec::new();
+        if let Some(previous_session) = self.sessions.get(client_id).cloned() {
+            replacement_outbound.extend(self.mark_playback_barrier_participant_disconnected(
+                client_id,
+                &previous_session.room,
+            )?);
+            replacement_outbound.extend(
+                self.mark_room_buffering_participant_disconnected(
+                    client_id,
+                    &previous_session.room,
+                )?,
+            );
+            self.remove_session_tracking(client_id);
             self.cleanup_room_if_empty(&previous_session.room)?;
         }
         let username = self.find_free_username(&requested_username, Some(client_id));
@@ -423,7 +435,7 @@ impl ServerRuntime {
             now + INITIAL_SERVER_STATE_DELAY_SECONDS,
         );
 
-        let mut outbound = Vec::new();
+        let mut outbound = replacement_outbound;
         let joined_message = user_joined_message_with_metadata(
             &username,
             &room_name,
@@ -497,6 +509,7 @@ impl ServerRuntime {
                 self.clients_receiving_to_gui_only_list_updates(Some(&room_name)),
             );
         }
+        outbound.extend(self.refresh_room_buffering_participant(client_id)?);
 
         Ok(outbound)
     }
@@ -727,6 +740,7 @@ impl ServerRuntime {
                             self.clients_receiving_to_gui_only_list_updates(Some(&session.room)),
                         );
                     }
+                    outbound_messages.extend(self.refresh_room_buffering_participant(client_id)?);
                 }
                 "file" => {
                     let Some(file_update) = file.take() else {
@@ -932,8 +946,21 @@ impl ServerRuntime {
                     let Some(capabilities) = features.take() else {
                         continue;
                     };
+                    let previously_supported = session.capabilities.playback_barrier_v1;
+                    let now_supported = capabilities.playback_barrier_v1;
                     session.capabilities = capabilities;
                     self.sessions.insert(client_id.to_owned(), session.clone());
+                    if !previously_supported && now_supported {
+                        outbound_messages
+                            .extend(self.refresh_room_buffering_participant(client_id)?);
+                    } else if previously_supported && !now_supported {
+                        outbound_messages.extend(
+                            self.mark_room_buffering_participant_disconnected(
+                                client_id,
+                                &session.room,
+                            )?,
+                        );
+                    }
                 }
                 SOROTTE_PLAYBACK_BARRIER_V1 => {
                     let Some(extension) = playback_barrier.take() else {

@@ -826,6 +826,19 @@ impl PlaybackCoordinator {
         if !now_seconds.is_finite() {
             return Vec::new();
         }
+        if self
+            .observed
+            .is_some_and(|observed| observed.paused_for_cache)
+        {
+            for command in &mut self.pending_commands {
+                if matches!(command.kind, PendingCommandKind::Pause) {
+                    // mpv intentionally masks logical pause while cache pause
+                    // is active. Keep the command observation-backed without
+                    // charging that unobservable interval to its timeout.
+                    command.issued_at_seconds = now_seconds;
+                }
+            }
+        }
         let timed_out = self
             .pending_commands
             .iter()
@@ -1092,6 +1105,19 @@ impl PlaybackCoordinator {
 
         if desired.paused {
             if self.transport_blocks_correction(observed) {
+                if observed.logical_pause != Some(true) {
+                    // Latch room pause immediately even while loading,
+                    // buffering, or seeking. Position correction remains
+                    // deferred until the transport is safe, and completion
+                    // still requires an observation of logical pause.
+                    self.issue_command(
+                        desired.state_revision,
+                        observed.observed_at_seconds,
+                        PendingCommandKind::Pause,
+                        CoordinatorPlayerCommand::SetPaused(true),
+                        actions,
+                    );
+                }
                 return;
             }
             self.issue_desired_seek_if_needed(desired, observed, actions);
@@ -2405,6 +2431,171 @@ mod tests {
             } if *rate > NORMAL_PLAYBACK_RATE
         )));
         assert!(coordinator.recovery_episode().is_none());
+    }
+
+    #[test]
+    fn authoritative_pause_latches_in_every_transport_blocked_phase_without_seeking() {
+        let blocked_states = [
+            (PlayerTransportPhase::Empty, false, false),
+            (PlayerTransportPhase::Loading, false, false),
+            (PlayerTransportPhase::Prebuffering, false, false),
+            (PlayerTransportPhase::Rebuffering, true, false),
+            (PlayerTransportPhase::Seeking, false, true),
+            (PlayerTransportPhase::Ended, false, false),
+            (PlayerTransportPhase::Failed, false, false),
+        ];
+
+        for (phase, paused_for_cache, seeking) in blocked_states {
+            let (mut coordinator, generation) = coordinator(MediaTransportKind::NetworkVod);
+            coordinator.update_desired_room_state(DesiredRoomPlayback {
+                force_seek: true,
+                ..desired(generation, 1, true, 12.0)
+            });
+
+            let actions = coordinator.observe(
+                PlayerTransportObservation::new(generation, 1.0)
+                    .with_phase(phase)
+                    .with_position(5.0)
+                    .with_logical_pause(false)
+                    .with_cache_pause(paused_for_cache)
+                    .with_seeking(seeking)
+                    .with_seekable(true),
+            );
+
+            assert!(
+                actions.iter().any(|action| matches!(
+                    action,
+                    PlaybackCoordinatorAction::Execute {
+                        command: CoordinatorPlayerCommand::SetPaused(true),
+                        ..
+                    }
+                )),
+                "authoritative pause was not latched during {phase:?}: {actions:?}"
+            );
+            assert!(
+                !actions.iter().any(|action| matches!(
+                    action,
+                    PlaybackCoordinatorAction::Execute {
+                        command: CoordinatorPlayerCommand::SetPosition(_),
+                        ..
+                    }
+                )),
+                "position correction must remain deferred during {phase:?}: {actions:?}"
+            );
+            assert!(
+                !actions.iter().any(|action| matches!(
+                    action,
+                    PlaybackCoordinatorAction::RevisionApplied { .. }
+                )),
+                "pause dispatch alone must not complete the revision during {phase:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cache_pause_suspends_pause_timeout_and_defers_seek_and_revision_completion() {
+        let config = PlaybackCoordinatorConfig {
+            command_timeout_seconds: 1.0,
+            ..PlaybackCoordinatorConfig::default()
+        };
+        let mut coordinator = PlaybackCoordinator::new(config);
+        let generation = coordinator
+            .prepare_media(
+                LogicalMediaId::new("cache-paused-authoritative-pause").unwrap(),
+                MediaTransportKind::NetworkVod,
+                0.0,
+            )
+            .media_generation;
+        coordinator.update_desired_room_state(DesiredRoomPlayback {
+            force_seek: true,
+            ..desired(generation, 1, true, 12.0)
+        });
+
+        let latch = coordinator.observe(
+            PlayerTransportObservation::new(generation, 1.0)
+                .with_phase(PlayerTransportPhase::Rebuffering)
+                .with_position(5.0)
+                .with_logical_pause(false)
+                .with_cache_pause(true)
+                .with_seeking(false)
+                .with_seekable(true),
+        );
+        let pause_id = latch
+            .iter()
+            .find_map(|action| match action {
+                PlaybackCoordinatorAction::Execute {
+                    command_id,
+                    command: CoordinatorPlayerCommand::SetPaused(true),
+                } => Some(*command_id),
+                _ => None,
+            })
+            .expect("cache-paused transport should latch authoritative pause");
+        assert!(coordinator.command_accepted(pause_id));
+
+        let stalled_tick = coordinator.tick(20.0);
+        assert!(
+            !stalled_tick.iter().any(|action| matches!(
+                action,
+                PlaybackCoordinatorAction::CommandTimedOut { command_id }
+                    if *command_id == pause_id
+            )),
+            "logical-pause acknowledgement is masked during cache pause"
+        );
+        assert_eq!(coordinator.metrics().command_timeouts, 0);
+
+        let cache_released = coordinator.observe(
+            PlayerTransportObservation::new(generation, 20.1)
+                .with_phase(PlayerTransportPhase::ReadyPaused)
+                .with_position(5.0)
+                .with_logical_pause(true)
+                .with_cache_pause(false)
+                .with_seeking(false)
+                .with_seekable(true),
+        );
+        assert!(cache_released.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPosition(position),
+                ..
+            } if (*position - 12.0).abs() < f64::EPSILON
+        )));
+        assert!(
+            !cache_released
+                .iter()
+                .any(|action| matches!(action, PlaybackCoordinatorAction::RevisionApplied { .. }))
+        );
+
+        let seeking = coordinator.observe(
+            PlayerTransportObservation::new(generation, 20.2)
+                .with_phase(PlayerTransportPhase::Seeking)
+                .with_position(12.0)
+                .with_logical_pause(true)
+                .with_cache_pause(false)
+                .with_seeking(true)
+                .with_seekable(true),
+        );
+        assert!(
+            !seeking
+                .iter()
+                .any(|action| matches!(action, PlaybackCoordinatorAction::RevisionApplied { .. }))
+        );
+
+        let applied = coordinator.observe(
+            PlayerTransportObservation::new(generation, 20.3)
+                .with_phase(PlayerTransportPhase::ReadyPaused)
+                .with_position(12.0)
+                .with_logical_pause(true)
+                .with_cache_pause(false)
+                .with_seeking(false)
+                .with_seekable(true),
+        );
+        assert!(applied.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::RevisionApplied {
+                state_revision: 1,
+                ..
+            }
+        )));
     }
 
     #[test]

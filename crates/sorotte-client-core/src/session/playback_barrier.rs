@@ -17,6 +17,7 @@ pub(super) struct ClientPlaybackBarrierState {
     buffering_policy: Option<RoomBufferingPolicyPayload>,
     buffering_status: Option<RoomBufferingStatusPayload>,
     last_transport_observation: Option<TransportBufferingReportPayload>,
+    buffering_report_epoch: u64,
 }
 
 impl ClientSession {
@@ -78,6 +79,14 @@ impl ClientSession {
         self.playback_barrier_v1_negotiated()
             .then_some(self.playback_barrier.buffering_status.as_ref())
             .flatten()
+    }
+
+    /// Changes whenever the server sends a valid full buffering-policy
+    /// snapshot. Runtime-level reporting uses this epoch so an identical
+    /// policy received by a new room/connection transport still produces one
+    /// fresh current-state report.
+    pub(crate) fn playback_barrier_buffering_report_epoch(&self) -> u64 {
+        self.playback_barrier.buffering_report_epoch
     }
 
     /// Builds a transport-readiness observation only while the reported media
@@ -338,11 +347,19 @@ impl ClientSession {
             return;
         }
 
-        let changed = self.playback_barrier.buffering_policy.as_ref() != Some(&policy);
-        if changed {
+        if self.playback_barrier.buffering_policy.as_ref() != Some(&policy) {
             self.playback_barrier.buffering_status = None;
-            self.playback_barrier.last_transport_observation = None;
         }
+        // A full policy is also the server's authoritative snapshot after a
+        // join, reconnect, room switch, or capability upgrade. Even when its
+        // identity is unchanged, the server has no report for this transport
+        // yet, so allow the runtime to publish its current buffering state.
+        self.playback_barrier.last_transport_observation = None;
+        self.playback_barrier.buffering_report_epoch = self
+            .playback_barrier
+            .buffering_report_epoch
+            .wrapping_add(1)
+            .max(1);
         self.playback_barrier.buffering_policy = Some(policy);
     }
 

@@ -167,7 +167,8 @@ pub use self::config::{
     ReconnectStateRestoreCorrectionStateSnapshot, SessionBehaviorConfig, UnpauseActionMode,
 };
 pub use self::control::{
-    ClientEffect, ClientEffectError, ClientEffectSink, ClientRuntimeAction, QueuedRuntimeControl,
+    ClientEffect, ClientEffectError, ClientEffectSink, ClientRuntimeAction, PendingProtocolLine,
+    PlaybackBarrierRequestScope, QueuedRuntimeControl,
 };
 pub use self::inbound::{
     ClientCompatibilityFallback, FileDuration, FileSize, PeerCapabilities, SharedFile,
@@ -186,6 +187,7 @@ pub use self::notifications::{
     ControllerAuthTransitionNotification, FileDifferenceSummary, ReconnectPlaylistRestoreIntent,
     ReconnectTransitionNotification, UserChangeNotification,
 };
+pub use self::outbox::ProtocolLineLease;
 pub use self::ping::ClientPingMetricsLegacyCompatible;
 pub(crate) use self::ping::unix_wall_clock_time_seconds_legacy_compatible;
 pub use self::playback_coordinator::{

@@ -8,6 +8,8 @@ where
 {
     pub fn begin_protocol_connection_generation(&mut self) {
         self.control.begin_protocol_connection_generation();
+        self.playback_coordination
+            .begin_protocol_connection_generation();
     }
 
     pub fn run_readiness_unpause_attempt(
@@ -72,7 +74,8 @@ where
         let actions = self
             .session
             .runtime_actions_for_controller_auth_notifications_if_needed();
-        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)?;
+        self.emit_pending_playback_barrier_request()
     }
 
     pub fn run_controlled_room_creation_notifications_if_needed(

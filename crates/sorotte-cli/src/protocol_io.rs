@@ -77,9 +77,12 @@ pub(super) async fn flush_runtime_protocol_lines<P>(
 where
     P: PlayerAdapter,
 {
-    while let Some(line) = runtime.pending_protocol_line()? {
-        write_protocol_line(writer, &line).await?;
-        let acknowledged = runtime.acknowledge_protocol_line();
+    while let Some(pending) = runtime.pending_protocol_line()? {
+        if let Err(error) = write_protocol_line(writer, pending.line()).await {
+            let _ = runtime.release_protocol_line(pending.lease());
+            return Err(error);
+        }
+        let acknowledged = runtime.acknowledge_protocol_line(pending.lease());
         debug_assert!(acknowledged.is_some());
     }
     Ok(())
@@ -166,6 +169,7 @@ mod tests {
                 .pending_protocol_line()
                 .expect("pending line should still serialize")
                 .expect("failed line should remain pending")
+                .line()
                 .contains("retry me")
         );
     }

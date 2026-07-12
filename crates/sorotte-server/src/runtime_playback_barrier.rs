@@ -78,6 +78,29 @@ impl ServerRuntime {
         )]
     }
 
+    /// Re-evaluates the dynamic eligible cohort and gives a newly capable
+    /// room participant the authoritative ongoing policy. The targeted
+    /// policy snapshot prompts that transport to report its current state;
+    /// the status fanout keeps the rest of the room's denominator current.
+    pub(crate) fn refresh_room_buffering_participant(
+        &mut self,
+        client_id: &str,
+    ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
+        let Some(session) = self.sessions.get(client_id) else {
+            return Ok(Vec::new());
+        };
+        if !session.capabilities.playback_barrier_v1
+            || !self.room_buffering_controls.contains_key(&session.room)
+        {
+            return Ok(Vec::new());
+        }
+        let room_name = session.room.clone();
+        let mut outbound =
+            self.evaluate_room_buffering_at(&room_name, self.current_time_seconds(), true)?;
+        outbound.extend(self.room_buffering_snapshot_for_client(&room_name, client_id));
+        Ok(outbound)
+    }
+
     pub(crate) fn handle_playback_barrier_set(
         &mut self,
         client_id: &str,
@@ -140,6 +163,8 @@ impl ServerRuntime {
             || (controlled_room && !authenticated_controller)
             || (!controlled_room && config.policy != RoomBufferingPolicy::Independent)
             || config.state_revision == Some(0)
+            || (config.load_intent == MediaLoadIntent::TransportRefresh
+                && config.media_generation != 0)
         {
             return Ok(Vec::new());
         }
@@ -182,32 +207,53 @@ impl ServerRuntime {
                         Vec::new()
                     });
                 }
+                let transport_refresh_identity =
+                    if config.load_intent == MediaLoadIntent::TransportRefresh {
+                        let Some(control) = self.room_buffering_controls.get(&session.room) else {
+                            return Ok(Vec::new());
+                        };
+                        if control.configured_by_username != session.username {
+                            return Ok(Vec::new());
+                        }
+                        Some((
+                            control.config.media_generation,
+                            control.config.state_revision,
+                        ))
+                    } else {
+                        None
+                    };
                 self.playback_barrier_request_nonces
                     .insert(client_id.to_owned(), config.request_nonce);
-                if config.load_intent == MediaLoadIntent::TransportRefresh {
-                    return Ok(self.room_buffering_snapshot_for_client(&session.room, client_id));
+                if let Some((media_generation, state_revision)) = transport_refresh_identity {
+                    // A reconnect refresh is new intent, not a replay of the
+                    // old serialized request. Rebind the freshly authorized
+                    // owner's requested policy to the server's retained
+                    // canonical media identity without allocating a barrier.
+                    config.media_generation = media_generation;
+                    config.state_revision = state_revision;
+                } else {
+                    if self
+                        .room_playback_barriers
+                        .get(&session.room)
+                        .is_some_and(|barrier| {
+                            matches!(
+                                barrier.phase,
+                                PlaybackBarrierPhase::Preparing | PlaybackBarrierPhase::Committed
+                            )
+                        })
+                    {
+                        return Ok(Vec::new());
+                    }
+                    let Some(generation) = self.allocate_playback_barrier_generation() else {
+                        return Ok(Vec::new());
+                    };
+                    config.media_generation = generation;
+                    config.state_revision = None;
+                    // A barrier from a previous playback episode is no longer the
+                    // current room-media lifecycle, even though its terminal
+                    // diagnostics may have been retained until this request.
+                    self.room_playback_barriers.remove(&session.room);
                 }
-                if self
-                    .room_playback_barriers
-                    .get(&session.room)
-                    .is_some_and(|barrier| {
-                        matches!(
-                            barrier.phase,
-                            PlaybackBarrierPhase::Preparing | PlaybackBarrierPhase::Committed
-                        )
-                    })
-                {
-                    return Ok(Vec::new());
-                }
-                let Some(generation) = self.allocate_playback_barrier_generation() else {
-                    return Ok(Vec::new());
-                };
-                config.media_generation = generation;
-                config.state_revision = None;
-                // A barrier from a previous playback episode is no longer the
-                // current room-media lifecycle, even though its terminal
-                // diagnostics may have been retained until this request.
-                self.room_playback_barriers.remove(&session.room);
             }
         }
         if let Some(barrier) = self.room_playback_barriers.get(&session.room)
@@ -656,11 +702,12 @@ impl ServerRuntime {
             });
         }
         // Consume every authorized, structurally valid nonce, including a
-        // request rejected by the active lifecycle. Retrying that stale user
-        // intent after the active generation terminates must not start it.
+        // request rejected because it does not own the active lifecycle.
+        // Retrying that stale user intent later must not start it.
         self.playback_barrier_request_nonces
             .insert(client_id.to_owned(), prepare.request_nonce);
 
+        let mut supersedes_active = false;
         if let Some(barrier) = self.room_playback_barriers.get(&session.room) {
             let same_logical_media = barrier.prepare.logical_media_id == prepare.logical_media_id;
             if prepare.load_intent == MediaLoadIntent::TransportRefresh {
@@ -674,26 +721,35 @@ impl ServerRuntime {
                 barrier.phase,
                 PlaybackBarrierPhase::Preparing | PlaybackBarrierPhase::Committed
             ) {
-                // An active generation cannot be superseded by a second
-                // controller, a reconnect, or a nonce change.
-                return Ok(Vec::new());
-            }
-            if prepare.load_intent == MediaLoadIntent::NewPlayback
-                && same_logical_media
-                && (barrier.initiator_client_id != client_id
-                    || barrier.initiator_session_sequence != initiator_session_sequence)
-            {
-                // A replacement controller or reconnected transport has no
-                // trustworthy local episode history. Its fresh, authorized
-                // nonce is nevertheless explicit playback intent, and the
-                // retained terminal identity makes Replay unambiguous.
-                prepare.load_intent = MediaLoadIntent::Replay;
-            }
-            match prepare.load_intent {
-                MediaLoadIntent::NewPlayback if same_logical_media => return Ok(Vec::new()),
-                MediaLoadIntent::Replay if !same_logical_media => return Ok(Vec::new()),
-                MediaLoadIntent::NewPlayback | MediaLoadIntent::Replay => {}
-                MediaLoadIntent::TransportRefresh => unreachable!("handled above"),
+                let same_owner = barrier.initiator_client_id == client_id
+                    && barrier.initiator_session_sequence == initiator_session_sequence;
+                let replacement_intent_matches_identity = match prepare.load_intent {
+                    MediaLoadIntent::NewPlayback => !same_logical_media,
+                    MediaLoadIntent::Replay => same_logical_media,
+                    MediaLoadIntent::TransportRefresh => false,
+                };
+                if !same_owner || !replacement_intent_matches_identity {
+                    return Ok(Vec::new());
+                }
+                supersedes_active = true;
+            } else {
+                if prepare.load_intent == MediaLoadIntent::NewPlayback
+                    && same_logical_media
+                    && (barrier.initiator_client_id != client_id
+                        || barrier.initiator_session_sequence != initiator_session_sequence)
+                {
+                    // A replacement controller or reconnected transport has no
+                    // trustworthy local episode history. Its fresh, authorized
+                    // nonce is nevertheless explicit playback intent, and the
+                    // retained terminal identity makes Replay unambiguous.
+                    prepare.load_intent = MediaLoadIntent::Replay;
+                }
+                match prepare.load_intent {
+                    MediaLoadIntent::NewPlayback if same_logical_media => return Ok(Vec::new()),
+                    MediaLoadIntent::Replay if !same_logical_media => return Ok(Vec::new()),
+                    MediaLoadIntent::NewPlayback | MediaLoadIntent::Replay => {}
+                    MediaLoadIntent::TransportRefresh => unreachable!("handled above"),
+                }
             }
         } else if prepare.load_intent == MediaLoadIntent::TransportRefresh {
             return Ok(Vec::new());
@@ -703,6 +759,20 @@ impl ServerRuntime {
             return Ok(Vec::new());
         };
         prepare.media_generation = generation;
+        let mut outbound = Vec::new();
+        if supersedes_active {
+            let barrier = self
+                .room_playback_barriers
+                .get_mut(&session.room)
+                .expect("active supersession candidate should still exist");
+            barrier.phase = PlaybackBarrierPhase::Degraded;
+            for participant in barrier.participants.values_mut() {
+                participant.status.phase = PlaybackBarrierParticipantPhase::Degraded;
+                participant.status.degraded_reason =
+                    Some(PlaybackBarrierDegradedReason::Superseded);
+            }
+            outbound.extend(self.playback_barrier_status_fanout(&session.room));
+        }
         if self
             .room_buffering_controls
             .get(&session.room)
@@ -812,7 +882,6 @@ impl ServerRuntime {
         self.seed_room_client_playback_states(&room_name, target_position, now_seconds);
         self.persist_room_if_needed(&room_name)?;
 
-        let mut outbound = Vec::new();
         for peer_client in self.clients_in_room(&room_name) {
             let state_message = self.forced_state_sync_message_for_client(
                 &peer_client,

@@ -4,11 +4,30 @@ use sorotte_player_api::PlayerCommand;
 
 pub struct ClientSessionUpdate<'a> {
     session: &'a mut ClientSession,
+    control: Option<&'a mut dyn ClientEffectSink>,
 }
 
 impl<'a> ClientSessionUpdate<'a> {
     pub fn new(session: &'a mut ClientSession) -> Self {
-        Self { session }
+        Self {
+            session,
+            control: None,
+        }
+    }
+
+    fn with_control(session: &'a mut ClientSession, control: &'a mut dyn ClientEffectSink) -> Self {
+        Self {
+            session,
+            control: Some(control),
+        }
+    }
+
+    fn cancel_playback_barrier_request_after_room_change(&mut self, previous_room: Option<String>) {
+        if previous_room.as_deref() != self.session.room()
+            && let Some(control) = self.control.as_deref_mut()
+        {
+            control.cancel_protocol_playback_barrier_requests();
+        }
     }
 
     pub fn apply_player_playback_telemetry_update(
@@ -19,14 +38,19 @@ impl<'a> ClientSessionUpdate<'a> {
     }
 
     pub fn initialize_local_identity(&mut self, username: String, room: String) {
+        let previous_room = self.session.room().map(str::to_owned);
         self.session.initialize_local_identity(username, room);
+        self.cancel_playback_barrier_request_after_room_change(previous_room);
     }
 
     pub fn apply_protocol_message(
         &mut self,
         message: ProtocolMessage,
     ) -> Result<(), ProtocolError> {
-        self.session.apply_protocol_message(message)
+        let previous_room = self.session.room().map(str::to_owned);
+        let result = self.session.apply_protocol_message(message);
+        self.cancel_playback_barrier_request_after_room_change(previous_room);
+        result
     }
 
     pub fn apply_protocol_message_at(
@@ -34,11 +58,17 @@ impl<'a> ClientSessionUpdate<'a> {
         message: ProtocolMessage,
         now_seconds: f64,
     ) -> Result<(), ProtocolError> {
-        self.session.apply_protocol_message_at(message, now_seconds)
+        let previous_room = self.session.room().map(str::to_owned);
+        let result = self.session.apply_protocol_message_at(message, now_seconds);
+        self.cancel_playback_barrier_request_after_room_change(previous_room);
+        result
     }
 
     pub fn apply_message_json(&mut self, json_line: &str) -> Result<(), ProtocolError> {
-        self.session.apply_message_json(json_line)
+        let previous_room = self.session.room().map(str::to_owned);
+        let result = self.session.apply_message_json(json_line);
+        self.cancel_playback_barrier_request_after_room_change(previous_room);
+        result
     }
 
     pub fn apply_message_json_at(
@@ -46,7 +76,10 @@ impl<'a> ClientSessionUpdate<'a> {
         json_line: &str,
         now_seconds: f64,
     ) -> Result<(), ProtocolError> {
-        self.session.apply_message_json_at(json_line, now_seconds)
+        let previous_room = self.session.room().map(str::to_owned);
+        let result = self.session.apply_message_json_at(json_line, now_seconds);
+        self.cancel_playback_barrier_request_after_room_change(previous_room);
+        result
     }
 
     pub fn mark_connecting(&mut self) {
@@ -228,14 +261,33 @@ where
             MediaLoadIntent::NewPlayback,
             now_seconds,
         );
-        if let Some(extension) = self
+        if let Some(room) = self.session.room() {
+            self.control
+                .retain_protocol_playback_barrier_scope(room, plan.media_generation);
+        } else {
+            self.control.cancel_protocol_playback_barrier_requests();
+        }
+        if let Some(request) = self
             .playback_coordination
             .playback_barrier_set_for_new_media(&plan, self.session, now_seconds)
         {
             self.control.activate_protocol_connection_generation();
+            let scope = PlaybackBarrierRequestScope::new(
+                request.room.clone(),
+                request.local_media_generation,
+                request.request_nonce,
+            );
             self.control
-                .emit(ClientEffect::send_playback_barrier_set(extension))
+                .emit(ClientEffect::send_playback_barrier_set(
+                    request.extension,
+                    scope,
+                ))
                 .map_err(client_effect_player_error)?;
+            self.playback_coordination
+                .confirm_playback_barrier_request_queued(
+                    request.local_media_generation,
+                    request.request_nonce,
+                );
         }
         Ok(plan)
     }
@@ -363,7 +415,7 @@ where
     }
 
     pub fn session_mut(&mut self) -> ClientSessionUpdate<'_> {
-        ClientSessionUpdate::new(&mut self.session)
+        ClientSessionUpdate::with_control(&mut self.session, &mut self.control)
     }
 
     pub fn reconnect_state_restore_correction_metrics(

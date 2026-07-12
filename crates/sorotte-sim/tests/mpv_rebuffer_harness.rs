@@ -241,6 +241,8 @@ fn real_mpv_clients_keep_seek_recovery_bounded_during_an_http_stall() {
         server.wait_for_requests(2, Duration::from_secs(1)),
         "both mpv clients should have fetched their independent media routes"
     );
+
+    verify_authoritative_pause_latches_during_an_http_stall();
 }
 
 fn verify_barrier_start_then_ordinary_pause_with_real_mpv(media: &TemporaryMedia) {
@@ -400,6 +402,123 @@ fn verify_one_bounded_rebuffer_episode_with_real_mpv() {
     assert!(
         server.wait_for_requests(1, Duration::from_secs(3)),
         "real mpv should fetch the short deterministic stall route"
+    );
+}
+
+fn verify_authoritative_pause_latches_during_an_http_stall() {
+    const PAUSE_REVISION: u64 = 2;
+    let server = FaultInjectingHttpServer::start(BTreeMap::from([(
+        "/pause-stall.wav".to_owned(),
+        HttpMediaFixture::static_bytes("audio/wav", pcm_wav(20)).with_faults(NetworkFaultProfile {
+            bytes_per_second: Some(115_000),
+            burst_stalls: vec![BurstStall {
+                after_body_bytes: 360_000,
+                duration: Duration::from_secs(4),
+            }],
+            ..NetworkFaultProfile::default()
+        }),
+    )]))
+    .expect("authoritative-pause fault server should start");
+    let mut client = RealMpvClient::start(10_003, &server.url("/pause-stall.wav"));
+
+    wait_for_real_mpv_client(
+        &mut client,
+        "injected HTTP stall after observation-backed start",
+        TEST_DURATION,
+        |state| {
+            state.started_revisions.contains(&1)
+                && state.latest_transport.paused_for_cache == Some(true)
+                && state.latest_transport.logical_pause != Some(true)
+        },
+    );
+
+    let pause_request_position = client
+        .latest_transport
+        .position_seconds
+        .expect("the injected stall should retain a transport position");
+    let pause_target = pause_request_position + 0.5;
+    let command_start = client.executed_commands.len();
+    let history_start = client.transport_history.len();
+    client.set_desired(PAUSE_REVISION, true, pause_target, true);
+
+    let commands_during_stall = &client.executed_commands[command_start..];
+    assert!(
+        matches!(
+            commands_during_stall.first(),
+            Some(CoordinatorPlayerCommand::SetPaused(true))
+        ),
+        "authoritative pause must be dispatched synchronously while cache-paused: \
+         {commands_during_stall:?}"
+    );
+    assert!(
+        !commands_during_stall
+            .iter()
+            .any(|command| matches!(command, CoordinatorPlayerCommand::SetPosition(_))),
+        "the forced position correction must remain deferred during cache pause: \
+         {commands_during_stall:?}"
+    );
+
+    wait_for_real_mpv_client(
+        &mut client,
+        "cache release into latched logical pause and deferred seek completion",
+        TEST_DURATION,
+        |state| {
+            state.applied_revisions.contains(&PAUSE_REVISION)
+                && state.latest_transport.paused_for_cache == Some(false)
+                && state.latest_transport.logical_pause == Some(true)
+                && state
+                    .latest_transport
+                    .position_seconds
+                    .is_some_and(|position| (position - pause_target).abs() <= 0.5)
+        },
+    );
+
+    let post_request_history = &client.transport_history[history_start..];
+    let cache_release_index = post_request_history
+        .iter()
+        .position(|state| state.paused_for_cache == Some(false))
+        .expect("the injected HTTP stall should release its cache pause");
+    let logical_pause_index = post_request_history
+        .iter()
+        .position(|state| state.logical_pause == Some(true))
+        .expect("cache release should expose the latched logical pause");
+    assert!(
+        logical_pause_index >= cache_release_index,
+        "logical pause must not be inferred from cache pause"
+    );
+    let release_position = post_request_history[cache_release_index]
+        .position_seconds
+        .unwrap_or(pause_request_position);
+    let maximum_position_before_logical_pause = post_request_history
+        [cache_release_index..logical_pause_index]
+        .iter()
+        .filter_map(|state| state.position_seconds)
+        .fold(release_position, f64::max);
+    assert!(
+        maximum_position_before_logical_pause - release_position <= 0.01,
+        "mpv advanced after cache release before logical pause was established: \
+         release={release_position}, maximum={maximum_position_before_logical_pause}, \
+         history={:?}",
+        &post_request_history[cache_release_index..=logical_pause_index]
+    );
+
+    let completed_commands = &client.executed_commands[command_start..];
+    let pause_index = completed_commands
+        .iter()
+        .position(|command| matches!(command, CoordinatorPlayerCommand::SetPaused(true)))
+        .expect("authoritative pause command should remain recorded");
+    let seek_index = completed_commands
+        .iter()
+        .position(|command| matches!(command, CoordinatorPlayerCommand::SetPosition(_)))
+        .expect("forced seek should execute after cache release");
+    assert!(
+        pause_index < seek_index,
+        "pause must latch before the deferred seek: {completed_commands:?}"
+    );
+    drop(client);
+    assert!(
+        server.wait_for_requests(1, Duration::from_secs(3)),
+        "real mpv should fetch the authoritative-pause stall route"
     );
 }
 
@@ -588,6 +707,7 @@ struct RealMpvClient {
     applied_revisions: BTreeSet<u64>,
     started_revisions: BTreeSet<u64>,
     latest_transport: PlayerTransportTelemetryUpdate,
+    transport_history: Vec<PlayerTransportTelemetryUpdate>,
     observed_rebuffer: bool,
     last_cache_pause_at: Option<f64>,
     clock_started: Instant,
@@ -657,6 +777,7 @@ impl RealMpvClient {
             applied_revisions: BTreeSet::new(),
             started_revisions: BTreeSet::new(),
             latest_transport: PlayerTransportTelemetryUpdate::default(),
+            transport_history: Vec::new(),
             observed_rebuffer: false,
             last_cache_pause_at: None,
             clock_started: Instant::now(),
@@ -692,6 +813,7 @@ impl RealMpvClient {
             }
             let observation = self.coordinator_observation(update.clone());
             merge_current_generation(&mut self.latest_transport, update);
+            self.transport_history.push(self.latest_transport.clone());
             if let Some(observation) = observation {
                 let actions = self.coordinator.observe(observation);
                 self.execute_actions(actions);
@@ -830,7 +952,7 @@ impl RealMpvClient {
         position_seconds: f64,
         force_seek: bool,
     ) {
-        let actions = self
+        let mut actions = self
             .coordinator
             .update_desired_room_state(DesiredRoomPlayback {
                 media_generation: self.coordinator_generation,
@@ -840,6 +962,9 @@ impl RealMpvClient {
                 anchor_observed_at_seconds: self.now_seconds(),
                 force_seek,
             });
+        if let Some(observation) = self.coordinator_observation(self.latest_transport.clone()) {
+            actions.extend(self.coordinator.observe(observation));
+        }
         self.execute_actions(actions);
     }
 }

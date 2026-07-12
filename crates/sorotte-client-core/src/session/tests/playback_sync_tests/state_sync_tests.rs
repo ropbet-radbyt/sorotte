@@ -363,13 +363,12 @@ fn leased_state_keeps_staged_bytes_stable_while_newer_heartbeats_coalesce() {
     assert_eq!(
         runtime
             .pending_protocol_line()
-            .expect("leased State should still encode")
-            .as_deref(),
-        Some(staged_line.as_str()),
+            .expect("leased State should still encode"),
+        Some(staged_line.clone()),
         "new heartbeats must not mutate bytes already staged with a transport"
     );
     assert!(matches!(
-        runtime.acknowledge_protocol_line(),
+        runtime.acknowledge_protocol_line(staged_line.lease()),
         Some(ProtocolMessage::State(_))
     ));
     let ProtocolMessage::State(latest) = &runtime.control().outbound_messages()[0] else {

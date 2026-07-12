@@ -35,6 +35,7 @@ pub(super) struct GuiStagedClientCoreProtocolDelivery {
     pub(super) token: u64,
     pub(super) line: String,
     pub(super) source: GuiClientCoreProtocolDeliverySource,
+    pub(super) core_lease: Option<ProtocolLineLease>,
 }
 
 impl GuiClientCoreChatSessionRuntimeAdapter {
@@ -653,28 +654,34 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             return Ok(None);
         }
 
-        let (line, source) = if let Some(line) = self.pending_startup_protocol_lines.front() {
-            let line = line.clone();
-            if !self.runtime.session().is_active() {
-                let _ = Self::dispatch_command_to_application(
-                    &mut self.runtime,
-                    ClientCommand::TransportConnected,
-                )?;
-            }
-            (line, GuiClientCoreProtocolDeliverySource::Startup)
-        } else {
-            if !self.runtime.session().is_active() {
-                return Ok(None);
-            }
-            let Some(line) = self
-                .runtime
-                .pending_protocol_line()
-                .map_err(|error| format!("Queued protocol line encoding failed: {error}"))?
-            else {
-                return Ok(None);
+        let (line, source, core_lease) =
+            if let Some(line) = self.pending_startup_protocol_lines.front() {
+                let line = line.clone();
+                if !self.runtime.session().is_active() {
+                    let _ = Self::dispatch_command_to_application(
+                        &mut self.runtime,
+                        ClientCommand::TransportConnected,
+                    )?;
+                }
+                (line, GuiClientCoreProtocolDeliverySource::Startup, None)
+            } else {
+                if !self.runtime.session().is_active() {
+                    return Ok(None);
+                }
+                let Some(pending) = self
+                    .runtime
+                    .pending_protocol_line()
+                    .map_err(|error| format!("Queued protocol line encoding failed: {error}"))?
+                else {
+                    return Ok(None);
+                };
+                let lease = pending.lease();
+                (
+                    pending.into_line(),
+                    GuiClientCoreProtocolDeliverySource::Runtime,
+                    Some(lease),
+                )
             };
-            (line, GuiClientCoreProtocolDeliverySource::Runtime)
-        };
 
         let token = self.next_outbound_protocol_delivery_token;
         self.next_outbound_protocol_delivery_token = self
@@ -685,6 +692,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             token,
             line: line.clone(),
             source,
+            core_lease,
         });
         Ok(Some(GuiOutboundProtocolDelivery::new(token, line)))
     }
@@ -707,6 +715,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
 
         let staged_source = staged.source;
         let staged_line = staged.line.clone();
+        let staged_core_lease = staged.core_lease;
 
         match staged_source {
             GuiClientCoreProtocolDeliverySource::Startup => {
@@ -719,17 +728,18 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                 self.pending_startup_protocol_lines.pop_front();
             }
             GuiClientCoreProtocolDeliverySource::Runtime => {
-                let pending = self
-                    .runtime
-                    .pending_protocol_line()
-                    .map_err(|error| format!("Queued protocol line encoding failed: {error}"))?;
-                if pending.as_deref() != Some(staged_line.as_str()) {
+                let Some(core_lease) = staged_core_lease else {
                     return Err(
-                        "Outbound protocol delivery receipt did not match the client-core outbox front."
+                        "Outbound protocol delivery receipt did not retain its client-core lease."
+                            .to_owned(),
+                    );
+                };
+                if self.runtime.acknowledge_protocol_line(core_lease).is_none() {
+                    return Err(
+                        "Outbound protocol delivery receipt did not match the client-core outbox lease."
                             .to_owned(),
                     );
                 }
-                let _ = self.runtime.acknowledge_protocol_line();
             }
         }
         self.staged_outbound_protocol_delivery = None;
@@ -746,7 +756,11 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         if staged.token != token {
             return Ok(());
         }
+        let core_lease = staged.core_lease;
         self.staged_outbound_protocol_delivery = None;
+        if let Some(core_lease) = core_lease {
+            let _ = self.runtime.release_protocol_line(core_lease);
+        }
         Ok(())
     }
 

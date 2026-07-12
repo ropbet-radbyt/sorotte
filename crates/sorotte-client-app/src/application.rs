@@ -5,11 +5,11 @@ use sorotte_client_core::{
     ClientPlayerIo, ClientRuntime, ClientSession, ClientSessionUpdate,
     ControlledRoomCreationNotification, ControllerAuthTransitionNotification, CoordinatorCommandId,
     FileSize, LogicalMediaId, MediaLoadIntent, MediaLoadPlan, MediaTransportKind,
-    PlaybackBarrierRoomBufferingConfig, PlaybackBarrierStartConfig, PlaybackBarrierTimeoutAction,
-    PlaybackCoordinationSnapshot, PlaybackCoordinatorAction, PlaybackCoordinatorConfig,
-    PrivacyMode, QueuedRuntimeControl, ReconnectStateRestoreCorrectionMetrics,
-    ReconnectStateRestoreCorrectionStateSnapshot, ReconnectTransitionNotification,
-    RoomPlaystateView, UserChangeNotification,
+    PendingProtocolLine, PlaybackBarrierRoomBufferingConfig, PlaybackBarrierStartConfig,
+    PlaybackBarrierTimeoutAction, PlaybackCoordinationSnapshot, PlaybackCoordinatorAction,
+    PlaybackCoordinatorConfig, PrivacyMode, ProtocolLineLease, QueuedRuntimeControl,
+    ReconnectStateRestoreCorrectionMetrics, ReconnectStateRestoreCorrectionStateSnapshot,
+    ReconnectTransitionNotification, RoomPlaystateView, UserChangeNotification,
 };
 use sorotte_player_api::{
     PlayerAdapter, PlayerError, PlayerPlaybackTelemetryUpdate, PlayerTransportTelemetryUpdate,
@@ -940,7 +940,7 @@ where
         }
     }
 
-    pub fn pending_protocol_line(&self) -> Result<Option<String>, ProtocolError> {
+    pub fn pending_protocol_line(&self) -> Result<Option<PendingProtocolLine>, ProtocolError> {
         self.runtime.pending_protocol_line()
     }
 
@@ -1027,8 +1027,15 @@ where
         })
     }
 
-    pub fn acknowledge_protocol_line(&mut self) -> Option<ProtocolMessage> {
-        self.runtime.acknowledge_protocol_line()
+    pub fn acknowledge_protocol_line(
+        &mut self,
+        lease: ProtocolLineLease,
+    ) -> Option<ProtocolMessage> {
+        self.runtime.acknowledge_protocol_line(lease)
+    }
+
+    pub fn release_protocol_line(&mut self, lease: ProtocolLineLease) -> bool {
+        self.runtime.release_protocol_line(lease)
     }
 
     pub fn pending_protocol_message_count(&self) -> usize {
@@ -2143,9 +2150,9 @@ mod tests {
             .pending_protocol_line()
             .expect("controller-auth message should encode")
             .expect("configured controller password should be cached for the active room");
-        assert!(line.contains(SECRET));
+        assert!(line.line().contains(SECRET));
 
-        let _ = application.acknowledge_protocol_line();
+        let _ = application.acknowledge_protocol_line(line.lease());
         let _ = application.dispatch(ClientCommand::update_settings(
             ClientApplicationSettings::new(ClientConfig::default()).with_active_room(ROOM),
         ));
@@ -2163,6 +2170,7 @@ mod tests {
                 .pending_protocol_line()
                 .expect("cached controller-auth message should encode")
                 .expect("live session should retain its cached controller password")
+                .line()
                 .contains(SECRET)
         );
     }
@@ -2210,7 +2218,7 @@ mod tests {
             .pending_protocol_line()
             .expect("State should encode")
             .expect("State should be staged");
-        assert!(staged_state.contains("\"State\""));
+        assert!(staged_state.line().contains("\"State\""));
         application
             .runtime
             .emit_effect(ClientEffect::SendChat("retain-chat".to_owned()))
@@ -2270,7 +2278,7 @@ mod tests {
             .pending_protocol_line()
             .expect("State should encode")
             .expect("State should be staged");
-        assert!(staged_state.contains("\"State\""));
+        assert!(staged_state.line().contains("\"State\""));
         application
             .runtime
             .emit_effect(ClientEffect::SendChat("retain-chat".to_owned()))
