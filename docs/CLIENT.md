@@ -146,6 +146,27 @@ Useful options:
 
 Explicit-IPC mode applies a practical subset of startup player options directly to the attached `mpv` instance, including pause, start position, speed, volume, mute, subtitle visibility, fullscreen/window flags, and generic `--name=value` / `--profile` attach commands.
 
+## Streaming, Buffering, and Recovery
+
+The GUI Streaming section and the `[client_settings]` section of `sorotte.ini` support typed quality and cache controls. A conservative example is:
+
+```ini
+[client_settings]
+streamingQualityPreset = 720p
+streamingBufferTarget = 8
+streamingReadAhead = 45
+streamingMemoryCacheMiB = 256
+streamingDiskCacheEnabled = false
+streamingRecoveryPolicy = balanced
+streamingStartPolicy = immediate
+```
+
+Quality and buffering values are applied to managed and attached `mpv` instances. Matching per-player advanced arguments take precedence; the GUI shows the effective value for generated streaming options.
+
+Sorotte prevents cache-release seek loops with a generation-aware coordinator that retains room intent, blocks competing drift correction during recovery, and requires observed forward playback before accepting play. Configured recovery uses bounded gentle catch-up, hard-seek and retry budgets, and explicit degradation. Sorotte clients also drive the feature-negotiated `sorottePlaybackBarrierV1` start barrier and authenticated controlled-room buffering policies. Quality downgrade remains advisory: the GUI and CLI can suggest a lower preset, but Sorotte never changes it automatically.
+
+See the [Stream Synchronization Guide](STREAM_SYNCHRONIZATION.md) for every setting, exact `mpv` mapping, source-specific guidance, wire lifecycle, diagnostics, tests, and the implemented-versus-planned boundary.
+
 ## Rooms, Playlists, And Controlled Rooms
 
 Room names are normal Syncplay room names. Controlled-room suffix parsing and controller password overrides are supported for Python-compatible flows.

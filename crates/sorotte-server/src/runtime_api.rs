@@ -19,6 +19,9 @@ impl ServerRuntime {
             room_controllers: BTreeMap::new(),
             room_playlists: BTreeMap::new(),
             room_playback_states: BTreeMap::new(),
+            room_playback_barriers: BTreeMap::new(),
+            room_buffering_controls: BTreeMap::new(),
+            next_playback_barrier_revision: 0,
             client_playback_states: BTreeMap::new(),
             client_room_join_sequence: BTreeMap::new(),
             next_room_join_sequence: 0,
@@ -361,10 +364,18 @@ impl ServerRuntime {
         let outbound_lines = outbound_messages
             .into_iter()
             .map(|message| {
-                let delivery = if matches!(&message.message, ProtocolMessage::State(_)) {
-                    ServerOutboundDelivery::CoalesciblePeriodicState
-                } else {
-                    ServerOutboundDelivery::Reliable
+                let delivery = match &message.message {
+                    ProtocolMessage::State(state)
+                        if state
+                            .state
+                            .playstate
+                            .as_ref()
+                            .and_then(|playstate| playstate.do_seek)
+                            != Some(true) =>
+                    {
+                        ServerOutboundDelivery::CoalesciblePeriodicState
+                    }
+                    _ => ServerOutboundDelivery::Reliable,
                 };
                 Ok(DirectedOutboundLine {
                     client_id: message.client_id,

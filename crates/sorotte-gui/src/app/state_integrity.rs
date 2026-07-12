@@ -1,6 +1,8 @@
 use sorotte_client_app::app_boundary::{
     language::normalized_legacy_runtime_language_tag_legacy_compatible,
     state::{
+        RoomBufferingPolicy, StartSynchronizationPolicy, StartTimeoutAction,
+        StreamingQualityPreset, StreamingRecoveryPolicy,
         parse_autoplay_min_users_override_legacy_compatible,
         parse_host_and_optional_port_from_host_arg_legacy_compatible,
         parse_unpause_action_mode_legacy_compatible,
@@ -334,6 +336,135 @@ impl SorotteGuiShellAppState {
         );
         self.push_parse_validation_issue(
             &mut issues,
+            "Streaming",
+            "Quality",
+            |value| StreamingQualityPreset::parse(value).is_some(),
+            "must be a supported streaming quality preset.",
+        );
+        self.push_parse_validation_issue(
+            &mut issues,
+            "Streaming",
+            "Recovery Policy",
+            |value| StreamingRecoveryPolicy::parse(value).is_some(),
+            "must be a supported recovery policy.",
+        );
+        self.push_parse_validation_issue(
+            &mut issues,
+            "Streaming",
+            "Room Buffering Policy",
+            |value| RoomBufferingPolicy::parse(value).is_some(),
+            "must be a supported room buffering policy.",
+        );
+        self.push_parse_validation_issue(
+            &mut issues,
+            "Streaming",
+            "Start Synchronization",
+            |value| StartSynchronizationPolicy::parse(value).is_some(),
+            "must be a supported start synchronization policy.",
+        );
+        self.push_parse_validation_issue(
+            &mut issues,
+            "Streaming",
+            "Start Timeout Action",
+            |value| StartTimeoutAction::parse(value).is_some(),
+            "must be continue, remain-paused, or ask-controller.",
+        );
+        self.push_parse_validation_issue(
+            &mut issues,
+            "Streaming",
+            "Maximum Catchup Rate",
+            |value| {
+                value
+                    .parse::<f64>()
+                    .is_ok_and(|value| value.is_finite() && (1.0..=1.25).contains(&value))
+            },
+            "must be between 1.0 and 1.25.",
+        );
+        for label in ["Room Quorum Percent", "Start Quorum Percent"] {
+            self.push_parse_validation_issue(
+                &mut issues,
+                "Streaming",
+                label,
+                |value| {
+                    value.parse::<f64>().is_ok_and(|value| {
+                        value.is_finite() && (0.0..=100.0).contains(&value) && value > 0.0
+                    })
+                },
+                "must be greater than 0 and no more than 100.",
+            );
+        }
+        for label in ["Maximum Hard Seeks", "Recovery Retry Budget"] {
+            self.push_parse_validation_issue(
+                &mut issues,
+                "Streaming",
+                label,
+                |value| value.parse::<u64>().is_ok(),
+                "must be a non-negative whole number.",
+            );
+        }
+        self.push_parse_validation_issue(
+            &mut issues,
+            "Streaming",
+            "Memory Cache MiB",
+            |value| value.parse::<u64>().is_ok_and(|value| value > 0),
+            "must be a positive whole number.",
+        );
+        for label in [
+            "Buffer Target Seconds",
+            "Read Ahead Seconds",
+            "Hard Seek Threshold Seconds",
+            "Stability Interval Seconds",
+            "Room Maximum Pause Seconds",
+            "Start Timeout Seconds",
+        ] {
+            self.push_parse_validation_issue(
+                &mut issues,
+                "Streaming",
+                label,
+                |value| {
+                    value
+                        .parse::<f64>()
+                        .is_ok_and(|value| value.is_finite() && value > 0.0)
+                },
+                "must be a finite positive number.",
+            );
+        }
+        if self
+            .configuration
+            .control_value("Streaming", "Quality")
+            .is_some_and(|value| value.eq_ignore_ascii_case("custom"))
+            && self
+                .configuration
+                .control_value("Streaming", "Custom Format")
+                .and_then(normalized_editable_text)
+                .is_none()
+        {
+            issues.push(GuiValidationIssue {
+                scope: "Streaming".to_owned(),
+                label: "Custom Format".to_owned(),
+                message: "must be set when the custom quality preset is selected.".to_owned(),
+            });
+        }
+        let buffer_target = self
+            .configuration
+            .control_value("Streaming", "Buffer Target Seconds")
+            .and_then(|value| value.parse::<f64>().ok());
+        let read_ahead = self
+            .configuration
+            .control_value("Streaming", "Read Ahead Seconds")
+            .and_then(|value| value.parse::<f64>().ok());
+        if buffer_target
+            .zip(read_ahead)
+            .is_some_and(|(target, read_ahead)| read_ahead < target)
+        {
+            issues.push(GuiValidationIssue {
+                scope: "Streaming".to_owned(),
+                label: "Read Ahead Seconds".to_owned(),
+                message: "must be at least the buffer target.".to_owned(),
+            });
+        }
+        self.push_parse_validation_issue(
+            &mut issues,
             "Chat",
             "Input Position",
             |value| matches!(value, "Top" | "Middle" | "Bottom"),
@@ -350,6 +481,7 @@ impl SorotteGuiShellAppState {
             ("Desync", "Rewind Threshold"),
             ("Desync", "Fastforward Threshold"),
             ("Desync", "Slowdown Threshold"),
+            ("Streaming", "Recovery Cooldown Seconds"),
             ("Media Search", "First File Timeout"),
             ("Media Search", "Search Timeout"),
             ("Media Search", "Double Check Interval"),

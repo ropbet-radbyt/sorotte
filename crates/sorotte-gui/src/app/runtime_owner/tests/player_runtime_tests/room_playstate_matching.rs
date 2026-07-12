@@ -280,7 +280,7 @@ fn gui_persisted_config_runtime_owner_waits_for_local_file_before_applying_room_
 }
 
 #[test]
-fn gui_persisted_config_runtime_owner_retries_room_unpause_after_cache_pause_release() {
+fn gui_persisted_config_runtime_owner_waits_for_advancement_without_seeking_on_cache_release() {
     #[derive(Debug, Default)]
     struct RecordingPlayerState {
         playback_updates: Vec<sorotte_player_api::PlayerPlaybackTelemetryUpdate>,
@@ -388,8 +388,9 @@ fn gui_persisted_config_runtime_owner_retries_room_unpause_after_cache_pause_rel
         );
         recorded.set_positions.clear();
     }
-    assert!(owner.pending_attached_cache_unpause);
+    assert!(owner.pending_attached_room_unpause_observation.is_some());
     assert_eq!(owner.player_paused, Some(false));
+    assert_eq!(owner.last_applied_attached_room_playstate, None);
 
     player_state
         .lock()
@@ -411,25 +412,222 @@ fn gui_persisted_config_runtime_owner_retries_room_unpause_after_cache_pause_rel
 
     owner.sync_session_playstate_to_attached_player_impl(&state, false);
 
+    {
+        let recorded = player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(
+            recorded.set_positions.is_empty(),
+            "cache release alone must not seek to the room's newer moving position"
+        );
+        assert!(
+            recorded.set_paused_values.is_empty(),
+            "cache release alone must not replay the room unpause"
+        );
+    }
+    assert!(
+        owner.pending_attached_room_unpause_observation.is_some(),
+        "cache release is not evidence that playback has resumed"
+    );
+    assert_eq!(owner.last_applied_attached_room_playstate, None);
+
+    player_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .playback_updates
+        .push(
+            sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(30.0)
+                .with_paused(false),
+        );
+    owner.refresh_player_state_impl();
+    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    assert!(
+        owner.pending_attached_room_unpause_observation.is_some(),
+        "one stationary post-cache sample must keep desired play pending"
+    );
+    assert_eq!(owner.last_applied_attached_room_playstate, None);
+
+    player_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .playback_updates
+        .push(
+            sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(30.25)
+                .with_paused(false),
+        );
+    owner.refresh_player_state_impl();
+    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    assert!(
+        owner.pending_attached_room_unpause_observation.is_none(),
+        "fresh forward position advancement should acknowledge desired play"
+    );
+    assert!(
+        owner.last_applied_attached_room_playstate.is_some(),
+        "the room playstate may be marked applied only after advancement is observed"
+    );
     let recorded = player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    assert_eq!(
-        recorded.set_paused_values,
-        vec![false],
-        "cache release should retry room unpause even though logical player state was already unpaused"
-    );
-    assert!(
-        !owner.pending_attached_cache_unpause,
-        "successful post-cache unpause should clear the pending retry"
-    );
-    assert_eq!(
+    assert!(recorded.set_positions.is_empty());
+    assert!(recorded.set_paused_values.is_empty());
+    assert_ne!(
         owner
             .session
             .as_ref()
             .and_then(|session| session.local_pause_state()),
-        Some(false),
-        "post-cache unpause correction should not become a manual pause"
+        Some(true),
+        "observed post-cache recovery should not become a manual pause"
+    );
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_retains_room_play_until_advancement_after_ipc_acceptance() {
+    #[derive(Debug, Default)]
+    struct RecordingPlayerState {
+        playback_updates: Vec<sorotte_player_api::PlayerPlaybackTelemetryUpdate>,
+        set_positions: Vec<f64>,
+        set_paused_values: Vec<bool>,
+    }
+
+    struct RecordingPlayerAdapter {
+        state: std::sync::Arc<std::sync::Mutex<RecordingPlayerState>>,
+    }
+
+    impl PlayerAdapter for RecordingPlayerAdapter {
+        fn name(&self) -> &'static str {
+            "recording"
+        }
+
+        fn take_playback_telemetry_update(
+            &mut self,
+        ) -> Option<sorotte_player_api::PlayerPlaybackTelemetryUpdate> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .playback_updates
+                .pop()
+        }
+
+        fn set_position(
+            &mut self,
+            position_seconds: f64,
+        ) -> Result<(), sorotte_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .set_positions
+                .push(position_seconds);
+            Ok(())
+        }
+
+        fn set_paused(&mut self, paused: bool) -> Result<(), sorotte_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .set_paused_values
+                .push(paused);
+            Ok(())
+        }
+    }
+
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
+    let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
+        state: player_state.clone(),
+    })));
+    owner.player_local_file = Some(
+        sorotte_player_api::LocalFileUpdate::new("episode1.mkv")
+            .with_path("C:/Media/episode1.mkv".to_owned()),
+    );
+    owner.player_position_seconds = Some(10.0);
+    owner.player_paused = Some(true);
+
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+        )
+        .expect("hello should apply");
+    owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+        )
+        .expect("room play should apply");
+
+    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    let baseline_position_seconds = owner
+        .player_position_seconds
+        .expect("room sync should retain an observation baseline");
+    assert_eq!(
+        player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_paused_values,
+        vec![false]
+    );
+    assert_eq!(
+        owner.player_paused,
+        Some(true),
+        "IPC acceptance must not overwrite the last observed pause property"
+    );
+    assert!(owner.pending_attached_room_unpause_observation.is_some());
+    assert_eq!(
+        owner.last_applied_attached_room_playstate, None,
+        "IPC acceptance alone must not mark desired play as applied"
+    );
+
+    player_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .playback_updates
+        .push(
+            sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(baseline_position_seconds)
+                .with_paused(false),
+        );
+    owner.refresh_player_state_impl();
+    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    assert!(
+        owner.pending_attached_room_unpause_observation.is_some(),
+        "a pause=false property without forward motion is not observed playback"
+    );
+    assert_eq!(owner.last_applied_attached_room_playstate, None);
+
+    player_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .playback_updates
+        .push(
+            sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(baseline_position_seconds + 0.25)
+                .with_paused(false),
+        );
+    owner.refresh_player_state_impl();
+    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+
+    assert!(owner.pending_attached_room_unpause_observation.is_none());
+    assert!(owner.last_applied_attached_room_playstate.is_some());
+    assert_eq!(
+        player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_paused_values,
+        vec![false],
+        "retained desired play should not busy-loop unpause commands while awaiting observations"
     );
 }
 

@@ -6,7 +6,8 @@ use crate::ipc::{MpvJsonIpcTransport, read_line_from_stream};
 use serde_json::{Value, json};
 use sorotte_player_api::{
     LocalFileUpdate, PlayerAdapter, PlayerCommand, PlayerError, PlayerMediaLoadFailureKind,
-    PlayerMediaLoadOutcome, PlayerPlaybackTelemetryUpdate,
+    PlayerMediaLoadOutcome, PlayerPlaybackTelemetryUpdate, PlayerSeekableRange,
+    PlayerTransportPhase,
 };
 use std::{
     collections::VecDeque,
@@ -16,6 +17,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+mod command_tests;
 mod event_tests;
 mod ipc_tests;
 mod legacy_ui_tests;

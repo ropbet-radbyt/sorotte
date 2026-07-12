@@ -115,7 +115,7 @@ Useful Python reference files:
 
 ## Coding Rules
 
-- Use Rust `1.95.0` and edition `2024`.
+- Use Rust `1.96.0` and edition `2024`.
 - Keep public API surfaces narrow. Add shared CLI/GUI behavior to `sorotte-client-app::app_boundary` where a cross-crate API is needed.
 - Prefer small, test-backed vertical slices over broad refactors.
 - Do not add non-`mpv` player backend work unless product scope is explicitly changed.

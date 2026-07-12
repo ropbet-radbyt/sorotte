@@ -60,6 +60,7 @@ use super::media_search_cache::clear_persisted_media_search_cache_at_root;
 use super::mpv_launch;
 use super::mpv_launch::{
     ManagedMpvProcessGuard, ManagedMpvSettingsDecision,
+    apply_effective_streaming_options_to_mpv_adapter,
     apply_legacy_syncplay_ui_settings_to_mpv_adapter, managed_mpv_settings_decision_from_settings,
 };
 use super::runtime_bridge::GuiPendingRoomChangeRequest;
@@ -173,7 +174,8 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) suppressed_attached_room_playstate_after_playlist_reset:
         Option<GuiSessionRoomPlaystate>,
     pub(super) pending_local_attached_pause_override: Option<bool>,
-    pub(super) pending_attached_cache_unpause: bool,
+    pub(super) pending_attached_room_unpause_observation:
+        Option<GuiPendingAttachedRoomUnpauseObservation>,
     pub(super) pending_attached_player_pause_confirmation_pump: Option<u64>,
     pub(super) pending_attached_player_pause_command: Option<GuiPendingAttachedPlayerPauseCommand>,
     pub(super) player_position_seconds: Option<f64>,
@@ -236,6 +238,19 @@ pub(super) const ATTACHED_PLAYER_PAUSE_COMMAND_SUPPRESSION: Duration = Duration:
 pub(super) struct GuiPendingAttachedPlayerPauseCommand {
     pub(super) target_paused: bool,
     pub(super) suppress_until: Instant,
+}
+
+/// Temporary P0 observation state for a desired room unpause.
+///
+/// The source-independent playback coordinator will eventually own this state. Until then, the
+/// GUI keeps only enough information to avoid treating IPC acceptance or cache release as proof
+/// that playback resumed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) enum GuiPendingAttachedRoomUnpauseObservation {
+    CachePaused,
+    AwaitingAdvancement {
+        baseline_position_seconds: Option<f64>,
+    },
 }
 
 pub(super) struct GuiPlexServerRefreshOutcome {

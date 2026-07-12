@@ -44,6 +44,18 @@ activate	config:Desync:Dont Slow Down With Me
 enter-text	config:Desync:Rewind Threshold	false	1.25
 enter-text	config:Desync:Fastforward Threshold	false	3.5
 enter-text	config:Desync:Slowdown Threshold	false	2.25
+enter-text	config:Streaming:Quality	false	720p
+enter-text	config:Streaming:Buffer Target Seconds	false	8
+enter-text	config:Streaming:Read Ahead Seconds	false	45
+enter-text	config:Streaming:Memory Cache MiB	false	256
+activate	config:Streaming:Disk Cache
+enter-text	config:Streaming:Recovery Policy	false	balanced
+enter-text	config:Streaming:Maximum Catchup Rate	false	1.06
+enter-text	config:Streaming:Hard Seek Threshold Seconds	false	9
+enter-text	config:Streaming:Maximum Hard Seeks	false	1
+enter-text	config:Streaming:Room Buffering Policy	false	quorum
+enter-text	config:Streaming:Start Synchronization	false	wait-all
+enter-text	config:Streaming:Start Timeout Action	false	remain-paused
 enter-text	config:Media Search:Directories	false	C:/Media\nD:/Archive
 enter-text	config:Media Search:First File Timeout	false	3.0
 enter-text	config:Media Search:Search Timeout	false	30.0
@@ -136,6 +148,18 @@ assert-value	config:Media Search:Directories	C:/Media\nD:/Archive
 assert-value	config:Desync:Rewind Threshold	1.25
 assert-value	config:Desync:Fastforward Threshold	3.5
 assert-value	config:Desync:Slowdown Threshold	2.25
+assert-value	config:Streaming:Quality	720p
+assert-value	config:Streaming:Buffer Target Seconds	8
+assert-value	config:Streaming:Read Ahead Seconds	45
+assert-value	config:Streaming:Memory Cache MiB	256
+assert-value	config:Streaming:Disk Cache	yes
+assert-value	config:Streaming:Recovery Policy	balanced
+assert-value	config:Streaming:Maximum Catchup Rate	1.06
+assert-value	config:Streaming:Maximum Hard Seeks	1
+assert-value	config:Streaming:Room Buffering Policy	quorum
+assert-value	config:Streaming:Start Synchronization	wait-all
+assert-value	config:Streaming:Start Timeout Action	remain-paused
+assert-value	config:Streaming:Effective mpv Options	cache=auto; cache-pause=yes; cache-pause-initial=yes; cache-pause-wait=8; cache-secs=45; demuxer-max-bytes=256MiB; cache-on-disk=yes; ytdl-format=bestvideo*[height<=720]+bestaudio/best[height<=720]
 assert-value	config:Media Search:First File Timeout	3.0
 assert-value	config:Media Search:Search Timeout	30.0
 assert-value	config:Media Search:Double Check Interval	2.5

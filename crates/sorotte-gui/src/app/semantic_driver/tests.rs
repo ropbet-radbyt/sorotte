@@ -56,6 +56,24 @@ fn gui_semantic_driver_runs_widget_id_scenario_without_platform_ui() {
     assert_eq!(saved.rewind_threshold_seconds, Some(1.25));
     assert_eq!(saved.fastforward_threshold_seconds, Some(3.5));
     assert_eq!(saved.slowdown_threshold_seconds, Some(2.25));
+    assert_eq!(saved.streaming_quality_preset.as_deref(), Some("720p"));
+    assert_eq!(saved.streaming_buffer_target_seconds, Some(8.0));
+    assert_eq!(saved.streaming_read_ahead_seconds, Some(45.0));
+    assert_eq!(saved.streaming_memory_cache_mebibytes, Some(256));
+    assert_eq!(saved.streaming_disk_cache_enabled, Some(true));
+    assert_eq!(saved.streaming_recovery_policy.as_deref(), Some("balanced"));
+    assert_eq!(saved.streaming_max_catchup_rate, Some(1.06));
+    assert_eq!(saved.streaming_hard_seek_threshold_seconds, Some(9.0));
+    assert_eq!(saved.streaming_max_hard_seeks_per_episode, Some(1));
+    assert_eq!(
+        saved.streaming_room_buffering_policy.as_deref(),
+        Some("quorum")
+    );
+    assert_eq!(saved.streaming_start_policy.as_deref(), Some("wait-all"));
+    assert_eq!(
+        saved.streaming_start_timeout_action.as_deref(),
+        Some("remain-paused")
+    );
     assert_eq!(
         saved.media_search_directories,
         Some(vec!["C:/Media".to_owned(), "D:/Archive".to_owned()])

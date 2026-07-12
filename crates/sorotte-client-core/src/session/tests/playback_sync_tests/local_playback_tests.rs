@@ -242,7 +242,7 @@ fn client_runtime_room_pause_sync_applies_remote_seek_without_pause_change() {
 }
 
 #[test]
-fn client_runtime_room_pause_sync_resyncs_after_cache_pause_release() {
+fn client_runtime_room_pause_sync_does_not_seek_or_replay_unpause_on_cache_release() {
     let mut session = ClientSession::default();
     session
         .apply_message_json(
@@ -274,6 +274,11 @@ fn client_runtime_room_pause_sync_resyncs_after_cache_pause_release() {
         .run_room_pause_sync_if_needed()
         .expect("remote seek should dispatch while cache pause defers unpause");
 
+    let initial_seek_position = runtime
+        .player()
+        .position
+        .expect("the explicit remote doSeek should still dispatch once");
+
     assert_eq!(
         runtime.player().paused,
         None,
@@ -285,7 +290,7 @@ fn client_runtime_room_pause_sync_resyncs_after_cache_pause_release() {
             .model
             .playback
             .pending_cache_room_playstate_resync,
-        "deferred cache pause should request a room playstate retry after cache release"
+        "cache pause should retain the desired room playstate for observation-based recovery"
     );
     assert_eq!(
         runtime.session().user_ready("alice"),
@@ -306,33 +311,78 @@ fn client_runtime_room_pause_sync_resyncs_after_cache_pause_release() {
 
     runtime
         .run_room_pause_sync_if_needed()
-        .expect("cache release should retry room playstate sync");
+        .expect("cache release observation should not fail");
 
-    let synced_position = runtime
-        .player()
-        .position
-        .expect("cache release should re-seek to the current room position");
-    assert!(
-        (synced_position - 34.0).abs() < 1.0,
-        "cache release should re-seek to the current room position; got {synced_position}"
+    assert_eq!(
+        runtime.player().position,
+        Some(initial_seek_position),
+        "cache release alone must not issue a second seek to the advancing room position"
     );
     assert_eq!(
         runtime.player().paused,
-        Some(false),
-        "cache release should re-apply the room unpause even when local logical state was already playing"
+        None,
+        "cache release alone must not replay an unpause command"
     );
+    assert!(
+        runtime
+            .session()
+            .model
+            .playback
+            .pending_cache_room_playstate_resync,
+        "desired play must remain pending after command acceptance and cache release"
+    );
+
+    runtime
+        .player_mut_for_test()
+        .pending_playback_telemetry_update = Some(
+        PlayerPlaybackTelemetryUpdate::default()
+            .with_position_seconds(initial_seek_position)
+            .with_paused(false),
+    );
+    runtime
+        .run_room_pause_sync_if_needed()
+        .expect("first post-cache position observation should not fail");
+    assert!(
+        runtime
+            .session()
+            .model
+            .playback
+            .pending_cache_room_playstate_resync,
+        "a matching pause property and one stationary position sample are not playback advancement"
+    );
+
+    runtime
+        .player_mut_for_test()
+        .pending_playback_telemetry_update = Some(
+        PlayerPlaybackTelemetryUpdate::default()
+            .with_position_seconds(initial_seek_position + 0.25)
+            .with_paused(false),
+    );
+    runtime
+        .run_room_pause_sync_if_needed()
+        .expect("advancing post-cache position observation should not fail");
     assert!(
         !runtime
             .session()
             .model
             .playback
             .pending_cache_room_playstate_resync,
-        "successful cache-release sync should clear the retry flag"
+        "desired play may be acknowledged after observed forward advancement"
+    );
+    assert_eq!(
+        runtime.player().position,
+        Some(initial_seek_position),
+        "closing recovery from observations must not issue another seek"
+    );
+    assert_eq!(
+        runtime.player().paused,
+        None,
+        "closing recovery from observations must not issue an unpause command"
     );
     assert_eq!(
         runtime.session().user_ready("alice"),
         Some(true),
-        "cache-release correction must not mark the user not-ready"
+        "cache recovery must not mark the user not-ready"
     );
 }
 

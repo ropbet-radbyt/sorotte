@@ -21,7 +21,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.95.0
+          toolchain: 1.96.0
           components: rustfmt, clippy
 
       - name: Cargo fmt
@@ -47,7 +47,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.95.0
+          toolchain: 1.96.0
           components: rustfmt, clippy
 
       - name: Setup Python
@@ -83,7 +83,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.95.0
+          toolchain: 1.96.0
           components: rustfmt, clippy
 
       - name: Cargo clippy
@@ -91,6 +91,12 @@ jobs:
 
       - name: Cargo test
         run: cargo test --workspace
+
+      - name: Install deterministic media-test player
+        run: sudo apt-get update && sudo apt-get install --yes mpv
+
+      - name: Real mpv rebuffer recovery harness
+        run: cargo test -p sorotte-sim --test mpv_rebuffer_harness -- --ignored --nocapture
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -125,7 +131,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.95.0
+          toolchain: 1.96.0
           components: rustfmt, clippy
 
       - name: Setup Python

@@ -185,6 +185,88 @@ fn runtime_actions_for_desync_correction_maps_slowdown_to_rate_change() {
 }
 
 #[test]
+fn client_runtime_suppresses_desync_correction_until_cache_recovery_advancement_is_observed() {
+    let session = desync_session_with_remote_state(0.0, false, false, "bob");
+    let player = RecordingPlayer {
+        pending_playback_telemetry_update: Some(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(6.0)
+                .with_paused(false)
+                .with_paused_for_cache(true),
+        ),
+        ..RecordingPlayer::default()
+    };
+    let control = QueuedRuntimeControl::default();
+    let mut runtime = ClientRuntime::new(session, player, control);
+
+    runtime
+        .run_desync_correction_if_needed(0.0, false, false, true)
+        .expect("cache-paused desync evaluation should not fail");
+    assert!(
+        runtime.player().player_effects.is_empty(),
+        "ordinary correction must not seek or change speed while cache-paused"
+    );
+    assert!(
+        runtime
+            .session()
+            .model
+            .playback
+            .pending_cache_room_playstate_resync
+    );
+
+    runtime
+        .player_mut_for_test()
+        .pending_playback_telemetry_update = Some(
+        PlayerPlaybackTelemetryUpdate::default()
+            .with_position_seconds(6.0)
+            .with_paused(false)
+            .with_paused_for_cache(false),
+    );
+    runtime
+        .run_desync_correction_if_needed(1.0, false, false, true)
+        .expect("first post-cache observation should not fail");
+    assert!(
+        runtime.player().player_effects.is_empty(),
+        "cache release and its first position sample must not trigger correction"
+    );
+    assert!(
+        runtime
+            .session()
+            .model
+            .playback
+            .pending_cache_room_playstate_resync,
+        "recovery must remain pending until a later sample proves forward advancement"
+    );
+
+    runtime
+        .player_mut_for_test()
+        .pending_playback_telemetry_update = Some(
+        PlayerPlaybackTelemetryUpdate::default()
+            .with_position_seconds(6.25)
+            .with_paused(false),
+    );
+    runtime
+        .run_desync_correction_if_needed(2.0, false, false, true)
+        .expect("advancing post-cache observation should not fail");
+    assert!(
+        !runtime
+            .session()
+            .model
+            .playback
+            .pending_cache_room_playstate_resync,
+        "observed forward playback should close the conservative P0 recovery gate"
+    );
+    assert!(
+        runtime
+            .player()
+            .player_effects
+            .iter()
+            .any(|effect| matches!(effect, ClientEffect::SetPlayerPosition(_))),
+        "ordinary correction may resume only after playback advancement is observed"
+    );
+}
+
+#[test]
 fn runtime_actions_for_desync_correction_scenario_fastforward_window_reset_and_retrigger() {
     let mut session = desync_session_with_remote_state(10.0, false, false, "bob");
     let steps = vec![

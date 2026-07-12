@@ -140,14 +140,80 @@ impl<'a> ClientSessionUpdate<'a> {
     }
 }
 
-pub struct ClientPlayerIo<'a, P> {
+pub struct ClientPlayerIo<'a, P, C> {
     player: &'a mut P,
+    playback_coordination: &'a mut RuntimePlaybackCoordination,
+    session: &'a ClientSession,
+    control: &'a mut C,
 }
 
-impl<P: PlayerAdapter> ClientPlayerIo<'_, P> {
+impl<P, C> ClientPlayerIo<'_, P, C>
+where
+    P: PlayerAdapter,
+    C: ClientEffectSink,
+{
     pub fn open_file(&mut self, path: &str) -> Result<(), PlayerError> {
-        self.player
-            .execute(PlayerCommand::OpenFile(path.to_owned()))
+        let kind = if path.contains("://") {
+            MediaTransportKind::NetworkVod
+        } else {
+            MediaTransportKind::LocalFile
+        };
+        let name = if path.contains("://") {
+            path.to_owned()
+        } else {
+            std::path::Path::new(path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(path)
+                .to_owned()
+        };
+        let size_bytes = if path.contains("://") {
+            0
+        } else {
+            std::fs::metadata(path)
+                .map(|metadata| metadata.len())
+                .unwrap_or_default()
+        };
+        let logical_id = logical_media_id_for_local_file_update(
+            &LocalFileUpdate::new(name)
+                .with_size_bytes(size_bytes)
+                .with_path(path),
+        );
+        self.open_media(
+            path,
+            logical_id,
+            kind,
+            unix_wall_clock_time_seconds_legacy_compatible(),
+        )
+        .map(|_| ())
+    }
+
+    pub fn open_media(
+        &mut self,
+        path: &str,
+        logical_id: LogicalMediaId,
+        kind: MediaTransportKind,
+        now_seconds: f64,
+    ) -> Result<MediaLoadPlan, PlayerError> {
+        let command = PlayerCommand::OpenFile(path.to_owned());
+        match self.player.execute_tracked(command.clone()) {
+            Ok(_) => {}
+            Err(PlayerError::Unsupported("execute_tracked")) => self.player.execute(command)?,
+            Err(error) => return Err(error),
+        }
+        let plan = self
+            .playback_coordination
+            .prepare_media(logical_id, kind, now_seconds);
+        if let Some(extension) = self
+            .playback_coordination
+            .playback_barrier_set_for_new_media(&plan, self.session, now_seconds)
+        {
+            self.control.activate_protocol_connection_generation();
+            self.control
+                .emit(ClientEffect::send_playback_barrier_set(extension))
+                .map_err(client_effect_player_error)?;
+        }
+        Ok(plan)
     }
 
     pub fn set_paused(&mut self, paused: bool) -> Result<(), PlayerError> {
@@ -177,6 +243,7 @@ where
             ping_metrics_legacy_compatible: ClientPingMetricsLegacyCompatible::default(),
             pending_player_playback_telemetry_updates: EffectOutbox::default(),
             last_local_file_update: None,
+            playback_coordination: RuntimePlaybackCoordination::default(),
         }
     }
 
@@ -305,9 +372,12 @@ where
         &mut self.player
     }
 
-    pub fn player_mut(&mut self) -> ClientPlayerIo<'_, P> {
+    pub fn player_mut(&mut self) -> ClientPlayerIo<'_, P, C> {
         ClientPlayerIo {
             player: &mut self.player,
+            playback_coordination: &mut self.playback_coordination,
+            session: &self.session,
+            control: &mut self.control,
         }
     }
 

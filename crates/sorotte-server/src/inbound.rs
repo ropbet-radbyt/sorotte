@@ -8,6 +8,7 @@ pub enum ServerCompatibilityFallback {
     IgnoredInvalidFileSize { context: String },
     IgnoredInvalidMediaMatch { context: String, reason: String },
     IgnoredInvalidFeatures { context: String },
+    IgnoredInvalidPlaybackBarrier { context: String, reason: String },
     IgnoredUnexpectedMessage { command: &'static str },
 }
 
@@ -92,6 +93,7 @@ pub struct ServerClientCapabilities {
     pub media_match: bool,
     pub plex_playlist_uris: bool,
     pub remote_readiness: bool,
+    pub playback_barrier_v1: bool,
     pub ui_mode: Option<String>,
     pub ui_mode_advertised: bool,
     pub(crate) advertised_fields: BTreeSet<&'static str>,
@@ -110,6 +112,7 @@ impl ServerClientCapabilities {
             ("mediaMatch", self.media_match),
             (SOROTTE_PLEX_PLAYLIST_URIS_FEATURE, self.plex_playlist_uris),
             ("setOthersReadiness", self.remote_readiness),
+            (SOROTTE_PLAYBACK_BARRIER_V1, self.playback_barrier_v1),
         ] {
             if self.advertised_fields.contains(name) {
                 features.insert(name.to_owned(), Value::Bool(enabled));
@@ -157,6 +160,7 @@ pub(crate) enum ServerSetCommand {
     PlaylistChange(Vec<String>),
     PlaylistIndex(Option<i64>),
     Features(ServerClientCapabilities),
+    PlaybackBarrier(Box<PlaybackBarrierSetExtension>),
 }
 
 impl std::fmt::Debug for ServerSetCommand {
@@ -192,6 +196,10 @@ impl std::fmt::Debug for ServerSetCommand {
                 .debug_tuple("Features")
                 .field(capabilities)
                 .finish(),
+            Self::PlaybackBarrier(extension) => formatter
+                .debug_tuple("PlaybackBarrier")
+                .field(extension)
+                .finish(),
         }
     }
 }
@@ -217,6 +225,7 @@ pub(crate) struct ServerStateCommand {
     pub(crate) ping: Option<ServerPingCommand>,
     pub(crate) server_ignoring: Option<u32>,
     pub(crate) client_ignoring: Option<u32>,
+    pub(crate) playback_barrier: Option<PlaybackBarrierStateExtension>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -268,6 +277,7 @@ fn legacy_capabilities(version: &str) -> ServerClientCapabilities {
         media_match: false,
         plex_playlist_uris: false,
         remote_readiness: false,
+        playback_barrier_v1: false,
         ui_mode: Some(LEGACY_UI_MODE_UNKNOWN.to_owned()),
         ui_mode_advertised: true,
         advertised_fields: BTreeSet::from([
@@ -314,6 +324,7 @@ fn capabilities_from_object(features: serde_json::Map<String, Value>) -> ServerC
         "mediaMatch",
         SOROTTE_PLEX_PLAYLIST_URIS_FEATURE,
         "setOthersReadiness",
+        SOROTTE_PLAYBACK_BARRIER_V1,
     ]
     .into_iter()
     .filter(|name| features.contains_key(*name))
@@ -328,6 +339,7 @@ fn capabilities_from_object(features: serde_json::Map<String, Value>) -> ServerC
         media_match: bool_feature(&features, "mediaMatch"),
         plex_playlist_uris: bool_feature(&features, SOROTTE_PLEX_PLAYLIST_URIS_FEATURE),
         remote_readiness: bool_feature(&features, "setOthersReadiness"),
+        playback_barrier_v1: bool_feature(&features, SOROTTE_PLAYBACK_BARRIER_V1),
         ui_mode: features
             .get("uiMode")
             .and_then(Value::as_str)
@@ -403,6 +415,16 @@ pub(crate) fn normalize_server_protocol_message(
         }
         ProtocolMessage::Set(message) => {
             let mut set = message.set;
+            let mut playback_barrier = match set.playback_barrier_v1() {
+                Ok(extension) => extension,
+                Err(reason) => {
+                    fallbacks.push(ServerCompatibilityFallback::IgnoredInvalidPlaybackBarrier {
+                        context: "Set.sorottePlaybackBarrierV1".to_owned(),
+                        reason: reason.to_string(),
+                    });
+                    None
+                }
+            };
             let mut order = set.command_order.clone();
             for command in [
                 "room",
@@ -412,6 +434,7 @@ pub(crate) fn normalize_server_protocol_message(
                 "playlistChange",
                 "playlistIndex",
                 "features",
+                SOROTTE_PLAYBACK_BARRIER_V1,
             ] {
                 if !order.iter().any(|candidate| candidate == command) {
                     order.push(command.to_owned());
@@ -463,6 +486,10 @@ pub(crate) fn normalize_server_protocol_message(
                             None
                         }
                     }),
+                    SOROTTE_PLAYBACK_BARRIER_V1 => playback_barrier
+                        .take()
+                        .map(Box::new)
+                        .map(ServerSetCommand::PlaybackBarrier),
                     _ => {
                         if set.extra.contains_key(&name)
                             || matches!(name.as_str(), "user" | "newControlledRoom")
@@ -491,6 +518,16 @@ pub(crate) fn normalize_server_protocol_message(
         },
         ProtocolMessage::State(message) => {
             let state = message.state;
+            let playback_barrier = match state.playback_barrier_v1() {
+                Ok(extension) => extension,
+                Err(reason) => {
+                    fallbacks.push(ServerCompatibilityFallback::IgnoredInvalidPlaybackBarrier {
+                        context: "State.sorottePlaybackBarrierV1".to_owned(),
+                        reason: reason.to_string(),
+                    });
+                    None
+                }
+            };
             let ignoring = state.ignoring_on_the_fly.unwrap_or_default();
             ServerInboundCommand::State(ServerStateCommand {
                 playstate: state.playstate.map(|playstate| ServerPlaystateCommand {
@@ -506,6 +543,7 @@ pub(crate) fn normalize_server_protocol_message(
                 }),
                 server_ignoring: ignoring.server,
                 client_ignoring: ignoring.client,
+                playback_barrier,
             })
         }
         ProtocolMessage::Tls(message) => ServerInboundCommand::Tls(message.tls.start_tls),

@@ -370,6 +370,17 @@ where
             return Ok(false);
         };
 
+        let logical_id = logical_media_id_for_local_file_update(&local_file_update);
+        let transport_kind = if local_file_update
+            .path
+            .as_deref()
+            .is_some_and(|path| path.contains("://"))
+            || local_file_update.name.contains("://")
+        {
+            MediaTransportKind::NetworkVod
+        } else {
+            MediaTransportKind::LocalFile
+        };
         let file_payload = Self::local_file_update_payload(&local_file_update);
         self.last_local_file_update = Some(local_file_update.clone());
         self.publish_local_file_legacy_compatible(
@@ -377,6 +388,14 @@ where
             filename_privacy_mode,
             filesize_privacy_mode,
         )?;
+        // Queue the compatible file announcement before an optional Sorotte
+        // start barrier so peers learn the source before their preparation
+        // deadline begins.
+        self.prepare_playback_media(
+            logical_id,
+            transport_kind,
+            unix_wall_clock_time_seconds_legacy_compatible(),
+        );
         Ok(true)
     }
 

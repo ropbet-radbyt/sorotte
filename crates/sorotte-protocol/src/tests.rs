@@ -6,13 +6,16 @@ use serde_json::json;
 
 use super::{
     ChatMessagePayload, ChatPayload, ControllerAuthPayload, ErrorPayload, FilePayload,
-    HelloPayload, IgnoringOnTheFlyPayload, ListPayload, ListUserEntry, NewControlledRoomPayload,
-    PingPayload, PlaylistChangePayload, PlaylistIndexPayload, PlaystatePayload, ProtocolError,
-    ProtocolMessage, ReadyPayload, RoomRef, SOROTTE_PLEX_PLAYLIST_URIS_KEY, SetPayload,
-    StatePayload, TlsPayload, UserSetPayload, canonical_playlist_files_from_change, decode_line,
-    decode_message_line, decode_message_line_items, decode_message_lines, encode_line,
-    encode_message_line, extract_hello, extract_hello_from_message,
-    playlist_change_with_plex_sidecar,
+    HelloPayload, IgnoringOnTheFlyPayload, ListPayload, ListUserEntry, MediaReadyPayload,
+    NewControlledRoomPayload, PingPayload, PlaybackBarrierPolicy, PlaybackBarrierSetExtension,
+    PlaybackBarrierStateExtension, PlaylistChangePayload, PlaylistIndexPayload, PlaystatePayload,
+    PrepareMediaPayload, ProtocolError, ProtocolMessage, ReadyPayload, RoomBufferingPhase,
+    RoomBufferingPolicy, RoomBufferingPolicyPayload, RoomBufferingStatusPayload, RoomRef,
+    SOROTTE_PLAYBACK_BARRIER_V1, SOROTTE_PLEX_PLAYLIST_URIS_KEY, SetPayload, StartedAckPayload,
+    StatePayload, TlsPayload, TransportBufferingReportPayload, UserSetPayload,
+    canonical_playlist_files_from_change, decode_line, decode_message_line,
+    decode_message_line_items, decode_message_lines, encode_line, encode_message_line,
+    extract_hello, extract_hello_from_message, playlist_change_with_plex_sidecar,
 };
 
 fn fixture_dir() -> PathBuf {
@@ -88,6 +91,185 @@ fn roundtrip_raw_json_value_fixture() {
     let encoded = encode_line(&value).expect("value should encode");
     let decoded = decode_line(&encoded).expect("encoded JSON should decode");
     assert_eq!(value, decoded);
+}
+
+#[test]
+fn playback_barrier_fixtures_decode_from_nested_extension_maps() {
+    let prepare_message = decode_message_line(&read_fixture("set_playback_barrier_prepare.json"))
+        .expect("prepare fixture should decode");
+    let ProtocolMessage::Set(prepare_message) = prepare_message else {
+        panic!("prepare fixture should be a Set message");
+    };
+    let prepare = prepare_message
+        .set
+        .playback_barrier_v1()
+        .expect("prepare extension should be well formed")
+        .and_then(|extension| extension.prepare)
+        .expect("prepare extension should contain PrepareMedia");
+    assert_eq!(prepare.media_generation, 7);
+    assert_eq!(prepare.logical_media_id, "youtube:example");
+    assert_eq!(prepare.policy, PlaybackBarrierPolicy::Quorum);
+    assert_eq!(prepare.quorum, Some(2));
+    assert_eq!(prepare.quorum_percent, Some(75));
+    assert_eq!(prepare.deadline, Some(115.0));
+
+    let observations =
+        decode_message_line(&read_fixture("state_playback_barrier_observations.json"))
+            .expect("observation fixture should decode");
+    let ProtocolMessage::State(observations) = observations else {
+        panic!("observation fixture should be a State message");
+    };
+    let observations = observations
+        .state
+        .playback_barrier_v1()
+        .expect("observation extension should be well formed")
+        .expect("observation extension should be present");
+    assert!(observations.ready.is_some_and(|ready| ready.is_ready()));
+    assert_eq!(
+        observations
+            .started
+            .as_ref()
+            .map(|started| started.state_revision),
+        Some(11)
+    );
+}
+
+#[test]
+fn playback_barrier_builders_remain_additive_and_roundtrip() {
+    let prepare = ProtocolMessage::set(
+        SetPayload::new().with_playback_barrier_v1(
+            PlaybackBarrierSetExtension::new().with_prepare(
+                PrepareMediaPayload::new(9, "logical-media", 42.0, PlaybackBarrierPolicy::Quorum)
+                    .with_quorum_percent(75)
+                    .with_timeout_ms(20_000),
+            ),
+        ),
+    );
+    let ready = ProtocolMessage::state(
+        StatePayload::new().with_playback_barrier_v1(
+            PlaybackBarrierStateExtension::new()
+                .with_ready(MediaReadyPayload::new(9, true, true).with_seekable(true))
+                .with_started(StartedAckPayload::new(9, 3, 42.1)),
+        ),
+    );
+
+    for message in [prepare, ready] {
+        let encoded = encode_message_line(&message).expect("barrier message should encode");
+        let value = decode_line(&encoded).expect("barrier message should remain valid JSON");
+        assert!(
+            value
+                .as_object()
+                .is_some_and(|commands| commands.len() == 1),
+            "barrier messages must not add an unconditional top-level command"
+        );
+        let nested = value.pointer(&format!(
+            "/{}/{}",
+            message.kind(),
+            SOROTTE_PLAYBACK_BARRIER_V1
+        ));
+        assert!(
+            nested.is_some(),
+            "barrier object should be nested in Set/State"
+        );
+        assert_eq!(
+            decode_message_line(&encoded).expect("barrier message should decode"),
+            message
+        );
+    }
+}
+
+#[test]
+fn room_buffering_policy_and_transport_reports_roundtrip_inside_capability_extension() {
+    let policy = RoomBufferingPolicyPayload::new(9, RoomBufferingPolicy::Quorum)
+        .with_state_revision(3)
+        .with_quorum_percent(75)
+        .with_debounce_ms(800)
+        .with_resume_hysteresis_ms(1_500)
+        .with_max_pause_ms(30_000);
+    let status = RoomBufferingStatusPayload {
+        config: policy.clone(),
+        phase: RoomBufferingPhase::Paused,
+        eligible_clients: 3,
+        required_buffering_clients: 3,
+        buffering_clients: ["alice".to_owned(), "bob".to_owned()].into_iter().collect(),
+        pause_deadline: Some(140.0),
+    };
+    let set_message = ProtocolMessage::set(
+        SetPayload::new().with_playback_barrier_v1(
+            PlaybackBarrierSetExtension::new()
+                .with_buffering_policy(policy.clone())
+                .with_buffering_status(status),
+        ),
+    );
+    let transport = TransportBufferingReportPayload::new(9, true)
+        .with_state_revision(3)
+        .with_buffered_seconds(0.25)
+        .with_observed_at(110.5);
+    let state_message = ProtocolMessage::state(StatePayload::new().with_playback_barrier_v1(
+        PlaybackBarrierStateExtension::new().with_transport(transport.clone()),
+    ));
+
+    let encoded_set = encode_message_line(&set_message).expect("policy should encode");
+    let set_json = decode_line(&encoded_set).expect("policy JSON should decode");
+    assert_eq!(
+        set_json
+            .pointer("/Set/sorottePlaybackBarrierV1/bufferingPolicy/policy")
+            .and_then(serde_json::Value::as_str),
+        Some("quorum")
+    );
+    assert_eq!(
+        decode_message_line(&encoded_set).expect("policy should roundtrip"),
+        set_message
+    );
+
+    let encoded_state = encode_message_line(&state_message).expect("transport should encode");
+    assert_eq!(
+        decode_message_line(&encoded_state).expect("transport should roundtrip"),
+        state_message
+    );
+    let ProtocolMessage::State(decoded) =
+        decode_message_line(&encoded_state).expect("transport should decode")
+    else {
+        panic!("transport report should remain a State message");
+    };
+    assert_eq!(
+        decoded
+            .state
+            .playback_barrier_v1()
+            .expect("transport extension should be valid")
+            .and_then(|extension| extension.transport),
+        Some(transport)
+    );
+}
+
+#[test]
+fn malformed_playback_barrier_extension_does_not_break_envelope_decoding() {
+    let message = decode_message_line(
+        r#"{"State":{"ping":{"clientRtt":0.1},"sorottePlaybackBarrierV1":{"ready":{"mediaGeneration":"invalid"}}}}"#,
+    )
+    .expect("permissive State envelope should preserve a malformed extension");
+    let ProtocolMessage::State(message) = message else {
+        panic!("expected State message");
+    };
+    assert!(message.state.ping.is_some());
+    assert!(message.state.playback_barrier_v1().is_err());
+}
+
+#[test]
+fn playback_barrier_debug_redacts_logical_media_identity() {
+    const MARKER: &str = "private-logical-media-token";
+    let prepare = PrepareMediaPayload::new(1, MARKER, 0.0, PlaybackBarrierPolicy::Controller);
+    let debug = format!("{:?}", prepare);
+    assert!(!debug.contains(MARKER));
+    assert!(debug.contains("<redacted>"));
+
+    let message_debug = format!(
+            "{:?}",
+            ProtocolMessage::set(SetPayload::new().with_playback_barrier_v1(
+                PlaybackBarrierSetExtension::new().with_prepare(prepare),
+            ),)
+        );
+    assert!(!message_debug.contains(MARKER));
 }
 
 #[test]

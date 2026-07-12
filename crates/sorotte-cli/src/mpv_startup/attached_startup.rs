@@ -48,7 +48,12 @@ where
         applied = true;
     }
     if let Some(file) = overrides.file.as_deref() {
-        player.open_file(file).map_err(|error| {
+        let open_result = match player.execute_tracked(PlayerCommand::OpenFile(file.to_owned())) {
+            Ok(_) => Ok(()),
+            Err(PlayerError::Unsupported("execute_tracked")) => player.open_file(file),
+            Err(error) => Err(error),
+        };
+        open_result.map_err(|error| {
             anyhow!("failed opening legacy startup file via attached player: {error}")
         })?;
         applied = true;

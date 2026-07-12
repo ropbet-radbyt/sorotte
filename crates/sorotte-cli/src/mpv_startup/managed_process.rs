@@ -1,11 +1,5 @@
 use super::*;
 
-const MANAGED_MPV_BUFFERING_DEFAULT_ARGS: &[&str] = &[
-    "--cache-pause=yes",
-    "--cache-pause-initial=yes",
-    "--cache-pause-wait=5",
-];
-
 #[derive(Debug)]
 pub(crate) struct ManagedMpvProcessGuard {
     child: Child,
@@ -167,11 +161,7 @@ fn managed_mpv_launch_base_args(ipc_path: &str) -> Vec<String> {
         "--force-window=no".to_owned(),
         "--idle=yes".to_owned(),
     ];
-    args.extend(
-        MANAGED_MPV_BUFFERING_DEFAULT_ARGS
-            .iter()
-            .map(|arg| (*arg).to_owned()),
-    );
+    args.extend(StreamingPlaybackConfig::default().mpv_arguments());
     args.push(format!("--input-ipc-server={ipc_path}"));
     args
 }

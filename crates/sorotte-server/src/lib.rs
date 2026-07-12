@@ -21,12 +21,17 @@ use sha1::{Digest, Sha1};
 use sha2::Sha256;
 use sorotte_core::{DomainError, SyncDomain};
 use sorotte_protocol::{
-    ChatPayload, ControllerAuthPayload, DEFAULT_MAX_PROTOCOL_LINE_BYTES, FilePayload, HelloPayload,
-    IgnoringOnTheFlyPayload, ListPayload, ListUserEntry, NewControlledRoomPayload, PingPayload,
-    PlaylistIndexPayload, PlaystatePayload, ProtocolError, ProtocolMessage, ReadyPayload, RoomRef,
-    SOROTTE_PLEX_PLAYLIST_URIS_FEATURE, SetPayload, StatePayload, UserSetPayload,
-    canonical_playlist_files_from_change, decode_line, decode_message_line_items,
-    encode_message_line, playlist_change_with_plex_sidecar,
+    ChatPayload, CommitStartPayload, ControllerAuthPayload, DEFAULT_MAX_PROTOCOL_LINE_BYTES,
+    FilePayload, HelloPayload, IgnoringOnTheFlyPayload, ListPayload, ListUserEntry,
+    MediaReadyPayload, NewControlledRoomPayload, PingPayload, PlaybackBarrierDegradedReason,
+    PlaybackBarrierParticipantPhase, PlaybackBarrierParticipantStatus, PlaybackBarrierPhase,
+    PlaybackBarrierPolicy, PlaybackBarrierSetExtension, PlaybackBarrierStateExtension,
+    PlaybackBarrierStatusPayload, PlaylistIndexPayload, PlaystatePayload, PrepareMediaPayload,
+    ProtocolError, ProtocolMessage, ReadyPayload, RoomBufferingPhase, RoomBufferingPolicy,
+    RoomBufferingPolicyPayload, RoomBufferingStatusPayload, RoomRef, SOROTTE_PLAYBACK_BARRIER_V1,
+    SOROTTE_PLEX_PLAYLIST_URIS_FEATURE, SetPayload, StartedAckPayload, StatePayload,
+    TransportBufferingReportPayload, UserSetPayload, canonical_playlist_files_from_change,
+    decode_line, decode_message_line_items, encode_message_line, playlist_change_with_plex_sidecar,
 };
 use sorotte_secret::SecretValue;
 use tokio::{
@@ -79,6 +84,19 @@ const PING_MOVING_AVERAGE_WEIGHT: f64 = 0.85;
 const SERVER_STATS_SNAPSHOT_INTERVAL_SECONDS: f64 = 3600.0;
 const SERVER_STATS_DELAY_STEP_SECONDS: f64 = 5.0;
 const SERVER_NETWORK_TICK_INTERVAL_SECONDS: f64 = 0.25;
+const PLAYBACK_BARRIER_DEFAULT_TIMEOUT_SECONDS: f64 = 20.0;
+const PLAYBACK_BARRIER_MIN_TIMEOUT_SECONDS: f64 = 1.0;
+const PLAYBACK_BARRIER_MAX_TIMEOUT_SECONDS: f64 = 30.0;
+const PLAYBACK_BARRIER_STARTED_TIMEOUT_SECONDS: f64 = 10.0;
+const PLAYBACK_BARRIER_MAX_LOGICAL_MEDIA_ID_CHARS: usize = 2048;
+const ROOM_BUFFERING_DEFAULT_QUORUM_PERCENT: u32 = 75;
+const ROOM_BUFFERING_DEFAULT_DEBOUNCE_SECONDS: f64 = 0.75;
+const ROOM_BUFFERING_MAX_DEBOUNCE_SECONDS: f64 = 10.0;
+const ROOM_BUFFERING_DEFAULT_RESUME_HYSTERESIS_SECONDS: f64 = 1.5;
+const ROOM_BUFFERING_MAX_RESUME_HYSTERESIS_SECONDS: f64 = 15.0;
+const ROOM_BUFFERING_DEFAULT_MAX_PAUSE_SECONDS: f64 = 30.0;
+const ROOM_BUFFERING_MIN_MAX_PAUSE_SECONDS: f64 = 1.0;
+const ROOM_BUFFERING_MAX_MAX_PAUSE_SECONDS: f64 = 60.0;
 // Media-match signatures can push otherwise valid Set/List lines above the
 // base Syncplay line size, especially when multiple users publish signatures.
 const MAX_PROTOCOL_LINE_BYTES: usize = DEFAULT_MAX_PROTOCOL_LINE_BYTES * 8;
@@ -114,6 +132,7 @@ mod persistence_actor;
 mod runtime_api;
 mod runtime_handlers;
 mod runtime_maintenance;
+mod runtime_playback_barrier;
 mod tls;
 
 pub use actor::{ServerActorError, ServerActorHandle};
@@ -293,6 +312,9 @@ pub struct ServerRuntime {
     room_controllers: BTreeMap<String, BTreeSet<String>>,
     room_playlists: BTreeMap<String, RoomPlaylistState>,
     room_playback_states: BTreeMap<String, RoomPlaybackState>,
+    room_playback_barriers: BTreeMap<String, RoomPlaybackBarrier>,
+    room_buffering_controls: BTreeMap<String, RoomBufferingControl>,
+    next_playback_barrier_revision: u64,
     client_playback_states: BTreeMap<String, ClientPlaybackState>,
     client_room_join_sequence: BTreeMap<String, u64>,
     next_room_join_sequence: u64,
@@ -425,6 +447,46 @@ struct ClientStateCounters {
     ping_rtt_seconds: f64,
     ping_average_rtt_seconds: f64,
     ping_forward_delay_seconds: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct RoomPlaybackBarrierParticipant {
+    username: String,
+    status: PlaybackBarrierParticipantStatus,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct RoomPlaybackBarrier {
+    prepare: PrepareMediaPayload,
+    initiator_client_id: String,
+    initiator_username: String,
+    participants: BTreeMap<String, RoomPlaybackBarrierParticipant>,
+    excluded_legacy_clients: BTreeSet<String>,
+    phase: PlaybackBarrierPhase,
+    state_revision: Option<u64>,
+    deadline: f64,
+    started_deadline: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct RoomBufferingParticipantReport {
+    username: String,
+    buffering: bool,
+    buffered_seconds: Option<f64>,
+    reported_at_seconds: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct RoomBufferingControl {
+    config: RoomBufferingPolicyPayload,
+    configured_by_client_id: String,
+    configured_by_username: String,
+    reports: BTreeMap<String, RoomBufferingParticipantReport>,
+    condition_active_since: Option<f64>,
+    condition_clear_since: Option<f64>,
+    paused_by_policy: bool,
+    pause_deadline: Option<f64>,
+    fail_open_latched: bool,
 }
 #[cfg(test)]
 mod tests;

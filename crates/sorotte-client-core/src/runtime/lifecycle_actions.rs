@@ -198,6 +198,13 @@ where
     }
 
     pub fn run_room_pause_sync_if_needed(&mut self) -> Result<(), PlayerError> {
+        self.run_room_pause_sync_if_needed_at(unix_wall_clock_time_seconds_legacy_compatible())
+    }
+
+    pub fn run_room_pause_sync_if_needed_at(
+        &mut self,
+        now_seconds: f64,
+    ) -> Result<(), PlayerError> {
         // Reconnect validation owns correction immediately after reconnect state restore.
         if self
             .session
@@ -210,29 +217,53 @@ where
 
         self.sync_player_playback_telemetry_into_session_and_buffer();
 
-        let Some(room_playstate) = self.current_room_playstate_legacy_ping_compatible_now() else {
+        self.drain_player_transport_coordination(now_seconds)?;
+        if self
+            .playback_coordination_snapshot()
+            .transport_telemetry_observed
+        {
+            return Ok(());
+        }
+
+        let Some(room_playstate) =
+            self.current_room_playstate_legacy_ping_compatible_at(now_seconds)
+        else {
             return Ok(());
         };
+        if room_playstate.paused == Some(true) {
+            self.session
+                .model
+                .playback
+                .pending_cache_room_playstate_resync = false;
+            self.session
+                .model
+                .playback
+                .cache_recovery_observation_position = None;
+            self.session
+                .model
+                .playback
+                .cache_recovery_waiting_for_post_cache_position = false;
+        }
         let room_seeked = room_playstate.do_seek == Some(true);
         let cache_pause_active = self.session.model.playback.local_paused_for_cache == Some(true);
-        let cache_blocks_room_unpause = cache_pause_active && room_playstate.paused == Some(false);
+        let cache_recovery_pending = self
+            .session
+            .model
+            .playback
+            .pending_cache_room_playstate_resync;
+        let cache_blocks_room_unpause =
+            (cache_pause_active || cache_recovery_pending) && room_playstate.paused == Some(false);
         if cache_blocks_room_unpause {
             self.session
                 .model
                 .playback
                 .pending_cache_room_playstate_resync = true;
         }
-        let cache_room_playstate_resync = !cache_pause_active
-            && self
-                .session
-                .model
-                .playback
-                .pending_cache_room_playstate_resync;
         let pause_mismatch = room_playstate.paused.is_some_and(|room_paused| {
             self.session.model.playback.local_paused.unwrap_or(true) != room_paused
         });
         let pause_mismatch_actionable = pause_mismatch && !cache_blocks_room_unpause;
-        if !room_seeked && !pause_mismatch_actionable && !cache_room_playstate_resync {
+        if !room_seeked && !pause_mismatch_actionable {
             return Ok(());
         }
         let set_by_is_self = self
@@ -244,23 +275,17 @@ where
             .zip(room_playstate.set_by.as_deref())
             .is_some_and(|(username, set_by)| username == set_by);
         if set_by_is_self {
-            self.session
-                .model
-                .playback
-                .pending_cache_room_playstate_resync = false;
             return Ok(());
         }
 
-        let target_position = if (room_seeked
-            || room_playstate.paused == Some(true)
-            || cache_room_playstate_resync)
+        let target_position = if (room_seeked || room_playstate.paused == Some(true))
             && let Some(room_position) = room_playstate.position.filter(|value| value.is_finite())
         {
             Some(room_position)
         } else {
             None
         };
-        let target_paused = if pause_mismatch_actionable || cache_room_playstate_resync {
+        let target_paused = if pause_mismatch_actionable {
             room_playstate.paused
         } else {
             None
@@ -269,12 +294,28 @@ where
             return Ok(());
         }
 
-        self.run_model_event(ClientEvent::RoomPauseSyncRequested {
+        let retain_desired_unpause_until_advancement = target_paused == Some(false);
+        let result = self.run_model_event(ClientEvent::RoomPauseSyncRequested {
             original_position: self.session.model.playback.local_position,
             target_position,
             target_paused,
-            clear_cache_resync_on_success: cache_room_playstate_resync,
-        })
+            clear_cache_resync_on_success: false,
+        });
+        if result.is_ok() && retain_desired_unpause_until_advancement {
+            self.session
+                .model
+                .playback
+                .pending_cache_room_playstate_resync = true;
+            self.session
+                .model
+                .playback
+                .cache_recovery_observation_position = self.session.model.playback.local_position;
+            self.session
+                .model
+                .playback
+                .cache_recovery_waiting_for_post_cache_position = false;
+        }
+        result
     }
 
     pub fn run_desync_correction_if_needed(
@@ -295,6 +336,22 @@ where
         }
 
         self.sync_player_playback_telemetry_into_session_and_buffer();
+        self.drain_player_transport_coordination(now_seconds)?;
+        let coordination = self.playback_coordination_snapshot();
+        if coordination.transport_telemetry_observed && coordination.ordinary_correction_blocked {
+            self.session.model.playback.behind_first_detected_at_seconds = None;
+            return Ok(());
+        }
+        if self.session.model.playback.local_paused_for_cache == Some(true)
+            || self
+                .session
+                .model
+                .playback
+                .pending_cache_room_playstate_resync
+        {
+            self.session.model.playback.behind_first_detected_at_seconds = None;
+            return Ok(());
+        }
         let Some(local_position) = self.session.model.playback.local_position else {
             return Ok(());
         };

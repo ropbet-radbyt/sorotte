@@ -1,5 +1,6 @@
 use super::*;
-use crate::FileSize;
+use crate::{FileSize, PlaybackBarrierStartConfig};
+use sorotte_protocol::PlaybackBarrierPolicy;
 
 #[test]
 fn is_playing_music_uses_current_user_file_extension() {
@@ -608,6 +609,55 @@ fn client_runtime_publish_pending_local_file_update_dispatches_sanitized_set_fil
         panic!("expected trailing List request after Set.file");
     };
     assert!(matches!(list_message.list, ListPayload::Request(_)));
+}
+
+#[test]
+fn pending_cli_file_publish_announces_source_before_start_barrier() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sorottePlaybackBarrierV1":true}}}"#,
+        )
+        .expect("barrier-aware hello should apply");
+    let private_url = "https://youtube.com/watch?v=dQw4w9WgXcQ&private=canary";
+    let player = RecordingPlayer {
+        pending_local_file_update: Some(LocalFileUpdate::new(private_url).with_path(private_url)),
+        ..Default::default()
+    };
+    let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+    runtime.set_playback_barrier_start_config(PlaybackBarrierStartConfig {
+        policy: Some(PlaybackBarrierPolicy::Controller),
+        ..PlaybackBarrierStartConfig::default()
+    });
+
+    assert!(
+        runtime
+            .publish_pending_local_file_update_legacy_compatible(
+                PrivacyMode::SendHashed,
+                PrivacyMode::DoNotSend,
+            )
+            .expect("pending file should publish")
+    );
+    let messages = runtime.control().outbound_messages();
+    let file_index = messages
+        .iter()
+        .position(|message| matches!(message, ProtocolMessage::Set(set) if set.set.file.is_some()))
+        .expect("compatible file announcement should be queued");
+    let (barrier_index, prepare) = messages
+        .iter()
+        .enumerate()
+        .find_map(|(index, message)| {
+            let ProtocolMessage::Set(set) = message else {
+                return None;
+            };
+            let extension = set.set.playback_barrier_v1().ok().flatten()?;
+            Some((index, extension.prepare?))
+        })
+        .expect("start barrier should be queued for the CLI media update");
+    assert!(file_index < barrier_index);
+    assert!(prepare.logical_media_id.starts_with("media-sha256:"));
+    assert!(!prepare.logical_media_id.contains("dQw4w9WgXcQ"));
+    assert!(!format!("{prepare:?}").contains("private=canary"));
 }
 
 #[test]

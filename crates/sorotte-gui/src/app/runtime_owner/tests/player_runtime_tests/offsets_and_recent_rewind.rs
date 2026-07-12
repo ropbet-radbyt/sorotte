@@ -76,7 +76,7 @@ fn gui_persisted_config_runtime_owner_keeps_offset_commands_on_global_timeline()
         last_applied_attached_room_playstate: None,
         suppressed_attached_room_playstate_after_playlist_reset: None,
         pending_local_attached_pause_override: None,
-        pending_attached_cache_unpause: false,
+        pending_attached_room_unpause_observation: None,
         pending_attached_player_pause_confirmation_pump: None,
         pending_attached_player_pause_command: None,
         player_position_seconds: Some(100.0),

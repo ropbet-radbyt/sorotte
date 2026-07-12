@@ -335,7 +335,7 @@ impl SorotteGuiShellAppState {
                 min_column_width: 420.0,
                 max_columns: 3,
             },
-            ["Readiness", "Desync", "Media Search"]
+            ["Readiness", "Desync", "Streaming", "Media Search"]
                 .into_iter()
                 .filter_map(section_card)
                 .chain([media_search_panel.clone()])

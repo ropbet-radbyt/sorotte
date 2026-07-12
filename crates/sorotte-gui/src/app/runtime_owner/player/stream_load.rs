@@ -365,10 +365,28 @@ impl GuiPersistedConfigRuntimeOwner {
         self.pending_logical_media_override = None;
         let (player_name, open_result) = {
             let player = self.player.as_mut()?;
-            (player.name(), player.open_file(&selected_path))
+            (player.name(), player.open_file_tracked(&selected_path))
         };
         Some(match open_result {
             Ok(()) => {
+                let logical_file = Self::placeholder_local_file_for_path(&selected_path);
+                let logical_id = logical_media_id_for_local_file_update(&logical_file);
+                let kind = if browser_is_url(&selected_path) {
+                    MediaTransportKind::NetworkVod
+                } else {
+                    MediaTransportKind::LocalFile
+                };
+                if let Some(session) = self.session.as_mut()
+                    && let Err(error) = session.prepare_attached_playback_media(
+                        logical_id,
+                        kind,
+                        system_time_seconds(),
+                    )
+                {
+                    eprintln!(
+                        "warning: failed to prepare attached-player media coordination: {error}"
+                    );
+                }
                 self.set_attached_player_forced_media_title(&Self::media_title_for_opened_path(
                     &selected_path,
                 ));
@@ -378,7 +396,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.player_position_seconds = Some(0.0);
                 self.player_paused_for_cache = None;
                 self.player_cache_buffering_percent = None;
-                self.pending_attached_cache_unpause = false;
+                self.pending_attached_room_unpause_observation = None;
                 self.refresh_player_state_impl();
                 let preserve_ready_for_auto_advanced_playlist_item =
                     self.playlist_auto_advance_eof_latched
@@ -422,11 +440,23 @@ impl GuiPersistedConfigRuntimeOwner {
             let player = self.player.as_mut()?;
             (
                 player.name(),
-                player.open_file(loaded_target_secret.as_str()),
+                player.open_file_tracked(loaded_target_secret.as_str()),
             )
         };
         Some(match open_result {
             Ok(()) => {
+                let logical_id = logical_media_id_for_local_file_update(&logical_file);
+                if let Some(session) = self.session.as_mut()
+                    && let Err(error) = session.prepare_attached_playback_media(
+                        logical_id,
+                        MediaTransportKind::NetworkVod,
+                        system_time_seconds(),
+                    )
+                {
+                    eprintln!(
+                        "warning: failed to prepare stable Plex media coordination identity: {error}"
+                    );
+                }
                 self.set_attached_player_forced_media_title(&media_title);
                 self.pending_stream_load_context = None;
                 if user_initiated {
@@ -444,7 +474,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.player_position_seconds = Some(0.0);
                 self.player_paused_for_cache = None;
                 self.player_cache_buffering_percent = None;
-                self.pending_attached_cache_unpause = false;
+                self.pending_attached_room_unpause_observation = None;
                 self.refresh_player_state_impl();
                 let preserve_ready_for_auto_advanced_playlist_item =
                     self.playlist_auto_advance_eof_latched

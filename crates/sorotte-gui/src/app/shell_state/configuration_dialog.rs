@@ -51,6 +51,32 @@ pub(in crate::app) struct GuiDesyncSection {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub(in crate::app) struct GuiStreamingSection {
+    pub(in crate::app) quality_label: String,
+    pub(in crate::app) custom_format: Option<String>,
+    pub(in crate::app) buffer_target_seconds: f64,
+    pub(in crate::app) read_ahead_seconds: f64,
+    pub(in crate::app) memory_cache_mebibytes: u64,
+    pub(in crate::app) disk_cache_enabled: bool,
+    pub(in crate::app) recovery_policy_label: String,
+    pub(in crate::app) maximum_catchup_rate: f64,
+    pub(in crate::app) hard_seek_threshold_seconds: f64,
+    pub(in crate::app) maximum_hard_seeks: u32,
+    pub(in crate::app) stability_interval_seconds: f64,
+    pub(in crate::app) retry_budget: u32,
+    pub(in crate::app) recovery_cooldown_seconds: f64,
+    pub(in crate::app) room_buffering_policy_label: String,
+    pub(in crate::app) room_quorum_percent: f64,
+    pub(in crate::app) room_maximum_pause_seconds: f64,
+    pub(in crate::app) start_policy_label: String,
+    pub(in crate::app) start_quorum_percent: f64,
+    pub(in crate::app) start_timeout_seconds: f64,
+    pub(in crate::app) start_timeout_action_label: String,
+    pub(in crate::app) quality_downgrade_suggestions: bool,
+    pub(in crate::app) effective_mpv_options: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub(in crate::app) struct GuiMediaSearchSection {
     pub(in crate::app) media_directories_text: String,
     pub(in crate::app) media_directory_count: usize,
@@ -233,6 +259,7 @@ pub(in crate::app) struct FirstRunConfigurationDialogState {
     pub(in crate::app) readiness: GuiReadinessSection,
     pub(in crate::app) privacy: GuiPrivacySection,
     pub(in crate::app) desync: GuiDesyncSection,
+    pub(in crate::app) streaming: GuiStreamingSection,
     pub(in crate::app) media_search: GuiMediaSearchSection,
     pub(in crate::app) chat: GuiChatSection,
     pub(in crate::app) osd: GuiOsdSection,

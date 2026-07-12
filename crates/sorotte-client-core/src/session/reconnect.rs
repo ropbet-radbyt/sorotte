@@ -6,6 +6,7 @@ impl ClientSession {
     }
 
     pub(super) fn reset_sync_state_for_reconnect_with_attempt(&mut self, attempt: u32) {
+        self.reset_playback_barrier();
         let (ready_snapshot, file_snapshot, controller_snapshot) = self
             .model
             .connection
@@ -76,6 +77,10 @@ impl ClientSession {
         self.model.playback.local_paused_for_cache = None;
         self.model.playback.local_cache_buffering_percent = None;
         self.model.playback.pending_cache_room_playstate_resync = false;
+        self.model.playback.cache_recovery_observation_position = None;
+        self.model
+            .playback
+            .cache_recovery_waiting_for_post_cache_position = false;
         self.model.playlist.last_seek_position_before_manual_seek = None;
         self.model.readiness.autoplay_timer_running = false;
         self.model.readiness.autoplay_time_left_seconds =

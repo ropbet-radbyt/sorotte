@@ -3,12 +3,17 @@ pub use sorotte_client_core::ConnectionPhase;
 use sorotte_client_core::{
     AutoplayCountdownNotification, ChatNotification, ClientEffect, ClientEffectError,
     ClientPlayerIo, ClientRuntime, ClientSession, ClientSessionUpdate,
-    ControlledRoomCreationNotification, ControllerAuthTransitionNotification, FileSize,
+    ControlledRoomCreationNotification, ControllerAuthTransitionNotification, CoordinatorCommandId,
+    FileSize, LogicalMediaId, MediaLoadPlan, MediaTransportKind,
+    PlaybackBarrierRoomBufferingConfig, PlaybackBarrierStartConfig, PlaybackBarrierTimeoutAction,
+    PlaybackCoordinationSnapshot, PlaybackCoordinatorAction, PlaybackCoordinatorConfig,
     PrivacyMode, QueuedRuntimeControl, ReconnectStateRestoreCorrectionMetrics,
     ReconnectStateRestoreCorrectionStateSnapshot, ReconnectTransitionNotification,
     RoomPlaystateView, UserChangeNotification,
 };
-use sorotte_player_api::{PlayerAdapter, PlayerError, PlayerPlaybackTelemetryUpdate};
+use sorotte_player_api::{
+    PlayerAdapter, PlayerError, PlayerPlaybackTelemetryUpdate, PlayerTransportTelemetryUpdate,
+};
 pub use sorotte_plex::PlexClientConfig;
 use sorotte_plex::{
     cache::PlexMatchCache,
@@ -21,7 +26,13 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
-use crate::{legacy_settings::AutoplayThresholdOverride, runtime_config::ClientConfig};
+use crate::{
+    legacy_settings::AutoplayThresholdOverride,
+    runtime_config::{
+        ClientConfig, RoomBufferingPolicy, StartSynchronizationPolicy, StartTimeoutAction,
+        StreamingPlaybackConfig, StreamingQualityDowngradeSuggestion,
+    },
+};
 
 const PLEX_SYNC_PUMP_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -312,6 +323,7 @@ where
     runtime: ClientRuntime<P, QueuedRuntimeControl>,
     endpoint: Option<String>,
     plex: Option<ClientPlexService>,
+    streaming_playback_config: StreamingPlaybackConfig,
 }
 
 impl<P> ClientApplication<P>
@@ -335,6 +347,7 @@ where
             runtime,
             endpoint: None,
             plex: None,
+            streaming_playback_config: StreamingPlaybackConfig::default(),
         }
     }
 
@@ -539,7 +552,7 @@ where
         self.runtime.player()
     }
 
-    pub fn player_mut(&mut self) -> ClientPlayerIo<'_, P> {
+    pub fn player_mut(&mut self) -> ClientPlayerIo<'_, P, QueuedRuntimeControl> {
         self.runtime.player_mut()
     }
 
@@ -635,6 +648,55 @@ where
             )
         };
         let config = settings.config;
+        self.streaming_playback_config = config.playback.streaming.clone();
+        self.runtime.set_playback_coordinator_config(
+            config.playback.streaming.playback_coordinator_config(),
+        );
+        let start = &config.playback.streaming.start_synchronization;
+        self.runtime
+            .set_playback_barrier_start_config(PlaybackBarrierStartConfig {
+                policy: match start.policy {
+                    StartSynchronizationPolicy::Immediate => None,
+                    StartSynchronizationPolicy::WaitForController => {
+                        Some(sorotte_protocol::PlaybackBarrierPolicy::Controller)
+                    }
+                    StartSynchronizationPolicy::WaitForAllEligible => {
+                        Some(sorotte_protocol::PlaybackBarrierPolicy::AllEligible)
+                    }
+                    StartSynchronizationPolicy::Quorum => {
+                        Some(sorotte_protocol::PlaybackBarrierPolicy::Quorum)
+                    }
+                },
+                quorum_percent: start.quorum.get().round() as u32,
+                timeout_seconds: start.timeout.get(),
+                timeout_action: match start.timeout_action {
+                    StartTimeoutAction::Continue => PlaybackBarrierTimeoutAction::Continue,
+                    StartTimeoutAction::RemainPaused => PlaybackBarrierTimeoutAction::RemainPaused,
+                    StartTimeoutAction::AskController => {
+                        PlaybackBarrierTimeoutAction::AskController
+                    }
+                },
+            });
+        let room_buffering = &config.playback.streaming.room_buffering;
+        self.runtime.set_playback_barrier_room_buffering_config(
+            PlaybackBarrierRoomBufferingConfig {
+                policy: match room_buffering.policy {
+                    RoomBufferingPolicy::Independent => {
+                        sorotte_protocol::RoomBufferingPolicy::Independent
+                    }
+                    RoomBufferingPolicy::PauseController => {
+                        sorotte_protocol::RoomBufferingPolicy::PauseController
+                    }
+                    RoomBufferingPolicy::PauseEligible => {
+                        sorotte_protocol::RoomBufferingPolicy::PauseAnyEligible
+                    }
+                    RoomBufferingPolicy::Quorum => sorotte_protocol::RoomBufferingPolicy::Quorum,
+                },
+                quorum_percent: room_buffering.quorum.get().round() as u32,
+                maximum_pause_seconds: room_buffering.maximum_pause.get(),
+                ..PlaybackBarrierRoomBufferingConfig::default()
+            },
+        );
 
         behavior.show_same_room_osd = config.interface.show_same_room_osd;
         behavior.show_osd_warnings = config.interface.show_osd_warnings;
@@ -1273,6 +1335,102 @@ where
 
     pub fn run_room_pause_sync_if_needed(&mut self) -> Result<(), PlayerError> {
         self.runtime.run_room_pause_sync_if_needed()
+    }
+
+    pub fn run_room_pause_sync_if_needed_at(
+        &mut self,
+        now_seconds: f64,
+    ) -> Result<(), PlayerError> {
+        self.runtime.run_room_pause_sync_if_needed_at(now_seconds)
+    }
+
+    pub fn set_playback_coordinator_config(&mut self, config: PlaybackCoordinatorConfig) {
+        self.runtime.set_playback_coordinator_config(config);
+    }
+
+    pub fn set_playback_barrier_start_config(&mut self, config: PlaybackBarrierStartConfig) {
+        self.runtime.set_playback_barrier_start_config(config);
+    }
+
+    pub fn set_playback_barrier_room_buffering_config(
+        &mut self,
+        config: PlaybackBarrierRoomBufferingConfig,
+    ) {
+        self.runtime
+            .set_playback_barrier_room_buffering_config(config);
+    }
+
+    pub fn prepare_playback_media(
+        &mut self,
+        logical_id: LogicalMediaId,
+        kind: MediaTransportKind,
+        now_seconds: f64,
+    ) -> MediaLoadPlan {
+        self.runtime
+            .prepare_playback_media(logical_id, kind, now_seconds)
+    }
+
+    pub fn observe_external_player_transport(
+        &mut self,
+        update: PlayerTransportTelemetryUpdate,
+        now_seconds: f64,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        self.runtime
+            .observe_external_player_transport(update, now_seconds)
+    }
+
+    pub fn observe_external_player_transport_at_epoch(
+        &mut self,
+        update: PlayerTransportTelemetryUpdate,
+        now_seconds: f64,
+        adapter_epoch: u64,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        self.runtime
+            .observe_external_player_transport_at_epoch(update, now_seconds, adapter_epoch)
+    }
+
+    pub fn reconcile_external_player_playback(
+        &mut self,
+        now_seconds: f64,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        self.runtime.reconcile_external_player_playback(now_seconds)
+    }
+
+    pub fn report_external_coordinator_command_dispatch(
+        &mut self,
+        command_id: CoordinatorCommandId,
+        result: Result<(), PlayerError>,
+        now_seconds: f64,
+    ) {
+        self.runtime
+            .report_external_coordinator_command_dispatch(command_id, result, now_seconds);
+    }
+
+    pub fn playback_coordination_snapshot(&self) -> PlaybackCoordinationSnapshot {
+        self.runtime.playback_coordination_snapshot()
+    }
+
+    pub fn streaming_quality_downgrade_suggestion(
+        &self,
+        approximate_selected_bitrate_bytes_per_second: Option<u64>,
+    ) -> Option<StreamingQualityDowngradeSuggestion> {
+        self.streaming_playback_config.quality_downgrade_suggestion(
+            &self.runtime.playback_coordination_snapshot().metrics,
+            approximate_selected_bitrate_bytes_per_second,
+        )
+    }
+
+    pub fn take_playback_barrier_timeout_action(&mut self) -> Option<PlaybackBarrierTimeoutAction> {
+        self.runtime.take_playback_barrier_timeout_action()
+    }
+
+    pub fn reset_playback_transport_adapter_epoch(&mut self, now_seconds: f64) -> u64 {
+        self.runtime
+            .reset_playback_transport_adapter_epoch(now_seconds)
+    }
+
+    pub fn playback_transport_adapter_epoch(&self) -> u64 {
+        self.runtime.playback_transport_adapter_epoch()
     }
 
     pub fn run_readiness_unpause_attempt(

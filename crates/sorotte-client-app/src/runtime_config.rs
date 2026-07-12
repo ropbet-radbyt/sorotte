@@ -198,6 +198,473 @@ impl Percent {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StreamingQualityPreset {
+    #[default]
+    Auto,
+    Best,
+    Balanced,
+    Max1080p,
+    Max720p,
+    Max480p,
+    Compatibility,
+    Custom,
+}
+
+impl StreamingQualityPreset {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "best" => Some(Self::Best),
+            "balanced" => Some(Self::Balanced),
+            "1080p" | "max1080p" | "max-1080p" => Some(Self::Max1080p),
+            "720p" | "max720p" | "max-720p" => Some(Self::Max720p),
+            "480p" | "max480p" | "max-480p" => Some(Self::Max480p),
+            "compatibility" | "combined" => Some(Self::Compatibility),
+            "custom" => Some(Self::Custom),
+            _ => None,
+        }
+    }
+
+    pub const fn config_value(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Best => "best",
+            Self::Balanced => "balanced",
+            Self::Max1080p => "1080p",
+            Self::Max720p => "720p",
+            Self::Max480p => "480p",
+            Self::Compatibility => "compatibility",
+            Self::Custom => "custom",
+        }
+    }
+
+    fn ytdl_format(self, custom: Option<&str>) -> Option<String> {
+        match self {
+            Self::Auto => None,
+            Self::Best => Some("bestvideo*+bestaudio/best".to_owned()),
+            Self::Balanced => {
+                Some("bestvideo*[height<=1080][fps<=30]+bestaudio/best[height<=1080]".to_owned())
+            }
+            Self::Max1080p => {
+                Some("bestvideo*[height<=1080]+bestaudio/best[height<=1080]".to_owned())
+            }
+            Self::Max720p => Some("bestvideo*[height<=720]+bestaudio/best[height<=720]".to_owned()),
+            Self::Max480p => Some("bestvideo*[height<=480]+bestaudio/best[height<=480]".to_owned()),
+            Self::Compatibility => {
+                Some("best[ext=mp4][height<=720]/best[height<=720]/best".to_owned())
+            }
+            Self::Custom => custom
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StreamingRecoveryPolicy {
+    PreserveContent,
+    #[default]
+    Balanced,
+    StayClosest,
+    PauseRoom,
+}
+
+impl StreamingRecoveryPolicy {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+            "preserve" | "preserve-content" => Some(Self::PreserveContent),
+            "balanced" => Some(Self::Balanced),
+            "stay-closest" | "closest" => Some(Self::StayClosest),
+            "pause-room" => Some(Self::PauseRoom),
+            _ => None,
+        }
+    }
+
+    pub const fn config_value(self) -> &'static str {
+        match self {
+            Self::PreserveContent => "preserve-content",
+            Self::Balanced => "balanced",
+            Self::StayClosest => "stay-closest",
+            Self::PauseRoom => "pause-room",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RoomBufferingPolicy {
+    #[default]
+    Independent,
+    PauseController,
+    PauseEligible,
+    Quorum,
+}
+
+impl RoomBufferingPolicy {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+            "independent" => Some(Self::Independent),
+            "pause-controller" | "controller" | "host" => Some(Self::PauseController),
+            "pause-eligible" | "any-eligible" | "all" => Some(Self::PauseEligible),
+            "quorum" => Some(Self::Quorum),
+            _ => None,
+        }
+    }
+
+    pub const fn config_value(self) -> &'static str {
+        match self {
+            Self::Independent => "independent",
+            Self::PauseController => "pause-controller",
+            Self::PauseEligible => "pause-eligible",
+            Self::Quorum => "quorum",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StartSynchronizationPolicy {
+    #[default]
+    Immediate,
+    WaitForController,
+    WaitForAllEligible,
+    Quorum,
+}
+
+impl StartSynchronizationPolicy {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+            "immediate" | "legacy" => Some(Self::Immediate),
+            "wait-controller" | "controller" => Some(Self::WaitForController),
+            "wait-all" | "all-eligible" | "all" => Some(Self::WaitForAllEligible),
+            "quorum" => Some(Self::Quorum),
+            _ => None,
+        }
+    }
+
+    pub const fn config_value(self) -> &'static str {
+        match self {
+            Self::Immediate => "immediate",
+            Self::WaitForController => "wait-controller",
+            Self::WaitForAllEligible => "wait-all",
+            Self::Quorum => "quorum",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StartTimeoutAction {
+    #[default]
+    Continue,
+    RemainPaused,
+    AskController,
+}
+
+impl StartTimeoutAction {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+            "continue" => Some(Self::Continue),
+            "remain-paused" | "paused" => Some(Self::RemainPaused),
+            "ask-controller" | "ask" => Some(Self::AskController),
+            _ => None,
+        }
+    }
+
+    pub const fn config_value(self) -> &'static str {
+        match self {
+            Self::Continue => "continue",
+            Self::RemainPaused => "remain-paused",
+            Self::AskController => "ask-controller",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StreamingBufferConfig {
+    pub target: Seconds,
+    pub read_ahead: Seconds,
+    pub memory_cache_mebibytes: u64,
+    pub disk_cache_enabled: bool,
+}
+
+impl Default for StreamingBufferConfig {
+    fn default() -> Self {
+        Self {
+            target: Seconds(5.0),
+            read_ahead: Seconds(30.0),
+            memory_cache_mebibytes: 150,
+            disk_cache_enabled: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StreamingRecoveryConfig {
+    pub policy: StreamingRecoveryPolicy,
+    pub max_catchup_rate: PlaybackRate,
+    pub hard_seek_threshold: Seconds,
+    pub max_hard_seeks_per_episode: u32,
+    pub stability_interval: Seconds,
+    pub retry_budget: u32,
+    pub cooldown: Seconds,
+}
+
+impl Default for StreamingRecoveryConfig {
+    fn default() -> Self {
+        Self {
+            policy: StreamingRecoveryPolicy::Balanced,
+            max_catchup_rate: PlaybackRate(1.05),
+            hard_seek_threshold: Seconds(8.0),
+            max_hard_seeks_per_episode: 1,
+            stability_interval: Seconds(4.0),
+            retry_budget: 1,
+            cooldown: Seconds(10.0),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RoomBufferingConfig {
+    pub policy: RoomBufferingPolicy,
+    pub quorum: Percent,
+    pub maximum_pause: Seconds,
+}
+
+impl Default for RoomBufferingConfig {
+    fn default() -> Self {
+        Self {
+            policy: RoomBufferingPolicy::Independent,
+            quorum: Percent(75.0),
+            maximum_pause: Seconds(30.0),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StartSynchronizationConfig {
+    pub policy: StartSynchronizationPolicy,
+    pub quorum: Percent,
+    pub timeout: Seconds,
+    pub timeout_action: StartTimeoutAction,
+}
+
+impl Default for StartSynchronizationConfig {
+    fn default() -> Self {
+        Self {
+            policy: StartSynchronizationPolicy::Immediate,
+            quorum: Percent(75.0),
+            timeout: Seconds(15.0),
+            timeout_action: StartTimeoutAction::Continue,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StreamingPlaybackConfig {
+    pub quality: StreamingQualityPreset,
+    pub custom_format: Option<String>,
+    pub buffering: StreamingBufferConfig,
+    pub recovery: StreamingRecoveryConfig,
+    pub room_buffering: RoomBufferingConfig,
+    pub start_synchronization: StartSynchronizationConfig,
+    pub quality_downgrade_suggestions: bool,
+}
+
+impl Default for StreamingPlaybackConfig {
+    fn default() -> Self {
+        Self {
+            quality: StreamingQualityPreset::Auto,
+            custom_format: None,
+            buffering: StreamingBufferConfig::default(),
+            recovery: StreamingRecoveryConfig::default(),
+            room_buffering: RoomBufferingConfig::default(),
+            start_synchronization: StartSynchronizationConfig::default(),
+            quality_downgrade_suggestions: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectiveMpvStreamingOption {
+    pub name: String,
+    pub configured_value: String,
+    pub effective_value: String,
+    pub overridden_by_advanced_arguments: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamingQualitySuggestionReason {
+    RepeatedRebuffering,
+    InsufficientObservedInputRate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamingQualityDowngradeSuggestion {
+    pub current: StreamingQualityPreset,
+    pub recommended: StreamingQualityPreset,
+    pub reason: StreamingQualitySuggestionReason,
+}
+
+impl StreamingPlaybackConfig {
+    pub fn playback_coordinator_config(&self) -> sorotte_client_core::PlaybackCoordinatorConfig {
+        sorotte_client_core::PlaybackCoordinatorConfig {
+            recovery_policy: match self.recovery.policy {
+                StreamingRecoveryPolicy::PreserveContent => {
+                    sorotte_client_core::RecoveryPolicy::PreserveContent
+                }
+                StreamingRecoveryPolicy::Balanced => sorotte_client_core::RecoveryPolicy::Balanced,
+                StreamingRecoveryPolicy::StayClosest => {
+                    sorotte_client_core::RecoveryPolicy::StayClosest
+                }
+                StreamingRecoveryPolicy::PauseRoom => {
+                    sorotte_client_core::RecoveryPolicy::PauseRoom
+                }
+            },
+            hard_seek_threshold_seconds: self.recovery.hard_seek_threshold.get(),
+            maximum_catchup_rate: self.recovery.max_catchup_rate.get(),
+            maximum_hard_seeks_per_episode: self.recovery.max_hard_seeks_per_episode,
+            stability_interval_seconds: self.recovery.stability_interval.get(),
+            command_retry_budget: self.recovery.retry_budget,
+            command_retry_cooldown_seconds: self.recovery.cooldown.get(),
+            ..sorotte_client_core::PlaybackCoordinatorConfig::default()
+        }
+    }
+
+    pub fn mpv_arguments(&self) -> Vec<String> {
+        let mut options = vec![
+            ("cache", "auto".to_owned()),
+            ("cache-pause", "yes".to_owned()),
+            ("cache-pause-initial", "yes".to_owned()),
+            (
+                "cache-pause-wait",
+                format_decimal(self.buffering.target.get()),
+            ),
+            (
+                "cache-secs",
+                format_decimal(self.buffering.read_ahead.get()),
+            ),
+            (
+                "demuxer-max-bytes",
+                format!("{}MiB", self.buffering.memory_cache_mebibytes),
+            ),
+            (
+                "cache-on-disk",
+                if self.buffering.disk_cache_enabled {
+                    "yes".to_owned()
+                } else {
+                    "no".to_owned()
+                },
+            ),
+        ];
+        if let Some(format) = self.quality.ytdl_format(self.custom_format.as_deref()) {
+            options.push(("ytdl-format", format));
+        }
+        options
+            .into_iter()
+            .map(|(name, value)| format!("--{name}={value}"))
+            .collect()
+    }
+
+    pub fn effective_mpv_options(
+        &self,
+        advanced_arguments: &[String],
+    ) -> Vec<EffectiveMpvStreamingOption> {
+        let advanced = parse_mpv_option_arguments(advanced_arguments);
+        self.mpv_arguments()
+            .into_iter()
+            .filter_map(|argument| {
+                let body = argument.strip_prefix("--")?;
+                let (name, configured_value) = body.split_once('=')?;
+                let override_value = advanced.get(name);
+                Some(EffectiveMpvStreamingOption {
+                    name: name.to_owned(),
+                    configured_value: configured_value.to_owned(),
+                    effective_value: override_value
+                        .cloned()
+                        .unwrap_or_else(|| configured_value.to_owned()),
+                    overridden_by_advanced_arguments: override_value.is_some(),
+                })
+            })
+            .collect()
+    }
+
+    pub fn quality_downgrade_suggestion(
+        &self,
+        metrics: &sorotte_client_core::PlaybackCoordinatorMetrics,
+        approximate_selected_bitrate_bytes_per_second: Option<u64>,
+    ) -> Option<StreamingQualityDowngradeSuggestion> {
+        if !self.quality_downgrade_suggestions {
+            return None;
+        }
+        let reason =
+            if metrics.buffer_episode_count >= 3 || metrics.total_buffer_duration_seconds >= 15.0 {
+                StreamingQualitySuggestionReason::RepeatedRebuffering
+            } else if approximate_selected_bitrate_bytes_per_second
+                .zip(metrics.last_input_rate_bytes_per_second)
+                .is_some_and(|(required, observed)| {
+                    observed.saturating_mul(100) < required.saturating_mul(115)
+                })
+            {
+                StreamingQualitySuggestionReason::InsufficientObservedInputRate
+            } else {
+                return None;
+            };
+        let recommended = match self.quality {
+            StreamingQualityPreset::Auto
+            | StreamingQualityPreset::Best
+            | StreamingQualityPreset::Custom => StreamingQualityPreset::Balanced,
+            StreamingQualityPreset::Balanced | StreamingQualityPreset::Max1080p => {
+                StreamingQualityPreset::Max720p
+            }
+            StreamingQualityPreset::Max720p => StreamingQualityPreset::Max480p,
+            StreamingQualityPreset::Max480p => StreamingQualityPreset::Compatibility,
+            StreamingQualityPreset::Compatibility => return None,
+        };
+        Some(StreamingQualityDowngradeSuggestion {
+            current: self.quality,
+            recommended,
+            reason,
+        })
+    }
+}
+
+fn format_decimal(value: f64) -> String {
+    let mut value = format!("{value:.3}");
+    while value.contains('.') && value.ends_with('0') {
+        value.pop();
+    }
+    if value.ends_with('.') {
+        value.pop();
+    }
+    value
+}
+
+fn parse_mpv_option_arguments(arguments: &[String]) -> BTreeMap<String, String> {
+    let mut options = BTreeMap::new();
+    let mut index = 0;
+    while let Some(argument) = arguments.get(index) {
+        let Some(body) = argument.strip_prefix("--") else {
+            index += 1;
+            continue;
+        };
+        if let Some(name) = body.strip_prefix("no-") {
+            options.insert(name.to_owned(), "no".to_owned());
+        } else if let Some((name, value)) = body.split_once('=') {
+            options.insert(name.to_owned(), value.to_owned());
+        } else if let Some(value) = arguments
+            .get(index + 1)
+            .filter(|value| !value.starts_with('-'))
+        {
+            options.insert(body.to_owned(), value.clone());
+            index += 1;
+        } else {
+            options.insert(body.to_owned(), "yes".to_owned());
+        }
+        index += 1;
+    }
+    options
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ServerPort(u16);
 
@@ -299,6 +766,7 @@ impl Default for SyncConfig {
 pub struct PlaybackConfig {
     pub player_path: Option<PathBuf>,
     pub per_player_arguments: BTreeMap<PathBuf, Vec<String>>,
+    pub streaming: StreamingPlaybackConfig,
     pub media_search_directories: Vec<PathBuf>,
     pub first_file_timeout: Seconds,
     pub folder_search_timeout: Seconds,
@@ -333,6 +801,7 @@ impl fmt::Debug for PlaybackConfig {
                         .flat_map(|args| args.iter()),
                 ),
             )
+            .field("streaming", &self.streaming)
             .field("media_search_directories", &self.media_search_directories)
             .field("first_file_timeout", &self.first_file_timeout)
             .field("folder_search_timeout", &self.folder_search_timeout)
@@ -367,6 +836,7 @@ impl Default for PlaybackConfig {
         Self {
             player_path: None,
             per_player_arguments: BTreeMap::new(),
+            streaming: StreamingPlaybackConfig::default(),
             media_search_directories: Vec::new(),
             first_file_timeout: Seconds(DEFAULT_FIRST_FILE_TIMEOUT_SECONDS),
             folder_search_timeout: Seconds(DEFAULT_FOLDER_SEARCH_TIMEOUT_SECONDS),
@@ -652,6 +1122,7 @@ pub fn resolve_client_config(settings: &StoredClientSettingsV1) -> ClientConfigR
     config.playback.player_path =
         resolve_path("player_path", settings.player_path.as_deref(), &mut issues);
     config.playback.per_player_arguments = resolve_per_player_arguments(settings, &mut issues);
+    config.playback.streaming = resolve_streaming_playback_config(settings, &mut issues);
     config.playback.media_search_directories =
         resolve_media_search_directories(settings, &mut issues);
     config.playback.first_file_timeout = resolve_seconds(
@@ -1062,6 +1533,166 @@ fn resolve_per_player_arguments(
         .collect()
 }
 
+fn resolve_streaming_playback_config(
+    settings: &StoredClientSettingsV1,
+    issues: &mut Vec<ClientConfigIssue>,
+) -> StreamingPlaybackConfig {
+    let mut config = StreamingPlaybackConfig::default();
+
+    if let Some(value) = settings.streaming_quality_preset.as_deref() {
+        match StreamingQualityPreset::parse(value) {
+            Some(value) => config.quality = value,
+            None => issues.push(ClientConfigIssue::new(
+                "streaming_quality_preset",
+                "must be auto, best, balanced, 1080p, 720p, 480p, compatibility, or custom",
+            )),
+        }
+    }
+    config.custom_format = normalized_optional_text(settings.streaming_custom_format.as_deref());
+    if config.quality == StreamingQualityPreset::Custom && config.custom_format.is_none() {
+        issues.push(ClientConfigIssue::new(
+            "streaming_custom_format",
+            "must be set when streaming quality is custom",
+        ));
+        config.quality = StreamingQualityPreset::Auto;
+    }
+
+    config.buffering.target = resolve_positive_seconds(
+        "streaming_buffer_target_seconds",
+        settings.streaming_buffer_target_seconds,
+        config.buffering.target,
+        issues,
+    );
+    config.buffering.read_ahead = resolve_positive_seconds(
+        "streaming_read_ahead_seconds",
+        settings.streaming_read_ahead_seconds,
+        config.buffering.read_ahead,
+        issues,
+    );
+    if config.buffering.read_ahead.get() < config.buffering.target.get() {
+        issues.push(ClientConfigIssue::new(
+            "streaming_read_ahead_seconds",
+            "must be at least the buffering target",
+        ));
+        config.buffering.read_ahead = config.buffering.target;
+    }
+    if let Some(value) = settings.streaming_memory_cache_mebibytes {
+        if value == 0 {
+            issues.push(ClientConfigIssue::new(
+                "streaming_memory_cache_mebibytes",
+                "must be greater than zero",
+            ));
+        } else {
+            config.buffering.memory_cache_mebibytes = value;
+        }
+    }
+    config.buffering.disk_cache_enabled = settings
+        .streaming_disk_cache_enabled
+        .unwrap_or(config.buffering.disk_cache_enabled);
+
+    if let Some(value) = settings.streaming_recovery_policy.as_deref() {
+        match StreamingRecoveryPolicy::parse(value) {
+            Some(value) => config.recovery.policy = value,
+            None => issues.push(ClientConfigIssue::new(
+                "streaming_recovery_policy",
+                "must be preserve-content, balanced, stay-closest, or pause-room",
+            )),
+        }
+    }
+    if let Some(value) = settings.streaming_max_catchup_rate {
+        if value.is_finite() && (1.0..=1.25).contains(&value) {
+            config.recovery.max_catchup_rate = PlaybackRate(value);
+        } else {
+            issues.push(ClientConfigIssue::new(
+                "streaming_max_catchup_rate",
+                "must be between 1.0 and 1.25",
+            ));
+        }
+    }
+    config.recovery.hard_seek_threshold = resolve_positive_seconds(
+        "streaming_hard_seek_threshold_seconds",
+        settings.streaming_hard_seek_threshold_seconds,
+        config.recovery.hard_seek_threshold,
+        issues,
+    );
+    config.recovery.max_hard_seeks_per_episode = settings
+        .streaming_max_hard_seeks_per_episode
+        .unwrap_or(config.recovery.max_hard_seeks_per_episode);
+    config.recovery.stability_interval = resolve_positive_seconds(
+        "streaming_stability_interval_seconds",
+        settings.streaming_stability_interval_seconds,
+        config.recovery.stability_interval,
+        issues,
+    );
+    config.recovery.retry_budget = settings
+        .streaming_recovery_retry_budget
+        .unwrap_or(config.recovery.retry_budget);
+    config.recovery.cooldown = resolve_seconds(
+        "streaming_recovery_cooldown_seconds",
+        settings.streaming_recovery_cooldown_seconds,
+        config.recovery.cooldown,
+        issues,
+    );
+
+    if let Some(value) = settings.streaming_room_buffering_policy.as_deref() {
+        match RoomBufferingPolicy::parse(value) {
+            Some(value) => config.room_buffering.policy = value,
+            None => issues.push(ClientConfigIssue::new(
+                "streaming_room_buffering_policy",
+                "must be independent, pause-controller, pause-eligible, or quorum",
+            )),
+        }
+    }
+    config.room_buffering.quorum = resolve_positive_percent(
+        "streaming_room_quorum_percent",
+        settings.streaming_room_quorum_percent,
+        config.room_buffering.quorum,
+        issues,
+    );
+    config.room_buffering.maximum_pause = resolve_positive_seconds(
+        "streaming_room_max_pause_seconds",
+        settings.streaming_room_max_pause_seconds,
+        config.room_buffering.maximum_pause,
+        issues,
+    );
+
+    if let Some(value) = settings.streaming_start_policy.as_deref() {
+        match StartSynchronizationPolicy::parse(value) {
+            Some(value) => config.start_synchronization.policy = value,
+            None => issues.push(ClientConfigIssue::new(
+                "streaming_start_policy",
+                "must be immediate, wait-controller, wait-all, or quorum",
+            )),
+        }
+    }
+    config.start_synchronization.quorum = resolve_positive_percent(
+        "streaming_start_quorum_percent",
+        settings.streaming_start_quorum_percent,
+        config.start_synchronization.quorum,
+        issues,
+    );
+    config.start_synchronization.timeout = resolve_positive_seconds(
+        "streaming_start_timeout_seconds",
+        settings.streaming_start_timeout_seconds,
+        config.start_synchronization.timeout,
+        issues,
+    );
+    if let Some(value) = settings.streaming_start_timeout_action.as_deref() {
+        match StartTimeoutAction::parse(value) {
+            Some(value) => config.start_synchronization.timeout_action = value,
+            None => issues.push(ClientConfigIssue::new(
+                "streaming_start_timeout_action",
+                "must be continue, remain-paused, or ask-controller",
+            )),
+        }
+    }
+    config.quality_downgrade_suggestions = settings
+        .streaming_quality_downgrade_suggestions
+        .unwrap_or(config.quality_downgrade_suggestions);
+
+    config
+}
+
 fn resolve_media_search_directories(
     settings: &StoredClientSettingsV1,
     issues: &mut Vec<ClientConfigIssue>,
@@ -1139,6 +1770,43 @@ fn resolve_seconds(
     };
     match Seconds::new(value) {
         Ok(value) => value,
+        Err(message) => {
+            issues.push(ClientConfigIssue::new(field, message));
+            default
+        }
+    }
+}
+
+fn resolve_positive_seconds(
+    field: &str,
+    value: Option<f64>,
+    default: Seconds,
+    issues: &mut Vec<ClientConfigIssue>,
+) -> Seconds {
+    let resolved = resolve_seconds(field, value, default, issues);
+    if value.is_some() && resolved.get() == 0.0 {
+        issues.push(ClientConfigIssue::new(field, "must be greater than zero"));
+        default
+    } else {
+        resolved
+    }
+}
+
+fn resolve_positive_percent(
+    field: &str,
+    value: Option<f64>,
+    default: Percent,
+    issues: &mut Vec<ClientConfigIssue>,
+) -> Percent {
+    let Some(value) = value else {
+        return default;
+    };
+    match Percent::new(value) {
+        Ok(value) if value.get() > 0.0 => value,
+        Ok(_) => {
+            issues.push(ClientConfigIssue::new(field, "must be greater than zero"));
+            default
+        }
         Err(message) => {
             issues.push(ClientConfigIssue::new(field, message));
             default
@@ -1228,6 +1896,172 @@ fn non_empty_trimmed(value: String, label: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn streaming_defaults_are_bounded_and_legacy_start_compatible() {
+        let config = ClientConfig::try_from_stored(&StoredClientSettingsV1::default())
+            .expect("empty settings should resolve")
+            .playback
+            .streaming;
+
+        assert_eq!(config.quality, StreamingQualityPreset::Auto);
+        assert_eq!(config.recovery.max_hard_seeks_per_episode, 1);
+        assert_eq!(config.recovery.max_catchup_rate.get(), 1.05);
+        assert_eq!(
+            config.start_synchronization.policy,
+            StartSynchronizationPolicy::Immediate
+        );
+        assert_eq!(
+            config.room_buffering.policy,
+            RoomBufferingPolicy::Independent
+        );
+        assert!(
+            config
+                .mpv_arguments()
+                .contains(&"--cache-pause-wait=5".to_owned())
+        );
+    }
+
+    #[test]
+    fn streaming_settings_resolve_to_typed_policy_and_mpv_arguments() {
+        let settings = StoredClientSettingsV1 {
+            streaming_quality_preset: Some("720p".to_owned()),
+            streaming_buffer_target_seconds: Some(8.0),
+            streaming_read_ahead_seconds: Some(45.0),
+            streaming_memory_cache_mebibytes: Some(256),
+            streaming_disk_cache_enabled: Some(true),
+            streaming_recovery_policy: Some("stay-closest".to_owned()),
+            streaming_max_catchup_rate: Some(1.08),
+            streaming_max_hard_seeks_per_episode: Some(1),
+            streaming_room_buffering_policy: Some("quorum".to_owned()),
+            streaming_start_policy: Some("wait-all".to_owned()),
+            streaming_start_timeout_action: Some("remain-paused".to_owned()),
+            ..StoredClientSettingsV1::default()
+        };
+
+        let config = ClientConfig::try_from_stored(&settings)
+            .expect("valid streaming settings should resolve")
+            .playback
+            .streaming;
+        assert_eq!(config.quality, StreamingQualityPreset::Max720p);
+        assert_eq!(config.recovery.policy, StreamingRecoveryPolicy::StayClosest);
+        assert_eq!(config.room_buffering.policy, RoomBufferingPolicy::Quorum);
+        assert_eq!(
+            config.start_synchronization.policy,
+            StartSynchronizationPolicy::WaitForAllEligible
+        );
+        assert!(config.mpv_arguments().iter().any(|argument| {
+            argument == "--ytdl-format=bestvideo*[height<=720]+bestaudio/best[height<=720]"
+        }));
+        assert!(
+            config
+                .mpv_arguments()
+                .contains(&"--demuxer-max-bytes=256MiB".to_owned())
+        );
+        assert!(
+            config
+                .mpv_arguments()
+                .contains(&"--cache-on-disk=yes".to_owned())
+        );
+        let coordinator = config.playback_coordinator_config();
+        assert_eq!(
+            coordinator.recovery_policy,
+            sorotte_client_core::RecoveryPolicy::StayClosest
+        );
+        assert_eq!(coordinator.maximum_hard_seeks_per_episode, 1);
+        assert_eq!(coordinator.maximum_catchup_rate, 1.08);
+    }
+
+    #[test]
+    fn advanced_player_arguments_are_reported_as_effective_overrides() {
+        let config = StreamingPlaybackConfig::default();
+        let effective = config.effective_mpv_options(&[
+            "--cache-pause-wait=12".to_owned(),
+            "--no-cache-on-disk".to_owned(),
+        ]);
+
+        let wait = effective
+            .iter()
+            .find(|option| option.name == "cache-pause-wait")
+            .expect("wait option should be present");
+        assert_eq!(wait.configured_value, "5");
+        assert_eq!(wait.effective_value, "12");
+        assert!(wait.overridden_by_advanced_arguments);
+
+        let disk = effective
+            .iter()
+            .find(|option| option.name == "cache-on-disk")
+            .expect("disk option should be present");
+        assert_eq!(disk.effective_value, "no");
+        assert!(disk.overridden_by_advanced_arguments);
+    }
+
+    #[test]
+    fn adaptive_quality_advisor_suggests_bounded_step_down_without_auto_switching() {
+        let config = StreamingPlaybackConfig {
+            quality: StreamingQualityPreset::Max1080p,
+            ..StreamingPlaybackConfig::default()
+        };
+        let metrics = sorotte_client_core::PlaybackCoordinatorMetrics {
+            buffer_episode_count: 3,
+            ..sorotte_client_core::PlaybackCoordinatorMetrics::default()
+        };
+
+        assert_eq!(
+            config.quality_downgrade_suggestion(&metrics, None),
+            Some(StreamingQualityDowngradeSuggestion {
+                current: StreamingQualityPreset::Max1080p,
+                recommended: StreamingQualityPreset::Max720p,
+                reason: StreamingQualitySuggestionReason::RepeatedRebuffering,
+            })
+        );
+        assert_eq!(config.quality, StreamingQualityPreset::Max1080p);
+    }
+
+    #[test]
+    fn adaptive_quality_advisor_uses_input_rate_headroom_and_honors_opt_out() {
+        let metrics = sorotte_client_core::PlaybackCoordinatorMetrics {
+            last_input_rate_bytes_per_second: Some(900_000),
+            ..sorotte_client_core::PlaybackCoordinatorMetrics::default()
+        };
+        let mut config = StreamingPlaybackConfig {
+            quality: StreamingQualityPreset::Max720p,
+            ..StreamingPlaybackConfig::default()
+        };
+        assert_eq!(
+            config
+                .quality_downgrade_suggestion(&metrics, Some(1_000_000))
+                .map(|suggestion| suggestion.reason),
+            Some(StreamingQualitySuggestionReason::InsufficientObservedInputRate)
+        );
+        config.quality_downgrade_suggestions = false;
+        assert_eq!(
+            config.quality_downgrade_suggestion(&metrics, Some(1_000_000)),
+            None
+        );
+    }
+
+    #[test]
+    fn invalid_streaming_configuration_reports_actionable_fields() {
+        let resolution = ClientConfig::resolve(&StoredClientSettingsV1 {
+            streaming_quality_preset: Some("custom".to_owned()),
+            streaming_buffer_target_seconds: Some(8.0),
+            streaming_read_ahead_seconds: Some(4.0),
+            streaming_max_catchup_rate: Some(1.5),
+            streaming_room_quorum_percent: Some(0.0),
+            ..StoredClientSettingsV1::default()
+        });
+
+        let fields = resolution
+            .issues
+            .iter()
+            .map(|issue| issue.field.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(fields.contains("streaming_custom_format"));
+        assert!(fields.contains("streaming_read_ahead_seconds"));
+        assert!(fields.contains("streaming_max_catchup_rate"));
+        assert!(fields.contains("streaming_room_quorum_percent"));
+    }
 
     #[test]
     fn empty_stored_settings_keep_shared_playlists_enabled_by_default() {

@@ -58,6 +58,18 @@ impl GuiPersistedConfigRuntimeOwner {
                         })?;
                     }
                 }
+                GuiAttachedPlayerRuntimeAction::Coordinator {
+                    command_id,
+                    command,
+                } => {
+                    let _ = self.apply_attached_player_runtime_actions_impl(
+                        vec![GuiAttachedPlayerRuntimeAction::Coordinator {
+                            command_id,
+                            command,
+                        }],
+                        "shared-playlist advance",
+                    );
+                }
             }
         }
 

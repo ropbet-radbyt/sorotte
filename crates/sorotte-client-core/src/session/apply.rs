@@ -56,6 +56,7 @@ impl ClientSession {
     }
 
     pub(super) fn apply_hello(&mut self, hello: ClientHello) {
+        self.reset_playback_barrier();
         if self.model.reconnect.in_progress {
             self.model.reconnect.in_progress = false;
             self.model.reconnect.connected_intent = true;
@@ -128,6 +129,7 @@ impl ClientSession {
             let mut playlist_change = None;
             let mut playlist_index = None;
             let mut features = None;
+            let mut playback_barrier = None;
             match command {
                 ClientSetCommand::Room(value) => room = Some(value),
                 ClientSetCommand::Users(value) => users = Some(value),
@@ -144,6 +146,9 @@ impl ClientSession {
                     username,
                     capabilities,
                 } => features = Some((username, capabilities)),
+                ClientSetCommand::PlaybackBarrier(extension) => {
+                    playback_barrier = Some(*extension);
+                }
             }
 
             if let Some(room) = room {
@@ -233,6 +238,10 @@ impl ClientSession {
                 if let Some(target_username) = target_username {
                     self.set_user_capabilities(&target_username, Some(capabilities));
                 }
+            }
+
+            if let Some(extension) = playback_barrier {
+                self.apply_playback_barrier_extension(extension);
             }
 
             if let Some(controller_auth) = controller_auth {

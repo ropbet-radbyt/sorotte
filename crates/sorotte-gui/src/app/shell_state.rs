@@ -44,7 +44,7 @@ pub(super) use self::configuration_dialog::{
     FirstRunConfigurationDialogDraft, FirstRunConfigurationDialogState, GuiChatSection,
     GuiConfigurationTextValue, GuiConnectionSettingsSection, GuiDesyncSection, GuiDialogControl,
     GuiDialogControlKind, GuiDialogSection, GuiMediaSearchSection, GuiOsdSection,
-    GuiPrivacySection, GuiReadinessSection, GuiSystemSection,
+    GuiPrivacySection, GuiReadinessSection, GuiStreamingSection, GuiSystemSection,
 };
 #[cfg(any(test, feature = "gui-semantic-smoke"))]
 pub(super) use self::main_window::MainWindowRuntimeChatSnapshot;

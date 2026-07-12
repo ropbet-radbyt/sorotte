@@ -2,6 +2,7 @@ use super::*;
 use std::collections::VecDeque;
 
 use crate::outbox::{EffectOutbox, ProtocolOutbox};
+use sorotte_protocol::PlaybackBarrierSetExtension;
 
 macro_rules! notification_outbox_methods {
     ($front:ident, $acknowledge:ident, $flush:ident, $field:ident, $notification:ty) => {
@@ -157,6 +158,9 @@ pub enum ClientEffect {
     SetFile(FilePayload),
     SetPlaylist(Vec<String>),
     SetPlaylistIndex(i64),
+    /// Reliable Set-envelope control for playback prepare and ongoing room
+    /// buffering policy requests. Observation acknowledgements use SendState.
+    SendPlaybackBarrierSet(Box<PlaybackBarrierSetExtension>),
     SendState(StatePayload),
     RequestControllerAuth(ControllerAuthPayload),
     SendChat(String),
@@ -214,6 +218,10 @@ impl std::fmt::Debug for ClientEffect {
                 .debug_tuple("SetPlaylistIndex")
                 .field(index)
                 .finish(),
+            Self::SendPlaybackBarrierSet(extension) => formatter
+                .debug_tuple("SendPlaybackBarrierSet")
+                .field(extension)
+                .finish(),
             Self::SendState(state) => formatter.debug_tuple("SendState").field(state).finish(),
             Self::RequestControllerAuth(payload) => formatter
                 .debug_tuple("RequestControllerAuth")
@@ -261,6 +269,10 @@ impl ClientEffect {
         serde_json::from_value(value)
             .map(Self::SetFile)
             .map_err(|error| ClientEffectError::InvalidFilePayload(error.to_string()))
+    }
+
+    pub fn send_playback_barrier_set(extension: PlaybackBarrierSetExtension) -> Self {
+        Self::SendPlaybackBarrierSet(Box::new(extension))
     }
 }
 
@@ -523,6 +535,11 @@ impl ClientEffectSink for QueuedRuntimeControl {
             ClientEffect::SetPlaylistIndex(index) => {
                 let set_payload =
                     SetPayload::new().with_playlist_index(PlaylistIndexPayload::new(index));
+                self.outbound_messages
+                    .push_back(ProtocolMessage::set(set_payload));
+            }
+            ClientEffect::SendPlaybackBarrierSet(extension) => {
+                let set_payload = SetPayload::new().with_playback_barrier_v1(*extension);
                 self.outbound_messages
                     .push_back(ProtocolMessage::set(set_payload));
             }

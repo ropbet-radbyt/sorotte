@@ -19,6 +19,8 @@ pub(in crate::app) struct GuiClientCoreChatSessionRuntimeAdapter {
     pub(super) next_state_sync_heartbeat_at: Option<Instant>,
     pub(super) next_autoplay_tick_at: Option<Instant>,
     pub(super) pending_attached_player_local_runtime_actions: Vec<GuiAttachedPlayerRuntimeAction>,
+    pub(super) playback_transport_adapter_epoch: u64,
+    pub(super) last_streaming_quality_suggestion: Option<StreamingQualityDowngradeSuggestion>,
     pub(super) tracked_remote_usernames: BTreeSet<String>,
     pub(super) optimistic_room_playlist: Option<(String, RoomPlaylistView)>,
 }
@@ -114,6 +116,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         )?;
         Self::dispatch_command_to_application(&mut runtime, ClientCommand::BeginConnecting)?;
 
+        let playback_transport_adapter_epoch = runtime.playback_transport_adapter_epoch();
         Ok(Self {
             username,
             baseline_room: room,
@@ -129,6 +132,8 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             next_state_sync_heartbeat_at: None,
             next_autoplay_tick_at: None,
             pending_attached_player_local_runtime_actions: Vec::new(),
+            playback_transport_adapter_epoch,
+            last_streaming_quality_suggestion: None,
             tracked_remote_usernames: BTreeSet::new(),
             optimistic_room_playlist: None,
         })
@@ -216,6 +221,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         features.insert("setOthersReadiness".to_owned(), Value::Bool(true));
         features.insert("mediaMatch".to_owned(), Value::Bool(true));
         features.insert("sorottePlexPlaylistUris".to_owned(), Value::Bool(true));
+        ClientSession::advertise_playback_barrier_v1(&mut features);
         Value::Object(features)
     }
 

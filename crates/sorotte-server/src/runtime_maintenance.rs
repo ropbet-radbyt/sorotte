@@ -124,6 +124,7 @@ impl ServerRuntime {
         &mut self,
         now: f64,
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
+        let mut outbound = self.collect_due_playback_barrier_updates_at(now)?;
         let mut due_clients: Vec<String> = self
             .client_next_periodic_state_at
             .iter()
@@ -132,7 +133,6 @@ impl ServerRuntime {
             .collect();
         due_clients.sort();
 
-        let mut outbound = Vec::new();
         for client_id in due_clients {
             let Some(mut next_state_at) =
                 self.client_next_periodic_state_at.get(&client_id).copied()
@@ -261,8 +261,15 @@ impl ServerRuntime {
         &mut self,
         client_id: &str,
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
-        let Some(session) = self.remove_session_tracking(client_id) else {
+        let Some(session) = self.sessions.get(client_id).cloned() else {
             return Ok(Vec::new());
+        };
+        let mut outbound_messages =
+            self.mark_playback_barrier_participant_disconnected(client_id, &session.room)?;
+        outbound_messages
+            .extend(self.mark_room_buffering_participant_disconnected(client_id, &session.room)?);
+        let Some(session) = self.remove_session_tracking(client_id) else {
+            return Ok(outbound_messages);
         };
         self.cleanup_room_if_empty(&session.room)?;
         let left_message = user_event_message(
@@ -278,10 +285,11 @@ impl ServerRuntime {
             self.clients_all()
         };
         recipients.push(client_id.to_owned());
-        let mut outbound_messages: Vec<_> = recipients
-            .into_iter()
-            .map(|peer_client| DirectedProtocolMessage::new(peer_client, left_message.clone()))
-            .collect();
+        outbound_messages.extend(
+            recipients
+                .into_iter()
+                .map(|peer_client| DirectedProtocolMessage::new(peer_client, left_message.clone())),
+        );
         if self.persistent_rooms_enabled {
             self.enqueue_list_snapshots_for_clients(
                 &mut outbound_messages,
@@ -424,6 +432,8 @@ impl ServerRuntime {
         self.room_controllers.remove(room_name);
         self.room_playlists.remove(room_name);
         self.room_playback_states.remove(room_name);
+        self.room_playback_barriers.remove(room_name);
+        self.room_buffering_controls.remove(room_name);
         self.delete_persisted_room_if_needed(room_name)?;
         Ok(())
     }

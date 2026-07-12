@@ -23,6 +23,27 @@ pub struct StoredClientSettingsV1 {
     pub room_list: Option<Vec<String>>,
     pub player_path: Option<String>,
     pub per_player_arguments: Option<BTreeMap<String, Vec<String>>>,
+    pub streaming_quality_preset: Option<String>,
+    pub streaming_custom_format: Option<String>,
+    pub streaming_buffer_target_seconds: Option<f64>,
+    pub streaming_read_ahead_seconds: Option<f64>,
+    pub streaming_memory_cache_mebibytes: Option<u64>,
+    pub streaming_disk_cache_enabled: Option<bool>,
+    pub streaming_recovery_policy: Option<String>,
+    pub streaming_max_catchup_rate: Option<f64>,
+    pub streaming_hard_seek_threshold_seconds: Option<f64>,
+    pub streaming_max_hard_seeks_per_episode: Option<u32>,
+    pub streaming_stability_interval_seconds: Option<f64>,
+    pub streaming_recovery_retry_budget: Option<u32>,
+    pub streaming_recovery_cooldown_seconds: Option<f64>,
+    pub streaming_room_buffering_policy: Option<String>,
+    pub streaming_room_quorum_percent: Option<f64>,
+    pub streaming_room_max_pause_seconds: Option<f64>,
+    pub streaming_start_policy: Option<String>,
+    pub streaming_start_quorum_percent: Option<f64>,
+    pub streaming_start_timeout_seconds: Option<f64>,
+    pub streaming_start_timeout_action: Option<String>,
+    pub streaming_quality_downgrade_suggestions: Option<bool>,
     pub media_search_directories: Option<Vec<String>>,
     pub public_servers: Option<Vec<(String, String)>>,
     pub stream_support_plugin_enabled: Option<bool>,
@@ -124,6 +145,81 @@ impl fmt::Debug for StoredClientSettingsV1 {
                 &self.per_player_arguments.as_ref().map(|arguments| {
                     RedactedCommandArgs::from_args(arguments.values().flat_map(|args| args.iter()))
                 }),
+            )
+            .field("streaming_quality_preset", &self.streaming_quality_preset)
+            .field(
+                "streaming_custom_format_configured",
+                &self.streaming_custom_format.is_some(),
+            )
+            .field(
+                "streaming_buffer_target_seconds",
+                &self.streaming_buffer_target_seconds,
+            )
+            .field(
+                "streaming_read_ahead_seconds",
+                &self.streaming_read_ahead_seconds,
+            )
+            .field(
+                "streaming_memory_cache_mebibytes",
+                &self.streaming_memory_cache_mebibytes,
+            )
+            .field(
+                "streaming_disk_cache_enabled",
+                &self.streaming_disk_cache_enabled,
+            )
+            .field("streaming_recovery_policy", &self.streaming_recovery_policy)
+            .field(
+                "streaming_max_catchup_rate",
+                &self.streaming_max_catchup_rate,
+            )
+            .field(
+                "streaming_hard_seek_threshold_seconds",
+                &self.streaming_hard_seek_threshold_seconds,
+            )
+            .field(
+                "streaming_max_hard_seeks_per_episode",
+                &self.streaming_max_hard_seeks_per_episode,
+            )
+            .field(
+                "streaming_stability_interval_seconds",
+                &self.streaming_stability_interval_seconds,
+            )
+            .field(
+                "streaming_recovery_retry_budget",
+                &self.streaming_recovery_retry_budget,
+            )
+            .field(
+                "streaming_recovery_cooldown_seconds",
+                &self.streaming_recovery_cooldown_seconds,
+            )
+            .field(
+                "streaming_room_buffering_policy",
+                &self.streaming_room_buffering_policy,
+            )
+            .field(
+                "streaming_room_quorum_percent",
+                &self.streaming_room_quorum_percent,
+            )
+            .field(
+                "streaming_room_max_pause_seconds",
+                &self.streaming_room_max_pause_seconds,
+            )
+            .field("streaming_start_policy", &self.streaming_start_policy)
+            .field(
+                "streaming_start_quorum_percent",
+                &self.streaming_start_quorum_percent,
+            )
+            .field(
+                "streaming_start_timeout_seconds",
+                &self.streaming_start_timeout_seconds,
+            )
+            .field(
+                "streaming_start_timeout_action",
+                &self.streaming_start_timeout_action,
+            )
+            .field(
+                "streaming_quality_downgrade_suggestions",
+                &self.streaming_quality_downgrade_suggestions,
             )
             .field("media_search_directories", &self.media_search_directories)
             .field("public_servers", &self.public_servers)

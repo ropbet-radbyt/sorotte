@@ -66,6 +66,12 @@ pub(crate) fn ready_update_message(
     ProtocolMessage::set(SetPayload::new().with_ready(payload))
 }
 
+pub(crate) fn playback_barrier_set_message(
+    extension: PlaybackBarrierSetExtension,
+) -> ProtocolMessage {
+    ProtocolMessage::set(SetPayload::new().with_playback_barrier_v1(extension))
+}
+
 pub(crate) fn readiness_legacy_chat_message(
     set_by_username: &str,
     username: &str,
@@ -213,6 +219,7 @@ pub(crate) fn server_feature_list(
         "mediaMatch": true,
         SOROTTE_PLEX_PLAYLIST_URIS_FEATURE: true,
         "setOthersReadiness": readiness_enabled,
+        SOROTTE_PLAYBACK_BARRIER_V1: true,
         "uiMode": LEGACY_UI_MODE_UNKNOWN,
     })
 }

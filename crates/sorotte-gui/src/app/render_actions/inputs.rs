@@ -282,6 +282,46 @@ impl GuiWidgetEguiRenderer {
                     .map(str::to_owned)
                     .collect()
             }
+            ("Streaming", "Quality") => [
+                "auto",
+                "best",
+                "balanced",
+                "1080p",
+                "720p",
+                "480p",
+                "compatibility",
+                "custom",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+            ("Streaming", "Recovery Policy") => {
+                ["preserve-content", "balanced", "stay-closest", "pause-room"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect()
+            }
+            ("Streaming", "Room Buffering Policy") => [
+                "independent",
+                "pause-controller",
+                "pause-eligible",
+                "quorum",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+            ("Streaming", "Start Synchronization") => {
+                ["immediate", "wait-controller", "wait-all", "quorum"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect()
+            }
+            ("Streaming", "Start Timeout Action") => {
+                ["continue", "remain-paused", "ask-controller"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect()
+            }
             ("Chat", "Input Position") => ["Top", "Middle", "Bottom"]
                 .into_iter()
                 .map(str::to_owned)

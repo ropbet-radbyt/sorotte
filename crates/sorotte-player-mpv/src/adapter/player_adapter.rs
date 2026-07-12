@@ -1,5 +1,7 @@
 use super::*;
-use sorotte_player_api::{PlayerAdapter, PlayerCapabilities};
+use sorotte_player_api::{
+    PlayerAdapter, PlayerCapabilities, PlayerCommand, PlayerCommandId, PlayerCommandProgress,
+};
 
 impl PlayerAdapter for MpvAdapter {
     fn name(&self) -> &'static str {
@@ -14,28 +16,243 @@ impl PlayerAdapter for MpvAdapter {
         }
     }
 
+    fn execute_tracked(&mut self, command: PlayerCommand) -> Result<PlayerCommandId, PlayerError> {
+        self.ensure_transport_observers_registered_if_attached();
+
+        let (command_id, supersession) = match &command {
+            PlayerCommand::OpenFile(_) => {
+                let generation = PlayerMediaGeneration::new(self.next_media_generation.max(1));
+                let command_id = self.register_tracked_command(
+                    Some(generation),
+                    TrackedCommandKind::Load {
+                        file_loaded: false,
+                        ready: false,
+                    },
+                );
+                (command_id, TrackedCommandSupersession::Load)
+            }
+            PlayerCommand::SetPosition(target_seconds) => {
+                let command_id = self.register_tracked_command(
+                    self.media_generation(),
+                    TrackedCommandKind::Seek {
+                        target_seconds: *target_seconds,
+                        seeking_finished: false,
+                        position_in_tolerance: false,
+                    },
+                );
+                (command_id, TrackedCommandSupersession::Seek)
+            }
+            PlayerCommand::SetPaused(true) => {
+                let command_id = self.register_tracked_command(
+                    self.media_generation(),
+                    TrackedCommandKind::Pause {
+                        logical_pause_observed: false,
+                    },
+                );
+                (command_id, TrackedCommandSupersession::PauseOrPlay)
+            }
+            PlayerCommand::SetPaused(false) => {
+                let command_id = self.register_tracked_command(
+                    self.media_generation(),
+                    TrackedCommandKind::Play {
+                        restart_sequence_baseline: self.playback_restart_sequence,
+                        position_baseline: self.observed_state.position_seconds,
+                        logical_play_observed: false,
+                        cache_clear_observed: self.observed_state.paused_for_cache == Some(false),
+                        restart_observed: false,
+                        forward_advancement_observed: false,
+                    },
+                );
+                (command_id, TrackedCommandSupersession::PauseOrPlay)
+            }
+            _ => return Err(PlayerError::Unsupported("execute_tracked command")),
+        };
+
+        let result = match command {
+            PlayerCommand::OpenFile(path) => self.open_file(&path),
+            PlayerCommand::SetPosition(position_seconds) => {
+                let result = self.send_ipc_command_if_attached(json!([
+                    MPV_COMMAND_SET_PROPERTY,
+                    MPV_PROPERTY_TIME_POS,
+                    position_seconds
+                ]));
+                if result.is_ok() && self.simulation_mode {
+                    self.position_seconds = position_seconds;
+                }
+                result
+            }
+            PlayerCommand::SetPaused(paused) => {
+                let result = self.send_ipc_command_if_attached(json!([
+                    MPV_COMMAND_SET_PROPERTY,
+                    MPV_PROPERTY_PAUSE,
+                    paused
+                ]));
+                if result.is_ok() && self.simulation_mode {
+                    self.paused = paused;
+                }
+                result
+            }
+            _ => unreachable!("tracked command variants were filtered above"),
+        };
+        if let Err(error) = result {
+            self.discard_unaccepted_tracked_command(command_id);
+            return Err(error);
+        }
+
+        if self.simulation_mode {
+            let media_generation = self.media_generation();
+            match supersession {
+                TrackedCommandSupersession::Load => {
+                    self.observe_tracked_commands(
+                        media_generation,
+                        TrackedCommandObservation::FileLoaded,
+                    );
+                    self.observe_tracked_commands(
+                        media_generation,
+                        TrackedCommandObservation::Phase(self.transport_phase),
+                    );
+                }
+                TrackedCommandSupersession::Seek => {
+                    self.observed_state.position_seconds = Some(self.position_seconds);
+                    self.observed_state.seeking = Some(false);
+                    self.observe_tracked_commands(
+                        media_generation,
+                        TrackedCommandObservation::Position(self.position_seconds),
+                    );
+                    self.observe_tracked_commands(
+                        media_generation,
+                        TrackedCommandObservation::Seeking(false),
+                    );
+                }
+                TrackedCommandSupersession::PauseOrPlay if self.paused => {
+                    self.observed_state.paused = Some(true);
+                    self.observed_state.logical_pause = Some(true);
+                    self.observed_state.paused_for_cache = Some(false);
+                    self.observe_tracked_commands(
+                        media_generation,
+                        TrackedCommandObservation::CachePause(false),
+                    );
+                    self.observe_tracked_commands(
+                        media_generation,
+                        TrackedCommandObservation::LogicalPause(true),
+                    );
+                }
+                TrackedCommandSupersession::PauseOrPlay => {
+                    self.observed_state.paused = Some(false);
+                    self.observed_state.logical_pause = Some(false);
+                    self.observed_state.paused_for_cache = Some(false);
+                    self.playback_restart_sequence =
+                        self.playback_restart_sequence.wrapping_add(1).max(1);
+                    self.observe_tracked_commands(
+                        media_generation,
+                        TrackedCommandObservation::LogicalPause(false),
+                    );
+                    self.observe_tracked_commands(
+                        media_generation,
+                        TrackedCommandObservation::CachePause(false),
+                    );
+                    self.observe_tracked_commands(
+                        media_generation,
+                        TrackedCommandObservation::PlaybackRestart(self.playback_restart_sequence),
+                    );
+                    self.position_seconds += PLAYBACK_ADVANCEMENT_EPSILON_SECONDS * 2.0;
+                    self.observed_state.position_seconds = Some(self.position_seconds);
+                    self.observe_tracked_commands(
+                        media_generation,
+                        TrackedCommandObservation::Position(self.position_seconds),
+                    );
+                }
+            }
+        }
+
+        self.accept_tracked_command(command_id);
+        match supersession {
+            TrackedCommandSupersession::Load => self
+                .supersede_tracked_commands(Some(command_id), |kind| kind.is_load_seek_or_play()),
+            TrackedCommandSupersession::Seek => self
+                .supersede_tracked_commands(Some(command_id), |kind| {
+                    matches!(kind, TrackedCommandKind::Seek { .. })
+                }),
+            TrackedCommandSupersession::PauseOrPlay => {
+                self.supersede_tracked_commands(Some(command_id), |kind| {
+                    matches!(
+                        kind,
+                        TrackedCommandKind::Pause { .. } | TrackedCommandKind::Play { .. }
+                    )
+                })
+            }
+        }
+        Ok(command_id)
+    }
+
     fn open_file(&mut self, path: &str) -> Result<(), PlayerError> {
-        self.send_ipc_command_if_attached(json!([
+        let generation = self.allocate_media_generation();
+        let previous_phase = self.transport_phase;
+        self.pending_load_request = Some(path.to_owned());
+        self.pending_load_generation = Some(generation);
+        self.transport_phase = PlayerTransportPhase::Loading;
+        let loading_update = self
+            .transport_update_for(generation)
+            .with_phase(PlayerTransportPhase::Loading);
+        self.queue_transport_telemetry_update(loading_update);
+
+        if let Err(error) = self.send_ipc_command_if_attached(json!([
             MPV_COMMAND_LOADFILE,
             path,
             MPV_LOADFILE_REPLACE
-        ]))?;
+        ])) {
+            if self.pending_load_generation == Some(generation) {
+                self.pending_load_request = None;
+                self.pending_load_generation = None;
+            }
+            self.transport_phase = previous_phase;
+            let mut failure_update = self
+                .transport_update_for(generation)
+                .with_phase(PlayerTransportPhase::Failed);
+            failure_update.error_kind = Some(PlayerMediaLoadFailureKind::Unknown);
+            self.queue_transport_telemetry_update(failure_update);
+            return Err(error);
+        }
+
         if self.ipc_client.is_some() {
-            self.current_path = Some(path.to_owned());
-            self.pending_load_request = Some(path.to_owned());
-            self.pending_local_file_update = None;
-            self.observed_state.path = None;
-            self.observed_state.duration_seconds = None;
-            self.observed_state.size_bytes = None;
-            self.paused_for_cache = false;
-            self.cache_buffering_percent = None;
-            self.observed_state.paused_for_cache = None;
-            self.observed_state.cache_buffering_percent = None;
+            // A fast mpv load can deliver start-file/file-loaded before the
+            // loadfile command reply. Do not erase those observations after
+            // the command returns.
+            if self.pending_load_generation == Some(generation) {
+                self.current_path = Some(path.to_owned());
+                self.pending_local_file_update = None;
+                self.observed_state.path = None;
+                self.observed_state.duration_seconds = None;
+                self.observed_state.size_bytes = None;
+                self.paused_for_cache = false;
+                self.cache_buffering_percent = None;
+                self.observed_state.paused_for_cache = None;
+                self.observed_state.cache_buffering_percent = None;
+            }
         } else {
+            self.active_media_generation = Some(generation);
+            self.pending_load_generation = None;
+            self.pending_load_request = None;
+            self.active_file_loaded = true;
+            self.active_generation_has_restarted = !self.paused;
             self.current_path = Some(path.to_owned());
             self.pending_local_file_update = Some(Self::local_file_update_for_path(path));
             self.pending_media_load_outcomes
                 .push_back(PlayerMediaLoadOutcome::success(path, Some(path.to_owned())));
+            let phase = if self.paused {
+                PlayerTransportPhase::ReadyPaused
+            } else {
+                PlayerTransportPhase::Playing
+            };
+            self.set_transport_phase(phase);
+        }
+        let belongs_to_tracked_load = self.pending_tracked_commands.iter().any(|command| {
+            command.accepted_at.is_none()
+                && command.media_generation == Some(generation)
+                && matches!(&command.kind, TrackedCommandKind::Load { .. })
+        });
+        if !belongs_to_tracked_load {
+            self.supersede_tracked_commands(None, |kind| kind.is_load_seek_or_play());
         }
         Ok(())
     }
@@ -259,12 +476,34 @@ impl PlayerAdapter for MpvAdapter {
     }
 
     fn take_playback_telemetry_update(&mut self) -> Option<PlayerPlaybackTelemetryUpdate> {
-        self.ensure_observers_registered_if_attached();
+        self.ensure_transport_observers_registered_if_attached();
         self.drain_ipc_events_if_attached();
         if self.pending_playback_telemetry_update.is_none() {
             self.poll_paused_position_telemetry_if_attached();
         }
         self.pending_playback_telemetry_update.take()
+    }
+
+    fn take_transport_telemetry_update(&mut self) -> Option<PlayerTransportTelemetryUpdate> {
+        self.ensure_transport_observers_registered_if_attached();
+        self.drain_ipc_events_if_attached();
+        self.pending_transport_telemetry_updates.pop_front()
+    }
+
+    fn take_command_progress(&mut self) -> Option<PlayerCommandProgress> {
+        self.ensure_transport_observers_registered_if_attached();
+        self.drain_ipc_events_if_attached();
+        if self
+            .ipc_client
+            .as_ref()
+            .is_some_and(|ipc_client| !ipc_client.is_healthy())
+        {
+            self.fail_all_accepted_tracked_commands(
+                sorotte_player_api::PlayerCommandFailureKind::TransportDisconnected,
+            );
+        }
+        self.expire_tracked_commands();
+        self.pending_command_progress_updates.pop_front()
     }
 
     fn take_media_load_outcome(&mut self) -> Option<PlayerMediaLoadOutcome> {

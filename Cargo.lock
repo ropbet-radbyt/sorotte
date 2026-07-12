@@ -3532,7 +3532,10 @@ dependencies = [
 name = "sorotte-sim"
 version = "0.1.0"
 dependencies = [
+ "sorotte-client-core",
  "sorotte-core",
+ "sorotte-player-api",
+ "sorotte-player-mpv",
 ]
 
 [[package]]

@@ -24,8 +24,8 @@ use sorotte_player_api::{
 };
 use sorotte_protocol::{
     ChatPayload, ControllerAuthPayload, FilePayload, IgnoringOnTheFlyPayload, ListPayload,
-    PingPayload, PlaystatePayload, ProtocolError, ProtocolMessage, StatePayload, decode_line,
-    decode_message_line,
+    PingPayload, PlaybackBarrierSetExtension, PlaystatePayload, ProtocolError, ProtocolMessage,
+    StatePayload, decode_line, decode_message_line,
 };
 
 fn protocol_file_payload(value: Value) -> FilePayload {
@@ -201,6 +201,7 @@ struct RecordingRuntimeControl {
     file_updates: Vec<FilePayload>,
     playlist_updates: Vec<Vec<String>>,
     playlist_index_updates: Vec<i64>,
+    playback_barrier_sets: Vec<PlaybackBarrierSetExtension>,
     state_updates: Vec<StatePayload>,
     controller_auth_requests: Vec<ControllerAuthPayload>,
     chat_messages: Vec<String>,
@@ -241,6 +242,9 @@ impl ClientEffectSink for RecordingRuntimeControl {
             ClientEffect::SetFile(file) => self.file_updates.push(file),
             ClientEffect::SetPlaylist(files) => self.playlist_updates.push(files),
             ClientEffect::SetPlaylistIndex(index) => self.playlist_index_updates.push(index),
+            ClientEffect::SendPlaybackBarrierSet(extension) => {
+                self.playback_barrier_sets.push(*extension);
+            }
             ClientEffect::SendState(state) => self.state_updates.push(state),
             ClientEffect::RequestControllerAuth(payload) => {
                 self.controller_auth_requests.push(payload);
@@ -274,6 +278,7 @@ mod control_tests;
 mod controller_tests;
 mod file_metadata_tests;
 mod ping_tests;
+mod playback_barrier_tests;
 mod playback_sync_tests;
 mod playlist_tests;
 mod protocol_tests;

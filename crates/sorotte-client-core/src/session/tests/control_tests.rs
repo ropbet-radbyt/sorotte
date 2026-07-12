@@ -1,4 +1,7 @@
 use super::*;
+use sorotte_protocol::{
+    PlaybackBarrierPolicy, PrepareMediaPayload, RoomBufferingPolicy, RoomBufferingPolicyPayload,
+};
 
 #[test]
 fn dispatch_runtime_actions_applies_player_and_control_operations() {
@@ -244,6 +247,68 @@ fn queued_runtime_control_can_drain_encoded_protocol_lines() {
         "encoded line should preserve manuallyInitiated"
     );
     assert!(control.outbound_messages().is_empty());
+}
+
+#[test]
+fn playback_barrier_set_effect_is_reliable_and_precedes_coalescible_state() {
+    const PRIVATE_MEDIA_ID: &str = "private-youtube-logical-id";
+    let extension = PlaybackBarrierSetExtension::new()
+        .with_prepare(PrepareMediaPayload::new(
+            7,
+            PRIVATE_MEDIA_ID,
+            12.0,
+            PlaybackBarrierPolicy::Controller,
+        ))
+        .with_buffering_policy(RoomBufferingPolicyPayload::new(
+            7,
+            RoomBufferingPolicy::Independent,
+        ));
+    let effect = ClientEffect::send_playback_barrier_set(extension.clone());
+    assert!(
+        !format!("{effect:?}").contains(PRIVATE_MEDIA_ID),
+        "effect diagnostics must preserve logical-media redaction"
+    );
+
+    let mut control = QueuedRuntimeControl::default();
+    control.begin_protocol_connection_generation();
+    control.activate_protocol_connection_generation();
+    control
+        .emit(ClientEffect::SendState(StatePayload::new()))
+        .expect("connection-scoped State should queue");
+    control.emit(effect).expect("barrier Set should queue");
+
+    assert_eq!(control.outbound_messages().len(), 2);
+    let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
+        panic!("reliable barrier Set should move ahead of an unleased State");
+    };
+    assert_eq!(
+        set_message
+            .set
+            .playback_barrier_v1()
+            .expect("queued extension should decode"),
+        Some(extension.clone())
+    );
+    assert!(matches!(
+        control.outbound_messages()[1],
+        ProtocolMessage::State(_)
+    ));
+
+    control.begin_protocol_connection_generation();
+    assert_eq!(
+        control.outbound_messages().len(),
+        1,
+        "connection replacement drops State but retains reliable barrier control"
+    );
+    let ProtocolMessage::Set(retained) = &control.outbound_messages()[0] else {
+        panic!("retained message should remain a Set envelope");
+    };
+    assert_eq!(
+        retained
+            .set
+            .playback_barrier_v1()
+            .expect("retained extension should decode"),
+        Some(extension)
+    );
 }
 
 #[test]

@@ -173,7 +173,7 @@ fn run_connected_session_branch_runtime_steps_legacy_compatible(
     for action in actions {
         match action {
             ConnectedSessionRuntimeStepAction::RunRoomPauseSync => {
-                runtime.run_room_pause_sync_if_needed()?;
+                runtime.run_room_pause_sync_if_needed_at(now_seconds)?;
             }
             ConnectedSessionRuntimeStepAction::RunReadinessUnpauseAttempt => {
                 runtime.run_readiness_unpause_attempt(
