@@ -106,6 +106,7 @@ impl PlayerAdapter for MpvAdapter {
         let result = match command {
             PlayerCommand::OpenFile(path) => self.open_file(&path),
             PlayerCommand::SetPosition(position_seconds) => {
+                self.begin_seek_cache_evidence_epoch();
                 let result = self.send_ipc_command_if_attached(json!([
                     MPV_COMMAND_SET_PROPERTY,
                     MPV_PROPERTY_TIME_POS,
@@ -358,6 +359,7 @@ impl PlayerAdapter for MpvAdapter {
     }
 
     fn set_position(&mut self, position_seconds: f64) -> Result<(), PlayerError> {
+        self.begin_seek_cache_evidence_epoch();
         self.send_ipc_command_if_attached(json!([
             MPV_COMMAND_SET_PROPERTY,
             MPV_PROPERTY_TIME_POS,
@@ -567,6 +569,7 @@ impl PlayerAdapter for MpvAdapter {
     fn take_transport_telemetry_update(&mut self) -> Option<PlayerTransportTelemetryUpdate> {
         self.ensure_transport_observers_registered_if_attached();
         self.drain_ipc_events_if_attached();
+        self.observe_unhealthy_ipc_transport();
         self.poll_ytdl_live_probe_completion();
         self.pending_transport_telemetry_updates.pop_front()
     }
@@ -574,6 +577,7 @@ impl PlayerAdapter for MpvAdapter {
     fn take_command_progress(&mut self) -> Option<PlayerCommandProgress> {
         self.ensure_transport_observers_registered_if_attached();
         self.drain_ipc_events_if_attached();
+        self.observe_unhealthy_ipc_transport();
         if self
             .ipc_client
             .as_ref()

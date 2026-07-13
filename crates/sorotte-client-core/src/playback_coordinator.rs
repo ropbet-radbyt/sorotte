@@ -11,6 +11,7 @@ const CONSERVATIVE_CATCHUP_RATE_WITHOUT_HEADROOM: f64 = 1.03;
 const HEALTHY_CATCHUP_BUFFER_SECONDS: f64 = 2.0;
 const MAXIMUM_CATCHUP_EPISODE_SECONDS: f64 = 300.0;
 const SEEK_PREPARATION_TIMEOUT_SECONDS: f64 = 60.0;
+const SEEK_PREPARATION_MAX_STABILIZATION_SECONDS: f64 = 1.0;
 const NEAREST_BUFFERED_TARGET_LIMIT_SECONDS: f64 = 15.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -606,6 +607,10 @@ struct SeekPreparationEpisode {
     deadline_seconds: f64,
     primary_seek_command_id: Option<CoordinatorCommandId>,
     primary_seek_issued: bool,
+    primary_seek_observation_sequence: Option<u64>,
+    refill_started_observation_sequence: Option<u64>,
+    refill_released_after_seek: bool,
+    stable_playable_since: Option<(u64, f64)>,
 }
 
 impl SeekPreparationEpisode {
@@ -749,6 +754,10 @@ impl PlaybackCoordinator {
             episode.cache_buffering_percent = None;
             episode.buffered_ahead_seconds = None;
             episode.nearest_safe_buffered_position_seconds = None;
+            episode.primary_seek_observation_sequence = Some(self.observation_sequence);
+            episode.refill_started_observation_sequence = None;
+            episode.refill_released_after_seek = false;
+            episode.stable_playable_since = None;
         }
         if let Some(media) = self.media.as_mut() {
             media.load_restart_baseline = 0;
@@ -858,6 +867,10 @@ impl PlaybackCoordinator {
                 episode.cache_buffering_percent = None;
                 episode.buffered_ahead_seconds = None;
                 episode.nearest_safe_buffered_position_seconds = None;
+                episode.primary_seek_observation_sequence = None;
+                episode.refill_started_observation_sequence = None;
+                episode.refill_released_after_seek = false;
+                episode.stable_playable_since = None;
                 episode.deadline_seconds =
                     now_seconds + self.config.seek_preparation_timeout_seconds;
             } else if let Some(terminal) = ready_handoff_to_rearm {
@@ -894,6 +907,10 @@ impl PlaybackCoordinator {
                     deadline_seconds: now_seconds + self.config.seek_preparation_timeout_seconds,
                     primary_seek_command_id: None,
                     primary_seek_issued: false,
+                    primary_seek_observation_sequence: None,
+                    refill_started_observation_sequence: None,
+                    refill_released_after_seek: false,
+                    stable_playable_since: None,
                 });
             }
             // A refreshed URL (for example, an expiring Plex URL) represents
@@ -1065,9 +1082,9 @@ impl PlaybackCoordinator {
             self.finish_seek_preparation(SeekPreparationTerminalOutcome::Superseded);
             self.begin_seek_preparation_if_needed(desired);
             if update_kind == DesiredRoomPlaybackUpdateKind::ExplicitSeekAlreadyDispatched
-                && let Some(episode) = self.seek_preparation.as_mut()
+                && self.seek_preparation.is_some()
             {
-                episode.primary_seek_issued = true;
+                self.mark_seek_preparation_primary_issued(None);
             }
         } else if let Some(episode) = self.seek_preparation.as_mut() {
             episode.latest_room_revision = desired.state_revision;
@@ -1158,6 +1175,21 @@ impl PlaybackCoordinator {
     pub fn observe(
         &mut self,
         observation: PlayerTransportObservation,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        self.observe_with_seek_preparation_evidence(observation, true)
+    }
+
+    pub(crate) fn replay_observation(
+        &mut self,
+        observation: PlayerTransportObservation,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        self.observe_with_seek_preparation_evidence(observation, false)
+    }
+
+    fn observe_with_seek_preparation_evidence(
+        &mut self,
+        observation: PlayerTransportObservation,
+        seek_preparation_evidence_is_fresh: bool,
     ) -> Vec<PlaybackCoordinatorAction> {
         let Some(media_generation) = self.media.as_ref().map(|media| media.generation) else {
             return Vec::new();
@@ -1300,7 +1332,12 @@ impl PlaybackCoordinator {
         self.update_diagnostic_for_observation(observed);
         let mut actions = self.take_pending_actions();
         self.complete_observed_commands(observed, advancing);
-        self.update_seek_preparation(observed, &mut actions);
+        self.update_seek_preparation(
+            observed,
+            &observation,
+            seek_preparation_evidence_is_fresh,
+            &mut actions,
+        );
         if self.seek_preparation.is_none() {
             let recovery_degraded =
                 self.update_recovery_episode(observed, advancing, position_sampled);
@@ -1308,7 +1345,13 @@ impl PlaybackCoordinator {
                 self.enter_degraded_recovery(reason, &mut actions);
             }
         }
-        self.coordinate_desired_state(observed, advancing, &mut actions);
+        self.coordinate_desired_state(
+            observed,
+            &observation,
+            seek_preparation_evidence_is_fresh,
+            advancing,
+            &mut actions,
+        );
         self.reconcile_rate_override(observed, observed.observed_at_seconds, &mut actions);
         actions
     }
@@ -1323,6 +1366,19 @@ impl PlaybackCoordinator {
         };
         command.accepted = true;
         true
+    }
+
+    pub(crate) fn active_seek_preparation_lost_command_tracking(
+        &self,
+        command_id: CoordinatorCommandId,
+    ) -> bool {
+        self.seek_preparation
+            .as_ref()
+            .is_some_and(|episode| episode.primary_seek_command_id == Some(command_id))
+            && self
+                .pending_commands
+                .iter()
+                .any(|command| command.id == command_id)
     }
 
     pub fn command_failed(&mut self, command_id: CoordinatorCommandId, now_seconds: f64) -> bool {
@@ -1787,6 +1843,10 @@ impl PlaybackCoordinator {
                 + self.config.seek_preparation_timeout_seconds,
             primary_seek_command_id: None,
             primary_seek_issued: false,
+            primary_seek_observation_sequence: None,
+            refill_started_observation_sequence: None,
+            refill_released_after_seek: false,
+            stable_playable_since: None,
         });
         self.close_recovery_without_metrics();
         if availability == SeekTargetAvailability::NonSeekable {
@@ -1808,6 +1868,8 @@ impl PlaybackCoordinator {
     fn update_seek_preparation(
         &mut self,
         observed: ObservedState,
+        observation: &PlayerTransportObservation,
+        seek_preparation_evidence_is_fresh: bool,
         actions: &mut Vec<PlaybackCoordinatorAction>,
     ) {
         let Some(media_kind) = self.media.as_ref().map(|media| media.kind) else {
@@ -1816,7 +1878,10 @@ impl PlaybackCoordinator {
         let Some(current) = self.seek_preparation.as_ref() else {
             return;
         };
-        if observed.phase == PlayerTransportPhase::Failed {
+        if matches!(
+            observed.phase,
+            PlayerTransportPhase::Ended | PlayerTransportPhase::Failed
+        ) {
             let current_revision = self.desired.map(|desired| desired.state_revision);
             self.finish_seek_preparation(SeekPreparationTerminalOutcome::Degraded(
                 SeekPreparationDegradedReason::TransportFailed,
@@ -1887,8 +1952,6 @@ impl PlaybackCoordinator {
             return;
         };
         episode.availability = availability;
-        episode.cache_buffering_percent = observed.cache_buffering_percent;
-        episode.buffered_ahead_seconds = observed.buffered_ahead_seconds;
         episode.nearest_safe_buffered_position_seconds = nearest;
         if media_kind == MediaTransportKind::LiveSliding
             && availability == SeekTargetAvailability::OutsideLiveWindow
@@ -1907,19 +1970,103 @@ impl PlaybackCoordinator {
             observed.phase,
             PlayerTransportPhase::ReadyPaused | PlayerTransportPhase::Playing
         );
-        let refill_ended = playable_phase;
-        let minimum_headroom_ready = observed.buffered_ahead_seconds.is_some_and(|seconds| {
-            seconds >= self.config.seek_preparation_minimum_headroom_seconds
-        });
-        let refill_progress_ready = observed
-            .cache_buffering_percent
-            .is_some_and(|percent| percent >= 100.0);
-        let ready = episode.primary_seek_issued
+        let post_seek_observation = episode
+            .primary_seek_observation_sequence
+            .is_some_and(|sequence| self.observation_sequence > sequence)
+            && seek_preparation_evidence_is_fresh;
+        if post_seek_observation && at_target {
+            if let Some(percent) = observation
+                .cache_buffering_percent
+                .filter(|percent| percent.is_finite())
+            {
+                episode.cache_buffering_percent = Some(percent.clamp(0.0, 100.0));
+            }
+            if let Some(seconds) = observation
+                .buffered_ahead_seconds
+                .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
+            {
+                episode.buffered_ahead_seconds = Some(seconds);
+            }
+        }
+
+        let refill_started = post_seek_observation
+            && (observation.paused_for_cache == Some(true)
+                || matches!(
+                    observation.phase,
+                    Some(PlayerTransportPhase::Prebuffering | PlayerTransportPhase::Rebuffering)
+                ));
+        if refill_started {
+            episode.refill_started_observation_sequence = Some(self.observation_sequence);
+            episode.refill_released_after_seek = false;
+            episode.stable_playable_since = None;
+        }
+
+        let transport_ready = episode.primary_seek_issued
+            && post_seek_observation
             && playable_phase
             && !observed.seeking
             && at_target
-            && !observed.paused_for_cache
-            && (minimum_headroom_ready || refill_progress_ready || refill_ended);
+            && !observed.paused_for_cache;
+        let fresh_playable_or_cache_release = matches!(
+            observation.phase,
+            Some(PlayerTransportPhase::ReadyPaused | PlayerTransportPhase::Playing)
+        ) || observation.paused_for_cache == Some(false);
+        if transport_ready
+            && fresh_playable_or_cache_release
+            && episode
+                .refill_started_observation_sequence
+                .is_some_and(|sequence| self.observation_sequence > sequence)
+        {
+            episode.refill_released_after_seek = true;
+        }
+
+        let minimum_headroom_ready = episode.buffered_ahead_seconds.is_some_and(|seconds| {
+            seconds >= self.config.seek_preparation_minimum_headroom_seconds
+        });
+        let refill_progress_ready = episode
+            .cache_buffering_percent
+            .is_some_and(|percent| percent >= 100.0);
+        let quantitative_cache_telemetry_observed =
+            episode.buffered_ahead_seconds.is_some() || episode.cache_buffering_percent.is_some();
+        let fresh_aligned_playable_observation =
+            observation.phase.is_some_and(|phase| {
+                matches!(
+                    phase,
+                    PlayerTransportPhase::ReadyPaused | PlayerTransportPhase::Playing
+                )
+            }) || observation.position_seconds.is_some_and(|position| {
+                (position - episode.frozen_target_seconds).abs()
+                    <= self.config.position_tolerance_seconds
+            });
+        let telemetry_poor_stable = if transport_ready
+            && !quantitative_cache_telemetry_observed
+            && episode.refill_started_observation_sequence.is_none()
+            && fresh_aligned_playable_observation
+        {
+            match episode.stable_playable_since {
+                Some((sequence, since_seconds)) => {
+                    self.observation_sequence > sequence
+                        && observed.observed_at_seconds - since_seconds
+                            >= self
+                                .config
+                                .stability_interval_seconds
+                                .min(SEEK_PREPARATION_MAX_STABILIZATION_SECONDS)
+                }
+                None => {
+                    episode.stable_playable_since =
+                        Some((self.observation_sequence, observed.observed_at_seconds));
+                    false
+                }
+            }
+        } else {
+            episode.stable_playable_since = None;
+            false
+        };
+        let ready = transport_ready
+            && (minimum_headroom_ready
+                || refill_progress_ready
+                || episode.refill_released_after_seek
+                || telemetry_poor_stable);
         if ready {
             let revision = episode.latest_room_revision;
             let paused_alignment_needed = self.desired.is_some_and(|desired| {
@@ -2166,6 +2313,8 @@ impl PlaybackCoordinator {
     fn coordinate_desired_state(
         &mut self,
         observed: ObservedState,
+        observation: &PlayerTransportObservation,
+        seek_preparation_evidence_is_fresh: bool,
         advancing: bool,
         actions: &mut Vec<PlaybackCoordinatorAction>,
     ) {
@@ -2228,7 +2377,12 @@ impl PlaybackCoordinator {
                 // this observation, when primary_seek_issued was still false.
                 // Re-evaluate now so an already-satisfied ReadyPaused target
                 // cannot wait forever for telemetry that may never change.
-                self.update_seek_preparation(observed, actions);
+                self.update_seek_preparation(
+                    observed,
+                    observation,
+                    seek_preparation_evidence_is_fresh,
+                    actions,
+                );
             }
             if self.seek_preparation.is_some() {
                 return;
@@ -2460,9 +2614,7 @@ impl PlaybackCoordinator {
                 (position - target).abs() <= self.config.position_tolerance_seconds
             })
         {
-            if let Some(episode) = self.seek_preparation.as_mut() {
-                episode.primary_seek_issued = true;
-            }
+            self.mark_seek_preparation_primary_issued(None);
             return true;
         }
         if self.media.as_ref().is_some_and(|media| {
@@ -2493,20 +2645,28 @@ impl PlaybackCoordinator {
             CoordinatorPlayerCommand::SetPosition(target),
             actions,
         );
-        if let Some(command_id) = command_id
-            && let Some(episode) = self.seek_preparation.as_mut()
-        {
-            episode.primary_seek_issued = true;
-            episode.primary_seek_command_id = Some(command_id);
-            episode.cache_buffering_percent = None;
-            episode.buffered_ahead_seconds = None;
-            self.metrics.last_buffered_ahead_seconds = None;
-            if let Some(observed) = self.observed.as_mut() {
-                observed.cache_buffering_percent = None;
-                observed.buffered_ahead_seconds = None;
-            }
+        if let Some(command_id) = command_id {
+            self.mark_seek_preparation_primary_issued(Some(command_id));
         }
         false
+    }
+
+    fn mark_seek_preparation_primary_issued(&mut self, command_id: Option<CoordinatorCommandId>) {
+        if let Some(episode) = self.seek_preparation.as_mut() {
+            episode.primary_seek_issued = true;
+            episode.primary_seek_command_id = command_id;
+            episode.primary_seek_observation_sequence = Some(self.observation_sequence);
+            episode.cache_buffering_percent = None;
+            episode.buffered_ahead_seconds = None;
+            episode.refill_started_observation_sequence = None;
+            episode.refill_released_after_seek = false;
+            episode.stable_playable_since = None;
+        }
+        self.metrics.last_buffered_ahead_seconds = None;
+        if let Some(observed) = self.observed.as_mut() {
+            observed.cache_buffering_percent = None;
+            observed.buffered_ahead_seconds = None;
+        }
     }
 
     fn coordinate_recovery(
@@ -4314,7 +4474,8 @@ mod tests {
                 .with_position(80.1)
                 .with_logical_pause(true)
                 .with_seeking(false)
-                .with_seekable(true),
+                .with_seekable(true)
+                .with_buffered_ahead_seconds(4.0),
         );
 
         let late_old_seek = coordinator.observe(
@@ -5737,7 +5898,7 @@ mod tests {
     }
 
     #[test]
-    fn already_satisfied_unknown_target_becomes_ready_without_an_extra_observation() {
+    fn already_satisfied_unknown_target_requires_stable_post_seek_observation() {
         let (mut coordinator, generation) = coordinator(MediaTransportKind::NetworkVod);
         coordinator.update_desired_room_state_with_kind(
             DesiredRoomPlayback {
@@ -5764,12 +5925,51 @@ mod tests {
                 ..
             }
         )));
+        assert_eq!(coordinator.last_seek_preparation_terminal_outcome(), None);
+        assert!(coordinator.seek_preparation_snapshot().is_some());
+        assert!(!actions.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::Play(_),
+                ..
+            }
+        )));
+
+        let first_post_seek = coordinator.observe(
+            PlayerTransportObservation::new(generation, 2.1)
+                .with_phase(PlayerTransportPhase::ReadyPaused)
+                .with_position(40.0)
+                .with_logical_pause(true)
+                .with_cache_pause(false)
+                .with_seeking(false)
+                .with_seekable(true)
+                .with_timeline_kind(PlayerTimelineKind::Unknown),
+        );
+        assert_eq!(coordinator.last_seek_preparation_terminal_outcome(), None);
+        assert!(!first_post_seek.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::Play(_),
+                ..
+            }
+        )));
+
+        let stable = coordinator.observe(
+            PlayerTransportObservation::new(generation, 3.2)
+                .with_phase(PlayerTransportPhase::ReadyPaused)
+                .with_position(40.0)
+                .with_logical_pause(true)
+                .with_cache_pause(false)
+                .with_seeking(false)
+                .with_seekable(true)
+                .with_timeline_kind(PlayerTimelineKind::Unknown),
+        );
         assert_eq!(
             coordinator.last_seek_preparation_terminal_outcome(),
             Some(SeekPreparationTerminalOutcome::Ready)
         );
         assert!(coordinator.recovery_episode().is_some());
-        assert!(actions.iter().any(|action| matches!(
+        assert!(stable.iter().any(|action| matches!(
             action,
             PlaybackCoordinatorAction::Execute {
                 command: CoordinatorPlayerCommand::Play(_),
@@ -6236,6 +6436,119 @@ mod tests {
     }
 
     #[test]
+    fn transient_ready_paused_waits_for_delayed_refill_and_its_release() {
+        let (mut coordinator, generation) = coordinator(MediaTransportKind::NetworkVod);
+        begin_fetch_required_seek(&mut coordinator, generation, 1, 40.0);
+
+        let transient = coordinator.observe(
+            PlayerTransportObservation::new(generation, 2.0)
+                .with_phase(PlayerTransportPhase::ReadyPaused)
+                .with_position(40.0)
+                .with_logical_pause(true)
+                .with_cache_pause(false)
+                .with_seeking(false)
+                .with_seekable(true)
+                .with_restart_sequence(1),
+        );
+        assert!(coordinator.seek_preparation_snapshot().is_some());
+        assert!(!transient.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::Play(_),
+                ..
+            }
+        )));
+
+        coordinator.observe(
+            PlayerTransportObservation::new(generation, 2.1)
+                .with_phase(PlayerTransportPhase::Rebuffering)
+                .with_position(40.0)
+                .with_logical_pause(true)
+                .with_cache_pause(true)
+                .with_seeking(false)
+                .with_seekable(true),
+        );
+        assert!(coordinator.seek_preparation_snapshot().is_some());
+        assert_eq!(coordinator.last_seek_preparation_terminal_outcome(), None);
+
+        let released = coordinator.observe(
+            PlayerTransportObservation::new(generation, 3.0)
+                .with_phase(PlayerTransportPhase::ReadyPaused)
+                .with_position(40.0)
+                .with_logical_pause(true)
+                .with_cache_pause(false)
+                .with_seeking(false)
+                .with_seekable(true),
+        );
+        assert_eq!(
+            coordinator.last_seek_preparation_terminal_outcome(),
+            Some(SeekPreparationTerminalOutcome::Ready)
+        );
+        assert!(released.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::Play(_),
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn target_scoped_headroom_must_cross_the_configured_threshold() {
+        let (mut coordinator, generation) = coordinator(MediaTransportKind::NetworkVod);
+        begin_fetch_required_seek(&mut coordinator, generation, 1, 40.0);
+
+        coordinator.observe(
+            PlayerTransportObservation::new(generation, 2.0)
+                .with_phase(PlayerTransportPhase::ReadyPaused)
+                .with_position(40.0)
+                .with_logical_pause(true)
+                .with_cache_pause(false)
+                .with_seeking(false)
+                .with_seekable(true)
+                .with_buffered_ahead_seconds(1.9),
+        );
+        assert!(coordinator.seek_preparation_snapshot().is_some());
+        assert_eq!(coordinator.last_seek_preparation_terminal_outcome(), None);
+
+        coordinator.observe(
+            PlayerTransportObservation::new(generation, 3.0)
+                .with_phase(PlayerTransportPhase::ReadyPaused)
+                .with_position(40.0)
+                .with_logical_pause(true)
+                .with_cache_pause(false)
+                .with_seeking(false)
+                .with_seekable(true)
+                .with_buffered_ahead_seconds(2.0),
+        );
+        assert_eq!(
+            coordinator.last_seek_preparation_terminal_outcome(),
+            Some(SeekPreparationTerminalOutcome::Ready)
+        );
+    }
+
+    #[test]
+    fn target_scoped_refill_progress_can_complete_without_headroom_telemetry() {
+        let (mut coordinator, generation) = coordinator(MediaTransportKind::NetworkVod);
+        begin_fetch_required_seek(&mut coordinator, generation, 1, 40.0);
+
+        coordinator.observe(
+            PlayerTransportObservation::new(generation, 2.0)
+                .with_phase(PlayerTransportPhase::ReadyPaused)
+                .with_position(40.0)
+                .with_logical_pause(true)
+                .with_cache_pause(false)
+                .with_seeking(false)
+                .with_seekable(true)
+                .with_cache_buffering_percent(100.0),
+        );
+        assert_eq!(
+            coordinator.last_seek_preparation_terminal_outcome(),
+            Some(SeekPreparationTerminalOutcome::Ready)
+        );
+    }
+
+    #[test]
     fn newer_explicit_seek_supersedes_preparation_but_ordinary_pause_does_not() {
         let (mut coordinator, generation) = coordinator(MediaTransportKind::NetworkVod);
         let first = begin_fetch_required_seek(&mut coordinator, generation, 1, 40.0);
@@ -6561,48 +6874,51 @@ mod tests {
     }
 
     #[test]
-    fn preparation_cannot_become_ready_from_non_playable_or_ended_phase_telemetry() {
+    fn preparation_rejects_non_playable_readiness_and_media_end_is_terminal() {
         let (mut coordinator, generation) = coordinator(MediaTransportKind::NetworkVod);
         begin_fetch_required_seek(&mut coordinator, generation, 1, 40.0);
 
-        for (observed_at, phase) in [
-            (2.0, PlayerTransportPhase::Prebuffering),
-            (3.0, PlayerTransportPhase::Ended),
-        ] {
-            coordinator.observe(
-                PlayerTransportObservation::new(generation, observed_at)
-                    .with_phase(phase)
-                    .with_position(40.0)
-                    .with_logical_pause(true)
-                    .with_cache_pause(false)
-                    .with_cache_buffering_percent(100.0)
-                    .with_buffered_ahead_seconds(10.0)
-                    .with_seeking(false)
-                    .with_seekable(true)
-                    .with_seekable_ranges(vec![PlayerSeekableRange::new(35.0, 50.0)]),
-            );
-            assert!(coordinator.seek_preparation.is_some());
-            assert_ne!(
-                coordinator.last_seek_preparation_terminal_outcome(),
-                Some(SeekPreparationTerminalOutcome::Ready)
-            );
-            assert!(coordinator.recovery_episode().is_none());
-        }
-
         coordinator.observe(
-            PlayerTransportObservation::new(generation, 4.0)
-                .with_phase(PlayerTransportPhase::ReadyPaused)
+            PlayerTransportObservation::new(generation, 2.0)
+                .with_phase(PlayerTransportPhase::Prebuffering)
                 .with_position(40.0)
                 .with_logical_pause(true)
                 .with_cache_pause(false)
+                .with_cache_buffering_percent(100.0)
+                .with_buffered_ahead_seconds(10.0)
                 .with_seeking(false)
                 .with_seekable(true)
                 .with_seekable_ranges(vec![PlayerSeekableRange::new(35.0, 50.0)]),
         );
-        assert_eq!(
+        assert!(coordinator.seek_preparation.is_some());
+        assert_ne!(
             coordinator.last_seek_preparation_terminal_outcome(),
             Some(SeekPreparationTerminalOutcome::Ready)
         );
+
+        let ended = coordinator.observe(
+            PlayerTransportObservation::new(generation, 3.0)
+                .with_phase(PlayerTransportPhase::Ended)
+                .with_position(40.0)
+                .with_logical_pause(true)
+                .with_cache_pause(false)
+                .with_seeking(false)
+                .with_seekable(true),
+        );
+        assert_eq!(
+            coordinator.last_seek_preparation_terminal_outcome(),
+            Some(SeekPreparationTerminalOutcome::Degraded(
+                SeekPreparationDegradedReason::TransportFailed
+            ))
+        );
+        assert!(ended.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Degraded {
+                reason: DegradedPlaybackReason::TransportFailed,
+                ..
+            }
+        )));
+        assert!(coordinator.recovery_episode().is_none());
     }
 
     #[test]
@@ -7050,7 +7366,8 @@ mod tests {
                 .with_cache_pause(false)
                 .with_seeking(false)
                 .with_seekable(true)
-                .with_seekable_ranges(vec![PlayerSeekableRange::new(35.0, 50.0)]),
+                .with_seekable_ranges(vec![PlayerSeekableRange::new(35.0, 50.0)])
+                .with_buffered_ahead_seconds(4.0),
         );
         let ready = coordinator
             .last_seek_preparation_terminal_snapshot()

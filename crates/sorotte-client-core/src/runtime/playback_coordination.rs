@@ -5,8 +5,8 @@ use crate::control::client_effect_player_error;
 use std::collections::BTreeMap;
 
 use sorotte_player_api::{
-    PlayerCommand, PlayerCommandId, PlayerCommandProgressState, PlayerCommandResult,
-    PlayerMediaGeneration, PlayerTransportTelemetryUpdate,
+    PlayerCommand, PlayerCommandFailureKind, PlayerCommandId, PlayerCommandProgressState,
+    PlayerCommandResult, PlayerMediaGeneration, PlayerTransportTelemetryUpdate,
 };
 pub use sorotte_protocol::PlaybackBarrierTimeoutAction;
 use sorotte_protocol::{
@@ -1852,7 +1852,10 @@ impl RuntimePlaybackCoordination {
             && desired_changed
             && let Some(observation) = self.latest_observation.clone()
         {
-            actions.extend(self.coordinator.observe(observation));
+            // This is a merged cache of previously accepted adapter fields,
+            // not a new transport sample. It may drive reconciliation, but it
+            // must never manufacture target-scoped refill/headroom evidence.
+            actions.extend(self.coordinator.replay_observation(observation));
         }
         if allow_command_replay {
             // Timer ownership is independent of whether this room state may
@@ -1938,6 +1941,19 @@ impl RuntimePlaybackCoordination {
                 // coordinator still owns RevisionApplied/Started based on its
                 // full transport observation stream.
                 let _ = self.coordinator.command_accepted(coordinator_command_id);
+                self.player_command_bindings.remove(&progress.command_id);
+            }
+            PlayerCommandProgressState::Finished(PlayerCommandResult::Failed(
+                PlayerCommandFailureKind::TimedOut,
+            )) if self
+                .coordinator
+                .active_seek_preparation_lost_command_tracking(coordinator_command_id) =>
+            {
+                // mpv's generic tracked-command window is deliberately
+                // shorter than an unbuffered seek-preparation episode. Losing
+                // that adapter tracker is not transport failure: retain the
+                // semantic seek and let target telemetry plus the extendable
+                // preparation deadline decide its outcome.
                 self.player_command_bindings.remove(&progress.command_id);
             }
             PlayerCommandProgressState::Finished(
@@ -2719,6 +2735,7 @@ mod tests {
     #[derive(Default)]
     struct CoordinatedTestPlayer {
         transport_updates: VecDeque<PlayerTransportTelemetryUpdate>,
+        command_progress_updates: VecDeque<sorotte_player_api::PlayerCommandProgress>,
         commands: Vec<PlayerCommand>,
         next_command_id: u64,
         advertises_telemetry: bool,
@@ -2765,6 +2782,10 @@ mod tests {
         fn take_transport_telemetry_update(&mut self) -> Option<PlayerTransportTelemetryUpdate> {
             self.transport_updates.pop_front()
         }
+
+        fn take_command_progress(&mut self) -> Option<sorotte_player_api::PlayerCommandProgress> {
+            self.command_progress_updates.pop_front()
+        }
     }
 
     fn reconnect_runtime(
@@ -2800,6 +2821,60 @@ mod tests {
             LogicalMediaId::new("reconnect-media").unwrap(),
             MediaTransportKind::NetworkVod,
             9.0,
+        );
+        runtime
+    }
+
+    fn runtime_with_tracked_fetch_seek()
+    -> ClientRuntime<CoordinatedTestPlayer, QueuedRuntimeControl> {
+        let mut runtime = ClientRuntime::new(
+            ClientSession::default(),
+            CoordinatedTestPlayer::default(),
+            QueuedRuntimeControl::default(),
+        );
+        runtime
+            .playback_coordination
+            .coordinator
+            .set_config(PlaybackCoordinatorConfig {
+                command_timeout_seconds: 1.0,
+                seek_preparation_timeout_seconds: 20.0,
+                ..PlaybackCoordinatorConfig::default()
+            });
+        let generation = runtime
+            .playback_coordination
+            .prepare_media(
+                LogicalMediaId::new("tracked-slow-fetch").unwrap(),
+                MediaTransportKind::NetworkVod,
+                0.0,
+            )
+            .media_generation;
+        runtime
+            .playback_coordination
+            .coordinator
+            .update_desired_room_state_with_kind(
+                DesiredRoomPlayback {
+                    media_generation: generation,
+                    state_revision: 1,
+                    paused: false,
+                    anchor_position_seconds: 40.0,
+                    anchor_observed_at_seconds: 0.0,
+                    force_seek: true,
+                },
+                DesiredRoomPlaybackUpdateKind::ExplicitSeek,
+            );
+        let mut initial = paused_transport(1, 0.1, PlayerTransportPhase::ReadyPaused, 5.0);
+        initial.seekable_ranges = Some(vec![sorotte_player_api::PlayerSeekableRange::new(
+            0.0, 10.0,
+        )]);
+        let actions = runtime
+            .playback_coordination
+            .observe_transport(initial, 0.1);
+        runtime
+            .execute_playback_coordinator_actions(actions, 0.1)
+            .unwrap();
+        assert_eq!(
+            runtime.player().commands,
+            vec![PlayerCommand::SetPosition(40.0)]
         );
         runtime
     }
@@ -6094,6 +6169,232 @@ mod tests {
             Some(SeekPreparationTerminalOutcome::Degraded(
                 SeekPreparationDegradedReason::TransportFailed
             ))
+        );
+    }
+
+    #[test]
+    fn tracked_seek_timeout_retains_preparation_through_extended_deadline_and_late_success() {
+        let mut runtime = runtime_with_tracked_fetch_seek();
+        runtime
+            .player_mut_for_test()
+            .command_progress_updates
+            .push_back(sorotte_player_api::PlayerCommandProgress::finished(
+                PlayerCommandId::new(1),
+                Some(PlayerMediaGeneration::new(1)),
+                None,
+                None,
+                PlayerCommandResult::Failed(PlayerCommandFailureKind::TimedOut),
+            ));
+        runtime.drain_player_transport_coordination(15.1).unwrap();
+        assert!(
+            runtime
+                .playback_coordination
+                .snapshot()
+                .seek_preparation
+                .is_some()
+        );
+        assert_eq!(
+            runtime
+                .playback_coordination
+                .snapshot()
+                .last_seek_preparation_terminal_outcome,
+            None
+        );
+
+        assert!(runtime.run_keep_waiting_for_seek_preparation(19.0).unwrap());
+        assert!(
+            runtime
+                .playback_coordination
+                .coordinator
+                .tick(21.0)
+                .is_empty(),
+            "Keep waiting must move the semantic deadline beyond the adapter's expired tracker"
+        );
+
+        let mut ready = paused_transport(1, 25.0, PlayerTransportPhase::ReadyPaused, 40.0);
+        ready.seekable_ranges = Some(vec![sorotte_player_api::PlayerSeekableRange::new(
+            35.0, 50.0,
+        )]);
+        ready.buffered_ahead_seconds = Some(4.0);
+        runtime
+            .player_mut_for_test()
+            .transport_updates
+            .push_back(ready);
+        runtime.drain_player_transport_coordination(25.0).unwrap();
+        assert_eq!(
+            runtime
+                .playback_coordination
+                .snapshot()
+                .last_seek_preparation_terminal_outcome,
+            Some(SeekPreparationTerminalOutcome::Ready)
+        );
+    }
+
+    #[test]
+    fn transport_failure_remains_terminal_after_tracked_seek_timeout() {
+        let mut runtime = runtime_with_tracked_fetch_seek();
+        runtime
+            .player_mut_for_test()
+            .command_progress_updates
+            .push_back(sorotte_player_api::PlayerCommandProgress::finished(
+                PlayerCommandId::new(1),
+                Some(PlayerMediaGeneration::new(1)),
+                None,
+                None,
+                PlayerCommandResult::Failed(PlayerCommandFailureKind::TimedOut),
+            ));
+        runtime.drain_player_transport_coordination(15.1).unwrap();
+
+        let failed = transport(1, 16.0, PlayerTransportPhase::Failed, 5.0);
+        runtime
+            .player_mut_for_test()
+            .transport_updates
+            .push_back(failed);
+        runtime.drain_player_transport_coordination(16.0).unwrap();
+        let snapshot = runtime.playback_coordination.snapshot();
+        assert_eq!(snapshot.diagnostic, PlaybackDiagnostic::Failed);
+        assert_eq!(
+            snapshot.last_degraded_reason,
+            Some(DegradedPlaybackReason::TransportFailed)
+        );
+        assert_eq!(
+            snapshot.last_seek_preparation_terminal_outcome,
+            Some(SeekPreparationTerminalOutcome::Degraded(
+                SeekPreparationDegradedReason::TransportFailed
+            ))
+        );
+    }
+
+    #[test]
+    fn adapter_ready_paused_update_waits_for_delayed_cache_pause_and_release() {
+        let mut runtime = runtime_with_tracked_fetch_seek();
+        let mut transient = paused_transport(1, 2.0, PlayerTransportPhase::ReadyPaused, 40.0);
+        transient.playback_restart_sequence = Some(1);
+        runtime
+            .player_mut_for_test()
+            .transport_updates
+            .push_back(transient);
+        runtime.drain_player_transport_coordination(2.0).unwrap();
+        assert!(
+            runtime
+                .playback_coordination
+                .snapshot()
+                .seek_preparation
+                .is_some()
+        );
+        assert_eq!(
+            runtime
+                .playback_coordination
+                .snapshot()
+                .last_seek_preparation_terminal_outcome,
+            None
+        );
+
+        runtime
+            .player_mut_for_test()
+            .transport_updates
+            .push_back(paused_transport(
+                1,
+                2.1,
+                PlayerTransportPhase::Rebuffering,
+                40.0,
+            ));
+        runtime.drain_player_transport_coordination(2.1).unwrap();
+        assert!(
+            runtime
+                .playback_coordination
+                .snapshot()
+                .seek_preparation
+                .is_some()
+        );
+
+        runtime
+            .player_mut_for_test()
+            .transport_updates
+            .push_back(paused_transport(
+                1,
+                3.0,
+                PlayerTransportPhase::ReadyPaused,
+                40.0,
+            ));
+        runtime.drain_player_transport_coordination(3.0).unwrap();
+        assert_eq!(
+            runtime
+                .playback_coordination
+                .snapshot()
+                .last_seek_preparation_terminal_outcome,
+            Some(SeekPreparationTerminalOutcome::Ready)
+        );
+    }
+
+    #[test]
+    fn runtime_merged_replay_cannot_relabel_pre_seek_cache_evidence_as_target_scoped() {
+        let mut coordination = RuntimePlaybackCoordination::default();
+        let generation = coordination
+            .prepare_media(
+                LogicalMediaId::new("runtime-replay-cache-provenance").unwrap(),
+                MediaTransportKind::NetworkVod,
+                0.0,
+            )
+            .media_generation;
+        let mut pre_seek = paused_transport(1, 0.1, PlayerTransportPhase::ReadyPaused, 5.0);
+        pre_seek.seekable_ranges = Some(vec![sorotte_player_api::PlayerSeekableRange::new(
+            0.0, 10.0,
+        )]);
+        pre_seek.cache_buffering_percent = Some(100.0);
+        pre_seek.buffered_ahead_seconds = Some(10.0);
+        coordination.observe_transport(pre_seek, 0.1);
+        coordination
+            .coordinator
+            .update_desired_room_state_with_kind(
+                DesiredRoomPlayback {
+                    media_generation: generation,
+                    state_revision: 1,
+                    paused: false,
+                    anchor_position_seconds: 40.0,
+                    anchor_observed_at_seconds: 0.1,
+                    force_seek: true,
+                },
+                DesiredRoomPlaybackUpdateKind::ExplicitSeek,
+            );
+        coordination.observe_transport(
+            paused_transport(1, 0.2, PlayerTransportPhase::ReadyPaused, 5.0),
+            0.2,
+        );
+        coordination.observe_transport(
+            paused_transport(1, 2.0, PlayerTransportPhase::ReadyPaused, 40.0),
+            2.0,
+        );
+
+        let replay = coordination
+            .latest_observation
+            .clone()
+            .expect("runtime should retain a merged transport snapshot");
+        assert_eq!(replay.cache_buffering_percent, Some(100.0));
+        assert_eq!(replay.buffered_ahead_seconds, Some(10.0));
+        coordination.coordinator.replay_observation(replay);
+
+        let active = coordination
+            .snapshot()
+            .seek_preparation
+            .expect("cached reconciliation must not complete the preparation");
+        assert_eq!(active.cache_buffering_percent, None);
+        assert_eq!(active.buffered_ahead_seconds, None);
+        assert_eq!(
+            coordination
+                .snapshot()
+                .last_seek_preparation_terminal_outcome,
+            None
+        );
+
+        let mut fresh_target = paused_transport(1, 3.0, PlayerTransportPhase::ReadyPaused, 40.0);
+        fresh_target.buffered_ahead_seconds = Some(2.0);
+        coordination.observe_transport(fresh_target, 3.0);
+        assert_eq!(
+            coordination
+                .snapshot()
+                .last_seek_preparation_terminal_outcome,
+            Some(SeekPreparationTerminalOutcome::Ready)
         );
     }
 

@@ -16,3 +16,6 @@ sorotte-secret = { path = "../sorotte-secret" }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
+
+[dev-dependencies]
+sorotte-client-core = { path = "../sorotte-client-core" }

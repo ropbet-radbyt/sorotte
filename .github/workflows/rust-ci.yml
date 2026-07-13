@@ -33,6 +33,32 @@ jobs:
       - name: Cargo test
         run: cargo test --workspace
 
+  gui-windows-release-build:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    name: GUI release build (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.96.0
+
+      # This is intentionally a compilation-only gate. Packaging, artifact
+      # upload, tag mutation, and GitHub Release writes remain owned by the
+      # dedicated release workflow.
+      - name: Build distributed GUI release binaries
+        shell: pwsh
+        run: >-
+          cargo build --release -p sorotte-gui
+          --bin sorotte-gui --bin sorotte-gui-updater
+
   compat-live-tls:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
@@ -99,7 +125,7 @@ jobs:
           print(first_line)
           PY
 
-      - name: Required real mpv pause, seek, and resume semantics
+      - name: Required real mpv pause, seek, resume, and bounded-fetch semantics
         run: >-
           cargo test -p sorotte-sim --test mpv_rebuffer_harness
           real_mpv_pause_seek_resume_semantics -- --ignored --exact --nocapture
@@ -181,7 +207,7 @@ jobs:
           print(first_line)
           PY
 
-      - name: Required real mpv pause, seek, and resume semantics
+      - name: Required real mpv pause, seek, resume, and bounded-fetch semantics
         run: |
           export PATH="$GITHUB_WORKSPACE/target/mpv-current/build:$PATH"
           cargo test -p sorotte-sim --test mpv_rebuffer_harness \

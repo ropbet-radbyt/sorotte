@@ -10,6 +10,7 @@ use sorotte_client_core::{
     CoordinatorCommandId, CoordinatorPlayerCommand, DesiredRoomPlayback,
     DesiredRoomPlaybackUpdateKind, LogicalMediaId, MediaTransportKind, PlaybackCoordinator,
     PlaybackCoordinatorAction, PlaybackCoordinatorConfig, PlayerTransportObservation,
+    SeekPreparationTerminalOutcome, SeekTargetAvailability,
 };
 use sorotte_player_api::{
     PlayerAdapter, PlayerCommand, PlayerCommandId, PlayerCommandProgressState, PlayerCommandResult,
@@ -161,6 +162,7 @@ fn real_mpv_pause_seek_resume_semantics() {
 
     verify_barrier_start_then_ordinary_pause_with_real_mpv(&media);
     verify_one_bounded_rebuffer_episode_with_real_mpv();
+    verify_mid_play_unbuffered_seek_is_bounded_with_real_mpv();
 }
 
 #[test]
@@ -437,6 +439,153 @@ fn verify_one_bounded_rebuffer_episode_with_real_mpv() {
     assert!(
         server.wait_for_requests(1, Duration::from_secs(3)),
         "real mpv should fetch the short deterministic stall route"
+    );
+}
+
+fn verify_mid_play_unbuffered_seek_is_bounded_with_real_mpv() {
+    const SEEK_REVISION: u64 = 2;
+    const SEEK_TARGET_SECONDS: f64 = 22.0;
+    const ADVANCED_ROOM_TARGET_SECONDS: f64 = 24.0;
+
+    let server = FaultInjectingHttpServer::start(BTreeMap::from([(
+        "/unbuffered-seek.wav".to_owned(),
+        HttpMediaFixture::static_bytes("audio/wav", pcm_wav(30)).with_faults(NetworkFaultProfile {
+            // The bounded cache cannot reach the target during startup,
+            // and the delayed range response keeps the preparation
+            // episode observable before mpv can refill at the target.
+            range_response_delay: Duration::from_millis(1_200),
+            bytes_per_second: Some(180_000),
+            ..NetworkFaultProfile::default()
+        }),
+    )]))
+    .expect("unbuffered-seek HTTP server should start");
+    let mut client = RealMpvClient::start(10_004, &server.url("/unbuffered-seek.wav"));
+
+    wait_for_real_mpv_client(
+        &mut client,
+        "playing baseline with the explicit seek target outside mpv's cache",
+        SEMANTICS_TIMEOUT,
+        |state| {
+            state.post_start_baseline_ready()
+                && state
+                    .latest_transport
+                    .seekable_ranges
+                    .as_ref()
+                    .is_some_and(|ranges| {
+                        !ranges.is_empty()
+                            && ranges.iter().all(|range| {
+                                SEEK_TARGET_SECONDS < range.start_seconds
+                                    || SEEK_TARGET_SECONDS > range.end_seconds
+                            })
+                    })
+        },
+    );
+
+    let command_start = client.executed_commands.len();
+    client.set_desired(SEEK_REVISION, false, SEEK_TARGET_SECONDS, true);
+
+    let initial = client
+        .coordinator
+        .seek_preparation_snapshot()
+        .expect("an out-of-cache explicit VOD seek should enter preparation");
+    assert_eq!(initial.availability, SeekTargetAvailability::FetchRequired);
+    assert_eq!(initial.frozen_target_seconds, SEEK_TARGET_SECONDS);
+    let preparation_id = initial.id;
+    let primary_seek_count = client.executed_commands[command_start..]
+        .iter()
+        .filter(|command| {
+            matches!(
+                command,
+                CoordinatorPlayerCommand::SetPosition(position)
+                    if (*position - SEEK_TARGET_SECONDS).abs() <= 0.5
+            )
+        })
+        .count();
+    assert_eq!(
+        primary_seek_count,
+        1,
+        "the explicit out-of-cache seek must issue exactly one primary seek: {:?}",
+        &client.executed_commands[command_start..]
+    );
+
+    // A normal canonical update may advance while this client is fetching.
+    // It must update convergence intent without replacing the frozen target
+    // or issuing another primary seek.
+    client.set_desired(SEEK_REVISION, false, ADVANCED_ROOM_TARGET_SECONDS, false);
+    let retained = client
+        .coordinator
+        .seek_preparation_snapshot()
+        .expect("ordinary room advancement must retain the active preparation");
+    assert_eq!(retained.id, preparation_id);
+    assert_eq!(retained.frozen_target_seconds, SEEK_TARGET_SECONDS);
+    assert!(
+        retained.latest_room_position_seconds >= ADVANCED_ROOM_TARGET_SECONDS,
+        "the preparation should retain the latest convergence target: {retained:?}"
+    );
+    assert_eq!(
+        client.executed_commands[command_start..]
+            .iter()
+            .filter(|command| matches!(command, CoordinatorPlayerCommand::SetPosition(_)))
+            .count(),
+        1,
+        "advancing room time must not restart the unbuffered seek: {:?}",
+        &client.executed_commands[command_start..]
+    );
+
+    wait_for_real_mpv_client(
+        &mut client,
+        "bounded unbuffered seek preparation and recovery",
+        PR_STALL_TIMEOUT,
+        |state| {
+            state.coordinator.last_seek_preparation_terminal_outcome()
+                == Some(SeekPreparationTerminalOutcome::Ready)
+                && state.started_revisions.contains(&SEEK_REVISION)
+                && state.latest_transport.paused_for_cache == Some(false)
+                && state.latest_transport.seeking == Some(false)
+        },
+    );
+
+    let terminal = client
+        .coordinator
+        .last_seek_preparation_terminal_snapshot()
+        .expect("completed preparation should retain its terminal snapshot");
+    assert_eq!(terminal.id, preparation_id);
+    assert_eq!(terminal.frozen_target_seconds, SEEK_TARGET_SECONDS);
+    assert_eq!(
+        terminal.terminal_outcome,
+        Some(SeekPreparationTerminalOutcome::Ready)
+    );
+    let position_commands = client.executed_commands[command_start..]
+        .iter()
+        .filter(|command| matches!(command, CoordinatorPlayerCommand::SetPosition(_)))
+        .count();
+    assert!(
+        position_commands <= 2,
+        "one primary seek and at most one recovery alignment are allowed: {:?}",
+        &client.executed_commands[command_start..]
+    );
+    assert!(
+        client
+            .position_commands_by_episode
+            .values()
+            .all(|count| *count <= 1),
+        "post-fetch recovery exceeded its one-seek budget: {:?}",
+        client.position_commands_by_episode
+    );
+
+    drop(client);
+    assert!(
+        server.wait_for_requests(2, Duration::from_secs(3)),
+        "mpv should issue a second HTTP request for the uncached target"
+    );
+    assert!(
+        server.requests().iter().any(|request| {
+            request.path == "/unbuffered-seek.wav"
+                && request.status_code == 206
+                && request.range_start.is_some_and(|start| start > 1_000_000)
+        }),
+        "the explicit seek should fetch a nonzero range near the distant target: {:?}",
+        server.requests()
     );
 }
 

@@ -1383,8 +1383,19 @@ impl MpvAdapter {
             }
         }
 
-        let lifecycle_boundary =
-            self.pending_transport_telemetry_updates
+        let cache_position_boundary = update.position_seconds.is_some()
+            && update.cache_buffering_percent.is_none()
+            && update.buffered_ahead_seconds.is_none()
+            && self
+                .pending_transport_telemetry_updates
+                .back()
+                .is_some_and(|pending| {
+                    pending.cache_buffering_percent.is_some()
+                        || pending.buffered_ahead_seconds.is_some()
+                });
+        let lifecycle_boundary = cache_position_boundary
+            || self
+                .pending_transport_telemetry_updates
                 .back()
                 .is_none_or(|pending| {
                     pending.media_generation != update.media_generation
@@ -1407,6 +1418,19 @@ impl MpvAdapter {
             self.pending_transport_telemetry_updates.pop_front();
         }
         self.pending_transport_telemetry_updates.push_back(update);
+    }
+
+    fn begin_seek_cache_evidence_epoch(&mut self) {
+        let generation = self.observation_media_generation();
+        self.cache_buffering_percent = None;
+        self.observed_state.cache_buffering_percent = None;
+        for pending in &mut self.pending_transport_telemetry_updates {
+            if pending.media_generation == generation {
+                pending.cache_buffering_percent = None;
+                pending.buffered_ahead_seconds = None;
+                pending.buffered_ahead_bytes = None;
+            }
+        }
     }
 
     fn set_transport_phase(&mut self, phase: PlayerTransportPhase) {
@@ -1705,6 +1729,33 @@ impl MpvAdapter {
         for event in pending_events {
             self.handle_ipc_event(&event);
         }
+    }
+
+    fn observe_unhealthy_ipc_transport(&mut self) {
+        let disconnected = self
+            .ipc_client
+            .as_ref()
+            .is_some_and(|ipc_client| !ipc_client.is_healthy());
+        if !disconnected
+            || matches!(
+                self.transport_phase,
+                PlayerTransportPhase::Empty
+                    | PlayerTransportPhase::Ended
+                    | PlayerTransportPhase::Failed
+            )
+            || (!self.active_file_loaded && self.pending_load_generation.is_none())
+        {
+            return;
+        }
+        let Some(generation) = self.observation_media_generation() else {
+            return;
+        };
+        self.transport_phase = PlayerTransportPhase::Failed;
+        self.active_file_loaded = false;
+        let update = self
+            .transport_update_for(generation)
+            .with_phase(PlayerTransportPhase::Failed);
+        self.queue_transport_telemetry_update(update);
     }
 
     fn handle_ipc_event(&mut self, event: &Value) {
