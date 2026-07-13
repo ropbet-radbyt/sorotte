@@ -9,6 +9,7 @@ pub(crate) const MPV_COMMAND_LOAD_SCRIPT: &str = "load-script";
 pub(crate) const MPV_COMMAND_SCRIPT_MESSAGE_TO: &str = "script-message-to";
 pub(crate) const MPV_LOADFILE_REPLACE: &str = "replace";
 pub(crate) const MPV_PROPERTY_PAUSE: &str = "pause";
+pub(crate) const MPV_PROPERTY_VERSION: &str = "mpv-version";
 pub(crate) const MPV_PROPERTY_TIME_POS: &str = "time-pos";
 pub(crate) const MPV_PROPERTY_SPEED: &str = "speed";
 pub(crate) const MPV_PROPERTY_PAUSED_FOR_CACHE: &str = "paused-for-cache";

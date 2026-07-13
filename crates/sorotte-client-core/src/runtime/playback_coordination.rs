@@ -63,6 +63,7 @@ impl Default for PlaybackBarrierRoomBufferingConfig {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlaybackCoordinationSnapshot {
     pub media_generation: Option<u64>,
+    pub pending_local_pause_intent: Option<bool>,
     pub diagnostic: PlaybackDiagnostic,
     pub recovery_episode: Option<RecoveryEpisodeSnapshot>,
     pub metrics: PlaybackCoordinatorMetrics,
@@ -202,6 +203,7 @@ pub(crate) struct RuntimePlaybackCoordination {
     desired_generation: Option<u64>,
     desired_revision: u64,
     desired_fingerprint: Option<RoomDesiredFingerprint>,
+    pending_local_pause_intent: Option<bool>,
     pending_forced_seek_revision: Option<u64>,
     transport_telemetry_observed: bool,
     transport_telemetry_available: bool,
@@ -313,6 +315,7 @@ impl RuntimePlaybackCoordination {
         if plan.playback_episode_changed {
             self.desired_generation = None;
             self.desired_fingerprint = None;
+            self.pending_local_pause_intent = None;
             self.pending_forced_seek_revision = None;
             self.last_applied_revision = None;
             self.last_started_revision = None;
@@ -363,6 +366,7 @@ impl RuntimePlaybackCoordination {
         self.last_external_now_seconds = None;
         self.last_coordinator_now_seconds = None;
         self.transport_telemetry_observed = false;
+        self.pending_local_pause_intent = None;
         self.last_reported_barrier_ready = None;
         self.last_reported_barrier_started = None;
         self.last_reported_room_buffering = None;
@@ -414,6 +418,7 @@ impl RuntimePlaybackCoordination {
     pub(crate) fn snapshot(&self) -> PlaybackCoordinationSnapshot {
         PlaybackCoordinationSnapshot {
             media_generation: self.coordinator.current_media_generation(),
+            pending_local_pause_intent: self.pending_local_pause_intent,
             diagnostic: self.coordinator.diagnostic(),
             recovery_episode: self.coordinator.recovery_episode(),
             metrics: self.coordinator.metrics().clone(),
@@ -707,6 +712,7 @@ impl RuntimePlaybackCoordination {
     }
 
     pub(crate) fn handle_authoritative_playback_barrier_room_change(&mut self) {
+        self.pending_local_pause_intent = None;
         if self.initiated_barrier.is_some()
             || self.accepted_barrier.is_some()
             || self.pending_barrier_recovery.is_some()
@@ -1259,10 +1265,29 @@ impl RuntimePlaybackCoordination {
             .map(|observation| observation.observed_at_seconds)
     }
 
+    pub(crate) fn stage_local_pause_intent(&mut self, paused: bool) {
+        self.pending_local_pause_intent = Some(paused);
+    }
+
+    pub(crate) fn rollback_local_pause_intent(&mut self, paused: bool) {
+        if self.pending_local_pause_intent == Some(paused) {
+            self.pending_local_pause_intent = None;
+        }
+    }
+
     pub(crate) fn update_desired_from_session(
         &mut self,
         session: &ClientSession,
         external_now_seconds: f64,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        self.update_desired_from_session_with_replay(session, external_now_seconds, true)
+    }
+
+    fn update_desired_from_session_with_replay(
+        &mut self,
+        session: &ClientSession,
+        external_now_seconds: f64,
+        allow_command_replay: bool,
     ) -> Vec<PlaybackCoordinatorAction> {
         let Some(media_generation) = self.coordinator.current_media_generation() else {
             return Vec::new();
@@ -1273,7 +1298,7 @@ impl RuntimePlaybackCoordination {
         let Some(authority) = session.current_room_playstate_authority() else {
             return Vec::new();
         };
-        let local_echo = authority == RoomPlaystateAuthority::LegacyLocalEcho;
+        let canonical_local_echo = authority == RoomPlaystateAuthority::LegacyLocalEcho;
         let Some(projected) = session.current_room_playstate_at(external_now_seconds) else {
             return Vec::new();
         };
@@ -1333,6 +1358,43 @@ impl RuntimePlaybackCoordination {
             | RoomPlaystateAuthority::LegacyLocalEcho
             | RoomPlaystateAuthority::ServerBarrier { .. } => (None, None),
         };
+        let local_intent_may_control_room = match authority {
+            RoomPlaystateAuthority::LegacyRemoteUser | RoomPlaystateAuthority::LegacyLocalEcho => {
+                true
+            }
+            RoomPlaystateAuthority::ServerBarrier {
+                media_generation, ..
+            } => {
+                session.playback_barrier_status().is_some_and(|status| {
+                    status.media_generation == media_generation
+                        && status.phase == PlaybackBarrierPhase::AwaitingDecision
+                }) && session.local_can_control().unwrap_or(false)
+            }
+            RoomPlaystateAuthority::ServerBufferingPolicy { .. } => false,
+        };
+        let mut local_intent_active = false;
+        if local_intent_may_control_room {
+            if let Some(local_paused) = self.pending_local_pause_intent {
+                if paused == local_paused {
+                    // The canonical echo has accepted the local command.
+                    self.pending_local_pause_intent = None;
+                } else {
+                    // Keep the local command authoritative across the
+                    // transport observation that can arrive before its
+                    // canonical server echo. Treating the overlay as a
+                    // local echo also prevents a forced seek or command
+                    // replay against the stale legacy state.
+                    paused = local_paused;
+                    local_intent_active = true;
+                }
+            }
+        } else {
+            // Preparing/Committed start synchronization and room buffering
+            // remain server-owned. AwaitingDecision is deliberately excluded:
+            // a controller's ordinary play/pause command resolves it.
+            self.pending_local_pause_intent = None;
+        }
+        let local_echo = canonical_local_echo || local_intent_active;
         if !position_seconds.is_finite() {
             return Vec::new();
         }
@@ -1411,7 +1473,8 @@ impl RuntimePlaybackCoordination {
                 anchor_observed_at_seconds: coordinator_now,
                 force_seek: self.pending_forced_seek_revision == Some(self.desired_revision),
             });
-        let replay_desired = !local_echo || self.reconnect_reconciliation.is_some();
+        let replay_desired =
+            allow_command_replay && (!local_echo || self.reconnect_reconciliation.is_some());
         if replay_desired
             && desired_changed
             && let Some(observation) = self.latest_observation.clone()
@@ -1741,6 +1804,42 @@ where
         self.control.activate_protocol_connection_generation();
         self.control.emit(ClientEffect::SendState(state))?;
         Ok(true)
+    }
+
+    /// Stages a user-owned pause/play command before the external player can
+    /// synchronously publish its resulting transport observation. The staged
+    /// intent overlays ordinary legacy room state until the matching server
+    /// echo arrives, but server barrier and room-buffering authority still
+    /// preempt it.
+    pub fn stage_external_player_pause_intent(
+        &mut self,
+        paused: bool,
+        now_seconds: f64,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        self.playback_coordination.stage_local_pause_intent(paused);
+        let actions = self
+            .playback_coordination
+            .update_desired_from_session_with_replay(&self.session, now_seconds, false);
+        let _ = self.report_playback_barrier_observations(&actions);
+        self.apply_external_coordinator_control_actions(&actions);
+        actions
+    }
+
+    /// Rolls back a staged pause/play intent when the external player rejects
+    /// the command, restoring canonical room authority immediately.
+    pub fn rollback_external_player_pause_intent(
+        &mut self,
+        paused: bool,
+        now_seconds: f64,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        self.playback_coordination
+            .rollback_local_pause_intent(paused);
+        let actions = self
+            .playback_coordination
+            .update_desired_from_session(&self.session, now_seconds);
+        let _ = self.report_playback_barrier_observations(&actions);
+        self.apply_external_coordinator_control_actions(&actions);
+        actions
     }
 
     pub fn observe_external_player_transport(
@@ -4458,6 +4557,263 @@ mod tests {
     }
 
     #[test]
+    fn staged_local_unpause_survives_transport_observation_before_canonical_echo() {
+        let mut session = barrier_session();
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"alice"}}}"#,
+                0.0,
+            )
+            .unwrap();
+        let mut coordination = RuntimePlaybackCoordination::default();
+        coordination.prepare_media(
+            LogicalMediaId::new("staged-local-unpause").unwrap(),
+            MediaTransportKind::LocalFile,
+            0.0,
+        );
+        coordination.update_desired_from_session(&session, 0.0);
+        coordination.observe_transport(
+            paused_transport(1, 0.0, PlayerTransportPhase::ReadyPaused, 10.0),
+            0.0,
+        );
+
+        coordination.stage_local_pause_intent(false);
+        let staged = coordination.update_desired_from_session_with_replay(&session, 0.1, false);
+        assert!(!has_pause_play_or_seek(&staged));
+        assert_eq!(coordination.pending_local_pause_intent, Some(false));
+        assert!(
+            coordination
+                .desired_fingerprint
+                .as_ref()
+                .is_some_and(|desired| !desired.paused && desired.local_echo)
+        );
+
+        let observed_play = coordination
+            .observe_transport(transport(1, 0.1, PlayerTransportPhase::Playing, 10.0), 0.1);
+        assert!(
+            !observed_play.iter().any(|action| matches!(
+                action,
+                PlaybackCoordinatorAction::Execute {
+                    command: CoordinatorPlayerCommand::SetPaused(true),
+                    ..
+                }
+            )),
+            "the pre-echo playing observation must not replay the stale canonical pause"
+        );
+
+        let extra_pre_echo_pump = coordination.update_desired_from_session(&session, 0.2);
+        assert!(
+            !extra_pre_echo_pump.iter().any(|action| matches!(
+                action,
+                PlaybackCoordinatorAction::Execute {
+                    command: CoordinatorPlayerCommand::SetPaused(true),
+                    ..
+                }
+            )),
+            "an extra reconciliation pump must retain the staged unpause"
+        );
+        assert_eq!(coordination.pending_local_pause_intent, Some(false));
+
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":false,"setBy":"alice"}}}"#,
+                0.3,
+            )
+            .unwrap();
+        let canonical_echo = coordination.update_desired_from_session(&session, 0.3);
+        assert!(!has_pause_play_or_seek(&canonical_echo));
+        assert_eq!(
+            coordination.pending_local_pause_intent, None,
+            "the matching canonical echo must retire the staged intent"
+        );
+
+        let continued_play = coordination
+            .observe_transport(transport(1, 0.4, PlayerTransportPhase::Playing, 10.25), 0.4);
+        assert!(!has_pause_play_or_seek(&continued_play));
+        assert!(
+            !coordination.snapshot().ordinary_correction_blocked,
+            "advancing playback after the echo must complete coordinator ownership"
+        );
+    }
+
+    #[test]
+    fn staged_controller_decision_survives_awaiting_decision_but_not_committed_start() {
+        let logical_id = "phase-aware-local-intent";
+        let mut awaiting_session = barrier_session();
+        awaiting_session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":4.0,"paused":true,"doSeek":false,"setBy":"alice"}}}"#,
+                0.0,
+            )
+            .unwrap();
+        apply_barrier_extension(
+            &mut awaiting_session,
+            PlaybackBarrierSetExtension::new()
+                .with_prepare(PrepareMediaPayload::new(
+                    21,
+                    logical_id,
+                    4.0,
+                    PlaybackBarrierPolicy::Controller,
+                ))
+                .with_status(barrier_status(
+                    21,
+                    None,
+                    PlaybackBarrierPhase::AwaitingDecision,
+                )),
+        );
+        let mut awaiting = RuntimePlaybackCoordination::default();
+        awaiting.prepare_media(
+            LogicalMediaId::new(logical_id).unwrap(),
+            MediaTransportKind::LocalFile,
+            0.0,
+        );
+        awaiting.update_desired_from_session(&awaiting_session, 0.0);
+        awaiting.stage_local_pause_intent(false);
+        let controller_decision =
+            awaiting.update_desired_from_session_with_replay(&awaiting_session, 0.1, false);
+        assert!(!has_pause_play_or_seek(&controller_decision));
+        assert_eq!(awaiting.pending_local_pause_intent, Some(false));
+        assert!(
+            awaiting
+                .desired_fingerprint
+                .as_ref()
+                .is_some_and(|desired| !desired.paused && desired.local_echo),
+            "a room controller must be able to resolve AwaitingDecision with ordinary play"
+        );
+
+        let mut committed_session = barrier_session();
+        committed_session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":4.0,"paused":false,"doSeek":false,"setBy":"alice"}}}"#,
+                0.0,
+            )
+            .unwrap();
+        apply_barrier_extension(
+            &mut committed_session,
+            PlaybackBarrierSetExtension::new()
+                .with_prepare(
+                    PrepareMediaPayload::new(
+                        22,
+                        logical_id,
+                        4.0,
+                        PlaybackBarrierPolicy::Controller,
+                    )
+                    .with_request_nonce(5),
+                )
+                .with_status(barrier_status(22, None, PlaybackBarrierPhase::Preparing)),
+        );
+        apply_barrier_extension(
+            &mut committed_session,
+            PlaybackBarrierSetExtension::new()
+                .with_commit(CommitStartPayload::new(22, 5, 4.0, 0.0, 10.0))
+                .with_status(barrier_status(22, Some(5), PlaybackBarrierPhase::Committed)),
+        );
+        assert_eq!(
+            committed_session
+                .playback_barrier_status()
+                .map(|status| status.phase),
+            Some(PlaybackBarrierPhase::Committed)
+        );
+        assert!(matches!(
+            committed_session.current_room_playstate_authority(),
+            Some(RoomPlaystateAuthority::ServerBarrier {
+                media_generation: 22,
+                ..
+            })
+        ));
+        let mut committed = RuntimePlaybackCoordination::default();
+        committed.prepare_media(
+            LogicalMediaId::new(logical_id).unwrap(),
+            MediaTransportKind::LocalFile,
+            0.0,
+        );
+        committed.update_desired_from_session(&committed_session, 0.0);
+        committed.stage_local_pause_intent(true);
+        let committed_reconciliation =
+            committed.update_desired_from_session_with_replay(&committed_session, 0.1, false);
+        assert!(!has_pause_play_or_seek(&committed_reconciliation));
+        assert_eq!(
+            committed.pending_local_pause_intent, None,
+            "Committed remains server-owned until the client observes and acknowledges the synchronized start"
+        );
+        assert!(
+            committed
+                .desired_fingerprint
+                .as_ref()
+                .is_some_and(|desired| !desired.paused),
+            "a local pause must not suppress the canonical committed start before StartedAck"
+        );
+    }
+
+    #[test]
+    fn staged_current_media_unpause_survives_protocol_reconnect_until_matching_echo() {
+        let mut session = barrier_session();
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+                0.0,
+            )
+            .unwrap();
+        let mut coordination = RuntimePlaybackCoordination::default();
+        coordination.prepare_media(
+            LogicalMediaId::new("reconnect-local-intent").unwrap(),
+            MediaTransportKind::LocalFile,
+            0.0,
+        );
+        coordination.update_desired_from_session(&session, 0.0);
+        coordination.observe_transport(
+            paused_transport(1, 0.0, PlayerTransportPhase::ReadyPaused, 10.0),
+            0.0,
+        );
+        coordination.stage_local_pause_intent(false);
+        coordination.update_desired_from_session_with_replay(&session, 0.1, false);
+
+        // A protocol reconnect keeps the user's command for the same media;
+        // adapter replacement and media preparation clear it separately.
+        session.reset_sync_state_for_reconnect();
+        assert_eq!(coordination.pending_local_pause_intent, Some(false));
+        session
+            .apply_message_json_at(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sorottePlaybackBarrierV1":true}}}"#,
+                1.0,
+            )
+            .unwrap();
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+                1.1,
+            )
+            .unwrap();
+        let stale_reconnect_state = coordination.update_desired_from_session(&session, 1.1);
+        assert_eq!(coordination.pending_local_pause_intent, Some(false));
+        assert!(!stale_reconnect_state.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPaused(true),
+                ..
+            }
+        )));
+        let pre_echo_play = coordination
+            .observe_transport(transport(1, 1.2, PlayerTransportPhase::Playing, 10.1), 1.2);
+        assert!(!pre_echo_play.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPaused(true),
+                ..
+            }
+        )));
+
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":10.1,"paused":false,"doSeek":false,"setBy":"alice"}}}"#,
+                1.3,
+            )
+            .unwrap();
+        coordination.update_desired_from_session(&session, 1.3);
+        assert_eq!(coordination.pending_local_pause_intent, None);
+    }
+
+    #[test]
     fn complete_barrier_then_local_pause_retires_committed_play_desire() {
         let logical_id = "terminal-local-pause";
         let mut session = barrier_session();
@@ -4559,6 +4915,11 @@ mod tests {
             .unwrap();
         let self_echo = coordination.update_desired_from_session(&session, 1.0);
         assert!(!has_pause_play_or_seek(&self_echo));
+        coordination.stage_local_pause_intent(false);
+        let staged_unpause =
+            coordination.update_desired_from_session_with_replay(&session, 1.05, false);
+        assert!(!has_pause_play_or_seek(&staged_unpause));
+        assert_eq!(coordination.pending_local_pause_intent, Some(false));
 
         let config = RoomBufferingPolicyPayload::new(7, RoomBufferingPolicy::PauseAnyEligible)
             .with_state_revision(3)
@@ -4577,6 +4938,10 @@ mod tests {
             }),
         );
         let authoritative = coordination.update_desired_from_session(&session, 1.1);
+        assert_eq!(
+            coordination.pending_local_pause_intent, None,
+            "server buffering authority must preempt a staged local unpause"
+        );
         assert!(authoritative.iter().any(|action| matches!(
             action,
             PlaybackCoordinatorAction::Execute {

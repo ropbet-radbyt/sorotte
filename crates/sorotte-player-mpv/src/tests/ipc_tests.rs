@@ -3,7 +3,7 @@ use crate::ipc::{MPV_IPC_MAX_LINE_BYTES, MpvIpcConnectionEvent, MpvJsonIpcClient
 use sorotte_player_api::PlayerCapabilities;
 use std::{
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
@@ -25,6 +25,37 @@ impl MpvJsonIpcTransport for NeverRespondingTransport {
         Err(io::Error::new(
             io::ErrorKind::TimedOut,
             "test transport never produces a response",
+        ))
+    }
+}
+
+#[derive(Debug)]
+struct VersionResponseThenTimeoutTransport {
+    writes: Arc<Mutex<Vec<String>>>,
+    version_response_sent: bool,
+}
+
+impl MpvJsonIpcTransport for VersionResponseThenTimeoutTransport {
+    fn send_line_until(&mut self, line: &str, _deadline: Instant) -> io::Result<()> {
+        self.writes
+            .lock()
+            .expect("timeout transport mutex should not be poisoned")
+            .push(line.to_owned());
+        Ok(())
+    }
+
+    fn read_line_until(&mut self, line: &mut String, _deadline: Instant) -> io::Result<usize> {
+        if !self.version_response_sent {
+            self.version_response_sent = true;
+            line.clear();
+            line.push_str(r#"{"request_id":1,"error":"success","data":"custom-build"}"#);
+            line.push('\n');
+            return Ok(line.len());
+        }
+        line.clear();
+        Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "compatibility probe timed out",
         ))
     }
 }
@@ -980,6 +1011,352 @@ fn open_file_sends_mpv_loadfile_replace_command_when_attached() {
         json!({
             "command": ["loadfile", "movie.mkv", "replace"],
             "request_id": 1
+        })
+    );
+}
+
+#[test]
+fn open_network_file_scopes_configured_cache_options_to_the_load() {
+    let (transport, state) = fake_transport_with_reads(&[
+        r#"{"request_id":1,"error":"success","data":"0.40.0"}"#,
+        r#"{"request_id":2,"error":"success"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "30"), ("cache-pause-wait", "5")]);
+
+    adapter
+        .open_file("https://media.example/video.m3u8")
+        .expect("attached mpv transport should accept network loadfile");
+
+    let writes = state.writes();
+    let version_query: Value =
+        serde_json::from_str(writes[0].trim_end()).expect("valid version query");
+    assert_eq!(
+        version_query,
+        json!({
+            "command": ["get_property", "mpv-version"],
+            "request_id": 1
+        })
+    );
+    let payload: Value = serde_json::from_str(writes[1].trim_end()).expect("valid json");
+    assert_eq!(
+        payload,
+        json!({
+            "command": [
+                "loadfile",
+                "https://media.example/video.m3u8",
+                "replace",
+                -1,
+                {
+                    "cache-pause-wait": "5",
+                    "cache-secs": "30"
+                }
+            ],
+            "request_id": 2
+        })
+    );
+}
+
+#[test]
+fn open_network_file_uses_legacy_options_position_for_mpv_before_0_38() {
+    let (transport, state) = fake_transport_with_reads(&[
+        r#"{"request_id":1,"error":"success","data":"0.37.0"}"#,
+        r#"{"request_id":2,"error":"success"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "30")]);
+
+    adapter
+        .open_file("https://media.example/legacy.m3u8")
+        .expect("legacy mpv should accept its four-argument loadfile shape");
+
+    let writes = state.writes();
+    let payload: Value = serde_json::from_str(writes[1].trim_end()).expect("valid json");
+    assert_eq!(
+        payload,
+        json!({
+            "command": [
+                "loadfile",
+                "https://media.example/legacy.m3u8",
+                "replace",
+                {"cache-secs": "30"}
+            ],
+            "request_id": 2
+        })
+    );
+}
+
+#[test]
+fn open_network_file_unknown_version_falls_back_to_legacy_and_caches_result() {
+    let (transport, state) = fake_transport_with_reads(&[
+        r#"{"request_id":1,"error":"success","data":"custom-build"}"#,
+        r#"{"request_id":2,"error":"invalid parameter"}"#,
+        r#"{"request_id":3,"error":"success"}"#,
+        r#"{"request_id":4,"error":"success"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "30")]);
+
+    adapter
+        .open_file("https://media.example/unknown.m3u8")
+        .expect("unknown old mpv should accept the fallback command");
+    adapter
+        .open_file("https://media.example/next.m3u8")
+        .expect("detected legacy syntax should be cached");
+
+    let writes = state.writes();
+    assert_eq!(writes.len(), 4, "the version must be queried only once");
+    let modern_attempt: Value =
+        serde_json::from_str(writes[1].trim_end()).expect("valid modern attempt");
+    assert_eq!(modern_attempt["command"][3], json!(-1));
+    let legacy_fallback: Value =
+        serde_json::from_str(writes[2].trim_end()).expect("valid legacy fallback");
+    assert!(legacy_fallback["command"][3].is_object());
+    let cached_legacy: Value =
+        serde_json::from_str(writes[3].trim_end()).expect("valid cached legacy command");
+    assert!(cached_legacy["command"][3].is_object());
+    assert_eq!(cached_legacy["request_id"], json!(4));
+
+    let connection_events = adapter.take_ipc_connection_events();
+    assert!(
+        matches!(
+            connection_events.as_slice(),
+            [MpvIpcConnectionEvent::Connected { .. }]
+        ),
+        "a successful compatibility fallback must not surface its expected modern-shape rejection: {connection_events:?}"
+    );
+}
+
+#[test]
+fn unknown_loadfile_syntax_does_not_fallback_after_primary_disconnect() {
+    let (transport, state) =
+        fake_transport_with_reads(&[r#"{"request_id":1,"error":"success","data":"custom-build"}"#]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "30")]);
+
+    let error = adapter
+        .open_file("https://media.example/disconnect.m3u8")
+        .expect_err("EOF during the modern probe must fail without a legacy retry");
+
+    assert!(
+        matches!(error, PlayerError::OperationFailed(ref message) if message.contains("unexpected EOF")),
+        "the primary disconnect error must be preserved: {error:?}"
+    );
+    assert_eq!(
+        state.writes().len(),
+        2,
+        "only the version query and primary loadfile probe may be written"
+    );
+    let events = adapter.take_ipc_connection_events();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, MpvIpcConnectionEvent::Disconnected { .. })),
+        "the primary disconnect must remain observable: {events:?}"
+    );
+}
+
+#[test]
+fn unknown_loadfile_syntax_does_not_fallback_after_primary_timeout() {
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let transport = VersionResponseThenTimeoutTransport {
+        writes: Arc::clone(&writes),
+        version_response_sent: false,
+    };
+    let mut adapter =
+        MpvAdapter::with_test_transport_and_ipc_timeout(transport, Duration::from_millis(20));
+    adapter.configure_network_media_options([("cache-secs", "30")]);
+
+    let error = adapter
+        .open_file("https://media.example/timeout.m3u8")
+        .expect_err("timeout during the modern probe must fail without a legacy retry");
+
+    assert!(
+        matches!(error, PlayerError::OperationFailed(ref message) if message.contains("timed out")),
+        "the primary timeout error must be preserved: {error:?}"
+    );
+    assert_eq!(
+        writes
+            .lock()
+            .expect("timeout transport mutex should not be poisoned")
+            .len(),
+        2,
+        "only the version query and primary loadfile probe may be written"
+    );
+    let events = adapter.take_ipc_connection_events();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, MpvIpcConnectionEvent::TimedOut { .. })),
+        "the primary timeout must remain observable: {events:?}"
+    );
+}
+
+#[test]
+fn unknown_loadfile_syntax_does_not_fallback_after_primary_protocol_corruption() {
+    let (transport, state) = fake_transport_with_reads(&[
+        r#"{"request_id":1,"error":"success","data":"custom-build"}"#,
+        "not-json",
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "30")]);
+
+    let error = adapter
+        .open_file("https://media.example/corrupt.m3u8")
+        .expect_err("protocol corruption during the modern probe must not retry");
+
+    assert!(
+        matches!(error, PlayerError::OperationFailed(ref message) if message.contains("invalid mpv IPC JSON")),
+        "the primary protocol error must be preserved: {error:?}"
+    );
+    assert_eq!(
+        state.writes().len(),
+        2,
+        "only the version query and primary loadfile probe may be written"
+    );
+}
+
+#[test]
+fn unknown_loadfile_syntax_reports_both_probe_and_fallback_rejections() {
+    let (transport, state) = fake_transport_with_reads(&[
+        r#"{"request_id":1,"error":"success","data":"custom-build"}"#,
+        r#"{"request_id":2,"error":"invalid parameter"}"#,
+        r#"{"request_id":3,"error":"property unavailable"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "30")]);
+
+    let error = adapter
+        .open_file("https://media.example/rejected.m3u8")
+        .expect_err("both rejected command shapes must fail the load");
+
+    assert!(
+        matches!(error, PlayerError::OperationFailed(ref message)
+            if message.contains("invalid parameter") && message.contains("property unavailable")),
+        "the final error must retain both compatibility failures: {error:?}"
+    );
+    assert_eq!(state.writes().len(), 3);
+}
+
+#[test]
+fn open_local_file_preserves_user_cache_options_when_network_options_are_configured() {
+    let (transport, state) = fake_transport_with_reads(&[
+        r#"{"request_id":1,"error":"success"}"#,
+        r#"{"request_id":2,"error":"success"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "30")]);
+    assert!(
+        state.writes().is_empty(),
+        "configuring network media must not mutate mpv's global options"
+    );
+
+    adapter
+        .open_file("C:/Media/movie.mkv")
+        .expect("attached mpv transport should accept local loadfile");
+    adapter
+        .open_file("file:///C:/Media/movie.mkv")
+        .expect("attached mpv transport should preserve options for file URLs");
+
+    let writes = state.writes();
+    let payloads = writes
+        .iter()
+        .map(|write| serde_json::from_str::<Value>(write.trim_end()).expect("valid json"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        payloads,
+        vec![
+            json!({
+                "command": ["loadfile", "C:/Media/movie.mkv", "replace"],
+                "request_id": 1
+            }),
+            json!({
+                "command": ["loadfile", "file:///C:/Media/movie.mkv", "replace"],
+                "request_id": 2
+            }),
+        ]
+    );
+}
+
+#[test]
+fn active_network_option_reapply_uses_authoritative_network_path_over_stale_local_cache() {
+    let (transport, state) = fake_transport_with_reads(&[
+        r#"{"request_id":1,"error":"success"}"#,
+        r#"{"request_id":2,"error":"success","data":"https://media.example/live.m3u8"}"#,
+        r#"{"request_id":3,"error":"success"}"#,
+        r#"{"request_id":4,"error":"success"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter
+        .open_file("C:/Media/stale-local.mkv")
+        .expect("stale local path should be cached from an earlier request");
+    adapter.configure_network_media_options([("cache-secs", "75"), ("cache-pause-wait", "5")]);
+
+    adapter
+        .apply_network_media_options_to_active_media()
+        .expect("an attached network file should accept file-local options");
+
+    let payloads = state
+        .writes()
+        .iter()
+        .map(|write| serde_json::from_str::<Value>(write.trim_end()).expect("valid json"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        payloads,
+        vec![
+            json!({
+                "command": ["loadfile", "C:/Media/stale-local.mkv", "replace"],
+                "request_id": 1
+            }),
+            json!({
+                "command": ["get_property", "path"],
+                "request_id": 2
+            }),
+            json!({
+                "command": ["set_property", "file-local-options/cache-pause-wait", "5"],
+                "request_id": 3
+            }),
+            json!({
+                "command": ["set_property", "file-local-options/cache-secs", "75"],
+                "request_id": 4
+            }),
+        ]
+    );
+}
+
+#[test]
+fn active_network_option_reapply_uses_authoritative_local_path_over_stale_network_cache() {
+    let (transport, state) = fake_transport_with_reads(&[
+        r#"{"request_id":1,"error":"success"}"#,
+        r#"{"request_id":2,"error":"success","data":"C:/Media/movie.mkv"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter
+        .open_file("https://media.example/stale-network.m3u8")
+        .expect("stale network path should be cached from an earlier request");
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+
+    adapter
+        .apply_network_media_options_to_active_media()
+        .expect("an attached local file should be left unchanged");
+
+    let writes = state.writes();
+    assert_eq!(writes.len(), 2);
+    let load_payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid load json");
+    assert_eq!(
+        load_payload,
+        json!({
+            "command": ["loadfile", "https://media.example/stale-network.m3u8", "replace"],
+            "request_id": 1
+        })
+    );
+    let path_payload: Value =
+        serde_json::from_str(writes[1].trim_end()).expect("valid path query json");
+    assert_eq!(
+        path_payload,
+        json!({
+            "command": ["get_property", "path"],
+            "request_id": 2
         })
     );
 }

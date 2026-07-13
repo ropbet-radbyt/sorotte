@@ -25,22 +25,44 @@ pub(crate) fn create_client_runtime_with_managed_mpv_support(
     Option<ManagedMpvProcessGuard>,
 )> {
     let session = create_client_session(config);
-    let (mut player, managed_guard) =
+    let (mut player, managed_guard, managed_startup_media) =
         create_mpv_adapter_and_optional_managed_process_from_env(legacy_overrides)?;
     apply_legacy_syncplay_ui_settings_to_mpv_adapter_legacy_compatible(
         &mut player,
         stored_settings,
     )?;
+    let streaming = stored_settings
+        .map(ClientConfig::resolve)
+        .map(|resolution| resolution.config.playback.streaming)
+        .unwrap_or_default();
+    let advanced_arguments = legacy_overrides
+        .map(|overrides| overrides.player_args.as_slice())
+        .unwrap_or_default();
+    let effective_options = streaming.effective_mpv_options(advanced_arguments);
+    player.configure_network_media_options(
+        effective_options
+            .iter()
+            .map(|option| (option.name.clone(), option.effective_value.clone())),
+    );
+    player
+        .apply_network_media_options_to_active_media()
+        .map_err(|error| anyhow!("failed updating active mpv network-media options: {error}"))?;
+    if let Some(media) = managed_startup_media {
+        player
+            .open_file(&media)
+            .map_err(|error| anyhow!("failed opening managed mpv startup media: {error}"))?;
+    }
     Ok((ClientApplication::new(session, player), managed_guard))
 }
 
 fn create_mpv_adapter_and_optional_managed_process_from_env(
     legacy_overrides: Option<&LegacyClientArgOverrides>,
-) -> anyhow::Result<(MpvAdapter, Option<ManagedMpvProcessGuard>)> {
+) -> anyhow::Result<(MpvAdapter, Option<ManagedMpvProcessGuard>, Option<String>)> {
     let explicit_ipc_path = explicit_mpv_ipc_path_from_env();
     if let Some(ipc_path) = explicit_ipc_path {
         return Ok((
             create_mpv_adapter_from_path_or_disconnected(&ipc_path),
+            None,
             None,
         ));
     }
@@ -49,13 +71,17 @@ fn create_mpv_adapter_and_optional_managed_process_from_env(
     apply_legacy_client_arg_managed_mpv_overrides(&mut managed_config, legacy_overrides);
     if !managed_config.enabled {
         #[cfg(test)]
-        return Ok((SimulatedPlayer::new().into_inner(), None));
+        return Ok((SimulatedPlayer::new().into_inner(), None, None));
         #[cfg(not(test))]
-        return Ok((MpvAdapter::default(), None));
+        return Ok((MpvAdapter::default(), None, None));
     }
 
+    let startup_media = managed_config
+        .media_file
+        .as_ref()
+        .map(|path| path.to_string_lossy().into_owned());
     let (adapter, guard) = spawn_managed_mpv_and_attach(managed_config)?;
-    Ok((adapter, Some(guard)))
+    Ok((adapter, Some(guard), startup_media))
 }
 
 fn create_mpv_adapter_from_path_or_disconnected(ipc_path: &str) -> MpvAdapter {
@@ -88,6 +114,7 @@ fn spawn_managed_mpv_and_attach(
         ));
     }
     if let Some(media_file) = config.media_file.as_ref()
+        && !media_file.to_string_lossy().contains("://")
         && !media_file.exists()
     {
         return Err(anyhow!(
@@ -120,10 +147,6 @@ fn spawn_managed_mpv_and_attach(
     if !config.extra_args.is_empty() {
         command.args(&config.extra_args);
     }
-    if let Some(media_file) = config.media_file.as_ref() {
-        command.arg(media_file);
-    }
-
     let child = command
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -156,14 +179,12 @@ fn managed_mpv_launch_base_args_legacy_compatible(ipc_path: &str) -> Vec<String>
 }
 
 fn managed_mpv_launch_base_args(ipc_path: &str) -> Vec<String> {
-    let mut args = vec![
+    vec![
         "--pause".to_owned(),
         "--force-window=no".to_owned(),
         "--idle=yes".to_owned(),
-    ];
-    args.extend(StreamingPlaybackConfig::default().mpv_arguments());
-    args.push(format!("--input-ipc-server={ipc_path}"));
-    args
+        format!("--input-ipc-server={ipc_path}"),
+    ]
 }
 
 pub(crate) fn connect_mpv_adapter_with_retry(

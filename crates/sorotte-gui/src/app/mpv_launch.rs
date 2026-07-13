@@ -31,7 +31,6 @@ pub(crate) enum ManagedMpvSettingsDecision {
 pub(crate) struct ManagedMpvLaunchConfig {
     pub(crate) requested_player_path: String,
     pub(crate) program: PathBuf,
-    pub(crate) streaming_args: Vec<String>,
     pub(crate) effective_streaming_options: Vec<EffectiveMpvStreamingOption>,
     pub(crate) extra_args: Vec<String>,
     pub(crate) ui_settings: LegacySyncplayUiSettings,
@@ -43,10 +42,6 @@ impl std::fmt::Debug for ManagedMpvLaunchConfig {
             .debug_struct("ManagedMpvLaunchConfig")
             .field("requested_player_path", &self.requested_player_path)
             .field("program", &self.program)
-            .field(
-                "streaming_args",
-                &RedactedCommandArgs::from_args(&self.streaming_args),
-            )
             .field(
                 "effective_streaming_options",
                 &self.effective_streaming_options,
@@ -64,7 +59,6 @@ impl ManagedMpvLaunchConfig {
     pub(crate) fn matches_process_target(&self, other: &Self) -> bool {
         self.requested_player_path == other.requested_player_path
             && self.program == other.program
-            && self.streaming_args == other.streaming_args
             && self.extra_args == other.extra_args
     }
 }
@@ -120,13 +114,11 @@ pub(crate) fn managed_mpv_settings_decision_from_settings(
         .cloned()
         .unwrap_or_default();
     let streaming = ClientConfig::resolve(settings).config.playback.streaming;
-    let streaming_args = streaming.mpv_arguments();
     let effective_streaming_options = streaming.effective_mpv_options(&extra_args);
     let program = resolve_managed_mpv_launch_program_legacy_compatible(Path::new(player_path));
     ManagedMpvSettingsDecision::Launch(Box::new(ManagedMpvLaunchConfig {
         requested_player_path: player_path.to_owned(),
         program,
-        streaming_args,
         effective_streaming_options,
         extra_args,
         ui_settings: legacy_syncplay_ui_settings_from_stored_settings(Some(settings)),
@@ -163,21 +155,23 @@ pub(crate) fn apply_legacy_syncplay_ui_settings_to_mpv_adapter(
     Ok(())
 }
 
-pub(crate) fn apply_effective_streaming_options_to_mpv_adapter(
+pub(crate) fn configure_effective_streaming_options_for_network_media(
     player: &mut MpvAdapter,
     options: &[EffectiveMpvStreamingOption],
+) {
+    player.configure_network_media_options(
+        options
+            .iter()
+            .map(|option| (option.name.clone(), option.effective_value.clone())),
+    );
+}
+
+pub(crate) fn apply_effective_streaming_options_to_active_network_media(
+    player: &mut MpvAdapter,
 ) -> Result<(), String> {
-    for option in options {
-        player
-            .set_option_string(&option.name, &option.effective_value)
-            .map_err(|error| {
-                format!(
-                    "failed to apply mpv streaming option {}={}: {error}",
-                    option.name, option.effective_value
-                )
-            })?;
-    }
-    Ok(())
+    player
+        .apply_network_media_options_to_active_media()
+        .map_err(|error| format!("failed to update active mpv network-media options: {error}"))
 }
 
 pub(crate) fn spawn_managed_mpv_and_attach(
@@ -213,7 +207,6 @@ pub(crate) fn spawn_managed_mpv_and_attach(
     }
     command.args(managed_mpv_launch_args(
         &ipc_path,
-        &config.streaming_args,
         &config.extra_args,
         downloader_path,
     ));
@@ -247,7 +240,6 @@ pub(crate) fn spawn_managed_mpv_and_attach(
 
 fn managed_mpv_launch_args(
     ipc_path: &str,
-    streaming_args: &[String],
     extra_args: &[String],
     downloader_path: Option<&Path>,
 ) -> Vec<String> {
@@ -261,7 +253,6 @@ fn managed_mpv_launch_args(
         "--drag-and-drop=no".to_owned(),
         "--ytdl=yes".to_owned(),
     ];
-    args.extend(streaming_args.iter().cloned());
     if let Some(path) = downloader_path {
         args.push(format!(
             "--script-opts-append=ytdl_hook-ytdl_path={}",
@@ -655,9 +646,7 @@ mod tests {
         legacy_syncplayintf_script_source_with_chat_input_bridge, managed_mpv_launch_args,
         managed_mpv_settings_decision_from_settings,
     };
-    use sorotte_client_app::app_boundary::state::{
-        StoredClientSettingsMvp, StreamingPlaybackConfig,
-    };
+    use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
     use sorotte_player_mpv::LegacySyncplayUiSettings;
 
     #[test]
@@ -665,7 +654,6 @@ mod tests {
         let config = ManagedMpvLaunchConfig {
             requested_player_path: "mpv".to_owned(),
             program: PathBuf::from("mpv"),
-            streaming_args: StreamingPlaybackConfig::default().mpv_arguments(),
             effective_streaming_options: Vec::new(),
             extra_args: vec![
                 "--http-header-fields=Authorization: Bearer GUI_PLAYER_ARG_CANARY".to_owned(),
@@ -692,6 +680,7 @@ mod tests {
             vec![
                 "--profile=syncplay".to_owned(),
                 "--keep-open=yes".to_owned(),
+                "--cache-secs=75".to_owned(),
             ],
         );
         let decision =
@@ -707,16 +696,20 @@ mod tests {
             panic!("expected managed mpv launch config");
         };
         assert_eq!(config.requested_player_path, "C:/Program Files/mpv/mpv.exe");
-        assert!(
-            config
-                .streaming_args
-                .contains(&"--cache-pause-wait=5".to_owned())
-        );
+        let cache_secs = config
+            .effective_streaming_options
+            .iter()
+            .find(|option| option.name == "cache-secs")
+            .expect("network cache duration should be configured");
+        assert_eq!(cache_secs.configured_value, "30");
+        assert_eq!(cache_secs.effective_value, "75");
+        assert!(cache_secs.overridden_by_advanced_arguments);
         assert_eq!(
             config.extra_args,
             vec![
                 "--profile=syncplay".to_owned(),
-                "--keep-open=yes".to_owned()
+                "--keep-open=yes".to_owned(),
+                "--cache-secs=75".to_owned(),
             ]
         );
         assert!(!config.ui_settings.show_osd);
@@ -761,10 +754,9 @@ mod tests {
     }
 
     #[test]
-    fn managed_mpv_launch_args_open_a_visible_idle_window_before_extra_args() {
+    fn managed_mpv_launch_args_preserve_local_cache_defaults_before_extra_args() {
         let args = managed_mpv_launch_args(
             r"\\.\pipe\sorotte-gui-mpv-test",
-            &StreamingPlaybackConfig::default().mpv_arguments(),
             &["--profile=syncplay".to_owned()],
             None,
         );
@@ -780,13 +772,6 @@ mod tests {
                 "--keep-open-pause=yes".to_owned(),
                 "--drag-and-drop=no".to_owned(),
                 "--ytdl=yes".to_owned(),
-                "--cache=auto".to_owned(),
-                "--cache-pause=yes".to_owned(),
-                "--cache-pause-initial=yes".to_owned(),
-                "--cache-pause-wait=5".to_owned(),
-                "--cache-secs=30".to_owned(),
-                "--demuxer-max-bytes=150MiB".to_owned(),
-                "--cache-on-disk=no".to_owned(),
                 r"--input-ipc-server=\\.\pipe\sorotte-gui-mpv-test".to_owned(),
                 "--profile=syncplay".to_owned(),
             ]
@@ -797,7 +782,6 @@ mod tests {
     fn managed_mpv_launch_args_include_explicit_ytdl_path_before_extra_args() {
         let args = managed_mpv_launch_args(
             r"\\.\pipe\sorotte-gui-mpv-test",
-            &StreamingPlaybackConfig::default().mpv_arguments(),
             &["--profile=syncplay".to_owned()],
             Some(std::path::Path::new("C:/Tools/yt-dlp.exe")),
         );
@@ -813,13 +797,6 @@ mod tests {
                 "--keep-open-pause=yes".to_owned(),
                 "--drag-and-drop=no".to_owned(),
                 "--ytdl=yes".to_owned(),
-                "--cache=auto".to_owned(),
-                "--cache-pause=yes".to_owned(),
-                "--cache-pause-initial=yes".to_owned(),
-                "--cache-pause-wait=5".to_owned(),
-                "--cache-secs=30".to_owned(),
-                "--demuxer-max-bytes=150MiB".to_owned(),
-                "--cache-on-disk=no".to_owned(),
                 "--script-opts-append=ytdl_hook-ytdl_path=C:/Tools/yt-dlp.exe".to_owned(),
                 r"--input-ipc-server=\\.\pipe\sorotte-gui-mpv-test".to_owned(),
                 "--profile=syncplay".to_owned(),

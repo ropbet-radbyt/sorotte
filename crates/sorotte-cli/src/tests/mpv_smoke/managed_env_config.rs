@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn managed_mpv_launch_base_args_include_buffering_defaults_before_ipc_arg() {
+fn managed_mpv_launch_base_args_preserve_local_cache_defaults() {
     let args = managed_mpv_launch_base_args_legacy_compatible(r"\\.\pipe\sorotte-cli-mpv-test");
 
     assert_eq!(
@@ -10,13 +10,6 @@ fn managed_mpv_launch_base_args_include_buffering_defaults_before_ipc_arg() {
             "--pause".to_owned(),
             "--force-window=no".to_owned(),
             "--idle=yes".to_owned(),
-            "--cache=auto".to_owned(),
-            "--cache-pause=yes".to_owned(),
-            "--cache-pause-initial=yes".to_owned(),
-            "--cache-pause-wait=5".to_owned(),
-            "--cache-secs=30".to_owned(),
-            "--demuxer-max-bytes=150MiB".to_owned(),
-            "--cache-on-disk=no".to_owned(),
             r"--input-ipc-server=\\.\pipe\sorotte-cli-mpv-test".to_owned(),
         ]
     );
@@ -85,4 +78,27 @@ fn managed_mpv_launch_env_config_from_env_parses_values() {
     if let Some(value) = old_poll {
         env.set_var(key_poll, value);
     }
+}
+
+#[test]
+fn managed_mpv_startup_keeps_initial_network_url_for_post_attach_load() {
+    let mut config = ManagedMpvLaunchEnvConfig::default();
+    let overrides = LegacyClientArgOverrides {
+        player_path: Some("mpv".to_owned()),
+        file: Some("https://media.example/video.m3u8".to_owned()),
+        player_args: vec!["--cache-secs=75".to_owned()],
+        ..LegacyClientArgOverrides::default()
+    };
+
+    apply_legacy_client_arg_managed_mpv_overrides(&mut config, Some(&overrides));
+
+    assert!(config.enabled);
+    assert_eq!(
+        config
+            .media_file
+            .as_deref()
+            .map(|path| path.to_string_lossy().into_owned()),
+        Some("https://media.example/video.m3u8".to_owned())
+    );
+    assert_eq!(config.extra_args, vec!["--cache-secs=75".to_owned()]);
 }

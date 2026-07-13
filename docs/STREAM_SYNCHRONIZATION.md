@@ -92,7 +92,7 @@ Settings live in `[client_settings]` in `sorotte.ini` and are editable in the GU
 | `streamingMemoryCacheMiB` | `150` | `demuxer-max-bytes`. |
 | `streamingDiskCacheEnabled` | `false` | `cache-on-disk=yes/no`. |
 
-Sorotte also enables `cache=auto`, `cache-pause=yes`, and `cache-pause-initial=yes`. Typed options apply to managed and attached mpv. Later advanced player arguments win; the GUI shows both configured and effective values.
+Sorotte also enables `cache=auto`, `cache-pause=yes`, and `cache-pause-initial=yes` for Sorotte-opened network media. These are mpv per-file options in managed and attached players: mpv restores the prior values when the stream ends, so local files keep the player's cache defaults and user configuration. Later advanced player arguments win for network media; the GUI shows both configured and effective values.
 
 ### Recovery
 

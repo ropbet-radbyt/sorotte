@@ -23,44 +23,6 @@ pub(crate) fn apply_stored_legacy_startup_player_defaults_if_arg_absent(
             overrides.player_args.extend(args.iter().cloned());
         }
     }
-
-    if has_explicit_streaming_settings(settings)
-        && overrides.player_path.as_deref().is_some_and(
-            crate::mpv_startup::legacy_player_path_requests_managed_mpv_legacy_compatible,
-        )
-    {
-        let mut typed_streaming_args = ClientConfig::resolve(settings)
-            .config
-            .playback
-            .streaming
-            .mpv_arguments();
-        typed_streaming_args.append(&mut overrides.player_args);
-        overrides.player_args = typed_streaming_args;
-    }
-}
-
-fn has_explicit_streaming_settings(settings: &StoredClientSettingsMvp) -> bool {
-    settings.streaming_quality_preset.is_some()
-        || settings.streaming_custom_format.is_some()
-        || settings.streaming_buffer_target_seconds.is_some()
-        || settings.streaming_read_ahead_seconds.is_some()
-        || settings.streaming_memory_cache_mebibytes.is_some()
-        || settings.streaming_disk_cache_enabled.is_some()
-        || settings.streaming_recovery_policy.is_some()
-        || settings.streaming_max_catchup_rate.is_some()
-        || settings.streaming_hard_seek_threshold_seconds.is_some()
-        || settings.streaming_max_hard_seeks_per_episode.is_some()
-        || settings.streaming_stability_interval_seconds.is_some()
-        || settings.streaming_recovery_retry_budget.is_some()
-        || settings.streaming_recovery_cooldown_seconds.is_some()
-        || settings.streaming_room_buffering_policy.is_some()
-        || settings.streaming_room_quorum_percent.is_some()
-        || settings.streaming_room_max_pause_seconds.is_some()
-        || settings.streaming_start_policy.is_some()
-        || settings.streaming_start_quorum_percent.is_some()
-        || settings.streaming_start_timeout_seconds.is_some()
-        || settings.streaming_start_timeout_action.is_some()
-        || settings.streaming_quality_downgrade_suggestions.is_some()
 }
 
 fn lookup_stored_per_player_arguments_for_player_path_legacy_compatible<'a>(

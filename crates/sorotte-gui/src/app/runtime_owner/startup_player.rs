@@ -297,27 +297,22 @@ impl GuiPersistedConfigRuntimeOwner {
                 Ok(mut adapter) => match apply_legacy_syncplay_ui_settings_to_mpv_adapter(
                     &mut adapter,
                     &ui_settings,
-                ) {
+                )
+                .and_then(|()| {
+                    configure_effective_streaming_options_for_network_media(
+                        &mut adapter,
+                        &effective_streaming_options,
+                    );
+                    apply_effective_streaming_options_to_active_network_media(&mut adapter)
+                }) {
                     Ok(()) => {
-                        match apply_effective_streaming_options_to_mpv_adapter(
-                            &mut adapter,
-                            &effective_streaming_options,
-                        ) {
-                            Ok(()) => {
-                                self.player = Some(GuiOwnedPlayer::Mpv(Box::new(adapter)));
-                                self.managed_stream_helper_refresh_required = false;
-                                self.player_unavailability_reason = None;
-                            }
-                            Err(error) => {
-                                self.player_unavailability_reason = Some(format!(
-                                    "mpv JSON IPC attach succeeded at '{ipc_path}', but typed streaming options could not be applied: {error}"
-                                ));
-                            }
-                        }
+                        self.player = Some(GuiOwnedPlayer::Mpv(Box::new(adapter)));
+                        self.managed_stream_helper_refresh_required = false;
+                        self.player_unavailability_reason = None;
                     }
                     Err(error) => {
                         self.player_unavailability_reason = Some(format!(
-                            "mpv JSON IPC attach succeeded at '{ipc_path}', but legacy GUI settings could not be applied: {error}"
+                            "mpv JSON IPC attach succeeded at '{ipc_path}', but player settings could not be applied: {error}"
                         ));
                     }
                 },
@@ -346,6 +341,10 @@ impl GuiPersistedConfigRuntimeOwner {
                             &config.ui_settings,
                         ) {
                             Ok(()) => {
+                                configure_effective_streaming_options_for_network_media(
+                                    &mut adapter,
+                                    &config.effective_streaming_options,
+                                );
                                 self.managed_mpv_process = Some(guard);
                                 self.player = Some(GuiOwnedPlayer::Mpv(Box::new(adapter)));
                                 self.managed_stream_helper_refresh_required = false;
@@ -369,7 +368,7 @@ impl GuiPersistedConfigRuntimeOwner {
         }
     }
 
-    fn configured_player_launch_state_from_lookup_and_settings<F>(
+    pub(super) fn configured_player_launch_state_from_lookup_and_settings<F>(
         lookup: &F,
         settings: Option<&StoredClientSettingsMvp>,
     ) -> Result<GuiPlayerLaunchRuntimeState, String>
@@ -394,7 +393,14 @@ impl GuiPersistedConfigRuntimeOwner {
             let streaming = settings
                 .map(|settings| ClientConfig::resolve(settings).config.playback.streaming)
                 .unwrap_or_default();
-            let effective_streaming_options = streaming.effective_mpv_options(&[]);
+            let advanced_arguments = settings
+                .and_then(|settings| {
+                    let player_path = settings.player_path.as_deref()?.trim();
+                    settings.per_player_arguments.as_ref()?.get(player_path)
+                })
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let effective_streaming_options = streaming.effective_mpv_options(advanced_arguments);
             return Ok(GuiPlayerLaunchRuntimeState::ExplicitMpvIpc {
                 ipc_path,
                 ui_settings: Box::new(ui_settings),
@@ -443,12 +449,9 @@ impl GuiPersistedConfigRuntimeOwner {
                 Some(format!("mpv legacy GUI settings reapply failed: {error}"));
             return false;
         }
-        if let Err(error) =
-            apply_effective_streaming_options_to_mpv_adapter(player, &streaming_options)
-        {
-            self.player_unavailability_reason = Some(format!(
-                "mpv typed streaming settings reapply failed: {error}"
-            ));
+        configure_effective_streaming_options_for_network_media(player, &streaming_options);
+        if let Err(error) = apply_effective_streaming_options_to_active_network_media(player) {
+            self.player_unavailability_reason = Some(error);
             return false;
         }
         self.player_launch_state = next_launch_state.clone();

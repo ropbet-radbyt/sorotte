@@ -161,7 +161,7 @@ streamingRecoveryPolicy = balanced
 streamingStartPolicy = immediate
 ```
 
-Quality and buffering values are applied to managed and attached `mpv` instances. Matching per-player advanced arguments take precedence; the GUI shows the effective value for generated streaming options.
+Quality and buffering values are attached as per-file options to network media that Sorotte opens in managed and attached `mpv` instances. Local files retain the player's own cache defaults and user configuration, and mpv restores those values after a stream ends. Matching per-player advanced arguments take precedence for streamed media; the GUI shows the effective value for generated streaming options.
 
 Sorotte prevents cache-release seek loops with a generation-aware coordinator that retains room intent, blocks competing drift correction during recovery, and requires observed forward playback before accepting play. Configured recovery uses bounded gentle catch-up, hard-seek and retry budgets, and explicit degradation. Sorotte clients also drive the feature-negotiated `sorottePlaybackBarrierV1` start barrier and authenticated controlled-room buffering policies. Quality downgrade remains advisory: the GUI and CLI can suggest a lower preset, but Sorotte never changes it automatically.
 

@@ -1,7 +1,7 @@
 use super::*;
 
 impl GuiPersistedConfigRuntimeOwner {
-    fn note_local_attached_player_pause_command(&mut self, target_paused: bool) {
+    pub(in crate::app) fn note_local_attached_player_pause_command(&mut self, target_paused: bool) {
         self.pending_attached_player_pause_command = Some(GuiPendingAttachedPlayerPauseCommand {
             target_paused,
             suppress_until: Instant::now() + ATTACHED_PLAYER_PAUSE_COMMAND_SUPPRESSION,
@@ -26,6 +26,61 @@ impl GuiPersistedConfigRuntimeOwner {
             }
             _ => None,
         };
+    }
+
+    pub(in crate::app) fn stage_attached_player_pause_intent(
+        &mut self,
+        target_paused: bool,
+    ) -> Result<(), String> {
+        let actions = self
+            .session
+            .as_mut()
+            .map(|session| {
+                session.stage_attached_player_pause_intent(target_paused, system_time_seconds())
+            })
+            .transpose()?
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|action| match action {
+                GuiAttachedPlayerRuntimeAction::Paused(paused) => *paused != target_paused,
+                GuiAttachedPlayerRuntimeAction::Coordinator {
+                    command: CoordinatorPlayerCommand::SetPaused(paused),
+                    ..
+                } => *paused != target_paused,
+                GuiAttachedPlayerRuntimeAction::Coordinator {
+                    command: CoordinatorPlayerCommand::Play(_),
+                    ..
+                } => target_paused,
+                GuiAttachedPlayerRuntimeAction::Position(_)
+                | GuiAttachedPlayerRuntimeAction::PlaybackRate(_)
+                | GuiAttachedPlayerRuntimeAction::Coordinator { .. } => true,
+            })
+            .collect();
+        self.pending_local_attached_pause_override = Some(target_paused);
+        let _ =
+            self.apply_attached_player_runtime_actions_impl(actions, "local pause-intent staging");
+        Ok(())
+    }
+
+    pub(in crate::app) fn rollback_attached_player_pause_intent(&mut self, target_paused: bool) {
+        self.pending_local_attached_pause_override = None;
+        let actions = self.session.as_mut().and_then(|session| {
+            match session
+                .rollback_attached_player_pause_intent(target_paused, system_time_seconds())
+            {
+                Ok(actions) => Some(actions),
+                Err(error) => {
+                    eprintln!(
+                        "warning: failed to roll back attached-player local pause intent: {error}"
+                    );
+                    None
+                }
+            }
+        });
+        if let Some(actions) = actions {
+            let _ = self
+                .apply_attached_player_runtime_actions_impl(actions, "local pause-intent rollback");
+        }
     }
 
     pub(in crate::app::runtime_owner) fn sync_manual_seek_into_detached_session_impl(
@@ -93,17 +148,24 @@ impl GuiPersistedConfigRuntimeOwner {
                     return Ok((true, None));
                 }
                 Ok(GuiLocalPlayerUnpauseDecision::Allow) => {
-                    let Some(player) = self.player.as_mut() else {
+                    if self.player.is_none() {
                         return Err(
                             "Playback pause toggle requires a playback runtime connection."
                                 .to_owned(),
                         );
-                    };
-                    player.set_paused(false).map_err(|error| {
-                            format!(
-                                "Playback pause toggle through the attached player failed while resuming playback: {error}"
-                            )
-                    })?;
+                    }
+                    self.stage_attached_player_pause_intent(false)?;
+                    let set_paused_result = self
+                        .player
+                        .as_mut()
+                        .expect("attached player was checked before staging")
+                        .set_paused(false);
+                    if let Err(error) = set_paused_result {
+                        self.rollback_attached_player_pause_intent(false);
+                        return Err(format!(
+                            "Playback pause toggle through the attached player failed while resuming playback: {error}"
+                        ));
+                    }
                     self.note_local_attached_player_pause_command(false);
                     self.player_paused = Some(false);
                     self.refresh_player_state_impl();
@@ -137,12 +199,21 @@ impl GuiPersistedConfigRuntimeOwner {
             }
         }
 
-        let Some(player) = self.player.as_mut() else {
+        if self.player.is_none() {
             return Err("Playback pause toggle requires a playback runtime connection.".to_owned());
-        };
-        player.set_paused(target_paused).map_err(|error| {
-            format!("Playback pause toggle through the attached player failed: {error}")
-        })?;
+        }
+        self.stage_attached_player_pause_intent(target_paused)?;
+        let set_paused_result = self
+            .player
+            .as_mut()
+            .expect("attached player was checked before staging")
+            .set_paused(target_paused);
+        if let Err(error) = set_paused_result {
+            self.rollback_attached_player_pause_intent(target_paused);
+            return Err(format!(
+                "Playback pause toggle through the attached player failed: {error}"
+            ));
+        }
         self.note_local_attached_player_pause_command(target_paused);
         self.player_paused = Some(target_paused);
         self.refresh_player_state_impl();

@@ -60,7 +60,7 @@ impl GuiPersistedConfigRuntimeOwner {
         }
     }
 
-    pub(super) fn apply_attached_player_runtime_actions_impl(
+    pub(in crate::app) fn apply_attached_player_runtime_actions_impl(
         &mut self,
         actions: Vec<GuiAttachedPlayerRuntimeAction>,
         action_description: &str,
@@ -75,11 +75,23 @@ impl GuiPersistedConfigRuntimeOwner {
                             Some(GuiPendingAttachedRoomUnpauseObservation::CachePaused);
                         continue;
                     }
-                    let Some(player) = self.player.as_mut() else {
+                    if self.player.is_none() {
                         return state_changed;
-                    };
-                    match player.set_paused(paused) {
+                    }
+                    if let Err(error) = self.stage_attached_player_pause_intent(paused) {
+                        eprintln!(
+                            "warning: failed to stage attached-player {action_description} pause intent: {error}"
+                        );
+                        continue;
+                    }
+                    let result = self
+                        .player
+                        .as_mut()
+                        .expect("attached player was checked before local runtime staging")
+                        .set_paused(paused);
+                    match result {
                         Ok(()) => {
+                            self.note_local_attached_player_pause_command(paused);
                             self.player_paused = Some(paused);
                             self.pending_attached_room_unpause_observation = None;
                             state_changed = true;
@@ -95,6 +107,7 @@ impl GuiPersistedConfigRuntimeOwner {
                             }
                         }
                         Err(error) => {
+                            self.rollback_attached_player_pause_intent(paused);
                             eprintln!(
                                 "warning: failed to apply attached-player {action_description} pause action: {error}"
                             );
@@ -142,6 +155,12 @@ impl GuiPersistedConfigRuntimeOwner {
                     command_id,
                     command,
                 } => {
+                    let pause_target = match command {
+                        CoordinatorPlayerCommand::SetPaused(paused) => Some(paused),
+                        CoordinatorPlayerCommand::Play(_) => Some(false),
+                        CoordinatorPlayerCommand::SetPosition(_)
+                        | CoordinatorPlayerCommand::SetPlaybackRate(_) => None,
+                    };
                     let Some(player) = self.player.as_mut() else {
                         return state_changed;
                     };
@@ -156,6 +175,9 @@ impl GuiPersistedConfigRuntimeOwner {
                         }
                     };
                     let accepted = result.is_ok();
+                    if accepted && let Some(paused) = pause_target {
+                        self.note_local_attached_player_pause_command(paused);
+                    }
                     if let Err(error) = result {
                         eprintln!(
                             "warning: attached-player coordinator command failed during {action_description}: {error}"
@@ -239,11 +261,15 @@ impl GuiPersistedConfigRuntimeOwner {
             }
             None => false,
         };
-        let coordinator_owns_sync = self
+        let coordination_snapshot = self
             .session
             .as_ref()
-            .and_then(|session| session.playback_coordination_snapshot())
-            .is_some_and(|snapshot| snapshot.transport_telemetry_observed);
+            .and_then(|session| session.playback_coordination_snapshot());
+        if let Some(snapshot) = coordination_snapshot.as_ref() {
+            self.pending_local_attached_pause_override = snapshot.pending_local_pause_intent;
+        }
+        let coordinator_owns_sync =
+            coordination_snapshot.is_some_and(|snapshot| snapshot.transport_telemetry_observed);
         if coordinator_owns_sync {
             let coordinator_actions = self
                 .session
@@ -260,6 +286,13 @@ impl GuiPersistedConfigRuntimeOwner {
                     "warning: failed to reconcile attached player through client-core coordinator: {error}"
                 ),
                 None => {}
+            }
+            if let Some(snapshot) = self
+                .session
+                .as_ref()
+                .and_then(|session| session.playback_coordination_snapshot())
+            {
+                self.pending_local_attached_pause_override = snapshot.pending_local_pause_intent;
             }
             // The coordinator consumes the canonical room state, including
             // server-owned transitions attributed to the local controller.
@@ -381,6 +414,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 };
                 match player.set_paused(paused) {
                     Ok(()) => {
+                        self.note_local_attached_player_pause_command(paused);
                         if paused {
                             self.player_paused = Some(true);
                             self.pending_attached_room_unpause_observation = None;

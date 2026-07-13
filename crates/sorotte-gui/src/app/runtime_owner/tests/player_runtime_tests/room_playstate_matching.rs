@@ -86,6 +86,7 @@ impl GuiSessionRuntimeAdapter for CoordinatorAuthoritySession {
     fn playback_coordination_snapshot(&self) -> Option<PlaybackCoordinationSnapshot> {
         Some(PlaybackCoordinationSnapshot {
             media_generation: Some(1),
+            pending_local_pause_intent: None,
             diagnostic: sorotte_client_core::PlaybackDiagnostic::ReadyWaitingForRoom,
             recovery_episode: None,
             metrics: Default::default(),

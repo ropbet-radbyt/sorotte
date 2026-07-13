@@ -265,11 +265,17 @@ impl PlayerAdapter for MpvAdapter {
             .with_phase(PlayerTransportPhase::Loading);
         self.queue_transport_telemetry_update(loading_update);
 
-        if let Err(error) = self.send_ipc_command_if_attached(json!([
-            MPV_COMMAND_LOADFILE,
-            path,
-            MPV_LOADFILE_REPLACE
-        ])) {
+        let load_result =
+            if uses_network_media_options(path) && !self.network_media_options.is_empty() {
+                self.send_network_media_loadfile(path)
+            } else {
+                self.send_ipc_command_if_attached(json!([
+                    MPV_COMMAND_LOADFILE,
+                    path,
+                    MPV_LOADFILE_REPLACE
+                ]))
+            };
+        if let Err(error) = load_result {
             if self.pending_load_generation == Some(generation) {
                 self.pending_load_request = None;
                 self.pending_load_generation = None;

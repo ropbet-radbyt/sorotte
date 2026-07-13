@@ -611,6 +611,28 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         Some(self.runtime.playback_coordination_snapshot())
     }
 
+    fn stage_attached_player_pause_intent(
+        &mut self,
+        paused: bool,
+        now_seconds: f64,
+    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        Ok(gui_actions_from_playback_coordinator(
+            self.runtime
+                .stage_external_player_pause_intent(paused, now_seconds),
+        ))
+    }
+
+    fn rollback_attached_player_pause_intent(
+        &mut self,
+        paused: bool,
+        now_seconds: f64,
+    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        Ok(gui_actions_from_playback_coordinator(
+            self.runtime
+                .rollback_external_player_pause_intent(paused, now_seconds),
+        ))
+    }
+
     fn take_streaming_quality_downgrade_suggestion(
         &mut self,
     ) -> Option<StreamingQualityDowngradeSuggestion> {

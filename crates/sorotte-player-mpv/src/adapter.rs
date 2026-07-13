@@ -4,7 +4,7 @@ mod player_adapter;
 mod state;
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     path::Path,
     time::{Duration, Instant},
 };
@@ -35,6 +35,13 @@ const MAX_PENDING_COMMAND_PROGRESS_UPDATES: usize = 128;
 const PLAYER_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 const PLAYER_LOAD_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 const PLAYBACK_ADVANCEMENT_EPSILON_SECONDS: f64 = 0.01;
+
+fn uses_network_media_options(path: &str) -> bool {
+    let Some((scheme, _)) = path.trim().split_once("://") else {
+        return false;
+    };
+    !scheme.eq_ignore_ascii_case("file")
+}
 
 #[derive(Debug)]
 struct PendingTrackedCommand {
@@ -133,6 +140,13 @@ enum TrackedCommandSupersession {
     PauseOrPlay,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MpvLoadfileOptionsSyntax {
+    Legacy,
+    InsertionIndex,
+    Unknown,
+}
+
 pub struct MpvAdapter {
     paused: bool,
     logical_pause_explicit: bool,
@@ -158,6 +172,8 @@ pub struct MpvAdapter {
     window_maximized: bool,
     window_minimized: bool,
     current_path: Option<String>,
+    network_media_options: BTreeMap<String, String>,
+    loadfile_options_syntax: Option<MpvLoadfileOptionsSyntax>,
     pending_local_file_update: Option<LocalFileUpdate>,
     pending_playback_telemetry_update: Option<PlayerPlaybackTelemetryUpdate>,
     pending_transport_telemetry_updates: VecDeque<PlayerTransportTelemetryUpdate>,
@@ -206,6 +222,7 @@ impl MpvAdapter {
         self.ipc_client = Some(client);
         self.observers_registered = false;
         self.transport_observers_registered = false;
+        self.loadfile_options_syntax = None;
         Ok(())
     }
 
@@ -237,6 +254,157 @@ impl MpvAdapter {
 
     pub fn current_path(&self) -> Option<&str> {
         self.current_path.as_deref()
+    }
+
+    /// Configures options that mpv should apply only while playing network media.
+    ///
+    /// The options are attached to Sorotte-issued `loadfile` commands as mpv
+    /// per-file options. mpv restores the user's prior values when that media
+    /// ends, so a later local file keeps its normal mpv/user cache policy.
+    pub fn configure_network_media_options<I, K, V>(&mut self, options: I)
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        self.network_media_options = options
+            .into_iter()
+            .map(|(name, value)| (name.into(), value.into()))
+            .collect();
+    }
+
+    /// Applies the configured network options to an already-active network file.
+    ///
+    /// mpv's `file-local-options` namespace snapshots the prior option values
+    /// and restores them when the file ends. This is useful when Sorotte
+    /// attaches to an existing mpv session or changes settings in place. Local
+    /// files are deliberately left untouched.
+    pub fn apply_network_media_options_to_active_media(&mut self) -> Result<(), PlayerError> {
+        // `current_path` may describe a requested load or a prior externally
+        // replaced playlist entry. An attached mpv is authoritative; the cache
+        // is safe only for simulation or other no-IPC operation.
+        let active_path = match self.ipc_client.as_mut() {
+            Some(client) => client.get_property_string(MPV_PROPERTY_PATH).ok().flatten(),
+            None => self.current_path.clone(),
+        };
+        let Some(active_path) = active_path else {
+            return Ok(());
+        };
+        if !uses_network_media_options(&active_path) {
+            return Ok(());
+        }
+
+        for (name, value) in self.network_media_options.clone() {
+            self.send_ipc_command_if_attached(json!([
+                MPV_COMMAND_SET_PROPERTY,
+                format!("file-local-options/{name}"),
+                value
+            ]))?;
+        }
+        Ok(())
+    }
+
+    fn network_media_options_map(&self) -> serde_json::Map<String, Value> {
+        self.network_media_options
+            .iter()
+            .map(|(name, value)| (name.clone(), Value::String(value.clone())))
+            .collect()
+    }
+
+    fn detect_loadfile_options_syntax(&mut self) -> MpvLoadfileOptionsSyntax {
+        if let Some(syntax) = self.loadfile_options_syntax {
+            return syntax;
+        }
+        let syntax = self
+            .ipc_client
+            .as_mut()
+            .and_then(|client| {
+                client
+                    .get_property_string(MPV_PROPERTY_VERSION)
+                    .ok()
+                    .flatten()
+            })
+            .as_deref()
+            .and_then(Self::loadfile_options_syntax_from_version)
+            .unwrap_or(MpvLoadfileOptionsSyntax::Unknown);
+        self.loadfile_options_syntax = Some(syntax);
+        syntax
+    }
+
+    fn loadfile_options_syntax_from_version(version: &str) -> Option<MpvLoadfileOptionsSyntax> {
+        let (major, minor) = version
+            .split(|character: char| !(character.is_ascii_digit() || character == '.'))
+            .filter(|part| part.contains('.'))
+            .find_map(|part| {
+                let mut components = part.split('.');
+                Some((
+                    components.next()?.parse::<u64>().ok()?,
+                    components.next()?.parse::<u64>().ok()?,
+                ))
+            })?;
+        Some(if major > 0 || minor >= 38 {
+            MpvLoadfileOptionsSyntax::InsertionIndex
+        } else {
+            MpvLoadfileOptionsSyntax::Legacy
+        })
+    }
+
+    fn send_network_media_loadfile(&mut self, path: &str) -> Result<(), PlayerError> {
+        let options = Value::Object(self.network_media_options_map());
+        let modern_command = || {
+            json!([
+                MPV_COMMAND_LOADFILE,
+                path,
+                MPV_LOADFILE_REPLACE,
+                -1,
+                options.clone()
+            ])
+        };
+        let legacy_command = || {
+            json!([
+                MPV_COMMAND_LOADFILE,
+                path,
+                MPV_LOADFILE_REPLACE,
+                options.clone()
+            ])
+        };
+
+        match self.detect_loadfile_options_syntax() {
+            MpvLoadfileOptionsSyntax::InsertionIndex => {
+                self.send_ipc_command_if_attached(modern_command())
+            }
+            MpvLoadfileOptionsSyntax::Legacy => self.send_ipc_command_if_attached(legacy_command()),
+            MpvLoadfileOptionsSyntax::Unknown => {
+                let Some(ipc_client) = self.ipc_client.as_mut() else {
+                    return self.send_ipc_command_if_attached(modern_command());
+                };
+                let modern_result =
+                    ipc_client.send_compatibility_probe_expect_success(modern_command());
+                self.drain_ipc_events_if_attached();
+                match modern_result {
+                    Ok(()) => {
+                        self.loadfile_options_syntax =
+                            Some(MpvLoadfileOptionsSyntax::InsertionIndex);
+                        Ok(())
+                    }
+                    Err(primary_error) if primary_error.is_server_rejection() => {
+                        let primary_message = primary_error.message().to_owned();
+                        let result = self.send_ipc_command_if_attached(legacy_command());
+                        if result.is_ok() {
+                            self.loadfile_options_syntax = Some(MpvLoadfileOptionsSyntax::Legacy);
+                            return Ok(());
+                        }
+                        Err(PlayerError::OperationFailed(format!(
+                            "mpv loadfile compatibility probe was rejected ({primary_message}); legacy fallback failed: {}",
+                            result.expect_err("failed result must contain its error")
+                        )))
+                    }
+                    Err(primary_error) => Err(PlayerError::OperationFailed(
+                        primary_error.message().to_owned(),
+                    )),
+                }
+            }
+        }
     }
 
     pub fn paused(&self) -> bool {

@@ -1,5 +1,4 @@
 use super::*;
-use sorotte_player_api::PlayerAdapter;
 
 pub(crate) fn legacy_syncplay_ui_settings_from_stored_settings(
     settings: Option<&StoredClientSettingsMvp>,
@@ -126,7 +125,6 @@ pub(crate) fn apply_legacy_syncplay_ui_settings_to_mpv_adapter_legacy_compatible
     player
         .configure_legacy_syncplay_ui_settings(resolved.clone())
         .map_err(|error| anyhow!("failed to configure mpv OSD/chat settings: {error}"))?;
-    apply_effective_mpv_streaming_options_to_adapter(player, settings);
 
     if (resolved.chat_output_enabled || resolved.chat_input_enabled)
         && let Some(script_path) = find_legacy_syncplayintf_script_path_legacy_compatible()
@@ -140,29 +138,4 @@ pub(crate) fn apply_legacy_syncplay_ui_settings_to_mpv_adapter_legacy_compatible
     }
 
     Ok(())
-}
-
-fn apply_effective_mpv_streaming_options_to_adapter(
-    player: &mut MpvAdapter,
-    settings: Option<&StoredClientSettingsMvp>,
-) {
-    let resolved = settings
-        .map(ClientConfig::resolve)
-        .map(|resolution| resolution.config.playback.streaming)
-        .unwrap_or_default();
-    let advanced_arguments = settings
-        .and_then(|settings| {
-            let player_path = settings.player_path.as_deref()?;
-            settings.per_player_arguments.as_ref()?.get(player_path)
-        })
-        .map(Vec::as_slice)
-        .unwrap_or_default();
-    for option in resolved.effective_mpv_options(advanced_arguments) {
-        if let Err(error) = player.set_option_string(&option.name, &option.effective_value) {
-            eprintln!(
-                "warning: failed to apply effective mpv streaming option {}={} via JSON IPC: {error}",
-                option.name, option.effective_value
-            );
-        }
-    }
 }

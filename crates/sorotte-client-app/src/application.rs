@@ -1432,6 +1432,24 @@ where
         self.runtime.reconcile_external_player_playback(now_seconds)
     }
 
+    pub fn stage_external_player_pause_intent(
+        &mut self,
+        paused: bool,
+        now_seconds: f64,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        self.runtime
+            .stage_external_player_pause_intent(paused, now_seconds)
+    }
+
+    pub fn rollback_external_player_pause_intent(
+        &mut self,
+        paused: bool,
+        now_seconds: f64,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        self.runtime
+            .rollback_external_player_pause_intent(paused, now_seconds)
+    }
+
     pub fn interrupt_external_playback_recovery(&mut self) -> Vec<PlaybackCoordinatorAction> {
         self.runtime.interrupt_external_playback_recovery()
     }

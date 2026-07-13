@@ -35,6 +35,11 @@ impl fmt::Debug for MpvAdapter {
                     .as_ref()
                     .map(|_| sorotte_secret::REDACTED_SECRET),
             )
+            .field(
+                "network_media_option_count",
+                &self.network_media_options.len(),
+            )
+            .field("loadfile_options_syntax", &self.loadfile_options_syntax)
             .field("pending_local_file_update", &self.pending_local_file_update)
             .field(
                 "pending_playback_telemetry_update",
@@ -140,6 +145,8 @@ impl Default for MpvAdapter {
             window_maximized: false,
             window_minimized: false,
             current_path: None,
+            network_media_options: BTreeMap::new(),
+            loadfile_options_syntax: None,
             pending_local_file_update: None,
             pending_playback_telemetry_update: None,
             pending_transport_telemetry_updates: VecDeque::new(),
