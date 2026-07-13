@@ -53,12 +53,21 @@ impl<'a> ClientSessionUpdate<'a> {
     fn observe_playback_barrier_extension(
         &mut self,
         extension: Option<PlaybackBarrierSetExtension>,
+        now_seconds: f64,
     ) {
-        if let (Some(playback_coordination), Some(extension)) =
-            (self.playback_coordination.as_deref_mut(), extension)
-        {
-            playback_coordination
-                .observe_playback_barrier_server_extension(&extension, self.session);
+        let retry_scheduled = self
+            .playback_coordination
+            .as_deref_mut()
+            .zip(extension.as_ref())
+            .is_some_and(|(playback_coordination, extension)| {
+                playback_coordination.observe_playback_barrier_server_extension(
+                    extension,
+                    self.session,
+                    now_seconds,
+                )
+            });
+        if retry_scheduled && let Some(control) = self.control.as_deref_mut() {
+            control.cancel_protocol_playback_barrier_requests();
         }
     }
 
@@ -79,12 +88,13 @@ impl<'a> ClientSessionUpdate<'a> {
         &mut self,
         message: ProtocolMessage,
     ) -> Result<(), ProtocolError> {
+        let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
         let extension = Self::playback_barrier_extension(&message);
         let previous_room = self.session.room().map(str::to_owned);
         let result = self.session.apply_protocol_message(message);
         self.cancel_playback_barrier_request_after_room_change(previous_room);
         if result.is_ok() {
-            self.observe_playback_barrier_extension(extension);
+            self.observe_playback_barrier_extension(extension, now_seconds);
         }
         result
     }
@@ -99,7 +109,7 @@ impl<'a> ClientSessionUpdate<'a> {
         let result = self.session.apply_protocol_message_at(message, now_seconds);
         self.cancel_playback_barrier_request_after_room_change(previous_room);
         if result.is_ok() {
-            self.observe_playback_barrier_extension(extension);
+            self.observe_playback_barrier_extension(extension, now_seconds);
         }
         result
     }

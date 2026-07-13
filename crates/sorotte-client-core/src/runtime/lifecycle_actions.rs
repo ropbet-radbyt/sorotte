@@ -71,11 +71,43 @@ where
     }
 
     pub fn run_controller_auth_notifications_if_needed(&mut self) -> Result<(), PlayerError> {
+        self.run_controller_auth_notifications_if_needed_at(
+            unix_wall_clock_time_seconds_legacy_compatible(),
+        )
+    }
+
+    pub fn run_controller_auth_notifications_if_needed_at(
+        &mut self,
+        now_seconds: f64,
+    ) -> Result<(), PlayerError> {
         let actions = self
             .session
             .runtime_actions_for_controller_auth_notifications_if_needed();
         ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)?;
-        self.emit_pending_playback_barrier_request()
+        self.emit_pending_playback_barrier_request_at(now_seconds)
+    }
+
+    /// Emits a playback-coordination retry once its correlated server delay
+    /// has elapsed. Calling this method before or repeatedly after the
+    /// deadline is safe: an initiated attempt suppresses duplicate emission.
+    pub fn run_pending_playback_barrier_retry_at(
+        &mut self,
+        now_seconds: f64,
+    ) -> Result<(), PlayerError> {
+        if self
+            .playback_coordination
+            .pending_playback_barrier_retry_delay_at(now_seconds)
+            .is_none()
+        {
+            return Ok(());
+        }
+        self.emit_pending_playback_barrier_request_at(now_seconds)
+    }
+
+    /// Remaining delay for the current correlated playback retry.
+    pub fn pending_playback_barrier_retry_delay_at(&self, now_seconds: f64) -> Option<f64> {
+        self.playback_coordination
+            .pending_playback_barrier_retry_delay_at(now_seconds)
     }
 
     pub fn run_controlled_room_creation_notifications_if_needed(

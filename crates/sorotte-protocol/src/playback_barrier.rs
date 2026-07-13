@@ -237,6 +237,53 @@ pub enum PlaybackBarrierRecoveryDisposition {
     Rejected,
 }
 
+/// Server disposition for a correlated playback-coordination request.
+///
+/// Unlike a top-level protocol error, this response is non-fatal and applies
+/// only to the matching application-level operation and request attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PlaybackBarrierRequestResultStatus {
+    RetryLater,
+}
+
+/// Non-fatal, application-level result for a playback-coordination request.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackBarrierRequestResultPayload {
+    pub request_id: String,
+    pub request_nonce: u64,
+    pub status: PlaybackBarrierRequestResultStatus,
+    pub retry_after_ms: u64,
+}
+
+impl std::fmt::Debug for PlaybackBarrierRequestResultPayload {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PlaybackBarrierRequestResultPayload")
+            .field("request_id", &"<redacted>")
+            .field("request_nonce", &self.request_nonce)
+            .field("status", &self.status)
+            .field("retry_after_ms", &self.retry_after_ms)
+            .finish()
+    }
+}
+
+impl PlaybackBarrierRequestResultPayload {
+    pub fn retry_later(
+        request_id: impl Into<String>,
+        request_nonce: u64,
+        retry_after_ms: u64,
+    ) -> Self {
+        Self {
+            request_id: request_id.into(),
+            request_nonce,
+            status: PlaybackBarrierRequestResultStatus::RetryLater,
+            retry_after_ms,
+        }
+    }
+}
+
 /// Nonce-correlated query/result used to recover an uncertain playback-start
 /// request after reconnecting without allocating a competing room generation.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -620,6 +667,8 @@ pub struct PlaybackBarrierSetExtension {
     pub buffering_status: Option<RoomBufferingStatusPayload>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery: Option<PlaybackBarrierRecoveryPayload>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_result: Option<PlaybackBarrierRequestResultPayload>,
 }
 
 impl PlaybackBarrierSetExtension {
@@ -654,6 +703,11 @@ impl PlaybackBarrierSetExtension {
 
     pub fn with_recovery(mut self, recovery: PlaybackBarrierRecoveryPayload) -> Self {
         self.recovery = Some(recovery);
+        self
+    }
+
+    pub fn with_request_result(mut self, result: PlaybackBarrierRequestResultPayload) -> Self {
+        self.request_result = Some(result);
         self
     }
 }

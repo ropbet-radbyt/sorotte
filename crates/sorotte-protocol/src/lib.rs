@@ -32,6 +32,7 @@ pub use playback_barrier::{
     CommitStartPayload, MediaLoadIntent, MediaReadyPayload, PlaybackBarrierDegradedReason,
     PlaybackBarrierParticipantPhase, PlaybackBarrierParticipantStatus, PlaybackBarrierPhase,
     PlaybackBarrierPolicy, PlaybackBarrierRecoveryDisposition, PlaybackBarrierRecoveryPayload,
+    PlaybackBarrierRequestResultPayload, PlaybackBarrierRequestResultStatus,
     PlaybackBarrierSetExtension, PlaybackBarrierStateExtension, PlaybackBarrierStatusPayload,
     PlaybackBarrierTimeoutAction, PrepareMediaPayload, RoomBufferingPhase, RoomBufferingPolicy,
     RoomBufferingPolicyPayload, RoomBufferingStatusPayload, SOROTTE_PLAYBACK_BARRIER_V1,

@@ -55,6 +55,143 @@ impl ServerRuntime {
         let now_seconds = self.playback_barrier_request_clock_seconds();
         self.playback_barrier_request_tombstones
             .retain(|_, tombstone| tombstone.retain_until_seconds > now_seconds);
+        self.prune_playback_barrier_new_identity_rate_history(now_seconds);
+    }
+
+    fn playback_barrier_retry_after_millis(delay_seconds: f64) -> u64 {
+        let delay_millis = if delay_seconds.is_finite() && delay_seconds > 0.0 {
+            (delay_seconds * 1_000.0).ceil() as u64
+        } else {
+            PLAYBACK_BARRIER_REQUEST_RETRY_MIN_MILLIS
+        };
+        delay_millis.clamp(
+            PLAYBACK_BARRIER_REQUEST_RETRY_MIN_MILLIS,
+            PLAYBACK_BARRIER_REQUEST_RETRY_MAX_MILLIS,
+        )
+    }
+
+    fn prune_playback_barrier_new_identity_rate_history(&mut self, now_seconds: f64) {
+        let cutoff_seconds = now_seconds
+            - self
+                .playback_barrier_new_identity_rate_policy
+                .window_seconds;
+        for history in self
+            .playback_barrier_new_identity_rate_by_client
+            .values_mut()
+            .chain(self.playback_barrier_new_identity_rate_by_room.values_mut())
+        {
+            while history
+                .front()
+                .is_some_and(|event| event.observed_at_seconds <= cutoff_seconds)
+            {
+                history.pop_front();
+            }
+        }
+        self.playback_barrier_new_identity_rate_by_client
+            .retain(|_, history| !history.is_empty());
+        self.playback_barrier_new_identity_rate_by_room
+            .retain(|_, history| !history.is_empty());
+    }
+
+    /// Records a genuinely new application operation identity, returning the
+    /// bounded retry delay when either the connection or room budget is full.
+    /// An exact retry of an identity already observed in the current window is
+    /// exempt so transient replay-capacity pressure cannot extend itself.
+    fn playback_barrier_new_identity_retry_after_millis(
+        &mut self,
+        client_id: &str,
+        room_name: &str,
+        request_id: Option<&str>,
+        request_nonce: u64,
+    ) -> Option<u64> {
+        let now_seconds = self.playback_barrier_request_clock_seconds();
+        self.prune_playback_barrier_new_identity_rate_history(now_seconds);
+        let username = self
+            .sessions
+            .get(client_id)
+            .map(|session| session.username.clone())?;
+
+        let exact_client_operation_seen = self
+            .playback_barrier_new_identity_rate_by_client
+            .get(client_id)
+            .is_some_and(|history| {
+                history.iter().any(|event| {
+                    event.matches_operation(&username, room_name, request_id, request_nonce)
+                })
+            });
+        let exact_room_operation_seen = request_id.is_some_and(|request_id| {
+            self.playback_barrier_new_identity_rate_by_room
+                .get(room_name)
+                .is_some_and(|history| {
+                    history.iter().any(|event| {
+                        event
+                            .request_id
+                            .as_ref()
+                            .map(|request_id| request_id.0.as_str())
+                            == Some(request_id)
+                            && event.request_nonce == request_nonce
+                    })
+                })
+        });
+        if exact_client_operation_seen || exact_room_operation_seen {
+            return None;
+        }
+
+        let client_retry_at = self
+            .playback_barrier_new_identity_rate_by_client
+            .get(client_id)
+            .filter(|history| {
+                history.len()
+                    >= self
+                        .playback_barrier_new_identity_rate_policy
+                        .max_per_client
+            })
+            .and_then(|history| history.front())
+            .map(|event| {
+                event.observed_at_seconds
+                    + self
+                        .playback_barrier_new_identity_rate_policy
+                        .window_seconds
+            });
+        let room_retry_at = self
+            .playback_barrier_new_identity_rate_by_room
+            .get(room_name)
+            .filter(|history| {
+                history.len() >= self.playback_barrier_new_identity_rate_policy.max_per_room
+            })
+            .and_then(|history| history.front())
+            .map(|event| {
+                event.observed_at_seconds
+                    + self
+                        .playback_barrier_new_identity_rate_policy
+                        .window_seconds
+            });
+        if let Some(retry_at_seconds) = client_retry_at
+            .into_iter()
+            .chain(room_retry_at)
+            .max_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal))
+        {
+            return Some(Self::playback_barrier_retry_after_millis(
+                retry_at_seconds - now_seconds,
+            ));
+        }
+
+        let event = PlaybackBarrierNewIdentityRateEvent {
+            username,
+            room_name: room_name.to_owned(),
+            request_id: request_id.map(PlaybackBarrierRequestId::new),
+            request_nonce,
+            observed_at_seconds: now_seconds,
+        };
+        self.playback_barrier_new_identity_rate_by_client
+            .entry(client_id.to_owned())
+            .or_default()
+            .push_back(event.clone());
+        self.playback_barrier_new_identity_rate_by_room
+            .entry(room_name.to_owned())
+            .or_default()
+            .push_back(event);
+        None
     }
 
     fn displaced_playback_barrier_requests(
@@ -131,6 +268,62 @@ impl ServerRuntime {
                 <= self.playback_barrier_request_tombstone_policy.max_global
     }
 
+    fn playback_barrier_replay_capacity_retry_after_millis(
+        &self,
+        room_name: &str,
+        displaced: &BTreeMap<PlaybackBarrierRequestId, DisplacedPlaybackBarrierRequest>,
+    ) -> u64 {
+        let additional_global = displaced
+            .keys()
+            .filter(|request_id| {
+                !self
+                    .playback_barrier_request_tombstones
+                    .contains_key(&(room_name.to_owned(), (*request_id).clone()))
+            })
+            .count();
+        let room_count = self
+            .playback_barrier_request_tombstones
+            .keys()
+            .filter(|(tombstone_room, _)| tombstone_room == room_name)
+            .count();
+        let required_room_expirations = room_count
+            .saturating_add(additional_global)
+            .saturating_sub(self.playback_barrier_request_tombstone_policy.max_per_room);
+        let required_global_expirations = self
+            .playback_barrier_request_tombstones
+            .len()
+            .saturating_add(additional_global)
+            .saturating_sub(self.playback_barrier_request_tombstone_policy.max_global);
+        let now_seconds = self.playback_barrier_request_clock_seconds();
+        let mut room_expirations = self
+            .playback_barrier_request_tombstones
+            .iter()
+            .filter(|((tombstone_room, _), _)| tombstone_room == room_name)
+            .map(|(_, tombstone)| tombstone.retain_until_seconds)
+            .collect::<Vec<_>>();
+        room_expirations
+            .sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+        let room_retry_at = required_room_expirations
+            .checked_sub(1)
+            .and_then(|index| room_expirations.get(index).copied());
+        let mut global_expirations = self
+            .playback_barrier_request_tombstones
+            .values()
+            .map(|tombstone| tombstone.retain_until_seconds)
+            .collect::<Vec<_>>();
+        global_expirations
+            .sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+        let global_retry_at = required_global_expirations
+            .checked_sub(1)
+            .and_then(|index| global_expirations.get(index).copied());
+        let retry_at_seconds = room_retry_at
+            .into_iter()
+            .chain(global_retry_at)
+            .max_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap_or(now_seconds + 1.0);
+        Self::playback_barrier_retry_after_millis(retry_at_seconds - now_seconds)
+    }
+
     fn retain_displaced_playback_barrier_requests(
         &mut self,
         room_name: &str,
@@ -154,10 +347,27 @@ impl ServerRuntime {
         }
     }
 
-    fn playback_barrier_replay_capacity_rejection(client_id: &str) -> Vec<DirectedProtocolMessage> {
+    fn playback_barrier_retry_later(
+        client_id: &str,
+        request_id: Option<&str>,
+        request_nonce: u64,
+        retry_after_ms: u64,
+    ) -> Vec<DirectedProtocolMessage> {
+        let Some(request_id) = request_id else {
+            // Legacy extension peers have no stable application identity to
+            // correlate. Reject atomically without emitting a fatal generic
+            // protocol error that would tear down their transport.
+            return Vec::new();
+        };
         vec![DirectedProtocolMessage::new(
             client_id,
-            ProtocolMessage::error_message(PLAYBACK_BARRIER_REPLAY_CAPACITY_ERROR),
+            playback_barrier_set_message(PlaybackBarrierSetExtension::new().with_request_result(
+                PlaybackBarrierRequestResultPayload::retry_later(
+                    request_id,
+                    request_nonce,
+                    retry_after_ms,
+                ),
+            )),
         )]
     }
 
@@ -826,11 +1036,33 @@ impl ServerRuntime {
                         true,
                     );
                 }
+                if let Some(retry_after_ms) = self.playback_barrier_new_identity_retry_after_millis(
+                    client_id,
+                    &session.room,
+                    config.request_id.as_deref(),
+                    config.request_nonce,
+                ) {
+                    return Ok(Self::playback_barrier_retry_later(
+                        client_id,
+                        config.request_id.as_deref(),
+                        config.request_nonce,
+                        retry_after_ms,
+                    ));
+                }
                 if !self.can_retain_displaced_playback_barrier_requests(
                     &session.room,
                     &displaced_requests,
                 ) {
-                    return Ok(Self::playback_barrier_replay_capacity_rejection(client_id));
+                    let retry_after_ms = self.playback_barrier_replay_capacity_retry_after_millis(
+                        &session.room,
+                        &displaced_requests,
+                    );
+                    return Ok(Self::playback_barrier_retry_later(
+                        client_id,
+                        config.request_id.as_deref(),
+                        config.request_nonce,
+                        retry_after_ms,
+                    ));
                 }
                 self.playback_barrier_request_nonces
                     .insert(client_id.to_owned(), config.request_nonce);
@@ -1418,6 +1650,19 @@ impl ServerRuntime {
                 Vec::new()
             });
         }
+        if let Some(retry_after_ms) = self.playback_barrier_new_identity_retry_after_millis(
+            client_id,
+            &session.room,
+            prepare.request_id.as_deref(),
+            prepare.request_nonce,
+        ) {
+            return Ok(Self::playback_barrier_retry_later(
+                client_id,
+                prepare.request_id.as_deref(),
+                prepare.request_nonce,
+                retry_after_ms,
+            ));
+        }
         let displaced_requests = if prepare.load_intent == MediaLoadIntent::TransportRefresh {
             BTreeMap::new()
         } else {
@@ -1430,7 +1675,16 @@ impl ServerRuntime {
         };
         if !self.can_retain_displaced_playback_barrier_requests(&session.room, &displaced_requests)
         {
-            return Ok(Self::playback_barrier_replay_capacity_rejection(client_id));
+            let retry_after_ms = self.playback_barrier_replay_capacity_retry_after_millis(
+                &session.room,
+                &displaced_requests,
+            );
+            return Ok(Self::playback_barrier_retry_later(
+                client_id,
+                prepare.request_id.as_deref(),
+                prepare.request_nonce,
+                retry_after_ms,
+            ));
         }
         // Consume every authorized, structurally valid nonce, including a
         // request rejected because it does not own the active lifecycle.

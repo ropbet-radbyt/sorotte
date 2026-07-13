@@ -9,6 +9,7 @@ use super::{
     HelloPayload, IgnoringOnTheFlyPayload, ListPayload, ListUserEntry, MediaLoadIntent,
     MediaReadyPayload, NewControlledRoomPayload, PingPayload, PlaybackBarrierPolicy,
     PlaybackBarrierRecoveryDisposition, PlaybackBarrierRecoveryPayload,
+    PlaybackBarrierRequestResultPayload, PlaybackBarrierRequestResultStatus,
     PlaybackBarrierSetExtension, PlaybackBarrierStateExtension, PlaybackBarrierTimeoutAction,
     PlaylistChangePayload, PlaylistIndexPayload, PlaystatePayload, PrepareMediaPayload,
     ProtocolError, ProtocolMessage, ReadyPayload, RoomBufferingPhase, RoomBufferingPolicy,
@@ -284,6 +285,53 @@ fn playback_barrier_request_ids_and_recovery_payloads_roundtrip_additively() {
         recovery_result.disposition,
         Some(PlaybackBarrierRecoveryDisposition::Recovered)
     );
+}
+
+#[test]
+fn playback_barrier_retry_result_is_correlated_redacted_and_roundtrips() {
+    let request_id = "private-application-request";
+    let request_result = PlaybackBarrierRequestResultPayload::retry_later(request_id, 42, 1_500);
+    let message = ProtocolMessage::set(SetPayload::new().with_playback_barrier_v1(
+        PlaybackBarrierSetExtension::new().with_request_result(request_result.clone()),
+    ));
+
+    let encoded = encode_message_line(&message).expect("request result should encode");
+    let value = decode_line(&encoded).expect("request result JSON should decode");
+    assert_eq!(
+        value
+            .pointer("/Set/sorottePlaybackBarrierV1/requestResult/requestId")
+            .and_then(serde_json::Value::as_str),
+        Some(request_id)
+    );
+    assert_eq!(
+        value
+            .pointer("/Set/sorottePlaybackBarrierV1/requestResult/requestNonce")
+            .and_then(serde_json::Value::as_u64),
+        Some(42)
+    );
+    assert_eq!(
+        value
+            .pointer("/Set/sorottePlaybackBarrierV1/requestResult/status")
+            .and_then(serde_json::Value::as_str),
+        Some("retryLater")
+    );
+    assert_eq!(
+        value
+            .pointer("/Set/sorottePlaybackBarrierV1/requestResult/retryAfterMs")
+            .and_then(serde_json::Value::as_u64),
+        Some(1_500)
+    );
+    assert_eq!(
+        decode_message_line(&encoded).expect("request result should roundtrip"),
+        message
+    );
+    assert_eq!(
+        request_result.status,
+        PlaybackBarrierRequestResultStatus::RetryLater
+    );
+    let debug = format!("{request_result:?}");
+    assert!(debug.contains("<redacted>"));
+    assert!(!debug.contains(request_id));
 }
 
 #[test]

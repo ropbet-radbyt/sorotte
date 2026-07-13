@@ -12,9 +12,13 @@ pub use sorotte_protocol::PlaybackBarrierTimeoutAction;
 use sorotte_protocol::{
     PlaybackBarrierParticipantPhase, PlaybackBarrierPhase, PlaybackBarrierPolicy,
     PlaybackBarrierRecoveryDisposition, PlaybackBarrierRecoveryPayload,
-    PlaybackBarrierSetExtension, PrepareMediaPayload, RoomBufferingPolicy,
-    RoomBufferingPolicyPayload,
+    PlaybackBarrierRequestResultStatus, PlaybackBarrierSetExtension, PrepareMediaPayload,
+    RoomBufferingPolicy, RoomBufferingPolicyPayload,
 };
+
+const PLAYBACK_BARRIER_RETRY_MIN_SECONDS: f64 = 0.1;
+const PLAYBACK_BARRIER_RETRY_MAX_SECONDS: f64 = 30.0;
+const PLAYBACK_BARRIER_RETRY_MAX_BACKOFF_EXPONENT: u32 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlaybackBarrierStartConfig {
@@ -100,13 +104,15 @@ struct RoomBufferingObservation {
     observed_at: Option<f64>,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq)]
 struct PendingMediaCoordinationIntent {
     local_media_generation: u64,
     load_intent: MediaLoadIntent,
     include_start_barrier: bool,
     request_id: String,
     retry_request_nonce: Option<u64>,
+    retry_not_before_seconds: Option<f64>,
+    retry_attempts: u32,
     room: Option<String>,
 }
 
@@ -119,6 +125,8 @@ impl std::fmt::Debug for PendingMediaCoordinationIntent {
             .field("include_start_barrier", &self.include_start_barrier)
             .field("request_id", &"<redacted>")
             .field("retry_request_nonce", &self.retry_request_nonce)
+            .field("retry_not_before_seconds", &self.retry_not_before_seconds)
+            .field("retry_attempts", &self.retry_attempts)
             .field("room", &self.room)
             .finish()
     }
@@ -319,6 +327,8 @@ impl RuntimePlaybackCoordination {
                 include_start_barrier: true,
                 request_id: new_playback_barrier_request_id(plan.media_generation),
                 retry_request_nonce: None,
+                retry_not_before_seconds: None,
+                retry_attempts: 0,
                 room: None,
             });
             self.handled_barrier_timeout = None;
@@ -487,18 +497,19 @@ impl RuntimePlaybackCoordination {
         &mut self,
         plan: &MediaLoadPlan,
         session: &ClientSession,
-        _now_seconds: f64,
+        now_seconds: f64,
     ) -> Option<PendingPlaybackBarrierRequest> {
         if !plan.playback_episode_changed {
             return None;
         }
 
-        self.playback_barrier_set_for_pending_media(session)
+        self.playback_barrier_set_for_pending_media(session, now_seconds)
     }
 
     pub(crate) fn playback_barrier_set_for_pending_media(
         &mut self,
         session: &ClientSession,
+        now_seconds: f64,
     ) -> Option<PendingPlaybackBarrierRequest> {
         if let Some(mut recovery) = self.pending_barrier_recovery.clone() {
             let room = session.room()?.to_owned();
@@ -549,6 +560,9 @@ impl RuntimePlaybackCoordination {
             operation.local_media_generation == intent.local_media_generation
         }) || !session.playback_barrier_v1_negotiated()
             || session.local_can_control() != Some(true)
+            || intent
+                .retry_not_before_seconds
+                .is_some_and(|deadline| !now_seconds.is_finite() || now_seconds < deadline)
         {
             return None;
         }
@@ -709,7 +723,40 @@ impl RuntimePlaybackCoordination {
         &mut self,
         extension: &PlaybackBarrierSetExtension,
         session: &ClientSession,
-    ) {
+        now_seconds: f64,
+    ) -> bool {
+        let retry_scheduled = extension.request_result.as_ref().is_some_and(|result| {
+            if result.status != PlaybackBarrierRequestResultStatus::RetryLater
+                || !now_seconds.is_finite()
+            {
+                return false;
+            }
+            let Some(operation) = self.initiated_barrier.as_ref() else {
+                return false;
+            };
+            if operation.request_id != result.request_id
+                || operation.request_nonce != result.request_nonce
+            {
+                return false;
+            }
+            let Some(intent) = self.pending_media_coordination.as_mut() else {
+                return false;
+            };
+            if intent.local_media_generation != operation.local_media_generation
+                || intent.request_id != operation.request_id
+            {
+                return false;
+            }
+
+            intent.retry_attempts = intent.retry_attempts.saturating_add(1);
+            let retry_delay_seconds =
+                playback_barrier_retry_delay_seconds(result.retry_after_ms, intent.retry_attempts);
+            intent.retry_request_nonce = Some(operation.request_nonce);
+            intent.retry_not_before_seconds = Some(now_seconds + retry_delay_seconds);
+            self.initiated_barrier = None;
+            true
+        });
+
         if let Some(response) = extension.recovery.as_ref()
             && let Some(recovery) = self.pending_barrier_recovery.clone()
             && recovery.recovery_nonce == Some(response.recovery_nonce)
@@ -755,6 +802,8 @@ impl RuntimePlaybackCoordination {
                             operation.request_id
                         },
                         retry_request_nonce: (!was_terminal).then_some(operation.request_nonce),
+                        retry_not_before_seconds: None,
+                        retry_attempts: 0,
                         room: session.room().map(str::to_owned),
                     });
                 }
@@ -818,6 +867,15 @@ impl RuntimePlaybackCoordination {
         {
             self.accepted_barrier_terminal = true;
         }
+
+        retry_scheduled
+    }
+
+    pub(crate) fn pending_playback_barrier_retry_delay_at(&self, now_seconds: f64) -> Option<f64> {
+        let intent = self.pending_media_coordination.as_ref()?;
+        let deadline = intent.retry_not_before_seconds?;
+        (self.initiated_barrier.is_none() && now_seconds.is_finite())
+            .then_some((deadline - now_seconds).max(0.0))
     }
 
     fn bind_adapter_generation(
@@ -1485,15 +1543,29 @@ fn seconds_to_milliseconds(seconds: f64) -> u64 {
     (seconds * 1_000.0).round().clamp(1.0, u64::MAX as f64) as u64
 }
 
+fn playback_barrier_retry_delay_seconds(retry_after_ms: u64, retry_attempt: u32) -> f64 {
+    let requested_seconds = (retry_after_ms as f64 / 1_000.0).clamp(
+        PLAYBACK_BARRIER_RETRY_MIN_SECONDS,
+        PLAYBACK_BARRIER_RETRY_MAX_SECONDS,
+    );
+    let exponent = retry_attempt
+        .saturating_sub(1)
+        .min(PLAYBACK_BARRIER_RETRY_MAX_BACKOFF_EXPONENT);
+    (requested_seconds * 2_f64.powi(exponent as i32)).min(PLAYBACK_BARRIER_RETRY_MAX_SECONDS)
+}
+
 impl<P, C> ClientRuntime<P, C>
 where
     P: PlayerAdapter,
     C: ClientEffectSink,
 {
-    pub(crate) fn emit_pending_playback_barrier_request(&mut self) -> Result<(), PlayerError> {
+    pub(crate) fn emit_pending_playback_barrier_request_at(
+        &mut self,
+        now_seconds: f64,
+    ) -> Result<(), PlayerError> {
         let Some(request) = self
             .playback_coordination
-            .playback_barrier_set_for_pending_media(&self.session)
+            .playback_barrier_set_for_pending_media(&self.session, now_seconds)
         else {
             return Ok(());
         };
@@ -2643,6 +2715,176 @@ mod tests {
                 .pending_media_coordination
                 .is_none()
         );
+    }
+
+    #[test]
+    fn matching_retry_later_retains_exact_operation_and_emits_once_when_due() {
+        let mut runtime = ClientRuntime::new(
+            barrier_session(),
+            DisconnectedPlayer,
+            QueuedRuntimeControl::default(),
+        );
+        runtime.set_playback_barrier_start_config(PlaybackBarrierStartConfig {
+            policy: Some(PlaybackBarrierPolicy::Controller),
+            ..PlaybackBarrierStartConfig::default()
+        });
+        runtime.prepare_playback_media(
+            LogicalMediaId::new("retry-later-media").unwrap(),
+            MediaTransportKind::NetworkVod,
+            1.0,
+        );
+        let ProtocolMessage::Set(initial_set) = runtime.control().outbound_messages()[0].clone()
+        else {
+            panic!("initial request should use Set");
+        };
+        let initial = initial_set
+            .set
+            .playback_barrier_v1()
+            .expect("request extension should decode")
+            .and_then(|extension| extension.prepare)
+            .expect("initial request should contain prepare");
+        let request_id = initial.request_id.expect("request id should be present");
+        let request_nonce = initial.request_nonce;
+
+        runtime
+            .session_mut()
+            .apply_protocol_message_at(
+                ProtocolMessage::set(SetPayload::new().with_playback_barrier_v1(
+                    PlaybackBarrierSetExtension::new().with_request_result(
+                        sorotte_protocol::PlaybackBarrierRequestResultPayload::retry_later(
+                            request_id.clone(),
+                            request_nonce,
+                            1_000,
+                        ),
+                    ),
+                )),
+                10.0,
+            )
+            .expect("retry result should apply without terminating the session");
+
+        assert!(runtime.session().is_active());
+        assert!(runtime.control().outbound_messages().is_empty());
+        assert!(runtime.playback_coordination.initiated_barrier.is_none());
+        let pending = runtime
+            .playback_coordination
+            .pending_media_coordination
+            .as_ref()
+            .expect("semantic media intent must remain pending");
+        assert_eq!(pending.request_id, request_id);
+        assert_eq!(pending.retry_request_nonce, Some(request_nonce));
+        assert_eq!(pending.retry_attempts, 1);
+        assert_eq!(
+            runtime.pending_playback_barrier_retry_delay_at(10.0),
+            Some(1.0)
+        );
+
+        runtime
+            .run_pending_playback_barrier_retry_at(10.999)
+            .expect("early retry pump should be inert");
+        assert!(runtime.control().outbound_messages().is_empty());
+        runtime
+            .run_pending_playback_barrier_retry_at(11.0)
+            .expect("due retry should emit");
+        runtime
+            .run_pending_playback_barrier_retry_at(12.0)
+            .expect("repeated retry pump should be idempotent");
+
+        assert_eq!(runtime.control().outbound_messages().len(), 1);
+        let ProtocolMessage::Set(retry_set) = &runtime.control().outbound_messages()[0] else {
+            panic!("retry should use Set");
+        };
+        let retry = retry_set
+            .set
+            .playback_barrier_v1()
+            .expect("retry extension should decode")
+            .and_then(|extension| extension.prepare)
+            .expect("retry should retain the start request");
+        assert_eq!(retry.request_id.as_deref(), Some(request_id.as_str()));
+        assert_eq!(retry.request_nonce, request_nonce);
+        assert_eq!(retry.logical_media_id, "retry-later-media");
+    }
+
+    #[test]
+    fn mismatched_retry_later_result_cannot_rearm_current_operation() {
+        for (request_id_matches, request_nonce_matches) in
+            [(false, true), (true, false), (false, false)]
+        {
+            let mut runtime = ClientRuntime::new(
+                barrier_session(),
+                DisconnectedPlayer,
+                QueuedRuntimeControl::default(),
+            );
+            runtime.set_playback_barrier_start_config(PlaybackBarrierStartConfig {
+                policy: Some(PlaybackBarrierPolicy::Controller),
+                ..PlaybackBarrierStartConfig::default()
+            });
+            runtime.prepare_playback_media(
+                LogicalMediaId::new("mismatched-retry-media").unwrap(),
+                MediaTransportKind::NetworkVod,
+                1.0,
+            );
+            let ProtocolMessage::Set(initial_set) =
+                runtime.control().outbound_messages()[0].clone()
+            else {
+                panic!("initial request should use Set");
+            };
+            let initial = initial_set
+                .set
+                .playback_barrier_v1()
+                .expect("request extension should decode")
+                .and_then(|extension| extension.prepare)
+                .expect("initial request should contain prepare");
+            let request_id = initial.request_id.expect("request id should be present");
+            let request_nonce = initial.request_nonce;
+            let response_id = if request_id_matches {
+                request_id.clone()
+            } else {
+                "another-operation".to_owned()
+            };
+            let response_nonce = if request_nonce_matches {
+                request_nonce
+            } else {
+                request_nonce.saturating_add(1)
+            };
+
+            runtime
+                .session_mut()
+                .apply_protocol_message_at(
+                    ProtocolMessage::set(SetPayload::new().with_playback_barrier_v1(
+                        PlaybackBarrierSetExtension::new().with_request_result(
+                            sorotte_protocol::PlaybackBarrierRequestResultPayload::retry_later(
+                                response_id,
+                                response_nonce,
+                                1_000,
+                            ),
+                        ),
+                    )),
+                    10.0,
+                )
+                .expect("mismatched result is syntactically valid");
+
+            assert!(runtime.session().is_active());
+            assert_eq!(runtime.control().outbound_messages().len(), 1);
+            assert!(runtime.playback_coordination.initiated_barrier.is_some());
+            assert_eq!(runtime.pending_playback_barrier_retry_delay_at(10.0), None);
+            let pending = runtime
+                .playback_coordination
+                .pending_media_coordination
+                .as_ref()
+                .expect("mismatched result must preserve the original pending intent");
+            assert_eq!(pending.request_id, request_id);
+            assert_eq!(pending.retry_request_nonce, None);
+            assert_eq!(pending.retry_attempts, 0);
+        }
+    }
+
+    #[test]
+    fn repeated_retry_later_results_apply_capped_exponential_backoff() {
+        assert_eq!(playback_barrier_retry_delay_seconds(1_000, 1), 1.0);
+        assert_eq!(playback_barrier_retry_delay_seconds(1_000, 2), 2.0);
+        assert_eq!(playback_barrier_retry_delay_seconds(1_000, 6), 30.0);
+        assert_eq!(playback_barrier_retry_delay_seconds(u64::MAX, 1), 30.0);
+        assert_eq!(playback_barrier_retry_delay_seconds(0, 1), 0.1);
     }
 
     #[test]

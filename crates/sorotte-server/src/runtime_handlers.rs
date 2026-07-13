@@ -402,6 +402,9 @@ impl ServerRuntime {
         let capabilities = hello.capabilities;
         let mut replacement_outbound = Vec::new();
         if let Some(previous_session) = self.sessions.get(client_id).cloned() {
+            let connection_rate_history = self
+                .playback_barrier_new_identity_rate_by_client
+                .remove(client_id);
             replacement_outbound.extend(self.mark_playback_barrier_participant_disconnected(
                 client_id,
                 &previous_session.room,
@@ -413,6 +416,10 @@ impl ServerRuntime {
                 )?,
             );
             self.remove_session_tracking(client_id);
+            if let Some(connection_rate_history) = connection_rate_history {
+                self.playback_barrier_new_identity_rate_by_client
+                    .insert(client_id.to_owned(), connection_rate_history);
+            }
             self.cleanup_room_if_empty(&previous_session.room)?;
         }
         let username = self.find_free_username(&requested_username, Some(client_id));

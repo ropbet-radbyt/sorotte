@@ -21,6 +21,14 @@ type ConnectedSessionWriteHalf = tokio::io::WriteHalf<Box<dyn ConnectedSessionAs
 const CLI_PLEX_CLIENT_IDENTIFIER: &str = "sorotte-cli";
 const CLI_PLEX_CACHE_FILE_NAME: &str = "plex-watch-cache.json";
 
+fn client_runtime_now_seconds() -> f64 {
+    static CLIENT_RUNTIME_CLOCK_EPOCH: OnceLock<std::time::Instant> = OnceLock::new();
+    CLIENT_RUNTIME_CLOCK_EPOCH
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_secs_f64()
+}
+
 fn normalized_tls_server_host(host: &str) -> &str {
     host.strip_prefix('[')
         .and_then(|host| host.strip_suffix(']'))
@@ -321,6 +329,18 @@ where
             return Ok(ConnectedSessionExit::RuntimeWindowElapsed);
         }
 
+        let playback_barrier_retry_delay =
+            runtime.pending_playback_barrier_retry_delay_at(client_runtime_now_seconds());
+        let playback_barrier_retry_timer = async move {
+            match playback_barrier_retry_delay {
+                Some(delay_seconds) => {
+                    tokio::time::sleep(Duration::from_secs_f64(delay_seconds.max(0.0))).await;
+                }
+                None => std::future::pending::<()>().await,
+            }
+        };
+        tokio::pin!(playback_barrier_retry_timer);
+
         tokio::select! {
             line = read_inbound_protocol_line(&mut reader) => {
                 match line? {
@@ -331,7 +351,7 @@ where
                             && decoded_inbound_messages
                                 .iter()
                                 .any(|message| matches!(message, ProtocolMessage::Hello(_)));
-                        let now_seconds = connected_start.elapsed().as_secs_f64();
+                        let now_seconds = client_runtime_now_seconds();
                         let event_execution_plan =
                             connected_session_inbound_message_event_execution_plan_legacy_compatible(
                                 inbound_is_server_hello,
@@ -385,7 +405,7 @@ where
                 }
             }
             _ = autoplay_tick.tick() => {
-                let now_seconds = connected_start.elapsed().as_secs_f64();
+                let now_seconds = client_runtime_now_seconds();
                 let event_execution_plan =
                     connected_session_autoplay_tick_event_execution_plan_legacy_compatible(
                         ConnectedSessionSharedExecutionInputs {
@@ -418,6 +438,11 @@ where
                 )
                 .await?;
                 emit_application_service_events(runtime.pump_plex_service().await);
+            }
+            _ = &mut playback_barrier_retry_timer => {
+                let now_seconds = client_runtime_now_seconds();
+                runtime.run_pending_playback_barrier_retry_at(now_seconds)?;
+                flush_runtime_protocol_lines(runtime, &mut writer).await?;
             }
             _ = plex_tick.tick(), if runtime.plex_service_enabled() => {
                 emit_application_service_events(runtime.pump_plex_service().await);
@@ -483,7 +508,7 @@ where
                     run_connected_session_event_plan_legacy_compatible(
                         runtime,
                         None,
-                        connected_start.elapsed().as_secs_f64(),
+                        client_runtime_now_seconds(),
                         dont_slow_down_with_me,
                         event_execution_plan,
                         ConnectedSessionEventExecutionContext {

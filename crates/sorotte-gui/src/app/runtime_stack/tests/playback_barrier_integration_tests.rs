@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::app::support::system_time_seconds;
 use sorotte_client_core::{
     PlaybackBarrierStartConfig, PlaybackBarrierTimeoutAction, RoomPlaystateAuthority,
 };
@@ -8,7 +9,8 @@ use sorotte_player_api::{
     PlayerTransportTelemetryUpdate,
 };
 use sorotte_protocol::{
-    CommitStartPayload, PlaybackBarrierPhase, PlaybackBarrierPolicy, PlaybackBarrierSetExtension,
+    CommitStartPayload, PlaybackBarrierPhase, PlaybackBarrierPolicy,
+    PlaybackBarrierRequestResultPayload, PlaybackBarrierSetExtension,
     PlaybackBarrierStateExtension, PlaybackBarrierStatusPayload, PlaystatePayload,
     PrepareMediaPayload, ProtocolMessage, RoomBufferingPhase, RoomBufferingPolicy,
     RoomBufferingPolicyPayload, RoomBufferingStatusPayload, SetPayload, StatePayload,
@@ -324,6 +326,91 @@ fn real_gui_controller_initiator_completes_controller_barrier_lifecycle() {
 #[test]
 fn real_gui_controller_participates_in_its_all_eligible_barrier() {
     exercise_gui_barrier_lifecycle(PlaybackBarrierPolicy::AllEligible);
+}
+
+#[test]
+fn real_gui_adapter_keeps_retry_later_nonfatal_and_retries_the_same_attempt_once() {
+    let mut adapter = barrier_aware_controller(PlaybackBarrierPolicy::Controller);
+    adapter
+        .prepare_attached_playback_media(
+            LogicalMediaId::new(LOGICAL_MEDIA_ID).expect("logical media ID should be valid"),
+            MediaTransportKind::NetworkVod,
+            MediaLoadIntent::NewPlayback,
+            10.0,
+        )
+        .expect("GUI media preparation should succeed");
+    let original = barrier_request(&mut adapter);
+    let received_before = system_time_seconds();
+
+    apply_protocol_message(
+        &mut adapter,
+        ProtocolMessage::set(
+            SetPayload::new().with_playback_barrier_v1(
+                PlaybackBarrierSetExtension::new().with_request_result(
+                    PlaybackBarrierRequestResultPayload::retry_later(
+                        original
+                            .request_id
+                            .clone()
+                            .expect("GUI barrier request should have an operation ID"),
+                        original.request_nonce,
+                        1_000,
+                    ),
+                ),
+            ),
+        ),
+    );
+
+    assert!(
+        matches!(
+            adapter.runtime.connection_phase(),
+            ConnectionPhase::Active(_)
+        ),
+        "retryLater must leave the GUI session active"
+    );
+    assert!(
+        !adapter.runtime.take_stop_reconnect_requested(),
+        "retryLater must not terminate GUI reconnect ownership"
+    );
+    assert!(
+        adapter
+            .runtime
+            .pending_playback_barrier_retry_delay_at(system_time_seconds())
+            .is_some(),
+        "the semantic media intent should remain pending behind a retry delay"
+    );
+
+    adapter
+        .runtime
+        .run_pending_playback_barrier_retry_at(received_before)
+        .expect("an early GUI retry pump should be harmless");
+    assert!(
+        adapter
+            .flush_outbound_protocol_lines()
+            .expect("early GUI outbox should encode")
+            .is_empty(),
+        "retryLater must not be retried before its delay"
+    );
+
+    adapter
+        .runtime
+        .run_pending_playback_barrier_retry_at(received_before + 2.0)
+        .expect("the due GUI retry should dispatch");
+    let retried = barrier_request(&mut adapter);
+    assert_eq!(retried.request_id, original.request_id);
+    assert_eq!(retried.request_nonce, original.request_nonce);
+    assert_eq!(retried.logical_media_id, original.logical_media_id);
+
+    adapter
+        .runtime
+        .run_pending_playback_barrier_retry_at(received_before + 3.0)
+        .expect("a repeated GUI retry pump should be harmless");
+    assert!(
+        adapter
+            .flush_outbound_protocol_lines()
+            .expect("repeated GUI retry outbox should encode")
+            .is_empty(),
+        "the GUI retry pump must emit exactly one attempt"
+    );
 }
 
 #[test]

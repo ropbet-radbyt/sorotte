@@ -1340,6 +1340,24 @@ where
         self.runtime.take_stop_reconnect_requested()
     }
 
+    /// Emits a correlated playback-coordination retry once its server-provided
+    /// backoff has elapsed. Repeated calls are safe and emit at most one
+    /// attempt for the current operation.
+    pub fn run_pending_playback_barrier_retry_at(
+        &mut self,
+        now_seconds: f64,
+    ) -> Result<(), PlayerError> {
+        self.runtime
+            .run_pending_playback_barrier_retry_at(now_seconds)
+    }
+
+    /// Returns the remaining delay before a pending playback-coordination
+    /// attempt may be retried.
+    pub fn pending_playback_barrier_retry_delay_at(&self, now_seconds: f64) -> Option<f64> {
+        self.runtime
+            .pending_playback_barrier_retry_delay_at(now_seconds)
+    }
+
     pub fn run_room_pause_sync_if_needed(&mut self) -> Result<(), PlayerError> {
         self.runtime.run_room_pause_sync_if_needed()
     }
@@ -1542,6 +1560,14 @@ where
 
     pub fn run_controller_auth_notifications_if_needed(&mut self) -> Result<(), PlayerError> {
         self.runtime.run_controller_auth_notifications_if_needed()
+    }
+
+    pub fn run_controller_auth_notifications_if_needed_at(
+        &mut self,
+        now_seconds: f64,
+    ) -> Result<(), PlayerError> {
+        self.runtime
+            .run_controller_auth_notifications_if_needed_at(now_seconds)
     }
 
     pub fn run_controlled_room_creation_notifications_if_needed(

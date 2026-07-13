@@ -3520,6 +3520,7 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2",
+ "sorotte-client-app",
  "sorotte-client-core",
  "sorotte-core",
  "sorotte-media-match",

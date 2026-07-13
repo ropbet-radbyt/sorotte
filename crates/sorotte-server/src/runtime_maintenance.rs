@@ -318,6 +318,8 @@ impl ServerRuntime {
         self.client_playback_states.remove(client_id);
         self.client_room_join_sequence.remove(client_id);
         self.playback_barrier_request_nonces.remove(client_id);
+        self.playback_barrier_new_identity_rate_by_client
+            .remove(client_id);
         self.client_last_state_update_at.remove(client_id);
         self.client_next_periodic_state_at.remove(client_id);
         Some(session)
@@ -448,6 +450,8 @@ impl ServerRuntime {
         self.room_buffering_controls.remove(room_name);
         self.playback_barrier_request_tombstones
             .retain(|(tombstone_room, _), _| tombstone_room != room_name);
+        self.playback_barrier_new_identity_rate_by_room
+            .remove(room_name);
         self.delete_persisted_room_if_needed(room_name)?;
         Ok(())
     }

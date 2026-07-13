@@ -28,6 +28,10 @@ impl ServerRuntime {
             playback_barrier_request_clock_started_at: Instant::now(),
             #[cfg(test)]
             playback_barrier_request_clock_override_seconds: None,
+            playback_barrier_new_identity_rate_policy:
+                PlaybackBarrierNewIdentityRatePolicy::default(),
+            playback_barrier_new_identity_rate_by_client: BTreeMap::new(),
+            playback_barrier_new_identity_rate_by_room: BTreeMap::new(),
             playback_barrier_request_nonces: BTreeMap::new(),
             next_playback_barrier_generation: 0,
             next_playback_barrier_revision: 0,
@@ -315,6 +319,26 @@ impl ServerRuntime {
         } else {
             0.0
         });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_playback_barrier_new_identity_rate_policy_for_tests(
+        &mut self,
+        window_seconds: f64,
+        max_per_client: usize,
+        max_per_room: usize,
+    ) {
+        self.playback_barrier_new_identity_rate_policy = PlaybackBarrierNewIdentityRatePolicy {
+            window_seconds: if window_seconds.is_finite() && window_seconds > 0.0 {
+                window_seconds
+            } else {
+                PLAYBACK_BARRIER_NEW_IDENTITY_RATE_WINDOW_SECONDS
+            },
+            max_per_client: max_per_client.max(1),
+            max_per_room: max_per_room.max(1),
+        };
+        self.playback_barrier_new_identity_rate_by_client.clear();
+        self.playback_barrier_new_identity_rate_by_room.clear();
     }
 
     pub fn subscribe_persistence_events(&self) -> broadcast::Receiver<ServerPersistenceEvent> {

@@ -92,9 +92,14 @@ where
 mod tests {
     use super::*;
     use sorotte_client_core::{
-        ClientEffect, ClientEffectSink, ClientRuntime, ClientSession, QueuedRuntimeControl,
+        ClientEffect, ClientEffectSink, ClientRuntime, ClientSession, ConnectionPhase,
+        LogicalMediaId, MediaTransportKind, PlaybackBarrierStartConfig,
+        PlaybackBarrierTimeoutAction, QueuedRuntimeControl,
     };
-    use sorotte_protocol::decode_message_line_items;
+    use sorotte_protocol::{
+        PlaybackBarrierPolicy, PlaybackBarrierRequestResultPayload, PlaybackBarrierSetExtension,
+        ProtocolMessage, SetPayload, decode_message_line_items, encode_message_line,
+    };
     use tokio::io::BufReader;
 
     struct ProtocolIoTestPlayer;
@@ -171,6 +176,129 @@ mod tests {
                 .expect("failed line should remain pending")
                 .line()
                 .contains("retry me")
+        );
+    }
+
+    #[test]
+    fn cli_application_boundary_keeps_retry_later_nonfatal_and_retries_same_attempt_once() {
+        let mut runtime = ClientApplication::with_default_session(ProtocolIoTestPlayer);
+        runtime
+            .apply_protocol_line(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"sorottePlaybackBarrierV1":true}}}"#,
+                1.0,
+                false,
+                false,
+                false,
+            )
+            .expect("barrier-aware server Hello should apply through the CLI boundary");
+        runtime
+            .apply_protocol_line(
+                r#"{"Set":{"user":{"alice":{"room":{"name":"room1"},"controller":true}}}}"#,
+                2.0,
+                false,
+                false,
+                false,
+            )
+            .expect("local controller projection should apply through the CLI boundary");
+        runtime.set_playback_barrier_start_config(PlaybackBarrierStartConfig {
+            policy: Some(PlaybackBarrierPolicy::Controller),
+            timeout_action: PlaybackBarrierTimeoutAction::Continue,
+            ..PlaybackBarrierStartConfig::default()
+        });
+        runtime.prepare_playback_media(
+            LogicalMediaId::new("sha256:cli-retry-later")
+                .expect("logical media ID should be valid"),
+            MediaTransportKind::NetworkVod,
+            3.0,
+        );
+
+        let pending = runtime
+            .pending_protocol_line()
+            .expect("CLI request should serialize")
+            .expect("CLI media preparation should queue a barrier request");
+        let original = decode_message_line_items(pending.line())
+            .expect("CLI request should decode")
+            .into_iter()
+            .find_map(|item| match item.message.ok()? {
+                ProtocolMessage::Set(set) => set.set.playback_barrier_v1().ok()??.prepare,
+                _ => None,
+            })
+            .expect("CLI request should contain PrepareMedia");
+        let lease = pending.lease();
+        assert!(
+            runtime.acknowledge_protocol_line(lease).is_some(),
+            "the local write receipt should release only the serialized request"
+        );
+
+        let retry_later = ProtocolMessage::set(
+            SetPayload::new().with_playback_barrier_v1(
+                PlaybackBarrierSetExtension::new().with_request_result(
+                    PlaybackBarrierRequestResultPayload::retry_later(
+                        original
+                            .request_id
+                            .clone()
+                            .expect("CLI barrier request should have an operation ID"),
+                        original.request_nonce,
+                        1_000,
+                    ),
+                ),
+            ),
+        );
+        runtime
+            .apply_protocol_line(
+                &encode_message_line(&retry_later).expect("retryLater should encode"),
+                10.0,
+                false,
+                false,
+                false,
+            )
+            .expect("retryLater should be nonfatal through the CLI application boundary");
+
+        assert!(matches!(
+            runtime.connection_phase(),
+            ConnectionPhase::Active(_)
+        ));
+        assert!(
+            !runtime.take_stop_reconnect_requested(),
+            "retryLater must not stop the CLI reconnect loop"
+        );
+        assert_eq!(
+            runtime.pending_playback_barrier_retry_delay_at(10.0),
+            Some(1.0),
+            "the CLI must retain the current semantic intent behind the server delay"
+        );
+        runtime
+            .run_pending_playback_barrier_retry_at(10.999)
+            .expect("an early CLI retry pump should be harmless");
+        assert_eq!(runtime.pending_protocol_message_count(), 0);
+
+        runtime
+            .run_pending_playback_barrier_retry_at(11.0)
+            .expect("the due CLI retry should dispatch");
+        assert_eq!(runtime.pending_protocol_message_count(), 1);
+        let retried = runtime
+            .pending_protocol_messages()
+            .iter()
+            .find_map(|message| match message {
+                ProtocolMessage::Set(set) => set
+                    .set
+                    .playback_barrier_v1()
+                    .ok()?
+                    .and_then(|extension| extension.prepare),
+                _ => None,
+            })
+            .expect("CLI retry should contain PrepareMedia");
+        assert_eq!(retried.request_id, original.request_id);
+        assert_eq!(retried.request_nonce, original.request_nonce);
+        assert_eq!(retried.logical_media_id, original.logical_media_id);
+
+        runtime
+            .run_pending_playback_barrier_retry_at(12.0)
+            .expect("a repeated CLI retry pump should be harmless");
+        assert_eq!(
+            runtime.pending_protocol_message_count(),
+            1,
+            "the CLI retry pump must emit exactly one attempt"
         );
     }
 }

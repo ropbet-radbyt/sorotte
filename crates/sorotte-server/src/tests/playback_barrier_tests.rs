@@ -1,5 +1,6 @@
 use super::*;
 use crate::ServerCompatibilityFallback;
+use sorotte_client_app::app_boundary::application::ClientApplication;
 use sorotte_client_core::{
     ClientEffect, ClientEffectSink, ClientRuntime, ClientSession, LogicalMediaId,
     MediaTransportKind, PlaybackBarrierStartConfig, QueuedRuntimeControl,
@@ -8,10 +9,10 @@ use sorotte_player_api::DisconnectedPlayer;
 use sorotte_protocol::{
     MediaLoadIntent, MediaReadyPayload, PlaybackBarrierDegradedReason,
     PlaybackBarrierParticipantPhase, PlaybackBarrierPhase, PlaybackBarrierRecoveryDisposition,
-    PlaybackBarrierSetExtension, PlaybackBarrierStateExtension, PlaybackBarrierStatusPayload,
-    RoomBufferingPhase, RoomBufferingPolicy, RoomBufferingStatusPayload,
-    SOROTTE_PLAYBACK_BARRIER_V1, StatePayload, TransportBufferingReportPayload,
-    encode_message_line,
+    PlaybackBarrierRequestResultStatus, PlaybackBarrierSetExtension, PlaybackBarrierStateExtension,
+    PlaybackBarrierStatusPayload, RoomBufferingPhase, RoomBufferingPolicy,
+    RoomBufferingStatusPayload, SOROTTE_PLAYBACK_BARRIER_V1, StatePayload,
+    TransportBufferingReportPayload, encode_message_line,
 };
 
 const CAPABILITY: &str = r#""sorottePlaybackBarrierV1":true"#;
@@ -3529,13 +3530,17 @@ fn tombstone_capacity_rejection_is_explicit_atomic_and_retryable_after_expiry() 
     let rejected = runtime
         .handle_line_fanout("alice-client", operation_d)
         .expect("capacity pressure should return an explicit response");
-    assert!(messages(&rejected).into_iter().any(|(_, message)| {
-        matches!(
-            message,
-            ProtocolMessage::Error(payload)
-                if payload.error.message == crate::PLAYBACK_BARRIER_REPLAY_CAPACITY_ERROR
-        )
-    }));
+    let request_result = messages(&rejected)
+        .into_iter()
+        .find_map(|(_, message)| barrier_extension(&message)?.request_result)
+        .expect("capacity pressure should return a typed request result");
+    assert_eq!(request_result.request_id, "capacity-d");
+    assert_eq!(request_result.request_nonce, 4);
+    assert_eq!(
+        request_result.status,
+        PlaybackBarrierRequestResultStatus::RetryLater
+    );
+    assert_eq!(request_result.retry_after_ms, 10_000);
     assert_eq!(runtime.next_playback_barrier_generation, 3);
     assert_eq!(
         runtime.room_playback_barriers["room"]
@@ -3553,6 +3558,436 @@ fn tombstone_capacity_rejection_is_explicit_atomic_and_retryable_after_expiry() 
         .expect("the same nonce should remain retryable after capacity ages out");
     assert_eq!(runtime.next_playback_barrier_generation, 4);
     assert_eq!(runtime.playback_barrier_request_nonces["alice-client"], 4);
+}
+
+#[test]
+fn client_application_retries_capacity_pressure_without_stopping_the_session() {
+    const CLIENT_ID: &str = "application-client";
+    const ROOM: &str = "application-capacity-room";
+
+    let mut server = ServerRuntime::default();
+    server.set_playback_barrier_request_tombstone_policy_for_tests(1.0, 1, 10);
+    server.set_playback_barrier_request_clock_for_tests(0.0);
+    server
+        .handle_line(CLIENT_ID, &hello("alice", ROOM, true))
+        .expect("application transport should join the server");
+
+    let mut client_session = ClientSession::default();
+    client_session
+        .apply_message_json(&hello("alice", ROOM, true))
+        .expect("application session should negotiate playback coordination");
+    let mut application = ClientApplication::new(client_session, DisconnectedPlayer);
+    application.set_playback_barrier_start_config(PlaybackBarrierStartConfig {
+        policy: Some(sorotte_protocol::PlaybackBarrierPolicy::Controller),
+        ..PlaybackBarrierStartConfig::default()
+    });
+
+    let send_application_request = |application: &mut ClientApplication<DisconnectedPlayer>,
+                                    server: &mut ServerRuntime| {
+        let pending = application
+            .pending_protocol_line()
+            .expect("application request should encode")
+            .expect("application request should be queued");
+        let line = pending.line().to_owned();
+        let ProtocolMessage::Set(set) =
+            decode_message_line(&line).expect("application request should decode")
+        else {
+            panic!("playback coordination should use a Set envelope");
+        };
+        let prepare = set
+            .set
+            .playback_barrier_v1()
+            .expect("application extension should decode")
+            .and_then(|extension| extension.prepare)
+            .expect("application request should carry a start prepare");
+        application
+            .acknowledge_protocol_line(pending.lease())
+            .expect("local transport write should release the serialized request");
+        let outbound = server
+            .handle_line_fanout(CLIENT_ID, &line)
+            .expect("server should process the application request");
+        (outbound, prepare)
+    };
+
+    let apply_application_responses =
+        |application: &mut ClientApplication<DisconnectedPlayer>,
+         outbound: &[DirectedOutboundLine],
+         received_at_seconds: f64| {
+            for line in outbound.iter().filter(|line| line.client_id == CLIENT_ID) {
+                application
+                    .apply_protocol_line(&line.line, received_at_seconds, false, false, false)
+                    .expect("application should apply the server response without disconnecting");
+            }
+        };
+
+    for media_id in ["application-capacity-a", "application-capacity-b"] {
+        application.prepare_playback_media(
+            LogicalMediaId::new(media_id).expect("test media identity should be valid"),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        let (outbound, _) = send_application_request(&mut application, &mut server);
+        apply_application_responses(&mut application, &outbound, 0.0);
+    }
+    assert_eq!(server.next_playback_barrier_generation, 2);
+    assert_eq!(server.playback_barrier_request_tombstones.len(), 1);
+
+    application.prepare_playback_media(
+        LogicalMediaId::new("application-capacity-current")
+            .expect("current media identity should be valid"),
+        MediaTransportKind::NetworkVod,
+        0.0,
+    );
+    let (retry_later, initial_prepare) = send_application_request(&mut application, &mut server);
+    assert_eq!(server.next_playback_barrier_generation, 2);
+    let result = messages(&retry_later)
+        .into_iter()
+        .find_map(|(client_id, message)| {
+            (client_id == CLIENT_ID)
+                .then(|| barrier_extension(&message))
+                .flatten()
+                .and_then(|extension| extension.request_result)
+        })
+        .expect("capacity pressure should return a correlated retry result");
+    assert_eq!(
+        result.request_id,
+        initial_prepare
+            .request_id
+            .as_deref()
+            .expect("application operation should have a stable identity")
+    );
+    assert_eq!(result.request_nonce, initial_prepare.request_nonce);
+    assert_eq!(
+        result.status,
+        PlaybackBarrierRequestResultStatus::RetryLater
+    );
+    assert_eq!(result.retry_after_ms, 1_000);
+
+    apply_application_responses(&mut application, &retry_later, 0.0);
+    assert!(
+        !application.take_stop_reconnect_requested(),
+        "retryable capacity pressure must not terminate reconnect ownership"
+    );
+    assert!(matches!(
+        application.connection_phase(),
+        sorotte_client_app::app_boundary::application::ConnectionPhase::Active(_)
+    ));
+    assert_eq!(
+        application.pending_playback_barrier_retry_delay_at(0.0),
+        Some(1.0),
+        "the semantic current-media intent should remain pending"
+    );
+    assert_eq!(application.pending_protocol_message_count(), 0);
+
+    application
+        .run_pending_playback_barrier_retry_at(0.999)
+        .expect("an early retry pump should remain inert");
+    assert_eq!(application.pending_protocol_message_count(), 0);
+    application
+        .run_pending_playback_barrier_retry_at(1.1)
+        .expect("the due retry should be queued");
+    application
+        .run_pending_playback_barrier_retry_at(1.1)
+        .expect("a repeated retry pump should be idempotent");
+    assert_eq!(
+        application.pending_protocol_message_count(),
+        1,
+        "exactly one retry should be serialized"
+    );
+
+    server.set_playback_barrier_request_clock_for_tests(1.1);
+    let (accepted, retried_prepare) = send_application_request(&mut application, &mut server);
+    assert_eq!(
+        retried_prepare.request_id, initial_prepare.request_id,
+        "retry must retain the same operation identity"
+    );
+    assert_eq!(
+        retried_prepare.request_nonce, initial_prepare.request_nonce,
+        "retry must retain the same operation nonce"
+    );
+    assert_eq!(server.next_playback_barrier_generation, 3);
+    assert_eq!(
+        server.room_playback_barriers[ROOM].prepare.request_id,
+        initial_prepare.request_id
+    );
+    apply_application_responses(&mut application, &accepted, 1.1);
+    assert_eq!(
+        application.pending_playback_barrier_retry_delay_at(1.1),
+        None
+    );
+    assert_eq!(application.pending_protocol_message_count(), 0);
+    assert!(!application.take_stop_reconnect_requested());
+}
+
+#[test]
+fn new_identity_rate_limit_is_correlated_and_exact_retries_and_recovery_are_exempt() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_playback_barrier_new_identity_rate_policy_for_tests(2.0, 1, 1);
+    runtime.set_playback_barrier_request_clock_for_tests(0.0);
+    runtime
+        .handle_line("alice-client", &hello("alice", "room", true))
+        .expect("controller should join");
+
+    let operation_a = r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":1,"requestId":"rate-a","loadIntent":"newPlayback","logicalMediaId":"rate-media-a","targetPosition":0.0,"policy":"controller"}}}}"#;
+    runtime
+        .handle_line_fanout("alice-client", operation_a)
+        .expect("first identity should fit the burst budget");
+    assert_eq!(runtime.next_playback_barrier_generation, 1);
+
+    let operation_b = r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":2,"requestId":"rate-b","loadIntent":"newPlayback","logicalMediaId":"rate-media-b","targetPosition":0.0,"policy":"controller"}}}}"#;
+    for _ in 0..2 {
+        let rejected = runtime
+            .handle_line_fanout("alice-client", operation_b)
+            .expect("rate pressure should return a typed retry result");
+        let result = messages(&rejected)
+            .into_iter()
+            .find_map(|(_, message)| barrier_extension(&message)?.request_result)
+            .expect("rate rejection should be correlated");
+        assert_eq!(result.request_id, "rate-b");
+        assert_eq!(result.request_nonce, 2);
+        assert_eq!(
+            result.status,
+            PlaybackBarrierRequestResultStatus::RetryLater
+        );
+        assert_eq!(result.retry_after_ms, 2_000);
+    }
+    assert_eq!(runtime.next_playback_barrier_generation, 1);
+    assert_eq!(runtime.playback_barrier_request_nonces["alice-client"], 1);
+
+    let recovery = runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"recovery":{"requestId":"rate-a","originalRequestNonce":1,"recoveryNonce":9,"logicalMediaId":"rate-media-a"}}}}"#,
+        )
+        .expect("recovery query should not share the new-identity budget");
+    let recovered = recovery_snapshot_for(&recovery, "alice-client")
+        .and_then(|extension| extension.recovery)
+        .expect("current operation should remain recoverable while rate-limited");
+    assert_eq!(
+        recovered.disposition,
+        Some(PlaybackBarrierRecoveryDisposition::Recovered)
+    );
+
+    runtime.set_playback_barrier_request_clock_for_tests(2.1);
+    runtime
+        .handle_line_fanout("alice-client", operation_b)
+        .expect("the exact rejected operation should succeed after the retry delay");
+    assert_eq!(runtime.next_playback_barrier_generation, 2);
+    assert_eq!(runtime.playback_barrier_request_nonces["alice-client"], 2);
+
+    runtime
+        .handle_line_fanout("alice-client", operation_b)
+        .expect("an exact accepted retry should bypass new-identity rate accounting");
+    assert_eq!(runtime.next_playback_barrier_generation, 2);
+}
+
+#[test]
+fn capacity_retry_keeps_its_room_rate_exemption_across_reconnect() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_playback_barrier_request_tombstone_policy_for_tests(10.0, 1, 10);
+    runtime.set_playback_barrier_new_identity_rate_policy_for_tests(10.0, 10, 4);
+    runtime.set_playback_barrier_request_clock_for_tests(0.0);
+    runtime
+        .handle_line("filler-client", &hello("filler", "room", true))
+        .expect("filler should join");
+    for (nonce, request_id, logical_id) in [
+        (1, "reconnect-rate-a", "reconnect-rate-media-a"),
+        (2, "reconnect-rate-b", "reconnect-rate-media-b"),
+    ] {
+        runtime
+            .handle_line_fanout(
+                "filler-client",
+                &format!(
+                    r#"{{"Set":{{"sorottePlaybackBarrierV1":{{"prepare":{{"mediaGeneration":0,"requestNonce":{nonce},"requestId":"{request_id}","loadIntent":"newPlayback","logicalMediaId":"{logical_id}","targetPosition":0.0,"policy":"controller"}}}}}}}}"#
+                ),
+            )
+            .expect("filler operation should be accepted");
+    }
+    assert_eq!(runtime.next_playback_barrier_generation, 2);
+    assert_eq!(runtime.playback_barrier_request_tombstones.len(), 1);
+
+    let retry = r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":1,"requestId":"capacity-reconnect-retry","loadIntent":"newPlayback","logicalMediaId":"capacity-reconnect-media","targetPosition":0.0,"policy":"controller"}}}}"#;
+    runtime
+        .handle_line("owner-old", &hello("owner", "room", true))
+        .expect("original owner transport should join");
+    let first_rejection = runtime
+        .handle_line_fanout("owner-old", retry)
+        .expect("capacity pressure should reject the original transport nonfatally");
+    assert!(messages(&first_rejection).into_iter().any(|(_, message)| {
+        barrier_extension(&message)
+            .and_then(|extension| extension.request_result)
+            .is_some_and(|result| result.request_id == "capacity-reconnect-retry")
+    }));
+    assert_eq!(
+        runtime.playback_barrier_new_identity_rate_by_room["room"].len(),
+        3
+    );
+
+    runtime
+        .handle_transport_disconnect_fanout("owner-old")
+        .expect("old owner transport should disconnect");
+    runtime
+        .handle_line("owner-new", &hello("owner", "room", true))
+        .expect("replacement owner transport should join");
+    let reconnect_rejection = runtime
+        .handle_line_fanout("owner-new", retry)
+        .expect("the same operation should remain retryable after reconnect");
+    let result = messages(&reconnect_rejection)
+        .into_iter()
+        .find_map(|(_, message)| barrier_extension(&message)?.request_result)
+        .expect("reconnect should still reach replay-capacity admission");
+    assert_eq!(result.request_id, "capacity-reconnect-retry");
+    assert_eq!(result.request_nonce, 1);
+    assert_eq!(result.retry_after_ms, 10_000);
+    assert_eq!(
+        runtime.playback_barrier_new_identity_rate_by_room["room"].len(),
+        3,
+        "one logical operation must not consume another room-rate slot after reconnect"
+    );
+    assert_eq!(runtime.next_playback_barrier_generation, 2);
+}
+
+#[test]
+fn no_id_operation_is_charged_again_after_reconnect() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_playback_barrier_new_identity_rate_policy_for_tests(10.0, 10, 1);
+    runtime.set_playback_barrier_request_clock_for_tests(0.0);
+    runtime
+        .handle_line("keeper", &hello("keeper", "room", true))
+        .expect("keeper should retain the room across reconnect");
+    runtime
+        .handle_line("owner-old", &hello("owner", "room", true))
+        .expect("old owner should join");
+    let policy = r#"{"Set":{"sorottePlaybackBarrierV1":{"bufferingPolicy":{"mediaGeneration":0,"requestNonce":1,"loadIntent":"newPlayback","policy":"independent"}}}}"#;
+    runtime
+        .handle_line_fanout("owner-old", policy)
+        .expect("first no-ID operation should fit the room budget");
+    assert_eq!(
+        runtime.room_buffering_controls["room"].configured_by_client_id,
+        "owner-old"
+    );
+
+    runtime
+        .handle_transport_disconnect_fanout("owner-old")
+        .expect("old owner should disconnect");
+    runtime
+        .handle_line("owner-new", &hello("owner", "room", true))
+        .expect("new owner transport should join");
+    let rejected = runtime
+        .handle_line_fanout("owner-new", policy)
+        .expect("uncorrelated operation should be rejected without a fatal error");
+    assert!(rejected.is_empty());
+    assert_eq!(
+        runtime.room_buffering_controls["room"].configured_by_client_id, "owner-old",
+        "missing operation IDs must not gain an exact-retry exemption across transports"
+    );
+    assert_eq!(
+        runtime.playback_barrier_new_identity_rate_by_room["room"].len(),
+        1
+    );
+}
+
+#[test]
+fn replacement_hello_does_not_reset_the_connection_identity_budget() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_playback_barrier_new_identity_rate_policy_for_tests(10.0, 1, 10);
+    runtime.set_playback_barrier_request_clock_for_tests(0.0);
+    runtime
+        .handle_line("keeper", &hello("keeper", "room", true))
+        .expect("keeper should retain the room");
+    runtime
+        .handle_line("owner-client", &hello("owner", "room", true))
+        .expect("owner should join");
+    runtime
+        .handle_line_fanout(
+            "owner-client",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"bufferingPolicy":{"mediaGeneration":0,"requestNonce":1,"requestId":"hello-rate-a","loadIntent":"newPlayback","policy":"independent"}}}}"#,
+        )
+        .expect("first identity should consume the connection budget");
+
+    runtime
+        .handle_line("owner-client", &hello("owner", "room", true))
+        .expect("replacement Hello should keep the physical connection budget");
+    let rejected = runtime
+        .handle_line_fanout(
+            "owner-client",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"bufferingPolicy":{"mediaGeneration":0,"requestNonce":2,"requestId":"hello-rate-b","loadIntent":"newPlayback","policy":"independent"}}}}"#,
+        )
+        .expect("second identity should receive typed backpressure");
+    let result = messages(&rejected)
+        .into_iter()
+        .find_map(|(_, message)| barrier_extension(&message)?.request_result)
+        .expect("replacement Hello must not bypass the per-connection rate limit");
+    assert_eq!(result.request_id, "hello-rate-b");
+    assert_eq!(result.request_nonce, 2);
+    assert_eq!(
+        result.status,
+        PlaybackBarrierRequestResultStatus::RetryLater
+    );
+    assert_eq!(
+        runtime.room_buffering_controls["room"]
+            .config
+            .request_id
+            .as_deref(),
+        Some("hello-rate-a")
+    );
+}
+
+#[test]
+fn room_new_identity_rate_limit_covers_policy_only_churn_across_connections() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_playback_barrier_new_identity_rate_policy_for_tests(1.0, 10, 1);
+    runtime.set_playback_barrier_request_clock_for_tests(0.0);
+    runtime
+        .handle_line("alice-client", &hello("alice", "public-room", true))
+        .expect("first capable participant should join");
+    runtime
+        .handle_line("bob-client", &hello("bob", "public-room", true))
+        .expect("second capable participant should join");
+
+    let policy_a = r#"{"Set":{"sorottePlaybackBarrierV1":{"bufferingPolicy":{"mediaGeneration":0,"requestNonce":1,"requestId":"room-rate-a","loadIntent":"newPlayback","policy":"independent"}}}}"#;
+    runtime
+        .handle_line_fanout("alice-client", policy_a)
+        .expect("first room identity should fit the room budget");
+    assert_eq!(runtime.next_playback_barrier_generation, 1);
+
+    let policy_b = r#"{"Set":{"sorottePlaybackBarrierV1":{"bufferingPolicy":{"mediaGeneration":0,"requestNonce":1,"requestId":"room-rate-b","loadIntent":"newPlayback","policy":"independent"}}}}"#;
+    let rejected = runtime
+        .handle_line_fanout("bob-client", policy_b)
+        .expect("room pressure should produce a typed result");
+    let result = messages(&rejected)
+        .into_iter()
+        .find_map(|(_, message)| barrier_extension(&message)?.request_result)
+        .expect("room rate rejection should be correlated");
+    assert_eq!(result.request_id, "room-rate-b");
+    assert_eq!(result.request_nonce, 1);
+    assert_eq!(
+        result.status,
+        PlaybackBarrierRequestResultStatus::RetryLater
+    );
+    assert_eq!(result.retry_after_ms, 1_000);
+    assert_eq!(runtime.next_playback_barrier_generation, 1);
+    assert!(
+        !runtime
+            .playback_barrier_request_nonces
+            .contains_key("bob-client")
+    );
+
+    runtime.set_playback_barrier_request_clock_for_tests(1.1);
+    runtime
+        .handle_line_fanout("bob-client", policy_b)
+        .expect("policy-only operation should retry after the room window");
+    // Equivalent public Independent policy is deliberately coalesced rather
+    // than allocating a fresh room generation.
+    assert_eq!(runtime.next_playback_barrier_generation, 1);
+    assert_eq!(runtime.playback_barrier_request_nonces["bob-client"], 1);
+    assert_eq!(
+        runtime.room_buffering_controls["public-room"]
+            .config
+            .request_id
+            .as_deref(),
+        Some("room-rate-b")
+    );
 }
 
 #[test]
@@ -3602,11 +4037,17 @@ fn tombstone_global_bound_ages_across_retained_persistent_rooms() {
     let rejected = runtime
         .handle_line_fanout("client-3", third_room_replacement)
         .expect("global capacity should reject without mutation");
-    assert!(
-        messages(&rejected)
-            .into_iter()
-            .any(|(_, message)| matches!(message, ProtocolMessage::Error(_)))
+    let request_result = messages(&rejected)
+        .into_iter()
+        .find_map(|(_, message)| barrier_extension(&message)?.request_result)
+        .expect("global capacity should return a correlated retry result");
+    assert_eq!(request_result.request_id, "global-3-b");
+    assert_eq!(request_result.request_nonce, 2);
+    assert_eq!(
+        request_result.status,
+        PlaybackBarrierRequestResultStatus::RetryLater
     );
+    assert_eq!(request_result.retry_after_ms, 5_000);
     assert_eq!(runtime.next_playback_barrier_generation, 5);
 
     runtime.set_playback_barrier_request_clock_for_tests(6.0);
