@@ -107,11 +107,8 @@ jobs:
   mpv-current-pr-semantics:
     if: github.event_name != 'schedule'
     name: Real mpv semantics (current v0.41.0)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    container:
-      # This is the dependency image used by mpv's own upstream Linux CI.
-      image: registry.opensuse.org/home/mia/images/images/mpv-ci:stable-deps
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: .
@@ -124,6 +121,22 @@ jobs:
         with:
           toolchain: 1.96.0
 
+      - name: Install current mpv build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libass-dev \
+            libavcodec-dev \
+            libavfilter-dev \
+            libavformat-dev \
+            libavutil-dev \
+            libplacebo-dev \
+            libswresample-dev \
+            libswscale-dev \
+            meson \
+            ninja-build \
+            pkg-config
+
       - name: Checkout current official mpv
         uses: actions/checkout@v4
         with:
@@ -135,9 +148,19 @@ jobs:
         working-directory: target/mpv-current
         run: |
           meson setup build \
+            -Dalsa=disabled \
+            -Dbuild-date=false \
+            -Ddrm=disabled \
+            -Dgl=disabled \
             -Dlibmpv=false \
+            -Dmanpage-build=disabled \
+            -Dpipewire=disabled \
+            -Dpulse=disabled \
             -Dtests=false \
-            -Dmanpage-build=disabled
+            -Dvaapi=disabled \
+            -Dvulkan=disabled \
+            -Dwayland=disabled \
+            -Dx11=disabled
           meson compile -C build mpv
 
       - name: Verify current mpv command layout
