@@ -6,7 +6,7 @@ use std::{
         Arc, LazyLock,
         atomic::{AtomicUsize, Ordering},
     },
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use md5::Md5;
@@ -92,7 +92,15 @@ const PLAYBACK_BARRIER_MAX_TIMEOUT_SECONDS: f64 = 30.0;
 const PLAYBACK_BARRIER_STARTED_TIMEOUT_SECONDS: f64 = 10.0;
 const PLAYBACK_BARRIER_MAX_LOGICAL_MEDIA_ID_CHARS: usize = 2048;
 const PLAYBACK_BARRIER_MAX_REQUEST_ID_BYTES: usize = 128;
-const PLAYBACK_BARRIER_MAX_REQUEST_RECEIPTS_PER_ROOM: usize = 4096;
+// Superseded transports are forcibly closed and ordinary live connections
+// time out after PROTOCOL_TIMEOUT_SECONDS. Retain displaced request identities
+// across that lifetime plus two IO deadlines and shutdown scheduling margin.
+const PLAYBACK_BARRIER_REQUEST_TOMBSTONE_TTL_SECONDS: f64 =
+    PROTOCOL_TIMEOUT_SECONDS + (2.0 * IO_TIMEOUT_SECONDS) + SERVER_NETWORK_SHUTDOWN_GRACE_SECONDS;
+const PLAYBACK_BARRIER_MAX_REQUEST_TOMBSTONES_PER_ROOM: usize = 4096;
+const PLAYBACK_BARRIER_MAX_REQUEST_TOMBSTONES_GLOBAL: usize = 16_384;
+const PLAYBACK_BARRIER_REPLAY_CAPACITY_ERROR: &str =
+    "Playback synchronization request temporarily rejected: replay-protection capacity";
 const ROOM_BUFFERING_DEFAULT_QUORUM_PERCENT: u32 = 75;
 const ROOM_BUFFERING_DEFAULT_DEBOUNCE_SECONDS: f64 = 0.75;
 const ROOM_BUFFERING_MAX_DEBOUNCE_SECONDS: f64 = 10.0;
@@ -318,18 +326,20 @@ pub struct ServerRuntime {
     room_playback_states: BTreeMap<String, RoomPlaybackState>,
     room_playback_barriers: BTreeMap<String, RoomPlaybackBarrier>,
     room_buffering_controls: BTreeMap<String, RoomBufferingControl>,
-    /// Superseded transport identities that remain connected while a newer
-    /// connection owns their recovered playback lifecycle. Fenced clients
-    /// cannot acknowledge, configure, or influence that lifecycle, and a
-    /// later disconnect therefore cannot degrade its replacement.
+    /// Superseded transport identities awaiting network teardown after a
+    /// newer connection recovered their playback lifecycle. Fenced clients
+    /// cannot dispatch any protocol command, and a later disconnect therefore
+    /// cannot degrade the replacement owner.
     playback_barrier_fenced_clients: BTreeSet<String>,
-    /// Accepted application-level start and policy operations retained for
-    /// the lifetime of a room. These receipts prevent a delayed frame for a
-    /// superseded operation from allocating a later generation after the
-    /// current lifecycle no longer carries that operation's identity. The
-    /// per-room cap fails closed instead of evicting replay protection.
-    playback_barrier_request_receipts:
-        BTreeMap<(String, PlaybackBarrierRequestId), PlaybackBarrierRequestReceipt>,
+    /// Recently displaced application operations. Current identity remains
+    /// canonical in the barrier or buffering control; only retired identities
+    /// consume this time-bounded, per-room and globally bounded replay cache.
+    playback_barrier_request_tombstones:
+        BTreeMap<(String, PlaybackBarrierRequestId), PlaybackBarrierRequestTombstone>,
+    playback_barrier_request_tombstone_policy: PlaybackBarrierRequestTombstonePolicy,
+    playback_barrier_request_clock_started_at: Instant,
+    #[cfg(test)]
+    playback_barrier_request_clock_override_seconds: Option<f64>,
     /// Highest accepted/consumed request nonce for each live connection.
     /// This bounds duplicate suppression to live sessions and prevents
     /// delayed requests from older room generations replaying as fresh user
@@ -509,25 +519,51 @@ impl std::fmt::Debug for PlaybackBarrierRequestId {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
-struct PlaybackBarrierRequestReceipt {
+#[derive(Clone, PartialEq)]
+struct PlaybackBarrierRequestTombstone {
     request_nonce: u64,
-    logical_media_id: Option<String>,
+    logical_media_id_digest: Option<[u8; 32]>,
     media_generation: u64,
+    retain_until_seconds: f64,
 }
 
-impl std::fmt::Debug for PlaybackBarrierRequestReceipt {
+impl std::fmt::Debug for PlaybackBarrierRequestTombstone {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("PlaybackBarrierRequestReceipt")
+            .debug_struct("PlaybackBarrierRequestTombstone")
             .field("request_nonce", &self.request_nonce)
             .field(
-                "logical_media_id",
-                &self.logical_media_id.as_ref().map(|_| "<redacted>"),
+                "logical_media_id_digest",
+                &self.logical_media_id_digest.as_ref().map(|_| "<redacted>"),
             )
             .field("media_generation", &self.media_generation)
+            .field("retain_until_seconds", &self.retain_until_seconds)
             .finish()
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PlaybackBarrierRequestTombstonePolicy {
+    ttl_seconds: f64,
+    max_per_room: usize,
+    max_global: usize,
+}
+
+impl Default for PlaybackBarrierRequestTombstonePolicy {
+    fn default() -> Self {
+        Self {
+            ttl_seconds: PLAYBACK_BARRIER_REQUEST_TOMBSTONE_TTL_SECONDS,
+            max_per_room: PLAYBACK_BARRIER_MAX_REQUEST_TOMBSTONES_PER_ROOM,
+            max_global: PLAYBACK_BARRIER_MAX_REQUEST_TOMBSTONES_GLOBAL,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DisplacedPlaybackBarrierRequest {
+    request_nonce: u64,
+    logical_media_id_digest: Option<[u8; 32]>,
+    media_generation: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]

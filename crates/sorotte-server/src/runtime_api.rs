@@ -22,7 +22,12 @@ impl ServerRuntime {
             room_playback_barriers: BTreeMap::new(),
             room_buffering_controls: BTreeMap::new(),
             playback_barrier_fenced_clients: BTreeSet::new(),
-            playback_barrier_request_receipts: BTreeMap::new(),
+            playback_barrier_request_tombstones: BTreeMap::new(),
+            playback_barrier_request_tombstone_policy:
+                PlaybackBarrierRequestTombstonePolicy::default(),
+            playback_barrier_request_clock_started_at: Instant::now(),
+            #[cfg(test)]
+            playback_barrier_request_clock_override_seconds: None,
             playback_barrier_request_nonces: BTreeMap::new(),
             next_playback_barrier_generation: 0,
             next_playback_barrier_revision: 0,
@@ -285,6 +290,33 @@ impl ServerRuntime {
         self.time_now_override_seconds = seconds;
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_playback_barrier_request_tombstone_policy_for_tests(
+        &mut self,
+        ttl_seconds: f64,
+        max_per_room: usize,
+        max_global: usize,
+    ) {
+        self.playback_barrier_request_tombstone_policy = PlaybackBarrierRequestTombstonePolicy {
+            ttl_seconds: if ttl_seconds.is_finite() && ttl_seconds > 0.0 {
+                ttl_seconds
+            } else {
+                PLAYBACK_BARRIER_REQUEST_TOMBSTONE_TTL_SECONDS
+            },
+            max_per_room: max_per_room.max(1),
+            max_global: max_global.max(1),
+        };
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_playback_barrier_request_clock_for_tests(&mut self, seconds: f64) {
+        self.playback_barrier_request_clock_override_seconds = Some(if seconds.is_finite() {
+            seconds.max(0.0)
+        } else {
+            0.0
+        });
+    }
+
     pub fn subscribe_persistence_events(&self) -> broadcast::Receiver<ServerPersistenceEvent> {
         self.persistence_events.subscribe()
     }
@@ -363,6 +395,7 @@ impl ServerRuntime {
         } else {
             self.current_time_seconds()
         };
+        self.prune_playback_barrier_request_tombstones();
         let outbound_messages = self.collect_due_periodic_updates_at(now_seconds)?;
         self.collect_due_stats_snapshots_at(now_seconds)?;
         let outbound_lines = outbound_messages

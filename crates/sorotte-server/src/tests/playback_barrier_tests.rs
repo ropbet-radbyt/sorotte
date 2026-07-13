@@ -989,6 +989,402 @@ fn recovery_rebinds_and_fences_old_connection_that_is_still_present() {
     assert_eq!(runtime.next_playback_barrier_generation, 1);
 }
 
+fn runtime_with_recovered_overlapping_committed_owner() -> ServerRuntime {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_time_now_override_seconds(Some(50.0));
+    runtime
+        .handle_line("alice-old", &hello("alice", "room", true))
+        .expect("old connection should join");
+    runtime
+        .handle_line_fanout(
+            "alice-old",
+            r#"{"Set":{"file":{"name":"revoked-owner.mkv","duration":120.0}}}"#,
+        )
+        .expect("old connection should publish its media");
+    let initial_sync_counter = runtime.server_ignoring_counter("alice-old");
+    runtime.acknowledge_server_ignoring_counter("alice-old", initial_sync_counter);
+    runtime
+        .handle_line_fanout(
+            "alice-old",
+            r#"{"State":{"playstate":{"position":2.0,"paused":false,"doSeek":false}}}"#,
+        )
+        .expect("room should begin in a playing state");
+    runtime
+        .handle_line_fanout(
+            "alice-old",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":141,"requestId":"revoked-transport-operation","loadIntent":"newPlayback","logicalMediaId":"revoked-transport-media","targetPosition":2.0,"policy":"controller"},"bufferingPolicy":{"mediaGeneration":0,"requestNonce":141,"requestId":"revoked-transport-operation","loadIntent":"newPlayback","policy":"independent"}}}}"#,
+        )
+        .expect("old connection should start a lifecycle");
+    runtime
+        .handle_line_fanout(
+            "alice-old",
+            r#"{"State":{"sorottePlaybackBarrierV1":{"ready":{"mediaGeneration":1,"loaded":true,"seekable":true,"bufferReady":true}}}}"#,
+        )
+        .expect("owner readiness should commit the lifecycle");
+    assert_eq!(
+        runtime.room_playback_barriers["room"].phase,
+        PlaybackBarrierPhase::Committed
+    );
+    runtime
+        .handle_line("alice-new", &hello("alice", "room", true))
+        .expect("new connection should overlap the old transport");
+    let recovery = runtime
+        .handle_line_fanout_with_transport_actions(
+            "alice-new",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"recovery":{"requestId":"revoked-transport-operation","originalRequestNonce":141,"recoveryNonce":142,"logicalMediaId":"revoked-transport-media"}}}}"#,
+        )
+        .expect("new connection should recover the committed lifecycle");
+    assert!(has_close_transport_action(
+        &recovery.transport_actions,
+        "alice-old"
+    ));
+    assert_eq!(
+        recovery_snapshot_for(&recovery.outbound_lines, "alice-new")
+            .and_then(|extension| extension.recovery)
+            .and_then(|recovery| recovery.disposition),
+        Some(PlaybackBarrierRecoveryDisposition::Recovered)
+    );
+    runtime
+}
+
+#[test]
+fn fenced_old_transport_cannot_pause_or_seek_after_recovery() {
+    let mut runtime = runtime_with_recovered_overlapping_committed_owner();
+    let old_counter = runtime.server_ignoring_counter("alice-old");
+    runtime.acknowledge_server_ignoring_counter("alice-old", old_counter);
+    let state_before = runtime.room_playback_state("room");
+
+    let pause = runtime
+        .handle_line_fanout_with_transport_actions(
+            "alice-old",
+            r#"{"State":{"playstate":{"position":2.0,"paused":true,"doSeek":false}}}"#,
+        )
+        .expect("fenced pause should be safely rejected");
+    assert!(pause.outbound_lines.is_empty());
+    assert!(has_close_transport_action(
+        &pause.transport_actions,
+        "alice-old"
+    ));
+    assert_eq!(runtime.room_playback_state("room"), state_before);
+
+    let old_counter = runtime.server_ignoring_counter("alice-old");
+    runtime.acknowledge_server_ignoring_counter("alice-old", old_counter);
+
+    let seek = runtime
+        .handle_line_fanout_with_transport_actions(
+            "alice-old",
+            r#"{"State":{"playstate":{"position":99.0,"paused":false,"doSeek":true}}}"#,
+        )
+        .expect("fenced seek should be safely rejected");
+    assert!(seek.outbound_lines.is_empty());
+    assert!(has_close_transport_action(
+        &seek.transport_actions,
+        "alice-old"
+    ));
+    assert_eq!(runtime.room_playback_state("room"), state_before);
+    assert_eq!(
+        runtime.room_playback_barriers["room"].phase,
+        PlaybackBarrierPhase::Committed
+    );
+}
+
+#[test]
+fn fenced_old_transport_cannot_retire_awaiting_controller_decision() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_time_now_override_seconds(Some(100.0));
+    runtime
+        .handle_line("alice-old", &hello("alice", "room", true))
+        .expect("old connection should join");
+    runtime
+        .handle_line_fanout(
+            "alice-old",
+            r#"{"State":{"playstate":{"position":4.0,"paused":false,"doSeek":false}}}"#,
+        )
+        .expect("room should start playing");
+    runtime
+        .handle_line_fanout(
+            "alice-old",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":151,"requestId":"awaiting-owner-operation","loadIntent":"newPlayback","logicalMediaId":"awaiting-owner-media","targetPosition":4.0,"policy":"controller","timeoutMs":1000,"timeoutAction":"askController"}}}}"#,
+        )
+        .expect("prepare should succeed");
+    runtime
+        .collect_dispatch_at(101.0)
+        .expect("prepare should enter AwaitingDecision");
+    assert_eq!(
+        runtime.room_playback_barriers["room"].phase,
+        PlaybackBarrierPhase::AwaitingDecision
+    );
+    let forced_pause_counter = runtime.server_ignoring_counter("alice-old");
+    runtime.acknowledge_server_ignoring_counter("alice-old", forced_pause_counter);
+
+    runtime
+        .handle_line("alice-new", &hello("alice", "room", true))
+        .expect("new connection should overlap old owner");
+    let recovery = runtime
+        .handle_line_fanout_with_transport_actions(
+            "alice-new",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"recovery":{"requestId":"awaiting-owner-operation","originalRequestNonce":151,"recoveryNonce":152,"logicalMediaId":"awaiting-owner-media"}}}}"#,
+        )
+        .expect("new connection should recover awaiting lifecycle");
+    assert!(has_close_transport_action(
+        &recovery.transport_actions,
+        "alice-old"
+    ));
+
+    let stale_decision = runtime
+        .handle_line_fanout_with_transport_actions(
+            "alice-old",
+            r#"{"State":{"playstate":{"position":4.0,"paused":false,"doSeek":false}}}"#,
+        )
+        .expect("fenced controller decision should be rejected");
+    assert!(stale_decision.outbound_lines.is_empty());
+    assert!(has_close_transport_action(
+        &stale_decision.transport_actions,
+        "alice-old"
+    ));
+    assert!(runtime.room_playback_state("room").paused);
+    assert_eq!(
+        runtime.room_playback_barriers["room"].phase,
+        PlaybackBarrierPhase::AwaitingDecision
+    );
+    assert_eq!(
+        runtime.room_playback_barriers["room"].initiator_client_id,
+        "alice-new"
+    );
+}
+
+#[test]
+fn fenced_old_transport_cannot_rehello_and_reclaim_operation() {
+    let mut runtime = runtime_with_recovered_overlapping_committed_owner();
+    let old_join_sequence = runtime.client_room_join_sequence["alice-old"];
+    let new_join_sequence = runtime.client_room_join_sequence["alice-new"];
+
+    let repeated_hello = runtime
+        .handle_line_fanout_with_transport_actions("alice-old", &hello("alice", "room", true))
+        .expect("fenced repeated Hello should be safely rejected");
+    assert!(repeated_hello.outbound_lines.is_empty());
+    assert!(has_close_transport_action(
+        &repeated_hello.transport_actions,
+        "alice-old"
+    ));
+    assert_eq!(
+        runtime.client_room_join_sequence["alice-old"],
+        old_join_sequence
+    );
+    assert_eq!(
+        runtime.client_room_join_sequence["alice-new"],
+        new_join_sequence
+    );
+    assert_eq!(runtime.sessions["alice-old"].username, "alice");
+
+    let replay = runtime
+        .handle_line_fanout_with_transport_actions(
+            "alice-old",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":141,"requestId":"revoked-transport-operation","loadIntent":"newPlayback","logicalMediaId":"revoked-transport-media","targetPosition":2.0,"policy":"controller"}}}}"#,
+        )
+        .expect("fenced operation replay should be safely rejected");
+    assert!(replay.outbound_lines.is_empty());
+    assert!(has_close_transport_action(
+        &replay.transport_actions,
+        "alice-old"
+    ));
+    assert_eq!(
+        runtime.room_playback_barriers["room"].initiator_client_id,
+        "alice-new"
+    );
+    assert!(
+        runtime
+            .playback_barrier_fenced_clients
+            .contains("alice-old")
+    );
+    assert!(
+        !runtime
+            .playback_barrier_fenced_clients
+            .contains("alice-new")
+    );
+    assert_eq!(runtime.next_playback_barrier_generation, 1);
+}
+
+#[test]
+fn fenced_old_transport_disconnect_is_inert_after_recovery() {
+    let mut runtime = runtime_with_recovered_overlapping_committed_owner();
+    let barrier_before = runtime.room_playback_barriers["room"].clone();
+    let buffering_owner_before = runtime.room_buffering_controls["room"]
+        .configured_by_client_id
+        .clone();
+
+    let disconnected = runtime
+        .handle_transport_disconnect_fanout("alice-old")
+        .expect("eventual old transport disconnect should clean up safely");
+    assert!(playback_barrier_status(&disconnected).is_none());
+    assert_eq!(runtime.room_playback_barriers["room"], barrier_before);
+    assert_eq!(
+        runtime.room_buffering_controls["room"].configured_by_client_id,
+        buffering_owner_before
+    );
+    assert!(!runtime.sessions.contains_key("alice-old"));
+    assert!(runtime.sessions.contains_key("alice-new"));
+    assert!(
+        !runtime
+            .playback_barrier_fenced_clients
+            .contains("alice-old")
+    );
+    assert_eq!(runtime.next_playback_barrier_generation, 1);
+}
+
+#[test]
+fn fenced_disconnect_cleans_current_room_without_touching_recovered_room() {
+    let mut runtime = ServerRuntime::default();
+    runtime
+        .handle_line("alice-old", &hello("alice", "room-a", true))
+        .expect("old owner should join room A");
+    runtime
+        .handle_line("charlie-a", &hello("charlie", "room-a", true))
+        .expect("room A peer should retain its lifecycle while the old owner moves");
+    runtime
+        .handle_line_fanout(
+            "alice-old",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":201,"requestId":"multi-room-operation-a","loadIntent":"newPlayback","logicalMediaId":"multi-room-media-a","targetPosition":1.0,"policy":"controller"}}}}"#,
+        )
+        .expect("room A lifecycle should start");
+    runtime
+        .handle_line_fanout(
+            "alice-old",
+            r#"{"State":{"sorottePlaybackBarrierV1":{"ready":{"mediaGeneration":1,"loaded":true,"seekable":true,"bufferReady":true}}}}"#,
+        )
+        .expect("room A lifecycle should commit");
+    runtime
+        .handle_line("bob", &hello("bob", "room-b", true))
+        .expect("room B peer should keep that room live");
+    runtime
+        .handle_line_fanout("alice-old", r#"{"Set":{"room":{"name":"room-b"}}}"#)
+        .expect("old transport should move to room B before recovery");
+    runtime
+        .handle_line_fanout(
+            "alice-old",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":202,"requestId":"multi-room-operation-b","loadIntent":"newPlayback","logicalMediaId":"multi-room-media-b","targetPosition":2.0,"policy":"controller"}}}}"#,
+        )
+        .expect("old transport should start an unrelated room B lifecycle");
+    assert!(
+        runtime.room_playback_barriers["room-b"]
+            .participants
+            .contains_key("alice-old")
+    );
+
+    runtime
+        .handle_line("alice-new", &hello("alice", "room-a", true))
+        .expect("replacement should join room A");
+    let recovery = runtime
+        .handle_line_fanout_with_transport_actions(
+            "alice-new",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"recovery":{"requestId":"multi-room-operation-a","originalRequestNonce":201,"recoveryNonce":203,"logicalMediaId":"multi-room-media-a"}}}}"#,
+        )
+        .expect("room A lifecycle should recover to the replacement");
+    assert!(has_close_transport_action(
+        &recovery.transport_actions,
+        "alice-old"
+    ));
+    let recovered_room_a = runtime.room_playback_barriers["room-a"].clone();
+    assert_eq!(recovered_room_a.initiator_client_id, "alice-new");
+
+    runtime
+        .handle_transport_disconnect_fanout("alice-old")
+        .expect("physical disconnect should clean the transport's current room");
+    assert_eq!(
+        runtime.room_playback_barriers["room-a"], recovered_room_a,
+        "room B disconnect cleanup must remain inert for recovered room A"
+    );
+    assert_eq!(
+        runtime.room_playback_barriers["room-b"].participants["alice-old"]
+            .status
+            .degraded_reason,
+        Some(PlaybackBarrierDegradedReason::Disconnected),
+        "global fencing must not suppress cleanup of an unrelated current-room lifecycle"
+    );
+}
+
+#[test]
+fn fenced_transport_cached_sample_is_excluded_from_periodic_room_derivation() {
+    let mut runtime = runtime_with_recovered_overlapping_committed_owner();
+    runtime
+        .handle_line_fanout(
+            "alice-new",
+            r#"{"Set":{"file":{"name":"revoked-owner.mkv","duration":120.0}}}"#,
+        )
+        .expect("replacement should publish the same media");
+    let replacement_counter = runtime.server_ignoring_counter("alice-new");
+    runtime.acknowledge_server_ignoring_counter("alice-new", replacement_counter);
+    runtime
+        .handle_line_fanout(
+            "alice-new",
+            r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":false}}}"#,
+        )
+        .expect("replacement should publish a current playback sample");
+
+    let (set_by, position) = runtime
+        .slowest_room_playback_client_at("room", false, 50.0)
+        .expect("replacement sample should remain eligible");
+    assert_eq!(set_by, "alice_");
+    assert_eq!(position, 10.0);
+    assert_eq!(
+        runtime.client_playback_states["alice-old"].position,
+        Some(2.0),
+        "the stale sample remains cached until physical disconnect, making the exclusion material"
+    );
+}
+
+#[test]
+fn fenced_transport_periodic_timeout_keeps_fence_through_rehello_race() {
+    let mut runtime = runtime_with_recovered_overlapping_committed_owner();
+    let old_join_sequence = runtime.client_room_join_sequence["alice-old"];
+    runtime
+        .client_last_state_update_at
+        .insert("alice-old".to_owned(), 0.0);
+    assert!(runtime.client_timed_out("alice-old", 100.0));
+
+    let periodic = runtime
+        .collect_periodic_tick_for_client_at("alice-old", 100.0, 100.0)
+        .expect("fenced periodic tick should remain inert");
+    assert!(periodic.is_empty());
+    assert!(has_close_transport_action(
+        &runtime.drain_transport_actions(),
+        "alice-old"
+    ));
+    assert!(runtime.sessions.contains_key("alice-old"));
+    assert!(
+        runtime
+            .playback_barrier_fenced_clients
+            .contains("alice-old")
+    );
+
+    let racing_hello = runtime
+        .handle_line_fanout_with_transport_actions("alice-old", &hello("alice", "room", true))
+        .expect("racing Hello should be rejected while teardown is pending");
+    assert!(racing_hello.outbound_lines.is_empty());
+    assert!(has_close_transport_action(
+        &racing_hello.transport_actions,
+        "alice-old"
+    ));
+    assert_eq!(
+        runtime.client_room_join_sequence["alice-old"],
+        old_join_sequence
+    );
+    assert_eq!(
+        runtime.room_playback_barriers["room"].initiator_client_id,
+        "alice-new"
+    );
+
+    runtime
+        .handle_transport_disconnect_fanout("alice-old")
+        .expect("physical disconnect should finally remove fenced model state");
+    assert!(!runtime.sessions.contains_key("alice-old"));
+    assert!(
+        !runtime
+            .playback_barrier_fenced_clients
+            .contains("alice-old")
+    );
+}
+
 #[test]
 fn same_request_id_replayed_from_newer_connection_is_cross_connection_idempotent() {
     let mut runtime = ServerRuntime::default();
@@ -2613,23 +3009,25 @@ fn authenticated_policy_owner_reconnect_restores_coordination_with_fresh_nonce()
 
 #[test]
 fn superseded_policy_operation_cannot_recover_or_replay_over_its_replacement() {
-    let mut runtime = ServerRuntime::default();
+    let room = controlled_room_name_for_test("room", "AB-123-456");
+    let mut runtime = ServerRuntime::with_room_password_salt(DEFAULT_CONTROLLED_ROOM_HASH_SALT);
     runtime
-        .handle_line("alice-old", &hello("alice", "room", true))
+        .handle_line("alice-old", &hello("alice", &room, true))
         .expect("policy owner should join");
-    let operation_a = r#"{"Set":{"sorottePlaybackBarrierV1":{"bufferingPolicy":{"mediaGeneration":0,"requestNonce":81,"requestId":"policy-operation-a","loadIntent":"newPlayback","policy":"independent","debounceMs":100,"resumeHysteresisMs":200,"maxPauseMs":5000}}}}"#;
+    authenticate_policy_controller(&mut runtime, "alice-old");
+    let operation_a = r#"{"Set":{"sorottePlaybackBarrierV1":{"bufferingPolicy":{"mediaGeneration":0,"requestNonce":81,"requestId":"policy-operation-a","loadIntent":"newPlayback","policy":"pauseAnyEligible","debounceMs":100,"resumeHysteresisMs":200,"maxPauseMs":5000}}}}"#;
     runtime
         .handle_line_fanout("alice-old", operation_a)
         .expect("policy operation A should allocate generation one");
     runtime
         .handle_line_fanout(
             "alice-old",
-            r#"{"Set":{"sorottePlaybackBarrierV1":{"bufferingPolicy":{"mediaGeneration":0,"requestNonce":82,"requestId":"policy-operation-b","loadIntent":"newPlayback","policy":"independent","debounceMs":300,"resumeHysteresisMs":400,"maxPauseMs":5000}}}}"#,
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"bufferingPolicy":{"mediaGeneration":0,"requestNonce":82,"requestId":"policy-operation-b","loadIntent":"newPlayback","policy":"pauseAnyEligible","debounceMs":300,"resumeHysteresisMs":400,"maxPauseMs":5000}}}}"#,
         )
         .expect("policy operation B should replace A");
     assert_eq!(runtime.next_playback_barrier_generation, 2);
     assert_eq!(
-        runtime.room_buffering_controls["room"]
+        runtime.room_buffering_controls[&room]
             .config
             .request_id
             .as_deref(),
@@ -2637,15 +3035,16 @@ fn superseded_policy_operation_cannot_recover_or_replay_over_its_replacement() {
     );
 
     runtime
-        .handle_line("alice-new", &hello("alice", "room", true))
+        .handle_line("alice-new", &hello("alice", &room, true))
         .expect("replacement transport should overlap the original");
+    authenticate_policy_controller(&mut runtime, "alice-new");
     let delayed = runtime
         .handle_line_fanout("alice-new", operation_a)
         .expect("a delayed policy A frame should be safely consumed");
     assert!(delayed.is_empty());
     assert_eq!(runtime.next_playback_barrier_generation, 2);
     assert_eq!(
-        runtime.room_buffering_controls["room"]
+        runtime.room_buffering_controls[&room]
             .config
             .request_id
             .as_deref(),
@@ -2668,7 +3067,7 @@ fn superseded_policy_operation_cannot_recover_or_replay_over_its_replacement() {
     assert_eq!(recovery.media_generation, Some(1));
     assert_eq!(runtime.next_playback_barrier_generation, 2);
     assert_eq!(
-        runtime.room_buffering_controls["room"]
+        runtime.room_buffering_controls[&room]
             .config
             .request_id
             .as_deref(),
@@ -2762,6 +3161,131 @@ fn policy_recovery_after_owner_disconnect_restores_the_requested_coordinated_pol
     );
     assert_eq!(runtime.next_playback_barrier_generation, generation);
     assert!(!runtime.room_playback_barriers.contains_key(&room));
+}
+
+#[test]
+fn policy_subset_retry_cannot_steal_a_combined_start_lifecycle() {
+    let mut runtime = ServerRuntime::default();
+    runtime
+        .handle_line("alice-old", &hello("alice", "room", true))
+        .expect("old owner should join");
+    runtime
+        .handle_line_fanout(
+            "alice-old",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":95,"requestId":"combined-operation","loadIntent":"newPlayback","logicalMediaId":"combined-media","targetPosition":0.0,"policy":"controller"},"bufferingPolicy":{"mediaGeneration":0,"requestNonce":95,"requestId":"combined-operation","loadIntent":"newPlayback","policy":"independent"}}}}"#,
+        )
+        .expect("combined lifecycle should start");
+    runtime
+        .handle_line("alice-new", &hello("alice", "room", true))
+        .expect("replacement transport should overlap");
+
+    let subset = runtime
+        .handle_line_fanout_with_transport_actions(
+            "alice-new",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"bufferingPolicy":{"mediaGeneration":0,"requestNonce":95,"requestId":"combined-operation","loadIntent":"newPlayback","policy":"independent"}}}}"#,
+        )
+        .expect("policy subset should be rejected without ownership mutation");
+    assert!(subset.outbound_lines.is_empty());
+    assert!(subset.transport_actions.is_empty());
+    assert_eq!(
+        runtime.room_playback_barriers["room"].initiator_client_id,
+        "alice-old"
+    );
+    assert_eq!(
+        runtime.room_buffering_controls["room"].configured_by_client_id,
+        "alice-old"
+    );
+    assert!(
+        !runtime
+            .playback_barrier_fenced_clients
+            .contains("alice-old")
+    );
+}
+
+#[test]
+fn transport_refresh_tombstones_the_displaced_policy_operation() {
+    let room = controlled_room_name_for_test("room", "AB-123-456");
+    let mut runtime = ServerRuntime::with_room_password_salt(DEFAULT_CONTROLLED_ROOM_HASH_SALT);
+    runtime.set_playback_barrier_request_tombstone_policy_for_tests(10.0, 2, 2);
+    runtime.set_playback_barrier_request_clock_for_tests(0.0);
+    runtime
+        .handle_line("alice-client", &hello("alice", &room, true))
+        .expect("policy owner should join");
+    authenticate_policy_controller(&mut runtime, "alice-client");
+    runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"bufferingPolicy":{"mediaGeneration":0,"requestNonce":96,"requestId":"policy-before-refresh","loadIntent":"newPlayback","policy":"pauseAnyEligible"}}}}"#,
+        )
+        .expect("initial policy should configure");
+    let generation = runtime.next_playback_barrier_generation;
+    runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"bufferingPolicy":{"mediaGeneration":0,"requestNonce":97,"requestId":"policy-transport-refresh","loadIntent":"transportRefresh","policy":"pauseAnyEligible"}}}}"#,
+        )
+        .expect("transport refresh should retain replay protection for the displaced identity");
+
+    assert_eq!(runtime.next_playback_barrier_generation, generation);
+    assert_eq!(
+        runtime.room_buffering_controls[&room]
+            .config
+            .request_id
+            .as_deref(),
+        Some("policy-transport-refresh")
+    );
+    assert!(runtime.playback_barrier_request_tombstones.contains_key(&(
+        room.clone(),
+        crate::PlaybackBarrierRequestId::new("policy-before-refresh"),
+    )));
+    let recovery = runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"recovery":{"requestId":"policy-before-refresh","originalRequestNonce":96,"recoveryNonce":98,"logicalMediaId":"policy-before-refresh-media"}}}}"#,
+        )
+        .expect("displaced policy recovery should be terminally classified");
+    assert_eq!(
+        recovery_snapshot_for(&recovery, "alice-client")
+            .and_then(|extension| extension.recovery)
+            .and_then(|recovery| recovery.disposition),
+        Some(PlaybackBarrierRecoveryDisposition::Superseded)
+    );
+}
+
+#[test]
+fn stable_request_id_cannot_change_nonce_or_intent_shape() {
+    let mut runtime = ServerRuntime::default();
+    runtime
+        .handle_line("alice-client", &hello("alice", "room", true))
+        .expect("participant should join");
+    runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"bufferingPolicy":{"mediaGeneration":0,"requestNonce":61,"requestId":"stable-policy-id","loadIntent":"newPlayback","policy":"independent"}}}}"#,
+        )
+        .expect("policy-only operation should configure");
+    let generation = runtime.next_playback_barrier_generation;
+
+    let changed_nonce = runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"bufferingPolicy":{"mediaGeneration":0,"requestNonce":62,"requestId":"stable-policy-id","loadIntent":"newPlayback","policy":"independent"}}}}"#,
+        )
+        .expect("same ID with another nonce should be ignored");
+    assert!(changed_nonce.is_empty());
+    let changed_shape = runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":63,"requestId":"stable-policy-id","loadIntent":"newPlayback","logicalMediaId":"shape-change-media","targetPosition":0.0,"policy":"controller"}}}}"#,
+        )
+        .expect("policy-only ID must not become a start operation");
+    assert!(changed_shape.is_empty());
+    assert_eq!(runtime.next_playback_barrier_generation, generation);
+    assert!(!runtime.room_playback_barriers.contains_key("room"));
+    assert_eq!(
+        runtime.room_buffering_controls["room"].config.request_nonce,
+        61
+    );
 }
 
 #[test]
@@ -2894,49 +3418,299 @@ fn invalid_application_request_ids_are_rejected_without_consuming_room_state() {
     assert_eq!(runtime.next_playback_barrier_generation, 0);
     assert!(runtime.room_playback_barriers.is_empty());
     assert!(runtime.room_buffering_controls.is_empty());
-    assert!(runtime.playback_barrier_request_receipts.is_empty());
+    assert!(runtime.playback_barrier_request_tombstones.is_empty());
 }
 
 #[test]
-fn request_receipt_capacity_fails_closed_without_allocating_a_generation() {
+fn retired_request_tombstone_window_starts_at_supersession_and_then_ages_out() {
     let mut runtime = ServerRuntime::default();
-    for index in 0..crate::PLAYBACK_BARRIER_MAX_REQUEST_RECEIPTS_PER_ROOM {
-        runtime.playback_barrier_request_receipts.insert(
-            (
+    runtime.set_playback_barrier_request_tombstone_policy_for_tests(10.0, 2, 3);
+    runtime.set_playback_barrier_request_clock_for_tests(0.0);
+    runtime
+        .handle_line("alice-old", &hello("alice", "room", true))
+        .expect("initial owner should join");
+    let operation_a = r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":1,"requestId":"aged-operation-a","loadIntent":"newPlayback","logicalMediaId":"aged-media-a","targetPosition":0.0,"policy":"controller"}}}}"#;
+    runtime
+        .handle_line_fanout("alice-old", operation_a)
+        .expect("operation A should start");
+    assert!(runtime.playback_barrier_request_tombstones.is_empty());
+
+    // The operation can remain current far longer than the replay window.
+    // Its retirement clock must start only when B actually supersedes it.
+    runtime.set_playback_barrier_request_clock_for_tests(100.0);
+    runtime
+        .handle_line_fanout(
+            "alice-old",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":2,"requestId":"aged-operation-b","loadIntent":"newPlayback","logicalMediaId":"aged-media-b","targetPosition":1.0,"policy":"controller"}}}}"#,
+        )
+        .expect("operation B should supersede A");
+    assert_eq!(runtime.next_playback_barrier_generation, 2);
+    assert_eq!(
+        runtime
+            .playback_barrier_request_tombstones
+            .get(&(
                 "room".to_owned(),
-                crate::PlaybackBarrierRequestId::new(format!("receipt-{index}")),
-            ),
-            crate::PlaybackBarrierRequestReceipt {
-                request_nonce: index as u64 + 1,
-                logical_media_id: Some(format!("media-{index}")),
-                media_generation: index as u64 + 1,
-            },
-        );
-    }
+                crate::PlaybackBarrierRequestId::new("aged-operation-a"),
+            ))
+            .map(|tombstone| tombstone.retain_until_seconds),
+        Some(110.0)
+    );
+
+    runtime
+        .handle_line_fanout(
+            "alice-old",
+            r#"{"State":{"sorottePlaybackBarrierV1":{"ready":{"mediaGeneration":2,"loaded":true,"seekable":true,"bufferReady":true}}}}"#,
+        )
+        .expect("B should commit");
+    runtime
+        .handle_line_fanout(
+            "alice-old",
+            r#"{"State":{"sorottePlaybackBarrierV1":{"started":{"mediaGeneration":2,"stateRevision":1,"observedPosition":1.1}}}}"#,
+        )
+        .expect("B should complete");
+    runtime
+        .handle_line("alice-new", &hello("alice", "room", true))
+        .expect("a replacement transport should join");
+
+    runtime.set_playback_barrier_request_clock_for_tests(109.0);
+    let delayed = runtime
+        .handle_line_fanout("alice-new", operation_a)
+        .expect("delayed A inside the supported window should be suppressed");
+    assert!(delayed.is_empty());
+    assert_eq!(runtime.next_playback_barrier_generation, 2);
+    let recovery = runtime
+        .handle_line_fanout(
+            "alice-new",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"recovery":{"requestId":"aged-operation-a","originalRequestNonce":1,"recoveryNonce":9,"logicalMediaId":"aged-media-a"}}}}"#,
+        )
+        .expect("retired A recovery should be explicit");
+    assert_eq!(
+        recovery_snapshot_for(&recovery, "alice-new")
+            .and_then(|extension| extension.recovery)
+            .and_then(|recovery| recovery.disposition),
+        Some(PlaybackBarrierRecoveryDisposition::Superseded)
+    );
+
+    runtime.set_playback_barrier_request_clock_for_tests(111.0);
+    runtime.prune_playback_barrier_request_tombstones();
+    assert!(runtime.playback_barrier_request_tombstones.is_empty());
+    runtime
+        .handle_line_fanout("alice-new", operation_a)
+        .expect("A may become fresh intent after the documented replay window");
+    assert_eq!(runtime.next_playback_barrier_generation, 3);
+}
+
+#[test]
+fn tombstone_capacity_rejection_is_explicit_atomic_and_retryable_after_expiry() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_playback_barrier_request_tombstone_policy_for_tests(10.0, 2, 10);
+    runtime.set_playback_barrier_request_clock_for_tests(0.0);
     runtime
         .handle_line("alice-client", &hello("alice", "room", true))
         .expect("controller should join");
-    let overflow = runtime
+    for (nonce, request_id, logical_id) in [
+        (1, "capacity-a", "capacity-media-a"),
+        (2, "capacity-b", "capacity-media-b"),
+        (3, "capacity-c", "capacity-media-c"),
+    ] {
+        runtime
+            .handle_line_fanout(
+                "alice-client",
+                &format!(
+                    r#"{{"Set":{{"sorottePlaybackBarrierV1":{{"prepare":{{"mediaGeneration":0,"requestNonce":{nonce},"requestId":"{request_id}","loadIntent":"newPlayback","logicalMediaId":"{logical_id}","targetPosition":0.0,"policy":"controller"}}}}}}}}"#
+                ),
+            )
+            .expect("operation should fit replay capacity");
+    }
+    assert_eq!(runtime.next_playback_barrier_generation, 3);
+    assert_eq!(runtime.playback_barrier_request_tombstones.len(), 2);
+
+    let operation_d = r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":4,"requestId":"capacity-d","loadIntent":"newPlayback","logicalMediaId":"capacity-media-d","targetPosition":0.0,"policy":"controller"}}}}"#;
+    let rejected = runtime
+        .handle_line_fanout("alice-client", operation_d)
+        .expect("capacity pressure should return an explicit response");
+    assert!(messages(&rejected).into_iter().any(|(_, message)| {
+        matches!(
+            message,
+            ProtocolMessage::Error(payload)
+                if payload.error.message == crate::PLAYBACK_BARRIER_REPLAY_CAPACITY_ERROR
+        )
+    }));
+    assert_eq!(runtime.next_playback_barrier_generation, 3);
+    assert_eq!(
+        runtime.room_playback_barriers["room"]
+            .prepare
+            .request_id
+            .as_deref(),
+        Some("capacity-c")
+    );
+    assert_eq!(runtime.playback_barrier_request_nonces["alice-client"], 3);
+
+    runtime.set_playback_barrier_request_clock_for_tests(11.0);
+    runtime.prune_playback_barrier_request_tombstones();
+    runtime
+        .handle_line_fanout("alice-client", operation_d)
+        .expect("the same nonce should remain retryable after capacity ages out");
+    assert_eq!(runtime.next_playback_barrier_generation, 4);
+    assert_eq!(runtime.playback_barrier_request_nonces["alice-client"], 4);
+}
+
+#[test]
+fn tombstone_global_bound_ages_across_retained_persistent_rooms() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_persistent_rooms_enabled(true);
+    runtime.set_playback_barrier_request_tombstone_policy_for_tests(5.0, 4, 2);
+    runtime.set_playback_barrier_request_clock_for_tests(0.0);
+    for room_index in 1..=3 {
+        let client_id = format!("client-{room_index}");
+        let room = format!("room-{room_index}");
+        runtime
+            .handle_line(&client_id, &hello("alice", &room, true))
+            .expect("room owner should join");
+        runtime
+            .handle_line_fanout(
+                &client_id,
+                &format!(
+                    r#"{{"Set":{{"sorottePlaybackBarrierV1":{{"prepare":{{"mediaGeneration":0,"requestNonce":1,"requestId":"global-{room_index}-a","loadIntent":"newPlayback","logicalMediaId":"global-media-{room_index}-a","targetPosition":0.0,"policy":"controller"}}}}}}}}"#
+                ),
+            )
+            .expect("first room operation should start");
+        if room_index < 3 {
+            runtime
+                .handle_line_fanout(
+                    &client_id,
+                    &format!(
+                        r#"{{"Set":{{"sorottePlaybackBarrierV1":{{"prepare":{{"mediaGeneration":0,"requestNonce":2,"requestId":"global-{room_index}-b","loadIntent":"newPlayback","logicalMediaId":"global-media-{room_index}-b","targetPosition":0.0,"policy":"controller"}}}}}}}}"#
+                    ),
+                )
+                .expect("replacement should create one tombstone");
+            runtime
+                .handle_line_fanout(
+                    &client_id,
+                    r#"{"Set":{"playlistChange":{"files":["retained.mkv"]}}}"#,
+                )
+                .expect("room should gain retained persistent state");
+            runtime
+                .handle_transport_disconnect_fanout(&client_id)
+                .expect("retained room owner should disconnect");
+            assert!(runtime.clients_in_room(&room).is_empty());
+            assert!(runtime.room_should_be_retained_when_empty(&room));
+        }
+    }
+    assert_eq!(runtime.playback_barrier_request_tombstones.len(), 2);
+    let third_room_replacement = r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":2,"requestId":"global-3-b","loadIntent":"newPlayback","logicalMediaId":"global-media-3-b","targetPosition":0.0,"policy":"controller"}}}}"#;
+    let rejected = runtime
+        .handle_line_fanout("client-3", third_room_replacement)
+        .expect("global capacity should reject without mutation");
+    assert!(
+        messages(&rejected)
+            .into_iter()
+            .any(|(_, message)| matches!(message, ProtocolMessage::Error(_)))
+    );
+    assert_eq!(runtime.next_playback_barrier_generation, 5);
+
+    runtime.set_playback_barrier_request_clock_for_tests(6.0);
+    runtime
+        .collect_dispatch_at(0.0)
+        .expect("periodic maintenance should prune expired tombstones globally");
+    assert!(runtime.playback_barrier_request_tombstones.is_empty());
+    runtime
+        .handle_line_fanout("client-3", third_room_replacement)
+        .expect("global capacity should recover after bounded aging");
+    assert_eq!(runtime.next_playback_barrier_generation, 6);
+}
+
+#[test]
+fn public_independent_policy_churn_is_coalesced_without_tombstones() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_playback_barrier_request_tombstone_policy_for_tests(10.0, 1, 1);
+    runtime.set_playback_barrier_request_clock_for_tests(0.0);
+    runtime
+        .handle_line("alice-client", &hello("alice", "room", true))
+        .expect("public participant should join");
+    for index in 1..=8 {
+        let load_intent = if index % 2 == 0 {
+            "transportRefresh"
+        } else {
+            "newPlayback"
+        };
+        let response = runtime
+            .handle_line_fanout(
+                "alice-client",
+                &format!(
+                    r#"{{"Set":{{"sorottePlaybackBarrierV1":{{"bufferingPolicy":{{"mediaGeneration":0,"requestNonce":{index},"requestId":"public-independent-{index}","loadIntent":"{load_intent}","policy":"independent"}}}}}}}}"#
+                ),
+            )
+            .expect("harmless Independent request should receive a canonical ack");
+        assert!(buffering_snapshot_for(&response, "alice-client").is_some());
+    }
+    assert_eq!(runtime.next_playback_barrier_generation, 1);
+    assert!(runtime.playback_barrier_request_tombstones.is_empty());
+    assert_eq!(
+        runtime.room_buffering_controls["room"]
+            .config
+            .request_id
+            .as_deref(),
+        Some("public-independent-8")
+    );
+
+    runtime
         .handle_line_fanout(
             "alice-client",
-            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":9000,"requestId":"overflow-request","loadIntent":"newPlayback","logicalMediaId":"overflow-media","targetPosition":0.0,"policy":"controller"}}}}"#,
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":20,"requestId":"legitimate-start","loadIntent":"newPlayback","logicalMediaId":"legitimate-media","targetPosition":0.0,"policy":"controller"}}}}"#,
         )
-        .expect("receipt overflow should fail closed");
-    assert!(overflow.is_empty());
-    assert_eq!(runtime.next_playback_barrier_generation, 0);
-    assert!(!runtime.room_playback_barriers.contains_key("room"));
-    assert_eq!(
-        runtime
-            .playback_barrier_request_receipts
-            .keys()
-            .filter(|(room, _)| room == "room")
-            .count(),
-        crate::PLAYBACK_BARRIER_MAX_REQUEST_RECEIPTS_PER_ROOM
+        .expect("legitimate start should remain available immediately");
+    assert_eq!(runtime.next_playback_barrier_generation, 2);
+    assert_eq!(runtime.playback_barrier_request_tombstones.len(), 1);
+}
+
+#[test]
+fn current_operation_remains_recoverable_after_tombstone_ttl() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_playback_barrier_request_tombstone_policy_for_tests(1.0, 1, 1);
+    runtime.set_playback_barrier_request_clock_for_tests(0.0);
+    runtime
+        .handle_line("alice-old", &hello("alice", "room", true))
+        .expect("old owner should join");
+    runtime
+        .handle_line_fanout(
+            "alice-old",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":31,"requestId":"current-aged-operation","loadIntent":"newPlayback","logicalMediaId":"current-aged-media","targetPosition":0.0,"policy":"controller"}}}}"#,
+        )
+        .expect("current operation should start");
+    runtime.set_playback_barrier_request_clock_for_tests(100.0);
+    runtime.prune_playback_barrier_request_tombstones();
+    assert!(runtime.playback_barrier_request_tombstones.is_empty());
+    // Even if an imported/older runtime state redundantly retained the same
+    // identity as a tombstone, canonical current state must win.
+    runtime.playback_barrier_request_tombstones.insert(
+        (
+            "room".to_owned(),
+            crate::PlaybackBarrierRequestId::new("current-aged-operation"),
+        ),
+        crate::PlaybackBarrierRequestTombstone {
+            request_nonce: 31,
+            logical_media_id_digest: None,
+            media_generation: 1,
+            retain_until_seconds: 200.0,
+        },
     );
-    assert!(!runtime.playback_barrier_request_receipts.contains_key(&(
-        "room".to_owned(),
-        crate::PlaybackBarrierRequestId::new("overflow-request"),
-    )));
+    runtime
+        .handle_line("alice-new", &hello("alice", "room", true))
+        .expect("replacement should join");
+    let recovered = runtime
+        .handle_line_fanout(
+            "alice-new",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"recovery":{"requestId":"current-aged-operation","originalRequestNonce":31,"recoveryNonce":32,"logicalMediaId":"current-aged-media"}}}}"#,
+        )
+        .expect("current identity should recover from canonical room state");
+    assert_eq!(
+        recovery_snapshot_for(&recovered, "alice-new")
+            .and_then(|extension| extension.recovery)
+            .and_then(|recovery| recovery.disposition),
+        Some(PlaybackBarrierRecoveryDisposition::Recovered)
+    );
+    assert_eq!(runtime.next_playback_barrier_generation, 1);
 }
 
 #[test]
@@ -2955,6 +3729,12 @@ fn playback_request_identity_is_redacted_from_server_runtime_debug() {
             ),
         )
         .expect("request identity should be retained only in redacted carriers");
+    runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":122,"requestId":"debug-replacement-operation","loadIntent":"newPlayback","logicalMediaId":"debug-replacement-media","targetPosition":0.0,"policy":"controller"}}}}"#,
+        )
+        .expect("replacement should retire the canary identity into the bounded cache");
 
     let debug = format!("{runtime:?}");
     assert!(!debug.contains(REQUEST_MARKER));

@@ -106,6 +106,14 @@ impl ServerRuntime {
         json_line: &str,
         peer_ip: Option<&str>,
     ) -> Result<Vec<DirectedProtocolMessage>, Box<LineFanoutFailure>> {
+        // A recovered application operation transfers authority to a newer
+        // connection. Reject the superseded transport before decoding so a
+        // repeated Hello, a batched command, or malformed input cannot pass
+        // through a command-specific path or replace its session while the
+        // network close is still in flight.
+        if self.reject_fenced_playback_barrier_transport(client_id) {
+            return Ok(Vec::new());
+        }
         let items = decode_message_line_items(json_line)
             .map_err(|error| Box::new(LineFanoutFailure::new(Vec::new(), error.into())))?;
         let mut outbound_messages = Vec::new();
@@ -275,6 +283,12 @@ impl ServerRuntime {
         message: ProtocolMessage,
         peer_ip: Option<&str>,
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
+        // The decoded-message API is also public, so enforce the same
+        // transport-wide revocation boundary here rather than relying only on
+        // the JSON-line entry point.
+        if self.reject_fenced_playback_barrier_transport(client_id) {
+            return Ok(Vec::new());
+        }
         let normalized = normalize_server_protocol_message(message);
         self.pending_compatibility_fallbacks
             .extend(normalized.fallbacks);

@@ -168,6 +168,13 @@ impl ServerRuntime {
         let Some(session) = self.sessions.get(client_id).cloned() else {
             return Ok(Vec::new());
         };
+        // A fenced session still models a live transport until the network's
+        // disconnect callback arrives. Periodic timeout cleanup must not
+        // remove the session (and its fence) while the close event and a
+        // racing protocol line are still in flight.
+        if self.reject_fenced_playback_barrier_transport(client_id) {
+            return Ok(Vec::new());
+        }
         self.ensure_room_state(&session.room);
         if self.room_playback_state(&session.room).set_by.is_none()
             && let Some(set_by_username) = self.fallback_room_set_by_username(&session.room)
@@ -202,7 +209,10 @@ impl ServerRuntime {
     pub(crate) fn fallback_room_set_by_username(&self, room_name: &str) -> Option<String> {
         self.sessions
             .iter()
-            .filter(|(_, session)| session.room == room_name)
+            .filter(|(client_id, session)| {
+                session.room == room_name
+                    && !self.playback_barrier_fenced_clients.contains(*client_id)
+            })
             .min_by_key(|(client_id, _)| self.client_room_join_order(client_id))
             .map(|(_, session)| session.username.clone())
     }
@@ -436,8 +446,8 @@ impl ServerRuntime {
         self.room_playback_states.remove(room_name);
         self.room_playback_barriers.remove(room_name);
         self.room_buffering_controls.remove(room_name);
-        self.playback_barrier_request_receipts
-            .retain(|(receipt_room, _), _| receipt_room != room_name);
+        self.playback_barrier_request_tombstones
+            .retain(|(tombstone_room, _), _| tombstone_room != room_name);
         self.delete_persisted_room_if_needed(room_name)?;
         Ok(())
     }
@@ -541,7 +551,8 @@ impl ServerRuntime {
             .is_controlled_room_name(room_name);
         let mut slowest: Option<(String, f64, u64)> = None;
         for (client_id, session) in &self.sessions {
-            if session.room != room_name {
+            if session.room != room_name || self.playback_barrier_fenced_clients.contains(client_id)
+            {
                 continue;
             }
             if controlled_room && !self.user_is_room_controller(&session.username, room_name) {

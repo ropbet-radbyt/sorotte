@@ -351,6 +351,24 @@ async fn dispatch_transport_actions_to_clients(
     }
 }
 
+async fn dispatch_transport_actions_to_peer_clients(
+    client_event_senders: &SharedClientEventSenders,
+    source_client_id: &str,
+    transport_actions: &[DirectedTransportAction],
+) {
+    for action in transport_actions {
+        if action.client_id == source_client_id {
+            continue;
+        }
+        dispatch_client_event(
+            client_event_senders,
+            &action.client_id,
+            ClientOutboundEvent::TransportAction(action.action.clone()),
+        )
+        .await;
+    }
+}
+
 #[cfg(test)]
 pub(crate) async fn prune_finished_session_tasks(session_tasks: &mut Vec<JoinHandle<()>>) {
     let mut index = 0;
@@ -835,6 +853,24 @@ async fn run_server_network_client_session_with_timeouts_until_shutdown(
                     transport_action_sink.as_ref(),
                     &dispatch.transport_actions,
                 );
+                // A command handled for this connection can revoke a
+                // different, overlapping connection (for example playback
+                // ownership recovery). Route those cross-client actions to
+                // the owning session task immediately; local actions remain
+                // synchronous below so StartTls cannot be applied twice.
+                let Some(()) = run_until_shutdown(
+                    &mut shutdown_rx,
+                    dispatch_transport_actions_to_peer_clients(
+                        &client_event_senders,
+                        &client_id,
+                        &dispatch.transport_actions,
+                    ),
+                )
+                .await
+                else {
+                    shutdown_requested = true;
+                    break;
+                };
                 let Some(action_result) = run_until_shutdown(
                     &mut shutdown_rx,
                     apply_local_transport_actions(
