@@ -432,6 +432,47 @@ impl ClientSession {
             .is_some_and(|playstate| self.room_playstate_has_remote_authority(playstate))
     }
 
+    pub fn current_room_playstate_authority(&self) -> Option<RoomPlaystateAuthority> {
+        let playstate = self.current_room_playstate()?;
+        if let (Some(prepare), Some(status)) = (
+            self.playback_barrier_prepare(),
+            self.playback_barrier_status(),
+        ) && prepare.media_generation == status.media_generation
+            && matches!(
+                status.phase,
+                sorotte_protocol::PlaybackBarrierPhase::Preparing
+                    | sorotte_protocol::PlaybackBarrierPhase::Committed
+                    | sorotte_protocol::PlaybackBarrierPhase::AwaitingDecision
+            )
+        {
+            return Some(RoomPlaystateAuthority::ServerBarrier {
+                media_generation: status.media_generation,
+                state_revision: status.state_revision,
+            });
+        }
+        if let Some(status) = self.playback_barrier_buffering_status()
+            && matches!(
+                status.phase,
+                sorotte_protocol::RoomBufferingPhase::Paused
+                    | sorotte_protocol::RoomBufferingPhase::DebouncingResume
+            )
+        {
+            return Some(RoomPlaystateAuthority::ServerBufferingPolicy {
+                media_generation: status.config.media_generation,
+            });
+        }
+        match playstate.set_by.as_deref() {
+            Some(set_by) if self.model.connection.username.as_deref() == Some(set_by) => {
+                Some(RoomPlaystateAuthority::LegacyLocalEcho)
+            }
+            Some(_) => Some(RoomPlaystateAuthority::LegacyRemoteUser),
+            None if self.current_room_has_other_users() => {
+                Some(RoomPlaystateAuthority::LegacyRemoteUser)
+            }
+            None => None,
+        }
+    }
+
     pub fn client_ignoring_on_the_fly(&self) -> u32 {
         self.model.playback.client_ignoring_on_the_fly
     }

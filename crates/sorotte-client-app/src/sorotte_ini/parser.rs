@@ -80,6 +80,99 @@ pub fn parse_sorotte_ini_stored_client_settings_mvp(contents: &str) -> StoredCli
                         settings.per_player_arguments = Some(parsed);
                     }
                 }
+                "streamingqualitypreset" if !value.is_empty() => {
+                    settings.streaming_quality_preset = Some(value.to_ascii_lowercase());
+                }
+                "streamingcustomformat" if !value.is_empty() => {
+                    settings.streaming_custom_format = Some(value);
+                }
+                "streamingbuffertarget" => {
+                    if let Some(parsed) = parse_ini_non_negative_f64_legacy_compatible(&value) {
+                        settings.streaming_buffer_target_seconds = Some(parsed);
+                    }
+                }
+                "streamingreadahead" => {
+                    if let Some(parsed) = parse_ini_non_negative_f64_legacy_compatible(&value) {
+                        settings.streaming_read_ahead_seconds = Some(parsed);
+                    }
+                }
+                "streamingmemorycachemib" => {
+                    if let Ok(parsed) = value.parse::<u64>() {
+                        settings.streaming_memory_cache_mebibytes = Some(parsed);
+                    }
+                }
+                "streamingdiskcacheenabled" => {
+                    if let Some(parsed) = parse_ini_bool_legacy_compatible(&value) {
+                        settings.streaming_disk_cache_enabled = Some(parsed);
+                    }
+                }
+                "streamingrecoverypolicy" if !value.is_empty() => {
+                    settings.streaming_recovery_policy = Some(value.to_ascii_lowercase());
+                }
+                "streamingmaxcatchuprate" => {
+                    if let Some(parsed) = parse_ini_non_negative_f64_legacy_compatible(&value) {
+                        settings.streaming_max_catchup_rate = Some(parsed);
+                    }
+                }
+                "streaminghardseekthreshold" => {
+                    if let Some(parsed) = parse_ini_non_negative_f64_legacy_compatible(&value) {
+                        settings.streaming_hard_seek_threshold_seconds = Some(parsed);
+                    }
+                }
+                "streamingmaxhardseeks" => {
+                    if let Ok(parsed) = value.parse::<u32>() {
+                        settings.streaming_max_hard_seeks_per_episode = Some(parsed);
+                    }
+                }
+                "streamingstabilityinterval" => {
+                    if let Some(parsed) = parse_ini_non_negative_f64_legacy_compatible(&value) {
+                        settings.streaming_stability_interval_seconds = Some(parsed);
+                    }
+                }
+                "streamingrecoveryretrybudget" => {
+                    if let Ok(parsed) = value.parse::<u32>() {
+                        settings.streaming_recovery_retry_budget = Some(parsed);
+                    }
+                }
+                "streamingrecoverycooldown" => {
+                    if let Some(parsed) = parse_ini_non_negative_f64_legacy_compatible(&value) {
+                        settings.streaming_recovery_cooldown_seconds = Some(parsed);
+                    }
+                }
+                "streamingroombufferingpolicy" if !value.is_empty() => {
+                    settings.streaming_room_buffering_policy = Some(value.to_ascii_lowercase());
+                }
+                "streamingroomquorumpercent" => {
+                    if let Some(parsed) = parse_ini_non_negative_f64_legacy_compatible(&value) {
+                        settings.streaming_room_quorum_percent = Some(parsed);
+                    }
+                }
+                "streamingroommaxpause" => {
+                    if let Some(parsed) = parse_ini_non_negative_f64_legacy_compatible(&value) {
+                        settings.streaming_room_max_pause_seconds = Some(parsed);
+                    }
+                }
+                "streamingstartpolicy" if !value.is_empty() => {
+                    settings.streaming_start_policy = Some(value.to_ascii_lowercase());
+                }
+                "streamingstartquorumpercent" => {
+                    if let Some(parsed) = parse_ini_non_negative_f64_legacy_compatible(&value) {
+                        settings.streaming_start_quorum_percent = Some(parsed);
+                    }
+                }
+                "streamingstarttimeout" => {
+                    if let Some(parsed) = parse_ini_non_negative_f64_legacy_compatible(&value) {
+                        settings.streaming_start_timeout_seconds = Some(parsed);
+                    }
+                }
+                "streamingstarttimeoutaction" if !value.is_empty() => {
+                    settings.streaming_start_timeout_action = Some(value.to_ascii_lowercase());
+                }
+                "streamingqualitydowngradesuggestions" => {
+                    if let Some(parsed) = parse_ini_bool_legacy_compatible(&value) {
+                        settings.streaming_quality_downgrade_suggestions = Some(parsed);
+                    }
+                }
                 "mediasearchdirectories" => {
                     if let Some(parsed) = parse_serialized_string_list_legacy_compatible(&value) {
                         settings.media_search_directories =

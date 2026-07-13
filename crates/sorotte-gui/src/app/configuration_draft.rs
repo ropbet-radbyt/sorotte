@@ -190,6 +190,75 @@ impl FirstRunConfigurationDialogDraft {
             ("Desync", "Slowdown Threshold") => {
                 self.settings.slowdown_threshold_seconds = parse_optional_nonnegative_f64(value);
             }
+            ("Streaming", "Quality") => {
+                self.settings.streaming_quality_preset =
+                    normalized_editable_text(value).map(|value| value.to_ascii_lowercase());
+            }
+            ("Streaming", "Custom Format") => {
+                self.settings.streaming_custom_format = normalized_editable_text(value);
+            }
+            ("Streaming", "Buffer Target Seconds") => {
+                self.settings.streaming_buffer_target_seconds =
+                    parse_optional_nonnegative_f64(value);
+            }
+            ("Streaming", "Read Ahead Seconds") => {
+                self.settings.streaming_read_ahead_seconds = parse_optional_nonnegative_f64(value);
+            }
+            ("Streaming", "Memory Cache MiB") => {
+                self.settings.streaming_memory_cache_mebibytes = parse_optional_u64(value);
+            }
+            ("Streaming", "Recovery Policy") => {
+                self.settings.streaming_recovery_policy =
+                    normalized_editable_text(value).map(|value| value.to_ascii_lowercase());
+            }
+            ("Streaming", "Maximum Catchup Rate") => {
+                self.settings.streaming_max_catchup_rate = parse_optional_nonnegative_f64(value);
+            }
+            ("Streaming", "Hard Seek Threshold Seconds") => {
+                self.settings.streaming_hard_seek_threshold_seconds =
+                    parse_optional_nonnegative_f64(value);
+            }
+            ("Streaming", "Maximum Hard Seeks") => {
+                self.settings.streaming_max_hard_seeks_per_episode = parse_optional_u32(value);
+            }
+            ("Streaming", "Stability Interval Seconds") => {
+                self.settings.streaming_stability_interval_seconds =
+                    parse_optional_nonnegative_f64(value);
+            }
+            ("Streaming", "Recovery Retry Budget") => {
+                self.settings.streaming_recovery_retry_budget = parse_optional_u32(value);
+            }
+            ("Streaming", "Recovery Cooldown Seconds") => {
+                self.settings.streaming_recovery_cooldown_seconds =
+                    parse_optional_nonnegative_f64(value);
+            }
+            ("Streaming", "Room Buffering Policy") => {
+                self.settings.streaming_room_buffering_policy =
+                    normalized_editable_text(value).map(|value| value.to_ascii_lowercase());
+            }
+            ("Streaming", "Room Quorum Percent") => {
+                self.settings.streaming_room_quorum_percent = parse_optional_nonnegative_f64(value);
+            }
+            ("Streaming", "Room Maximum Pause Seconds") => {
+                self.settings.streaming_room_max_pause_seconds =
+                    parse_optional_nonnegative_f64(value);
+            }
+            ("Streaming", "Start Synchronization") => {
+                self.settings.streaming_start_policy =
+                    normalized_editable_text(value).map(|value| value.to_ascii_lowercase());
+            }
+            ("Streaming", "Start Quorum Percent") => {
+                self.settings.streaming_start_quorum_percent =
+                    parse_optional_nonnegative_f64(value);
+            }
+            ("Streaming", "Start Timeout Seconds") => {
+                self.settings.streaming_start_timeout_seconds =
+                    parse_optional_nonnegative_f64(value);
+            }
+            ("Streaming", "Start Timeout Action") => {
+                self.settings.streaming_start_timeout_action =
+                    normalized_editable_text(value).map(|value| value.to_ascii_lowercase());
+            }
             ("Media Search", "First File Timeout") => {
                 self.settings.folder_search_first_file_timeout_seconds =
                     parse_optional_nonnegative_f64(value);
@@ -311,6 +380,12 @@ impl FirstRunConfigurationDialogDraft {
             ("Desync", "Dont Slow Down With Me") => {
                 self.settings.dont_slow_down_with_me = Some(value);
             }
+            ("Streaming", "Disk Cache") => {
+                self.settings.streaming_disk_cache_enabled = Some(value);
+            }
+            ("Streaming", "Quality Downgrade Suggestions") => {
+                self.settings.streaming_quality_downgrade_suggestions = Some(value);
+            }
             ("Chat", "Chat Input") => {
                 self.settings.chat_input_enabled = Some(value);
             }
@@ -397,6 +472,14 @@ fn parse_optional_u16(value: &str) -> Option<u16> {
         .parse::<u16>()
         .ok()
         .filter(|parsed| *parsed > 0)
+}
+
+fn parse_optional_u32(value: &str) -> Option<u32> {
+    normalized_editable_text(value)?.parse::<u32>().ok()
+}
+
+fn parse_optional_u64(value: &str) -> Option<u64> {
+    normalized_editable_text(value)?.parse::<u64>().ok()
 }
 
 fn parse_optional_nonnegative_f64(value: &str) -> Option<f64> {

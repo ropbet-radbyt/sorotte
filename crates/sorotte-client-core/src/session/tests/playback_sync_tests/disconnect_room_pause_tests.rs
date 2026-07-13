@@ -88,12 +88,68 @@ fn client_runtime_room_pause_sync_applies_remote_pause_mismatch_from_playstate()
     assert_eq!(
         runtime.session().model.playback.local_paused,
         Some(false),
-        "room pause sync should optimistically mirror local pause state until next telemetry sample"
+        "the reducer may mirror command intent while observed recovery remains pending"
+    );
+    assert!(
+        runtime
+            .session()
+            .model
+            .playback
+            .pending_cache_room_playstate_resync,
+        "IPC acceptance alone must not acknowledge the desired room unpause"
     );
     assert_eq!(
         runtime.drain_player_playback_telemetry_updates(),
         vec![PlayerPlaybackTelemetryUpdate::default().with_paused(true)],
         "room pause sync should preserve synced telemetry for diagnostics drains"
+    );
+
+    runtime
+        .player_mut_for_test()
+        .pending_playback_telemetry_update = Some(
+        PlayerPlaybackTelemetryUpdate::default()
+            .with_position_seconds(5.0)
+            .with_paused(false),
+    );
+    runtime
+        .run_room_pause_sync_if_needed()
+        .expect("stationary observed unpause should not fail");
+    assert!(
+        runtime
+            .session()
+            .model
+            .playback
+            .pending_cache_room_playstate_resync,
+        "pause=false without position advancement must keep desired play pending"
+    );
+
+    runtime
+        .player_mut_for_test()
+        .pending_playback_telemetry_update = Some(
+        PlayerPlaybackTelemetryUpdate::default()
+            .with_position_seconds(5.25)
+            .with_paused(false),
+    );
+    runtime
+        .run_room_pause_sync_if_needed()
+        .expect("advancing observed unpause should not fail");
+    assert!(
+        !runtime
+            .session()
+            .model
+            .playback
+            .pending_cache_room_playstate_resync,
+        "observed position advancement may acknowledge desired play"
+    );
+    assert_eq!(
+        runtime
+            .player()
+            .player_effects
+            .iter()
+            .filter(|effect| matches!(effect, ClientEffect::SetPlayerPaused(false)))
+            .count(),
+        1,
+        "retained desired play should not busy-loop unpause commands while awaiting observations"
     );
 }
 

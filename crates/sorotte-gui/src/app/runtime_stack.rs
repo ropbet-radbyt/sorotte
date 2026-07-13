@@ -21,16 +21,22 @@ use sorotte_client_app::app_boundary::application::{
     ClientApplication, ClientApplicationSettings, ClientCommand, ClientEvent,
 };
 use sorotte_client_app::app_boundary::state::{
-    AutoplayThresholdOverride, RoomName, StoredClientSettingsRuntimeSnapshot, Username,
+    AutoplayThresholdOverride, RoomName, StoredClientSettingsRuntimeSnapshot,
+    StreamingQualityDowngradeSuggestion, Username,
     parse_host_and_optional_port_from_host_arg_legacy_compatible,
 };
 use sorotte_client_core::{
     AUTOPLAY_TICK_INTERVAL_SECONDS, ChatNotification, ClientEffect, ClientMediaMatchPeerFileState,
-    ClientRuntimeAction, PrivacyMode, RoomPlaylistView, RoomPlaystateView,
+    ClientRuntimeAction, ClientSession, CoordinatorCommandId, CoordinatorPlayerCommand,
+    LogicalMediaId, MediaLoadIntent, MediaLoadPlan, MediaTransportKind,
+    PlaybackBarrierTimeoutAction, PlaybackCoordinationSnapshot, PlaybackCoordinatorAction,
+    PrivacyMode, ProtocolLineLease, RoomPlaylistView, RoomPlaystateView,
     SYNCPLAY_COMPAT_VERSION_LEGACY, SYNCPLAY_WIRE_VERSION_LEGACY, legacy_server_password_token,
 };
 use sorotte_media_match::{MediaMatchTier, MediaMatchWireSignature};
-use sorotte_player_api::PlayerPlaybackTelemetryUpdate;
+use sorotte_player_api::{
+    PlayerError, PlayerPlaybackTelemetryUpdate, PlayerTransportTelemetryUpdate,
+};
 use sorotte_protocol::{
     HelloPayload, ListPayload, ProtocolMessage, decode_message_line_items, encode_message_line,
 };

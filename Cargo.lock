@@ -3385,6 +3385,7 @@ dependencies = [
 name = "sorotte-client-core"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.2.17",
  "md-5",
  "serde_json",
  "sha2",
@@ -3519,8 +3520,11 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2",
+ "sorotte-client-app",
+ "sorotte-client-core",
  "sorotte-core",
  "sorotte-media-match",
+ "sorotte-player-api",
  "sorotte-protocol",
  "sorotte-secret",
  "thiserror 2.0.18",
@@ -3532,7 +3536,10 @@ dependencies = [
 name = "sorotte-sim"
 version = "0.1.0"
 dependencies = [
+ "sorotte-client-core",
  "sorotte-core",
+ "sorotte-player-api",
+ "sorotte-player-mpv",
 ]
 
 [[package]]

@@ -3,12 +3,17 @@ pub use sorotte_client_core::ConnectionPhase;
 use sorotte_client_core::{
     AutoplayCountdownNotification, ChatNotification, ClientEffect, ClientEffectError,
     ClientPlayerIo, ClientRuntime, ClientSession, ClientSessionUpdate,
-    ControlledRoomCreationNotification, ControllerAuthTransitionNotification, FileSize,
-    PrivacyMode, QueuedRuntimeControl, ReconnectStateRestoreCorrectionMetrics,
-    ReconnectStateRestoreCorrectionStateSnapshot, ReconnectTransitionNotification,
-    RoomPlaystateView, UserChangeNotification,
+    ControlledRoomCreationNotification, ControllerAuthTransitionNotification, CoordinatorCommandId,
+    FileSize, LogicalMediaId, MediaLoadIntent, MediaLoadPlan, MediaTransportKind,
+    PendingProtocolLine, PlaybackBarrierRoomBufferingConfig, PlaybackBarrierStartConfig,
+    PlaybackBarrierTimeoutAction, PlaybackCoordinationSnapshot, PlaybackCoordinatorAction,
+    PlaybackCoordinatorConfig, PrivacyMode, ProtocolLineLease, QueuedRuntimeControl,
+    ReconnectStateRestoreCorrectionMetrics, ReconnectStateRestoreCorrectionStateSnapshot,
+    ReconnectTransitionNotification, RoomPlaystateView, UserChangeNotification,
 };
-use sorotte_player_api::{PlayerAdapter, PlayerError, PlayerPlaybackTelemetryUpdate};
+use sorotte_player_api::{
+    PlayerAdapter, PlayerError, PlayerPlaybackTelemetryUpdate, PlayerTransportTelemetryUpdate,
+};
 pub use sorotte_plex::PlexClientConfig;
 use sorotte_plex::{
     cache::PlexMatchCache,
@@ -21,7 +26,13 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
-use crate::{legacy_settings::AutoplayThresholdOverride, runtime_config::ClientConfig};
+use crate::{
+    legacy_settings::AutoplayThresholdOverride,
+    runtime_config::{
+        ClientConfig, RoomBufferingPolicy, StartSynchronizationPolicy, StartTimeoutAction,
+        StreamingPlaybackConfig, StreamingQualityDowngradeSuggestion,
+    },
+};
 
 const PLEX_SYNC_PUMP_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -312,6 +323,7 @@ where
     runtime: ClientRuntime<P, QueuedRuntimeControl>,
     endpoint: Option<String>,
     plex: Option<ClientPlexService>,
+    streaming_playback_config: StreamingPlaybackConfig,
 }
 
 impl<P> ClientApplication<P>
@@ -335,6 +347,7 @@ where
             runtime,
             endpoint: None,
             plex: None,
+            streaming_playback_config: StreamingPlaybackConfig::default(),
         }
     }
 
@@ -539,7 +552,7 @@ where
         self.runtime.player()
     }
 
-    pub fn player_mut(&mut self) -> ClientPlayerIo<'_, P> {
+    pub fn player_mut(&mut self) -> ClientPlayerIo<'_, P, QueuedRuntimeControl> {
         self.runtime.player_mut()
     }
 
@@ -635,6 +648,55 @@ where
             )
         };
         let config = settings.config;
+        self.streaming_playback_config = config.playback.streaming.clone();
+        self.runtime.set_playback_coordinator_config(
+            config.playback.streaming.playback_coordinator_config(),
+        );
+        let start = &config.playback.streaming.start_synchronization;
+        self.runtime
+            .set_playback_barrier_start_config(PlaybackBarrierStartConfig {
+                policy: match start.policy {
+                    StartSynchronizationPolicy::Immediate => None,
+                    StartSynchronizationPolicy::WaitForController => {
+                        Some(sorotte_protocol::PlaybackBarrierPolicy::Controller)
+                    }
+                    StartSynchronizationPolicy::WaitForAllEligible => {
+                        Some(sorotte_protocol::PlaybackBarrierPolicy::AllEligible)
+                    }
+                    StartSynchronizationPolicy::Quorum => {
+                        Some(sorotte_protocol::PlaybackBarrierPolicy::Quorum)
+                    }
+                },
+                quorum_percent: start.quorum.get().round() as u32,
+                timeout_seconds: start.timeout.get(),
+                timeout_action: match start.timeout_action {
+                    StartTimeoutAction::Continue => PlaybackBarrierTimeoutAction::Continue,
+                    StartTimeoutAction::RemainPaused => PlaybackBarrierTimeoutAction::RemainPaused,
+                    StartTimeoutAction::AskController => {
+                        PlaybackBarrierTimeoutAction::AskController
+                    }
+                },
+            });
+        let room_buffering = &config.playback.streaming.room_buffering;
+        self.runtime.set_playback_barrier_room_buffering_config(
+            PlaybackBarrierRoomBufferingConfig {
+                policy: match room_buffering.policy {
+                    RoomBufferingPolicy::Independent => {
+                        sorotte_protocol::RoomBufferingPolicy::Independent
+                    }
+                    RoomBufferingPolicy::PauseController => {
+                        sorotte_protocol::RoomBufferingPolicy::PauseController
+                    }
+                    RoomBufferingPolicy::PauseEligible => {
+                        sorotte_protocol::RoomBufferingPolicy::PauseAnyEligible
+                    }
+                    RoomBufferingPolicy::Quorum => sorotte_protocol::RoomBufferingPolicy::Quorum,
+                },
+                quorum_percent: room_buffering.quorum.get().round() as u32,
+                maximum_pause_seconds: room_buffering.maximum_pause.get(),
+                ..PlaybackBarrierRoomBufferingConfig::default()
+            },
+        );
 
         behavior.show_same_room_osd = config.interface.show_same_room_osd;
         behavior.show_osd_warnings = config.interface.show_osd_warnings;
@@ -878,7 +940,7 @@ where
         }
     }
 
-    pub fn pending_protocol_line(&self) -> Result<Option<String>, ProtocolError> {
+    pub fn pending_protocol_line(&self) -> Result<Option<PendingProtocolLine>, ProtocolError> {
         self.runtime.pending_protocol_line()
     }
 
@@ -965,8 +1027,15 @@ where
         })
     }
 
-    pub fn acknowledge_protocol_line(&mut self) -> Option<ProtocolMessage> {
-        self.runtime.acknowledge_protocol_line()
+    pub fn acknowledge_protocol_line(
+        &mut self,
+        lease: ProtocolLineLease,
+    ) -> Option<ProtocolMessage> {
+        self.runtime.acknowledge_protocol_line(lease)
+    }
+
+    pub fn release_protocol_line(&mut self, lease: ProtocolLineLease) -> bool {
+        self.runtime.release_protocol_line(lease)
     }
 
     pub fn pending_protocol_message_count(&self) -> usize {
@@ -1271,8 +1340,137 @@ where
         self.runtime.take_stop_reconnect_requested()
     }
 
+    /// Emits a correlated playback-coordination retry once its server-provided
+    /// backoff has elapsed. Repeated calls are safe and emit at most one
+    /// attempt for the current operation.
+    pub fn run_pending_playback_barrier_retry_at(
+        &mut self,
+        now_seconds: f64,
+    ) -> Result<(), PlayerError> {
+        self.runtime
+            .run_pending_playback_barrier_retry_at(now_seconds)
+    }
+
+    /// Returns the remaining delay before a pending playback-coordination
+    /// attempt may be retried.
+    pub fn pending_playback_barrier_retry_delay_at(&self, now_seconds: f64) -> Option<f64> {
+        self.runtime
+            .pending_playback_barrier_retry_delay_at(now_seconds)
+    }
+
     pub fn run_room_pause_sync_if_needed(&mut self) -> Result<(), PlayerError> {
         self.runtime.run_room_pause_sync_if_needed()
+    }
+
+    pub fn run_room_pause_sync_if_needed_at(
+        &mut self,
+        now_seconds: f64,
+    ) -> Result<(), PlayerError> {
+        self.runtime.run_room_pause_sync_if_needed_at(now_seconds)
+    }
+
+    pub fn set_playback_coordinator_config(&mut self, config: PlaybackCoordinatorConfig) {
+        self.runtime.set_playback_coordinator_config(config);
+    }
+
+    pub fn set_playback_barrier_start_config(&mut self, config: PlaybackBarrierStartConfig) {
+        self.runtime.set_playback_barrier_start_config(config);
+    }
+
+    pub fn set_playback_barrier_room_buffering_config(
+        &mut self,
+        config: PlaybackBarrierRoomBufferingConfig,
+    ) {
+        self.runtime
+            .set_playback_barrier_room_buffering_config(config);
+    }
+
+    pub fn prepare_playback_media(
+        &mut self,
+        logical_id: LogicalMediaId,
+        kind: MediaTransportKind,
+        now_seconds: f64,
+    ) -> MediaLoadPlan {
+        self.runtime
+            .prepare_playback_media(logical_id, kind, now_seconds)
+    }
+
+    pub fn prepare_playback_media_with_intent(
+        &mut self,
+        logical_id: LogicalMediaId,
+        kind: MediaTransportKind,
+        intent: MediaLoadIntent,
+        now_seconds: f64,
+    ) -> MediaLoadPlan {
+        self.runtime
+            .prepare_playback_media_with_intent(logical_id, kind, intent, now_seconds)
+    }
+
+    pub fn observe_external_player_transport(
+        &mut self,
+        update: PlayerTransportTelemetryUpdate,
+        now_seconds: f64,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        self.runtime
+            .observe_external_player_transport(update, now_seconds)
+    }
+
+    pub fn observe_external_player_transport_at_epoch(
+        &mut self,
+        update: PlayerTransportTelemetryUpdate,
+        now_seconds: f64,
+        adapter_epoch: u64,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        self.runtime
+            .observe_external_player_transport_at_epoch(update, now_seconds, adapter_epoch)
+    }
+
+    pub fn reconcile_external_player_playback(
+        &mut self,
+        now_seconds: f64,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        self.runtime.reconcile_external_player_playback(now_seconds)
+    }
+
+    pub fn interrupt_external_playback_recovery(&mut self) -> Vec<PlaybackCoordinatorAction> {
+        self.runtime.interrupt_external_playback_recovery()
+    }
+
+    pub fn report_external_coordinator_command_dispatch(
+        &mut self,
+        command_id: CoordinatorCommandId,
+        result: Result<(), PlayerError>,
+        now_seconds: f64,
+    ) {
+        self.runtime
+            .report_external_coordinator_command_dispatch(command_id, result, now_seconds);
+    }
+
+    pub fn playback_coordination_snapshot(&self) -> PlaybackCoordinationSnapshot {
+        self.runtime.playback_coordination_snapshot()
+    }
+
+    pub fn streaming_quality_downgrade_suggestion(
+        &self,
+        approximate_selected_bitrate_bytes_per_second: Option<u64>,
+    ) -> Option<StreamingQualityDowngradeSuggestion> {
+        self.streaming_playback_config.quality_downgrade_suggestion(
+            &self.runtime.playback_coordination_snapshot().metrics,
+            approximate_selected_bitrate_bytes_per_second,
+        )
+    }
+
+    pub fn take_playback_barrier_timeout_action(&mut self) -> Option<PlaybackBarrierTimeoutAction> {
+        self.runtime.take_playback_barrier_timeout_action()
+    }
+
+    pub fn reset_playback_transport_adapter_epoch(&mut self, now_seconds: f64) -> u64 {
+        self.runtime
+            .reset_playback_transport_adapter_epoch(now_seconds)
+    }
+
+    pub fn playback_transport_adapter_epoch(&self) -> u64 {
+        self.runtime.playback_transport_adapter_epoch()
     }
 
     pub fn run_readiness_unpause_attempt(
@@ -1362,6 +1560,14 @@ where
 
     pub fn run_controller_auth_notifications_if_needed(&mut self) -> Result<(), PlayerError> {
         self.runtime.run_controller_auth_notifications_if_needed()
+    }
+
+    pub fn run_controller_auth_notifications_if_needed_at(
+        &mut self,
+        now_seconds: f64,
+    ) -> Result<(), PlayerError> {
+        self.runtime
+            .run_controller_auth_notifications_if_needed_at(now_seconds)
     }
 
     pub fn run_controlled_room_creation_notifications_if_needed(
@@ -1970,9 +2176,9 @@ mod tests {
             .pending_protocol_line()
             .expect("controller-auth message should encode")
             .expect("configured controller password should be cached for the active room");
-        assert!(line.contains(SECRET));
+        assert!(line.line().contains(SECRET));
 
-        let _ = application.acknowledge_protocol_line();
+        let _ = application.acknowledge_protocol_line(line.lease());
         let _ = application.dispatch(ClientCommand::update_settings(
             ClientApplicationSettings::new(ClientConfig::default()).with_active_room(ROOM),
         ));
@@ -1990,6 +2196,7 @@ mod tests {
                 .pending_protocol_line()
                 .expect("cached controller-auth message should encode")
                 .expect("live session should retain its cached controller password")
+                .line()
                 .contains(SECRET)
         );
     }
@@ -2037,7 +2244,7 @@ mod tests {
             .pending_protocol_line()
             .expect("State should encode")
             .expect("State should be staged");
-        assert!(staged_state.contains("\"State\""));
+        assert!(staged_state.line().contains("\"State\""));
         application
             .runtime
             .emit_effect(ClientEffect::SendChat("retain-chat".to_owned()))
@@ -2097,7 +2304,7 @@ mod tests {
             .pending_protocol_line()
             .expect("State should encode")
             .expect("State should be staged");
-        assert!(staged_state.contains("\"State\""));
+        assert!(staged_state.line().contains("\"State\""));
         application
             .runtime
             .emit_effect(ClientEffect::SendChat("retain-chat".to_owned()))

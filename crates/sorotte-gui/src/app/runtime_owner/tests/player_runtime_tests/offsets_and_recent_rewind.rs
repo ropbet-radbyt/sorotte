@@ -1,5 +1,370 @@
 use super::*;
 use crate::app::runtime_owner::GuiUpdateRuntime;
+use sorotte_client_core::{LogicalMediaId, MediaLoadIntent, MediaTransportKind};
+use sorotte_player_api::{
+    PlayerMediaGeneration, PlayerObservationTimestamp, PlayerSeekableRange, PlayerTransportPhase,
+    PlayerTransportTelemetryUpdate,
+};
+use sorotte_protocol::{
+    PlaybackBarrierPhase, PlaybackBarrierPolicy, PlaybackBarrierSetExtension,
+    PlaybackBarrierStatusPayload, PlaystatePayload, PrepareMediaPayload, ProtocolMessage,
+    SetPayload, StatePayload, decode_message_line_items, encode_message_line,
+};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::time::Duration;
+
+#[derive(Debug, Default)]
+struct OffsetTimelinePlayerState {
+    transport_updates: VecDeque<PlayerTransportTelemetryUpdate>,
+    set_positions: Vec<f64>,
+    set_paused: Vec<bool>,
+}
+
+struct OffsetTimelinePlayer {
+    state: std::sync::Arc<std::sync::Mutex<OffsetTimelinePlayerState>>,
+}
+
+impl PlayerAdapter for OffsetTimelinePlayer {
+    fn name(&self) -> &'static str {
+        "offset-timeline"
+    }
+
+    fn set_position(
+        &mut self,
+        position_seconds: f64,
+    ) -> Result<(), sorotte_player_api::PlayerError> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_positions
+            .push(position_seconds);
+        Ok(())
+    }
+
+    fn set_paused(&mut self, paused: bool) -> Result<(), sorotte_player_api::PlayerError> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_paused
+            .push(paused);
+        Ok(())
+    }
+
+    fn take_transport_telemetry_update(&mut self) -> Option<PlayerTransportTelemetryUpdate> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .transport_updates
+            .pop_front()
+    }
+}
+
+fn offset_transport(
+    observed_at_seconds: f64,
+    phase: PlayerTransportPhase,
+    player_position_seconds: f64,
+    logical_pause: bool,
+    seekable_range: PlayerSeekableRange,
+) -> PlayerTransportTelemetryUpdate {
+    let mut update = PlayerTransportTelemetryUpdate::new(
+        PlayerMediaGeneration::new(1),
+        PlayerObservationTimestamp::from_adapter_start(Duration::from_secs_f64(
+            observed_at_seconds,
+        )),
+    )
+    .with_phase(phase)
+    .with_position_seconds(player_position_seconds)
+    .with_logical_pause(logical_pause);
+    update.paused_for_cache = Some(phase == PlayerTransportPhase::Rebuffering);
+    update.seeking = Some(false);
+    update.seekable = Some(true);
+    update.seekable_ranges = Some(vec![seekable_range]);
+    update.core_idle = Some(phase == PlayerTransportPhase::ReadyPaused);
+    update.playback_restart_sequence = Some(1);
+    update
+}
+
+fn apply_offset_test_protocol(
+    session: &mut dyn GuiSessionRuntimeAdapter,
+    message: ProtocolMessage,
+) {
+    let line = encode_message_line(&message).expect("offset test protocol frame should encode");
+    session
+        .apply_message_json(&line)
+        .expect("offset test protocol frame should apply through the real GUI adapter");
+}
+
+fn offset_test_owner(
+    offset_seconds: f64,
+    media_kind: MediaTransportKind,
+) -> (
+    GuiPersistedConfigRuntimeOwner,
+    std::sync::Arc<std::sync::Mutex<OffsetTimelinePlayerState>>,
+    SorotteGuiShellAppState,
+) {
+    let player_state =
+        std::sync::Arc::new(std::sync::Mutex::new(OffsetTimelinePlayerState::default()));
+    let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("real client-core GUI session should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(OffsetTimelinePlayer {
+        state: player_state.clone(),
+    })));
+    owner.player_local_file = Some(
+        sorotte_player_api::LocalFileUpdate::new("offset-episode.mkv")
+            .with_path("C:/Media/offset-episode.mkv".to_owned()),
+    );
+    owner.player_position_seconds = None;
+    owner.player_paused = None;
+    owner.user_offset_seconds = offset_seconds;
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    let session = owner.session.as_mut().expect("GUI session should exist");
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"sorottePlaybackBarrierV1":true}}}"#,
+        )
+        .expect("barrier-aware server Hello should apply");
+    session
+        .prepare_attached_playback_media(
+            LogicalMediaId::new("sha256:gui-offset-integration")
+                .expect("logical media ID should be valid"),
+            media_kind,
+            MediaLoadIntent::NewPlayback,
+            100.0,
+        )
+        .expect("GUI media preparation should succeed");
+    (owner, player_state, state)
+}
+
+#[test]
+fn real_gui_positive_offset_normalizes_barrier_readiness_on_the_room_timeline() {
+    let (mut owner, player_state, state) = offset_test_owner(5.0, MediaTransportKind::NetworkVod);
+    let session = owner.session.as_mut().expect("GUI session should exist");
+    apply_offset_test_protocol(
+        session.as_mut(),
+        ProtocolMessage::state(
+            StatePayload::new().with_playstate(
+                PlaystatePayload::new()
+                    .with_position(10.0)
+                    .with_paused(true)
+                    .with_do_seek(true)
+                    .with_set_by("alice"),
+            ),
+        ),
+    );
+    apply_offset_test_protocol(
+        session.as_mut(),
+        ProtocolMessage::set(
+            SetPayload::new().with_playback_barrier_v1(
+                PlaybackBarrierSetExtension::new()
+                    .with_prepare(
+                        PrepareMediaPayload::new(
+                            51,
+                            "sha256:gui-offset-integration",
+                            10.0,
+                            PlaybackBarrierPolicy::Controller,
+                        )
+                        .with_request_nonce(1),
+                    )
+                    .with_status(PlaybackBarrierStatusPayload {
+                        media_generation: 51,
+                        state_revision: None,
+                        phase: PlaybackBarrierPhase::Preparing,
+                        policy: PlaybackBarrierPolicy::Controller,
+                        quorum: None,
+                        deadline: 120.0,
+                        participants: BTreeMap::new(),
+                        excluded_legacy_clients: BTreeSet::new(),
+                    }),
+            ),
+        ),
+    );
+    player_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .transport_updates
+        .push_back(offset_transport(
+            1.0,
+            PlayerTransportPhase::ReadyPaused,
+            15.0,
+            true,
+            PlayerSeekableRange::new(15.0, 25.0),
+        ));
+
+    owner.refresh_player_state_impl();
+    assert_eq!(
+        owner.player_position_seconds,
+        Some(10.0),
+        "positive-offset player telemetry must be stored on the room timeline"
+    );
+    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+
+    let outbound = owner
+        .session
+        .as_mut()
+        .expect("GUI session should exist")
+        .flush_outbound_protocol_lines()
+        .expect("GUI outbox should encode");
+    let ready = outbound
+        .into_iter()
+        .flat_map(|line| {
+            decode_message_line_items(&line)
+                .expect("GUI outbox line should decode")
+                .into_iter()
+        })
+        .filter_map(|item| item.message.ok())
+        .find_map(|message| match message {
+            ProtocolMessage::State(state) => state
+                .state
+                .playback_barrier_v1()
+                .expect("barrier State extension should decode")
+                .and_then(|extension| extension.ready),
+            _ => None,
+        })
+        .expect("room-timeline ReadyPaused observation should emit MediaReady");
+    assert_eq!(ready.media_generation, 51);
+    assert!(ready.loaded);
+    assert!(ready.buffer_ready);
+    assert_eq!(ready.seekable, Some(true));
+    assert!(
+        player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_positions
+            .is_empty(),
+        "an offset-normalized observation already at the barrier target must not be re-sought"
+    );
+}
+
+#[test]
+fn real_gui_negative_offset_normalizes_recovery_and_shifts_coordinator_seek_once() {
+    let (mut owner, player_state, state) = offset_test_owner(-5.0, MediaTransportKind::LiveSliding);
+    apply_offset_test_protocol(
+        owner
+            .session
+            .as_mut()
+            .expect("GUI session should exist")
+            .as_mut(),
+        ProtocolMessage::state(
+            StatePayload::new().with_playstate(
+                PlaystatePayload::new()
+                    .with_position(10.0)
+                    .with_paused(false)
+                    .with_do_seek(false)
+                    .with_set_by("bob"),
+            ),
+        ),
+    );
+    player_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .transport_updates
+        .push_back(offset_transport(
+            1.0,
+            PlayerTransportPhase::Playing,
+            5.0,
+            false,
+            PlayerSeekableRange::new(0.0, 16.0),
+        ));
+    owner.refresh_player_state_impl();
+    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    assert_eq!(
+        owner.player_position_seconds,
+        Some(10.0),
+        "negative-offset normal playback telemetry must be stored globally"
+    );
+    player_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .set_positions
+        .clear();
+
+    player_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .transport_updates
+        .push_back(offset_transport(
+            2.0,
+            PlayerTransportPhase::Rebuffering,
+            5.0,
+            false,
+            PlayerSeekableRange::new(0.0, 16.0),
+        ));
+    owner.refresh_player_state_impl();
+    assert_eq!(owner.player_position_seconds, Some(10.0));
+    assert!(
+        owner
+            .session
+            .as_ref()
+            .and_then(|session| session.playback_coordination_snapshot())
+            .and_then(|snapshot| snapshot.recovery_episode)
+            .is_some(),
+        "the normalized rebuffer observation should enter coordinator-owned recovery"
+    );
+
+    apply_offset_test_protocol(
+        owner
+            .session
+            .as_mut()
+            .expect("GUI session should exist")
+            .as_mut(),
+        ProtocolMessage::state(
+            StatePayload::new().with_playstate(
+                PlaystatePayload::new()
+                    .with_position(20.0)
+                    .with_paused(true)
+                    .with_do_seek(true)
+                    .with_set_by("bob"),
+            ),
+        ),
+    );
+    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    assert!(
+        player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_positions
+            .is_empty(),
+        "Rebuffering must block the forced correction until transport becomes safe"
+    );
+    assert_eq!(
+        player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_paused,
+        vec![true],
+        "the authoritative pause must latch immediately while the forced seek remains deferred"
+    );
+
+    player_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .transport_updates
+        .push_back(offset_transport(
+            3.0,
+            PlayerTransportPhase::ReadyPaused,
+            5.0,
+            true,
+            // On the room timeline this player-local [0, 16] window is
+            // [5, 21]. The live-edge safety clamp therefore permits the
+            // requested global 20s target only when the range is shifted.
+            PlayerSeekableRange::new(0.0, 16.0),
+        ));
+    owner.refresh_player_state_impl();
+
+    assert_eq!(
+        player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_positions,
+        vec![15.0],
+        "the coordinator's global 20s seek must cross the GUI boundary as player-local 15s exactly once"
+    );
+}
 
 #[test]
 fn gui_persisted_config_runtime_owner_keeps_offset_commands_on_global_timeline() {
@@ -76,7 +441,7 @@ fn gui_persisted_config_runtime_owner_keeps_offset_commands_on_global_timeline()
         last_applied_attached_room_playstate: None,
         suppressed_attached_room_playstate_after_playlist_reset: None,
         pending_local_attached_pause_override: None,
-        pending_attached_cache_unpause: false,
+        pending_attached_room_unpause_observation: None,
         pending_attached_player_pause_confirmation_pump: None,
         pending_attached_player_pause_command: None,
         player_position_seconds: Some(100.0),

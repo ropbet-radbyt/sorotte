@@ -6,6 +6,7 @@ impl fmt::Debug for MpvAdapter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MpvAdapter")
             .field("paused", &self.paused)
+            .field("logical_pause_explicit", &self.logical_pause_explicit)
             .field("position_seconds", &self.position_seconds)
             .field("playback_rate", &self.playback_rate)
             .field("paused_for_cache", &self.paused_for_cache)
@@ -40,6 +41,15 @@ impl fmt::Debug for MpvAdapter {
                 &self.pending_playback_telemetry_update,
             )
             .field(
+                "pending_transport_telemetry_updates",
+                &self.pending_transport_telemetry_updates,
+            )
+            .field("pending_tracked_commands", &self.pending_tracked_commands)
+            .field(
+                "pending_command_progress_updates",
+                &self.pending_command_progress_updates,
+            )
+            .field(
                 "pending_media_load_outcomes",
                 &self.pending_media_load_outcomes,
             )
@@ -61,6 +71,22 @@ impl fmt::Debug for MpvAdapter {
             )
             .field("observed_state", &self.observed_state)
             .field("observers_registered", &self.observers_registered)
+            .field(
+                "transport_observers_registered",
+                &self.transport_observers_registered,
+            )
+            .field("next_media_generation", &self.next_media_generation)
+            .field("active_media_generation", &self.active_media_generation)
+            .field("pending_load_generation", &self.pending_load_generation)
+            .field("active_playlist_entry_id", &self.active_playlist_entry_id)
+            .field("transport_phase", &self.transport_phase)
+            .field("active_file_loaded", &self.active_file_loaded)
+            .field(
+                "active_generation_has_restarted",
+                &self.active_generation_has_restarted,
+            )
+            .field("playback_restart_sequence", &self.playback_restart_sequence)
+            .field("next_command_id", &self.next_command_id)
             .field(
                 "legacy_syncplay_ui_settings",
                 &self.legacy_syncplay_ui_settings,
@@ -91,6 +117,7 @@ impl Default for MpvAdapter {
     fn default() -> Self {
         Self {
             paused: false,
+            logical_pause_explicit: false,
             position_seconds: 0.0,
             playback_rate: 0.0,
             paused_for_cache: false,
@@ -115,6 +142,9 @@ impl Default for MpvAdapter {
             current_path: None,
             pending_local_file_update: None,
             pending_playback_telemetry_update: None,
+            pending_transport_telemetry_updates: VecDeque::new(),
+            pending_tracked_commands: VecDeque::new(),
+            pending_command_progress_updates: VecDeque::new(),
             pending_media_load_outcomes: VecDeque::new(),
             pending_chat_requests: VecDeque::new(),
             pending_load_request: None,
@@ -122,6 +152,18 @@ impl Default for MpvAdapter {
             last_paused_position_poll_at: None,
             observed_state: MpvObservedState::default(),
             observers_registered: false,
+            transport_observers_registered: false,
+            observation_clock_origin: Instant::now(),
+            next_media_generation: 1,
+            active_media_generation: None,
+            pending_load_generation: None,
+            active_playlist_entry_id: None,
+            playlist_entry_generations: HashMap::new(),
+            transport_phase: PlayerTransportPhase::Empty,
+            active_file_loaded: false,
+            active_generation_has_restarted: false,
+            playback_restart_sequence: 0,
+            next_command_id: 1,
             legacy_syncplay_ui_settings: LegacySyncplayUiSettings::default(),
             legacy_syncplayintf_script_loaded: false,
             legacy_syncplayintf_options_applied: false,
@@ -139,10 +181,16 @@ pub(super) struct MpvObservedState {
     pub(super) duration_seconds: Option<f64>,
     pub(super) size_bytes: Option<u64>,
     pub(super) paused: Option<bool>,
+    pub(super) logical_pause: Option<bool>,
     pub(super) position_seconds: Option<f64>,
     pub(super) playback_rate: Option<f64>,
     pub(super) paused_for_cache: Option<bool>,
     pub(super) cache_buffering_percent: Option<f64>,
+    pub(super) seeking: Option<bool>,
+    pub(super) seekable: Option<bool>,
+    pub(super) core_idle: Option<bool>,
+    pub(super) demuxer_cache_idle: Option<bool>,
+    pub(super) eof_reached: Option<bool>,
 }
 
 impl std::fmt::Debug for MpvObservedState {
@@ -156,10 +204,16 @@ impl std::fmt::Debug for MpvObservedState {
             .field("duration_seconds", &self.duration_seconds)
             .field("size_bytes", &self.size_bytes)
             .field("paused", &self.paused)
+            .field("logical_pause", &self.logical_pause)
             .field("position_seconds", &self.position_seconds)
             .field("playback_rate", &self.playback_rate)
             .field("paused_for_cache", &self.paused_for_cache)
             .field("cache_buffering_percent", &self.cache_buffering_percent)
+            .field("seeking", &self.seeking)
+            .field("seekable", &self.seekable)
+            .field("core_idle", &self.core_idle)
+            .field("demuxer_cache_idle", &self.demuxer_cache_idle)
+            .field("eof_reached", &self.eof_reached)
             .finish()
     }
 }

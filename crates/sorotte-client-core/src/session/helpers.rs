@@ -261,6 +261,7 @@ impl ClientSession {
 
     pub(super) fn update_local_room(&mut self, room_name: String) {
         if self.model.room.name.as_deref() != Some(room_name.as_str()) {
+            self.reset_playback_barrier();
             self.reset_playlist_index_transition_tracking();
             self.model.controller.pending_local_room_switch_target = None;
         } else if self

@@ -19,6 +19,22 @@ impl ServerRuntime {
             room_controllers: BTreeMap::new(),
             room_playlists: BTreeMap::new(),
             room_playback_states: BTreeMap::new(),
+            room_playback_barriers: BTreeMap::new(),
+            room_buffering_controls: BTreeMap::new(),
+            playback_barrier_fenced_clients: BTreeSet::new(),
+            playback_barrier_request_tombstones: BTreeMap::new(),
+            playback_barrier_request_tombstone_policy:
+                PlaybackBarrierRequestTombstonePolicy::default(),
+            playback_barrier_request_clock_started_at: Instant::now(),
+            #[cfg(test)]
+            playback_barrier_request_clock_override_seconds: None,
+            playback_barrier_new_identity_rate_policy:
+                PlaybackBarrierNewIdentityRatePolicy::default(),
+            playback_barrier_new_identity_rate_by_client: BTreeMap::new(),
+            playback_barrier_new_identity_rate_by_room: BTreeMap::new(),
+            playback_barrier_request_nonces: BTreeMap::new(),
+            next_playback_barrier_generation: 0,
+            next_playback_barrier_revision: 0,
             client_playback_states: BTreeMap::new(),
             client_room_join_sequence: BTreeMap::new(),
             next_room_join_sequence: 0,
@@ -278,6 +294,53 @@ impl ServerRuntime {
         self.time_now_override_seconds = seconds;
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_playback_barrier_request_tombstone_policy_for_tests(
+        &mut self,
+        ttl_seconds: f64,
+        max_per_room: usize,
+        max_global: usize,
+    ) {
+        self.playback_barrier_request_tombstone_policy = PlaybackBarrierRequestTombstonePolicy {
+            ttl_seconds: if ttl_seconds.is_finite() && ttl_seconds > 0.0 {
+                ttl_seconds
+            } else {
+                PLAYBACK_BARRIER_REQUEST_TOMBSTONE_TTL_SECONDS
+            },
+            max_per_room: max_per_room.max(1),
+            max_global: max_global.max(1),
+        };
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_playback_barrier_request_clock_for_tests(&mut self, seconds: f64) {
+        self.playback_barrier_request_clock_override_seconds = Some(if seconds.is_finite() {
+            seconds.max(0.0)
+        } else {
+            0.0
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_playback_barrier_new_identity_rate_policy_for_tests(
+        &mut self,
+        window_seconds: f64,
+        max_per_client: usize,
+        max_per_room: usize,
+    ) {
+        self.playback_barrier_new_identity_rate_policy = PlaybackBarrierNewIdentityRatePolicy {
+            window_seconds: if window_seconds.is_finite() && window_seconds > 0.0 {
+                window_seconds
+            } else {
+                PLAYBACK_BARRIER_NEW_IDENTITY_RATE_WINDOW_SECONDS
+            },
+            max_per_client: max_per_client.max(1),
+            max_per_room: max_per_room.max(1),
+        };
+        self.playback_barrier_new_identity_rate_by_client.clear();
+        self.playback_barrier_new_identity_rate_by_room.clear();
+    }
+
     pub fn subscribe_persistence_events(&self) -> broadcast::Receiver<ServerPersistenceEvent> {
         self.persistence_events.subscribe()
     }
@@ -356,15 +419,24 @@ impl ServerRuntime {
         } else {
             self.current_time_seconds()
         };
+        self.prune_playback_barrier_request_tombstones();
         let outbound_messages = self.collect_due_periodic_updates_at(now_seconds)?;
         self.collect_due_stats_snapshots_at(now_seconds)?;
         let outbound_lines = outbound_messages
             .into_iter()
             .map(|message| {
-                let delivery = if matches!(&message.message, ProtocolMessage::State(_)) {
-                    ServerOutboundDelivery::CoalesciblePeriodicState
-                } else {
-                    ServerOutboundDelivery::Reliable
+                let delivery = match &message.message {
+                    ProtocolMessage::State(state)
+                        if state
+                            .state
+                            .playstate
+                            .as_ref()
+                            .and_then(|playstate| playstate.do_seek)
+                            != Some(true) =>
+                    {
+                        ServerOutboundDelivery::CoalesciblePeriodicState
+                    }
+                    _ => ServerOutboundDelivery::Reliable,
                 };
                 Ok(DirectedOutboundLine {
                     client_id: message.client_id,

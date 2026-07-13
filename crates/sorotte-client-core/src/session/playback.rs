@@ -106,6 +106,13 @@ impl ClientSession {
         dont_slow_down_with_me: bool,
         speed_supported: bool,
     ) -> DesyncCorrectionAction {
+        if self.model.playback.local_paused_for_cache == Some(true)
+            || self.model.playback.pending_cache_room_playstate_resync
+        {
+            self.model.playback.behind_first_detected_at_seconds = None;
+            return DesyncCorrectionAction::None;
+        }
+
         let (Some(global_position), Some(global_paused)) =
             (global_playstate.position, global_playstate.paused)
         else {

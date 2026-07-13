@@ -2,6 +2,8 @@ use super::*;
 use crate::control::client_effect_player_error;
 use sorotte_player_api::PlayerCommand;
 
+const CACHE_RECOVERY_MIN_OBSERVED_ADVANCEMENT_SECONDS: f64 = 0.01;
+
 impl ClientSession {
     pub(crate) fn snapshot_local_action_state(&self) -> ClientSessionLocalActionSnapshot {
         ClientSessionLocalActionSnapshot {
@@ -16,6 +18,14 @@ impl ClientSession {
                 .model
                 .playback
                 .pending_cache_room_playstate_resync,
+            cache_recovery_observation_position: self
+                .model
+                .playback
+                .cache_recovery_observation_position,
+            cache_recovery_waiting_for_post_cache_position: self
+                .model
+                .playback
+                .cache_recovery_waiting_for_post_cache_position,
             last_seek_position_before_manual_seek: self
                 .model
                 .playlist
@@ -40,6 +50,12 @@ impl ClientSession {
         self.model.playback.local_cache_buffering_percent = snapshot.local_cache_buffering_percent;
         self.model.playback.pending_cache_room_playstate_resync =
             snapshot.pending_cache_room_playstate_resync;
+        self.model.playback.cache_recovery_observation_position =
+            snapshot.cache_recovery_observation_position;
+        self.model
+            .playback
+            .cache_recovery_waiting_for_post_cache_position =
+            snapshot.cache_recovery_waiting_for_post_cache_position;
         self.model.playlist.last_seek_position_before_manual_seek =
             snapshot.last_seek_position_before_manual_seek;
         self.model.playback.last_paused_on_leave_at_seconds =
@@ -54,16 +70,45 @@ impl ClientSession {
         update: &PlayerPlaybackTelemetryUpdate,
     ) -> bool {
         let mut changed = false;
+        let observed_position = update
+            .position_seconds
+            .filter(|value| value.is_finite() && *value >= 0.0);
         let cache_pause_was_active = self.model.playback.local_paused_for_cache == Some(true);
         if let Some(paused_for_cache) = update.paused_for_cache {
             if self.model.playback.local_paused_for_cache != Some(paused_for_cache) {
                 self.model.playback.local_paused_for_cache = Some(paused_for_cache);
                 changed = true;
             }
-            if (paused_for_cache || cache_pause_was_active)
-                && !self.model.playback.pending_cache_room_playstate_resync
+            if paused_for_cache {
+                if !self.model.playback.pending_cache_room_playstate_resync {
+                    self.model.playback.pending_cache_room_playstate_resync = true;
+                    changed = true;
+                }
+                let recovery_position = observed_position.or(self.model.playback.local_position);
+                if self.model.playback.cache_recovery_observation_position != recovery_position {
+                    self.model.playback.cache_recovery_observation_position = recovery_position;
+                    changed = true;
+                }
+                if self
+                    .model
+                    .playback
+                    .cache_recovery_waiting_for_post_cache_position
+                {
+                    self.model
+                        .playback
+                        .cache_recovery_waiting_for_post_cache_position = false;
+                    changed = true;
+                }
+            } else if cache_pause_was_active
+                && self.model.playback.pending_cache_room_playstate_resync
+                && !self
+                    .model
+                    .playback
+                    .cache_recovery_waiting_for_post_cache_position
             {
-                self.model.playback.pending_cache_room_playstate_resync = true;
+                self.model
+                    .playback
+                    .cache_recovery_waiting_for_post_cache_position = true;
                 changed = true;
             }
         }
@@ -78,23 +123,53 @@ impl ClientSession {
         let cache_pause_active = self.model.playback.local_paused_for_cache == Some(true);
         if let Some(paused) = update.paused
             && !cache_pause_active
+            && self.model.playback.local_paused != Some(paused)
         {
-            if self.model.playback.local_paused != Some(paused) {
-                self.model.playback.local_paused = Some(paused);
-                changed = true;
-            }
-            if !paused && self.model.playback.pending_cache_room_playstate_resync {
-                self.model.playback.pending_cache_room_playstate_resync = false;
-                changed = true;
-            }
+            self.model.playback.local_paused = Some(paused);
+            changed = true;
         }
-        if let Some(position_seconds) = update
-            .position_seconds
-            .filter(|value| value.is_finite() && *value >= 0.0)
+        if let Some(position_seconds) = observed_position
             && self.model.playback.local_position != Some(position_seconds)
         {
             self.model.playback.local_position = Some(position_seconds);
             changed = true;
+        }
+        if self.model.playback.pending_cache_room_playstate_resync
+            && !cache_pause_active
+            && let Some(position_seconds) = observed_position
+        {
+            if self
+                .model
+                .playback
+                .cache_recovery_waiting_for_post_cache_position
+            {
+                self.model.playback.cache_recovery_observation_position = Some(position_seconds);
+                self.model
+                    .playback
+                    .cache_recovery_waiting_for_post_cache_position = false;
+                changed = true;
+            } else if self.model.playback.local_paused == Some(false)
+                && self
+                    .model
+                    .playback
+                    .cache_recovery_observation_position
+                    .is_some_and(|baseline_position| {
+                        position_seconds - baseline_position
+                            > CACHE_RECOVERY_MIN_OBSERVED_ADVANCEMENT_SECONDS
+                    })
+            {
+                self.model.playback.pending_cache_room_playstate_resync = false;
+                self.model.playback.cache_recovery_observation_position = None;
+                changed = true;
+            } else if self
+                .model
+                .playback
+                .cache_recovery_observation_position
+                .is_none()
+            {
+                self.model.playback.cache_recovery_observation_position = Some(position_seconds);
+                changed = true;
+            }
         }
         if let Some(playback_rate) = update
             .playback_rate

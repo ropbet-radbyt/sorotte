@@ -130,6 +130,15 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                 message: format!("Client-core chat notification dispatch failed: {error}"),
             });
         }
+        if let Err(error) = self
+            .runtime
+            .run_pending_playback_barrier_retry_at(system_time_seconds())
+        {
+            actions.push(GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Error,
+                message: format!("Client-core playback retry dispatch failed: {error}"),
+            });
+        }
         self.queue_periodic_state_sync_heartbeat_if_due();
 
         let main_window_runtime_snapshot = self.main_window_runtime_snapshot(state);

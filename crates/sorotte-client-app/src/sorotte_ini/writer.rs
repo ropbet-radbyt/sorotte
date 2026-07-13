@@ -89,6 +89,7 @@ fn upsert_sorotte_ini_stored_client_settings_mvp_with_plex_identity_clear(
             &serialized,
         );
     }
+    upsert_optional_streaming_settings(&mut lines, settings);
     if let Some(media_search_directories) = settings.media_search_directories.as_ref() {
         let serialized = format_serialized_string_list_legacy_compatible(media_search_directories);
         upsert_ini_value_legacy_compatible(
@@ -655,5 +656,123 @@ fn upsert_sorotte_ini_stored_client_settings_mvp_with_plex_identity_clear(
         format!("\u{feff}{output}")
     } else {
         output
+    }
+}
+
+fn upsert_optional_streaming_settings(lines: &mut Vec<String>, settings: &StoredClientSettingsMvp) {
+    for (key, value) in [
+        (
+            "streamingQualityPreset",
+            settings.streaming_quality_preset.as_deref(),
+        ),
+        (
+            "streamingCustomFormat",
+            settings.streaming_custom_format.as_deref(),
+        ),
+        (
+            "streamingRecoveryPolicy",
+            settings.streaming_recovery_policy.as_deref(),
+        ),
+        (
+            "streamingRoomBufferingPolicy",
+            settings.streaming_room_buffering_policy.as_deref(),
+        ),
+        (
+            "streamingStartPolicy",
+            settings.streaming_start_policy.as_deref(),
+        ),
+        (
+            "streamingStartTimeoutAction",
+            settings.streaming_start_timeout_action.as_deref(),
+        ),
+    ] {
+        if let Some(value) = value {
+            upsert_ini_value_legacy_compatible(lines, "client_settings", key, value);
+        }
+    }
+
+    for (key, value) in [
+        (
+            "streamingBufferTarget",
+            settings.streaming_buffer_target_seconds,
+        ),
+        ("streamingReadAhead", settings.streaming_read_ahead_seconds),
+        (
+            "streamingMaxCatchupRate",
+            settings.streaming_max_catchup_rate,
+        ),
+        (
+            "streamingHardSeekThreshold",
+            settings.streaming_hard_seek_threshold_seconds,
+        ),
+        (
+            "streamingStabilityInterval",
+            settings.streaming_stability_interval_seconds,
+        ),
+        (
+            "streamingRecoveryCooldown",
+            settings.streaming_recovery_cooldown_seconds,
+        ),
+        (
+            "streamingRoomQuorumPercent",
+            settings.streaming_room_quorum_percent,
+        ),
+        (
+            "streamingRoomMaxPause",
+            settings.streaming_room_max_pause_seconds,
+        ),
+        (
+            "streamingStartQuorumPercent",
+            settings.streaming_start_quorum_percent,
+        ),
+        (
+            "streamingStartTimeout",
+            settings.streaming_start_timeout_seconds,
+        ),
+    ] {
+        if let Some(value) = value
+            && let Some(rendered) = format_ini_non_negative_f64_legacy_compatible(value)
+        {
+            upsert_ini_value_legacy_compatible(lines, "client_settings", key, &rendered);
+        }
+    }
+
+    for (key, value) in [
+        (
+            "streamingMemoryCacheMiB",
+            settings.streaming_memory_cache_mebibytes,
+        ),
+        (
+            "streamingMaxHardSeeks",
+            settings.streaming_max_hard_seeks_per_episode.map(u64::from),
+        ),
+        (
+            "streamingRecoveryRetryBudget",
+            settings.streaming_recovery_retry_budget.map(u64::from),
+        ),
+    ] {
+        if let Some(value) = value {
+            upsert_ini_value_legacy_compatible(lines, "client_settings", key, &value.to_string());
+        }
+    }
+
+    for (key, value) in [
+        (
+            "streamingDiskCacheEnabled",
+            settings.streaming_disk_cache_enabled,
+        ),
+        (
+            "streamingQualityDowngradeSuggestions",
+            settings.streaming_quality_downgrade_suggestions,
+        ),
+    ] {
+        if let Some(value) = value {
+            upsert_ini_value_legacy_compatible(
+                lines,
+                "client_settings",
+                key,
+                format_ini_bool_legacy_compatible(value),
+            );
+        }
     }
 }

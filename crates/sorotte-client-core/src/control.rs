@@ -1,7 +1,8 @@
 use super::*;
 use std::collections::VecDeque;
 
-use crate::outbox::{EffectOutbox, ProtocolOutbox};
+use crate::outbox::{EffectOutbox, ProtocolLineLease, ProtocolOutbox};
+use sorotte_protocol::PlaybackBarrierSetExtension;
 
 macro_rules! notification_outbox_methods {
     ($front:ident, $acknowledge:ident, $flush:ident, $field:ident, $notification:ty) => {
@@ -138,6 +139,82 @@ impl std::fmt::Debug for ClientRuntimeAction {
     }
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct PlaybackBarrierRequestScope {
+    room: String,
+    local_media_generation: u64,
+    request_nonce: u64,
+}
+
+impl PlaybackBarrierRequestScope {
+    pub fn new(room: impl Into<String>, local_media_generation: u64, request_nonce: u64) -> Self {
+        Self {
+            room: room.into(),
+            local_media_generation,
+            request_nonce,
+        }
+    }
+
+    fn matches(&self, extension: &PlaybackBarrierSetExtension) -> bool {
+        if self.room.trim().is_empty()
+            || self.local_media_generation == 0
+            || self.request_nonce == 0
+        {
+            return false;
+        }
+
+        let prepare_nonce = extension
+            .prepare
+            .as_ref()
+            .map(|prepare| prepare.request_nonce);
+        let buffering_nonce = extension
+            .buffering_policy
+            .as_ref()
+            .map(|policy| policy.request_nonce);
+        let recovery_nonce = extension
+            .recovery
+            .as_ref()
+            .map(|recovery| recovery.recovery_nonce);
+        (prepare_nonce.is_some() || buffering_nonce.is_some() || recovery_nonce.is_some())
+            && prepare_nonce
+                .into_iter()
+                .chain(buffering_nonce)
+                .chain(recovery_nonce)
+                .all(|request_nonce| request_nonce == self.request_nonce)
+    }
+}
+
+impl std::fmt::Debug for PlaybackBarrierRequestScope {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PlaybackBarrierRequestScope")
+            .field("room", &sorotte_secret::REDACTED_SECRET)
+            .field("local_media_generation", &self.local_media_generation)
+            .field("request_nonce", &self.request_nonce)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingProtocolLine {
+    lease: ProtocolLineLease,
+    line: String,
+}
+
+impl PendingProtocolLine {
+    pub fn lease(&self) -> ProtocolLineLease {
+        self.lease
+    }
+
+    pub fn line(&self) -> &str {
+        &self.line
+    }
+
+    pub fn into_line(self) -> String {
+        self.line
+    }
+}
+
 #[derive(Clone, PartialEq)]
 pub enum ClientEffect {
     SetPlayerPaused(bool),
@@ -157,6 +234,13 @@ pub enum ClientEffect {
     SetFile(FilePayload),
     SetPlaylist(Vec<String>),
     SetPlaylistIndex(i64),
+    /// Connection-scoped reliable Set-envelope control for playback prepare
+    /// and ongoing room buffering policy requests. Observation
+    /// acknowledgements use SendState.
+    SendPlaybackBarrierSet {
+        extension: Box<PlaybackBarrierSetExtension>,
+        scope: PlaybackBarrierRequestScope,
+    },
     SendState(StatePayload),
     RequestControllerAuth(ControllerAuthPayload),
     SendChat(String),
@@ -214,6 +298,11 @@ impl std::fmt::Debug for ClientEffect {
                 .debug_tuple("SetPlaylistIndex")
                 .field(index)
                 .finish(),
+            Self::SendPlaybackBarrierSet { extension, scope } => formatter
+                .debug_struct("SendPlaybackBarrierSet")
+                .field("extension", extension)
+                .field("scope", scope)
+                .finish(),
             Self::SendState(state) => formatter.debug_tuple("SendState").field(state).finish(),
             Self::RequestControllerAuth(payload) => formatter
                 .debug_tuple("RequestControllerAuth")
@@ -262,6 +351,16 @@ impl ClientEffect {
             .map(Self::SetFile)
             .map_err(|error| ClientEffectError::InvalidFilePayload(error.to_string()))
     }
+
+    pub fn send_playback_barrier_set(
+        extension: PlaybackBarrierSetExtension,
+        scope: PlaybackBarrierRequestScope,
+    ) -> Self {
+        Self::SendPlaybackBarrierSet {
+            extension: Box::new(extension),
+            scope,
+        }
+    }
 }
 
 pub trait ClientEffectSink {
@@ -275,6 +374,20 @@ pub trait ClientEffectSink {
     /// Allows connection-scoped effects for the current generation after the
     /// server handshake has made the session active.
     fn activate_protocol_connection_generation(&mut self) {}
+
+    /// Retains only a playback-barrier request matching the current room and
+    /// local-media episode. A newly prepared episode invalidates serialized
+    /// intent for the previous media even when no replacement can be emitted.
+    fn retain_protocol_playback_barrier_scope(
+        &mut self,
+        _room: &str,
+        _local_media_generation: u64,
+    ) {
+    }
+
+    /// Explicitly cancels any undelivered playback-barrier Set request without
+    /// disturbing durable chat, playlist, or other protocol commands.
+    fn cancel_protocol_playback_barrier_requests(&mut self) {}
 }
 
 pub(crate) fn client_effect_player_error(error: ClientEffectError) -> PlayerError {
@@ -353,28 +466,26 @@ impl QueuedRuntimeControl {
         Ok(lines)
     }
 
-    pub(crate) fn front_outbound_message_line(&self) -> Result<Option<String>, ProtocolError> {
+    pub(crate) fn front_outbound_message_line(
+        &self,
+    ) -> Result<Option<PendingProtocolLine>, ProtocolError> {
         self.outbound_messages
             .front_for_delivery()
-            .map(encode_message_line)
+            .map(|(lease, message)| {
+                encode_message_line(message).map(|line| PendingProtocolLine { lease, line })
+            })
             .transpose()
     }
 
-    pub(crate) fn acknowledge_outbound_message(&mut self) -> Option<ProtocolMessage> {
-        self.outbound_messages.acknowledge_front()
+    pub(crate) fn acknowledge_outbound_message(
+        &mut self,
+        lease: ProtocolLineLease,
+    ) -> Option<ProtocolMessage> {
+        self.outbound_messages.acknowledge_front(lease)
     }
 
-    pub(crate) fn flush_outbound_message_lines<F>(
-        &mut self,
-        mut send_line: F,
-    ) -> Result<(), ProtocolError>
-    where
-        F: FnMut(&str) -> Result<(), ProtocolError>,
-    {
-        self.outbound_messages.try_flush(|message| {
-            let line = encode_message_line(message)?;
-            send_line(&line)
-        })
+    pub(crate) fn release_outbound_message(&mut self, lease: ProtocolLineLease) -> bool {
+        self.outbound_messages.release_front(lease)
     }
 
     pub fn drain_reconnect_delays(&mut self) -> Vec<f64> {
@@ -468,6 +579,15 @@ impl ClientEffectSink for QueuedRuntimeControl {
         self.outbound_messages.activate_connection_generation();
     }
 
+    fn retain_protocol_playback_barrier_scope(&mut self, room: &str, local_media_generation: u64) {
+        self.outbound_messages
+            .retain_connection_scoped_reliable_scope(room, local_media_generation);
+    }
+
+    fn cancel_protocol_playback_barrier_requests(&mut self) {
+        self.outbound_messages.cancel_connection_scoped_reliable();
+    }
+
     fn emit(&mut self, effect: ClientEffect) -> Result<(), ClientEffectError> {
         match effect {
             ClientEffect::SetPlayerPaused(_) => {
@@ -483,6 +603,7 @@ impl ClientEffectSink for QueuedRuntimeControl {
                 .outbound_messages
                 .push_back(ProtocolMessage::list_request()),
             ClientEffect::SetRoom(room) => {
+                self.outbound_messages.cancel_connection_scoped_reliable();
                 let set_payload = SetPayload::new().with_room(RoomRef::new(room));
                 self.outbound_messages
                     .push_back(ProtocolMessage::set(set_payload));
@@ -525,6 +646,20 @@ impl ClientEffectSink for QueuedRuntimeControl {
                     SetPayload::new().with_playlist_index(PlaylistIndexPayload::new(index));
                 self.outbound_messages
                     .push_back(ProtocolMessage::set(set_payload));
+            }
+            ClientEffect::SendPlaybackBarrierSet { extension, scope } => {
+                if !scope.matches(&extension) {
+                    return Err(ClientEffectError::OperationFailed(
+                        "playback barrier request scope does not match its payload".to_owned(),
+                    ));
+                }
+                let set_payload = SetPayload::new().with_playback_barrier_v1(*extension);
+                let _ = self.outbound_messages.push_connection_scoped_reliable(
+                    ProtocolMessage::set(set_payload),
+                    scope.room,
+                    scope.local_media_generation,
+                    scope.request_nonce,
+                );
             }
             ClientEffect::SendState(state) => {
                 let _ = self.queue_connection_scoped_state(state);

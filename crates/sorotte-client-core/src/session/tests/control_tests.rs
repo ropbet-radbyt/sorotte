@@ -1,4 +1,9 @@
 use super::*;
+use crate::PlaybackBarrierRequestScope;
+use sorotte_protocol::{
+    MediaLoadIntent, PlaybackBarrierPolicy, PrepareMediaPayload, RoomBufferingPolicy,
+    RoomBufferingPolicyPayload,
+};
 
 #[test]
 fn dispatch_runtime_actions_applies_player_and_control_operations() {
@@ -244,6 +249,180 @@ fn queued_runtime_control_can_drain_encoded_protocol_lines() {
         "encoded line should preserve manuallyInitiated"
     );
     assert!(control.outbound_messages().is_empty());
+}
+
+#[test]
+fn reconnect_drops_playback_barrier_set_but_retains_chat_and_playlist_commands() {
+    const PRIVATE_MEDIA_ID: &str = "private-youtube-logical-id";
+    let extension = PlaybackBarrierSetExtension::new()
+        .with_prepare(PrepareMediaPayload::request(
+            7,
+            PRIVATE_MEDIA_ID,
+            12.0,
+            PlaybackBarrierPolicy::Controller,
+            MediaLoadIntent::NewPlayback,
+        ))
+        .with_buffering_policy(
+            RoomBufferingPolicyPayload::new(0, RoomBufferingPolicy::Independent)
+                .with_request_nonce(7),
+        );
+    let effect = ClientEffect::send_playback_barrier_set(
+        extension.clone(),
+        PlaybackBarrierRequestScope::new("room-one", 31, 7),
+    );
+    assert!(
+        !format!("{effect:?}").contains(PRIVATE_MEDIA_ID),
+        "effect diagnostics must preserve logical-media redaction"
+    );
+
+    let mut control = QueuedRuntimeControl::default();
+    control.begin_protocol_connection_generation();
+    control.activate_protocol_connection_generation();
+    control
+        .emit(ClientEffect::SendChat("durable chat".to_owned()))
+        .expect("chat should queue");
+    control
+        .emit(ClientEffect::SetPlaylist(vec![
+            "episode-one.mkv".to_owned(),
+        ]))
+        .expect("playlist change should queue");
+    control.emit(effect).expect("barrier Set should queue");
+
+    assert_eq!(control.outbound_messages().len(), 3);
+    assert!(matches!(
+        control.outbound_messages()[0],
+        ProtocolMessage::Chat(_)
+    ));
+    let ProtocolMessage::Set(playlist) = &control.outbound_messages()[1] else {
+        panic!("second durable message should be the playlist Set");
+    };
+    assert!(playlist.set.playlist_change.is_some());
+    let ProtocolMessage::Set(barrier) = &control.outbound_messages()[2] else {
+        panic!("third message should be the playback-barrier Set");
+    };
+    assert_eq!(
+        barrier
+            .set
+            .playback_barrier_v1()
+            .expect("queued extension should decode"),
+        Some(extension.clone())
+    );
+
+    control.begin_protocol_connection_generation();
+    assert_eq!(
+        control.outbound_messages().len(),
+        2,
+        "connection replacement must retain only durable chat and playlist commands"
+    );
+    assert!(matches!(
+        control.outbound_messages()[0],
+        ProtocolMessage::Chat(_)
+    ));
+    let ProtocolMessage::Set(retained_playlist) = &control.outbound_messages()[1] else {
+        panic!("playlist Set should remain queued after reconnect");
+    };
+    assert!(retained_playlist.set.playlist_change.is_some());
+    assert!(
+        retained_playlist
+            .set
+            .playback_barrier_v1()
+            .expect("retained Set extension should decode")
+            .is_none(),
+        "the stale playback-barrier Set must not cross connection generations"
+    );
+}
+
+#[test]
+fn room_media_and_explicit_cancellation_drop_only_playback_barrier_requests() {
+    fn barrier_effect(room: &str, local_media_generation: u64, request_nonce: u64) -> ClientEffect {
+        ClientEffect::send_playback_barrier_set(
+            PlaybackBarrierSetExtension::new().with_buffering_policy(
+                RoomBufferingPolicyPayload::new(0, RoomBufferingPolicy::PauseController)
+                    .with_request_nonce(request_nonce),
+            ),
+            PlaybackBarrierRequestScope::new(room, local_media_generation, request_nonce),
+        )
+    }
+
+    let mut control = QueuedRuntimeControl::default();
+    control.begin_protocol_connection_generation();
+    control.activate_protocol_connection_generation();
+    control
+        .emit(ClientEffect::SendChat("durable".to_owned()))
+        .expect("chat should queue");
+    control
+        .emit(barrier_effect("room-one", 31, 7))
+        .expect("barrier should queue");
+
+    control.retain_protocol_playback_barrier_scope("room-one", 31);
+    assert_eq!(control.outbound_messages().len(), 2);
+    control.retain_protocol_playback_barrier_scope("room-one", 32);
+    assert_eq!(control.outbound_messages().len(), 1);
+    assert!(matches!(
+        control.outbound_messages()[0],
+        ProtocolMessage::Chat(_)
+    ));
+
+    control
+        .emit(barrier_effect("room-one", 32, 8))
+        .expect("replacement barrier should queue");
+    control
+        .emit(ClientEffect::SetRoom("room-two".to_owned()))
+        .expect("room change should queue");
+    assert_eq!(control.outbound_messages().len(), 2);
+    assert!(control.outbound_messages().iter().all(|message| {
+        !matches!(message, ProtocolMessage::Set(set) if set
+            .set
+            .playback_barrier_v1()
+            .expect("queued Set extension should decode")
+            .is_some())
+    }));
+
+    control
+        .emit(barrier_effect("room-two", 33, 9))
+        .expect("new-room barrier should queue");
+    assert_eq!(control.outbound_messages().len(), 3);
+    control.cancel_protocol_playback_barrier_requests();
+    assert_eq!(control.outbound_messages().len(), 2);
+    assert!(matches!(
+        control.outbound_messages()[0],
+        ProtocolMessage::Chat(_)
+    ));
+}
+
+#[test]
+fn authoritative_inbound_room_change_cancels_queued_playback_barrier_request() {
+    let mut session = ClientSession::default();
+    session.initialize_local_identity("alice".to_owned(), "room-one".to_owned());
+    let mut control = QueuedRuntimeControl::default();
+    control.begin_protocol_connection_generation();
+    control.activate_protocol_connection_generation();
+    control
+        .emit(ClientEffect::SendChat("durable".to_owned()))
+        .expect("chat should queue");
+    control
+        .emit(ClientEffect::send_playback_barrier_set(
+            PlaybackBarrierSetExtension::new().with_buffering_policy(
+                RoomBufferingPolicyPayload::new(0, RoomBufferingPolicy::PauseController)
+                    .with_request_nonce(7),
+            ),
+            PlaybackBarrierRequestScope::new("room-one", 31, 7),
+        ))
+        .expect("barrier should queue");
+    let mut runtime = ClientRuntime::new(session, RecordingPlayer::default(), control);
+
+    runtime
+        .session_mut()
+        .apply_message_json(r#"{"Set":{"user":{"alice":{"room":{"name":"room-two"}}}}}"#)
+        .expect("authoritative room change should apply");
+
+    assert_eq!(runtime.session().room(), Some("room-two"));
+    let (_, _, control) = runtime.into_parts();
+    assert_eq!(control.outbound_messages().len(), 1);
+    assert!(matches!(
+        control.outbound_messages()[0],
+        ProtocolMessage::Chat(_)
+    ));
 }
 
 #[test]

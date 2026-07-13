@@ -10,10 +10,18 @@ use crate::app::{
     MenuDialogRuntimeSnapshot, SorotteGuiShellAppState,
 };
 use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
-use sorotte_client_core::{ConnectionPhase, ReconnectTransitionNotification};
+use sorotte_client_core::{
+    ConnectionPhase, CoordinatorPlayerCommand, LogicalMediaId, MediaLoadIntent, MediaTransportKind,
+    ReconnectTransitionNotification,
+};
+use sorotte_player_api::{
+    PlayerMediaGeneration, PlayerObservationTimestamp, PlayerTransportPhase,
+    PlayerTransportTelemetryUpdate,
+};
 
 mod chat_projection_tests;
 mod controller_autoplay_tests;
+mod playback_barrier_integration_tests;
 mod playlist_tests;
 mod public_server_tests;
 mod session_config_tests;

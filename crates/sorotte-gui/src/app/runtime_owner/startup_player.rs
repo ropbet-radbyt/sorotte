@@ -47,7 +47,7 @@ impl GuiPersistedConfigRuntimeOwner {
             last_applied_attached_room_playstate: None,
             suppressed_attached_room_playstate_after_playlist_reset: None,
             pending_local_attached_pause_override: None,
-            pending_attached_cache_unpause: false,
+            pending_attached_room_unpause_observation: None,
             pending_attached_player_pause_confirmation_pump: None,
             pending_attached_player_pause_command: None,
             player_position_seconds: None,
@@ -196,7 +196,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.player_local_file_placeholder = false;
         self.player_position_seconds = None;
         self.player_paused = None;
-        self.pending_attached_cache_unpause = false;
+        self.pending_attached_room_unpause_observation = None;
         self.pending_attached_player_pause_confirmation_pump = None;
         self.pending_attached_player_pause_command = None;
         self.stream_helper_runtime_snapshot = GuiStreamHelperRuntimeSnapshot::default();
@@ -251,7 +251,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.last_applied_attached_room_playstate = None;
         self.suppressed_attached_room_playstate_after_playlist_reset = None;
         self.pending_local_attached_pause_override = None;
-        self.pending_attached_cache_unpause = false;
+        self.pending_attached_room_unpause_observation = None;
         self.pending_attached_player_pause_confirmation_pump = None;
         self.pending_attached_player_pause_command = None;
     }
@@ -270,6 +270,9 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn attach_player_from_launch_state(&mut self, launch_state: GuiPlayerLaunchRuntimeState) {
         self.detach_player();
+        if let Some(session) = self.session.as_mut() {
+            session.reset_playback_transport_adapter_epoch(system_time_seconds());
+        }
         self.player_launch_state = launch_state.clone();
         if !matches!(launch_state, GuiPlayerLaunchRuntimeState::ManagedMpv(_)) {
             self.managed_stream_helper_refresh_required = false;
@@ -288,15 +291,29 @@ impl GuiPersistedConfigRuntimeOwner {
             GuiPlayerLaunchRuntimeState::ExplicitMpvIpc {
                 ipc_path,
                 ui_settings,
+                streaming: _,
+                effective_streaming_options,
             } => match MpvAdapter::with_json_ipc(&ipc_path) {
                 Ok(mut adapter) => match apply_legacy_syncplay_ui_settings_to_mpv_adapter(
                     &mut adapter,
                     &ui_settings,
                 ) {
                     Ok(()) => {
-                        self.player = Some(GuiOwnedPlayer::Mpv(Box::new(adapter)));
-                        self.managed_stream_helper_refresh_required = false;
-                        self.player_unavailability_reason = None;
+                        match apply_effective_streaming_options_to_mpv_adapter(
+                            &mut adapter,
+                            &effective_streaming_options,
+                        ) {
+                            Ok(()) => {
+                                self.player = Some(GuiOwnedPlayer::Mpv(Box::new(adapter)));
+                                self.managed_stream_helper_refresh_required = false;
+                                self.player_unavailability_reason = None;
+                            }
+                            Err(error) => {
+                                self.player_unavailability_reason = Some(format!(
+                                    "mpv JSON IPC attach succeeded at '{ipc_path}', but typed streaming options could not be applied: {error}"
+                                ));
+                            }
+                        }
                     }
                     Err(error) => {
                         self.player_unavailability_reason = Some(format!(
@@ -374,9 +391,15 @@ impl GuiPersistedConfigRuntimeOwner {
         if let Some(ipc_path) = explicit_mpv_ipc_path_from_lookup(lookup) {
             let ui_settings =
                 mpv_launch::legacy_syncplay_ui_settings_from_stored_settings(settings);
+            let streaming = settings
+                .map(|settings| ClientConfig::resolve(settings).config.playback.streaming)
+                .unwrap_or_default();
+            let effective_streaming_options = streaming.effective_mpv_options(&[]);
             return Ok(GuiPlayerLaunchRuntimeState::ExplicitMpvIpc {
                 ipc_path,
                 ui_settings: Box::new(ui_settings),
+                streaming: Box::new(streaming),
+                effective_streaming_options,
             });
         }
 
@@ -403,15 +426,29 @@ impl GuiPersistedConfigRuntimeOwner {
         {
             return false;
         }
+        let Some(ui_settings) = next_launch_state.mpv_ui_settings().cloned() else {
+            return false;
+        };
+        let Some(streaming_options) = next_launch_state
+            .effective_mpv_streaming_options()
+            .map(<[_]>::to_vec)
+        else {
+            return false;
+        };
         let Some(player) = self.player.as_mut().and_then(GuiOwnedPlayer::as_mpv_mut) else {
             return false;
         };
-        let Some(ui_settings) = next_launch_state.mpv_ui_settings() else {
-            return false;
-        };
-        if let Err(error) = apply_legacy_syncplay_ui_settings_to_mpv_adapter(player, ui_settings) {
+        if let Err(error) = apply_legacy_syncplay_ui_settings_to_mpv_adapter(player, &ui_settings) {
             self.player_unavailability_reason =
                 Some(format!("mpv legacy GUI settings reapply failed: {error}"));
+            return false;
+        }
+        if let Err(error) =
+            apply_effective_streaming_options_to_mpv_adapter(player, &streaming_options)
+        {
+            self.player_unavailability_reason = Some(format!(
+                "mpv typed streaming settings reapply failed: {error}"
+            ));
             return false;
         }
         self.player_launch_state = next_launch_state.clone();

@@ -639,6 +639,12 @@ async fn connected_client_session_includes_shared_playlists_feature_in_hello_whe
             features.get("setOthersReadiness").and_then(Value::as_bool),
             Some(true)
         );
+        assert_eq!(
+            features
+                .get(sorotte_protocol::SOROTTE_PLAYBACK_BARRIER_V1)
+                .and_then(Value::as_bool),
+            Some(true)
+        );
     });
 
     let mut config = test_client_loop_config_with_addr(addr);

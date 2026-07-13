@@ -51,6 +51,15 @@ impl StatePayload {
         self.ignoring_on_the_fly = Some(ignoring_on_the_fly);
         self
     }
+
+    pub fn with_playback_barrier_v1(mut self, extension: PlaybackBarrierStateExtension) -> Self {
+        playback_barrier::insert_extension(&mut self.extra, &extension);
+        self
+    }
+
+    pub fn playback_barrier_v1(&self) -> serde_json::Result<Option<PlaybackBarrierStateExtension>> {
+        playback_barrier::decode_extension(&self.extra)
+    }
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize, Default)]

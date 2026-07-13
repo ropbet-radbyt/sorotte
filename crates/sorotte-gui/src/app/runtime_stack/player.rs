@@ -1,8 +1,13 @@
 use std::{collections::VecDeque, path::Path};
 
 use crate::app::mpv_launch::ManagedMpvLaunchConfig;
+use sorotte_client_app::app_boundary::state::{
+    EffectiveMpvStreamingOption, StreamingPlaybackConfig,
+};
 use sorotte_player_api::{
-    LocalFileUpdate, PlayerAdapter, PlayerMediaLoadOutcome, PlayerPlaybackTelemetryUpdate,
+    LocalFileUpdate, PlayerAdapter, PlayerCommand, PlayerCommandId, PlayerCommandProgress,
+    PlayerError, PlayerMediaLoadOutcome, PlayerPlaybackTelemetryUpdate,
+    PlayerTransportTelemetryUpdate,
 };
 use sorotte_player_mpv::{LegacySyncplayUiSettings, MpvAdapter};
 
@@ -124,6 +129,14 @@ impl GuiOwnedPlayer {
             Self::Test(_) => None,
         }
     }
+
+    pub(in super::super) fn open_file_tracked(&mut self, path: &str) -> Result<(), PlayerError> {
+        match self.execute_tracked(PlayerCommand::OpenFile(path.to_owned())) {
+            Ok(_) => Ok(()),
+            Err(PlayerError::Unsupported("execute_tracked")) => self.open_file(path),
+            Err(error) => Err(error),
+        }
+    }
 }
 
 impl PlayerAdapter for GuiOwnedPlayer {
@@ -137,6 +150,15 @@ impl PlayerAdapter for GuiOwnedPlayer {
             Self::Mpv(player) => player.open_file(path),
             #[cfg(test)]
             Self::Custom(player) => player.open_file(path),
+        }
+    }
+
+    fn execute_tracked(&mut self, command: PlayerCommand) -> Result<PlayerCommandId, PlayerError> {
+        match self {
+            Self::Test(player) => player.execute_tracked(command),
+            Self::Mpv(player) => player.execute_tracked(command),
+            #[cfg(test)]
+            Self::Custom(player) => player.execute_tracked(command),
         }
     }
 
@@ -210,6 +232,24 @@ impl PlayerAdapter for GuiOwnedPlayer {
         }
     }
 
+    fn take_transport_telemetry_update(&mut self) -> Option<PlayerTransportTelemetryUpdate> {
+        match self {
+            Self::Test(player) => player.take_transport_telemetry_update(),
+            Self::Mpv(player) => player.take_transport_telemetry_update(),
+            #[cfg(test)]
+            Self::Custom(player) => player.take_transport_telemetry_update(),
+        }
+    }
+
+    fn take_command_progress(&mut self) -> Option<PlayerCommandProgress> {
+        match self {
+            Self::Test(player) => player.take_command_progress(),
+            Self::Mpv(player) => player.take_command_progress(),
+            #[cfg(test)]
+            Self::Custom(player) => player.take_command_progress(),
+        }
+    }
+
     fn take_media_load_outcome(&mut self) -> Option<PlayerMediaLoadOutcome> {
         match self {
             Self::Test(player) => player.take_media_load_outcome(),
@@ -229,13 +269,15 @@ impl PlayerAdapter for GuiOwnedPlayer {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(in super::super) enum GuiPlayerLaunchRuntimeState {
     None,
     TestPlayer,
     ExplicitMpvIpc {
         ipc_path: String,
         ui_settings: Box<LegacySyncplayUiSettings>,
+        streaming: Box<StreamingPlaybackConfig>,
+        effective_streaming_options: Vec<EffectiveMpvStreamingOption>,
     },
     ManagedMpv(Box<ManagedMpvLaunchConfig>),
     UnsupportedConfiguredPlayer {
@@ -285,6 +327,19 @@ impl GuiPlayerLaunchRuntimeState {
         match self {
             Self::ExplicitMpvIpc { ui_settings, .. } => Some(ui_settings),
             Self::ManagedMpv(config) => Some(&config.ui_settings),
+            Self::None | Self::TestPlayer | Self::UnsupportedConfiguredPlayer { .. } => None,
+        }
+    }
+
+    pub(in super::super) fn effective_mpv_streaming_options(
+        &self,
+    ) -> Option<&[EffectiveMpvStreamingOption]> {
+        match self {
+            Self::ExplicitMpvIpc {
+                effective_streaming_options,
+                ..
+            } => Some(effective_streaming_options),
+            Self::ManagedMpv(config) => Some(&config.effective_streaming_options),
             Self::None | Self::TestPlayer | Self::UnsupportedConfiguredPlayer { .. } => None,
         }
     }

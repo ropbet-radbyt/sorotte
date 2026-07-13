@@ -115,6 +115,7 @@ pub(crate) fn persist_sorotte_cli_stored_settings_mvp_legacy_compatible(
         plex_selected_server_id: None,
         plex_selected_server_url: None,
         plex_selected_server_token: None,
+        ..StoredClientSettingsMvp::default()
     };
     shared_upsert_sorotte_ini_stored_client_settings_mvp_at_path(&path, &settings)
 }

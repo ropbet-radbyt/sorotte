@@ -100,6 +100,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let error_message = format!("Session transport driver pump failed: {error}");
         eprintln!("{error_message}");
         let now_seconds = system_time_seconds();
+        let _ = self.interrupt_attached_playback_recovery_impl("transport disconnect");
         if Self::session_transport_failure_is_terminal(&error) {
             self.handle_terminal_session_transport_failure(
                 handle,

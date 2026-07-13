@@ -81,6 +81,73 @@ pub fn legacy_server_password_token(password: &str) -> String {
     format!("{:x}", Md5::digest(password.as_bytes()))
 }
 
+/// Builds the privacy-safe, source-stable identity used by playback
+/// coordination. Local paths are deliberately excluded so peers with
+/// different library roots still agree; known YouTube URL forms collapse to
+/// the video ID so harmless URL/query variations do not create generations.
+pub fn logical_media_id_for_local_file_update(update: &LocalFileUpdate) -> LogicalMediaId {
+    let source_identity = youtube_video_id(&update.name)
+        .or_else(|| update.path.as_deref().and_then(youtube_video_id))
+        .map(|video_id| format!("youtube:{video_id}"))
+        .unwrap_or_else(|| update.name.trim().to_owned());
+    let mut digest = Sha256::new();
+    digest.update(b"sorotte-logical-media-v1\0");
+    digest.update(source_identity.as_bytes());
+    if !source_identity.starts_with("youtube:") {
+        digest.update(b"\0");
+        digest.update(update.size_bytes.unwrap_or_default().to_le_bytes());
+    }
+    LogicalMediaId::new(format!("media-sha256:{:x}", digest.finalize()))
+        .expect("SHA-256 logical media identity is non-empty")
+}
+
+fn youtube_video_id(value: &str) -> Option<&str> {
+    let value = value.trim();
+    let lower = value.to_ascii_lowercase();
+    let host_start = lower.find("://").map_or(0, |index| index + 3);
+    let host_and_path = &value[host_start..];
+    let lower_host_and_path = &lower[host_start..];
+    let host_end = lower_host_and_path
+        .find(['/', '?', '#'])
+        .unwrap_or(lower_host_and_path.len());
+    let host = lower_host_and_path[..host_end]
+        .trim_start_matches("www.")
+        .trim_start_matches("m.");
+    let path_and_query = &host_and_path[host_end..];
+
+    let candidate = if host == "youtu.be" {
+        path_and_query
+            .trim_start_matches('/')
+            .split(['?', '#'])
+            .next()
+    } else if matches!(host, "youtube.com" | "music.youtube.com") {
+        let path = path_and_query.split(['?', '#']).next().unwrap_or_default();
+        let path_candidate = ["/shorts/", "/embed/", "/live/"]
+            .into_iter()
+            .find_map(|prefix| {
+                path.strip_prefix(prefix)
+                    .and_then(|rest| rest.split('/').next())
+            });
+        path_candidate.or_else(|| {
+            path_and_query
+                .split_once('?')
+                .map(|(_, query)| query)
+                .into_iter()
+                .flat_map(|query| query.split('&'))
+                .find_map(|part| part.strip_prefix("v="))
+        })
+    } else {
+        None
+    }?;
+    let candidate = candidate.trim();
+    (!candidate.is_empty()
+        && candidate.len() <= 64
+        && candidate
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')))
+    .then_some(candidate)
+}
+
 mod config;
 mod control;
 mod inbound;
@@ -88,6 +155,7 @@ mod model;
 mod notifications;
 mod outbox;
 mod ping;
+mod playback_coordinator;
 mod runtime;
 mod session;
 mod views;
@@ -99,7 +167,8 @@ pub use self::config::{
     ReconnectStateRestoreCorrectionStateSnapshot, SessionBehaviorConfig, UnpauseActionMode,
 };
 pub use self::control::{
-    ClientEffect, ClientEffectError, ClientEffectSink, ClientRuntimeAction, QueuedRuntimeControl,
+    ClientEffect, ClientEffectError, ClientEffectSink, ClientRuntimeAction, PendingProtocolLine,
+    PlaybackBarrierRequestScope, QueuedRuntimeControl,
 };
 pub use self::inbound::{
     ClientCompatibilityFallback, FileDuration, FileSize, PeerCapabilities, SharedFile,
@@ -118,11 +187,22 @@ pub use self::notifications::{
     ControllerAuthTransitionNotification, FileDifferenceSummary, ReconnectPlaylistRestoreIntent,
     ReconnectTransitionNotification, UserChangeNotification,
 };
+pub use self::outbox::ProtocolLineLease;
 pub use self::ping::ClientPingMetricsLegacyCompatible;
 pub(crate) use self::ping::unix_wall_clock_time_seconds_legacy_compatible;
-pub use self::runtime::{ClientPlayerIo, ClientRuntime, ClientSessionUpdate};
+pub use self::playback_coordinator::{
+    CoordinatorCommandId, CoordinatorPlayerCommand, DegradedPlaybackReason, DesiredRoomPlayback,
+    LogicalMediaId, MediaLoadIntent, MediaLoadPlan, MediaTransportKind, PlaybackCoordinator,
+    PlaybackCoordinatorAction, PlaybackCoordinatorConfig, PlaybackCoordinatorMetrics,
+    PlaybackDiagnostic, PlayerTransportObservation, RecoveryEpisodeSnapshot, RecoveryPolicy,
+};
+pub use self::runtime::{
+    ClientPlayerIo, ClientRuntime, ClientSessionUpdate, PlaybackBarrierRoomBufferingConfig,
+    PlaybackBarrierStartConfig, PlaybackBarrierTimeoutAction, PlaybackCoordinationSnapshot,
+};
 pub use self::session::ClientSession;
 pub(crate) use self::session::ClientSessionLocalActionSnapshot;
 pub use self::views::{
-    ClientMediaMatchPeerFileState, ClientUserView, RoomPlaylistView, RoomPlaystateView,
+    ClientMediaMatchPeerFileState, ClientUserView, RoomPlaylistView, RoomPlaystateAuthority,
+    RoomPlaystateView,
 };

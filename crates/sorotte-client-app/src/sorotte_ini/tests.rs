@@ -95,6 +95,51 @@ fn parse_sorotte_ini_stored_client_settings_mvp_leaves_missing_plugin_gates_unse
 }
 
 #[test]
+fn streaming_controls_roundtrip_through_sorotte_ini() {
+    let settings = StoredClientSettingsMvp {
+        streaming_quality_preset: Some("720p".to_owned()),
+        streaming_buffer_target_seconds: Some(8.0),
+        streaming_read_ahead_seconds: Some(45.0),
+        streaming_memory_cache_mebibytes: Some(256),
+        streaming_disk_cache_enabled: Some(true),
+        streaming_recovery_policy: Some("balanced".to_owned()),
+        streaming_max_catchup_rate: Some(1.06),
+        streaming_hard_seek_threshold_seconds: Some(9.0),
+        streaming_max_hard_seeks_per_episode: Some(1),
+        streaming_stability_interval_seconds: Some(4.0),
+        streaming_recovery_retry_budget: Some(2),
+        streaming_recovery_cooldown_seconds: Some(12.0),
+        streaming_room_buffering_policy: Some("quorum".to_owned()),
+        streaming_room_quorum_percent: Some(80.0),
+        streaming_room_max_pause_seconds: Some(25.0),
+        streaming_start_policy: Some("wait-all".to_owned()),
+        streaming_start_quorum_percent: Some(90.0),
+        streaming_start_timeout_seconds: Some(20.0),
+        streaming_start_timeout_action: Some("remain-paused".to_owned()),
+        streaming_quality_downgrade_suggestions: Some(true),
+        ..StoredClientSettingsMvp::default()
+    };
+
+    let rendered = upsert_sorotte_ini_stored_client_settings_mvp("", &settings);
+    let reparsed = parse_sorotte_ini_stored_client_settings_mvp(&rendered);
+
+    assert_eq!(reparsed.streaming_quality_preset.as_deref(), Some("720p"));
+    assert_eq!(reparsed.streaming_buffer_target_seconds, Some(8.0));
+    assert_eq!(reparsed.streaming_memory_cache_mebibytes, Some(256));
+    assert_eq!(reparsed.streaming_disk_cache_enabled, Some(true));
+    assert_eq!(
+        reparsed.streaming_room_buffering_policy.as_deref(),
+        Some("quorum")
+    );
+    assert_eq!(reparsed.streaming_start_policy.as_deref(), Some("wait-all"));
+    assert_eq!(
+        reparsed.streaming_start_timeout_action.as_deref(),
+        Some("remain-paused")
+    );
+    assert_eq!(reparsed.streaming_quality_downgrade_suggestions, Some(true));
+}
+
+#[test]
 fn parse_sorotte_ini_stored_client_settings_mvp_filters_blank_media_search_directories() {
     let settings = parse_sorotte_ini_stored_client_settings_mvp(
         "[client_settings]\n\

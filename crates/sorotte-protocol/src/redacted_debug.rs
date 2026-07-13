@@ -125,9 +125,16 @@ fn json_key_is_sensitive(key: &str) -> bool {
         .filter(|character| character.is_ascii_alphanumeric())
         .flat_map(char::to_lowercase)
         .collect::<String>();
-    ["password", "token", "secret", "credential"]
-        .into_iter()
-        .any(|marker| normalized.contains(marker))
+    [
+        "password",
+        "token",
+        "secret",
+        "credential",
+        "logicalmediaid",
+        "requestid",
+    ]
+    .into_iter()
+    .any(|marker| normalized.contains(marker))
 }
 
 pub(crate) fn text_may_contain_credentials(value: &str) -> bool {

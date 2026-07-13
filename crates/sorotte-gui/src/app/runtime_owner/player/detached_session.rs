@@ -75,6 +75,9 @@ impl GuiPersistedConfigRuntimeOwner {
     ) -> Result<(bool, Option<String>), String> {
         self.pending_attached_player_pause_confirmation_pump = None;
         let mut sync_error = None;
+        if target_paused {
+            let _ = self.interrupt_attached_playback_recovery_impl("local pause");
+        }
         if !target_paused {
             if self.player_paused_for_cache == Some(true) {
                 self.refresh_player_state_impl();

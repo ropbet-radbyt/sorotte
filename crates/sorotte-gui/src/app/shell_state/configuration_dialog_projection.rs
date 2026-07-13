@@ -3,6 +3,29 @@ use super::*;
 impl FirstRunConfigurationDialogState {
     pub(in crate::app) fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
         let config = ClientConfig::resolve(settings).config;
+        let advanced_player_arguments = settings
+            .player_path
+            .as_deref()
+            .and_then(|path| settings.per_player_arguments.as_ref()?.get(path))
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let effective_mpv_options = config
+            .playback
+            .streaming
+            .effective_mpv_options(advanced_player_arguments)
+            .into_iter()
+            .map(|option| {
+                if option.overridden_by_advanced_arguments {
+                    format!(
+                        "{}={} (advanced override)",
+                        option.name, option.effective_value
+                    )
+                } else {
+                    format!("{}={}", option.name, option.effective_value)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
         let startup_entries = legacy_configuration_getter_startup_compat_entries();
         let ignored_startup_exception_count = startup_entries
             .iter()
@@ -82,6 +105,81 @@ impl FirstRunConfigurationDialogState {
                     config.synchronization.fastforward_threshold.get(),
                 ),
                 slowdown_threshold_seconds: Some(config.synchronization.slowdown_threshold.get()),
+            },
+            streaming: GuiStreamingSection {
+                quality_label: config.playback.streaming.quality.config_value().to_owned(),
+                custom_format: config.playback.streaming.custom_format.clone(),
+                buffer_target_seconds: config.playback.streaming.buffering.target.get(),
+                read_ahead_seconds: config.playback.streaming.buffering.read_ahead.get(),
+                memory_cache_mebibytes: config.playback.streaming.buffering.memory_cache_mebibytes,
+                disk_cache_enabled: config.playback.streaming.buffering.disk_cache_enabled,
+                recovery_policy_label: config
+                    .playback
+                    .streaming
+                    .recovery
+                    .policy
+                    .config_value()
+                    .to_owned(),
+                maximum_catchup_rate: config.playback.streaming.recovery.max_catchup_rate.get(),
+                hard_seek_threshold_seconds: config
+                    .playback
+                    .streaming
+                    .recovery
+                    .hard_seek_threshold
+                    .get(),
+                maximum_hard_seeks: config
+                    .playback
+                    .streaming
+                    .recovery
+                    .max_hard_seeks_per_episode,
+                stability_interval_seconds: config
+                    .playback
+                    .streaming
+                    .recovery
+                    .stability_interval
+                    .get(),
+                retry_budget: config.playback.streaming.recovery.retry_budget,
+                recovery_cooldown_seconds: config.playback.streaming.recovery.cooldown.get(),
+                room_buffering_policy_label: config
+                    .playback
+                    .streaming
+                    .room_buffering
+                    .policy
+                    .config_value()
+                    .to_owned(),
+                room_quorum_percent: config.playback.streaming.room_buffering.quorum.get(),
+                room_maximum_pause_seconds: config
+                    .playback
+                    .streaming
+                    .room_buffering
+                    .maximum_pause
+                    .get(),
+                start_policy_label: config
+                    .playback
+                    .streaming
+                    .start_synchronization
+                    .policy
+                    .config_value()
+                    .to_owned(),
+                start_quorum_percent: config.playback.streaming.start_synchronization.quorum.get(),
+                start_timeout_seconds: config
+                    .playback
+                    .streaming
+                    .start_synchronization
+                    .timeout
+                    .get(),
+                start_timeout_action_label: config
+                    .playback
+                    .streaming
+                    .start_synchronization
+                    .timeout_action
+                    .config_value()
+                    .to_owned(),
+                quality_downgrade_suggestions: config
+                    .playback
+                    .streaming
+                    .quality_downgrade_suggestions,
+                effective_mpv_options,
             },
             media_search: GuiMediaSearchSection {
                 media_directories_text: optional_string_list_multiline_text(
@@ -327,6 +425,121 @@ impl FirstRunConfigurationDialogState {
                         label: "Slowdown Threshold",
                         kind: GuiDialogControlKind::NumericInput,
                         value: optional_f64_text(self.desync.slowdown_threshold_seconds),
+                    },
+                ],
+            },
+            GuiDialogSection {
+                title: "Streaming",
+                controls: vec![
+                    GuiDialogControl {
+                        label: "Quality",
+                        kind: GuiDialogControlKind::Select,
+                        value: self.streaming.quality_label.clone(),
+                    },
+                    GuiDialogControl {
+                        label: "Custom Format",
+                        kind: GuiDialogControlKind::TextInput,
+                        value: optional_text(self.streaming.custom_format.as_deref()).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Buffer Target Seconds",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: optional_f64_text(Some(self.streaming.buffer_target_seconds)),
+                    },
+                    GuiDialogControl {
+                        label: "Read Ahead Seconds",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: optional_f64_text(Some(self.streaming.read_ahead_seconds)),
+                    },
+                    GuiDialogControl {
+                        label: "Memory Cache MiB",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: self.streaming.memory_cache_mebibytes.to_string(),
+                    },
+                    GuiDialogControl {
+                        label: "Disk Cache",
+                        kind: GuiDialogControlKind::Checkbox,
+                        value: bool_label(self.streaming.disk_cache_enabled).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Recovery Policy",
+                        kind: GuiDialogControlKind::Select,
+                        value: self.streaming.recovery_policy_label.clone(),
+                    },
+                    GuiDialogControl {
+                        label: "Maximum Catchup Rate",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: optional_f64_text(Some(self.streaming.maximum_catchup_rate)),
+                    },
+                    GuiDialogControl {
+                        label: "Hard Seek Threshold Seconds",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: optional_f64_text(Some(self.streaming.hard_seek_threshold_seconds)),
+                    },
+                    GuiDialogControl {
+                        label: "Maximum Hard Seeks",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: self.streaming.maximum_hard_seeks.to_string(),
+                    },
+                    GuiDialogControl {
+                        label: "Stability Interval Seconds",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: optional_f64_text(Some(self.streaming.stability_interval_seconds)),
+                    },
+                    GuiDialogControl {
+                        label: "Recovery Retry Budget",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: self.streaming.retry_budget.to_string(),
+                    },
+                    GuiDialogControl {
+                        label: "Recovery Cooldown Seconds",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: optional_f64_text(Some(self.streaming.recovery_cooldown_seconds)),
+                    },
+                    GuiDialogControl {
+                        label: "Room Buffering Policy",
+                        kind: GuiDialogControlKind::Select,
+                        value: self.streaming.room_buffering_policy_label.clone(),
+                    },
+                    GuiDialogControl {
+                        label: "Room Quorum Percent",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: optional_f64_text(Some(self.streaming.room_quorum_percent)),
+                    },
+                    GuiDialogControl {
+                        label: "Room Maximum Pause Seconds",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: optional_f64_text(Some(self.streaming.room_maximum_pause_seconds)),
+                    },
+                    GuiDialogControl {
+                        label: "Start Synchronization",
+                        kind: GuiDialogControlKind::Select,
+                        value: self.streaming.start_policy_label.clone(),
+                    },
+                    GuiDialogControl {
+                        label: "Start Quorum Percent",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: optional_f64_text(Some(self.streaming.start_quorum_percent)),
+                    },
+                    GuiDialogControl {
+                        label: "Start Timeout Seconds",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: optional_f64_text(Some(self.streaming.start_timeout_seconds)),
+                    },
+                    GuiDialogControl {
+                        label: "Start Timeout Action",
+                        kind: GuiDialogControlKind::Select,
+                        value: self.streaming.start_timeout_action_label.clone(),
+                    },
+                    GuiDialogControl {
+                        label: "Quality Downgrade Suggestions",
+                        kind: GuiDialogControlKind::Checkbox,
+                        value: bool_label(self.streaming.quality_downgrade_suggestions).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Effective mpv Options",
+                        kind: GuiDialogControlKind::ReadOnly,
+                        value: self.streaming.effective_mpv_options.clone(),
                     },
                 ],
             },

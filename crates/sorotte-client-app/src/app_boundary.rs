@@ -164,9 +164,13 @@ pub mod state {
     };
     pub use crate::runtime_config::{
         ClientConfig, ClientConfigErrors, ClientConfigIssue, ClientConfigResolution,
-        ConnectionConfig, InterfaceConfig, MediaMatchConfig, Percent, PlaybackConfig, PlaybackRate,
-        PlexConfig, PluginConfig, PublicServerConfig, ReadinessConfig, RoomName, Seconds,
-        ServerPort, SyncConfig, Username, resolve_client_config,
+        ConnectionConfig, EffectiveMpvStreamingOption, InterfaceConfig, MediaMatchConfig, Percent,
+        PlaybackConfig, PlaybackRate, PlexConfig, PluginConfig, PublicServerConfig,
+        ReadinessConfig, RoomBufferingConfig, RoomBufferingPolicy, RoomName, Seconds, ServerPort,
+        StartSynchronizationConfig, StartSynchronizationPolicy, StartTimeoutAction,
+        StreamingBufferConfig, StreamingPlaybackConfig, StreamingQualityDowngradeSuggestion,
+        StreamingQualityPreset, StreamingQualitySuggestionReason, StreamingRecoveryConfig,
+        StreamingRecoveryPolicy, SyncConfig, Username, resolve_client_config,
     };
 }
 

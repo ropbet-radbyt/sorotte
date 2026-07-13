@@ -20,6 +20,10 @@ pub(in crate::app) enum GuiAttachedPlayerRuntimeAction {
     Paused(bool),
     Position(f64),
     PlaybackRate(f64),
+    Coordinator {
+        command_id: CoordinatorCommandId,
+        command: CoordinatorPlayerCommand,
+    },
 }
 
 #[allow(
@@ -172,6 +176,54 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         _cache_buffering_percent: Option<f64>,
     ) -> Result<(), String> {
         Ok(())
+    }
+
+    fn prepare_attached_playback_media(
+        &mut self,
+        _logical_id: LogicalMediaId,
+        _kind: MediaTransportKind,
+        _intent: MediaLoadIntent,
+        _now_seconds: f64,
+    ) -> Result<Option<MediaLoadPlan>, String> {
+        Ok(None)
+    }
+
+    fn sync_attached_player_transport_telemetry(
+        &mut self,
+        _update: PlayerTransportTelemetryUpdate,
+        _now_seconds: f64,
+    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        Ok(Vec::new())
+    }
+
+    fn report_attached_coordinator_command_dispatch(
+        &mut self,
+        _command_id: CoordinatorCommandId,
+        _accepted: bool,
+        _now_seconds: f64,
+    ) {
+    }
+
+    fn playback_coordination_snapshot(&self) -> Option<PlaybackCoordinationSnapshot> {
+        None
+    }
+
+    fn take_streaming_quality_downgrade_suggestion(
+        &mut self,
+    ) -> Option<StreamingQualityDowngradeSuggestion> {
+        None
+    }
+
+    fn take_playback_barrier_timeout_action(&mut self) -> Option<PlaybackBarrierTimeoutAction> {
+        None
+    }
+
+    fn reset_playback_transport_adapter_epoch(&mut self, _now_seconds: f64) {}
+
+    fn interrupt_attached_playback_recovery(
+        &mut self,
+    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        Ok(Vec::new())
     }
 
     fn set_playback_paused(&mut self, _paused: bool) -> Result<bool, String> {

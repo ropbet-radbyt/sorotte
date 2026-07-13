@@ -12,6 +12,11 @@ use std::{
 };
 
 use sorotte_client_app::app_boundary::state::ClientConfig;
+use sorotte_client_app::app_boundary::state::StreamingQualitySuggestionReason;
+use sorotte_client_core::{
+    CoordinatorPlayerCommand, MediaLoadIntent, MediaTransportKind, PlaybackBarrierTimeoutAction,
+    logical_media_id_for_local_file_update,
+};
 use sorotte_player_api::{LocalFileUpdate, PlayerAdapter, PlayerMediaLoadOutcome};
 use sorotte_player_mpv::LegacySyncplayOsdKind;
 
@@ -56,8 +61,9 @@ use super::{
     GuiAttachedMediaSearchIndex, GuiAttachedMediaSearchRootIndex,
     GuiAttachedMediaSearchRootRefreshResult, GuiAutomaticMediaResolutionTrigger,
     GuiPendingAttachedMediaResolution, GuiPendingAttachedPlayerPauseCommand,
-    GuiPersistedConfigRuntimeOwner, GuiPlexStreamResolveOutcome, GuiPlexStreamResolveWorkerResult,
-    GuiUserMediaTargetResolution, GuiUserMediaTargetResolutionSource,
+    GuiPendingAttachedRoomUnpauseObservation, GuiPersistedConfigRuntimeOwner,
+    GuiPlexStreamResolveOutcome, GuiPlexStreamResolveWorkerResult, GuiUserMediaTargetResolution,
+    GuiUserMediaTargetResolutionSource,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

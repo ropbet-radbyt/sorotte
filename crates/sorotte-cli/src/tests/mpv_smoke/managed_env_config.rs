@@ -10,9 +10,13 @@ fn managed_mpv_launch_base_args_include_buffering_defaults_before_ipc_arg() {
             "--pause".to_owned(),
             "--force-window=no".to_owned(),
             "--idle=yes".to_owned(),
+            "--cache=auto".to_owned(),
             "--cache-pause=yes".to_owned(),
             "--cache-pause-initial=yes".to_owned(),
             "--cache-pause-wait=5".to_owned(),
+            "--cache-secs=30".to_owned(),
+            "--demuxer-max-bytes=150MiB".to_owned(),
+            "--cache-on-disk=no".to_owned(),
             r"--input-ipc-server=\\.\pipe\sorotte-cli-mpv-test".to_owned(),
         ]
     );

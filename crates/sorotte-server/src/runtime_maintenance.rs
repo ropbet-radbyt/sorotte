@@ -124,6 +124,7 @@ impl ServerRuntime {
         &mut self,
         now: f64,
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
+        let mut outbound = self.collect_due_playback_barrier_updates_at(now)?;
         let mut due_clients: Vec<String> = self
             .client_next_periodic_state_at
             .iter()
@@ -132,7 +133,6 @@ impl ServerRuntime {
             .collect();
         due_clients.sort();
 
-        let mut outbound = Vec::new();
         for client_id in due_clients {
             let Some(mut next_state_at) =
                 self.client_next_periodic_state_at.get(&client_id).copied()
@@ -168,6 +168,13 @@ impl ServerRuntime {
         let Some(session) = self.sessions.get(client_id).cloned() else {
             return Ok(Vec::new());
         };
+        // A fenced session still models a live transport until the network's
+        // disconnect callback arrives. Periodic timeout cleanup must not
+        // remove the session (and its fence) while the close event and a
+        // racing protocol line are still in flight.
+        if self.reject_fenced_playback_barrier_transport(client_id) {
+            return Ok(Vec::new());
+        }
         self.ensure_room_state(&session.room);
         if self.room_playback_state(&session.room).set_by.is_none()
             && let Some(set_by_username) = self.fallback_room_set_by_username(&session.room)
@@ -202,7 +209,10 @@ impl ServerRuntime {
     pub(crate) fn fallback_room_set_by_username(&self, room_name: &str) -> Option<String> {
         self.sessions
             .iter()
-            .filter(|(_, session)| session.room == room_name)
+            .filter(|(client_id, session)| {
+                session.room == room_name
+                    && !self.playback_barrier_fenced_clients.contains(*client_id)
+            })
             .min_by_key(|(client_id, _)| self.client_room_join_order(client_id))
             .map(|(_, session)| session.username.clone())
     }
@@ -261,8 +271,15 @@ impl ServerRuntime {
         &mut self,
         client_id: &str,
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
-        let Some(session) = self.remove_session_tracking(client_id) else {
+        let Some(session) = self.sessions.get(client_id).cloned() else {
             return Ok(Vec::new());
+        };
+        let mut outbound_messages =
+            self.mark_playback_barrier_participant_disconnected(client_id, &session.room)?;
+        outbound_messages
+            .extend(self.mark_room_buffering_participant_disconnected(client_id, &session.room)?);
+        let Some(session) = self.remove_session_tracking(client_id) else {
+            return Ok(outbound_messages);
         };
         self.cleanup_room_if_empty(&session.room)?;
         let left_message = user_event_message(
@@ -278,10 +295,11 @@ impl ServerRuntime {
             self.clients_all()
         };
         recipients.push(client_id.to_owned());
-        let mut outbound_messages: Vec<_> = recipients
-            .into_iter()
-            .map(|peer_client| DirectedProtocolMessage::new(peer_client, left_message.clone()))
-            .collect();
+        outbound_messages.extend(
+            recipients
+                .into_iter()
+                .map(|peer_client| DirectedProtocolMessage::new(peer_client, left_message.clone())),
+        );
         if self.persistent_rooms_enabled {
             self.enqueue_list_snapshots_for_clients(
                 &mut outbound_messages,
@@ -293,11 +311,15 @@ impl ServerRuntime {
 
     pub(crate) fn remove_session_tracking(&mut self, client_id: &str) -> Option<ServerSession> {
         let session = self.sessions.remove(client_id)?;
+        self.playback_barrier_fenced_clients.remove(client_id);
         let _ = self.domain.leave_room(&session.username, &session.room);
         self.remove_room_controller(&session.username, &session.room);
         self.client_state_counters.remove(client_id);
         self.client_playback_states.remove(client_id);
         self.client_room_join_sequence.remove(client_id);
+        self.playback_barrier_request_nonces.remove(client_id);
+        self.playback_barrier_new_identity_rate_by_client
+            .remove(client_id);
         self.client_last_state_update_at.remove(client_id);
         self.client_next_periodic_state_at.remove(client_id);
         Some(session)
@@ -424,6 +446,12 @@ impl ServerRuntime {
         self.room_controllers.remove(room_name);
         self.room_playlists.remove(room_name);
         self.room_playback_states.remove(room_name);
+        self.room_playback_barriers.remove(room_name);
+        self.room_buffering_controls.remove(room_name);
+        self.playback_barrier_request_tombstones
+            .retain(|(tombstone_room, _), _| tombstone_room != room_name);
+        self.playback_barrier_new_identity_rate_by_room
+            .remove(room_name);
         self.delete_persisted_room_if_needed(room_name)?;
         Ok(())
     }
@@ -527,7 +555,8 @@ impl ServerRuntime {
             .is_controlled_room_name(room_name);
         let mut slowest: Option<(String, f64, u64)> = None;
         for (client_id, session) in &self.sessions {
-            if session.room != room_name {
+            if session.room != room_name || self.playback_barrier_fenced_clients.contains(client_id)
+            {
                 continue;
             }
             if controlled_room && !self.user_is_room_controller(&session.username, room_name) {

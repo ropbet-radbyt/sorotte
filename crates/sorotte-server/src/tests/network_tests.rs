@@ -914,6 +914,191 @@ async fn server_network_loop_routes_hello_response_to_connected_client() {
 }
 
 #[tokio::test]
+async fn recovery_on_new_socket_closes_superseded_socket_through_cross_client_routing() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let address = listener
+        .local_addr()
+        .expect("listener should have local address");
+    let runtime = ServerActorHandle::spawn(ServerRuntime::new());
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let server_task = tokio::spawn(run_server_network_loop_until_shutdown(
+        listener,
+        runtime.clone(),
+        None,
+        shutdown_rx,
+    ));
+
+    let old_stream = TcpStream::connect(address)
+        .await
+        .expect("old client should connect");
+    let (old_reader, mut old_writer) = old_stream.into_split();
+    let mut old_reader = BufReader::new(old_reader);
+    old_writer
+        .write_all(br#"{"Hello":{"username":"alice","room":{"name":"room"},"version":"1.7.5","features":{"sorottePlaybackBarrierV1":true}}}
+"#)
+        .await
+        .expect("old Hello should write");
+    old_writer.flush().await.expect("old Hello should flush");
+    timeout(Duration::from_secs(2), async {
+        loop {
+            let mut line = String::new();
+            assert!(
+                old_reader
+                    .read_line(&mut line)
+                    .await
+                    .expect("old Hello response should read")
+                    > 0,
+                "old socket should remain open through Hello"
+            );
+            if matches!(
+                decode_message_line(line.trim_end()).expect("old response should decode"),
+                ProtocolMessage::Hello(_)
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("old Hello response should arrive");
+
+    old_writer
+        .write_all(br#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":501,"requestId":"network-overlap-operation","loadIntent":"newPlayback","logicalMediaId":"network-overlap-media","targetPosition":1.0,"policy":"controller"}}}}
+"#)
+        .await
+        .expect("old prepare should write");
+    old_writer.flush().await.expect("old prepare should flush");
+    timeout(Duration::from_secs(2), async {
+        loop {
+            let mut line = String::new();
+            assert!(
+                old_reader
+                    .read_line(&mut line)
+                    .await
+                    .expect("canonical prepare should read")
+                    > 0,
+                "old socket should remain open until recovery"
+            );
+            let message =
+                decode_message_line(line.trim_end()).expect("old prepare response should decode");
+            let ProtocolMessage::Set(set) = message else {
+                continue;
+            };
+            if set
+                .set
+                .playback_barrier_v1()
+                .ok()
+                .flatten()
+                .is_some_and(|extension| extension.prepare.is_some())
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("canonical prepare should prove server acceptance");
+
+    let new_stream = TcpStream::connect(address)
+        .await
+        .expect("replacement client should connect");
+    let (new_reader, mut new_writer) = new_stream.into_split();
+    let mut new_reader = BufReader::new(new_reader);
+    new_writer
+        .write_all(br#"{"Hello":{"username":"alice","room":{"name":"room"},"version":"1.7.5","features":{"sorottePlaybackBarrierV1":true}}}
+"#)
+        .await
+        .expect("replacement Hello should write");
+    new_writer
+        .flush()
+        .await
+        .expect("replacement Hello should flush");
+    timeout(Duration::from_secs(2), async {
+        loop {
+            let mut line = String::new();
+            assert!(
+                new_reader
+                    .read_line(&mut line)
+                    .await
+                    .expect("replacement Hello response should read")
+                    > 0,
+                "replacement socket should stay connected"
+            );
+            if matches!(
+                decode_message_line(line.trim_end()).expect("replacement response should decode"),
+                ProtocolMessage::Hello(_)
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("replacement Hello response should arrive");
+
+    new_writer
+        .write_all(br#"{"Set":{"sorottePlaybackBarrierV1":{"recovery":{"requestId":"network-overlap-operation","originalRequestNonce":501,"recoveryNonce":502,"logicalMediaId":"network-overlap-media"}}}}
+"#)
+        .await
+        .expect("replacement recovery should write");
+    new_writer
+        .flush()
+        .await
+        .expect("replacement recovery should flush");
+
+    timeout(Duration::from_secs(2), async {
+        loop {
+            let mut line = String::new();
+            if old_reader
+                .read_line(&mut line)
+                .await
+                .expect("old socket close should read cleanly")
+                == 0
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("recovery processed on client-2 must close client-1's socket");
+
+    timeout(Duration::from_secs(2), async {
+        loop {
+            if runtime
+                .session("client-1")
+                .await
+                .expect("actor should answer old-session query")
+                .is_none()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("old socket EOF should complete model disconnect cleanup");
+    assert!(
+        runtime
+            .session("client-2")
+            .await
+            .expect("actor should answer replacement-session query")
+            .is_some(),
+        "cross-client Close must not close the recovery source"
+    );
+
+    shutdown_tx
+        .send(true)
+        .expect("shutdown signal should send successfully");
+    server_task
+        .await
+        .expect("server task should join cleanly")
+        .expect("server loop should exit without error");
+    runtime
+        .shutdown()
+        .await
+        .expect("test actor should shut down cleanly");
+}
+
+#[tokio::test]
 async fn server_network_loop_passes_peer_ip_to_motd_template() {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await

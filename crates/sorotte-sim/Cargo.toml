@@ -9,4 +9,9 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+sorotte-client-core = { path = "../sorotte-client-core" }
 sorotte-core = { path = "../sorotte-core" }
+sorotte-player-api = { path = "../sorotte-player-api" }
+
+[dev-dependencies]
+sorotte-player-mpv = { path = "../sorotte-player-mpv" }

@@ -136,6 +136,15 @@ impl SetPayload {
         self
     }
 
+    pub fn with_playback_barrier_v1(mut self, extension: PlaybackBarrierSetExtension) -> Self {
+        playback_barrier::insert_extension(&mut self.extra, &extension);
+        self
+    }
+
+    pub fn playback_barrier_v1(&self) -> serde_json::Result<Option<PlaybackBarrierSetExtension>> {
+        playback_barrier::decode_extension(&self.extra)
+    }
+
     pub fn with_command_order(mut self, command_order: Vec<String>) -> Self {
         self.command_order = command_order;
         self

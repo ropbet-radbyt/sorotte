@@ -1,12 +1,12 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs, io,
     path::{Path, PathBuf},
     sync::{
         Arc, LazyLock,
         atomic::{AtomicUsize, Ordering},
     },
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use md5::Md5;
@@ -21,12 +21,20 @@ use sha1::{Digest, Sha1};
 use sha2::Sha256;
 use sorotte_core::{DomainError, SyncDomain};
 use sorotte_protocol::{
-    ChatPayload, ControllerAuthPayload, DEFAULT_MAX_PROTOCOL_LINE_BYTES, FilePayload, HelloPayload,
-    IgnoringOnTheFlyPayload, ListPayload, ListUserEntry, NewControlledRoomPayload, PingPayload,
-    PlaylistIndexPayload, PlaystatePayload, ProtocolError, ProtocolMessage, ReadyPayload, RoomRef,
-    SOROTTE_PLEX_PLAYLIST_URIS_FEATURE, SetPayload, StatePayload, UserSetPayload,
-    canonical_playlist_files_from_change, decode_line, decode_message_line_items,
-    encode_message_line, playlist_change_with_plex_sidecar,
+    ChatPayload, CommitStartPayload, ControllerAuthPayload, DEFAULT_MAX_PROTOCOL_LINE_BYTES,
+    FilePayload, HelloPayload, IgnoringOnTheFlyPayload, ListPayload, ListUserEntry,
+    MediaLoadIntent, MediaReadyPayload, NewControlledRoomPayload, PingPayload,
+    PlaybackBarrierDegradedReason, PlaybackBarrierParticipantPhase,
+    PlaybackBarrierParticipantStatus, PlaybackBarrierPhase, PlaybackBarrierPolicy,
+    PlaybackBarrierRecoveryDisposition, PlaybackBarrierRecoveryPayload,
+    PlaybackBarrierRequestResultPayload, PlaybackBarrierSetExtension,
+    PlaybackBarrierStateExtension, PlaybackBarrierStatusPayload, PlaybackBarrierTimeoutAction,
+    PlaylistIndexPayload, PlaystatePayload, PrepareMediaPayload, ProtocolError, ProtocolMessage,
+    ReadyPayload, RoomBufferingPhase, RoomBufferingPolicy, RoomBufferingPolicyPayload,
+    RoomBufferingStatusPayload, RoomRef, SOROTTE_PLAYBACK_BARRIER_V1,
+    SOROTTE_PLEX_PLAYLIST_URIS_FEATURE, SetPayload, StartedAckPayload, StatePayload,
+    TransportBufferingReportPayload, UserSetPayload, canonical_playlist_files_from_change,
+    decode_line, decode_message_line_items, encode_message_line, playlist_change_with_plex_sidecar,
 };
 use sorotte_secret::SecretValue;
 use tokio::{
@@ -79,6 +87,36 @@ const PING_MOVING_AVERAGE_WEIGHT: f64 = 0.85;
 const SERVER_STATS_SNAPSHOT_INTERVAL_SECONDS: f64 = 3600.0;
 const SERVER_STATS_DELAY_STEP_SECONDS: f64 = 5.0;
 const SERVER_NETWORK_TICK_INTERVAL_SECONDS: f64 = 0.25;
+const PLAYBACK_BARRIER_DEFAULT_TIMEOUT_SECONDS: f64 = 20.0;
+const PLAYBACK_BARRIER_MIN_TIMEOUT_SECONDS: f64 = 1.0;
+const PLAYBACK_BARRIER_MAX_TIMEOUT_SECONDS: f64 = 30.0;
+const PLAYBACK_BARRIER_STARTED_TIMEOUT_SECONDS: f64 = 10.0;
+const PLAYBACK_BARRIER_MAX_LOGICAL_MEDIA_ID_CHARS: usize = 2048;
+const PLAYBACK_BARRIER_MAX_REQUEST_ID_BYTES: usize = 128;
+// Superseded transports are forcibly closed and ordinary live connections
+// time out after PROTOCOL_TIMEOUT_SECONDS. Retain displaced request identities
+// across that lifetime plus two IO deadlines and shutdown scheduling margin.
+const PLAYBACK_BARRIER_REQUEST_TOMBSTONE_TTL_SECONDS: f64 =
+    PROTOCOL_TIMEOUT_SECONDS + (2.0 * IO_TIMEOUT_SECONDS) + SERVER_NETWORK_SHUTDOWN_GRACE_SECONDS;
+const PLAYBACK_BARRIER_MAX_REQUEST_TOMBSTONES_PER_ROOM: usize = 4096;
+const PLAYBACK_BARRIER_MAX_REQUEST_TOMBSTONES_GLOBAL: usize = 16_384;
+const PLAYBACK_BARRIER_REQUEST_RETRY_MIN_MILLIS: u64 = 250;
+const PLAYBACK_BARRIER_REQUEST_RETRY_MAX_MILLIS: u64 = 30_000;
+// New identities are deliberately burst-tolerant for normal playlist skips,
+// while remaining far below the rate needed to keep the 120-second replay
+// window continuously saturated. Exact retries use the same identity and do
+// not consume this budget.
+const PLAYBACK_BARRIER_NEW_IDENTITY_RATE_WINDOW_SECONDS: f64 = 10.0;
+const PLAYBACK_BARRIER_MAX_NEW_IDENTITIES_PER_CLIENT_WINDOW: usize = 16;
+const PLAYBACK_BARRIER_MAX_NEW_IDENTITIES_PER_ROOM_WINDOW: usize = 64;
+const ROOM_BUFFERING_DEFAULT_QUORUM_PERCENT: u32 = 75;
+const ROOM_BUFFERING_DEFAULT_DEBOUNCE_SECONDS: f64 = 0.75;
+const ROOM_BUFFERING_MAX_DEBOUNCE_SECONDS: f64 = 10.0;
+const ROOM_BUFFERING_DEFAULT_RESUME_HYSTERESIS_SECONDS: f64 = 1.5;
+const ROOM_BUFFERING_MAX_RESUME_HYSTERESIS_SECONDS: f64 = 15.0;
+const ROOM_BUFFERING_DEFAULT_MAX_PAUSE_SECONDS: f64 = 30.0;
+const ROOM_BUFFERING_MIN_MAX_PAUSE_SECONDS: f64 = 1.0;
+const ROOM_BUFFERING_MAX_MAX_PAUSE_SECONDS: f64 = 60.0;
 // Media-match signatures can push otherwise valid Set/List lines above the
 // base Syncplay line size, especially when multiple users publish signatures.
 const MAX_PROTOCOL_LINE_BYTES: usize = DEFAULT_MAX_PROTOCOL_LINE_BYTES * 8;
@@ -114,6 +152,7 @@ mod persistence_actor;
 mod runtime_api;
 mod runtime_handlers;
 mod runtime_maintenance;
+mod runtime_playback_barrier;
 mod tls;
 
 pub use actor::{ServerActorError, ServerActorHandle};
@@ -293,6 +332,34 @@ pub struct ServerRuntime {
     room_controllers: BTreeMap<String, BTreeSet<String>>,
     room_playlists: BTreeMap<String, RoomPlaylistState>,
     room_playback_states: BTreeMap<String, RoomPlaybackState>,
+    room_playback_barriers: BTreeMap<String, RoomPlaybackBarrier>,
+    room_buffering_controls: BTreeMap<String, RoomBufferingControl>,
+    /// Superseded transport identities awaiting network teardown after a
+    /// newer connection recovered their playback lifecycle. Fenced clients
+    /// cannot dispatch any protocol command, and a later disconnect therefore
+    /// cannot degrade the replacement owner.
+    playback_barrier_fenced_clients: BTreeSet<String>,
+    /// Recently displaced application operations. Current identity remains
+    /// canonical in the barrier or buffering control; only retired identities
+    /// consume this time-bounded, per-room and globally bounded replay cache.
+    playback_barrier_request_tombstones:
+        BTreeMap<(String, PlaybackBarrierRequestId), PlaybackBarrierRequestTombstone>,
+    playback_barrier_request_tombstone_policy: PlaybackBarrierRequestTombstonePolicy,
+    playback_barrier_request_clock_started_at: Instant,
+    #[cfg(test)]
+    playback_barrier_request_clock_override_seconds: Option<f64>,
+    playback_barrier_new_identity_rate_policy: PlaybackBarrierNewIdentityRatePolicy,
+    playback_barrier_new_identity_rate_by_client:
+        BTreeMap<String, VecDeque<PlaybackBarrierNewIdentityRateEvent>>,
+    playback_barrier_new_identity_rate_by_room:
+        BTreeMap<String, VecDeque<PlaybackBarrierNewIdentityRateEvent>>,
+    /// Highest accepted/consumed request nonce for each live connection.
+    /// This bounds duplicate suppression to live sessions and prevents
+    /// delayed requests from older room generations replaying as fresh user
+    /// intent, including after a room switch.
+    playback_barrier_request_nonces: BTreeMap<String, u64>,
+    next_playback_barrier_generation: u64,
+    next_playback_barrier_revision: u64,
     client_playback_states: BTreeMap<String, ClientPlaybackState>,
     client_room_join_sequence: BTreeMap<String, u64>,
     next_room_join_sequence: u64,
@@ -425,6 +492,174 @@ struct ClientStateCounters {
     ping_rtt_seconds: f64,
     ping_average_rtt_seconds: f64,
     ping_forward_delay_seconds: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct RoomPlaybackBarrierParticipant {
+    username: String,
+    status: PlaybackBarrierParticipantStatus,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct RoomPlaybackBarrier {
+    prepare: PrepareMediaPayload,
+    /// Retained after the barrier becomes terminal so an idempotent retry can
+    /// replay the canonical lifecycle without making the commit active again.
+    commit: Option<CommitStartPayload>,
+    initiator_client_id: String,
+    initiator_session_sequence: u64,
+    initiator_username: String,
+    participants: BTreeMap<String, RoomPlaybackBarrierParticipant>,
+    excluded_legacy_clients: BTreeSet<String>,
+    phase: PlaybackBarrierPhase,
+    state_revision: Option<u64>,
+    deadline: f64,
+    started_deadline: Option<f64>,
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct PlaybackBarrierRequestId(String);
+
+impl PlaybackBarrierRequestId {
+    fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+}
+
+impl std::fmt::Debug for PlaybackBarrierRequestId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("<redacted-playback-request-id>")
+    }
+}
+
+#[derive(Clone, PartialEq)]
+struct PlaybackBarrierRequestTombstone {
+    request_nonce: u64,
+    logical_media_id_digest: Option<[u8; 32]>,
+    media_generation: u64,
+    retain_until_seconds: f64,
+}
+
+impl std::fmt::Debug for PlaybackBarrierRequestTombstone {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PlaybackBarrierRequestTombstone")
+            .field("request_nonce", &self.request_nonce)
+            .field(
+                "logical_media_id_digest",
+                &self.logical_media_id_digest.as_ref().map(|_| "<redacted>"),
+            )
+            .field("media_generation", &self.media_generation)
+            .field("retain_until_seconds", &self.retain_until_seconds)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PlaybackBarrierRequestTombstonePolicy {
+    ttl_seconds: f64,
+    max_per_room: usize,
+    max_global: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PlaybackBarrierNewIdentityRatePolicy {
+    window_seconds: f64,
+    max_per_client: usize,
+    max_per_room: usize,
+}
+
+impl Default for PlaybackBarrierNewIdentityRatePolicy {
+    fn default() -> Self {
+        Self {
+            window_seconds: PLAYBACK_BARRIER_NEW_IDENTITY_RATE_WINDOW_SECONDS,
+            max_per_client: PLAYBACK_BARRIER_MAX_NEW_IDENTITIES_PER_CLIENT_WINDOW,
+            max_per_room: PLAYBACK_BARRIER_MAX_NEW_IDENTITIES_PER_ROOM_WINDOW,
+        }
+    }
+}
+
+#[derive(Clone, PartialEq)]
+struct PlaybackBarrierNewIdentityRateEvent {
+    username: String,
+    room_name: String,
+    request_id: Option<PlaybackBarrierRequestId>,
+    request_nonce: u64,
+    observed_at_seconds: f64,
+}
+
+impl PlaybackBarrierNewIdentityRateEvent {
+    fn matches_operation(
+        &self,
+        username: &str,
+        room_name: &str,
+        request_id: Option<&str>,
+        request_nonce: u64,
+    ) -> bool {
+        self.username == username
+            && self.room_name == room_name
+            && self
+                .request_id
+                .as_ref()
+                .map(|request_id| request_id.0.as_str())
+                == request_id
+            && self.request_nonce == request_nonce
+    }
+}
+
+impl std::fmt::Debug for PlaybackBarrierNewIdentityRateEvent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PlaybackBarrierNewIdentityRateEvent")
+            .field("username", &self.username)
+            .field("room_name", &self.room_name)
+            .field(
+                "request_id",
+                &self.request_id.as_ref().map(|_| "<redacted>"),
+            )
+            .field("request_nonce", &self.request_nonce)
+            .field("observed_at_seconds", &self.observed_at_seconds)
+            .finish()
+    }
+}
+
+impl Default for PlaybackBarrierRequestTombstonePolicy {
+    fn default() -> Self {
+        Self {
+            ttl_seconds: PLAYBACK_BARRIER_REQUEST_TOMBSTONE_TTL_SECONDS,
+            max_per_room: PLAYBACK_BARRIER_MAX_REQUEST_TOMBSTONES_PER_ROOM,
+            max_global: PLAYBACK_BARRIER_MAX_REQUEST_TOMBSTONES_GLOBAL,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DisplacedPlaybackBarrierRequest {
+    request_nonce: u64,
+    logical_media_id_digest: Option<[u8; 32]>,
+    media_generation: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct RoomBufferingParticipantReport {
+    username: String,
+    buffering: bool,
+    buffered_seconds: Option<f64>,
+    reported_at_seconds: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct RoomBufferingControl {
+    config: RoomBufferingPolicyPayload,
+    requested_config: RoomBufferingPolicyPayload,
+    configured_by_client_id: String,
+    configured_by_username: String,
+    reports: BTreeMap<String, RoomBufferingParticipantReport>,
+    condition_active_since: Option<f64>,
+    condition_clear_since: Option<f64>,
+    paused_by_policy: bool,
+    pause_deadline: Option<f64>,
+    fail_open_latched: bool,
 }
 #[cfg(test)]
 mod tests;

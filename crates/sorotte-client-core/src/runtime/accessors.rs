@@ -1,14 +1,74 @@
 use super::*;
 use crate::control::client_effect_player_error;
 use sorotte_player_api::PlayerCommand;
+use sorotte_protocol::PlaybackBarrierSetExtension;
 
 pub struct ClientSessionUpdate<'a> {
     session: &'a mut ClientSession,
+    control: Option<&'a mut dyn ClientEffectSink>,
+    playback_coordination: Option<&'a mut RuntimePlaybackCoordination>,
 }
 
 impl<'a> ClientSessionUpdate<'a> {
     pub fn new(session: &'a mut ClientSession) -> Self {
-        Self { session }
+        Self {
+            session,
+            control: None,
+            playback_coordination: None,
+        }
+    }
+
+    fn with_runtime_context(
+        session: &'a mut ClientSession,
+        control: &'a mut dyn ClientEffectSink,
+        playback_coordination: &'a mut RuntimePlaybackCoordination,
+    ) -> Self {
+        Self {
+            session,
+            control: Some(control),
+            playback_coordination: Some(playback_coordination),
+        }
+    }
+
+    fn cancel_playback_barrier_request_after_room_change(&mut self, previous_room: Option<String>) {
+        if previous_room.as_deref() != self.session.room() {
+            if let Some(control) = self.control.as_deref_mut() {
+                control.cancel_protocol_playback_barrier_requests();
+            }
+            if let Some(playback_coordination) = self.playback_coordination.as_deref_mut() {
+                playback_coordination.handle_authoritative_playback_barrier_room_change();
+            }
+        }
+    }
+
+    fn playback_barrier_extension(
+        message: &ProtocolMessage,
+    ) -> Option<PlaybackBarrierSetExtension> {
+        let ProtocolMessage::Set(set) = message else {
+            return None;
+        };
+        set.set.playback_barrier_v1().ok().flatten()
+    }
+
+    fn observe_playback_barrier_extension(
+        &mut self,
+        extension: Option<PlaybackBarrierSetExtension>,
+        now_seconds: f64,
+    ) {
+        let retry_scheduled = self
+            .playback_coordination
+            .as_deref_mut()
+            .zip(extension.as_ref())
+            .is_some_and(|(playback_coordination, extension)| {
+                playback_coordination.observe_playback_barrier_server_extension(
+                    extension,
+                    self.session,
+                    now_seconds,
+                )
+            });
+        if retry_scheduled && let Some(control) = self.control.as_deref_mut() {
+            control.cancel_protocol_playback_barrier_requests();
+        }
     }
 
     pub fn apply_player_playback_telemetry_update(
@@ -19,14 +79,24 @@ impl<'a> ClientSessionUpdate<'a> {
     }
 
     pub fn initialize_local_identity(&mut self, username: String, room: String) {
+        let previous_room = self.session.room().map(str::to_owned);
         self.session.initialize_local_identity(username, room);
+        self.cancel_playback_barrier_request_after_room_change(previous_room);
     }
 
     pub fn apply_protocol_message(
         &mut self,
         message: ProtocolMessage,
     ) -> Result<(), ProtocolError> {
-        self.session.apply_protocol_message(message)
+        let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
+        let extension = Self::playback_barrier_extension(&message);
+        let previous_room = self.session.room().map(str::to_owned);
+        let result = self.session.apply_protocol_message(message);
+        self.cancel_playback_barrier_request_after_room_change(previous_room);
+        if result.is_ok() {
+            self.observe_playback_barrier_extension(extension, now_seconds);
+        }
+        result
     }
 
     pub fn apply_protocol_message_at(
@@ -34,11 +104,21 @@ impl<'a> ClientSessionUpdate<'a> {
         message: ProtocolMessage,
         now_seconds: f64,
     ) -> Result<(), ProtocolError> {
-        self.session.apply_protocol_message_at(message, now_seconds)
+        let extension = Self::playback_barrier_extension(&message);
+        let previous_room = self.session.room().map(str::to_owned);
+        let result = self.session.apply_protocol_message_at(message, now_seconds);
+        self.cancel_playback_barrier_request_after_room_change(previous_room);
+        if result.is_ok() {
+            self.observe_playback_barrier_extension(extension, now_seconds);
+        }
+        result
     }
 
     pub fn apply_message_json(&mut self, json_line: &str) -> Result<(), ProtocolError> {
-        self.session.apply_message_json(json_line)
+        for item in decode_message_line_items(json_line)? {
+            self.apply_protocol_message(item.message?)?;
+        }
+        Ok(())
     }
 
     pub fn apply_message_json_at(
@@ -46,7 +126,10 @@ impl<'a> ClientSessionUpdate<'a> {
         json_line: &str,
         now_seconds: f64,
     ) -> Result<(), ProtocolError> {
-        self.session.apply_message_json_at(json_line, now_seconds)
+        for item in decode_message_line_items(json_line)? {
+            self.apply_protocol_message_at(item.message?, now_seconds)?;
+        }
+        Ok(())
     }
 
     pub fn mark_connecting(&mut self) {
@@ -140,14 +223,120 @@ impl<'a> ClientSessionUpdate<'a> {
     }
 }
 
-pub struct ClientPlayerIo<'a, P> {
+pub struct ClientPlayerIo<'a, P, C> {
     player: &'a mut P,
+    playback_coordination: &'a mut RuntimePlaybackCoordination,
+    session: &'a ClientSession,
+    control: &'a mut C,
 }
 
-impl<P: PlayerAdapter> ClientPlayerIo<'_, P> {
+impl<P, C> ClientPlayerIo<'_, P, C>
+where
+    P: PlayerAdapter,
+    C: ClientEffectSink,
+{
     pub fn open_file(&mut self, path: &str) -> Result<(), PlayerError> {
-        self.player
-            .execute(PlayerCommand::OpenFile(path.to_owned()))
+        let kind = if path.contains("://") {
+            MediaTransportKind::NetworkVod
+        } else {
+            MediaTransportKind::LocalFile
+        };
+        let name = if path.contains("://") {
+            path.to_owned()
+        } else {
+            std::path::Path::new(path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(path)
+                .to_owned()
+        };
+        let size_bytes = if path.contains("://") {
+            0
+        } else {
+            std::fs::metadata(path)
+                .map(|metadata| metadata.len())
+                .unwrap_or_default()
+        };
+        let logical_id = logical_media_id_for_local_file_update(
+            &LocalFileUpdate::new(name)
+                .with_size_bytes(size_bytes)
+                .with_path(path),
+        );
+        self.open_media(
+            path,
+            logical_id,
+            kind,
+            unix_wall_clock_time_seconds_legacy_compatible(),
+        )
+        .map(|_| ())
+    }
+
+    pub fn open_media(
+        &mut self,
+        path: &str,
+        logical_id: LogicalMediaId,
+        kind: MediaTransportKind,
+        now_seconds: f64,
+    ) -> Result<MediaLoadPlan, PlayerError> {
+        let cleanup_actions = self.playback_coordination.interrupt_recovery();
+        for action in cleanup_actions {
+            if let PlaybackCoordinatorAction::Execute {
+                command_id,
+                command: CoordinatorPlayerCommand::SetPlaybackRate(rate),
+            } = action
+            {
+                // Best effort: opening the requested source remains
+                // authoritative even if the outgoing transport is gone.
+                match self.player.execute(PlayerCommand::SetPlaybackRate(rate)) {
+                    Ok(()) => self
+                        .playback_coordination
+                        .command_dispatch_succeeded(command_id),
+                    Err(_) => {
+                        let now_seconds = self.playback_coordination.coordinator_now(now_seconds);
+                        self.playback_coordination
+                            .command_dispatch_failed(command_id, now_seconds);
+                    }
+                }
+            }
+        }
+        let command = PlayerCommand::OpenFile(path.to_owned());
+        match self.player.execute_tracked(command.clone()) {
+            Ok(_) => {}
+            Err(PlayerError::Unsupported("execute_tracked")) => self.player.execute(command)?,
+            Err(error) => return Err(error),
+        }
+        let plan = self.playback_coordination.prepare_media_with_intent(
+            logical_id,
+            kind,
+            MediaLoadIntent::NewPlayback,
+            now_seconds,
+        );
+        if let Some(room) = self.session.room() {
+            self.control
+                .retain_protocol_playback_barrier_scope(room, plan.media_generation);
+        } else {
+            self.control.cancel_protocol_playback_barrier_requests();
+        }
+        if let Some(request) = self
+            .playback_coordination
+            .playback_barrier_set_for_new_media(&plan, self.session, now_seconds)
+        {
+            self.control.activate_protocol_connection_generation();
+            let scope = PlaybackBarrierRequestScope::new(
+                request.room.clone(),
+                request.local_media_generation,
+                request.request_nonce,
+            );
+            self.control
+                .emit(ClientEffect::send_playback_barrier_set(
+                    request.extension.clone(),
+                    scope,
+                ))
+                .map_err(client_effect_player_error)?;
+            self.playback_coordination
+                .confirm_playback_barrier_request_queued(&request);
+        }
+        Ok(plan)
     }
 
     pub fn set_paused(&mut self, paused: bool) -> Result<(), PlayerError> {
@@ -177,6 +366,7 @@ where
             ping_metrics_legacy_compatible: ClientPingMetricsLegacyCompatible::default(),
             pending_player_playback_telemetry_updates: EffectOutbox::default(),
             last_local_file_update: None,
+            playback_coordination: RuntimePlaybackCoordination::default(),
         }
     }
 
@@ -272,7 +462,11 @@ where
     }
 
     pub fn session_mut(&mut self) -> ClientSessionUpdate<'_> {
-        ClientSessionUpdate::new(&mut self.session)
+        ClientSessionUpdate::with_runtime_context(
+            &mut self.session,
+            &mut self.control,
+            &mut self.playback_coordination,
+        )
     }
 
     pub fn reconnect_state_restore_correction_metrics(
@@ -305,9 +499,12 @@ where
         &mut self.player
     }
 
-    pub fn player_mut(&mut self) -> ClientPlayerIo<'_, P> {
+    pub fn player_mut(&mut self) -> ClientPlayerIo<'_, P, C> {
         ClientPlayerIo {
             player: &mut self.player,
+            playback_coordination: &mut self.playback_coordination,
+            session: &self.session,
+            control: &mut self.control,
         }
     }
 

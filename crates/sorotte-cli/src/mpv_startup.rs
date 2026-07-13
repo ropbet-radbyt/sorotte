@@ -4,10 +4,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::anyhow;
 use sorotte_client_app::app_boundary::{
-    application::ClientApplication, commands::parse_seek_time_seconds_legacy_like,
-    state::StoredClientSettingsMvp,
+    application::ClientApplication,
+    commands::parse_seek_time_seconds_legacy_like,
+    state::{StoredClientSettingsMvp, StreamingPlaybackConfig},
 };
-use sorotte_player_api::{PlayerAdapter, PlayerError};
+use sorotte_player_api::{PlayerAdapter, PlayerCommand, PlayerError};
 use sorotte_player_mpv::MpvAdapter;
 #[cfg(test)]
 use sorotte_player_mpv::SimulatedPlayer;

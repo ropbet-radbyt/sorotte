@@ -1,5 +1,27 @@
 use super::*;
 
+fn gui_actions_from_playback_coordinator(
+    actions: Vec<PlaybackCoordinatorAction>,
+) -> Vec<GuiAttachedPlayerRuntimeAction> {
+    actions
+        .into_iter()
+        .filter_map(|action| match action {
+            PlaybackCoordinatorAction::Execute {
+                command_id,
+                command,
+            } => Some(GuiAttachedPlayerRuntimeAction::Coordinator {
+                command_id,
+                command,
+            }),
+            PlaybackCoordinatorAction::RequestRoomPause { .. }
+            | PlaybackCoordinatorAction::RevisionApplied { .. }
+            | PlaybackCoordinatorAction::Started { .. }
+            | PlaybackCoordinatorAction::Degraded { .. }
+            | PlaybackCoordinatorAction::CommandTimedOut { .. } => None,
+        })
+        .collect()
+}
+
 impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     fn drain_gui_actions(&mut self, state: &SorotteGuiShellAppState) -> Vec<GuiShellAction> {
         self.drain_gui_actions_impl(state)
@@ -539,6 +561,85 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         .map(|_| ())
     }
 
+    fn prepare_attached_playback_media(
+        &mut self,
+        logical_id: LogicalMediaId,
+        kind: MediaTransportKind,
+        intent: MediaLoadIntent,
+        now_seconds: f64,
+    ) -> Result<Option<MediaLoadPlan>, String> {
+        Ok(Some(self.runtime.prepare_playback_media_with_intent(
+            logical_id,
+            kind,
+            intent,
+            now_seconds,
+        )))
+    }
+
+    fn sync_attached_player_transport_telemetry(
+        &mut self,
+        update: PlayerTransportTelemetryUpdate,
+        now_seconds: f64,
+    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        Ok(gui_actions_from_playback_coordinator(
+            self.runtime.observe_external_player_transport_at_epoch(
+                update,
+                now_seconds,
+                self.playback_transport_adapter_epoch,
+            ),
+        ))
+    }
+
+    fn report_attached_coordinator_command_dispatch(
+        &mut self,
+        command_id: CoordinatorCommandId,
+        accepted: bool,
+        now_seconds: f64,
+    ) {
+        let result = if accepted {
+            Ok(())
+        } else {
+            Err(PlayerError::OperationFailed(
+                "attached player rejected coordinator command".to_owned(),
+            ))
+        };
+        self.runtime
+            .report_external_coordinator_command_dispatch(command_id, result, now_seconds);
+    }
+
+    fn playback_coordination_snapshot(&self) -> Option<PlaybackCoordinationSnapshot> {
+        Some(self.runtime.playback_coordination_snapshot())
+    }
+
+    fn take_streaming_quality_downgrade_suggestion(
+        &mut self,
+    ) -> Option<StreamingQualityDowngradeSuggestion> {
+        let suggestion = self.runtime.streaming_quality_downgrade_suggestion(None);
+        if suggestion == self.last_streaming_quality_suggestion {
+            return None;
+        }
+        self.last_streaming_quality_suggestion = suggestion;
+        suggestion
+    }
+
+    fn take_playback_barrier_timeout_action(&mut self) -> Option<PlaybackBarrierTimeoutAction> {
+        self.runtime.take_playback_barrier_timeout_action()
+    }
+
+    fn reset_playback_transport_adapter_epoch(&mut self, now_seconds: f64) {
+        self.playback_transport_adapter_epoch = self
+            .runtime
+            .reset_playback_transport_adapter_epoch(now_seconds);
+    }
+
+    fn interrupt_attached_playback_recovery(
+        &mut self,
+    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        Ok(gui_actions_from_playback_coordinator(
+            self.runtime.interrupt_external_playback_recovery(),
+        ))
+    }
+
     fn set_playback_paused(&mut self, paused: bool) -> Result<bool, String> {
         match self.runtime.run_set_paused(paused) {
             Ok(sent) => Ok(sent),
@@ -833,6 +934,15 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         &mut self,
         now_seconds: f64,
     ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        let coordinator_actions = gui_actions_from_playback_coordinator(
+            self.runtime.reconcile_external_player_playback(now_seconds),
+        );
+        let coordinator_snapshot = self.runtime.playback_coordination_snapshot();
+        if coordinator_snapshot.transport_telemetry_observed
+            && coordinator_snapshot.ordinary_correction_blocked
+        {
+            return Ok(coordinator_actions);
+        }
         let Some(room_playstate) = self
             .runtime
             .current_room_playstate_legacy_ping_compatible_now()
@@ -860,7 +970,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
                 self.dont_slow_down_with_me,
                 true,
             );
-        Ok(actions
+        let mut actions = actions
             .into_iter()
             .filter_map(|action| match action {
                 ClientRuntimeAction::SetPosition(position_seconds) => {
@@ -871,7 +981,9 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
                 }
                 _ => None,
             })
-            .collect())
+            .collect::<Vec<_>>();
+        actions.splice(0..0, coordinator_actions);
+        Ok(actions)
     }
 
     fn publish_local_file_legacy_compatible(

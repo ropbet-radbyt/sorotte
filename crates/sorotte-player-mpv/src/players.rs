@@ -1,8 +1,9 @@
 use std::path::Path;
 
 use sorotte_player_api::{
-    LocalFileUpdate, PlayerAdapter, PlayerCapabilities, PlayerCommand, PlayerError,
-    PlayerMediaLoadOutcome, PlayerPlaybackTelemetryUpdate,
+    LocalFileUpdate, PlayerAdapter, PlayerCapabilities, PlayerCommand, PlayerCommandId,
+    PlayerCommandProgress, PlayerError, PlayerMediaLoadOutcome, PlayerPlaybackTelemetryUpdate,
+    PlayerTransportTelemetryUpdate,
 };
 
 use crate::MpvAdapter;
@@ -75,12 +76,29 @@ macro_rules! impl_player_wrapper {
                 self.0.execute(command)
             }
 
+            fn execute_tracked(
+                &mut self,
+                command: PlayerCommand,
+            ) -> Result<PlayerCommandId, PlayerError> {
+                self.0.execute_tracked(command)
+            }
+
             fn take_local_file_update(&mut self) -> Option<LocalFileUpdate> {
                 self.0.take_local_file_update()
             }
 
             fn take_playback_telemetry_update(&mut self) -> Option<PlayerPlaybackTelemetryUpdate> {
                 self.0.take_playback_telemetry_update()
+            }
+
+            fn take_transport_telemetry_update(
+                &mut self,
+            ) -> Option<PlayerTransportTelemetryUpdate> {
+                self.0.take_transport_telemetry_update()
+            }
+
+            fn take_command_progress(&mut self) -> Option<PlayerCommandProgress> {
+                self.0.take_command_progress()
             }
 
             fn take_media_load_outcome(&mut self) -> Option<PlayerMediaLoadOutcome> {

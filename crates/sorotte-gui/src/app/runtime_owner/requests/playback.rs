@@ -93,6 +93,7 @@ impl GuiPersistedConfigRuntimeOwner {
         }
         match self.undo_seek_target_position_from_detached_session(projected_state) {
             Ok(Some(target_position_seconds)) => {
+                let _ = self.interrupt_attached_playback_recovery_impl("manual undo seek");
                 let player_target_position_seconds = self
                     .player_target_position_seconds_for_global_position(target_position_seconds);
                 let (player_name, undo_result) = {
@@ -181,6 +182,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let message = dispatch.line_to_emit.unwrap_or_else(|| {
             localized_current_offset_message_legacy_compatible(self.user_offset_seconds, None)
         });
+        let _ = self.interrupt_attached_playback_recovery_impl("local offset change");
         if let Some(player) = self.player.as_mut() {
             let player_name = player.name();
             match player.set_position(target_player_position_seconds) {
@@ -265,6 +267,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     }
                 }
             }
+            let _ = self.interrupt_attached_playback_recovery_impl("manual relative seek");
             let player_target_position_seconds =
                 self.player_target_position_seconds_for_global_position(target_position_seconds);
             let (player_name, seek_result) = {
@@ -340,6 +343,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     }
                 }
             }
+            let _ = self.interrupt_attached_playback_recovery_impl("manual absolute seek");
             let player_target_position_seconds =
                 self.player_target_position_seconds_for_global_position(target_position_seconds);
             let (player_name, seek_result) = {

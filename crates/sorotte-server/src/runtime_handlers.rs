@@ -106,6 +106,14 @@ impl ServerRuntime {
         json_line: &str,
         peer_ip: Option<&str>,
     ) -> Result<Vec<DirectedProtocolMessage>, Box<LineFanoutFailure>> {
+        // A recovered application operation transfers authority to a newer
+        // connection. Reject the superseded transport before decoding so a
+        // repeated Hello, a batched command, or malformed input cannot pass
+        // through a command-specific path or replace its session while the
+        // network close is still in flight.
+        if self.reject_fenced_playback_barrier_transport(client_id) {
+            return Ok(Vec::new());
+        }
         let items = decode_message_line_items(json_line)
             .map_err(|error| Box::new(LineFanoutFailure::new(Vec::new(), error.into())))?;
         let mut outbound_messages = Vec::new();
@@ -275,6 +283,12 @@ impl ServerRuntime {
         message: ProtocolMessage,
         peer_ip: Option<&str>,
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
+        // The decoded-message API is also public, so enforce the same
+        // transport-wide revocation boundary here rather than relying only on
+        // the JSON-line entry point.
+        if self.reject_fenced_playback_barrier_transport(client_id) {
+            return Ok(Vec::new());
+        }
         let normalized = normalize_server_protocol_message(message);
         self.pending_compatibility_fallbacks
             .extend(normalized.fallbacks);
@@ -386,7 +400,26 @@ impl ServerRuntime {
         }
 
         let capabilities = hello.capabilities;
-        if let Some(previous_session) = self.remove_session_tracking(client_id) {
+        let mut replacement_outbound = Vec::new();
+        if let Some(previous_session) = self.sessions.get(client_id).cloned() {
+            let connection_rate_history = self
+                .playback_barrier_new_identity_rate_by_client
+                .remove(client_id);
+            replacement_outbound.extend(self.mark_playback_barrier_participant_disconnected(
+                client_id,
+                &previous_session.room,
+            )?);
+            replacement_outbound.extend(
+                self.mark_room_buffering_participant_disconnected(
+                    client_id,
+                    &previous_session.room,
+                )?,
+            );
+            self.remove_session_tracking(client_id);
+            if let Some(connection_rate_history) = connection_rate_history {
+                self.playback_barrier_new_identity_rate_by_client
+                    .insert(client_id.to_owned(), connection_rate_history);
+            }
             self.cleanup_room_if_empty(&previous_session.room)?;
         }
         let username = self.find_free_username(&requested_username, Some(client_id));
@@ -423,7 +456,7 @@ impl ServerRuntime {
             now + INITIAL_SERVER_STATE_DELAY_SECONDS,
         );
 
-        let mut outbound = Vec::new();
+        let mut outbound = replacement_outbound;
         let joined_message = user_joined_message_with_metadata(
             &username,
             &room_name,
@@ -497,6 +530,7 @@ impl ServerRuntime {
                 self.clients_receiving_to_gui_only_list_updates(Some(&room_name)),
             );
         }
+        outbound.extend(self.refresh_room_buffering_participant(client_id)?);
 
         Ok(outbound)
     }
@@ -536,6 +570,7 @@ impl ServerRuntime {
             let mut playlist_change = None;
             let mut playlist_index = None;
             let mut features = None;
+            let mut playback_barrier = None;
             let command_name = match command {
                 ServerSetCommand::Room(value) => {
                     room = Some(value);
@@ -570,6 +605,10 @@ impl ServerRuntime {
                     features = Some(capabilities);
                     "features"
                 }
+                ServerSetCommand::PlaybackBarrier(extension) => {
+                    playback_barrier = Some(*extension);
+                    SOROTTE_PLAYBACK_BARRIER_V1
+                }
             };
             match command_name {
                 "room" => {
@@ -583,6 +622,16 @@ impl ServerRuntime {
                     }
 
                     let previous_room = session.room.clone();
+                    outbound_messages.extend(self.mark_playback_barrier_participant_disconnected(
+                        client_id,
+                        &previous_room,
+                    )?);
+                    outbound_messages.extend(
+                        self.mark_room_buffering_participant_disconnected(
+                            client_id,
+                            &previous_room,
+                        )?,
+                    );
                     let previous_ready = self.stored_user_ready(&session.username, &previous_room);
                     if self.isolate_rooms {
                         let left_message = user_event_message(
@@ -712,6 +761,7 @@ impl ServerRuntime {
                             self.clients_receiving_to_gui_only_list_updates(Some(&session.room)),
                         );
                     }
+                    outbound_messages.extend(self.refresh_room_buffering_participant(client_id)?);
                 }
                 "file" => {
                     let Some(file_update) = file.take() else {
@@ -917,8 +967,28 @@ impl ServerRuntime {
                     let Some(capabilities) = features.take() else {
                         continue;
                     };
+                    let previously_supported = session.capabilities.playback_barrier_v1;
+                    let now_supported = capabilities.playback_barrier_v1;
                     session.capabilities = capabilities;
                     self.sessions.insert(client_id.to_owned(), session.clone());
+                    if !previously_supported && now_supported {
+                        outbound_messages
+                            .extend(self.refresh_room_buffering_participant(client_id)?);
+                    } else if previously_supported && !now_supported {
+                        outbound_messages.extend(
+                            self.mark_room_buffering_participant_disconnected(
+                                client_id,
+                                &session.room,
+                            )?,
+                        );
+                    }
+                }
+                SOROTTE_PLAYBACK_BARRIER_V1 => {
+                    let Some(extension) = playback_barrier.take() else {
+                        continue;
+                    };
+                    outbound_messages
+                        .extend(self.handle_playback_barrier_set(client_id, extension)?);
                 }
                 _ => {}
             }
@@ -930,7 +1000,7 @@ impl ServerRuntime {
     pub(crate) fn handle_state(
         &mut self,
         client_id: &str,
-        state: ServerStateCommand,
+        mut state: ServerStateCommand,
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
         let session = self
             .sessions
@@ -951,12 +1021,39 @@ impl ServerRuntime {
             self.ingest_client_ping_metrics(client_id, ping.latency_calculation, ping.client_rtt);
         }
         self.record_client_state_update_now(client_id);
+        let had_barrier_ack = state
+            .playback_barrier
+            .as_ref()
+            .is_some_and(|extension| extension.ready.is_some() || extension.started.is_some());
+        let mut barrier_outbound = if let Some(extension) = state.playback_barrier.take() {
+            self.handle_playback_barrier_state(client_id, extension)?
+        } else {
+            Vec::new()
+        };
+        let buffering_changed_room_playback = barrier_outbound.iter().any(|directed| {
+            matches!(
+                &directed.message,
+                ProtocolMessage::State(message) if message.state.playstate.is_some()
+            )
+        });
         if self.server_ignoring_counter(client_id) > 0 {
-            return Ok(Vec::new());
+            return Ok(barrier_outbound);
+        }
+        // Barrier observations are acknowledgements, not playback-control
+        // commands. Ignore any stale optimistic playstate bundled alongside
+        // them, especially the paused sample sent with the final MediaReady.
+        if had_barrier_ack
+            || buffering_changed_room_playback
+            || self
+                .room_playback_barriers
+                .get(&session.room)
+                .is_some_and(|barrier| barrier.phase == PlaybackBarrierPhase::Preparing)
+        {
+            return Ok(barrier_outbound);
         }
 
         let Some(playstate) = state.playstate else {
-            return Ok(Vec::new());
+            return Ok(barrier_outbound);
         };
 
         self.ensure_room_state(&session.room);
@@ -968,6 +1065,10 @@ impl ServerRuntime {
         let pause_changed = playstate
             .paused
             .is_some_and(|paused| paused != room_state_before.paused);
+        if can_control_room && pause_changed {
+            barrier_outbound
+                .extend(self.retire_awaiting_playback_barrier_decision(client_id, &session.room));
+        }
         let sample_paused = playstate.paused.unwrap_or(room_state_before.paused);
         let playback_sample_position = playstate.position.map(|mut position| {
             if !sample_paused {
@@ -978,7 +1079,7 @@ impl ServerRuntime {
         self.record_client_playback_state_sample(client_id, playback_sample_position, now_seconds);
 
         if !do_seek.unwrap_or(false) && !pause_changed {
-            return Ok(Vec::new());
+            return Ok(barrier_outbound);
         }
 
         if can_control_room {
@@ -997,7 +1098,7 @@ impl ServerRuntime {
             self.seed_room_client_playback_states(&session.room, watcher_position, now_seconds);
             self.persist_room_if_needed(&session.room)?;
             let room_state = self.room_playback_state_at(&session.room, now_seconds);
-            let mut outbound_messages = Vec::new();
+            let mut outbound_messages = barrier_outbound;
             for peer_client in self.clients_in_room(&session.room) {
                 let state_message = self.forced_state_sync_message_for_client(
                     &peer_client,
@@ -1012,7 +1113,7 @@ impl ServerRuntime {
         }
 
         let watcher_pause_state = playstate.paused.unwrap_or(room_state_before.paused);
-        Ok(vec![
+        barrier_outbound.extend([
             DirectedProtocolMessage::new(
                 client_id,
                 self.forced_state_sync_message_for_client(
@@ -1033,6 +1134,7 @@ impl ServerRuntime {
                     room_state_before.set_by.as_deref(),
                 ),
             ),
-        ])
+        ]);
+        Ok(barrier_outbound)
     }
 }

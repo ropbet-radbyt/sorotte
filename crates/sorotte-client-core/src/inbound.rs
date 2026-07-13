@@ -1,6 +1,7 @@
 use super::*;
 use serde_json::Number;
 use sorotte_media_match::{MediaMatchWireSignature, media_match_wire_signature_from_value};
+use sorotte_protocol::{PlaybackBarrierSetExtension, SOROTTE_PLAYBACK_BARRIER_V1};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientCompatibilityFallback {
@@ -9,6 +10,7 @@ pub enum ClientCompatibilityFallback {
     IgnoredInvalidFileSize { context: String },
     IgnoredInvalidMediaMatch { context: String, reason: String },
     IgnoredInvalidFeatures { context: String },
+    IgnoredInvalidPlaybackBarrier { context: String, reason: String },
     IgnoredUnexpectedListRequest,
 }
 
@@ -160,6 +162,7 @@ pub struct PeerCapabilities {
     pub media_match: bool,
     pub plex_playlist_uris: bool,
     pub remote_readiness: bool,
+    pub playback_barrier_v1: bool,
     pub ui_mode: Option<String>,
 }
 
@@ -228,6 +231,7 @@ pub(crate) enum ClientSetCommand {
         username: Option<String>,
         capabilities: PeerCapabilities,
     },
+    PlaybackBarrier(Box<PlaybackBarrierSetExtension>),
 }
 
 impl std::fmt::Debug for ClientSetCommand {
@@ -264,6 +268,10 @@ impl std::fmt::Debug for ClientSetCommand {
                 .debug_struct("Features")
                 .field("has_username", &username.is_some())
                 .field("capabilities", capabilities)
+                .finish(),
+            Self::PlaybackBarrier(extension) => formatter
+                .debug_tuple("PlaybackBarrier")
+                .field(extension)
                 .finish(),
         }
     }
@@ -390,6 +398,10 @@ fn peer_capabilities(value: &Value) -> Option<PeerCapabilities> {
             .get("setOthersReadiness")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        playback_barrier_v1: features
+            .get(SOROTTE_PLAYBACK_BARRIER_V1)
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         ui_mode: features
             .get("uiMode")
             .and_then(Value::as_str)
@@ -483,6 +495,7 @@ fn ordered_set_commands(set: SetPayload) -> Vec<(String, SetPayload)> {
         "playlistChange",
         "playlistIndex",
         "features",
+        SOROTTE_PLAYBACK_BARRIER_V1,
     ] {
         if !order.iter().any(|candidate| candidate == command) {
             order.push(command.to_owned());
@@ -549,6 +562,11 @@ pub(crate) fn normalize_client_protocol_message(
                     SOROTTE_PLEX_PLAYLIST_URIS_FEATURE,
                 )
                 .unwrap_or(false),
+                playback_barrier_v1: feature_bool(
+                    hello.features.as_ref(),
+                    SOROTTE_PLAYBACK_BARRIER_V1,
+                )
+                .unwrap_or(false),
                 persistent_rooms: feature_bool(hello.features.as_ref(), "persistentRooms")
                     .unwrap_or(false),
                 max_username_length: feature_usize(hello.features.as_ref(), "maxUsernameLength")
@@ -570,6 +588,16 @@ pub(crate) fn normalize_client_protocol_message(
             })
         }
         ProtocolMessage::Set(message) => {
+            let mut playback_barrier = match message.set.playback_barrier_v1() {
+                Ok(extension) => extension,
+                Err(reason) => {
+                    fallbacks.push(ClientCompatibilityFallback::IgnoredInvalidPlaybackBarrier {
+                        context: "Set.sorottePlaybackBarrierV1".to_owned(),
+                        reason: reason.to_string(),
+                    });
+                    None
+                }
+            };
             let mut commands = Vec::new();
             for (name, mut set) in ordered_set_commands(message.set) {
                 let command =
@@ -671,6 +699,10 @@ pub(crate) fn normalize_client_protocol_message(
                                     None
                                 })
                         }),
+                        SOROTTE_PLAYBACK_BARRIER_V1 => playback_barrier
+                            .take()
+                            .map(Box::new)
+                            .map(ClientSetCommand::PlaybackBarrier),
                         _ => {
                             if set.extra.contains_key(&name) {
                                 fallbacks.push(ClientCompatibilityFallback::IgnoredSetCommand {

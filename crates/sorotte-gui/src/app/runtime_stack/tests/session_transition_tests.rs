@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::app::support::system_time_seconds;
 use sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot_legacy_compatible;
 
 #[test]
@@ -100,6 +101,144 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_session_state_befor
                 enabled: false,
             })
     );
+}
+
+#[test]
+fn rich_transport_keeps_steady_state_attached_drift_correction() {
+    fn observed(
+        seconds: f64,
+        phase: PlayerTransportPhase,
+        position: f64,
+        paused: bool,
+    ) -> PlayerTransportTelemetryUpdate {
+        let mut update = PlayerTransportTelemetryUpdate::new(
+            PlayerMediaGeneration::new(1),
+            PlayerObservationTimestamp::from_adapter_start(std::time::Duration::from_secs_f64(
+                seconds,
+            )),
+        )
+        .with_phase(phase)
+        .with_position_seconds(position)
+        .with_logical_pause(paused);
+        update.paused_for_cache = Some(false);
+        update.seeking = Some(false);
+        update.seekable = Some(true);
+        update.core_idle = Some(false);
+        update
+    }
+
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+        )
+        .unwrap();
+    adapter
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":20.0,"paused":false,"doSeek":false,"setBy":"bob"},"ping":{"latencyCalculation":123.0}}}"#,
+        )
+        .unwrap();
+    let now = system_time_seconds();
+    adapter
+        .prepare_attached_playback_media(
+            LogicalMediaId::new("episode.mkv").unwrap(),
+            MediaTransportKind::LocalFile,
+            MediaLoadIntent::NewPlayback,
+            now,
+        )
+        .unwrap();
+    adapter
+        .sync_attached_player_transport_telemetry(
+            observed(1.0, PlayerTransportPhase::ReadyPaused, 20.0, true),
+            now,
+        )
+        .unwrap();
+    adapter
+        .sync_attached_player_transport_telemetry(
+            observed(2.0, PlayerTransportPhase::Playing, 20.0, false),
+            now + 1.0,
+        )
+        .unwrap();
+    adapter
+        .sync_attached_player_transport_telemetry(
+            observed(3.0, PlayerTransportPhase::Playing, 20.2, false),
+            now + 2.0,
+        )
+        .unwrap();
+
+    // The first room-state handoff for a media generation belongs solely to
+    // the coordinator. Complete its forced seek before exercising the legacy
+    // steady-state drift policy below.
+    let bootstrap_actions = adapter.attached_player_runtime_actions(now + 2.0).unwrap();
+    assert!(
+        !bootstrap_actions
+            .iter()
+            .any(|action| matches!(action, GuiAttachedPlayerRuntimeAction::Position(_)))
+    );
+    let (bootstrap_command_id, bootstrap_target) = bootstrap_actions
+        .iter()
+        .find_map(|action| match action {
+            GuiAttachedPlayerRuntimeAction::Coordinator {
+                command_id,
+                command: CoordinatorPlayerCommand::SetPosition(position),
+            } => Some((*command_id, *position)),
+            _ => None,
+        })
+        .expect("initial media handoff should emit one coordinator-owned seek");
+    adapter.report_attached_coordinator_command_dispatch(bootstrap_command_id, true, now + 2.0);
+    adapter
+        .sync_attached_player_transport_telemetry(
+            observed(3.5, PlayerTransportPhase::Playing, bootstrap_target, false),
+            now + 2.5,
+        )
+        .unwrap();
+    assert!(
+        !adapter
+            .runtime
+            .playback_coordination_snapshot()
+            .ordinary_correction_blocked,
+        "fresh seek confirmation should release steady-state correction"
+    );
+
+    adapter
+        .sync_local_playback_telemetry(Some(false), Some(40.0))
+        .unwrap();
+    adapter
+        .sync_attached_player_transport_telemetry(
+            observed(4.0, PlayerTransportPhase::Playing, 40.0, false),
+            now + 3.0,
+        )
+        .unwrap();
+    let ahead_actions = adapter.attached_player_runtime_actions(now + 3.0).unwrap();
+    assert!(ahead_actions.iter().any(|action| matches!(
+        action,
+        GuiAttachedPlayerRuntimeAction::Position(position) if *position < 30.0
+    )));
+
+    adapter
+        .sync_local_playback_telemetry(Some(false), Some(0.0))
+        .unwrap();
+    adapter.dont_slow_down_with_me = true;
+    adapter
+        .sync_attached_player_transport_telemetry(
+            observed(5.0, PlayerTransportPhase::Playing, 0.0, false),
+            now + 4.0,
+        )
+        .unwrap();
+    let _ = adapter.attached_player_runtime_actions(now + 4.0).unwrap();
+    let behind_actions = adapter.attached_player_runtime_actions(now + 9.0).unwrap();
+    assert!(behind_actions.iter().any(|action| matches!(
+        action,
+        GuiAttachedPlayerRuntimeAction::Position(position) if *position > 20.0
+    )));
+    assert!(!behind_actions.iter().any(|action| matches!(
+        action,
+        GuiAttachedPlayerRuntimeAction::Coordinator {
+            command: CoordinatorPlayerCommand::SetPosition(_),
+            ..
+        }
+    )));
 }
 
 #[test]

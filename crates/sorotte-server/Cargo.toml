@@ -26,3 +26,8 @@ sorotte-secret = { path = "../sorotte-secret" }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "net", "signal"] }
 tokio-rustls.workspace = true
+
+[dev-dependencies]
+sorotte-client-app = { path = "../sorotte-client-app" }
+sorotte-client-core = { path = "../sorotte-client-core" }
+sorotte-player-api = { path = "../sorotte-player-api" }

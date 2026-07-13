@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_owner::GuiPendingAttachedRoomUnpauseObservation;
 use crate::app::runtime_owner::GuiUpdateRuntime;
 
 use sorotte_plex::{
@@ -87,7 +88,7 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         last_applied_attached_room_playstate: None,
         suppressed_attached_room_playstate_after_playlist_reset: None,
         pending_local_attached_pause_override: None,
-        pending_attached_cache_unpause: false,
+        pending_attached_room_unpause_observation: None,
         pending_attached_player_pause_confirmation_pump: None,
         pending_attached_player_pause_command: None,
         player_position_seconds: None,
@@ -656,7 +657,8 @@ fn gui_persisted_config_runtime_owner_publishes_plex_stream_logical_file_before_
     owner.active_shared_playlist_index = Some(0);
     owner.player_paused_for_cache = Some(true);
     owner.player_cache_buffering_percent = Some(99.0);
-    owner.pending_attached_cache_unpause = true;
+    owner.pending_attached_room_unpause_observation =
+        Some(GuiPendingAttachedRoomUnpauseObservation::CachePaused);
     owner
         .session
         .as_mut()
@@ -695,7 +697,7 @@ fn gui_persisted_config_runtime_owner_publishes_plex_stream_logical_file_before_
     );
     assert_eq!(owner.player_paused_for_cache, None);
     assert_eq!(owner.player_cache_buffering_percent, None);
-    assert!(!owner.pending_attached_cache_unpause);
+    assert!(owner.pending_attached_room_unpause_observation.is_none());
     assert!(
         owner.current_player_matches_media_target(sparse_logical_uri),
         "Plex stream identity should match by machine/rating key even when the opened logical URI has richer query metadata"

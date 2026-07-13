@@ -156,7 +156,16 @@ impl GuiPersistedConfigRuntimeOwner {
                 .unwrap_or(path)
                 .to_owned()
         };
-        LocalFileUpdate::new(name).with_path(path.to_owned())
+        let size_bytes = if path.contains("://") {
+            0
+        } else {
+            std::fs::metadata(path)
+                .map(|metadata| metadata.len())
+                .unwrap_or_default()
+        };
+        LocalFileUpdate::new(name)
+            .with_size_bytes(size_bytes)
+            .with_path(path.to_owned())
     }
 
     pub(super) fn sync_player_runtime_state(

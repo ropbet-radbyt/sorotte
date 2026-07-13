@@ -210,6 +210,30 @@ pub(crate) fn flush_player_playback_telemetry_diagnostics(
             }
         }
     }
+    if log_telemetry {
+        let coordination = runtime.playback_coordination_snapshot();
+        let recovery = coordination
+            .recovery_episode
+            .as_ref()
+            .map(|episode| format!("episode-{}", episode.id))
+            .unwrap_or_else(|| "none".to_owned());
+        println!(
+            "playback coordinator: phase={:?} recovery={} degraded={:?} buffer-episodes={} hard-seeks={}",
+            coordination.diagnostic,
+            recovery,
+            coordination.last_degraded_reason,
+            coordination.metrics.buffer_episode_count,
+            coordination.metrics.hard_seek_count,
+        );
+        if let Some(suggestion) = runtime.streaming_quality_downgrade_suggestion(None) {
+            println!(
+                "stream quality suggestion: current={} recommended={} reason={:?} (no automatic change was made)",
+                suggestion.current.config_value(),
+                suggestion.recommended.config_value(),
+                suggestion.reason,
+            );
+        }
+    }
 
     Ok(())
 }

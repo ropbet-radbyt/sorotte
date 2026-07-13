@@ -130,6 +130,7 @@ pub enum PlayerCommand {
     SetOptionString { name: String, value: String },
     ApplyProfile(String),
     SetPaused(bool),
+    Play(PlayerPlayIntent),
     SetPosition(f64),
     SetPlaybackRate(f64),
     SetMuted(bool),
@@ -158,6 +159,7 @@ impl std::fmt::Debug for PlayerCommand {
             Self::SetOptionString { .. } => "SetOptionString(<redacted>)",
             Self::ApplyProfile(_) => "ApplyProfile(<redacted>)",
             Self::SetPaused(_) => "SetPaused",
+            Self::Play(_) => "Play",
             Self::SetPosition(_) => "SetPosition",
             Self::SetPlaybackRate(_) => "SetPlaybackRate",
             Self::SetMuted(_) => "SetMuted",
@@ -182,15 +184,32 @@ impl std::fmt::Debug for PlayerCommand {
     }
 }
 
+/// Observation requirements for an unpause command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayerPlayIntent {
+    /// Resume an already-started file. mpv does not emit `playback-restart`
+    /// for this transition, so fresh position advancement is the completion
+    /// signal.
+    Resume,
+    /// Start playback after a new file load. The baseline is captured when
+    /// loading begins, because a paused load can emit `playback-restart`
+    /// before the later unpause command is sent.
+    StartAfterLoad { baseline_restart_sequence: u64 },
+    /// Start playback after a seek operation. The baseline is captured when
+    /// seeking begins for the same reason: the restart can precede unpause.
+    StartAfterSeek { baseline_restart_sequence: u64 },
+}
+
 impl PlayerCommand {
     pub const fn required_capability(&self) -> PlayerCapability {
         match self {
             Self::OpenFile(_) => PlayerCapability::OpenFile,
             Self::SetOptionString { .. } => PlayerCapability::SetOption,
             Self::ApplyProfile(_) => PlayerCapability::ApplyProfile,
-            Self::SetPaused(_) | Self::SetPosition(_) | Self::SetPlaybackRate(_) => {
-                PlayerCapability::Playback
-            }
+            Self::SetPaused(_)
+            | Self::Play(_)
+            | Self::SetPosition(_)
+            | Self::SetPlaybackRate(_) => PlayerCapability::Playback,
             Self::SetMuted(_) | Self::SetVolume(_) => PlayerCapability::Audio,
             Self::SetDeinterlace(_) | Self::SetKeepaspect(_) | Self::SetKeepaspectWindow(_) => {
                 PlayerCapability::Video
@@ -301,6 +320,318 @@ impl PlayerPlaybackTelemetryUpdate {
     }
 }
 
+/// Identifies one media load attempt within a player adapter instance.
+///
+/// Generations are local to an adapter. They allow a playback coordinator to
+/// discard delayed observations from media that has already been replaced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PlayerMediaGeneration(u64);
+
+impl PlayerMediaGeneration {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl From<u64> for PlayerMediaGeneration {
+    fn from(value: u64) -> Self {
+        Self::new(value)
+    }
+}
+
+/// A monotonic timestamp measured from the creation of a player adapter.
+///
+/// The timestamp deliberately has no wall-clock meaning. Consumers can use it
+/// to order observations and calculate local elapsed durations without making
+/// a platform-specific `Instant` part of the player API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PlayerObservationTimestamp(std::time::Duration);
+
+impl PlayerObservationTimestamp {
+    pub const fn from_adapter_start(elapsed: std::time::Duration) -> Self {
+        Self(elapsed)
+    }
+
+    pub const fn elapsed_since_adapter_start(self) -> std::time::Duration {
+        self.0
+    }
+}
+
+/// Identifies one tracked command within a player adapter instance.
+///
+/// IDs are local to an adapter and remain valid until the adapter reports a
+/// terminal [`PlayerCommandResult`] for them. A command reply from the player
+/// only establishes [`PlayerCommandProgressState::Accepted`]; callers must
+/// wait for the corresponding observed result before treating the requested
+/// effect as applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PlayerCommandId(u64);
+
+impl PlayerCommandId {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl From<u64> for PlayerCommandId {
+    fn from(value: u64) -> Self {
+        Self::new(value)
+    }
+}
+
+/// Why an accepted player command reached a failed terminal state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PlayerCommandFailureKind {
+    /// No matching player observation arrived before the adapter deadline.
+    TimedOut,
+    /// The media ended or failed before the requested effect was observed.
+    MediaEnded,
+    /// The player transport disconnected after accepting the command.
+    TransportDisconnected,
+    /// The adapter could not classify the observed player failure further.
+    Unknown,
+}
+
+/// Terminal result for an observation-acknowledged player command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PlayerCommandResult {
+    /// The requested effect was observed on the matching media generation.
+    Completed,
+    /// A newer command made this command obsolete before it completed.
+    Superseded,
+    /// The command was accepted but could not be observed to completion.
+    Failed(PlayerCommandFailureKind),
+}
+
+/// Current lifecycle state of a tracked player command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PlayerCommandProgressState {
+    /// The underlying player accepted the command. This is not completion.
+    Accepted,
+    /// The adapter observed a terminal command result.
+    Finished(PlayerCommandResult),
+}
+
+/// One progress update for an observation-acknowledged player command.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlayerCommandProgress {
+    pub command_id: PlayerCommandId,
+    pub media_generation: Option<PlayerMediaGeneration>,
+    pub observed_at: Option<PlayerObservationTimestamp>,
+    pub observed_position_seconds: Option<f64>,
+    pub state: PlayerCommandProgressState,
+}
+
+impl PlayerCommandProgress {
+    pub const fn accepted(
+        command_id: PlayerCommandId,
+        media_generation: Option<PlayerMediaGeneration>,
+        observed_at: Option<PlayerObservationTimestamp>,
+    ) -> Self {
+        Self {
+            command_id,
+            media_generation,
+            observed_at,
+            observed_position_seconds: None,
+            state: PlayerCommandProgressState::Accepted,
+        }
+    }
+
+    pub const fn finished(
+        command_id: PlayerCommandId,
+        media_generation: Option<PlayerMediaGeneration>,
+        observed_at: Option<PlayerObservationTimestamp>,
+        observed_position_seconds: Option<f64>,
+        result: PlayerCommandResult,
+    ) -> Self {
+        Self {
+            command_id,
+            media_generation,
+            observed_at,
+            observed_position_seconds,
+            state: PlayerCommandProgressState::Finished(result),
+        }
+    }
+
+    pub const fn result(self) -> Option<PlayerCommandResult> {
+        match self.state {
+            PlayerCommandProgressState::Accepted => None,
+            PlayerCommandProgressState::Finished(result) => Some(result),
+        }
+    }
+
+    pub const fn is_terminal(self) -> bool {
+        matches!(self.state, PlayerCommandProgressState::Finished(_))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum PlayerTransportPhase {
+    #[default]
+    Empty,
+    Loading,
+    Prebuffering,
+    ReadyPaused,
+    Playing,
+    Rebuffering,
+    Seeking,
+    Ended,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlayerSeekableRange {
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+}
+
+impl PlayerSeekableRange {
+    pub const fn new(start_seconds: f64, end_seconds: f64) -> Self {
+        Self {
+            start_seconds,
+            end_seconds,
+        }
+    }
+
+    pub fn shifted(self, delta_seconds: f64) -> Self {
+        Self {
+            start_seconds: self.start_seconds + delta_seconds,
+            end_seconds: self.end_seconds + delta_seconds,
+        }
+    }
+}
+
+/// Generation-aware observations used for transport readiness and recovery.
+///
+/// This is intentionally separate from [`PlayerPlaybackTelemetryUpdate`]. The
+/// older type remains source-compatible for existing clients while this richer
+/// stream can evolve around observed player behavior instead of command
+/// acceptance. Fields are sparse: `None` means that observation was not part
+/// of this update, not that the player necessarily lacks the capability.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PlayerTransportTelemetryUpdate {
+    pub media_generation: Option<PlayerMediaGeneration>,
+    pub observed_at: Option<PlayerObservationTimestamp>,
+    pub phase: Option<PlayerTransportPhase>,
+    pub position_seconds: Option<f64>,
+    pub playback_rate: Option<f64>,
+    pub logical_pause: Option<bool>,
+    pub paused_for_cache: Option<bool>,
+    pub cache_buffering_percent: Option<f64>,
+    pub seeking: Option<bool>,
+    pub seekable: Option<bool>,
+    pub core_idle: Option<bool>,
+    pub demuxer_cache_idle: Option<bool>,
+    pub playback_restart_sequence: Option<u64>,
+    pub eof_reached: Option<bool>,
+    pub seekable_ranges: Option<Vec<PlayerSeekableRange>>,
+    pub buffered_ahead_seconds: Option<f64>,
+    pub buffered_ahead_bytes: Option<u64>,
+    pub input_rate_bytes_per_second: Option<u64>,
+    pub error_kind: Option<PlayerMediaLoadFailureKind>,
+}
+
+impl PlayerTransportTelemetryUpdate {
+    pub fn new(
+        media_generation: PlayerMediaGeneration,
+        observed_at: PlayerObservationTimestamp,
+    ) -> Self {
+        Self {
+            media_generation: Some(media_generation),
+            observed_at: Some(observed_at),
+            ..Self::default()
+        }
+    }
+
+    pub fn with_phase(mut self, phase: PlayerTransportPhase) -> Self {
+        self.phase = Some(phase);
+        self
+    }
+
+    pub fn with_position_seconds(mut self, position_seconds: f64) -> Self {
+        self.position_seconds = Some(position_seconds);
+        self
+    }
+
+    pub fn with_logical_pause(mut self, logical_pause: bool) -> Self {
+        self.logical_pause = Some(logical_pause);
+        self
+    }
+
+    pub fn merge_from(&mut self, newer: Self) {
+        if let Some(media_generation) = newer.media_generation {
+            self.media_generation = Some(media_generation);
+        }
+        if let Some(observed_at) = newer.observed_at {
+            self.observed_at = Some(observed_at);
+        }
+        if let Some(phase) = newer.phase {
+            self.phase = Some(phase);
+        }
+        if let Some(position_seconds) = newer.position_seconds {
+            self.position_seconds = Some(position_seconds);
+        }
+        if let Some(playback_rate) = newer.playback_rate {
+            self.playback_rate = Some(playback_rate);
+        }
+        if let Some(paused_for_cache) = newer.paused_for_cache {
+            self.paused_for_cache = Some(paused_for_cache);
+            if paused_for_cache && self.logical_pause == Some(true) {
+                self.logical_pause = None;
+            }
+        }
+        if let Some(logical_pause) = newer.logical_pause
+            && !(logical_pause && self.paused_for_cache == Some(true))
+        {
+            self.logical_pause = Some(logical_pause);
+        }
+        if let Some(cache_buffering_percent) = newer.cache_buffering_percent {
+            self.cache_buffering_percent = Some(cache_buffering_percent);
+        }
+        if let Some(seeking) = newer.seeking {
+            self.seeking = Some(seeking);
+        }
+        if let Some(seekable) = newer.seekable {
+            self.seekable = Some(seekable);
+        }
+        if let Some(core_idle) = newer.core_idle {
+            self.core_idle = Some(core_idle);
+        }
+        if let Some(demuxer_cache_idle) = newer.demuxer_cache_idle {
+            self.demuxer_cache_idle = Some(demuxer_cache_idle);
+        }
+        if let Some(playback_restart_sequence) = newer.playback_restart_sequence {
+            self.playback_restart_sequence = Some(playback_restart_sequence);
+        }
+        if let Some(eof_reached) = newer.eof_reached {
+            self.eof_reached = Some(eof_reached);
+        }
+        if let Some(seekable_ranges) = newer.seekable_ranges {
+            self.seekable_ranges = Some(seekable_ranges);
+        }
+        if let Some(buffered_ahead_seconds) = newer.buffered_ahead_seconds {
+            self.buffered_ahead_seconds = Some(buffered_ahead_seconds);
+        }
+        if let Some(buffered_ahead_bytes) = newer.buffered_ahead_bytes {
+            self.buffered_ahead_bytes = Some(buffered_ahead_bytes);
+        }
+        if let Some(input_rate_bytes_per_second) = newer.input_rate_bytes_per_second {
+            self.input_rate_bytes_per_second = Some(input_rate_bytes_per_second);
+        }
+        if let Some(error_kind) = newer.error_kind {
+            self.error_kind = Some(error_kind);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlayerMediaLoadFailureKind {
     LoadAborted,
@@ -392,6 +723,7 @@ pub trait PlayerAdapter: Send + Sync {
             PlayerCommand::SetOptionString { name, value } => self.set_option_string(&name, &value),
             PlayerCommand::ApplyProfile(profile) => self.apply_profile(&profile),
             PlayerCommand::SetPaused(paused) => self.set_paused(paused),
+            PlayerCommand::Play(_) => self.set_paused(false),
             PlayerCommand::SetPosition(position) => self.set_position(position),
             PlayerCommand::SetPlaybackRate(rate) => self.set_playback_rate(rate),
             PlayerCommand::SetMuted(muted) => self.set_muted(muted),
@@ -414,6 +746,15 @@ pub trait PlayerAdapter: Send + Sync {
             PlayerCommand::SetWindowMaximized(enabled) => self.set_window_maximized(enabled),
             PlayerCommand::SetWindowMinimized(enabled) => self.set_window_minimized(enabled),
         }
+    }
+    /// Executes a command whose effect must be acknowledged by player
+    /// observations.
+    ///
+    /// The compatibility command methods remain available. Adapters that do
+    /// not implement tracked execution reject this additive operation rather
+    /// than manufacturing an ID with no completion semantics.
+    fn execute_tracked(&mut self, _command: PlayerCommand) -> Result<PlayerCommandId, PlayerError> {
+        Err(PlayerError::Unsupported("execute_tracked"))
     }
     fn open_file(&mut self, _path: &str) -> Result<(), PlayerError> {
         Err(PlayerError::Unsupported("open_file"))
@@ -493,6 +834,12 @@ pub trait PlayerAdapter: Send + Sync {
     fn take_playback_telemetry_update(&mut self) -> Option<PlayerPlaybackTelemetryUpdate> {
         None
     }
+    fn take_transport_telemetry_update(&mut self) -> Option<PlayerTransportTelemetryUpdate> {
+        None
+    }
+    fn take_command_progress(&mut self) -> Option<PlayerCommandProgress> {
+        None
+    }
     fn take_media_load_outcome(&mut self) -> Option<PlayerMediaLoadOutcome> {
         None
     }
@@ -512,14 +859,21 @@ impl PlayerAdapter for DisconnectedPlayer {
     fn execute(&mut self, _command: PlayerCommand) -> Result<(), PlayerError> {
         Err(PlayerError::NotConnected)
     }
+
+    fn execute_tracked(&mut self, _command: PlayerCommand) -> Result<PlayerCommandId, PlayerError> {
+        Err(PlayerError::NotConnected)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         DisconnectedPlayer, LocalFileUpdate, PlayerAdapter, PlayerCapabilities, PlayerCapability,
-        PlayerCommand, PlayerError, PlayerMediaLoadFailureKind, PlayerMediaLoadOutcome,
-        PlayerPlaybackTelemetryUpdate,
+        PlayerCommand, PlayerCommandFailureKind, PlayerCommandId, PlayerCommandProgress,
+        PlayerCommandProgressState, PlayerCommandResult, PlayerError, PlayerMediaGeneration,
+        PlayerMediaLoadFailureKind, PlayerMediaLoadOutcome, PlayerObservationTimestamp,
+        PlayerPlaybackTelemetryUpdate, PlayerSeekableRange, PlayerTransportPhase,
+        PlayerTransportTelemetryUpdate,
     };
 
     struct DummyPlayer;
@@ -628,12 +982,17 @@ mod tests {
         assert_eq!(player.name(), "dummy");
         assert_eq!(player.take_local_file_update(), None);
         assert_eq!(player.take_playback_telemetry_update(), None);
+        assert_eq!(player.take_command_progress(), None);
         assert_eq!(player.take_media_load_outcome(), None);
         assert_eq!(player.take_pending_chat_request(), None);
         assert_eq!(player.capabilities(), PlayerCapabilities::NONE);
         assert_eq!(
             player.execute(PlayerCommand::SetPaused(true)),
             Err(PlayerError::Unsupported("set_paused"))
+        );
+        assert_eq!(
+            player.execute_tracked(PlayerCommand::SetPaused(true)),
+            Err(PlayerError::Unsupported("execute_tracked"))
         );
     }
 
@@ -663,7 +1022,40 @@ mod tests {
             player.execute(PlayerCommand::OpenFile("movie.mkv".to_owned())),
             Err(PlayerError::NotConnected)
         );
+        assert_eq!(
+            player.execute_tracked(PlayerCommand::SetPaused(false)),
+            Err(PlayerError::NotConnected)
+        );
         assert_eq!(player.capabilities(), PlayerCapabilities::NONE);
+    }
+
+    #[test]
+    fn command_progress_distinguishes_acceptance_from_terminal_results() {
+        let command_id = PlayerCommandId::new(9);
+        let generation = PlayerMediaGeneration::new(4);
+        let observed_at =
+            PlayerObservationTimestamp::from_adapter_start(std::time::Duration::from_millis(20));
+        let accepted =
+            PlayerCommandProgress::accepted(command_id, Some(generation), Some(observed_at));
+        let timed_out = PlayerCommandProgress::finished(
+            command_id,
+            Some(generation),
+            Some(observed_at),
+            Some(12.5),
+            PlayerCommandResult::Failed(PlayerCommandFailureKind::TimedOut),
+        );
+
+        assert_eq!(command_id.get(), 9);
+        assert_eq!(accepted.state, PlayerCommandProgressState::Accepted);
+        assert_eq!(accepted.result(), None);
+        assert!(!accepted.is_terminal());
+        assert_eq!(
+            timed_out.result(),
+            Some(PlayerCommandResult::Failed(
+                PlayerCommandFailureKind::TimedOut
+            ))
+        );
+        assert!(timed_out.is_terminal());
     }
 
     #[test]
@@ -693,6 +1085,71 @@ mod tests {
         assert_eq!(update.playback_rate, Some(0.95));
         assert_eq!(update.paused_for_cache, Some(true));
         assert_eq!(update.cache_buffering_percent, Some(37.5));
+    }
+
+    #[test]
+    fn transport_telemetry_carries_generation_lifecycle_and_cache_hints() {
+        let generation = PlayerMediaGeneration::new(7);
+        let observed_at =
+            PlayerObservationTimestamp::from_adapter_start(std::time::Duration::from_millis(125));
+        let mut update = PlayerTransportTelemetryUpdate::new(generation, observed_at)
+            .with_phase(PlayerTransportPhase::Rebuffering)
+            .with_position_seconds(42.5)
+            .with_logical_pause(false);
+        update.paused_for_cache = Some(true);
+        update.seeking = Some(false);
+        update.seekable = Some(true);
+        update.seekable_ranges = Some(vec![PlayerSeekableRange::new(10.0, 80.0)]);
+        update.buffered_ahead_seconds = Some(5.25);
+        update.input_rate_bytes_per_second = Some(2_000_000);
+
+        assert_eq!(update.media_generation, Some(generation));
+        assert_eq!(generation.get(), 7);
+        assert_eq!(
+            update
+                .observed_at
+                .expect("timestamp should be present")
+                .elapsed_since_adapter_start(),
+            std::time::Duration::from_millis(125)
+        );
+        assert_eq!(update.phase, Some(PlayerTransportPhase::Rebuffering));
+        assert_eq!(update.position_seconds, Some(42.5));
+        assert_eq!(update.logical_pause, Some(false));
+        assert_eq!(update.paused_for_cache, Some(true));
+        assert_eq!(update.seekable_ranges.as_ref().map(Vec::len), Some(1));
+        assert_eq!(update.buffered_ahead_seconds, Some(5.25));
+        assert_eq!(update.input_rate_bytes_per_second, Some(2_000_000));
+    }
+
+    #[test]
+    fn merging_cache_pause_does_not_turn_it_into_logical_pause() {
+        let mut pending = PlayerTransportTelemetryUpdate {
+            logical_pause: Some(true),
+            ..PlayerTransportTelemetryUpdate::default()
+        };
+        pending.merge_from(PlayerTransportTelemetryUpdate {
+            paused_for_cache: Some(true),
+            ..PlayerTransportTelemetryUpdate::default()
+        });
+
+        assert_eq!(pending.logical_pause, None);
+        assert_eq!(pending.paused_for_cache, Some(true));
+    }
+
+    #[test]
+    fn cache_release_update_can_restore_an_explicit_logical_pause() {
+        let mut pending = PlayerTransportTelemetryUpdate {
+            paused_for_cache: Some(true),
+            ..PlayerTransportTelemetryUpdate::default()
+        };
+        pending.merge_from(PlayerTransportTelemetryUpdate {
+            logical_pause: Some(true),
+            paused_for_cache: Some(false),
+            ..PlayerTransportTelemetryUpdate::default()
+        });
+
+        assert_eq!(pending.logical_pause, Some(true));
+        assert_eq!(pending.paused_for_cache, Some(false));
     }
 
     #[test]

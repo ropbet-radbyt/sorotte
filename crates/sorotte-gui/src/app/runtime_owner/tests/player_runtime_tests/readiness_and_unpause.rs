@@ -558,7 +558,11 @@ fn gui_persisted_config_runtime_owner_keeps_ready_when_host_unpauses_controlled_
             .any(|line| line.contains("\"ready\"") && line.contains("\"isReady\":false")),
         "host-started playback must not clear readiness for an already-ready non-controller"
     );
-    assert_eq!(owner.player_paused, Some(false));
+    assert_eq!(
+        owner.player_paused,
+        Some(true),
+        "legacy room unpause must still use observation-backed player state"
+    );
     assert!(
         player_state
             .lock()
@@ -651,7 +655,11 @@ fn gui_persisted_config_runtime_owner_keeps_not_ready_when_host_unpauses_control
             .any(|line| line.contains("\"ready\"")),
         "host-started playback must not change readiness for a not-ready non-controller"
     );
-    assert_eq!(owner.player_paused, Some(false));
+    assert_eq!(
+        owner.player_paused,
+        Some(true),
+        "unpause command acceptance must remain pending until player advancement is observed"
+    );
     assert!(!state.actual_local_main_window_user_ready());
     assert!(
         player_state
@@ -744,7 +752,11 @@ fn gui_persisted_config_runtime_owner_keeps_not_ready_when_host_unpauses_uncontr
             .any(|line| line.contains("\"ready\"")),
         "host-started playback must not mark a not-ready user ready in an uncontrolled room"
     );
-    assert_eq!(owner.player_paused, Some(false));
+    assert_eq!(
+        owner.player_paused,
+        Some(true),
+        "legacy room unpause must still use observation-backed player state"
+    );
     assert!(!state.actual_local_main_window_user_ready());
     assert!(
         player_state

@@ -64,3 +64,16 @@ pub struct RoomPlaystateView {
     pub do_seek: Option<bool>,
     pub set_by: Option<String>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoomPlaystateAuthority {
+    LegacyRemoteUser,
+    LegacyLocalEcho,
+    ServerBarrier {
+        media_generation: u64,
+        state_revision: Option<u64>,
+    },
+    ServerBufferingPolicy {
+        media_generation: u64,
+    },
+}

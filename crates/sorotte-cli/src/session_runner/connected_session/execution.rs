@@ -59,12 +59,16 @@ where
     Ok(())
 }
 
-fn run_connected_session_inbound_post_apply_legacy_compatible(
-    runtime: &mut ClientApplication<MpvAdapter>,
+fn run_connected_session_inbound_post_apply_legacy_compatible<P>(
+    runtime: &mut ClientApplication<P>,
     pending_ready_at_start_on_server_hello: &mut Option<bool>,
     pending_chat_message_on_connect: &mut Option<String>,
+    now_seconds: f64,
     plan: ConnectedSessionInboundPostApplyPlan,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+where
+    P: sorotte_player_api::PlayerAdapter,
+{
     for action in connected_session_inbound_post_apply_actions_legacy_compatible(plan) {
         match action {
             ConnectedSessionInboundPostApplyAction::ConsumePendingReadyAtStart => {
@@ -84,7 +88,7 @@ fn run_connected_session_inbound_post_apply_legacy_compatible(
                 runtime.run_controller_reidentify_if_needed()?;
             }
             ConnectedSessionInboundPostApplyAction::RunControllerAuthNotifications => {
-                runtime.run_controller_auth_notifications_if_needed()?;
+                runtime.run_controller_auth_notifications_if_needed_at(now_seconds)?;
             }
             ConnectedSessionInboundPostApplyAction::RunChatNotifications => {
                 runtime.run_chat_notifications_if_needed()?;
@@ -104,13 +108,16 @@ fn run_connected_session_inbound_post_apply_legacy_compatible(
     Ok(())
 }
 
-fn apply_connected_session_inbound_message_legacy_compatible(
-    application: &mut ClientApplication<MpvAdapter>,
+fn apply_connected_session_inbound_message_legacy_compatible<P>(
+    application: &mut ClientApplication<P>,
     line: &str,
     now_seconds: f64,
     dont_slow_down_with_me: bool,
     plan: ConnectedSessionInboundApplyPlan,
-) -> anyhow::Result<ConnectedSessionInboundApplyOutcome> {
+) -> anyhow::Result<ConnectedSessionInboundApplyOutcome>
+where
+    P: sorotte_player_api::PlayerAdapter,
+{
     let outcome = application.apply_protocol_line_prefix(
         line,
         now_seconds,
@@ -173,7 +180,7 @@ fn run_connected_session_branch_runtime_steps_legacy_compatible(
     for action in actions {
         match action {
             ConnectedSessionRuntimeStepAction::RunRoomPauseSync => {
-                runtime.run_room_pause_sync_if_needed()?;
+                runtime.run_room_pause_sync_if_needed_at(now_seconds)?;
             }
             ConnectedSessionRuntimeStepAction::RunReadinessUnpauseAttempt => {
                 runtime.run_readiness_unpause_attempt(
@@ -358,6 +365,7 @@ where
             runtime,
             pending_ready_at_start_on_server_hello,
             pending_chat_message_on_connect,
+            now_seconds,
             inbound_post_apply,
         )?;
     }
@@ -376,4 +384,114 @@ where
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sorotte_client_core::{
+        ClientSession, LogicalMediaId, MediaTransportKind, PlaybackBarrierStartConfig,
+    };
+    use sorotte_player_api::DisconnectedPlayer;
+    use sorotte_protocol::{
+        PlaybackBarrierPolicy, PlaybackBarrierRequestResultPayload, PlaybackBarrierSetExtension,
+        SetPayload,
+    };
+
+    #[test]
+    fn cli_post_apply_uses_the_inbound_clock_and_does_not_retry_early() {
+        let mut application = ClientApplication::new(ClientSession::default(), DisconnectedPlayer);
+        application
+            .apply_protocol_line(
+                r#"{"Hello":{"username":"alice","room":{"name":"room"},"version":"1.7.5","features":{"sorottePlaybackBarrierV1":true}}}"#,
+                1.0,
+                false,
+                false,
+                false,
+            )
+            .expect("barrier-aware Hello should apply");
+        application.set_playback_barrier_start_config(PlaybackBarrierStartConfig {
+            policy: Some(PlaybackBarrierPolicy::Controller),
+            ..PlaybackBarrierStartConfig::default()
+        });
+        application.prepare_playback_media(
+            LogicalMediaId::new("cli-post-apply-retry").expect("logical ID should be valid"),
+            MediaTransportKind::NetworkVod,
+            2.0,
+        );
+        let pending = application
+            .pending_protocol_line()
+            .expect("request should encode")
+            .expect("request should be queued");
+        let ProtocolMessage::Set(set) =
+            decode_message_line(pending.line()).expect("request should decode")
+        else {
+            panic!("playback request should use Set");
+        };
+        let prepare = set
+            .set
+            .playback_barrier_v1()
+            .expect("extension should decode")
+            .and_then(|extension| extension.prepare)
+            .expect("request should include prepare");
+        application
+            .acknowledge_protocol_line(pending.lease())
+            .expect("local write should release the request frame");
+
+        let retry_later = ProtocolMessage::set(SetPayload::new().with_playback_barrier_v1(
+            PlaybackBarrierSetExtension::new().with_request_result(
+                PlaybackBarrierRequestResultPayload::retry_later(
+                    prepare.request_id.expect("request ID should be present"),
+                    prepare.request_nonce,
+                    1_000,
+                ),
+            ),
+        ));
+        let retry_line = encode_message_line(&retry_later).expect("retry result should encode");
+        apply_connected_session_inbound_message_legacy_compatible(
+            &mut application,
+            &retry_line,
+            10.0,
+            false,
+            ConnectedSessionInboundApplyPlan {
+                reconcile_inbound_state: false,
+                apply_message_json_at: true,
+                outbound_state_sync_enabled: false,
+            },
+        )
+        .expect("CLI inbound apply should keep retryLater nonfatal");
+        let mut pending_ready = None;
+        let mut pending_chat = None;
+        run_connected_session_inbound_post_apply_legacy_compatible(
+            &mut application,
+            &mut pending_ready,
+            &mut pending_chat,
+            10.0,
+            ConnectedSessionInboundPostApplyPlan {
+                consume_pending_ready_at_start: false,
+                consume_pending_chat_message_on_connect: false,
+                run_reconnect_transition: false,
+                run_controller_reidentify: false,
+                run_controller_auth_notifications: true,
+                run_chat_notifications: false,
+                run_user_change_notifications: false,
+                run_reconnect_state_restore: false,
+                run_reconnect_playlist_restore: false,
+            },
+        )
+        .expect("CLI post-apply should use the same monotonic timestamp");
+
+        assert_eq!(application.pending_protocol_message_count(), 0);
+        assert_eq!(
+            application.pending_playback_barrier_retry_delay_at(10.0),
+            Some(1.0)
+        );
+        application
+            .run_pending_playback_barrier_retry_at(11.0)
+            .expect("due retry should emit");
+        application
+            .run_pending_playback_barrier_retry_at(12.0)
+            .expect("repeated pump should be idempotent");
+        assert_eq!(application.pending_protocol_message_count(), 1);
+    }
 }

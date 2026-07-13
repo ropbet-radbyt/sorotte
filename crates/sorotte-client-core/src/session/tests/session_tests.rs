@@ -1,4 +1,5 @@
 use super::*;
+use crate::RoomPlaystateAuthority;
 
 #[test]
 fn reconcile_state_builds_client_ignore_and_waits_for_ack_before_applying_new_global_state() {
@@ -144,6 +145,11 @@ fn client_session_current_room_playstate_remote_authority_requires_remote_user_o
         !session.current_room_playstate_has_remote_authority(),
         "room playstate without setBy should not be treated as authoritative when no remote users are known"
     );
+    assert_eq!(
+        session.current_room_playstate_authority(),
+        None,
+        "unattributed state in an otherwise empty room has no coordinator authority"
+    );
 
     session
             .apply_message_json(
@@ -166,6 +172,10 @@ fn client_session_current_room_playstate_remote_authority_requires_remote_user_o
     assert!(
         !session.current_room_playstate_has_remote_authority(),
         "self-origin room playstate should not be treated as remotely authoritative"
+    );
+    assert_eq!(
+        session.current_room_playstate_authority(),
+        Some(RoomPlaystateAuthority::LegacyLocalEcho)
     );
 
     session
