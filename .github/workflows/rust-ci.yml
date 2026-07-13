@@ -161,7 +161,10 @@ jobs:
             -Dvulkan=disabled \
             -Dwayland=disabled \
             -Dx11=disabled
-          meson compile -C build mpv
+          # v0.41 exposes both the executable and an internal shared-library
+          # target as `mpv`; qualify the target so Meson does not reject the
+          # otherwise ambiguous name.
+          meson compile -C build ./mpv:executable
 
       - name: Verify current mpv command layout
         run: |
