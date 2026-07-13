@@ -171,10 +171,15 @@ impl PlaybackBarrierRequestScope {
             .buffering_policy
             .as_ref()
             .map(|policy| policy.request_nonce);
-        (prepare_nonce.is_some() || buffering_nonce.is_some())
+        let recovery_nonce = extension
+            .recovery
+            .as_ref()
+            .map(|recovery| recovery.recovery_nonce);
+        (prepare_nonce.is_some() || buffering_nonce.is_some() || recovery_nonce.is_some())
             && prepare_nonce
                 .into_iter()
                 .chain(buffering_nonce)
+                .chain(recovery_nonce)
                 .all(|request_nonce| request_nonce == self.request_nonce)
     }
 }

@@ -31,11 +31,11 @@ pub use message::ProtocolMessage;
 pub use playback_barrier::{
     CommitStartPayload, MediaLoadIntent, MediaReadyPayload, PlaybackBarrierDegradedReason,
     PlaybackBarrierParticipantPhase, PlaybackBarrierParticipantStatus, PlaybackBarrierPhase,
-    PlaybackBarrierPolicy, PlaybackBarrierSetExtension, PlaybackBarrierStateExtension,
-    PlaybackBarrierStatusPayload, PlaybackBarrierTimeoutAction, PrepareMediaPayload,
-    RoomBufferingPhase, RoomBufferingPolicy, RoomBufferingPolicyPayload,
-    RoomBufferingStatusPayload, SOROTTE_PLAYBACK_BARRIER_V1, StartedAckPayload,
-    TransportBufferingReportPayload,
+    PlaybackBarrierPolicy, PlaybackBarrierRecoveryDisposition, PlaybackBarrierRecoveryPayload,
+    PlaybackBarrierSetExtension, PlaybackBarrierStateExtension, PlaybackBarrierStatusPayload,
+    PlaybackBarrierTimeoutAction, PrepareMediaPayload, RoomBufferingPhase, RoomBufferingPolicy,
+    RoomBufferingPolicyPayload, RoomBufferingStatusPayload, SOROTTE_PLAYBACK_BARRIER_V1,
+    StartedAckPayload, TransportBufferingReportPayload,
 };
 pub use room::RoomRef;
 pub use set::{

@@ -8,6 +8,7 @@ use super::{
     ChatMessagePayload, ChatPayload, ControllerAuthPayload, ErrorPayload, FilePayload,
     HelloPayload, IgnoringOnTheFlyPayload, ListPayload, ListUserEntry, MediaLoadIntent,
     MediaReadyPayload, NewControlledRoomPayload, PingPayload, PlaybackBarrierPolicy,
+    PlaybackBarrierRecoveryDisposition, PlaybackBarrierRecoveryPayload,
     PlaybackBarrierSetExtension, PlaybackBarrierStateExtension, PlaybackBarrierTimeoutAction,
     PlaylistChangePayload, PlaylistIndexPayload, PlaystatePayload, PrepareMediaPayload,
     ProtocolError, ProtocolMessage, ReadyPayload, RoomBufferingPhase, RoomBufferingPolicy,
@@ -193,6 +194,141 @@ fn playback_barrier_builders_remain_additive_and_roundtrip() {
 }
 
 #[test]
+fn playback_barrier_request_ids_and_recovery_payloads_roundtrip_additively() {
+    let request_id = "application-request-42";
+    let recovery_query =
+        PlaybackBarrierRecoveryPayload::query(request_id, 41, 42, "logical-media-private");
+    let request = ProtocolMessage::set(
+        SetPayload::new().with_playback_barrier_v1(
+            PlaybackBarrierSetExtension::new()
+                .with_prepare(
+                    PrepareMediaPayload::request(
+                        41,
+                        "logical-media-private",
+                        0.0,
+                        PlaybackBarrierPolicy::Controller,
+                        MediaLoadIntent::NewPlayback,
+                    )
+                    .with_request_id(request_id),
+                )
+                .with_buffering_policy(
+                    RoomBufferingPolicyPayload::new(0, RoomBufferingPolicy::Independent)
+                        .with_request_nonce(41)
+                        .with_request_id(request_id),
+                )
+                .with_recovery(recovery_query.clone()),
+        ),
+    );
+    let encoded_request = encode_message_line(&request).expect("recovery query should encode");
+    let request_json = decode_line(&encoded_request).expect("recovery query JSON should decode");
+    assert_eq!(
+        request_json
+            .pointer("/Set/sorottePlaybackBarrierV1/prepare/requestId")
+            .and_then(serde_json::Value::as_str),
+        Some(request_id)
+    );
+    assert_eq!(
+        request_json
+            .pointer("/Set/sorottePlaybackBarrierV1/bufferingPolicy/requestId")
+            .and_then(serde_json::Value::as_str),
+        Some(request_id)
+    );
+    assert_eq!(
+        request_json
+            .pointer("/Set/sorottePlaybackBarrierV1/recovery/recoveryNonce")
+            .and_then(serde_json::Value::as_u64),
+        Some(42)
+    );
+    assert!(
+        request_json
+            .pointer("/Set/sorottePlaybackBarrierV1/recovery/disposition")
+            .is_none(),
+        "a recovery query must not imply a server disposition"
+    );
+    assert_eq!(
+        decode_message_line(&encoded_request).expect("recovery query should roundtrip"),
+        request
+    );
+
+    let recovery_result = PlaybackBarrierRecoveryPayload::result(
+        request_id,
+        41,
+        42,
+        "logical-media-private",
+        PlaybackBarrierRecoveryDisposition::Recovered,
+    )
+    .with_media_generation(7);
+    let result = ProtocolMessage::set(SetPayload::new().with_playback_barrier_v1(
+        PlaybackBarrierSetExtension::new().with_recovery(recovery_result.clone()),
+    ));
+    let encoded_result = encode_message_line(&result).expect("recovery result should encode");
+    let result_json = decode_line(&encoded_result).expect("recovery result JSON should decode");
+    assert_eq!(
+        result_json
+            .pointer("/Set/sorottePlaybackBarrierV1/recovery/disposition")
+            .and_then(serde_json::Value::as_str),
+        Some("recovered")
+    );
+    assert_eq!(
+        result_json
+            .pointer("/Set/sorottePlaybackBarrierV1/recovery/mediaGeneration")
+            .and_then(serde_json::Value::as_u64),
+        Some(7)
+    );
+    assert_eq!(
+        decode_message_line(&encoded_result).expect("recovery result should roundtrip"),
+        result
+    );
+    assert_eq!(recovery_query.disposition, None);
+    assert_eq!(
+        recovery_result.disposition,
+        Some(PlaybackBarrierRecoveryDisposition::Recovered)
+    );
+}
+
+#[test]
+fn absent_request_ids_preserve_the_legacy_playback_barrier_json_shape() {
+    let legacy = ProtocolMessage::set(
+        SetPayload::new().with_playback_barrier_v1(
+            PlaybackBarrierSetExtension::new()
+                .with_prepare(PrepareMediaPayload::request(
+                    8,
+                    "legacy-logical-media",
+                    0.0,
+                    PlaybackBarrierPolicy::Controller,
+                    MediaLoadIntent::NewPlayback,
+                ))
+                .with_buffering_policy(
+                    RoomBufferingPolicyPayload::new(0, RoomBufferingPolicy::Independent)
+                        .with_request_nonce(8),
+                ),
+        ),
+    );
+
+    let encoded = encode_message_line(&legacy).expect("legacy barrier request should encode");
+    let value = decode_line(&encoded).expect("legacy barrier JSON should decode");
+    assert!(
+        value
+            .pointer("/Set/sorottePlaybackBarrierV1/prepare/requestId")
+            .is_none()
+    );
+    assert!(
+        value
+            .pointer("/Set/sorottePlaybackBarrierV1/bufferingPolicy/requestId")
+            .is_none()
+    );
+    assert!(
+        value
+            .pointer("/Set/sorottePlaybackBarrierV1/recovery")
+            .is_none()
+    );
+    assert_eq!(
+        decode_message_line(&encoded).expect("legacy barrier request should roundtrip"),
+        legacy
+    );
+}
+
+#[test]
 fn room_buffering_policy_and_transport_reports_roundtrip_inside_capability_extension() {
     let policy = RoomBufferingPolicyPayload::new(9, RoomBufferingPolicy::Quorum)
         .with_request_nonce(12)
@@ -286,7 +422,9 @@ fn malformed_playback_barrier_extension_does_not_break_envelope_decoding() {
 #[test]
 fn playback_barrier_debug_redacts_logical_media_identity() {
     const MARKER: &str = "private-logical-media-token";
-    let prepare = PrepareMediaPayload::new(1, MARKER, 0.0, PlaybackBarrierPolicy::Controller);
+    const REQUEST_MARKER: &str = "private-playback-request-token";
+    let prepare = PrepareMediaPayload::new(1, MARKER, 0.0, PlaybackBarrierPolicy::Controller)
+        .with_request_id(REQUEST_MARKER);
     let debug = format!("{:?}", prepare);
     assert!(!debug.contains(MARKER));
     assert!(debug.contains("<redacted>"));
@@ -296,8 +434,17 @@ fn playback_barrier_debug_redacts_logical_media_identity() {
             ProtocolMessage::set(SetPayload::new().with_playback_barrier_v1(
                 PlaybackBarrierSetExtension::new().with_prepare(prepare),
             ),)
-        );
+    );
     assert!(!message_debug.contains(MARKER));
+    assert!(!message_debug.contains(REQUEST_MARKER));
+
+    let policy_debug = format!(
+        "{:?}",
+        RoomBufferingPolicyPayload::new(1, RoomBufferingPolicy::Independent)
+            .with_request_id(REQUEST_MARKER)
+    );
+    assert!(!policy_debug.contains(REQUEST_MARKER));
+    assert!(policy_debug.contains("<redacted>"));
 }
 
 #[test]

@@ -22,10 +22,15 @@ pub enum RoomBufferingPolicy {
 ///
 /// Timing values are requests. Servers normalize them to bounded values before
 /// publishing the active policy in [`RoomBufferingStatusPayload`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RoomBufferingPolicyPayload {
     pub media_generation: u64,
+    /// Opaque application-level request identity retained across transport
+    /// reconnects. Legacy peers omit this field and continue to rely on the
+    /// connection-scoped nonce.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
     /// Strictly increasing connection-scoped request nonce when
     /// `media_generation` is zero. The server echoes it on canonical config.
     #[serde(default)]
@@ -47,10 +52,32 @@ pub struct RoomBufferingPolicyPayload {
     pub max_pause_ms: Option<u64>,
 }
 
+impl std::fmt::Debug for RoomBufferingPolicyPayload {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RoomBufferingPolicyPayload")
+            .field("media_generation", &self.media_generation)
+            .field(
+                "request_id",
+                &self.request_id.as_ref().map(|_| "<redacted>"),
+            )
+            .field("request_nonce", &self.request_nonce)
+            .field("load_intent", &self.load_intent)
+            .field("state_revision", &self.state_revision)
+            .field("policy", &self.policy)
+            .field("quorum_percent", &self.quorum_percent)
+            .field("debounce_ms", &self.debounce_ms)
+            .field("resume_hysteresis_ms", &self.resume_hysteresis_ms)
+            .field("max_pause_ms", &self.max_pause_ms)
+            .finish()
+    }
+}
+
 impl RoomBufferingPolicyPayload {
     pub fn new(media_generation: u64, policy: RoomBufferingPolicy) -> Self {
         Self {
             media_generation,
+            request_id: None,
             request_nonce: 0,
             load_intent: MediaLoadIntent::NewPlayback,
             state_revision: None,
@@ -60,6 +87,11 @@ impl RoomBufferingPolicyPayload {
             resume_hysteresis_ms: None,
             max_pause_ms: None,
         }
+    }
+
+    pub fn with_request_id(mut self, request_id: impl Into<String>) -> Self {
+        self.request_id = Some(request_id.into());
+        self
     }
 
     pub fn with_request_nonce(mut self, request_nonce: u64) -> Self {
@@ -194,6 +226,90 @@ pub enum PlaybackBarrierTimeoutAction {
     AskController,
 }
 
+/// Canonical server disposition for an application-level recovery exchange.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PlaybackBarrierRecoveryDisposition {
+    Recovered,
+    Existing,
+    Absent,
+    Superseded,
+    Rejected,
+}
+
+/// Nonce-correlated query/result used to recover an uncertain playback-start
+/// request after reconnecting without allocating a competing room generation.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackBarrierRecoveryPayload {
+    pub request_id: String,
+    pub original_request_nonce: u64,
+    pub recovery_nonce: u64,
+    pub logical_media_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disposition: Option<PlaybackBarrierRecoveryDisposition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_generation: Option<u64>,
+}
+
+impl std::fmt::Debug for PlaybackBarrierRecoveryPayload {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PlaybackBarrierRecoveryPayload")
+            .field("request_id", &"<redacted>")
+            .field("original_request_nonce", &self.original_request_nonce)
+            .field("recovery_nonce", &self.recovery_nonce)
+            .field("logical_media_id", &"<redacted>")
+            .field("disposition", &self.disposition)
+            .field("media_generation", &self.media_generation)
+            .finish()
+    }
+}
+
+impl PlaybackBarrierRecoveryPayload {
+    pub fn query(
+        request_id: impl Into<String>,
+        original_request_nonce: u64,
+        recovery_nonce: u64,
+        logical_media_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            request_id: request_id.into(),
+            original_request_nonce,
+            recovery_nonce,
+            logical_media_id: logical_media_id.into(),
+            disposition: None,
+            media_generation: None,
+        }
+    }
+
+    pub fn result(
+        request_id: impl Into<String>,
+        original_request_nonce: u64,
+        recovery_nonce: u64,
+        logical_media_id: impl Into<String>,
+        disposition: PlaybackBarrierRecoveryDisposition,
+    ) -> Self {
+        Self::query(
+            request_id,
+            original_request_nonce,
+            recovery_nonce,
+            logical_media_id,
+        )
+        .with_disposition(disposition)
+    }
+
+    pub fn with_disposition(mut self, disposition: PlaybackBarrierRecoveryDisposition) -> Self {
+        self.disposition = Some(disposition);
+        self
+    }
+
+    pub fn with_media_generation(mut self, media_generation: u64) -> Self {
+        self.media_generation = Some(media_generation);
+        self
+    }
+}
+
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrepareMediaPayload {
@@ -204,6 +320,11 @@ pub struct PrepareMediaPayload {
     /// deliberately independent of the client's wall clock.
     #[serde(default)]
     pub request_nonce: u64,
+    /// Opaque application-level request identity retained across transport
+    /// reconnects. Legacy peers omit this field and continue to rely on the
+    /// connection-scoped nonce.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
     #[serde(default)]
     pub load_intent: MediaLoadIntent,
     pub logical_media_id: String,
@@ -229,6 +350,10 @@ impl std::fmt::Debug for PrepareMediaPayload {
             .debug_struct("PrepareMediaPayload")
             .field("media_generation", &self.media_generation)
             .field("request_nonce", &self.request_nonce)
+            .field(
+                "request_id",
+                &self.request_id.as_ref().map(|_| "<redacted>"),
+            )
             .field("load_intent", &self.load_intent)
             .field("logical_media_id", &"<redacted>")
             .field("target_position", &self.target_position)
@@ -252,6 +377,7 @@ impl PrepareMediaPayload {
         Self {
             media_generation,
             request_nonce: 0,
+            request_id: None,
             load_intent: MediaLoadIntent::NewPlayback,
             logical_media_id: logical_media_id.into(),
             target_position,
@@ -278,6 +404,11 @@ impl PrepareMediaPayload {
 
     pub fn with_request_nonce(mut self, request_nonce: u64) -> Self {
         self.request_nonce = request_nonce;
+        self
+    }
+
+    pub fn with_request_id(mut self, request_id: impl Into<String>) -> Self {
+        self.request_id = Some(request_id.into());
         self
     }
 
@@ -487,6 +618,8 @@ pub struct PlaybackBarrierSetExtension {
     pub buffering_policy: Option<RoomBufferingPolicyPayload>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub buffering_status: Option<RoomBufferingStatusPayload>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<PlaybackBarrierRecoveryPayload>,
 }
 
 impl PlaybackBarrierSetExtension {
@@ -516,6 +649,11 @@ impl PlaybackBarrierSetExtension {
 
     pub fn with_buffering_status(mut self, status: RoomBufferingStatusPayload) -> Self {
         self.buffering_status = Some(status);
+        self
+    }
+
+    pub fn with_recovery(mut self, recovery: PlaybackBarrierRecoveryPayload) -> Self {
+        self.recovery = Some(recovery);
         self
     }
 }

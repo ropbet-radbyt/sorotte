@@ -21,6 +21,8 @@ impl ServerRuntime {
             room_playback_states: BTreeMap::new(),
             room_playback_barriers: BTreeMap::new(),
             room_buffering_controls: BTreeMap::new(),
+            playback_barrier_fenced_clients: BTreeSet::new(),
+            playback_barrier_request_receipts: BTreeMap::new(),
             playback_barrier_request_nonces: BTreeMap::new(),
             next_playback_barrier_generation: 0,
             next_playback_barrier_revision: 0,

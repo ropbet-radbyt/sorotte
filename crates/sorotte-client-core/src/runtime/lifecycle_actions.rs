@@ -495,6 +495,6 @@ where
         let actions = self
             .session
             .runtime_actions_for_controller_reidentify_if_needed();
-        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+        self.dispatch_runtime_actions_with_room_switch_coordination(&actions, true)
     }
 }

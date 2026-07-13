@@ -1,10 +1,12 @@
 use super::*;
 use crate::control::client_effect_player_error;
 use sorotte_player_api::PlayerCommand;
+use sorotte_protocol::PlaybackBarrierSetExtension;
 
 pub struct ClientSessionUpdate<'a> {
     session: &'a mut ClientSession,
     control: Option<&'a mut dyn ClientEffectSink>,
+    playback_coordination: Option<&'a mut RuntimePlaybackCoordination>,
 }
 
 impl<'a> ClientSessionUpdate<'a> {
@@ -12,21 +14,51 @@ impl<'a> ClientSessionUpdate<'a> {
         Self {
             session,
             control: None,
+            playback_coordination: None,
         }
     }
 
-    fn with_control(session: &'a mut ClientSession, control: &'a mut dyn ClientEffectSink) -> Self {
+    fn with_runtime_context(
+        session: &'a mut ClientSession,
+        control: &'a mut dyn ClientEffectSink,
+        playback_coordination: &'a mut RuntimePlaybackCoordination,
+    ) -> Self {
         Self {
             session,
             control: Some(control),
+            playback_coordination: Some(playback_coordination),
         }
     }
 
     fn cancel_playback_barrier_request_after_room_change(&mut self, previous_room: Option<String>) {
-        if previous_room.as_deref() != self.session.room()
-            && let Some(control) = self.control.as_deref_mut()
+        if previous_room.as_deref() != self.session.room() {
+            if let Some(control) = self.control.as_deref_mut() {
+                control.cancel_protocol_playback_barrier_requests();
+            }
+            if let Some(playback_coordination) = self.playback_coordination.as_deref_mut() {
+                playback_coordination.handle_authoritative_playback_barrier_room_change();
+            }
+        }
+    }
+
+    fn playback_barrier_extension(
+        message: &ProtocolMessage,
+    ) -> Option<PlaybackBarrierSetExtension> {
+        let ProtocolMessage::Set(set) = message else {
+            return None;
+        };
+        set.set.playback_barrier_v1().ok().flatten()
+    }
+
+    fn observe_playback_barrier_extension(
+        &mut self,
+        extension: Option<PlaybackBarrierSetExtension>,
+    ) {
+        if let (Some(playback_coordination), Some(extension)) =
+            (self.playback_coordination.as_deref_mut(), extension)
         {
-            control.cancel_protocol_playback_barrier_requests();
+            playback_coordination
+                .observe_playback_barrier_server_extension(&extension, self.session);
         }
     }
 
@@ -47,9 +79,13 @@ impl<'a> ClientSessionUpdate<'a> {
         &mut self,
         message: ProtocolMessage,
     ) -> Result<(), ProtocolError> {
+        let extension = Self::playback_barrier_extension(&message);
         let previous_room = self.session.room().map(str::to_owned);
         let result = self.session.apply_protocol_message(message);
         self.cancel_playback_barrier_request_after_room_change(previous_room);
+        if result.is_ok() {
+            self.observe_playback_barrier_extension(extension);
+        }
         result
     }
 
@@ -58,17 +94,21 @@ impl<'a> ClientSessionUpdate<'a> {
         message: ProtocolMessage,
         now_seconds: f64,
     ) -> Result<(), ProtocolError> {
+        let extension = Self::playback_barrier_extension(&message);
         let previous_room = self.session.room().map(str::to_owned);
         let result = self.session.apply_protocol_message_at(message, now_seconds);
         self.cancel_playback_barrier_request_after_room_change(previous_room);
+        if result.is_ok() {
+            self.observe_playback_barrier_extension(extension);
+        }
         result
     }
 
     pub fn apply_message_json(&mut self, json_line: &str) -> Result<(), ProtocolError> {
-        let previous_room = self.session.room().map(str::to_owned);
-        let result = self.session.apply_message_json(json_line);
-        self.cancel_playback_barrier_request_after_room_change(previous_room);
-        result
+        for item in decode_message_line_items(json_line)? {
+            self.apply_protocol_message(item.message?)?;
+        }
+        Ok(())
     }
 
     pub fn apply_message_json_at(
@@ -76,10 +116,10 @@ impl<'a> ClientSessionUpdate<'a> {
         json_line: &str,
         now_seconds: f64,
     ) -> Result<(), ProtocolError> {
-        let previous_room = self.session.room().map(str::to_owned);
-        let result = self.session.apply_message_json_at(json_line, now_seconds);
-        self.cancel_playback_barrier_request_after_room_change(previous_room);
-        result
+        for item in decode_message_line_items(json_line)? {
+            self.apply_protocol_message_at(item.message?, now_seconds)?;
+        }
+        Ok(())
     }
 
     pub fn mark_connecting(&mut self) {
@@ -279,15 +319,12 @@ where
             );
             self.control
                 .emit(ClientEffect::send_playback_barrier_set(
-                    request.extension,
+                    request.extension.clone(),
                     scope,
                 ))
                 .map_err(client_effect_player_error)?;
             self.playback_coordination
-                .confirm_playback_barrier_request_queued(
-                    request.local_media_generation,
-                    request.request_nonce,
-                );
+                .confirm_playback_barrier_request_queued(&request);
         }
         Ok(plan)
     }
@@ -415,7 +452,11 @@ where
     }
 
     pub fn session_mut(&mut self) -> ClientSessionUpdate<'_> {
-        ClientSessionUpdate::with_control(&mut self.session, &mut self.control)
+        ClientSessionUpdate::with_runtime_context(
+            &mut self.session,
+            &mut self.control,
+            &mut self.playback_coordination,
+        )
     }
 
     pub fn reconnect_state_restore_correction_metrics(

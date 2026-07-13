@@ -9,6 +9,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+getrandom.workspace = true
 sorotte-core = { path = "../sorotte-core" }
 sorotte-media-match = { path = "../sorotte-media-match" }
 sorotte-protocol = { path = "../sorotte-protocol" }

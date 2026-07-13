@@ -13,6 +13,21 @@ impl ServerRuntime {
         Some(generation)
     }
 
+    fn can_record_playback_barrier_request(&self, room_name: &str, request_id: &str) -> bool {
+        let key = (
+            room_name.to_owned(),
+            PlaybackBarrierRequestId::new(request_id),
+        );
+        self.playback_barrier_request_receipts.contains_key(&key)
+            || self
+                .playback_barrier_request_receipts
+                .keys()
+                .filter(|(receipt_room, _)| receipt_room == room_name)
+                .take(PLAYBACK_BARRIER_MAX_REQUEST_RECEIPTS_PER_ROOM)
+                .count()
+                < PLAYBACK_BARRIER_MAX_REQUEST_RECEIPTS_PER_ROOM
+    }
+
     /// Replays the server-authored lifecycle for an idempotent request. This
     /// never mutates room playback and deliberately includes a retained
     /// terminal commit only as history; clients scope its authority through
@@ -22,6 +37,15 @@ impl ServerRuntime {
         room_name: &str,
         client_id: &str,
     ) -> Vec<DirectedProtocolMessage> {
+        self.playback_barrier_snapshot_for_client_with_recovery(room_name, client_id, None)
+    }
+
+    fn playback_barrier_snapshot_for_client_with_recovery(
+        &self,
+        room_name: &str,
+        client_id: &str,
+        recovery: Option<PlaybackBarrierRecoveryPayload>,
+    ) -> Vec<DirectedProtocolMessage> {
         let Some(barrier) = self.room_playback_barriers.get(room_name) else {
             return Vec::new();
         };
@@ -29,6 +53,9 @@ impl ServerRuntime {
             return Vec::new();
         };
         if session.room != room_name || !session.capabilities.playback_barrier_v1 {
+            return Vec::new();
+        }
+        if self.playback_barrier_fenced_clients.contains(client_id) {
             return Vec::new();
         }
 
@@ -47,6 +74,14 @@ impl ServerRuntime {
                 extension = extension.with_buffering_status(status);
             }
         }
+        if let Some(recovery) = recovery {
+            extension = extension.with_recovery(recovery);
+        }
+        self.redact_playback_barrier_request_identity_for_client(
+            room_name,
+            client_id,
+            &mut extension,
+        );
         vec![DirectedProtocolMessage::new(
             client_id,
             playback_barrier_set_message(extension),
@@ -67,11 +102,19 @@ impl ServerRuntime {
         if session.room != room_name || !session.capabilities.playback_barrier_v1 {
             return Vec::new();
         }
+        if self.playback_barrier_fenced_clients.contains(client_id) {
+            return Vec::new();
+        }
         let mut extension =
             PlaybackBarrierSetExtension::new().with_buffering_policy(control.config.clone());
         if let Some(status) = self.room_buffering_status(room_name) {
             extension = extension.with_buffering_status(status);
         }
+        self.redact_playback_barrier_request_identity_for_client(
+            room_name,
+            client_id,
+            &mut extension,
+        );
         vec![DirectedProtocolMessage::new(
             client_id,
             playback_barrier_set_message(extension),
@@ -90,6 +133,7 @@ impl ServerRuntime {
             return Ok(Vec::new());
         };
         if !session.capabilities.playback_barrier_v1
+            || self.playback_barrier_fenced_clients.contains(client_id)
             || !self.room_buffering_controls.contains_key(&session.room)
         {
             return Ok(Vec::new());
@@ -106,6 +150,15 @@ impl ServerRuntime {
         client_id: &str,
         extension: PlaybackBarrierSetExtension,
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
+        if let Some(recovery) = extension.recovery {
+            // Recovery is deliberately a two-phase exchange. Never interpret
+            // a query and a speculative fresh prepare from the same envelope;
+            // the client must wait for the explicit Active/Absent disposition.
+            return self.handle_playback_barrier_recovery(client_id, recovery);
+        }
+        if self.playback_barrier_fenced_clients.contains(client_id) {
+            return Ok(Vec::new());
+        }
         let mut outbound = Vec::new();
         let had_prepare = extension.prepare.is_some();
         let mut apply_buffering_policy = extension.prepare.is_none();
@@ -130,6 +183,9 @@ impl ServerRuntime {
         client_id: &str,
         extension: PlaybackBarrierStateExtension,
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
+        if self.playback_barrier_fenced_clients.contains(client_id) {
+            return Ok(Vec::new());
+        }
         let mut outbound = Vec::new();
         if let Some(ready) = extension.ready {
             outbound.extend(self.record_playback_barrier_ready(client_id, ready)?);
@@ -141,6 +197,318 @@ impl ServerRuntime {
             outbound.extend(self.record_room_buffering_report(client_id, transport)?);
         }
         Ok(outbound)
+    }
+
+    fn handle_playback_barrier_recovery(
+        &mut self,
+        client_id: &str,
+        query: PlaybackBarrierRecoveryPayload,
+    ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
+        let Some(session) = self.sessions.get(client_id).cloned() else {
+            return Err(ServerRuntimeError::MissingSession(client_id.to_owned()));
+        };
+        if !session.capabilities.playback_barrier_v1 {
+            return Ok(Vec::new());
+        }
+
+        let query_is_valid = query.disposition.is_none()
+            && query.media_generation.is_none()
+            && query.original_request_nonce > 0
+            && query.recovery_nonce > 0
+            && valid_playback_barrier_request_id(&query.request_id)
+            && !query.logical_media_id.trim().is_empty()
+            && query.logical_media_id.chars().count()
+                <= PLAYBACK_BARRIER_MAX_LOGICAL_MEDIA_ID_CHARS;
+        let authorized = !self.playback_barrier_fenced_clients.contains(client_id)
+            && self.user_can_control_playlist(&session.username, &session.room);
+        if !query_is_valid || !authorized {
+            return Ok(vec![DirectedProtocolMessage::new(
+                client_id,
+                playback_barrier_set_message(PlaybackBarrierSetExtension::new().with_recovery(
+                    playback_barrier_recovery_result(
+                        &query,
+                        PlaybackBarrierRecoveryDisposition::Rejected,
+                        None,
+                    ),
+                )),
+            )]);
+        }
+
+        if let Some(receipt) = self.playback_barrier_request_receipts.get(&(
+            session.room.clone(),
+            PlaybackBarrierRequestId::new(query.request_id.clone()),
+        )) {
+            let receipt_matches = receipt.request_nonce == query.original_request_nonce
+                && receipt
+                    .logical_media_id
+                    .as_deref()
+                    .is_none_or(|logical_media_id| logical_media_id == query.logical_media_id);
+            if !receipt_matches {
+                return Ok(vec![DirectedProtocolMessage::new(
+                    client_id,
+                    playback_barrier_set_message(PlaybackBarrierSetExtension::new().with_recovery(
+                        playback_barrier_recovery_result(
+                            &query,
+                            PlaybackBarrierRecoveryDisposition::Rejected,
+                            Some(receipt.media_generation),
+                        ),
+                    )),
+                )]);
+            }
+            let receipt_is_current =
+                self.room_playback_barriers
+                    .get(&session.room)
+                    .is_some_and(|barrier| {
+                        barrier.prepare.request_id.as_deref() == Some(query.request_id.as_str())
+                    })
+                    || self
+                        .room_buffering_controls
+                        .get(&session.room)
+                        .is_some_and(|control| {
+                            control.config.request_id.as_deref() == Some(query.request_id.as_str())
+                        });
+            if !receipt_is_current {
+                return Ok(vec![DirectedProtocolMessage::new(
+                    client_id,
+                    playback_barrier_set_message(PlaybackBarrierSetExtension::new().with_recovery(
+                        playback_barrier_recovery_result(
+                            &query,
+                            PlaybackBarrierRecoveryDisposition::Superseded,
+                            Some(receipt.media_generation),
+                        ),
+                    )),
+                )]);
+            }
+        }
+
+        if !self.can_record_playback_barrier_request(&session.room, &query.request_id) {
+            return Ok(vec![DirectedProtocolMessage::new(
+                client_id,
+                playback_barrier_set_message(PlaybackBarrierSetExtension::new().with_recovery(
+                    playback_barrier_recovery_result(
+                        &query,
+                        PlaybackBarrierRecoveryDisposition::Rejected,
+                        None,
+                    ),
+                )),
+            )]);
+        }
+
+        if !self.room_playback_barriers.contains_key(&session.room)
+            && self
+                .room_buffering_controls
+                .get(&session.room)
+                .is_some_and(|control| {
+                    control.config.request_id.as_deref() == Some(query.request_id.as_str())
+                        && control.config.request_nonce == query.original_request_nonce
+                })
+        {
+            self.rebind_room_buffering_owner_if_newer(client_id, &session.room);
+            let control = self
+                .room_buffering_controls
+                .get(&session.room)
+                .expect("exact policy recovery should remain configured");
+            let media_generation = control.config.media_generation;
+            let mut extension = PlaybackBarrierSetExtension::new()
+                .with_buffering_policy(control.config.clone())
+                .with_recovery(playback_barrier_recovery_result(
+                    &query,
+                    PlaybackBarrierRecoveryDisposition::Recovered,
+                    Some(media_generation),
+                ));
+            if let Some(status) = self.room_buffering_status(&session.room) {
+                extension = extension.with_buffering_status(status);
+            }
+            self.redact_playback_barrier_request_identity_for_client(
+                &session.room,
+                client_id,
+                &mut extension,
+            );
+            return Ok(vec![DirectedProtocolMessage::new(
+                client_id,
+                playback_barrier_set_message(extension),
+            )]);
+        }
+
+        let Some(barrier) = self.room_playback_barriers.get(&session.room) else {
+            return Ok(vec![DirectedProtocolMessage::new(
+                client_id,
+                playback_barrier_set_message(PlaybackBarrierSetExtension::new().with_recovery(
+                    playback_barrier_recovery_result(
+                        &query,
+                        PlaybackBarrierRecoveryDisposition::Absent,
+                        None,
+                    ),
+                )),
+            )]);
+        };
+        let media_generation = barrier.prepare.media_generation;
+        let same_logical_media = barrier.prepare.logical_media_id == query.logical_media_id;
+        let exact_request = same_logical_media
+            && barrier.prepare.request_nonce == query.original_request_nonce
+            && barrier.prepare.request_id.as_deref() == Some(query.request_id.as_str());
+        let lifecycle_is_active = matches!(
+            barrier.phase,
+            PlaybackBarrierPhase::Preparing
+                | PlaybackBarrierPhase::Committed
+                | PlaybackBarrierPhase::AwaitingDecision
+        );
+        let disposition = if exact_request {
+            PlaybackBarrierRecoveryDisposition::Recovered
+        } else if same_logical_media && lifecycle_is_active {
+            PlaybackBarrierRecoveryDisposition::Existing
+        } else if same_logical_media {
+            PlaybackBarrierRecoveryDisposition::Absent
+        } else {
+            PlaybackBarrierRecoveryDisposition::Superseded
+        };
+        let room_name = session.room.clone();
+
+        if disposition == PlaybackBarrierRecoveryDisposition::Absent {
+            return Ok(vec![DirectedProtocolMessage::new(
+                client_id,
+                playback_barrier_set_message(
+                    PlaybackBarrierSetExtension::new()
+                        .with_recovery(playback_barrier_recovery_result(&query, disposition, None)),
+                ),
+            )]);
+        }
+        if disposition == PlaybackBarrierRecoveryDisposition::Superseded {
+            return Ok(vec![DirectedProtocolMessage::new(
+                client_id,
+                playback_barrier_set_message(PlaybackBarrierSetExtension::new().with_recovery(
+                    playback_barrier_recovery_result(&query, disposition, Some(media_generation)),
+                )),
+            )]);
+        }
+
+        let mut outbound = Vec::new();
+        if exact_request && self.rebind_playback_barrier_owner_if_newer(client_id, &room_name) {
+            outbound.extend(self.playback_barrier_status_fanout(&room_name));
+            outbound.extend(self.evaluate_room_buffering_at(
+                &room_name,
+                self.current_time_seconds(),
+                true,
+            )?);
+        }
+        let recovery =
+            playback_barrier_recovery_result(&query, disposition, Some(media_generation));
+        outbound.extend(self.playback_barrier_snapshot_for_client_with_recovery(
+            &room_name,
+            client_id,
+            Some(recovery),
+        ));
+        Ok(outbound)
+    }
+
+    fn rebind_playback_barrier_owner_if_newer(&mut self, client_id: &str, room_name: &str) -> bool {
+        let Some(new_session_sequence) = self.client_room_join_sequence.get(client_id).copied()
+        else {
+            return false;
+        };
+        let Some(session) = self.sessions.get(client_id).cloned() else {
+            return false;
+        };
+        let Some(barrier) = self.room_playback_barriers.get(room_name) else {
+            return false;
+        };
+        if new_session_sequence <= barrier.initiator_session_sequence {
+            return false;
+        }
+
+        let old_client_id = barrier.initiator_client_id.clone();
+        let barrier_phase = barrier.phase;
+        let barrier = self
+            .room_playback_barriers
+            .get_mut(room_name)
+            .expect("recovery candidate should remain present");
+        let mut participant = barrier
+            .participants
+            .remove(&old_client_id)
+            .or_else(|| barrier.participants.remove(client_id))
+            .unwrap_or(RoomPlaybackBarrierParticipant {
+                username: session.username.clone(),
+                status: PlaybackBarrierParticipantStatus::pending(),
+            });
+        participant.username.clone_from(&session.username);
+        if participant.status.degraded_reason == Some(PlaybackBarrierDegradedReason::Disconnected) {
+            match barrier_phase {
+                PlaybackBarrierPhase::Preparing => {
+                    participant.status.phase = PlaybackBarrierParticipantPhase::Pending;
+                    participant.status.degraded_reason = None;
+                }
+                PlaybackBarrierPhase::Committed => {
+                    participant.status.phase = PlaybackBarrierParticipantPhase::Ready;
+                    participant.status.degraded_reason = None;
+                }
+                PlaybackBarrierPhase::AwaitingDecision
+                | PlaybackBarrierPhase::Complete
+                | PlaybackBarrierPhase::Degraded => {}
+            }
+        }
+        barrier
+            .participants
+            .insert(client_id.to_owned(), participant);
+        barrier.initiator_client_id = client_id.to_owned();
+        barrier.initiator_session_sequence = new_session_sequence;
+        barrier.initiator_username.clone_from(&session.username);
+
+        if old_client_id != client_id && self.sessions.contains_key(&old_client_id) {
+            self.playback_barrier_fenced_clients
+                .insert(old_client_id.clone());
+        }
+        if let Some(control) = self.room_buffering_controls.get_mut(room_name)
+            && control.configured_by_client_id == old_client_id
+        {
+            control.config = control.requested_config.clone();
+            control.configured_by_client_id = client_id.to_owned();
+            control.configured_by_username = session.username;
+            control.reports.remove(&old_client_id);
+            control.reports.remove(client_id);
+            control.condition_active_since = None;
+            control.condition_clear_since = None;
+        }
+        true
+    }
+
+    fn rebind_room_buffering_owner_if_newer(&mut self, client_id: &str, room_name: &str) -> bool {
+        let Some(session) = self.sessions.get(client_id).cloned() else {
+            return false;
+        };
+        let Some(new_session_sequence) = self.client_room_join_sequence.get(client_id).copied()
+        else {
+            return false;
+        };
+        let Some(control) = self.room_buffering_controls.get(room_name) else {
+            return false;
+        };
+        let old_client_id = control.configured_by_client_id.clone();
+        if old_client_id == client_id {
+            return false;
+        }
+        let old_session_sequence = self
+            .client_room_join_sequence
+            .get(&old_client_id)
+            .copied()
+            .unwrap_or_default();
+        if new_session_sequence <= old_session_sequence {
+            return false;
+        }
+        let control = self
+            .room_buffering_controls
+            .get_mut(room_name)
+            .expect("policy recovery candidate should remain configured");
+        control.config = control.requested_config.clone();
+        control.configured_by_client_id = client_id.to_owned();
+        control.configured_by_username = session.username;
+        control.reports.remove(&old_client_id);
+        control.reports.remove(client_id);
+        control.condition_active_since = None;
+        control.condition_clear_since = None;
+        if self.sessions.contains_key(&old_client_id) {
+            self.playback_barrier_fenced_clients.insert(old_client_id);
+        }
+        true
     }
 
     fn configure_room_buffering_policy(
@@ -165,11 +533,39 @@ impl ServerRuntime {
             || config.state_revision == Some(0)
             || (config.load_intent == MediaLoadIntent::TransportRefresh
                 && config.media_generation != 0)
+            || config
+                .request_id
+                .as_deref()
+                .is_some_and(|request_id| !valid_playback_barrier_request_id(request_id))
         {
             return Ok(Vec::new());
         }
         if config.media_generation == 0 {
             if config.request_nonce == 0 {
+                return Ok(Vec::new());
+            }
+            if !paired_with_new_prepare && let Some(request_id) = config.request_id.as_deref() {
+                let exact_current_operation = self
+                    .room_buffering_controls
+                    .get(&session.room)
+                    .is_some_and(|control| {
+                        control.config.request_id.as_deref() == Some(request_id)
+                            && control.config.request_nonce == config.request_nonce
+                    });
+                if exact_current_operation {
+                    self.rebind_room_buffering_owner_if_newer(client_id, &session.room);
+                    return Ok(self.room_buffering_snapshot_for_client(&session.room, client_id));
+                }
+                if self.playback_barrier_request_receipts.contains_key(&(
+                    session.room.clone(),
+                    PlaybackBarrierRequestId::new(request_id),
+                )) {
+                    return Ok(Vec::new());
+                }
+            }
+            if config.request_id.as_deref().is_some_and(|request_id| {
+                !self.can_record_playback_barrier_request(&session.room, request_id)
+            }) {
                 return Ok(Vec::new());
             }
             if paired_with_new_prepare {
@@ -181,7 +577,8 @@ impl ServerRuntime {
                         .client_room_join_sequence
                         .get(client_id)
                         .is_some_and(|sequence| *sequence == barrier.initiator_session_sequence)
-                    && barrier.prepare.request_nonce == config.request_nonce;
+                    && barrier.prepare.request_nonce == config.request_nonce
+                    && barrier.prepare.request_id == config.request_id;
                 if !same_request {
                     return Ok(Vec::new());
                 }
@@ -322,6 +719,7 @@ impl ServerRuntime {
             room_name.clone(),
             RoomBufferingControl {
                 config: config.clone(),
+                requested_config: config.clone(),
                 configured_by_client_id: client_id.to_owned(),
                 configured_by_username: session.username,
                 reports: BTreeMap::new(),
@@ -332,6 +730,15 @@ impl ServerRuntime {
                 fail_open_latched: false,
             },
         );
+        if let Some(request_id) = config.request_id.clone() {
+            self.playback_barrier_request_receipts
+                .entry((room_name.clone(), PlaybackBarrierRequestId::new(request_id)))
+                .or_insert(PlaybackBarrierRequestReceipt {
+                    request_nonce: config.request_nonce,
+                    logical_media_id: None,
+                    media_generation: config.media_generation,
+                });
+        }
         let status = self
             .room_buffering_status(&room_name)
             .expect("new room buffering control should have status");
@@ -512,8 +919,10 @@ impl ServerRuntime {
         let eligible: BTreeSet<&str> = self
             .sessions
             .iter()
-            .filter(|(_, session)| {
-                session.room == room_name && session.capabilities.playback_barrier_v1
+            .filter(|(client_id, session)| {
+                session.room == room_name
+                    && session.capabilities.playback_barrier_v1
+                    && !self.playback_barrier_fenced_clients.contains(*client_id)
             })
             .map(|(client_id, _)| client_id.as_str())
             .collect();
@@ -588,8 +997,10 @@ impl ServerRuntime {
         let eligible: BTreeMap<&str, &str> = self
             .sessions
             .iter()
-            .filter(|(_, session)| {
-                session.room == room_name && session.capabilities.playback_barrier_v1
+            .filter(|(client_id, session)| {
+                session.room == room_name
+                    && session.capabilities.playback_barrier_v1
+                    && !self.playback_barrier_fenced_clients.contains(*client_id)
             })
             .map(|(client_id, session)| (client_id.as_str(), session.username.as_str()))
             .collect();
@@ -643,14 +1054,51 @@ impl ServerRuntime {
         room_name: &str,
         extension: PlaybackBarrierSetExtension,
     ) -> Vec<DirectedProtocolMessage> {
-        let message = playback_barrier_set_message(extension);
         self.sessions
             .iter()
-            .filter(|(_, session)| {
-                session.room == room_name && session.capabilities.playback_barrier_v1
+            .filter(|(client_id, session)| {
+                session.room == room_name
+                    && session.capabilities.playback_barrier_v1
+                    && !self.playback_barrier_fenced_clients.contains(*client_id)
             })
-            .map(|(client_id, _)| DirectedProtocolMessage::new(client_id, message.clone()))
+            .map(|(client_id, _)| {
+                let mut extension = extension.clone();
+                self.redact_playback_barrier_request_identity_for_client(
+                    room_name,
+                    client_id,
+                    &mut extension,
+                );
+                DirectedProtocolMessage::new(client_id, playback_barrier_set_message(extension))
+            })
             .collect()
+    }
+
+    fn redact_playback_barrier_request_identity_for_client(
+        &self,
+        room_name: &str,
+        client_id: &str,
+        extension: &mut PlaybackBarrierSetExtension,
+    ) {
+        if self
+            .room_playback_barriers
+            .get(room_name)
+            .is_none_or(|barrier| barrier.initiator_client_id != client_id)
+            && let Some(prepare) = extension.prepare.as_mut()
+        {
+            prepare.request_id = None;
+        }
+        if self
+            .room_buffering_controls
+            .get(room_name)
+            .is_none_or(|control| control.configured_by_client_id != client_id)
+        {
+            if let Some(policy) = extension.buffering_policy.as_mut() {
+                policy.request_id = None;
+            }
+            if let Some(status) = extension.buffering_status.as_mut() {
+                status.config.request_id = None;
+            }
+        }
     }
 
     fn start_playback_barrier(
@@ -669,6 +1117,10 @@ impl ServerRuntime {
             || prepare.request_nonce == 0
             || prepare.logical_media_id.trim().is_empty()
             || !prepare.target_position.is_finite()
+            || prepare
+                .request_id
+                .as_deref()
+                .is_some_and(|request_id| !valid_playback_barrier_request_id(request_id))
         {
             return Ok(Vec::new());
         }
@@ -681,6 +1133,45 @@ impl ServerRuntime {
         else {
             return Ok(Vec::new());
         };
+
+        if let Some(request_id) = prepare.request_id.as_deref()
+            && let Some(barrier) = self.room_playback_barriers.get(&session.room)
+            && barrier.prepare.request_id.as_deref() == Some(request_id)
+        {
+            let exact_operation = barrier.prepare.request_nonce == prepare.request_nonce
+                && barrier.prepare.logical_media_id == prepare.logical_media_id;
+            if !exact_operation {
+                return Ok(Vec::new());
+            }
+            self.playback_barrier_request_nonces
+                .entry(client_id.to_owned())
+                .and_modify(|nonce| *nonce = (*nonce).max(prepare.request_nonce))
+                .or_insert(prepare.request_nonce);
+            let rebound = self.rebind_playback_barrier_owner_if_newer(client_id, &session.room);
+            let mut outbound = if rebound {
+                self.playback_barrier_status_fanout(&session.room)
+            } else {
+                Vec::new()
+            };
+            outbound.extend(self.playback_barrier_snapshot_for_client(&session.room, client_id));
+            return Ok(outbound);
+        }
+        if prepare.request_id.as_ref().is_some_and(|request_id| {
+            self.playback_barrier_request_receipts.contains_key(&(
+                session.room.clone(),
+                PlaybackBarrierRequestId::new(request_id.clone()),
+            ))
+        }) {
+            // This operation was accepted previously but is no longer the
+            // room's current lifecycle. A delayed copy must never allocate a
+            // fresh generation after supersession.
+            return Ok(Vec::new());
+        }
+        if prepare.request_id.as_deref().is_some_and(|request_id| {
+            !self.can_record_playback_barrier_request(&session.room, request_id)
+        }) {
+            return Ok(Vec::new());
+        }
 
         if self
             .playback_barrier_request_nonces
@@ -809,7 +1300,11 @@ impl ServerRuntime {
         let mut participants = BTreeMap::new();
         let mut excluded_legacy_clients = BTreeSet::new();
         for (peer_client_id, peer_session) in &self.sessions {
-            if peer_session.room != session.room {
+            if peer_session.room != session.room
+                || self
+                    .playback_barrier_fenced_clients
+                    .contains(peer_client_id)
+            {
                 continue;
             }
             if peer_session.capabilities.playback_barrier_v1 {
@@ -871,6 +1366,16 @@ impl ServerRuntime {
                 started_deadline: None,
             },
         );
+        if let Some(request_id) = prepare.request_id.clone() {
+            self.playback_barrier_request_receipts.insert(
+                (room_name.clone(), PlaybackBarrierRequestId::new(request_id)),
+                PlaybackBarrierRequestReceipt {
+                    request_nonce: prepare.request_nonce,
+                    logical_media_id: Some(prepare.logical_media_id.clone()),
+                    media_generation: prepare.media_generation,
+                },
+            );
+        }
 
         {
             let room_state = self.room_playback_state_mut(&room_name);
@@ -1226,6 +1731,9 @@ impl ServerRuntime {
         client_id: &str,
         room_name: &str,
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
+        if self.playback_barrier_fenced_clients.contains(client_id) {
+            return Ok(Vec::new());
+        }
         let now_seconds = self.current_time_seconds();
         let Some(control) = self.room_buffering_controls.get_mut(room_name) else {
             return Ok(Vec::new());
@@ -1267,6 +1775,9 @@ impl ServerRuntime {
         client_id: &str,
         room_name: &str,
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
+        if self.playback_barrier_fenced_clients.contains(client_id) {
+            return Ok(Vec::new());
+        }
         let Some(barrier) = self.room_playback_barriers.get_mut(room_name) else {
             return Ok(Vec::new());
         };
@@ -1326,7 +1837,6 @@ impl ServerRuntime {
         let Some(barrier) = self.room_playback_barriers.get(room_name) else {
             return Vec::new();
         };
-        let message = playback_barrier_set_message(extension);
         barrier
             .participants
             .keys()
@@ -1335,7 +1845,15 @@ impl ServerRuntime {
                     session.room == room_name && session.capabilities.playback_barrier_v1
                 })
             })
-            .map(|client_id| DirectedProtocolMessage::new(client_id, message.clone()))
+            .map(|client_id| {
+                let mut extension = extension.clone();
+                self.redact_playback_barrier_request_identity_for_client(
+                    room_name,
+                    client_id,
+                    &mut extension,
+                );
+                DirectedProtocolMessage::new(client_id, playback_barrier_set_message(extension))
+            })
             .collect()
     }
 }
@@ -1352,6 +1870,14 @@ fn normalize_room_buffering_duration_ms(
     (requested_seconds.clamp(min_seconds, max_seconds) * 1_000.0) as u64
 }
 
+fn valid_playback_barrier_request_id(request_id: &str) -> bool {
+    !request_id.is_empty()
+        && request_id.len() <= PLAYBACK_BARRIER_MAX_REQUEST_ID_BYTES
+        && request_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
 fn room_buffering_config_seconds(value_ms: Option<u64>) -> f64 {
     value_ms.unwrap_or_default() as f64 / 1_000.0
 }
@@ -1364,4 +1890,23 @@ fn room_buffering_quorum_required(eligible_clients: u32, quorum_percent: u32) ->
         .saturating_mul(quorum_percent.clamp(1, 100))
         .saturating_add(99)
         / 100
+}
+
+fn playback_barrier_recovery_result(
+    query: &PlaybackBarrierRecoveryPayload,
+    disposition: PlaybackBarrierRecoveryDisposition,
+    media_generation: Option<u64>,
+) -> PlaybackBarrierRecoveryPayload {
+    let result = PlaybackBarrierRecoveryPayload::result(
+        query.request_id.clone(),
+        query.original_request_nonce,
+        query.recovery_nonce,
+        query.logical_media_id.clone(),
+        disposition,
+    );
+    if let Some(media_generation) = media_generation {
+        result.with_media_generation(media_generation)
+    } else {
+        result
+    }
 }

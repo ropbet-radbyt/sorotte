@@ -5,6 +5,30 @@ where
     P: PlayerAdapter,
     C: ClientEffectSink,
 {
+    pub(crate) fn dispatch_runtime_actions_with_room_switch_coordination(
+        &mut self,
+        actions: &[ClientRuntimeAction],
+        preserve_uninitiated_media: bool,
+    ) -> Result<(), PlayerError> {
+        for action in actions {
+            ClientSession::dispatch_runtime_actions(
+                std::slice::from_ref(action),
+                &mut self.player,
+                &mut self.control,
+            )?;
+            if matches!(action, ClientRuntimeAction::SetRoom { .. }) {
+                if preserve_uninitiated_media {
+                    self.playback_coordination
+                        .handle_authoritative_playback_barrier_room_change();
+                } else {
+                    self.playback_coordination
+                        .discard_room_scoped_playback_barrier_intent();
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn run_send_chat_message(
         &mut self,
         message: impl Into<String>,
@@ -82,7 +106,7 @@ where
             .session
             .runtime_actions_for_local_room_switch(room.into());
         let sent = !actions.is_empty();
-        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+        self.dispatch_runtime_actions_with_room_switch_coordination(&actions, false)
             .map(|_| sent)
     }
 

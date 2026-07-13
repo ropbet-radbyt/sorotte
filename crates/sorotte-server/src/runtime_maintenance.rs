@@ -301,6 +301,7 @@ impl ServerRuntime {
 
     pub(crate) fn remove_session_tracking(&mut self, client_id: &str) -> Option<ServerSession> {
         let session = self.sessions.remove(client_id)?;
+        self.playback_barrier_fenced_clients.remove(client_id);
         let _ = self.domain.leave_room(&session.username, &session.room);
         self.remove_room_controller(&session.username, &session.room);
         self.client_state_counters.remove(client_id);
@@ -435,6 +436,8 @@ impl ServerRuntime {
         self.room_playback_states.remove(room_name);
         self.room_playback_barriers.remove(room_name);
         self.room_buffering_controls.remove(room_name);
+        self.playback_barrier_request_receipts
+            .retain(|(receipt_room, _), _| receipt_room != room_name);
         self.delete_persisted_room_if_needed(room_name)?;
         Ok(())
     }

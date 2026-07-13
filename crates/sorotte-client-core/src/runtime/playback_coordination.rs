@@ -11,6 +11,7 @@ use sorotte_player_api::{
 pub use sorotte_protocol::PlaybackBarrierTimeoutAction;
 use sorotte_protocol::{
     PlaybackBarrierParticipantPhase, PlaybackBarrierPhase, PlaybackBarrierPolicy,
+    PlaybackBarrierRecoveryDisposition, PlaybackBarrierRecoveryPayload,
     PlaybackBarrierSetExtension, PrepareMediaPayload, RoomBufferingPolicy,
     RoomBufferingPolicyPayload,
 };
@@ -99,11 +100,60 @@ struct RoomBufferingObservation {
     observed_at: Option<f64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct PendingMediaCoordinationIntent {
     local_media_generation: u64,
     load_intent: MediaLoadIntent,
     include_start_barrier: bool,
+    request_id: String,
+    retry_request_nonce: Option<u64>,
+    room: Option<String>,
+}
+
+impl std::fmt::Debug for PendingMediaCoordinationIntent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PendingMediaCoordinationIntent")
+            .field("local_media_generation", &self.local_media_generation)
+            .field("load_intent", &self.load_intent)
+            .field("include_start_barrier", &self.include_start_barrier)
+            .field("request_id", &"<redacted>")
+            .field("retry_request_nonce", &self.retry_request_nonce)
+            .field("room", &self.room)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct PlaybackBarrierOperation {
+    local_media_generation: u64,
+    load_intent: MediaLoadIntent,
+    include_start_barrier: bool,
+    request_id: String,
+    request_nonce: u64,
+    logical_media_id: String,
+    room: String,
+}
+
+impl std::fmt::Debug for PlaybackBarrierOperation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PlaybackBarrierOperation")
+            .field("local_media_generation", &self.local_media_generation)
+            .field("load_intent", &self.load_intent)
+            .field("include_start_barrier", &self.include_start_barrier)
+            .field("request_id", &"<redacted>")
+            .field("request_nonce", &self.request_nonce)
+            .field("logical_media_id", &"<redacted>")
+            .field("room", &self.room)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingPlaybackBarrierRecovery {
+    operation: PlaybackBarrierOperation,
+    recovery_nonce: Option<u64>,
     room: Option<String>,
 }
 
@@ -113,6 +163,8 @@ pub(crate) struct PendingPlaybackBarrierRequest {
     pub(crate) room: String,
     pub(crate) local_media_generation: u64,
     pub(crate) request_nonce: u64,
+    operation: PlaybackBarrierOperation,
+    recovery_request: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,8 +206,10 @@ pub(crate) struct RuntimePlaybackCoordination {
     barrier_start_config: PlaybackBarrierStartConfig,
     room_buffering_config: PlaybackBarrierRoomBufferingConfig,
     next_room_barrier_request_nonce: u64,
-    initiated_barrier: Option<(u64, u64)>,
-    delivered_barrier: Option<(u64, u64)>,
+    initiated_barrier: Option<PlaybackBarrierOperation>,
+    accepted_barrier: Option<PlaybackBarrierOperation>,
+    pending_barrier_recovery: Option<PendingPlaybackBarrierRecovery>,
+    accepted_barrier_terminal: bool,
     pending_media_coordination: Option<PendingMediaCoordinationIntent>,
     handled_barrier_timeout: Option<(u64, Option<u64>)>,
     pending_barrier_timeout_action: Option<PlaybackBarrierTimeoutAction>,
@@ -256,11 +310,15 @@ impl RuntimePlaybackCoordination {
             self.last_started_revision = None;
             self.last_degraded_reason = None;
             self.initiated_barrier = None;
-            self.delivered_barrier = None;
+            self.accepted_barrier = None;
+            self.pending_barrier_recovery = None;
+            self.accepted_barrier_terminal = false;
             self.pending_media_coordination = Some(PendingMediaCoordinationIntent {
                 local_media_generation: plan.media_generation,
                 load_intent: plan.load_intent,
                 include_start_barrier: true,
+                request_id: new_playback_barrier_request_id(plan.media_generation),
+                retry_request_nonce: None,
                 room: None,
             });
             self.handled_barrier_timeout = None;
@@ -399,29 +457,30 @@ impl RuntimePlaybackCoordination {
         self.last_reported_barrier_started = None;
         self.last_reported_room_buffering = None;
 
-        if let Some(initiated) = self.initiated_barrier.take() {
-            if self.delivered_barrier == Some(initiated) {
-                self.pending_media_coordination =
-                    self.coordinator
-                        .current_media_generation()
-                        .map(|local_media_generation| PendingMediaCoordinationIntent {
-                            local_media_generation,
-                            load_intent: MediaLoadIntent::TransportRefresh,
-                            include_start_barrier: false,
-                            room: None,
-                        });
-            } else if let Some(pending) = self.pending_media_coordination.as_mut() {
-                // The serialized request never left the old outbox. Preserve
-                // its semantic intent, but rebuild it in the new connection
-                // generation with a fresh nonce after Hello/authentication.
-                pending.room = None;
-            }
+        let recovering = self
+            .pending_barrier_recovery
+            .take()
+            .map(|recovery| recovery.operation);
+        let accepted = self.accepted_barrier.take();
+        let initiated = self.initiated_barrier.take();
+        let recoverable = recovering.or(accepted).or(initiated);
+
+        if let Some(operation) = recoverable {
+            // A socket write cannot distinguish an accepted request from
+            // bytes lost before server parsing. Recover even a terminal
+            // lifecycle first: the retained server operation also owns the
+            // ongoing buffering policy and may need to be rebound from an
+            // overlapping old transport identity.
+            self.pending_barrier_recovery = Some(PendingPlaybackBarrierRecovery {
+                operation,
+                recovery_nonce: None,
+                room: None,
+            });
         } else if let Some(pending) = self.pending_media_coordination.as_mut() {
             // An unsent current-media intent remains valid, but it must bind
             // to the newly authenticated room and receive a fresh nonce.
             pending.room = None;
         }
-        self.delivered_barrier = None;
     }
 
     pub(crate) fn playback_barrier_set_for_new_media(
@@ -441,6 +500,42 @@ impl RuntimePlaybackCoordination {
         &mut self,
         session: &ClientSession,
     ) -> Option<PendingPlaybackBarrierRequest> {
+        if let Some(mut recovery) = self.pending_barrier_recovery.clone() {
+            let room = session.room()?.to_owned();
+            if recovery.room.as_deref() != Some(room.as_str()) {
+                recovery.room = Some(room.clone());
+                recovery.recovery_nonce = None;
+                self.pending_barrier_recovery = Some(recovery.clone());
+            }
+            if recovery.recovery_nonce.is_some()
+                || !session.playback_barrier_v1_negotiated()
+                || session.local_can_control() != Some(true)
+                || self.coordinator.current_media_generation()
+                    != Some(recovery.operation.local_media_generation)
+                || !self.current_logical_media_matches(&recovery.operation.logical_media_id)
+            {
+                return None;
+            }
+
+            let recovery_nonce = self.next_room_barrier_request_nonce();
+            let extension = PlaybackBarrierSetExtension::new().with_recovery(
+                PlaybackBarrierRecoveryPayload::query(
+                    recovery.operation.request_id.clone(),
+                    recovery.operation.request_nonce,
+                    recovery_nonce,
+                    recovery.operation.logical_media_id.clone(),
+                ),
+            );
+            return Some(PendingPlaybackBarrierRequest {
+                extension,
+                room,
+                local_media_generation: recovery.operation.local_media_generation,
+                request_nonce: recovery_nonce,
+                operation: recovery.operation,
+                recovery_request: true,
+            });
+        }
+
         let mut intent = self.pending_media_coordination.clone()?;
         let room = session.room()?.to_owned();
         if intent.room.as_deref() != Some(room.as_str()) {
@@ -450,10 +545,9 @@ impl RuntimePlaybackCoordination {
             intent.room = Some(room.clone());
             self.pending_media_coordination = Some(intent.clone());
         }
-        if self
-            .initiated_barrier
-            .is_some_and(|(local_generation, _)| local_generation == intent.local_media_generation)
-            || !session.playback_barrier_v1_negotiated()
+        if self.initiated_barrier.as_ref().is_some_and(|operation| {
+            operation.local_media_generation == intent.local_media_generation
+        }) || !session.playback_barrier_v1_negotiated()
             || session.local_can_control() != Some(true)
         {
             return None;
@@ -505,8 +599,11 @@ impl RuntimePlaybackCoordination {
         } else {
             intent.load_intent
         };
-        let request_nonce = self.next_room_barrier_request_nonce();
+        let request_nonce = intent
+            .retry_request_nonce
+            .unwrap_or_else(|| self.next_room_barrier_request_nonce());
         let mut extension = PlaybackBarrierSetExtension::new();
+        let mut start_requested = false;
         if intent.include_start_barrier
             && let Some(policy) = self.barrier_start_config.policy
         {
@@ -515,22 +612,25 @@ impl RuntimePlaybackCoordination {
                 .clamp(1.0, u64::MAX as f64) as u64;
             let mut prepare = PrepareMediaPayload::request(
                 request_nonce,
-                logical_media_id,
+                logical_media_id.clone(),
                 0.0,
                 policy,
                 load_intent,
             )
+            .with_request_id(intent.request_id.clone())
             .with_timeout_ms(timeout_ms)
             .with_timeout_action(self.barrier_start_config.timeout_action);
             if policy == PlaybackBarrierPolicy::Quorum {
                 prepare = prepare.with_quorum_percent(self.barrier_start_config.quorum_percent);
             }
             extension = extension.with_prepare(prepare);
+            start_requested = true;
         }
 
         let room_config = self.room_buffering_config;
         let mut buffering = RoomBufferingPolicyPayload::new(0, room_config.policy)
             .with_request_nonce(request_nonce)
+            .with_request_id(intent.request_id.clone())
             .with_load_intent(load_intent)
             .with_debounce_ms(seconds_to_milliseconds(room_config.debounce_seconds))
             .with_resume_hysteresis_ms(seconds_to_milliseconds(
@@ -540,65 +640,183 @@ impl RuntimePlaybackCoordination {
         if room_config.policy == RoomBufferingPolicy::Quorum {
             buffering = buffering.with_quorum_percent(room_config.quorum_percent);
         }
+        let operation = PlaybackBarrierOperation {
+            local_media_generation: local_generation,
+            load_intent,
+            include_start_barrier: start_requested,
+            request_id: intent.request_id,
+            request_nonce,
+            logical_media_id,
+            room: room.clone(),
+        };
         Some(PendingPlaybackBarrierRequest {
             extension: extension.with_buffering_policy(buffering),
             room,
             local_media_generation: local_generation,
             request_nonce,
+            operation,
+            recovery_request: false,
         })
     }
 
     pub(crate) fn confirm_playback_barrier_request_queued(
         &mut self,
-        local_media_generation: u64,
-        request_nonce: u64,
+        request: &PendingPlaybackBarrierRequest,
     ) {
+        if request.recovery_request {
+            if let Some(recovery) = self.pending_barrier_recovery.as_mut()
+                && recovery.operation == request.operation
+            {
+                recovery.recovery_nonce = Some(request.request_nonce);
+                recovery.room = Some(request.room.clone());
+            }
+            return;
+        }
         if self
             .pending_media_coordination
             .as_ref()
-            .is_some_and(|intent| intent.local_media_generation == local_media_generation)
+            .is_some_and(|intent| {
+                intent.local_media_generation == request.local_media_generation
+                    && intent.request_id == request.operation.request_id
+            })
         {
-            self.initiated_barrier = Some((local_media_generation, request_nonce));
+            self.initiated_barrier = Some(request.operation.clone());
         }
     }
 
-    pub(crate) fn confirm_playback_barrier_request_delivered(&mut self, request_nonce: u64) {
-        let Some(initiated @ (local_media_generation, initiated_nonce)) = self.initiated_barrier
-        else {
-            return;
-        };
-        if request_nonce != initiated_nonce {
-            return;
-        }
-        self.delivered_barrier = Some(initiated);
-        if self
-            .pending_media_coordination
-            .as_ref()
-            .is_some_and(|intent| intent.local_media_generation == local_media_generation)
+    pub(crate) fn discard_room_scoped_playback_barrier_intent(&mut self) {
+        self.initiated_barrier = None;
+        self.accepted_barrier = None;
+        self.pending_barrier_recovery = None;
+        self.pending_media_coordination = None;
+        self.accepted_barrier_terminal = false;
+    }
+
+    pub(crate) fn handle_authoritative_playback_barrier_room_change(&mut self) {
+        if self.initiated_barrier.is_some()
+            || self.accepted_barrier.is_some()
+            || self.pending_barrier_recovery.is_some()
         {
-            self.pending_media_coordination = None;
+            self.discard_room_scoped_playback_barrier_intent();
+        } else if let Some(pending) = self.pending_media_coordination.as_mut() {
+            // A pre-authentication media intent has never been serialized and
+            // may safely bind to the authoritative destination room.
+            pending.room = None;
         }
     }
 
-    pub(crate) fn confirm_protocol_message_delivered(&mut self, message: &ProtocolMessage) {
-        let ProtocolMessage::Set(set) = message else {
-            return;
-        };
-        let Ok(Some(extension)) = set.set.playback_barrier_v1() else {
-            return;
-        };
-        let request_nonce = extension
-            .prepare
-            .as_ref()
-            .map(|prepare| prepare.request_nonce)
+    pub(crate) fn observe_playback_barrier_server_extension(
+        &mut self,
+        extension: &PlaybackBarrierSetExtension,
+        session: &ClientSession,
+    ) {
+        if let Some(response) = extension.recovery.as_ref()
+            && let Some(recovery) = self.pending_barrier_recovery.clone()
+            && recovery.recovery_nonce == Some(response.recovery_nonce)
+            && recovery.operation.request_id == response.request_id
+            && recovery.operation.request_nonce == response.original_request_nonce
+            && logical_media_ids_match(
+                &recovery.operation.logical_media_id,
+                &response.logical_media_id,
+            )
+        {
+            match response.disposition {
+                Some(PlaybackBarrierRecoveryDisposition::Recovered) => {}
+                Some(PlaybackBarrierRecoveryDisposition::Existing) => {
+                    let existing_lifecycle_applied =
+                        session.playback_barrier_prepare().is_some_and(|prepare| {
+                            logical_media_ids_match(
+                                &recovery.operation.logical_media_id,
+                                &prepare.logical_media_id,
+                            )
+                        });
+                    if existing_lifecycle_applied {
+                        self.discard_room_scoped_playback_barrier_intent();
+                    }
+                }
+                Some(PlaybackBarrierRecoveryDisposition::Absent) => {
+                    let operation = recovery.operation;
+                    let was_terminal = self.accepted_barrier_terminal;
+                    self.initiated_barrier = None;
+                    self.accepted_barrier = None;
+                    self.pending_barrier_recovery = None;
+                    self.accepted_barrier_terminal = false;
+                    self.pending_media_coordination = Some(PendingMediaCoordinationIntent {
+                        local_media_generation: operation.local_media_generation,
+                        load_intent: if was_terminal {
+                            MediaLoadIntent::TransportRefresh
+                        } else {
+                            operation.load_intent
+                        },
+                        include_start_barrier: !was_terminal && operation.include_start_barrier,
+                        request_id: if was_terminal {
+                            new_playback_barrier_request_id(operation.local_media_generation)
+                        } else {
+                            operation.request_id
+                        },
+                        retry_request_nonce: (!was_terminal).then_some(operation.request_nonce),
+                        room: session.room().map(str::to_owned),
+                    });
+                }
+                Some(
+                    PlaybackBarrierRecoveryDisposition::Superseded
+                    | PlaybackBarrierRecoveryDisposition::Rejected,
+                ) => self.discard_room_scoped_playback_barrier_intent(),
+                None => {}
+            }
+        }
+
+        let candidate = self
+            .initiated_barrier
+            .clone()
+            .or_else(|| self.accepted_barrier.clone())
             .or_else(|| {
-                extension
-                    .buffering_policy
+                self.pending_barrier_recovery
                     .as_ref()
-                    .map(|policy| policy.request_nonce)
+                    .map(|recovery| recovery.operation.clone())
             });
-        if let Some(request_nonce) = request_nonce {
-            self.confirm_playback_barrier_request_delivered(request_nonce);
+        if let Some(operation) = candidate {
+            let prepare_matches = extension.prepare.as_ref().is_some_and(|prepare| {
+                prepare.request_id.as_deref() == Some(operation.request_id.as_str())
+                    && prepare.request_nonce == operation.request_nonce
+                    && prepare.media_generation > 0
+                    && logical_media_ids_match(
+                        &operation.logical_media_id,
+                        &prepare.logical_media_id,
+                    )
+                    && session
+                        .playback_barrier_prepare()
+                        .is_some_and(|accepted| accepted == prepare)
+            });
+            let policy_matches = extension.buffering_policy.as_ref().is_some_and(|policy| {
+                policy.request_id.as_deref() == Some(operation.request_id.as_str())
+                    && policy.request_nonce == operation.request_nonce
+                    && policy.media_generation > 0
+                    && session
+                        .playback_barrier_buffering_policy()
+                        .is_some_and(|accepted| accepted == policy)
+            });
+            if prepare_matches || policy_matches {
+                self.initiated_barrier = Some(operation.clone());
+                self.accepted_barrier = Some(operation);
+                self.pending_media_coordination = None;
+                self.pending_barrier_recovery = None;
+            }
+        }
+
+        if let Some(operation) = self.accepted_barrier.as_ref()
+            && session.playback_barrier_prepare().is_some_and(|prepare| {
+                prepare.request_id.as_deref() == Some(operation.request_id.as_str())
+                    && prepare.request_nonce == operation.request_nonce
+            })
+            && session.playback_barrier_status().is_some_and(|status| {
+                matches!(
+                    status.phase,
+                    PlaybackBarrierPhase::Complete | PlaybackBarrierPhase::Degraded
+                )
+            })
+        {
+            self.accepted_barrier_terminal = true;
         }
     }
 
@@ -886,16 +1104,16 @@ impl RuntimePlaybackCoordination {
     }
 
     fn capture_barrier_timeout_action(&mut self, session: &ClientSession) {
-        let Some((local_generation, request_nonce)) = self.initiated_barrier else {
+        let Some(operation) = self.initiated_barrier.as_ref() else {
             return;
         };
-        if self.coordinator.current_media_generation() != Some(local_generation) {
+        if self.coordinator.current_media_generation() != Some(operation.local_media_generation) {
             return;
         }
-        let Some(prepare) = session
-            .playback_barrier_prepare()
-            .filter(|prepare| prepare.request_nonce == request_nonce)
-        else {
+        let Some(prepare) = session.playback_barrier_prepare().filter(|prepare| {
+            prepare.request_nonce == operation.request_nonce
+                && prepare.request_id.as_deref() == Some(operation.request_id.as_str())
+        }) else {
             return;
         };
         let Some(status) = session.playback_barrier_status().filter(|status| {
@@ -1248,6 +1466,21 @@ fn normalized_positive_seconds(value: f64, fallback: f64) -> f64 {
     }
 }
 
+fn new_playback_barrier_request_id(local_media_generation: u64) -> String {
+    let mut bytes = [0_u8; 16];
+    if getrandom::getrandom(&mut bytes).is_ok() {
+        return bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    }
+
+    let unix_nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    format!(
+        "fallback-{:x}-{unix_nanos:x}-{local_media_generation:x}",
+        std::process::id()
+    )
+}
+
 fn seconds_to_milliseconds(seconds: f64) -> u64 {
     (seconds * 1_000.0).round().clamp(1.0, u64::MAX as f64) as u64
 }
@@ -1272,15 +1505,12 @@ where
         );
         self.control
             .emit(ClientEffect::send_playback_barrier_set(
-                request.extension,
+                request.extension.clone(),
                 scope,
             ))
             .map_err(client_effect_player_error)?;
         self.playback_coordination
-            .confirm_playback_barrier_request_queued(
-                request.local_media_generation,
-                request.request_nonce,
-            );
+            .confirm_playback_barrier_request_queued(&request);
         Ok(())
     }
 
@@ -1369,16 +1599,13 @@ where
             if self
                 .control
                 .emit(ClientEffect::send_playback_barrier_set(
-                    request.extension,
+                    request.extension.clone(),
                     scope,
                 ))
                 .is_ok()
             {
                 self.playback_coordination
-                    .confirm_playback_barrier_request_queued(
-                        request.local_media_generation,
-                        request.request_nonce,
-                    );
+                    .confirm_playback_barrier_request_queued(&request);
             }
         }
         plan
@@ -2067,6 +2294,41 @@ mod tests {
     }
 
     #[test]
+    fn client_runtime_debug_redacts_playback_request_and_logical_media_identities() {
+        const LOGICAL_MEDIA_MARKER: &str = "private-runtime-logical-media-canary";
+
+        let mut runtime = ClientRuntime::new(
+            barrier_session(),
+            DisconnectedPlayer,
+            QueuedRuntimeControl::default(),
+        );
+        runtime.set_playback_barrier_start_config(PlaybackBarrierStartConfig {
+            policy: Some(PlaybackBarrierPolicy::Controller),
+            ..PlaybackBarrierStartConfig::default()
+        });
+        runtime.prepare_playback_media(
+            LogicalMediaId::new(LOGICAL_MEDIA_MARKER).unwrap(),
+            MediaTransportKind::NetworkVod,
+            1.0,
+        );
+        let ProtocolMessage::Set(request) = &runtime.control().outbound_messages()[0] else {
+            panic!("coordination request should use Set");
+        };
+        let request_id = request
+            .set
+            .playback_barrier_v1()
+            .expect("request extension should decode")
+            .and_then(|extension| extension.prepare)
+            .and_then(|prepare| prepare.request_id)
+            .expect("current clients should attach an opaque request identity");
+
+        let debug = format!("{runtime:?}");
+        assert!(!debug.contains(LOGICAL_MEDIA_MARKER));
+        assert!(!debug.contains(&request_id));
+        assert!(debug.contains("<redacted>"));
+    }
+
+    #[test]
     fn startup_media_waits_for_controlled_room_auth_then_emits_once() {
         let mut runtime = ClientRuntime::new(
             controlled_barrier_session(),
@@ -2155,7 +2417,7 @@ mod tests {
     }
 
     #[test]
-    fn reconnect_reissues_only_current_buffering_refresh_with_fresh_nonce() {
+    fn transport_write_does_not_acknowledge_start_and_reconnect_queries_server() {
         let mut runtime = ClientRuntime::new(
             barrier_session(),
             DisconnectedPlayer,
@@ -2177,45 +2439,55 @@ mod tests {
         let ProtocolMessage::Set(initial_set) = &runtime.control().outbound_messages()[0] else {
             panic!("initial coordination should use a Set envelope");
         };
-        let initial_nonce = initial_set
+        let initial_prepare = initial_set
             .set
             .playback_barrier_v1()
             .expect("initial extension should decode")
             .and_then(|extension| extension.prepare)
-            .expect("initial request should start a barrier")
-            .request_nonce;
+            .expect("initial request should start a barrier");
+        let initial_nonce = initial_prepare.request_nonce;
+        let request_id = initial_prepare
+            .request_id
+            .expect("new clients attach a stable operation id");
         runtime.flush_queued_protocol_messages();
+        assert!(
+            runtime
+                .playback_coordination
+                .pending_media_coordination
+                .is_some()
+        );
+        assert!(runtime.playback_coordination.accepted_barrier.is_none());
 
         runtime.begin_protocol_connection_generation();
         runtime
             .run_controller_auth_notifications_if_needed()
-            .expect("current buffering intent should refresh after reconnect");
+            .expect("uncertain start should query after reconnect");
         runtime
             .run_controller_auth_notifications_if_needed()
-            .expect("refresh should be emitted exactly once");
+            .expect("recovery query should be emitted exactly once");
 
         assert_eq!(runtime.control().outbound_messages().len(), 1);
-        let ProtocolMessage::Set(refresh_set) = &runtime.control().outbound_messages()[0] else {
-            panic!("buffering refresh should use a Set envelope");
+        let ProtocolMessage::Set(recovery_set) = &runtime.control().outbound_messages()[0] else {
+            panic!("recovery query should use a Set envelope");
         };
-        let extension = refresh_set
+        let extension = recovery_set
             .set
             .playback_barrier_v1()
-            .expect("refresh extension should decode")
-            .expect("refresh extension should be present");
-        assert!(
-            extension.prepare.is_none(),
-            "reconnect must not create a new start barrier"
-        );
-        let buffering = extension
-            .buffering_policy
-            .expect("reconnect should refresh ongoing buffering");
-        assert_eq!(buffering.load_intent, MediaLoadIntent::TransportRefresh);
-        assert!(buffering.request_nonce > initial_nonce);
+            .expect("recovery extension should decode")
+            .expect("recovery extension should be present");
+        assert!(extension.prepare.is_none());
+        assert!(extension.buffering_policy.is_none());
+        let recovery = extension
+            .recovery
+            .expect("recovery query should be present");
+        assert_eq!(recovery.request_id, request_id);
+        assert_eq!(recovery.original_request_nonce, initial_nonce);
+        assert!(recovery.recovery_nonce > initial_nonce);
+        assert_eq!(recovery.disposition, None);
     }
 
     #[test]
-    fn reconnect_rebuilds_undelivered_current_media_start_with_fresh_nonce() {
+    fn absent_recovery_result_rebuilds_exactly_one_current_media_start() {
         let mut runtime = ClientRuntime::new(
             barrier_session(),
             DisconnectedPlayer,
@@ -2233,13 +2505,16 @@ mod tests {
         let ProtocolMessage::Set(initial_set) = &runtime.control().outbound_messages()[0] else {
             panic!("initial coordination should use a Set envelope");
         };
-        let initial_nonce = initial_set
+        let initial_prepare = initial_set
             .set
             .playback_barrier_v1()
             .expect("initial extension should decode")
             .and_then(|extension| extension.prepare)
-            .expect("initial request should start a barrier")
-            .request_nonce;
+            .expect("initial request should start a barrier");
+        let initial_nonce = initial_prepare.request_nonce;
+        let request_id = initial_prepare
+            .request_id
+            .expect("request id should be present");
 
         runtime.begin_protocol_connection_generation();
         assert!(
@@ -2248,7 +2523,43 @@ mod tests {
         );
         runtime
             .run_controller_auth_notifications_if_needed()
-            .expect("the current semantic intent should be rebuilt");
+            .expect("the current semantic intent should query the server");
+
+        assert_eq!(runtime.control().outbound_messages().len(), 1);
+        let ProtocolMessage::Set(recovery_set) = &runtime.control().outbound_messages()[0] else {
+            panic!("recovery query should use a Set envelope");
+        };
+        let recovery = recovery_set
+            .set
+            .playback_barrier_v1()
+            .expect("recovery extension should decode")
+            .and_then(|extension| extension.recovery)
+            .expect("recovery query should be present");
+        let recovery_nonce = recovery.recovery_nonce;
+        runtime.flush_queued_protocol_messages();
+
+        runtime
+            .session_mut()
+            .apply_protocol_message(ProtocolMessage::set(
+                SetPayload::new().with_playback_barrier_v1(
+                    PlaybackBarrierSetExtension::new().with_recovery(
+                        PlaybackBarrierRecoveryPayload::result(
+                            request_id.clone(),
+                            initial_nonce,
+                            recovery_nonce,
+                            "undelivered-current-media",
+                            PlaybackBarrierRecoveryDisposition::Absent,
+                        ),
+                    ),
+                ),
+            ))
+            .expect("explicit absence should apply");
+        runtime
+            .run_controller_auth_notifications_if_needed()
+            .expect("absence should authorize one fresh start");
+        runtime
+            .run_controller_auth_notifications_if_needed()
+            .expect("fresh start should not duplicate");
 
         assert_eq!(runtime.control().outbound_messages().len(), 1);
         let ProtocolMessage::Set(rebuilt_set) = &runtime.control().outbound_messages()[0] else {
@@ -2261,9 +2572,10 @@ mod tests {
             .expect("rebuilt extension should be present");
         let prepare = extension
             .prepare
-            .expect("an undelivered start remains a current start intent");
+            .expect("absence must rebuild the start intent");
         assert_eq!(prepare.load_intent, MediaLoadIntent::NewPlayback);
-        assert!(prepare.request_nonce > initial_nonce);
+        assert_eq!(prepare.request_nonce, initial_nonce);
+        assert_eq!(prepare.request_id.as_deref(), Some(request_id.as_str()));
         assert_eq!(
             extension
                 .buffering_policy
@@ -2271,6 +2583,491 @@ mod tests {
                 .map(|policy| policy.request_nonce),
             Some(prepare.request_nonce)
         );
+    }
+
+    #[test]
+    fn matching_canonical_response_is_the_application_ack_boundary() {
+        let mut runtime = ClientRuntime::new(
+            barrier_session(),
+            DisconnectedPlayer,
+            QueuedRuntimeControl::default(),
+        );
+        runtime.set_playback_barrier_start_config(PlaybackBarrierStartConfig {
+            policy: Some(PlaybackBarrierPolicy::Controller),
+            ..PlaybackBarrierStartConfig::default()
+        });
+        runtime.prepare_playback_media(
+            LogicalMediaId::new("canonical-ack-media").unwrap(),
+            MediaTransportKind::NetworkVod,
+            1.0,
+        );
+        let ProtocolMessage::Set(request_set) = runtime.control().outbound_messages()[0].clone()
+        else {
+            panic!("request should use Set");
+        };
+        let request = request_set
+            .set
+            .playback_barrier_v1()
+            .expect("request extension should decode")
+            .expect("request extension should exist");
+        runtime.flush_queued_protocol_messages();
+        assert!(runtime.playback_coordination.accepted_barrier.is_none());
+        assert!(
+            runtime
+                .playback_coordination
+                .pending_media_coordination
+                .is_some()
+        );
+
+        let mut canonical_prepare = request.prepare.expect("start should be requested");
+        canonical_prepare.media_generation = 7;
+        let mut canonical_policy = request
+            .buffering_policy
+            .expect("buffering policy should be requested");
+        canonical_policy.media_generation = 7;
+        runtime
+            .session_mut()
+            .apply_protocol_message(ProtocolMessage::set(
+                SetPayload::new().with_playback_barrier_v1(
+                    PlaybackBarrierSetExtension::new()
+                        .with_prepare(canonical_prepare)
+                        .with_buffering_policy(canonical_policy),
+                ),
+            ))
+            .expect("canonical response should apply");
+
+        assert!(runtime.playback_coordination.accepted_barrier.is_some());
+        assert!(
+            runtime
+                .playback_coordination
+                .pending_media_coordination
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn terminal_accepted_reconnect_recovers_before_emitting_any_fresh_request() {
+        let mut runtime = ClientRuntime::new(
+            barrier_session(),
+            DisconnectedPlayer,
+            QueuedRuntimeControl::default(),
+        );
+        runtime.set_playback_barrier_start_config(PlaybackBarrierStartConfig {
+            policy: Some(PlaybackBarrierPolicy::Controller),
+            ..PlaybackBarrierStartConfig::default()
+        });
+        runtime.prepare_playback_media(
+            LogicalMediaId::new("terminal-recovery-media").unwrap(),
+            MediaTransportKind::NetworkVod,
+            1.0,
+        );
+        let ProtocolMessage::Set(request_set) = runtime.control().outbound_messages()[0].clone()
+        else {
+            panic!("request should use Set");
+        };
+        let request = request_set
+            .set
+            .playback_barrier_v1()
+            .expect("request extension should decode")
+            .expect("request extension should exist");
+        let mut canonical_prepare = request.prepare.expect("start should be requested");
+        canonical_prepare.media_generation = 7;
+        let mut canonical_policy = request
+            .buffering_policy
+            .expect("buffering policy should be requested");
+        canonical_policy.media_generation = 7;
+        let request_id = canonical_prepare
+            .request_id
+            .clone()
+            .expect("request id should be present");
+        let request_nonce = canonical_prepare.request_nonce;
+        runtime.flush_queued_protocol_messages();
+        runtime
+            .session_mut()
+            .apply_protocol_message(ProtocolMessage::set(
+                SetPayload::new().with_playback_barrier_v1(
+                    PlaybackBarrierSetExtension::new()
+                        .with_prepare(canonical_prepare.clone())
+                        .with_status(barrier_status(7, None, PlaybackBarrierPhase::Degraded))
+                        .with_buffering_policy(canonical_policy.clone()),
+                ),
+            ))
+            .expect("terminal canonical lifecycle should apply");
+        assert!(runtime.playback_coordination.accepted_barrier_terminal);
+
+        runtime.begin_protocol_connection_generation();
+        runtime
+            .run_controller_auth_notifications_if_needed()
+            .expect("terminal lifecycle should query recovery first");
+        assert_eq!(runtime.control().outbound_messages().len(), 1);
+        let ProtocolMessage::Set(recovery_set) = &runtime.control().outbound_messages()[0] else {
+            panic!("recovery should use Set");
+        };
+        let recovery = recovery_set
+            .set
+            .playback_barrier_v1()
+            .expect("recovery extension should decode")
+            .expect("recovery extension should exist");
+        assert!(recovery.prepare.is_none());
+        assert!(recovery.buffering_policy.is_none());
+        let recovery = recovery.recovery.expect("recovery query should be present");
+        assert_eq!(recovery.request_id, request_id);
+        assert_eq!(recovery.original_request_nonce, request_nonce);
+        runtime.flush_queued_protocol_messages();
+
+        runtime
+            .session_mut()
+            .apply_protocol_message(ProtocolMessage::set(
+                SetPayload::new().with_playback_barrier_v1(
+                    PlaybackBarrierSetExtension::new()
+                        .with_prepare(canonical_prepare)
+                        .with_status(barrier_status(7, None, PlaybackBarrierPhase::Degraded))
+                        .with_buffering_policy(canonical_policy)
+                        .with_recovery(
+                            PlaybackBarrierRecoveryPayload::result(
+                                request_id,
+                                request_nonce,
+                                recovery.recovery_nonce,
+                                "terminal-recovery-media",
+                                PlaybackBarrierRecoveryDisposition::Recovered,
+                            )
+                            .with_media_generation(7),
+                        ),
+                ),
+            ))
+            .expect("recovered terminal lifecycle should apply");
+        runtime
+            .run_controller_auth_notifications_if_needed()
+            .expect("recovered terminal lifecycle should not emit fresh intent");
+        assert!(runtime.control().outbound_messages().is_empty());
+        assert!(runtime.playback_coordination.accepted_barrier.is_some());
+        assert!(
+            runtime
+                .playback_coordination
+                .pending_barrier_recovery
+                .is_none()
+        );
+        assert!(runtime.playback_coordination.accepted_barrier_terminal);
+    }
+
+    #[test]
+    fn absent_terminal_recovery_emits_only_one_fresh_policy_refresh() {
+        let mut runtime = ClientRuntime::new(
+            barrier_session(),
+            DisconnectedPlayer,
+            QueuedRuntimeControl::default(),
+        );
+        runtime.set_playback_barrier_start_config(PlaybackBarrierStartConfig {
+            policy: Some(PlaybackBarrierPolicy::Controller),
+            ..PlaybackBarrierStartConfig::default()
+        });
+        runtime.prepare_playback_media(
+            LogicalMediaId::new("absent-terminal-media").unwrap(),
+            MediaTransportKind::NetworkVod,
+            1.0,
+        );
+        let ProtocolMessage::Set(request_set) = runtime.control().outbound_messages()[0].clone()
+        else {
+            panic!("request should use Set");
+        };
+        let request = request_set
+            .set
+            .playback_barrier_v1()
+            .expect("request extension should decode")
+            .expect("request extension should exist");
+        let mut canonical_prepare = request.prepare.expect("start should be requested");
+        canonical_prepare.media_generation = 11;
+        let mut canonical_policy = request
+            .buffering_policy
+            .expect("buffering policy should be requested");
+        canonical_policy.media_generation = 11;
+        let request_id = canonical_prepare
+            .request_id
+            .clone()
+            .expect("request id should be present");
+        let request_nonce = canonical_prepare.request_nonce;
+        runtime.flush_queued_protocol_messages();
+        runtime
+            .session_mut()
+            .apply_protocol_message(ProtocolMessage::set(
+                SetPayload::new().with_playback_barrier_v1(
+                    PlaybackBarrierSetExtension::new()
+                        .with_prepare(canonical_prepare)
+                        .with_status(barrier_status(11, None, PlaybackBarrierPhase::Degraded))
+                        .with_buffering_policy(canonical_policy),
+                ),
+            ))
+            .expect("terminal canonical lifecycle should apply");
+        assert!(runtime.playback_coordination.accepted_barrier_terminal);
+
+        runtime.begin_protocol_connection_generation();
+        runtime
+            .run_controller_auth_notifications_if_needed()
+            .expect("terminal lifecycle should query recovery");
+        let ProtocolMessage::Set(recovery_set) = &runtime.control().outbound_messages()[0] else {
+            panic!("recovery should use Set");
+        };
+        let recovery = recovery_set
+            .set
+            .playback_barrier_v1()
+            .expect("recovery extension should decode")
+            .and_then(|extension| extension.recovery)
+            .expect("recovery query should be present");
+        runtime.flush_queued_protocol_messages();
+
+        runtime
+            .session_mut()
+            .apply_protocol_message(ProtocolMessage::set(
+                SetPayload::new().with_playback_barrier_v1(
+                    PlaybackBarrierSetExtension::new().with_recovery(
+                        PlaybackBarrierRecoveryPayload::result(
+                            request_id,
+                            request_nonce,
+                            recovery.recovery_nonce,
+                            "absent-terminal-media",
+                            PlaybackBarrierRecoveryDisposition::Absent,
+                        ),
+                    ),
+                ),
+            ))
+            .expect("explicit terminal absence should apply");
+        runtime
+            .run_controller_auth_notifications_if_needed()
+            .expect("terminal absence should emit a policy refresh");
+        runtime
+            .run_controller_auth_notifications_if_needed()
+            .expect("policy refresh should remain exactly once");
+
+        assert_eq!(runtime.control().outbound_messages().len(), 1);
+        let ProtocolMessage::Set(refresh_set) = &runtime.control().outbound_messages()[0] else {
+            panic!("policy refresh should use Set");
+        };
+        let refresh = refresh_set
+            .set
+            .playback_barrier_v1()
+            .expect("policy refresh extension should decode")
+            .expect("policy refresh extension should exist");
+        assert!(refresh.prepare.is_none());
+        assert!(refresh.recovery.is_none());
+        let policy = refresh
+            .buffering_policy
+            .expect("policy refresh should be present");
+        assert_eq!(policy.media_generation, 0);
+        assert_eq!(policy.load_intent, MediaLoadIntent::TransportRefresh);
+        assert!(policy.request_nonce > recovery.recovery_nonce);
+    }
+
+    #[test]
+    fn mismatched_operation_id_cannot_acknowledge_same_nonce() {
+        let mut runtime = ClientRuntime::new(
+            barrier_session(),
+            DisconnectedPlayer,
+            QueuedRuntimeControl::default(),
+        );
+        runtime.set_playback_barrier_start_config(PlaybackBarrierStartConfig {
+            policy: Some(PlaybackBarrierPolicy::Controller),
+            ..PlaybackBarrierStartConfig::default()
+        });
+        runtime.prepare_playback_media(
+            LogicalMediaId::new("nonce-collision-media").unwrap(),
+            MediaTransportKind::NetworkVod,
+            1.0,
+        );
+        let ProtocolMessage::Set(request_set) = runtime.control().outbound_messages()[0].clone()
+        else {
+            panic!("request should use Set");
+        };
+        let mut prepare = request_set
+            .set
+            .playback_barrier_v1()
+            .expect("request extension should decode")
+            .and_then(|extension| extension.prepare)
+            .expect("prepare should exist");
+        prepare.media_generation = 9;
+        prepare.request_id = Some("another-controller-operation".to_owned());
+        runtime.flush_queued_protocol_messages();
+        runtime
+            .session_mut()
+            .apply_protocol_message(ProtocolMessage::set(
+                SetPayload::new().with_playback_barrier_v1(
+                    PlaybackBarrierSetExtension::new().with_prepare(prepare),
+                ),
+            ))
+            .expect("peer canonical response should still apply to the session");
+
+        assert!(runtime.playback_coordination.accepted_barrier.is_none());
+        assert!(
+            runtime
+                .playback_coordination
+                .pending_media_coordination
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn matching_identity_on_rejected_zero_generation_echo_is_not_an_application_ack() {
+        let mut runtime = ClientRuntime::new(
+            barrier_session(),
+            DisconnectedPlayer,
+            QueuedRuntimeControl::default(),
+        );
+        runtime.set_playback_barrier_start_config(PlaybackBarrierStartConfig {
+            policy: Some(PlaybackBarrierPolicy::Controller),
+            ..PlaybackBarrierStartConfig::default()
+        });
+        runtime.prepare_playback_media(
+            LogicalMediaId::new("invalid-canonical-echo").unwrap(),
+            MediaTransportKind::NetworkVod,
+            1.0,
+        );
+        let ProtocolMessage::Set(request) = runtime.control().outbound_messages()[0].clone() else {
+            panic!("request should use Set");
+        };
+        runtime.flush_queued_protocol_messages();
+        runtime
+            .session_mut()
+            .apply_protocol_message(ProtocolMessage::Set(request))
+            .expect("request-shaped echo is syntactically valid");
+
+        assert!(runtime.session().playback_barrier_prepare().is_none());
+        assert!(runtime.playback_coordination.accepted_barrier.is_none());
+        assert!(
+            runtime
+                .playback_coordination
+                .pending_media_coordination
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn queued_room_a_start_is_discarded_atomically_on_room_switch() {
+        let mut runtime = ClientRuntime::new(
+            barrier_session(),
+            DisconnectedPlayer,
+            QueuedRuntimeControl::default(),
+        );
+        runtime.set_playback_barrier_start_config(PlaybackBarrierStartConfig {
+            policy: Some(PlaybackBarrierPolicy::Controller),
+            ..PlaybackBarrierStartConfig::default()
+        });
+        runtime.prepare_playback_media(
+            LogicalMediaId::new("room-switch-queued-media").unwrap(),
+            MediaTransportKind::NetworkVod,
+            1.0,
+        );
+        assert!(runtime.playback_coordination.initiated_barrier.is_some());
+
+        assert!(
+            runtime
+                .run_set_room("room2")
+                .expect("room switch should queue")
+        );
+        assert!(runtime.control().outbound_messages().iter().all(|message| {
+            let ProtocolMessage::Set(set) = message else {
+                return true;
+            };
+            set.set
+                .playback_barrier_v1()
+                .expect("extension should decode")
+                .is_none()
+        }));
+        assert!(runtime.playback_coordination.initiated_barrier.is_none());
+        assert!(runtime.playback_coordination.accepted_barrier.is_none());
+        assert!(
+            runtime
+                .playback_coordination
+                .pending_barrier_recovery
+                .is_none()
+        );
+        assert!(
+            runtime
+                .playback_coordination
+                .pending_media_coordination
+                .is_none()
+        );
+
+        runtime
+            .session_mut()
+            .apply_message_json(r#"{"Set":{"room":{"name":"room2"}}}"#)
+            .expect("authoritative destination room should apply");
+        runtime
+            .run_controller_auth_notifications_if_needed()
+            .expect("room B should not resurrect the cancelled intent");
+        runtime.begin_protocol_connection_generation();
+        runtime
+            .run_controller_auth_notifications_if_needed()
+            .expect("reconnect should not resurrect room A");
+        assert!(runtime.control().outbound_messages().iter().all(|message| {
+            let ProtocolMessage::Set(set) = message else {
+                return true;
+            };
+            set.set
+                .playback_barrier_v1()
+                .expect("extension should decode")
+                .is_none()
+        }));
+    }
+
+    #[test]
+    fn new_controlled_room_reidentify_preserves_unserialized_pre_auth_media() {
+        let mut runtime = ClientRuntime::new(
+            controlled_barrier_session(),
+            DisconnectedPlayer,
+            QueuedRuntimeControl::default(),
+        );
+        runtime.set_playback_barrier_start_config(PlaybackBarrierStartConfig {
+            policy: Some(PlaybackBarrierPolicy::Controller),
+            ..PlaybackBarrierStartConfig::default()
+        });
+        runtime.prepare_playback_media(
+            LogicalMediaId::new("new-controlled-room-media").unwrap(),
+            MediaTransportKind::NetworkVod,
+            1.0,
+        );
+        assert!(runtime.control().outbound_messages().is_empty());
+
+        runtime
+            .session_mut()
+            .apply_message_json(
+                r#"{"Set":{"newControlledRoom":{"roomName":"+other:ZYXWVU654321","password":"AB-123-456"}}}"#,
+            )
+            .expect("new controlled room should apply");
+        runtime
+            .run_controller_reidentify_if_needed()
+            .expect("reidentify actions should dispatch");
+        assert!(
+            runtime
+                .playback_coordination
+                .pending_media_coordination
+                .is_some()
+        );
+
+        runtime
+            .session_mut()
+            .apply_message_json(
+                r#"{"Set":{"controllerAuth":{"user":"alice","room":"+other:ZYXWVU654321","success":true}}}"#,
+            )
+            .expect("destination authentication should apply");
+        runtime
+            .run_controller_auth_notifications_if_needed()
+            .expect("authenticated destination should emit media coordination");
+
+        let barrier_requests = runtime
+            .control()
+            .outbound_messages()
+            .iter()
+            .filter(|message| {
+                let ProtocolMessage::Set(set) = message else {
+                    return false;
+                };
+                set.set
+                    .playback_barrier_v1()
+                    .ok()
+                    .flatten()
+                    .is_some_and(|extension| extension.prepare.is_some())
+            })
+            .count();
+        assert_eq!(barrier_requests, 1);
     }
 
     #[test]
@@ -2581,6 +3378,7 @@ mod tests {
                         PlaybackBarrierPolicy::AllEligible,
                     )
                     .with_request_nonce(22)
+                    .with_request_id("timeout-request")
                     .with_timeout_action(PlaybackBarrierTimeoutAction::RemainPaused),
                 )
                 .with_status(PlaybackBarrierStatusPayload {
@@ -2600,7 +3398,15 @@ mod tests {
             MediaTransportKind::NetworkVod,
             90.0,
         );
-        coordination.initiated_barrier = Some((plan.media_generation, 22));
+        coordination.initiated_barrier = Some(PlaybackBarrierOperation {
+            local_media_generation: plan.media_generation,
+            load_intent: MediaLoadIntent::NewPlayback,
+            include_start_barrier: true,
+            request_id: "timeout-request".to_owned(),
+            request_nonce: 22,
+            logical_media_id: "media-sha256:opaque-id".to_owned(),
+            room: "room1".to_owned(),
+        });
         coordination.capture_barrier_timeout_action(&session);
         assert_eq!(
             coordination.pending_barrier_timeout_action.take(),

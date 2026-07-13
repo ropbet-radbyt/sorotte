@@ -26,6 +26,7 @@ use sorotte_protocol::{
     MediaLoadIntent, MediaReadyPayload, NewControlledRoomPayload, PingPayload,
     PlaybackBarrierDegradedReason, PlaybackBarrierParticipantPhase,
     PlaybackBarrierParticipantStatus, PlaybackBarrierPhase, PlaybackBarrierPolicy,
+    PlaybackBarrierRecoveryDisposition, PlaybackBarrierRecoveryPayload,
     PlaybackBarrierSetExtension, PlaybackBarrierStateExtension, PlaybackBarrierStatusPayload,
     PlaybackBarrierTimeoutAction, PlaylistIndexPayload, PlaystatePayload, PrepareMediaPayload,
     ProtocolError, ProtocolMessage, ReadyPayload, RoomBufferingPhase, RoomBufferingPolicy,
@@ -90,6 +91,8 @@ const PLAYBACK_BARRIER_MIN_TIMEOUT_SECONDS: f64 = 1.0;
 const PLAYBACK_BARRIER_MAX_TIMEOUT_SECONDS: f64 = 30.0;
 const PLAYBACK_BARRIER_STARTED_TIMEOUT_SECONDS: f64 = 10.0;
 const PLAYBACK_BARRIER_MAX_LOGICAL_MEDIA_ID_CHARS: usize = 2048;
+const PLAYBACK_BARRIER_MAX_REQUEST_ID_BYTES: usize = 128;
+const PLAYBACK_BARRIER_MAX_REQUEST_RECEIPTS_PER_ROOM: usize = 4096;
 const ROOM_BUFFERING_DEFAULT_QUORUM_PERCENT: u32 = 75;
 const ROOM_BUFFERING_DEFAULT_DEBOUNCE_SECONDS: f64 = 0.75;
 const ROOM_BUFFERING_MAX_DEBOUNCE_SECONDS: f64 = 10.0;
@@ -315,6 +318,18 @@ pub struct ServerRuntime {
     room_playback_states: BTreeMap<String, RoomPlaybackState>,
     room_playback_barriers: BTreeMap<String, RoomPlaybackBarrier>,
     room_buffering_controls: BTreeMap<String, RoomBufferingControl>,
+    /// Superseded transport identities that remain connected while a newer
+    /// connection owns their recovered playback lifecycle. Fenced clients
+    /// cannot acknowledge, configure, or influence that lifecycle, and a
+    /// later disconnect therefore cannot degrade its replacement.
+    playback_barrier_fenced_clients: BTreeSet<String>,
+    /// Accepted application-level start and policy operations retained for
+    /// the lifetime of a room. These receipts prevent a delayed frame for a
+    /// superseded operation from allocating a later generation after the
+    /// current lifecycle no longer carries that operation's identity. The
+    /// per-room cap fails closed instead of evicting replay protection.
+    playback_barrier_request_receipts:
+        BTreeMap<(String, PlaybackBarrierRequestId), PlaybackBarrierRequestReceipt>,
     /// Highest accepted/consumed request nonce for each live connection.
     /// This bounds duplicate suppression to live sessions and prevents
     /// delayed requests from older room generations replaying as fresh user
@@ -479,6 +494,42 @@ struct RoomPlaybackBarrier {
     started_deadline: Option<f64>,
 }
 
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct PlaybackBarrierRequestId(String);
+
+impl PlaybackBarrierRequestId {
+    fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+}
+
+impl std::fmt::Debug for PlaybackBarrierRequestId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("<redacted-playback-request-id>")
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct PlaybackBarrierRequestReceipt {
+    request_nonce: u64,
+    logical_media_id: Option<String>,
+    media_generation: u64,
+}
+
+impl std::fmt::Debug for PlaybackBarrierRequestReceipt {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PlaybackBarrierRequestReceipt")
+            .field("request_nonce", &self.request_nonce)
+            .field(
+                "logical_media_id",
+                &self.logical_media_id.as_ref().map(|_| "<redacted>"),
+            )
+            .field("media_generation", &self.media_generation)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct RoomBufferingParticipantReport {
     username: String,
@@ -490,6 +541,7 @@ struct RoomBufferingParticipantReport {
 #[derive(Debug, Clone, PartialEq)]
 struct RoomBufferingControl {
     config: RoomBufferingPolicyPayload,
+    requested_config: RoomBufferingPolicyPayload,
     configured_by_client_id: String,
     configured_by_username: String,
     reports: BTreeMap<String, RoomBufferingParticipantReport>,
