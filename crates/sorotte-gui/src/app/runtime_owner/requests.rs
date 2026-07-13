@@ -219,6 +219,9 @@ impl GuiPersistedConfigRuntimeOwner {
             | GuiRuntimeRequest::RetryPlayerLaunch
             | GuiRuntimeRequest::SeekOffset(_)
             | GuiRuntimeRequest::SeekToPosition(_)
+            | GuiRuntimeRequest::KeepWaitingForSeekPreparation
+            | GuiRuntimeRequest::CancelSeekPreparation
+            | GuiRuntimeRequest::JoinNearestBufferedSeekPreparation
             | GuiRuntimeRequest::SetPlaybackPaused(_)
             | GuiRuntimeRequest::TogglePlaybackPause => {
                 unreachable!("player requests are routed through GuiClientCommand::Player")

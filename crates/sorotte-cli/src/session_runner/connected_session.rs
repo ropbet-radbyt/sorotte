@@ -310,6 +310,7 @@ where
         tokio::time::interval(Duration::from_millis(PLAYER_CHAT_INPUT_POLL_INTERVAL_MS));
     let mut file_difference_state = FileDifferenceNotificationState::default();
     let mut reconnect_correction_diagnostics_state = ReconnectCorrectionDiagnosticsState::default();
+    let mut seek_preparation_notification_state = SeekPreparationNotificationState::default();
     let mut local_user_offset_seconds = 0.0f64;
     let mut pending_ready_at_start_on_server_hello =
         Some(config.ready_at_start_override.unwrap_or(false));
@@ -381,6 +382,7 @@ where
                                     startup_playlist_file_on_connect,
                                     diagnostics_config: &diagnostics_config,
                                     reconnect_correction_diagnostics_state: &mut reconnect_correction_diagnostics_state,
+                                    seek_preparation_notification_state: &mut seek_preparation_notification_state,
                                     file_difference_state: &mut file_difference_state,
                                     notification_sink,
                                     file_difference_sink,
@@ -430,6 +432,7 @@ where
                             startup_playlist_file_on_connect,
                             diagnostics_config: &diagnostics_config,
                             reconnect_correction_diagnostics_state: &mut reconnect_correction_diagnostics_state,
+                            seek_preparation_notification_state: &mut seek_preparation_notification_state,
                             file_difference_state: &mut file_difference_state,
                             notification_sink,
                             file_difference_sink,
@@ -489,6 +492,7 @@ where
                                     run_planned_local_runtime_action_legacy_compatible(
                                         runtime,
                                         &mut local_user_offset_seconds,
+                                        client_runtime_now_seconds(),
                                         action,
                                     )?
                                 }
@@ -521,6 +525,7 @@ where
                                 startup_playlist_file_on_connect,
                                 diagnostics_config: &diagnostics_config,
                                 reconnect_correction_diagnostics_state: &mut reconnect_correction_diagnostics_state,
+                                seek_preparation_notification_state: &mut seek_preparation_notification_state,
                                 file_difference_state: &mut file_difference_state,
                                 notification_sink,
                                 file_difference_sink,

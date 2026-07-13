@@ -46,6 +46,7 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::ApplyGuiCommandRuntimeSnapshot(_)
             | GuiShellAction::ApplyGuiMediaIndexRuntimeSnapshot(_)
             | GuiShellAction::ApplyGuiPlayerSetupRuntimeSnapshot(_)
+            | GuiShellAction::ApplyGuiSeekPreparationRuntimeSnapshot(_)
             | GuiShellAction::ApplyGuiStreamHelperRuntimeSnapshot(_)
             | GuiShellAction::ApplyGuiStreamHelperRemediationRuntimeSnapshot(_)
             | GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(_)
@@ -152,6 +153,9 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::RequestSeekPrompt
             | GuiShellAction::RequestOffsetPrompt
             | GuiShellAction::RequestPlaybackUndoSeek
+            | GuiShellAction::RequestSeekPreparationKeepWaiting
+            | GuiShellAction::RequestSeekPreparationCancel
+            | GuiShellAction::RequestSeekPreparationJoinNearest
             | GuiShellAction::AnnounceLocalUserReady
             | GuiShellAction::AnnounceLocalUserNotReady
             | GuiShellAction::AnnounceAutoplayState(_)

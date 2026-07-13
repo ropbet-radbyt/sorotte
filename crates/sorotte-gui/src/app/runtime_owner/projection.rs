@@ -1,5 +1,9 @@
 use std::path::Path;
 
+use sorotte_client_core::{
+    PlaybackCoordinationSnapshot, SeekPreparationDegradedReason, SeekPreparationPhase,
+    SeekPreparationTerminalOutcome,
+};
 use sorotte_player_api::LocalFileUpdate;
 
 use super::super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
@@ -7,11 +11,107 @@ use super::super::runtime_stack::GuiPlayerLaunchRuntimeState;
 use super::super::shell_state::{
     GuiCommandAvailabilityState, GuiCommandRuntimeSnapshot, GuiMediaIndexRuntimeSnapshot,
     GuiPendingOperationKind, GuiPlayerSetupIssue, GuiPlayerSetupIssueKind,
-    GuiPlayerSetupRuntimeSnapshot, GuiShellAction, MainWindowRuntimeSnapshot,
-    MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot, MenuSectionShellState,
-    SorotteGuiShellAppState,
+    GuiPlayerSetupRuntimeSnapshot, GuiSeekPreparationDegradedReason, GuiSeekPreparationPhase,
+    GuiSeekPreparationRuntimeSnapshot, GuiSeekPreparationState, GuiShellAction,
+    MainWindowRuntimeSnapshot, MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot,
+    MenuSectionShellState, SorotteGuiShellAppState,
 };
 use super::GuiPersistedConfigRuntimeOwner;
+
+fn gui_seek_preparation_degraded_reason(
+    reason: SeekPreparationDegradedReason,
+) -> GuiSeekPreparationDegradedReason {
+    match reason {
+        SeekPreparationDegradedReason::NonSeekable => GuiSeekPreparationDegradedReason::NonSeekable,
+        SeekPreparationDegradedReason::OutsideLiveWindow => {
+            GuiSeekPreparationDegradedReason::OutsideLiveWindow
+        }
+        SeekPreparationDegradedReason::TimedOut => GuiSeekPreparationDegradedReason::TimedOut,
+        SeekPreparationDegradedReason::TimelineWindowUnavailable => {
+            GuiSeekPreparationDegradedReason::TimelineWindowUnavailable
+        }
+        SeekPreparationDegradedReason::TransportFailed => {
+            GuiSeekPreparationDegradedReason::TransportFailed
+        }
+    }
+}
+
+fn current_seek_handoff_recovery_is_degraded(snapshot: &PlaybackCoordinationSnapshot) -> bool {
+    let Some(media_generation) = snapshot.media_generation else {
+        return false;
+    };
+    let handoff_terminal = snapshot
+        .last_seek_preparation_terminal
+        .as_ref()
+        .is_some_and(|terminal| {
+            terminal.media_generation == media_generation
+                && matches!(
+                    terminal.terminal_outcome,
+                    Some(
+                        SeekPreparationTerminalOutcome::Ready
+                            | SeekPreparationTerminalOutcome::Superseded
+                    )
+                )
+        });
+    let degraded_recovery = snapshot
+        .recovery_episode
+        .as_ref()
+        .is_some_and(|recovery| recovery.media_generation == media_generation && recovery.degraded);
+    handoff_terminal && degraded_recovery
+}
+
+fn projected_seek_preparation_runtime_snapshot(
+    coordination: Option<&PlaybackCoordinationSnapshot>,
+) -> GuiSeekPreparationRuntimeSnapshot {
+    if coordination.is_some_and(current_seek_handoff_recovery_is_degraded) {
+        return GuiSeekPreparationRuntimeSnapshot {
+            preparation: None,
+            degraded_reason: Some(GuiSeekPreparationDegradedReason::ConvergenceDegraded),
+        };
+    }
+
+    let preparation = coordination
+        .and_then(|snapshot| snapshot.seek_preparation.as_ref())
+        .map(|preparation| GuiSeekPreparationState {
+            phase: match preparation.phase {
+                SeekPreparationPhase::Seeking => GuiSeekPreparationPhase::Seeking,
+                SeekPreparationPhase::Fetching => GuiSeekPreparationPhase::Fetching,
+                SeekPreparationPhase::Refilling => GuiSeekPreparationPhase::Refilling,
+                SeekPreparationPhase::ReadyToJoin => GuiSeekPreparationPhase::ReadyToJoin,
+                SeekPreparationPhase::CatchingUp => GuiSeekPreparationPhase::CatchingUp,
+            },
+            frozen_target_seconds: preparation.frozen_target_seconds,
+            cache_refill_percent: preparation.cache_buffering_percent,
+            buffered_ahead_seconds: preparation.buffered_ahead_seconds,
+            nearest_safe_buffered_position_seconds: preparation
+                .nearest_safe_buffered_position_seconds,
+            can_keep_waiting: preparation.can_keep_waiting,
+            can_cancel_and_remain: preparation.can_cancel_and_remain,
+            can_join_nearest_buffered: preparation.can_join_nearest_buffered,
+        });
+    let degraded_reason = if preparation.is_none() {
+        coordination
+            .and_then(|snapshot| {
+                snapshot
+                    .last_seek_preparation_terminal
+                    .as_ref()
+                    .filter(|terminal| snapshot.media_generation == Some(terminal.media_generation))
+            })
+            .and_then(|terminal| terminal.terminal_outcome)
+            .and_then(|outcome| match outcome {
+                SeekPreparationTerminalOutcome::Degraded(reason) => {
+                    Some(gui_seek_preparation_degraded_reason(reason))
+                }
+                _ => None,
+            })
+    } else {
+        None
+    };
+    GuiSeekPreparationRuntimeSnapshot {
+        preparation,
+        degraded_reason,
+    }
+}
 
 impl GuiPersistedConfigRuntimeOwner {
     fn projected_media_index_runtime_snapshot(&self) -> GuiMediaIndexRuntimeSnapshot {
@@ -111,6 +211,16 @@ impl GuiPersistedConfigRuntimeOwner {
         GuiPlayerSetupRuntimeSnapshot {
             issue: self.player_setup_issue_impl(),
         }
+    }
+
+    pub(super) fn seek_preparation_runtime_snapshot_impl(
+        &self,
+    ) -> GuiSeekPreparationRuntimeSnapshot {
+        let coordination = self
+            .session
+            .as_ref()
+            .and_then(|session| session.playback_coordination_snapshot());
+        projected_seek_preparation_runtime_snapshot(coordination.as_ref())
     }
 
     pub(super) fn command_availability_for_runtime_state_impl(
@@ -264,6 +374,15 @@ impl GuiPersistedConfigRuntimeOwner {
             ));
         }
 
+        let desired_seek_preparation = self.seek_preparation_runtime_snapshot_impl();
+        if state.seek_preparation != desired_seek_preparation.preparation
+            || state.seek_preparation_degraded_reason != desired_seek_preparation.degraded_reason
+        {
+            handle.push_action(GuiShellAction::ApplyGuiSeekPreparationRuntimeSnapshot(
+                desired_seek_preparation,
+            ));
+        }
+
         let desired_stream_helper = self.stream_helper_runtime_snapshot.clone();
         if state.stream_helper.health != desired_stream_helper.health
             || state.stream_helper.message != desired_stream_helper.message
@@ -411,5 +530,158 @@ impl GuiPersistedConfigRuntimeOwner {
                 },
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod seek_preparation_projection_tests {
+    use sorotte_client_core::{
+        PlaybackDiagnostic, RecoveryEpisodeSnapshot, SeekPreparationSnapshot,
+        SeekTargetAvailability,
+    };
+
+    use super::*;
+
+    fn ready_terminal(media_generation: u64) -> SeekPreparationSnapshot {
+        SeekPreparationSnapshot {
+            id: 7,
+            media_generation,
+            load_attempt: 1,
+            room_revision: 12,
+            latest_room_revision: 12,
+            requested_target_seconds: 135.0,
+            frozen_target_seconds: 135.0,
+            frozen_room_anchor_position_seconds: 135.0,
+            frozen_room_anchor_observed_at_seconds: 10.0,
+            latest_room_position_seconds: 138.0,
+            availability: SeekTargetAvailability::Cached,
+            phase: SeekPreparationPhase::CatchingUp,
+            cache_buffering_percent: Some(100.0),
+            buffered_ahead_seconds: Some(30.0),
+            nearest_safe_buffered_position_seconds: None,
+            started_at_seconds: 10.0,
+            terminal_outcome: Some(SeekPreparationTerminalOutcome::Ready),
+            can_keep_waiting: false,
+            can_cancel_and_remain: false,
+            can_join_nearest_buffered: false,
+        }
+    }
+
+    fn snapshot_with_ready_terminal(media_generation: u64) -> PlaybackCoordinationSnapshot {
+        let terminal = ready_terminal(media_generation);
+        PlaybackCoordinationSnapshot {
+            media_generation: Some(media_generation),
+            pending_local_pause_intent: None,
+            pending_local_pause_intent_dormant: false,
+            last_local_pause_intent_stage_accepted: None,
+            diagnostic: PlaybackDiagnostic::ReadyWaitingForRoom,
+            recovery_episode: Some(RecoveryEpisodeSnapshot {
+                id: 9,
+                media_generation,
+                entered_at_seconds: 11.0,
+                hard_seek_attempts: 1,
+                stable_since_seconds: None,
+                catchup_deadline_seconds: Some(20.0),
+                degraded: false,
+            }),
+            seek_preparation: Some(terminal.clone()),
+            last_seek_preparation_terminal_outcome: terminal.terminal_outcome,
+            last_seek_preparation_terminal: Some(terminal),
+            metrics: Default::default(),
+            transport_telemetry_observed: true,
+            ordinary_correction_blocked: false,
+            last_applied_revision: Some(12),
+            last_started_revision: None,
+            last_degraded_reason: None,
+        }
+    }
+
+    fn snapshot_with_superseded_terminal(media_generation: u64) -> PlaybackCoordinationSnapshot {
+        let mut snapshot = snapshot_with_ready_terminal(media_generation);
+        snapshot.seek_preparation = None;
+        snapshot.last_seek_preparation_terminal_outcome =
+            Some(SeekPreparationTerminalOutcome::Superseded);
+        snapshot
+            .last_seek_preparation_terminal
+            .as_mut()
+            .unwrap()
+            .terminal_outcome = Some(SeekPreparationTerminalOutcome::Superseded);
+        snapshot
+    }
+
+    #[test]
+    fn current_ready_seek_with_degraded_recovery_projects_terminal_convergence_status() {
+        let mut snapshot = snapshot_with_ready_terminal(3);
+
+        let active = projected_seek_preparation_runtime_snapshot(Some(&snapshot));
+        assert_eq!(
+            active.preparation.as_ref().map(|state| state.phase),
+            Some(GuiSeekPreparationPhase::CatchingUp)
+        );
+        assert_eq!(active.degraded_reason, None);
+
+        snapshot.recovery_episode.as_mut().unwrap().degraded = true;
+        let degraded = projected_seek_preparation_runtime_snapshot(Some(&snapshot));
+        assert_eq!(degraded.preparation, None);
+        assert_eq!(
+            degraded.degraded_reason,
+            Some(GuiSeekPreparationDegradedReason::ConvergenceDegraded)
+        );
+    }
+
+    #[test]
+    fn current_join_nearest_handoff_with_degraded_recovery_projects_convergence_status() {
+        let mut snapshot = snapshot_with_superseded_terminal(3);
+
+        let active = projected_seek_preparation_runtime_snapshot(Some(&snapshot));
+        assert_eq!(active, GuiSeekPreparationRuntimeSnapshot::default());
+
+        snapshot.recovery_episode.as_mut().unwrap().degraded = true;
+        let degraded = projected_seek_preparation_runtime_snapshot(Some(&snapshot));
+        assert_eq!(degraded.preparation, None);
+        assert_eq!(
+            degraded.degraded_reason,
+            Some(GuiSeekPreparationDegradedReason::ConvergenceDegraded)
+        );
+    }
+
+    #[test]
+    fn convergence_degradation_requires_current_media_terminal_and_recovery() {
+        let mut stale_terminal = snapshot_with_ready_terminal(3);
+        stale_terminal.recovery_episode.as_mut().unwrap().degraded = true;
+        stale_terminal
+            .last_seek_preparation_terminal
+            .as_mut()
+            .unwrap()
+            .media_generation = 2;
+        assert_ne!(
+            projected_seek_preparation_runtime_snapshot(Some(&stale_terminal)).degraded_reason,
+            Some(GuiSeekPreparationDegradedReason::ConvergenceDegraded)
+        );
+
+        let mut stale_recovery = snapshot_with_ready_terminal(3);
+        let recovery = stale_recovery.recovery_episode.as_mut().unwrap();
+        recovery.media_generation = 2;
+        recovery.degraded = true;
+        assert_ne!(
+            projected_seek_preparation_runtime_snapshot(Some(&stale_recovery)).degraded_reason,
+            Some(GuiSeekPreparationDegradedReason::ConvergenceDegraded)
+        );
+
+        let mut stale_join_handoff = snapshot_with_superseded_terminal(3);
+        stale_join_handoff
+            .recovery_episode
+            .as_mut()
+            .unwrap()
+            .degraded = true;
+        stale_join_handoff
+            .last_seek_preparation_terminal
+            .as_mut()
+            .unwrap()
+            .media_generation = 2;
+        assert_ne!(
+            projected_seek_preparation_runtime_snapshot(Some(&stale_join_handoff)).degraded_reason,
+            Some(GuiSeekPreparationDegradedReason::ConvergenceDegraded)
+        );
     }
 }

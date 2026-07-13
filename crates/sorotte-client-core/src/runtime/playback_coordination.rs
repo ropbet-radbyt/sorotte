@@ -71,6 +71,9 @@ pub struct PlaybackCoordinationSnapshot {
     pub last_local_pause_intent_stage_accepted: Option<bool>,
     pub diagnostic: PlaybackDiagnostic,
     pub recovery_episode: Option<RecoveryEpisodeSnapshot>,
+    pub seek_preparation: Option<SeekPreparationSnapshot>,
+    pub last_seek_preparation_terminal_outcome: Option<SeekPreparationTerminalOutcome>,
+    pub last_seek_preparation_terminal: Option<SeekPreparationSnapshot>,
     pub metrics: PlaybackCoordinatorMetrics,
     pub transport_telemetry_observed: bool,
     pub ordinary_correction_blocked: bool,
@@ -456,6 +459,30 @@ impl RuntimePlaybackCoordination {
         actions
     }
 
+    pub(crate) fn keep_waiting_for_seek_preparation(
+        &mut self,
+        now_seconds: f64,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        self.coordinator
+            .keep_waiting_for_seek_preparation(self.coordinator_now(now_seconds))
+    }
+
+    pub(crate) fn cancel_seek_preparation(
+        &mut self,
+        now_seconds: f64,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        self.coordinator
+            .cancel_seek_preparation(self.coordinator_now(now_seconds))
+    }
+
+    pub(crate) fn join_nearest_buffered_seek_preparation(
+        &mut self,
+        now_seconds: f64,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        self.coordinator
+            .join_nearest_buffered_seek_preparation(self.coordinator_now(now_seconds))
+    }
+
     pub(crate) fn snapshot(&self) -> PlaybackCoordinationSnapshot {
         let active_local_pause_intent = self
             .pending_local_pause_intent
@@ -473,6 +500,13 @@ impl RuntimePlaybackCoordination {
             last_local_pause_intent_stage_accepted: self.last_local_pause_intent_stage_accepted,
             diagnostic: self.coordinator.diagnostic(),
             recovery_episode: self.coordinator.recovery_episode(),
+            seek_preparation: self.coordinator.seek_preparation_snapshot(),
+            last_seek_preparation_terminal_outcome: self
+                .coordinator
+                .last_seek_preparation_terminal_outcome(),
+            last_seek_preparation_terminal: self
+                .coordinator
+                .last_seek_preparation_terminal_snapshot(),
             metrics: self.coordinator.metrics().clone(),
             transport_telemetry_observed: self.transport_telemetry_observed,
             ordinary_correction_blocked: self.coordinator.ordinary_correction_blocked(),
@@ -829,6 +863,8 @@ impl RuntimePlaybackCoordination {
     }
 
     pub(crate) fn handle_authoritative_playback_barrier_room_change(&mut self) {
+        self.coordinator.cancel_seek_preparation_for_lifecycle();
+        self.coordinator.clear_seek_preparation_terminal();
         self.pending_local_pause_intent = None;
         self.last_local_pause_intent_stage_accepted = None;
         self.local_control_authority = Some(ConnectionLocalControlAuthority {
@@ -1169,9 +1205,12 @@ impl RuntimePlaybackCoordination {
             paused_for_cache: update.paused_for_cache,
             seeking: update.seeking,
             seekable: update.seekable,
+            timeline_kind: update.timeline_kind,
             seekable_ranges: update.seekable_ranges,
+            known_live_seekable_window: update.known_live_seekable_window,
             core_idle: update.core_idle,
             playback_restart_sequence: update.playback_restart_sequence,
+            cache_buffering_percent: update.cache_buffering_percent,
             buffered_ahead_seconds: update.buffered_ahead_seconds,
             input_rate_bytes_per_second: update.input_rate_bytes_per_second,
         };
@@ -1225,6 +1264,13 @@ impl RuntimePlaybackCoordination {
         current.paused_for_cache = newer.paused_for_cache.or(current.paused_for_cache);
         current.seeking = newer.seeking.or(current.seeking);
         current.seekable = newer.seekable.or(current.seekable);
+        current.timeline_kind = newer.timeline_kind.or(current.timeline_kind);
+        if (newer.timeline_kind == Some(sorotte_player_api::PlayerTimelineKind::SlidingLive)
+            && newer.seekable_ranges.is_some())
+            || newer.known_live_seekable_window.is_some()
+        {
+            current.known_live_seekable_window = newer.known_live_seekable_window;
+        }
         current.seekable_ranges = newer
             .seekable_ranges
             .or_else(|| current.seekable_ranges.take());
@@ -1232,6 +1278,9 @@ impl RuntimePlaybackCoordination {
         current.playback_restart_sequence = newer
             .playback_restart_sequence
             .or(current.playback_restart_sequence);
+        current.cache_buffering_percent = newer
+            .cache_buffering_percent
+            .or(current.cache_buffering_percent);
         current.buffered_ahead_seconds = newer
             .buffered_ahead_seconds
             .or(current.buffered_ahead_seconds);
@@ -1286,12 +1335,17 @@ impl RuntimePlaybackCoordination {
         &self,
         session: &ClientSession,
         local_media_generation: u64,
+        coordinator_state_revision: u64,
     ) -> Option<(u64, u64)> {
         let prepare = session.playback_barrier_prepare()?;
         let commit = session.playback_barrier_active_commit()?;
+        let desired = self.desired_fingerprint.as_ref()?;
         if prepare.media_generation != commit.media_generation
             || self.coordinator.current_media_generation() != Some(local_media_generation)
             || !self.current_logical_media_matches(&prepare.logical_media_id)
+            || coordinator_state_revision != self.desired_revision
+            || desired.barrier_media_generation != Some(commit.media_generation)
+            || desired.barrier_state_revision != Some(commit.state_revision)
         {
             return None;
         }
@@ -1752,16 +1806,46 @@ impl RuntimePlaybackCoordination {
         self.desired_fingerprint = Some(fingerprint);
 
         let coordinator_now = self.coordinator_now(external_now_seconds);
-        let mut actions = self
-            .coordinator
-            .update_desired_room_state(DesiredRoomPlayback {
+        let superseded_dispatched_seek = if barrier_became_authoritative
+            && matches!(authority, RoomPlaystateAuthority::ServerBarrier { .. })
+        {
+            // A startup barrier owns its canonical target and readiness
+            // lifecycle. An earlier client-only unbuffered-seek episode must
+            // not retain a frozen target or suppress the barrier alignment.
+            let primary_seek_issued = self.coordinator.cancel_seek_preparation_for_lifecycle();
+            self.coordinator.clear_seek_preparation_terminal();
+            primary_seek_issued
+        } else {
+            false
+        };
+        let mut actions = self.coordinator.update_desired_room_state_with_kind(
+            DesiredRoomPlayback {
                 media_generation,
                 state_revision: self.desired_revision,
                 paused,
                 anchor_position_seconds: position_seconds,
                 anchor_observed_at_seconds: coordinator_now,
                 force_seek: self.pending_forced_seek_revision == Some(self.desired_revision),
-            });
+            },
+            if superseded_dispatched_seek {
+                DesiredRoomPlaybackUpdateKind::AuthoritativeSeekAfterSupersededDispatch
+            } else if explicit_seek_changed {
+                match authority {
+                    RoomPlaystateAuthority::LegacyLocalEcho => {
+                        DesiredRoomPlaybackUpdateKind::ExplicitSeekAlreadyDispatched
+                    }
+                    RoomPlaystateAuthority::LegacyRemoteUser => {
+                        DesiredRoomPlaybackUpdateKind::ExplicitSeek
+                    }
+                    RoomPlaystateAuthority::ServerBarrier { .. }
+                    | RoomPlaystateAuthority::ServerBufferingPolicy { .. } => {
+                        DesiredRoomPlaybackUpdateKind::Ordinary
+                    }
+                }
+            } else {
+                DesiredRoomPlaybackUpdateKind::Ordinary
+            },
+        );
         let replay_desired =
             allow_command_replay && (!local_echo || self.reconnect_reconciliation.is_some());
         if replay_desired
@@ -1770,7 +1854,11 @@ impl RuntimePlaybackCoordination {
         {
             actions.extend(self.coordinator.observe(observation));
         }
-        if replay_desired {
+        if allow_command_replay {
+            // Timer ownership is independent of whether this room state may
+            // replay a cached player observation. In particular, a canonical
+            // local echo suppresses command replay but must still advance
+            // seek-preparation and command deadlines on the normal pump.
             actions.extend(self.coordinator.tick(coordinator_now));
         }
         self.record_observation_outcomes(&actions);
@@ -1820,9 +1908,13 @@ impl RuntimePlaybackCoordination {
         coordinator_command_id: CoordinatorCommandId,
         now_seconds: f64,
     ) {
-        let _ = self
+        let failed = self
             .coordinator
             .command_failed(coordinator_command_id, now_seconds);
+        if failed {
+            let actions = self.coordinator.take_pending_actions();
+            self.record_observation_outcomes(&actions);
+        }
     }
 
     pub(crate) fn apply_player_command_progress(
@@ -1852,9 +1944,13 @@ impl RuntimePlaybackCoordination {
                 PlayerCommandResult::Superseded | PlayerCommandResult::Failed(_),
             ) => {
                 let now_seconds = self.coordinator_now(external_now_seconds);
-                let _ = self
+                let failed = self
                     .coordinator
                     .command_failed(coordinator_command_id, now_seconds);
+                if failed {
+                    let actions = self.coordinator.take_pending_actions();
+                    self.record_observation_outcomes(&actions);
+                }
                 self.player_command_bindings.remove(&progress.command_id);
             }
         }
@@ -2049,6 +2145,30 @@ where
         self.playback_coordination.snapshot()
     }
 
+    pub fn keep_waiting_for_external_seek_preparation(
+        &mut self,
+        now_seconds: f64,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        self.playback_coordination
+            .keep_waiting_for_seek_preparation(now_seconds)
+    }
+
+    pub fn cancel_external_seek_preparation(
+        &mut self,
+        now_seconds: f64,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        self.playback_coordination
+            .cancel_seek_preparation(now_seconds)
+    }
+
+    pub fn join_nearest_buffered_external_seek_preparation(
+        &mut self,
+        now_seconds: f64,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        self.playback_coordination
+            .join_nearest_buffered_seek_preparation(now_seconds)
+    }
+
     /// Interrupts a recovery episode for an externally owned player (the GUI
     /// attached-player path) and returns every cleanup command to that owner.
     /// The internal runtime player must not consume these commands because GUI
@@ -2231,6 +2351,51 @@ where
         self.execute_playback_coordinator_actions(actions, now_seconds)
     }
 
+    pub fn run_keep_waiting_for_seek_preparation(
+        &mut self,
+        now_seconds: f64,
+    ) -> Result<bool, PlayerError> {
+        let available = self
+            .playback_coordination
+            .snapshot()
+            .seek_preparation
+            .is_some_and(|preparation| preparation.can_keep_waiting);
+        let actions = self
+            .playback_coordination
+            .keep_waiting_for_seek_preparation(now_seconds);
+        self.execute_playback_coordinator_actions(actions, now_seconds)?;
+        Ok(available)
+    }
+
+    pub fn run_cancel_seek_preparation(&mut self, now_seconds: f64) -> Result<bool, PlayerError> {
+        let available = self
+            .playback_coordination
+            .snapshot()
+            .seek_preparation
+            .is_some_and(|preparation| preparation.can_cancel_and_remain);
+        let actions = self
+            .playback_coordination
+            .cancel_seek_preparation(now_seconds);
+        self.execute_playback_coordinator_actions(actions, now_seconds)?;
+        Ok(available)
+    }
+
+    pub fn run_join_nearest_buffered_seek_preparation(
+        &mut self,
+        now_seconds: f64,
+    ) -> Result<bool, PlayerError> {
+        let available = self
+            .playback_coordination
+            .snapshot()
+            .seek_preparation
+            .is_some_and(|preparation| preparation.can_join_nearest_buffered);
+        let actions = self
+            .playback_coordination
+            .join_nearest_buffered_seek_preparation(now_seconds);
+        self.execute_playback_coordinator_actions(actions, now_seconds)?;
+        Ok(available)
+    }
+
     fn execute_playback_coordinator_actions(
         &mut self,
         actions: Vec<PlaybackCoordinatorAction>,
@@ -2367,15 +2532,18 @@ where
         for action in actions {
             let PlaybackCoordinatorAction::Started {
                 media_generation: local_media_generation,
+                state_revision: coordinator_state_revision,
                 observed_position_seconds,
-                ..
             } = action
             else {
                 continue;
             };
-            let Some((room_media_generation, room_state_revision)) = self
-                .playback_coordination
-                .barrier_started_target(&self.session, *local_media_generation)
+            let Some((room_media_generation, room_state_revision)) =
+                self.playback_coordination.barrier_started_target(
+                    &self.session,
+                    *local_media_generation,
+                    *coordinator_state_revision,
+                )
             else {
                 continue;
             };
@@ -4935,6 +5103,50 @@ mod tests {
     }
 
     #[test]
+    fn local_echo_seek_preparation_deadline_advances_without_command_replay() {
+        let mut session = barrier_session();
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":40.0,"paused":true,"doSeek":true,"setBy":"alice"}}}"#,
+                0.0,
+            )
+            .unwrap();
+        let mut coordination = RuntimePlaybackCoordination::default();
+        coordination
+            .coordinator
+            .set_config(PlaybackCoordinatorConfig {
+                command_timeout_seconds: 1.0,
+                seek_preparation_timeout_seconds: 2.0,
+                ..PlaybackCoordinatorConfig::default()
+            });
+        coordination.prepare_media(
+            LogicalMediaId::new("local-echo-slow-seek").unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+
+        coordination.update_desired_from_session(&session, 0.0);
+        assert!(coordination.snapshot().seek_preparation.is_some());
+
+        let timed_out = coordination.update_desired_from_session(&session, 2.1);
+        assert!(timed_out.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Degraded {
+                reason: DegradedPlaybackReason::RecoveryCommandTimedOut,
+                ..
+            }
+        )));
+        assert_eq!(
+            coordination
+                .snapshot()
+                .last_seek_preparation_terminal_outcome,
+            Some(SeekPreparationTerminalOutcome::Degraded(
+                SeekPreparationDegradedReason::TimedOut
+            ))
+        );
+    }
+
+    #[test]
     fn staged_local_unpause_survives_transport_observation_before_canonical_echo() {
         let mut session = barrier_session();
         session
@@ -5672,6 +5884,296 @@ mod tests {
             1.0,
         );
         assert_eq!(coordination.snapshot().pending_local_pause_intent, None);
+    }
+
+    #[test]
+    fn authoritative_room_change_force_cancels_dispatched_seek_preparation() {
+        let mut coordination = RuntimePlaybackCoordination::default();
+        let plan = coordination.prepare_media(
+            LogicalMediaId::new("room-scoped-seek").unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        coordination
+            .coordinator
+            .update_desired_room_state_with_kind(
+                DesiredRoomPlayback {
+                    media_generation: plan.media_generation,
+                    state_revision: 1,
+                    paused: false,
+                    anchor_position_seconds: 40.0,
+                    anchor_observed_at_seconds: 0.0,
+                    force_seek: true,
+                },
+                DesiredRoomPlaybackUpdateKind::ExplicitSeek,
+            );
+        let actions = coordination.coordinator.observe(
+            PlayerTransportObservation::new(plan.media_generation, 0.1)
+                .with_phase(PlayerTransportPhase::ReadyPaused)
+                .with_position(5.0)
+                .with_logical_pause(true)
+                .with_cache_pause(false)
+                .with_seeking(false)
+                .with_seekable(true)
+                .with_seekable_ranges(vec![sorotte_player_api::PlayerSeekableRange::new(
+                    0.0, 10.0,
+                )]),
+        );
+        assert!(actions.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPosition(40.0),
+                ..
+            }
+        )));
+
+        coordination.handle_authoritative_playback_barrier_room_change();
+        let snapshot = coordination.snapshot();
+        assert!(snapshot.seek_preparation.is_none());
+        assert_eq!(snapshot.last_seek_preparation_terminal_outcome, None);
+        assert!(snapshot.last_seek_preparation_terminal.is_none());
+    }
+
+    #[test]
+    fn startup_barrier_doseek_does_not_enter_client_owned_seek_preparation() {
+        let mut session = barrier_session();
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":0.0,"paused":true,"doSeek":true,"setBy":"alice"}}}"#,
+                0.0,
+            )
+            .unwrap();
+        apply_barrier_extension(
+            &mut session,
+            PlaybackBarrierSetExtension::new()
+                .with_prepare(
+                    PrepareMediaPayload::new(
+                        1,
+                        "startup-barrier-media",
+                        0.0,
+                        PlaybackBarrierPolicy::Controller,
+                    )
+                    .with_request_nonce(1),
+                )
+                .with_status(barrier_status(1, None, PlaybackBarrierPhase::Preparing)),
+        );
+        let mut coordination = RuntimePlaybackCoordination::default();
+        coordination.prepare_media(
+            LogicalMediaId::new("startup-barrier-media").unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        coordination.update_desired_from_session(&session, 0.0);
+        assert!(coordination.snapshot().seek_preparation.is_none());
+
+        coordination.observe_transport(
+            paused_transport(1, 1.0, PlayerTransportPhase::ReadyPaused, 0.0),
+            1.0,
+        );
+        assert!(session.playback_barrier_prepare().is_some());
+        assert!(session.playback_barrier_status().is_some());
+        assert!(coordination.current_logical_media_matches("startup-barrier-media"));
+        assert!(coordination.latest_observation.is_some());
+        let ready = coordination
+            .barrier_ready_signature(&session)
+            .expect("barrier transport should produce a readiness signature");
+        assert!(ready.buffer_ready);
+        assert!(coordination.snapshot().seek_preparation.is_none());
+    }
+
+    #[test]
+    fn started_from_precommit_revision_cannot_be_relabelled_as_barrier_ack() {
+        let logical_id = "commit-between-start-and-reconciliation";
+        let mut session = barrier_session();
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":5.0,"paused":false,"doSeek":false,"setBy":"alice"}}}"#,
+                0.0,
+            )
+            .unwrap();
+        let mut coordination = RuntimePlaybackCoordination::default();
+        let local_generation = coordination
+            .prepare_media(
+                LogicalMediaId::new(logical_id).unwrap(),
+                MediaTransportKind::LocalFile,
+                0.0,
+            )
+            .media_generation;
+        coordination.update_desired_from_session(&session, 0.0);
+        let precommit_revision = coordination.desired_revision;
+
+        apply_barrier_extension(
+            &mut session,
+            PlaybackBarrierSetExtension::new()
+                .with_prepare(
+                    PrepareMediaPayload::new(
+                        31,
+                        logical_id,
+                        5.0,
+                        PlaybackBarrierPolicy::Controller,
+                    )
+                    .with_request_nonce(7),
+                )
+                .with_status(barrier_status(31, None, PlaybackBarrierPhase::Preparing)),
+        );
+        apply_barrier_extension(
+            &mut session,
+            PlaybackBarrierSetExtension::new()
+                .with_commit(CommitStartPayload::new(31, 9, 5.0, 0.0, 10.0))
+                .with_status(barrier_status(31, Some(9), PlaybackBarrierPhase::Committed)),
+        );
+
+        assert_eq!(
+            coordination.barrier_started_target(&session, local_generation, precommit_revision,),
+            None,
+            "a session commit must not relabel an old coordinator Started action"
+        );
+
+        coordination.update_desired_from_session(&session, 0.1);
+        let committed_revision = coordination.desired_revision;
+        assert_ne!(committed_revision, precommit_revision);
+        assert_eq!(
+            coordination.barrier_started_target(&session, local_generation, committed_revision,),
+            Some((31, 9))
+        );
+    }
+
+    #[test]
+    fn rejected_preparation_seek_projects_runtime_transport_failure() {
+        let mut coordination = RuntimePlaybackCoordination::default();
+        let generation = coordination
+            .prepare_media(
+                LogicalMediaId::new("runtime-preparation-failure").unwrap(),
+                MediaTransportKind::NetworkVod,
+                0.0,
+            )
+            .media_generation;
+        coordination
+            .coordinator
+            .update_desired_room_state_with_kind(
+                DesiredRoomPlayback {
+                    media_generation: generation,
+                    state_revision: 1,
+                    paused: false,
+                    anchor_position_seconds: 40.0,
+                    anchor_observed_at_seconds: 0.0,
+                    force_seek: true,
+                },
+                DesiredRoomPlaybackUpdateKind::ExplicitSeek,
+            );
+        let actions = coordination.coordinator.observe(
+            PlayerTransportObservation::new(generation, 0.1)
+                .with_phase(PlayerTransportPhase::ReadyPaused)
+                .with_position(5.0)
+                .with_logical_pause(true)
+                .with_seekable(true)
+                .with_seekable_ranges(vec![sorotte_player_api::PlayerSeekableRange::new(
+                    0.0, 10.0,
+                )]),
+        );
+        let command_id = actions
+            .iter()
+            .find_map(|action| match action {
+                PlaybackCoordinatorAction::Execute {
+                    command_id,
+                    command: CoordinatorPlayerCommand::SetPosition(_),
+                } => Some(*command_id),
+                _ => None,
+            })
+            .expect("preparation should dispatch a seek");
+
+        coordination.command_dispatch_failed(command_id, 0.2);
+        let snapshot = coordination.snapshot();
+        assert_eq!(snapshot.diagnostic, PlaybackDiagnostic::Degraded);
+        assert_eq!(
+            snapshot.last_degraded_reason,
+            Some(DegradedPlaybackReason::TransportFailed)
+        );
+        assert_eq!(
+            snapshot.last_seek_preparation_terminal_outcome,
+            Some(SeekPreparationTerminalOutcome::Degraded(
+                SeekPreparationDegradedReason::TransportFailed
+            ))
+        );
+    }
+
+    #[test]
+    fn startup_barrier_supersedes_an_active_client_owned_seek_preparation() {
+        let mut session = barrier_session();
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":40.0,"paused":false,"doSeek":true,"setBy":"bob"}}}"#,
+                0.0,
+            )
+            .unwrap();
+        let mut coordination = RuntimePlaybackCoordination::default();
+        coordination.prepare_media(
+            LogicalMediaId::new("barrier-supersedes-client-seek").unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        coordination.update_desired_from_session(&session, 0.0);
+        let mut initial_transport =
+            paused_transport(1, 0.1, PlayerTransportPhase::ReadyPaused, 5.0);
+        initial_transport.seekable_ranges =
+            Some(vec![sorotte_player_api::PlayerSeekableRange::new(
+                0.0, 10.0,
+            )]);
+        coordination.observe_transport(initial_transport, 0.1);
+        assert!(coordination.snapshot().seek_preparation.is_some());
+
+        apply_barrier_extension(
+            &mut session,
+            PlaybackBarrierSetExtension::new()
+                .with_prepare(
+                    PrepareMediaPayload::new(
+                        1,
+                        "barrier-supersedes-client-seek",
+                        5.0,
+                        PlaybackBarrierPolicy::Controller,
+                    )
+                    .with_request_nonce(1),
+                )
+                .with_status(barrier_status(1, None, PlaybackBarrierPhase::Preparing)),
+        );
+        let actions = coordination.update_desired_from_session(&session, 0.2);
+
+        let snapshot = coordination.snapshot();
+        assert!(snapshot.seek_preparation.is_none());
+        assert!(snapshot.last_seek_preparation_terminal.is_none());
+        assert!(actions.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPosition(position),
+                ..
+            } if (*position - 5.0).abs() <= f64::EPSILON
+        )));
+        assert!(!actions.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPosition(position),
+                ..
+            } if (*position - 40.0).abs() <= f64::EPSILON
+        )));
+
+        let late_old_seek = coordination.observe_transport(
+            paused_transport(1, 0.3, PlayerTransportPhase::ReadyPaused, 40.0),
+            0.3,
+        );
+        assert!(!late_old_seek.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPosition(_),
+                ..
+            }
+        )));
+        assert!(coordination.snapshot().ordinary_correction_blocked);
+
+        coordination.observe_transport(
+            paused_transport(1, 0.4, PlayerTransportPhase::ReadyPaused, 5.0),
+            0.4,
+        );
+        assert!(!coordination.snapshot().ordinary_correction_blocked);
     }
 
     #[test]

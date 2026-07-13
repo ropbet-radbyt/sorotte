@@ -1,4 +1,7 @@
 use super::*;
+use crate::notifications::{
+    SeekPreparationNotificationState, next_seek_preparation_notification_messages,
+};
 
 #[test]
 fn flush_autoplay_notifications_to_sink_dispatches_notifications() {
@@ -168,4 +171,121 @@ fn player_playback_drift_diagnostic_messages_localized_legacy_compatible_localiz
     assert_eq!(messages.len(), 2);
     assert!(messages[0].starts_with("Player-Abweichung: Pause-Abweichung "));
     assert!(messages[1].starts_with("Player-Abweichung: Positionsabweichung "));
+}
+
+fn seek_preparation_snapshot(
+    phase: sorotte_client_core::SeekPreparationPhase,
+) -> sorotte_client_core::SeekPreparationSnapshot {
+    sorotte_client_core::SeekPreparationSnapshot {
+        id: 1,
+        media_generation: 2,
+        load_attempt: 1,
+        room_revision: 3,
+        latest_room_revision: 4,
+        requested_target_seconds: 2_533.0,
+        frozen_target_seconds: 2_533.0,
+        frozen_room_anchor_position_seconds: 2_533.0,
+        frozen_room_anchor_observed_at_seconds: 10.0,
+        latest_room_position_seconds: 2_537.2,
+        availability: sorotte_client_core::SeekTargetAvailability::FetchRequired,
+        phase,
+        cache_buffering_percent: None,
+        buffered_ahead_seconds: None,
+        nearest_safe_buffered_position_seconds: None,
+        started_at_seconds: 10.0,
+        terminal_outcome: None,
+        can_keep_waiting: true,
+        can_cancel_and_remain: true,
+        can_join_nearest_buffered: false,
+    }
+}
+
+#[test]
+fn seek_preparation_diagnostics_use_truthful_nonfatal_status_labels() {
+    use sorotte_client_core::{SeekPreparationPhase, SeekPreparationTerminalOutcome};
+
+    for (phase, expected) in [
+        (SeekPreparationPhase::Seeking, "Seeking to 42:13"),
+        (
+            SeekPreparationPhase::Fetching,
+            "Fetching stream data for 42:13",
+        ),
+        (
+            SeekPreparationPhase::ReadyToJoin,
+            "Ready - joining the room",
+        ),
+        (SeekPreparationPhase::CatchingUp, "Catching up to the room"),
+    ] {
+        let messages =
+            seek_preparation_diagnostic_messages(Some(&seek_preparation_snapshot(phase)), None);
+        assert!(messages[0].contains(expected));
+        assert!(!messages.iter().any(|line| line.contains("ETA")));
+        assert!(!messages.iter().any(|line| line.contains("download")));
+    }
+
+    let mut refilling = seek_preparation_snapshot(SeekPreparationPhase::Refilling);
+    refilling.cache_buffering_percent = Some(68.4);
+    refilling.buffered_ahead_seconds = Some(3.8);
+    refilling.nearest_safe_buffered_position_seconds = Some(2_530.0);
+    refilling.can_join_nearest_buffered = true;
+    let messages = seek_preparation_diagnostic_messages(Some(&refilling), None);
+    assert_eq!(
+        messages,
+        vec![
+            "seek preparation: Buffer refill: 68%; availability=fetch-required",
+            "seek preparation: 3.8 seconds buffered ahead",
+            "seek preparation actions: keep-waiting,join-nearest-buffered-position,cancel-and-remain",
+        ]
+    );
+
+    let terminal = seek_preparation_diagnostic_messages(
+        None,
+        Some(SeekPreparationTerminalOutcome::Degraded(
+            sorotte_client_core::SeekPreparationDegradedReason::TimedOut,
+        )),
+    );
+    assert_eq!(
+        terminal,
+        vec!["seek preparation: terminal=degraded (TimedOut)"]
+    );
+}
+
+#[test]
+fn normal_seek_preparation_notifications_emit_changed_states_once() {
+    use sorotte_client_core::{SeekPreparationPhase, SeekPreparationTerminalOutcome};
+
+    let mut state = SeekPreparationNotificationState::default();
+    let fetching = seek_preparation_snapshot(SeekPreparationPhase::Fetching);
+    let first = next_seek_preparation_notification_messages(Some(&fetching), None, &mut state);
+    assert!(first[0].contains("Fetching stream data"));
+    assert!(first.iter().any(|line| line.contains("keep-waiting")));
+    assert!(
+        next_seek_preparation_notification_messages(Some(&fetching), None, &mut state).is_empty(),
+        "an unchanged default-CLI projection must not flood the terminal"
+    );
+
+    let mut refilling = fetching.clone();
+    refilling.phase = SeekPreparationPhase::Refilling;
+    refilling.cache_buffering_percent = Some(60.0);
+    let changed = next_seek_preparation_notification_messages(Some(&refilling), None, &mut state);
+    assert!(changed[0].contains("Buffer refill: 60%"));
+
+    let mut terminal = refilling;
+    terminal.terminal_outcome = Some(SeekPreparationTerminalOutcome::Cancelled);
+    terminal.can_keep_waiting = false;
+    terminal.can_cancel_and_remain = false;
+    let completed = next_seek_preparation_notification_messages(None, Some(&terminal), &mut state);
+    assert_eq!(completed, vec!["seek preparation: terminal=cancelled"]);
+    assert!(
+        next_seek_preparation_notification_messages(None, Some(&terminal), &mut state).is_empty(),
+        "a terminal outcome must be announced exactly once"
+    );
+
+    assert!(next_seek_preparation_notification_messages(None, None, &mut state).is_empty());
+    terminal.id += 1;
+    assert_eq!(
+        next_seek_preparation_notification_messages(None, Some(&terminal), &mut state),
+        vec!["seek preparation: terminal=cancelled"],
+        "the same outcome from a later episode remains visible"
+    );
 }

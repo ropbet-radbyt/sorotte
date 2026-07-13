@@ -311,6 +311,15 @@ impl GuiWidgetEguiRenderer {
             "main-window:control:seek" => vec![GuiShellAction::RequestSeekPrompt],
             "main-window:control:undo-seek" => vec![GuiShellAction::RequestPlaybackUndoSeek],
             "main-window:control:set-offset" => vec![GuiShellAction::RequestOffsetPrompt],
+            "main-window:seek-preparation:keep-waiting" => {
+                vec![GuiShellAction::RequestSeekPreparationKeepWaiting]
+            }
+            "main-window:seek-preparation:cancel" => {
+                vec![GuiShellAction::RequestSeekPreparationCancel]
+            }
+            "main-window:seek-preparation:join-nearest" => {
+                vec![GuiShellAction::RequestSeekPreparationJoinNearest]
+            }
             "main-window:control:autoplay-threshold-down" => state
                 .main_window
                 .autoplay_threshold

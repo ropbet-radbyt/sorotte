@@ -1,0 +1,36 @@
+# Client-owned stream seek preparation is explicit without claiming download progress
+setting	username	smoke-user
+setting	room	smoke-room
+activate	main-window-root
+assert-selected	main-window-root	true
+apply-seek-preparation-runtime	seeking	135	none	none	none	true	true	false
+assert-label	main-window:seek-preparation	Playback synchronization
+assert-value	main-window:seek-preparation:status	Seeking to 02:15
+assert-value	main-window:seek-preparation:target	02:15
+assert-enabled	main-window:seek-preparation:keep-waiting	true
+assert-enabled	main-window:seek-preparation:cancel	true
+activate	main-window:seek-preparation:keep-waiting
+apply-seek-preparation-runtime	fetching	135	none	0.5	none	true	true	false
+assert-value	main-window:seek-preparation:status	Fetching stream data
+assert-value	main-window:seek-preparation:buffered-ahead	0.5 s
+apply-seek-preparation-runtime	refilling	135	64.6	12.3	128	true	true	true
+assert-value	main-window:seek-preparation:status	Buffer refill 65%
+assert-value	main-window:seek-preparation:refill	65%
+assert-value	main-window:seek-preparation:buffered-ahead	12.3 s
+assert-value	main-window:seek-preparation:nearest-buffered	02:08
+assert-enabled	main-window:seek-preparation:join-nearest	true
+activate	main-window:seek-preparation:join-nearest
+apply-seek-preparation-runtime	ready-to-join	135	100	30	none	false	false	false
+assert-value	main-window:seek-preparation:status	Ready; joining playback
+apply-seek-preparation-runtime	catching-up	135	100	30	none	false	false	false
+assert-value	main-window:seek-preparation:status	Catching up to the room
+# Ready and Join nearest (Superseded) handoffs share this terminal recovery status.
+apply-seek-preparation-degraded-runtime	convergence-degraded
+assert-value	main-window:seek-preparation:status	Seek completed, but room convergence degraded.
+apply-seek-preparation-degraded-runtime	timed-out
+assert-value	main-window:seek-preparation:status	Buffer refill timed out.
+assert-value	main-window:seek-preparation:guidance	Playback stayed in a safe degraded state. Choose a new seek or retry the stream when ready.
+apply-seek-preparation-degraded-runtime	timeline-window-unavailable
+assert-value	main-window:seek-preparation:status	Could not determine a safe seek window for this stream.
+clear-seek-preparation-runtime
+assert-value	main-window:room	smoke-room

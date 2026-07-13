@@ -81,6 +81,17 @@ pub fn plan_local_input_dispatch_legacy_compatible(
         PlannedLocalInputCommand::UndoSeek => {
             PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::UndoSeek)
         }
+        PlannedLocalInputCommand::KeepWaitingForSeekPreparation => {
+            PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::KeepWaitingForSeekPreparation)
+        }
+        PlannedLocalInputCommand::JoinNearestBufferedSeekPreparation => {
+            PlannedLocalInputDispatch::Run(
+                PlannedLocalRuntimeAction::JoinNearestBufferedSeekPreparation,
+            )
+        }
+        PlannedLocalInputCommand::CancelSeekPreparation => {
+            PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::CancelSeekPreparation)
+        }
         PlannedLocalInputCommand::SetUserOffset(command) => {
             PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::SetUserOffset(command))
         }
@@ -157,6 +168,13 @@ pub fn plan_local_input_command_legacy_compatible(
         }
         LocalInputCommand::ShuffleEntirePlaylist => PlannedLocalInputCommand::ShuffleEntirePlaylist,
         LocalInputCommand::UndoSeek => PlannedLocalInputCommand::UndoSeek,
+        LocalInputCommand::KeepWaitingForSeekPreparation => {
+            PlannedLocalInputCommand::KeepWaitingForSeekPreparation
+        }
+        LocalInputCommand::JoinNearestBufferedSeekPreparation => {
+            PlannedLocalInputCommand::JoinNearestBufferedSeekPreparation
+        }
+        LocalInputCommand::CancelSeekPreparation => PlannedLocalInputCommand::CancelSeekPreparation,
         LocalInputCommand::SetUserOffset(command) => {
             PlannedLocalInputCommand::SetUserOffset(command)
         }

@@ -429,3 +429,127 @@ fn gui_shell_app_state_projects_runtime_room_control_status_into_main_window_wid
         Some("Not granted by server: room controls are locked.")
     );
 }
+
+#[test]
+fn gui_shell_app_state_projects_stream_seek_refill_without_changing_local_file_surface() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        player_path: Some("mpv".to_owned()),
+        room: Some("Lounge".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    assert!(
+        state
+            .main_window_widget_tree()
+            .find("main-window:seek-preparation")
+            .is_none(),
+        "ordinary local-file playback must not gain a stream refill panel"
+    );
+
+    assert!(
+        state.apply(GuiShellAction::ApplyGuiSeekPreparationRuntimeSnapshot(
+            GuiSeekPreparationRuntimeSnapshot {
+                preparation: Some(GuiSeekPreparationState {
+                    phase: GuiSeekPreparationPhase::Refilling,
+                    frozen_target_seconds: 135.0,
+                    cache_refill_percent: Some(64.6),
+                    buffered_ahead_seconds: Some(12.3),
+                    nearest_safe_buffered_position_seconds: Some(128.0),
+                    can_keep_waiting: true,
+                    can_cancel_and_remain: false,
+                    can_join_nearest_buffered: true,
+                }),
+                degraded_reason: None,
+            },
+        ))
+    );
+
+    let tree = state.main_window_widget_tree();
+    assert_eq!(
+        tree.find("main-window:seek-preparation:status")
+            .and_then(|node| node.value.as_deref()),
+        Some("Buffer refill 65%")
+    );
+    assert_eq!(
+        tree.find("main-window:seek-preparation:target")
+            .and_then(|node| node.value.as_deref()),
+        Some("02:15")
+    );
+    assert_eq!(
+        tree.find("main-window:seek-preparation:buffered-ahead")
+            .and_then(|node| node.value.as_deref()),
+        Some("12.3 s")
+    );
+    assert!(
+        tree.find("main-window:seek-preparation:refill")
+            .and_then(|node| node.tooltip.as_deref())
+            .is_some_and(|tooltip| tooltip.contains("not file download progress"))
+    );
+    assert!(
+        tree.find("main-window:seek-preparation:cancel").is_none(),
+        "cancel must remain hidden after the core says the primary seek cannot be revoked"
+    );
+    assert!(
+        tree.find("main-window:seek-preparation:join-nearest")
+            .is_some_and(|node| node.enabled)
+    );
+
+    assert!(
+        state.apply(GuiShellAction::ApplyGuiSeekPreparationRuntimeSnapshot(
+            GuiSeekPreparationRuntimeSnapshot {
+                preparation: None,
+                degraded_reason: Some(GuiSeekPreparationDegradedReason::ConvergenceDegraded),
+            },
+        ))
+    );
+    let convergence_degraded = state.main_window_widget_tree();
+    assert_eq!(
+        convergence_degraded
+            .find("main-window:seek-preparation:status")
+            .and_then(|node| node.value.as_deref()),
+        Some("Seek completed, but room convergence degraded.")
+    );
+    assert!(
+        convergence_degraded
+            .find("main-window:seek-preparation:keep-waiting")
+            .is_none()
+    );
+
+    assert!(
+        state.apply(GuiShellAction::ApplyGuiSeekPreparationRuntimeSnapshot(
+            GuiSeekPreparationRuntimeSnapshot {
+                preparation: None,
+                degraded_reason: Some(GuiSeekPreparationDegradedReason::TimedOut),
+            },
+        ))
+    );
+    let degraded = state.main_window_widget_tree();
+    assert_eq!(
+        degraded
+            .find("main-window:seek-preparation:status")
+            .and_then(|node| node.value.as_deref()),
+        Some("Buffer refill timed out.")
+    );
+    assert!(
+        degraded
+            .find("main-window:seek-preparation:keep-waiting")
+            .is_none()
+    );
+    assert!(
+        degraded
+            .find("main-window:seek-preparation:join-nearest")
+            .is_none()
+    );
+
+    assert!(
+        state.apply(GuiShellAction::ApplyGuiSeekPreparationRuntimeSnapshot(
+            GuiSeekPreparationRuntimeSnapshot::default(),
+        ))
+    );
+    assert!(
+        state
+            .main_window_widget_tree()
+            .find("main-window:seek-preparation")
+            .is_none()
+    );
+}

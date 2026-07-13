@@ -1,5 +1,7 @@
 use super::*;
 use crate::app::feature_slices::player::Command;
+use crate::app::runtime_stack::GuiAttachedPlayerRuntimeAction;
+use crate::app::support::system_time_seconds;
 
 impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn handle_player_command(
@@ -28,6 +30,13 @@ impl GuiPersistedConfigRuntimeOwner {
             Command::SeekToPosition(position_seconds) => {
                 self.handle_seek_to_position_request(handle, projected_state, position_seconds)
             }
+            Command::KeepWaitingForSeekPreparation => {
+                self.handle_keep_waiting_for_seek_preparation_request(handle)
+            }
+            Command::CancelSeekPreparation => self.handle_cancel_seek_preparation_request(handle),
+            Command::JoinNearestBufferedSeekPreparation => {
+                self.handle_join_nearest_buffered_seek_preparation_request(handle)
+            }
             Command::SetPaused(paused) => {
                 self.handle_set_playback_paused_request(handle, projected_state, paused)
             }
@@ -35,6 +44,61 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.handle_toggle_playback_pause_request(handle, projected_state)
             }
         }
+    }
+
+    fn finish_seek_preparation_control_request(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        result: Result<Vec<GuiAttachedPlayerRuntimeAction>, String>,
+        description: &str,
+    ) -> bool {
+        match result {
+            Ok(actions) => {
+                let state_changed =
+                    self.apply_attached_player_runtime_actions_impl(actions, description);
+                if state_changed {
+                    self.refresh_player_state_impl();
+                }
+                true
+            }
+            Err(error) => {
+                Self::push_player_error(handle, error);
+                true
+            }
+        }
+    }
+
+    fn handle_keep_waiting_for_seek_preparation_request(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+    ) -> bool {
+        let result = self.session.as_mut().map_or_else(
+            || Err("No active stream seek preparation is available.".to_owned()),
+            |session| session.keep_waiting_for_seek_preparation(system_time_seconds()),
+        );
+        self.finish_seek_preparation_control_request(handle, result, "keep waiting")
+    }
+
+    fn handle_cancel_seek_preparation_request(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+    ) -> bool {
+        let result = self.session.as_mut().map_or_else(
+            || Err("No active stream seek preparation is available to cancel.".to_owned()),
+            |session| session.cancel_seek_preparation(system_time_seconds()),
+        );
+        self.finish_seek_preparation_control_request(handle, result, "cancel seek preparation")
+    }
+
+    fn handle_join_nearest_buffered_seek_preparation_request(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+    ) -> bool {
+        let result = self.session.as_mut().map_or_else(
+            || Err("No safe buffered stream position is available to join.".to_owned()),
+            |session| session.join_nearest_buffered_seek_preparation(system_time_seconds()),
+        );
+        self.finish_seek_preparation_control_request(handle, result, "join nearest buffered")
     }
 
     pub(super) fn handle_retry_player_launch_request(

@@ -437,9 +437,18 @@ fn localized_local_command_help_command_lines_legacy_compatible(
 
 pub(crate) fn local_command_help_lines_legacy_compatible(language: Option<&str>) -> Vec<String> {
     let command_lines = localized_local_command_help_command_lines_legacy_compatible(language);
-    let mut lines = Vec::with_capacity(command_lines.len() + 1);
+    let mut lines = Vec::with_capacity(command_lines.len() + 4);
     lines.push(localized_local_command_help_heading_legacy_compatible(language).to_owned());
     lines.extend(command_lines.iter().copied().map(str::to_owned));
+    lines.extend(
+        [
+            "\tkeep-waiting - extend the current stream seek preparation",
+            "\tjoin-nearest-buffered-position - join a nearby safe buffered position",
+            "\tcancel-and-remain - cancel an unissued stream seek and remain here",
+        ]
+        .into_iter()
+        .map(str::to_owned),
+    );
     lines
 }
 

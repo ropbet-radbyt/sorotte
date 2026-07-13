@@ -71,13 +71,13 @@ use crate::mpv_startup::{
     create_client_runtime_with_managed_mpv_support,
 };
 use crate::notifications::{
-    emit_autoplay_countdown_notification, emit_file_difference_notification,
-    emit_reconnect_correction_diagnostic, flush_autoplay_notifications_legacy_compatible,
-    flush_chat_notifications_legacy_compatible,
+    SeekPreparationNotificationState, emit_autoplay_countdown_notification,
+    emit_file_difference_notification, emit_reconnect_correction_diagnostic,
+    flush_autoplay_notifications_legacy_compatible, flush_chat_notifications_legacy_compatible,
     flush_controller_auth_notifications_legacy_compatible,
     flush_file_difference_notifications_legacy_compatible,
     flush_player_playback_telemetry_diagnostics, flush_reconnect_correction_diagnostics_to_sink,
-    flush_reconnect_notifications_legacy_compatible,
+    flush_reconnect_notifications_legacy_compatible, flush_seek_preparation_notifications,
     flush_user_change_notifications_legacy_compatible,
 };
 use crate::protocol_io::{

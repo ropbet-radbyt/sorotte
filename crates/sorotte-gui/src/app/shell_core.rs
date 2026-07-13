@@ -79,6 +79,8 @@ impl SorotteGuiShellAppState {
             playlist_shuffle_nonce: 0,
             media_index_status: Default::default(),
             player_setup_issue: None,
+            seek_preparation: None,
+            seek_preparation_degraded_reason: None,
             stream_helper: Default::default(),
             stream_helper_remediation: Default::default(),
             media_match: GuiMediaMatchState::from_stored_settings(&shell_settings),

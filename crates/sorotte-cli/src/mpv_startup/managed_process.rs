@@ -60,11 +60,11 @@ fn create_mpv_adapter_and_optional_managed_process_from_env(
 ) -> anyhow::Result<(MpvAdapter, Option<ManagedMpvProcessGuard>, Option<String>)> {
     let explicit_ipc_path = explicit_mpv_ipc_path_from_env();
     if let Some(ipc_path) = explicit_ipc_path {
-        return Ok((
-            create_mpv_adapter_from_path_or_disconnected(&ipc_path),
-            None,
-            None,
-        ));
+        let mut adapter = create_mpv_adapter_from_path_or_disconnected(&ipc_path);
+        let ytdl_probe_executable = legacy_overrides
+            .and_then(|overrides| ytdl_probe_executable_from_mpv_args(&overrides.player_args));
+        adapter.configure_ytdl_live_probe_executable(ytdl_probe_executable);
+        return Ok((adapter, None, None));
     }
 
     let mut managed_config = managed_mpv_launch_env_config_from_env();
@@ -155,17 +155,43 @@ fn spawn_managed_mpv_and_attach(
         child,
         ipc_cleanup_path,
     };
-    let adapter = connect_mpv_adapter_with_retry(&ipc_path, connect_timeout, connect_poll_interval)
-        .map_err(|err| {
-            anyhow!(
-                "managed mpv launched but JSON IPC attach failed (mpv_bin={}, ipc={}): {err}",
-                mpv_bin.display(),
-                ipc_path
-            )
-        })?;
+    let mut adapter =
+        connect_mpv_adapter_with_retry(&ipc_path, connect_timeout, connect_poll_interval).map_err(
+            |err| {
+                anyhow!(
+                    "managed mpv launched but JSON IPC attach failed (mpv_bin={}, ipc={}): {err}",
+                    mpv_bin.display(),
+                    ipc_path
+                )
+            },
+        )?;
+    adapter.configure_ytdl_live_probe_executable(ytdl_probe_executable_from_mpv_args(
+        &config.extra_args,
+    ));
 
     eprintln!("info: started managed mpv and attached JSON IPC at '{ipc_path}'");
     Ok((adapter, guard))
+}
+
+fn ytdl_probe_executable_from_mpv_args(args: &[String]) -> Option<PathBuf> {
+    args.iter().enumerate().find_map(|(index, argument)| {
+        let option_value = ["--script-opts-append=", "--script-opts="]
+            .iter()
+            .find_map(|prefix| argument.strip_prefix(prefix))
+            .or_else(|| {
+                matches!(argument.as_str(), "--script-opts-append" | "--script-opts")
+                    .then(|| args.get(index + 1).map(String::as_str))
+                    .flatten()
+            })?;
+        option_value.split(',').find_map(|entry| {
+            entry
+                .trim()
+                .strip_prefix("ytdl_hook-ytdl_path=")
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(PathBuf::from)
+        })
+    })
 }
 
 #[cfg(test)]
@@ -245,5 +271,41 @@ fn ipc_cleanup_path_for_platform(path: &str) -> Option<PathBuf> {
     #[cfg(not(windows))]
     {
         Some(PathBuf::from(path))
+    }
+}
+
+#[cfg(test)]
+mod ytdl_probe_configuration_tests {
+    use super::*;
+
+    #[test]
+    fn extracts_ytdl_hook_path_from_inline_and_separate_script_options() {
+        assert_eq!(
+            ytdl_probe_executable_from_mpv_args(&[
+                "--script-opts-append=ytdl_hook-ytdl_path=C:/Tools/yt-dlp.exe".to_owned(),
+            ]),
+            Some(PathBuf::from("C:/Tools/yt-dlp.exe"))
+        );
+        assert_eq!(
+            ytdl_probe_executable_from_mpv_args(&[
+                "--script-opts".to_owned(),
+                "osc-visibility=never,ytdl_hook-ytdl_path=/opt/sorotte/yt-dlp".to_owned(),
+            ]),
+            Some(PathBuf::from("/opt/sorotte/yt-dlp"))
+        );
+    }
+
+    #[test]
+    fn absent_or_empty_ytdl_hook_path_uses_adapter_path_fallback() {
+        assert_eq!(
+            ytdl_probe_executable_from_mpv_args(&["--fullscreen".to_owned()]),
+            None
+        );
+        assert_eq!(
+            ytdl_probe_executable_from_mpv_args(&[
+                "--script-opts-append=ytdl_hook-ytdl_path=".to_owned(),
+            ]),
+            None
+        );
     }
 }

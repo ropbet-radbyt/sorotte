@@ -55,7 +55,7 @@ use super::{
     resolve_legacy_startup_file_with_media_search_fallback_legacy_compatible,
     run_client_network_loop, run_connected_client_session,
     run_connected_client_session_with_legacy_startup_overrides,
-    run_planned_local_runtime_action_legacy_compatible,
+    run_planned_local_runtime_action_legacy_compatible, seek_preparation_diagnostic_messages,
     should_run_headless_automatic_update_check_legacy_compatible,
     should_skip_legacy_external_player_launch_due_to_mpv_integration_env,
     upsert_sorotte_ini_stored_client_settings_mvp, user_change_notification_hidden_from_osd,

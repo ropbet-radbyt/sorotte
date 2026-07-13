@@ -371,6 +371,9 @@ fn is_known_local_command_token_legacy_compatible(token: &str) -> bool {
             | "undo"
             | "u"
             | "revert"
+            | "keep-waiting"
+            | "join-nearest-buffered-position"
+            | "cancel-and-remain"
             | "list"
             | "l"
             | "users"
@@ -425,6 +428,15 @@ pub fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
     let trimmed = input.trim_end_matches(' ');
     if matches_local_command_alias_legacy_compatible(trimmed, &["help", "h", "?", "/?", "\\?"]) {
         return Some(LocalInputCommand::ShowHelp);
+    }
+    if matches_local_command_alias_legacy_compatible(trimmed, &["keep-waiting"]) {
+        return Some(LocalInputCommand::KeepWaitingForSeekPreparation);
+    }
+    if matches_local_command_alias_legacy_compatible(trimmed, &["join-nearest-buffered-position"]) {
+        return Some(LocalInputCommand::JoinNearestBufferedSeekPreparation);
+    }
+    if matches_local_command_alias_legacy_compatible(trimmed, &["cancel-and-remain"]) {
+        return Some(LocalInputCommand::CancelSeekPreparation);
     }
     if matches_local_command_alias_legacy_compatible(trimmed, &["undoplaylist"]) {
         return Some(LocalInputCommand::UndoPlaylistChange);

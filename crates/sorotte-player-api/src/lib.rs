@@ -487,6 +487,19 @@ pub enum PlayerTransportPhase {
     Failed,
 }
 
+/// Player-observed classification of the active media timeline.
+///
+/// `Unknown` is an explicit pending classification for adapters that can
+/// distinguish finite VOD from a moving live window. It is different from an
+/// absent sparse field, which means that the adapter provides no such signal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum PlayerTimelineKind {
+    #[default]
+    Unknown,
+    Vod,
+    SlidingLive,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlayerSeekableRange {
     pub start_seconds: f64,
@@ -528,11 +541,17 @@ pub struct PlayerTransportTelemetryUpdate {
     pub cache_buffering_percent: Option<f64>,
     pub seeking: Option<bool>,
     pub seekable: Option<bool>,
+    /// Current-generation player classification of the media timeline.
+    pub timeline_kind: Option<PlayerTimelineKind>,
     pub core_idle: Option<bool>,
     pub demuxer_cache_idle: Option<bool>,
     pub playback_restart_sequence: Option<u64>,
     pub eof_reached: Option<bool>,
     pub seekable_ranges: Option<Vec<PlayerSeekableRange>>,
+    /// Conservative locally usable window for a confirmed sliding source.
+    /// This never claims to be the source's complete DVR window; separate
+    /// tracks and uncached source regions can make it a strict subset.
+    pub known_live_seekable_window: Option<PlayerSeekableRange>,
     pub buffered_ahead_seconds: Option<f64>,
     pub buffered_ahead_bytes: Option<u64>,
     pub input_rate_bytes_per_second: Option<u64>,
@@ -567,6 +586,8 @@ impl PlayerTransportTelemetryUpdate {
     }
 
     pub fn merge_from(&mut self, newer: Self) {
+        let replaces_live_window = newer.timeline_kind == Some(PlayerTimelineKind::SlidingLive)
+            && newer.seekable_ranges.is_some();
         if let Some(media_generation) = newer.media_generation {
             self.media_generation = Some(media_generation);
         }
@@ -602,6 +623,9 @@ impl PlayerTransportTelemetryUpdate {
         if let Some(seekable) = newer.seekable {
             self.seekable = Some(seekable);
         }
+        if let Some(timeline_kind) = newer.timeline_kind {
+            self.timeline_kind = Some(timeline_kind);
+        }
         if let Some(core_idle) = newer.core_idle {
             self.core_idle = Some(core_idle);
         }
@@ -616,6 +640,11 @@ impl PlayerTransportTelemetryUpdate {
         }
         if let Some(seekable_ranges) = newer.seekable_ranges {
             self.seekable_ranges = Some(seekable_ranges);
+        }
+        if replaces_live_window {
+            self.known_live_seekable_window = newer.known_live_seekable_window;
+        } else if let Some(known_live_seekable_window) = newer.known_live_seekable_window {
+            self.known_live_seekable_window = Some(known_live_seekable_window);
         }
         if let Some(buffered_ahead_seconds) = newer.buffered_ahead_seconds {
             self.buffered_ahead_seconds = Some(buffered_ahead_seconds);
@@ -872,8 +901,8 @@ mod tests {
         PlayerCommand, PlayerCommandFailureKind, PlayerCommandId, PlayerCommandProgress,
         PlayerCommandProgressState, PlayerCommandResult, PlayerError, PlayerMediaGeneration,
         PlayerMediaLoadFailureKind, PlayerMediaLoadOutcome, PlayerObservationTimestamp,
-        PlayerPlaybackTelemetryUpdate, PlayerSeekableRange, PlayerTransportPhase,
-        PlayerTransportTelemetryUpdate,
+        PlayerPlaybackTelemetryUpdate, PlayerSeekableRange, PlayerTimelineKind,
+        PlayerTransportPhase, PlayerTransportTelemetryUpdate,
     };
 
     struct DummyPlayer;
@@ -1099,7 +1128,9 @@ mod tests {
         update.paused_for_cache = Some(true);
         update.seeking = Some(false);
         update.seekable = Some(true);
+        update.timeline_kind = Some(PlayerTimelineKind::SlidingLive);
         update.seekable_ranges = Some(vec![PlayerSeekableRange::new(10.0, 80.0)]);
+        update.known_live_seekable_window = Some(PlayerSeekableRange::new(10.0, 80.0));
         update.buffered_ahead_seconds = Some(5.25);
         update.input_rate_bytes_per_second = Some(2_000_000);
 
@@ -1116,9 +1147,33 @@ mod tests {
         assert_eq!(update.position_seconds, Some(42.5));
         assert_eq!(update.logical_pause, Some(false));
         assert_eq!(update.paused_for_cache, Some(true));
+        assert_eq!(update.timeline_kind, Some(PlayerTimelineKind::SlidingLive));
+        assert_eq!(
+            update.known_live_seekable_window,
+            Some(PlayerSeekableRange::new(10.0, 80.0))
+        );
         assert_eq!(update.seekable_ranges.as_ref().map(Vec::len), Some(1));
         assert_eq!(update.buffered_ahead_seconds, Some(5.25));
         assert_eq!(update.input_rate_bytes_per_second, Some(2_000_000));
+    }
+
+    #[test]
+    fn merging_empty_live_cache_snapshot_clears_previous_usable_window() {
+        let mut pending = PlayerTransportTelemetryUpdate {
+            timeline_kind: Some(PlayerTimelineKind::SlidingLive),
+            seekable_ranges: Some(vec![PlayerSeekableRange::new(80.0, 100.0)]),
+            known_live_seekable_window: Some(PlayerSeekableRange::new(80.0, 100.0)),
+            ..PlayerTransportTelemetryUpdate::default()
+        };
+        pending.merge_from(PlayerTransportTelemetryUpdate {
+            timeline_kind: Some(PlayerTimelineKind::SlidingLive),
+            seekable_ranges: Some(Vec::new()),
+            known_live_seekable_window: None,
+            ..PlayerTransportTelemetryUpdate::default()
+        });
+
+        assert_eq!(pending.seekable_ranges, Some(Vec::new()));
+        assert_eq!(pending.known_live_seekable_window, None);
     }
 
     #[test]

@@ -247,7 +247,9 @@ fn paused_playback_telemetry_polls_time_pos_without_async_seek_event() {
         r#"{"request_id":13,"error":"success"}"#,
         r#"{"request_id":14,"error":"success"}"#,
         r#"{"request_id":15,"error":"success"}"#,
-        r#"{"request_id":16,"error":"success","data":222.5}"#,
+        r#"{"request_id":16,"error":"success"}"#,
+        r#"{"request_id":17,"error":"success"}"#,
+        r#"{"request_id":18,"error":"success","data":222.5}"#,
     ]);
     let mut adapter = MpvAdapter::with_test_transport(transport);
 
@@ -271,13 +273,13 @@ fn paused_playback_telemetry_polls_time_pos_without_async_seek_event() {
     assert_eq!(adapter.position_seconds(), 222.5);
 
     let writes = state.writes();
-    assert_eq!(writes.len(), 16);
-    let last_payload: Value = serde_json::from_str(writes[15].trim_end()).expect("valid json");
+    assert_eq!(writes.len(), 18);
+    let last_payload: Value = serde_json::from_str(writes[17].trim_end()).expect("valid json");
     assert_eq!(
         last_payload,
         json!({
             "command": ["get_property", "time-pos"],
-            "request_id": 16
+            "request_id": 18
         })
     );
 }
@@ -372,11 +374,13 @@ fn transport_lifecycle_and_cache_hints_are_generation_correlated() {
         r#"{"request_id":13,"error":"success"}"#,
         r#"{"request_id":14,"error":"success"}"#,
         r#"{"request_id":15,"error":"success"}"#,
+        r#"{"request_id":16,"error":"success"}"#,
+        r#"{"request_id":17,"error":"success"}"#,
         r#"{"event":"property-change","name":"paused-for-cache","data":false}"#,
         r#"{"event":"property-change","name":"core-idle","data":true}"#,
-        r#"{"request_id":16,"error":"success"}"#,
+        r#"{"request_id":18,"error":"success"}"#,
         r#"{"event":"property-change","name":"core-idle","data":false}"#,
-        r#"{"request_id":17,"error":"success"}"#,
+        r#"{"request_id":19,"error":"success"}"#,
     ]);
     let mut adapter = MpvAdapter::with_test_transport(transport);
 
@@ -454,11 +458,15 @@ fn transport_lifecycle_and_cache_hints_are_generation_correlated() {
     assert_eq!(resumed.phase, Some(PlayerTransportPhase::Playing));
 
     let writes = state.writes();
-    assert_eq!(writes.len(), 17);
+    assert_eq!(writes.len(), 19);
     let seeking_observer: Value =
         serde_json::from_str(writes[9].trim_end()).expect("valid seeking observer json");
     let cache_state_observer: Value =
         serde_json::from_str(writes[12].trim_end()).expect("valid cache observer json");
+    let ytdl_live_observer: Value =
+        serde_json::from_str(writes[14].trim_end()).expect("valid ytdl live observer json");
+    let metadata_observer: Value =
+        serde_json::from_str(writes[15].trim_end()).expect("valid metadata observer json");
     assert_eq!(
         seeking_observer,
         json!({
@@ -471,6 +479,20 @@ fn transport_lifecycle_and_cache_hints_are_generation_correlated() {
         json!({
             "command": ["observe_property", 12, "demuxer-cache-state"],
             "request_id": 13
+        })
+    );
+    assert_eq!(
+        ytdl_live_observer,
+        json!({
+            "command": ["observe_property", 15, "metadata/by-key/ytdl_is_live"],
+            "request_id": 15
+        })
+    );
+    assert_eq!(
+        metadata_observer,
+        json!({
+            "command": ["observe_property", 16, "metadata"],
+            "request_id": 16
         })
     );
 }
@@ -613,8 +635,10 @@ fn stale_end_file_keeps_the_new_generation_loading() {
         r#"{"request_id":13,"error":"success"}"#,
         r#"{"request_id":14,"error":"success"}"#,
         r#"{"request_id":15,"error":"success"}"#,
-        r#"{"event":"end-file","playlist_entry_id":100,"reason":"stop"}"#,
         r#"{"request_id":16,"error":"success"}"#,
+        r#"{"request_id":17,"error":"success"}"#,
+        r#"{"event":"end-file","playlist_entry_id":100,"reason":"stop"}"#,
+        r#"{"request_id":18,"error":"success"}"#,
     ]);
     let mut adapter = MpvAdapter::with_test_transport(transport);
 

@@ -567,6 +567,7 @@ impl PlayerAdapter for MpvAdapter {
     fn take_transport_telemetry_update(&mut self) -> Option<PlayerTransportTelemetryUpdate> {
         self.ensure_transport_observers_registered_if_attached();
         self.drain_ipc_events_if_attached();
+        self.poll_ytdl_live_probe_completion();
         self.pending_transport_telemetry_updates.pop_front()
     }
 

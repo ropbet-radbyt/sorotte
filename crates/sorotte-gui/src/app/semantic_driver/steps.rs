@@ -1,7 +1,8 @@
 use super::super::{
     GuiDroppedFilesTarget, GuiPendingOperationKind, GuiPlayerSetupIssue, GuiPlayerSetupIssueKind,
-    GuiPlayerSetupRuntimeSnapshot, MainWindowRuntimeChatSnapshot, MainWindowRuntimeRoomSnapshot,
-    MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot,
+    GuiPlayerSetupRuntimeSnapshot, GuiSeekPreparationDegradedReason, GuiSeekPreparationPhase,
+    GuiSeekPreparationRuntimeSnapshot, GuiSeekPreparationState, MainWindowRuntimeChatSnapshot,
+    MainWindowRuntimeRoomSnapshot, MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -9,6 +10,7 @@ pub(in crate::app) enum GuiSemanticStep {
     ApplyMainWindowRuntimeSnapshot(MainWindowRuntimeSnapshot),
     ApplyMainWindowPlaylistSelection(Option<usize>),
     ApplyPlayerSetupRuntimeSnapshot(GuiPlayerSetupRuntimeSnapshot),
+    ApplySeekPreparationRuntimeSnapshot(GuiSeekPreparationRuntimeSnapshot),
     OpenMediaFiles(Vec<String>),
     DropMediaFiles {
         target: GuiDroppedFilesTarget,
@@ -115,6 +117,49 @@ impl GuiSemanticStep {
             "true" => Ok(true),
             "false" => Ok(false),
             _ => Err(format!("expected boolean 'true' or 'false', got {token:?}")),
+        }
+    }
+
+    fn parse_f64(token: &str, field: &str) -> Result<f64, String> {
+        token
+            .parse::<f64>()
+            .map_err(|_| format!("expected a number for {field}, got {token:?}"))
+    }
+
+    fn parse_optional_f64(token: &str, field: &str) -> Result<Option<f64>, String> {
+        if token == "none" {
+            Ok(None)
+        } else {
+            Self::parse_f64(token, field).map(Some)
+        }
+    }
+
+    fn parse_seek_preparation_phase(token: &str) -> Result<GuiSeekPreparationPhase, String> {
+        match token {
+            "seeking" => Ok(GuiSeekPreparationPhase::Seeking),
+            "fetching" => Ok(GuiSeekPreparationPhase::Fetching),
+            "refilling" => Ok(GuiSeekPreparationPhase::Refilling),
+            "ready-to-join" => Ok(GuiSeekPreparationPhase::ReadyToJoin),
+            "catching-up" => Ok(GuiSeekPreparationPhase::CatchingUp),
+            _ => Err(format!("unknown seek-preparation phase {token:?}")),
+        }
+    }
+
+    fn parse_seek_preparation_degraded_reason(
+        token: &str,
+    ) -> Result<GuiSeekPreparationDegradedReason, String> {
+        match token {
+            "non-seekable" => Ok(GuiSeekPreparationDegradedReason::NonSeekable),
+            "outside-live-window" => Ok(GuiSeekPreparationDegradedReason::OutsideLiveWindow),
+            "timed-out" => Ok(GuiSeekPreparationDegradedReason::TimedOut),
+            "timeline-window-unavailable" => {
+                Ok(GuiSeekPreparationDegradedReason::TimelineWindowUnavailable)
+            }
+            "transport-failed" => Ok(GuiSeekPreparationDegradedReason::TransportFailed),
+            "convergence-degraded" => Ok(GuiSeekPreparationDegradedReason::ConvergenceDegraded),
+            _ => Err(format!(
+                "unknown seek-preparation degraded reason {token:?}"
+            )),
         }
     }
 
@@ -358,228 +403,315 @@ impl GuiSemanticStep {
             .next()
             .ok_or_else(|| "script line is missing a command".to_owned())?;
 
-        let step =
-            match command {
-                "apply-main-window-runtime" => Self::ApplyMainWindowRuntimeSnapshot(
-                    Self::parse_main_window_runtime_snapshot(fields)?,
-                ),
-                "apply-player-setup-runtime" => {
-                    let kind =
-                        Self::parse_player_setup_issue_kind(fields.next().ok_or_else(|| {
-                            "apply-player-setup-runtime requires an issue kind".to_owned()
-                        })?)?;
-                    let message = Self::decode_text_token(fields.next().ok_or_else(|| {
-                        "apply-player-setup-runtime requires an issue message".to_owned()
-                    })?);
-                    if fields.next().is_some() {
-                        return Err(
-                            "apply-player-setup-runtime accepts exactly two arguments".to_owned()
-                        );
-                    }
-                    Self::ApplyPlayerSetupRuntimeSnapshot(GuiPlayerSetupRuntimeSnapshot {
-                        issue: Some(GuiPlayerSetupIssue { kind, message }),
-                    })
+        let step = match command {
+            "apply-main-window-runtime" => Self::ApplyMainWindowRuntimeSnapshot(
+                Self::parse_main_window_runtime_snapshot(fields)?,
+            ),
+            "apply-player-setup-runtime" => {
+                let kind =
+                    Self::parse_player_setup_issue_kind(fields.next().ok_or_else(|| {
+                        "apply-player-setup-runtime requires an issue kind".to_owned()
+                    })?)?;
+                let message = Self::decode_text_token(fields.next().ok_or_else(|| {
+                    "apply-player-setup-runtime requires an issue message".to_owned()
+                })?);
+                if fields.next().is_some() {
+                    return Err(
+                        "apply-player-setup-runtime accepts exactly two arguments".to_owned()
+                    );
                 }
-                "apply-main-window-playlist-selection" => {
-                    let index = Self::parse_optional_index(fields.next().ok_or_else(|| {
-                        "apply-main-window-playlist-selection requires an index or 'none'"
+                Self::ApplyPlayerSetupRuntimeSnapshot(GuiPlayerSetupRuntimeSnapshot {
+                    issue: Some(GuiPlayerSetupIssue { kind, message }),
+                })
+            }
+            "apply-seek-preparation-runtime" => {
+                let phase =
+                    Self::parse_seek_preparation_phase(fields.next().ok_or_else(|| {
+                        "apply-seek-preparation-runtime requires a phase".to_owned()
+                    })?)?;
+                let frozen_target_seconds = Self::parse_f64(
+                    fields.next().ok_or_else(|| {
+                        "apply-seek-preparation-runtime requires a frozen target".to_owned()
+                    })?,
+                    "frozen target",
+                )?;
+                let cache_refill_percent = Self::parse_optional_f64(
+                    fields.next().ok_or_else(|| {
+                        "apply-seek-preparation-runtime requires cache refill percent or 'none'"
+                            .to_owned()
+                    })?,
+                    "cache refill percent",
+                )?;
+                let buffered_ahead_seconds = Self::parse_optional_f64(
+                    fields.next().ok_or_else(|| {
+                        "apply-seek-preparation-runtime requires buffered-ahead seconds or 'none'"
+                            .to_owned()
+                    })?,
+                    "buffered-ahead seconds",
+                )?;
+                let nearest_safe_buffered_position_seconds = Self::parse_optional_f64(
+                        fields.next().ok_or_else(|| {
+                            "apply-seek-preparation-runtime requires nearest buffered position or 'none'"
+                                .to_owned()
+                        })?,
+                        "nearest buffered position",
+                    )?;
+                let can_keep_waiting = Self::parse_bool(fields.next().ok_or_else(|| {
+                    "apply-seek-preparation-runtime requires can_keep_waiting".to_owned()
+                })?)?;
+                let can_cancel_and_remain = Self::parse_bool(fields.next().ok_or_else(|| {
+                    "apply-seek-preparation-runtime requires can_cancel_and_remain".to_owned()
+                })?)?;
+                let can_join_nearest_buffered =
+                    Self::parse_bool(fields.next().ok_or_else(|| {
+                        "apply-seek-preparation-runtime requires can_join_nearest_buffered"
                             .to_owned()
                     })?)?;
-                    if fields.next().is_some() {
-                        return Err(
-                            "apply-main-window-playlist-selection accepts exactly one argument"
-                                .to_owned(),
-                        );
-                    }
-                    Self::ApplyMainWindowPlaylistSelection(index)
+                if fields.next().is_some() {
+                    return Err(
+                        "apply-seek-preparation-runtime accepts exactly eight arguments".to_owned(),
+                    );
                 }
-                "push-chat-message" => {
-                    let sender = fields
+                Self::ApplySeekPreparationRuntimeSnapshot(GuiSeekPreparationRuntimeSnapshot {
+                    preparation: Some(GuiSeekPreparationState {
+                        phase,
+                        frozen_target_seconds,
+                        cache_refill_percent,
+                        buffered_ahead_seconds,
+                        nearest_safe_buffered_position_seconds,
+                        can_keep_waiting,
+                        can_cancel_and_remain,
+                        can_join_nearest_buffered,
+                    }),
+                    degraded_reason: None,
+                })
+            }
+            "apply-seek-preparation-degraded-runtime" => {
+                let degraded_reason =
+                    Self::parse_seek_preparation_degraded_reason(fields.next().ok_or_else(
+                        || "apply-seek-preparation-degraded-runtime requires a reason".to_owned(),
+                    )?)?;
+                if fields.next().is_some() {
+                    return Err(
+                        "apply-seek-preparation-degraded-runtime accepts exactly one argument"
+                            .to_owned(),
+                    );
+                }
+                Self::ApplySeekPreparationRuntimeSnapshot(GuiSeekPreparationRuntimeSnapshot {
+                    preparation: None,
+                    degraded_reason: Some(degraded_reason),
+                })
+            }
+            "clear-seek-preparation-runtime" => {
+                if fields.next().is_some() {
+                    return Err("clear-seek-preparation-runtime accepts no arguments".to_owned());
+                }
+                Self::ApplySeekPreparationRuntimeSnapshot(
+                    GuiSeekPreparationRuntimeSnapshot::default(),
+                )
+            }
+            "apply-main-window-playlist-selection" => {
+                let index = Self::parse_optional_index(fields.next().ok_or_else(|| {
+                    "apply-main-window-playlist-selection requires an index or 'none'".to_owned()
+                })?)?;
+                if fields.next().is_some() {
+                    return Err(
+                        "apply-main-window-playlist-selection accepts exactly one argument"
+                            .to_owned(),
+                    );
+                }
+                Self::ApplyMainWindowPlaylistSelection(index)
+            }
+            "push-chat-message" => {
+                let sender = fields
+                    .next()
+                    .ok_or_else(|| "push-chat-message requires a sender".to_owned())?;
+                let message = fields
+                    .next()
+                    .ok_or_else(|| "push-chat-message requires a message".to_owned())?;
+                if fields.next().is_some() {
+                    return Err("push-chat-message accepts exactly two arguments".to_owned());
+                }
+                Self::PushChatMessage {
+                    sender: sender.to_owned(),
+                    message: message.to_owned(),
+                }
+            }
+            "open-media-files" => {
+                let entries = Self::split_list_token(
+                    fields
                         .next()
-                        .ok_or_else(|| "push-chat-message requires a sender".to_owned())?;
-                    let message = fields
+                        .ok_or_else(|| "open-media-files requires one or more paths".to_owned())?,
+                )
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+                if fields.next().is_some() {
+                    return Err("open-media-files accepts exactly one argument".to_owned());
+                }
+                if entries.is_empty() {
+                    return Err("open-media-files requires at least one path".to_owned());
+                }
+                Self::OpenMediaFiles(entries)
+            }
+            "drop-media-files" => {
+                let target = Self::parse_drop_target(
+                    fields
                         .next()
-                        .ok_or_else(|| "push-chat-message requires a message".to_owned())?;
-                    if fields.next().is_some() {
-                        return Err("push-chat-message accepts exactly two arguments".to_owned());
-                    }
-                    Self::PushChatMessage {
-                        sender: sender.to_owned(),
-                        message: message.to_owned(),
-                    }
-                }
-                "open-media-files" => {
-                    let entries =
-                        Self::split_list_token(fields.next().ok_or_else(|| {
-                            "open-media-files requires one or more paths".to_owned()
-                        })?)
-                        .into_iter()
-                        .map(str::to_owned)
-                        .collect::<Vec<_>>();
-                    if fields.next().is_some() {
-                        return Err("open-media-files accepts exactly one argument".to_owned());
-                    }
-                    if entries.is_empty() {
-                        return Err("open-media-files requires at least one path".to_owned());
-                    }
-                    Self::OpenMediaFiles(entries)
-                }
-                "drop-media-files" => {
-                    let target = Self::parse_drop_target(
-                        fields
-                            .next()
-                            .ok_or_else(|| "drop-media-files requires a target".to_owned())?,
-                    )?;
-                    let entries =
-                        Self::split_list_token(fields.next().ok_or_else(|| {
-                            "drop-media-files requires one or more paths".to_owned()
-                        })?)
-                        .into_iter()
-                        .map(str::to_owned)
-                        .collect::<Vec<_>>();
-                    if fields.next().is_some() {
-                        return Err("drop-media-files accepts exactly two arguments".to_owned());
-                    }
-                    if entries.is_empty() {
-                        return Err("drop-media-files requires at least one path".to_owned());
-                    }
-                    Self::DropMediaFiles {
-                        target,
-                        paths: entries,
-                    }
-                }
-                "add-media-search-directory" => {
-                    let path = fields
+                        .ok_or_else(|| "drop-media-files requires a target".to_owned())?,
+                )?;
+                let entries = Self::split_list_token(
+                    fields
                         .next()
-                        .ok_or_else(|| "add-media-search-directory requires a path".to_owned())?;
-                    if fields.next().is_some() {
-                        return Err(
-                            "add-media-search-directory accepts exactly one argument".to_owned()
-                        );
-                    }
-                    Self::AddMediaSearchDirectory(path.to_owned())
+                        .ok_or_else(|| "drop-media-files requires one or more paths".to_owned())?,
+                )
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+                if fields.next().is_some() {
+                    return Err("drop-media-files accepts exactly two arguments".to_owned());
                 }
-                "activate" => {
-                    let widget_id = fields
+                if entries.is_empty() {
+                    return Err("drop-media-files requires at least one path".to_owned());
+                }
+                Self::DropMediaFiles {
+                    target,
+                    paths: entries,
+                }
+            }
+            "add-media-search-directory" => {
+                let path = fields
+                    .next()
+                    .ok_or_else(|| "add-media-search-directory requires a path".to_owned())?;
+                if fields.next().is_some() {
+                    return Err(
+                        "add-media-search-directory accepts exactly one argument".to_owned()
+                    );
+                }
+                Self::AddMediaSearchDirectory(path.to_owned())
+            }
+            "activate" => {
+                let widget_id = fields
+                    .next()
+                    .ok_or_else(|| "activate requires a widget id".to_owned())?;
+                if fields.next().is_some() {
+                    return Err("activate accepts exactly one argument".to_owned());
+                }
+                Self::activate(widget_id)
+            }
+            "enter-text" => {
+                let widget_id = fields
+                    .next()
+                    .ok_or_else(|| "enter-text requires a widget id".to_owned())?;
+                let submit = Self::parse_bool(
+                    fields
                         .next()
-                        .ok_or_else(|| "activate requires a widget id".to_owned())?;
-                    if fields.next().is_some() {
-                        return Err("activate accepts exactly one argument".to_owned());
-                    }
-                    Self::activate(widget_id)
+                        .ok_or_else(|| "enter-text requires a submit flag".to_owned())?,
+                )?;
+                let value = fields
+                    .next()
+                    .ok_or_else(|| "enter-text requires a value".to_owned())?;
+                if fields.next().is_some() {
+                    return Err("enter-text accepts exactly three arguments".to_owned());
                 }
-                "enter-text" => {
-                    let widget_id = fields
+                Self::enter_text(widget_id, &Self::decode_text_token(value), submit)
+            }
+            "assert-label" => {
+                let widget_id = fields
+                    .next()
+                    .ok_or_else(|| "assert-label requires a widget id".to_owned())?;
+                let label = fields
+                    .next()
+                    .ok_or_else(|| "assert-label requires a label".to_owned())?;
+                if fields.next().is_some() {
+                    return Err("assert-label accepts exactly two arguments".to_owned());
+                }
+                Self::assert_widget_label(widget_id, label)
+            }
+            "assert-value" => {
+                let widget_id = fields
+                    .next()
+                    .ok_or_else(|| "assert-value requires a widget id".to_owned())?;
+                let value = fields
+                    .next()
+                    .ok_or_else(|| "assert-value requires a value token".to_owned())?;
+                if fields.next().is_some() {
+                    return Err("assert-value accepts exactly two arguments".to_owned());
+                }
+                let parsed_value = Self::parse_optional_value(value);
+                Self::assert_widget_value(widget_id, parsed_value.as_deref())
+            }
+            "assert-selected" => {
+                let widget_id = fields
+                    .next()
+                    .ok_or_else(|| "assert-selected requires a widget id".to_owned())?;
+                let selected = Self::parse_bool(
+                    fields
                         .next()
-                        .ok_or_else(|| "enter-text requires a widget id".to_owned())?;
-                    let submit = Self::parse_bool(
-                        fields
-                            .next()
-                            .ok_or_else(|| "enter-text requires a submit flag".to_owned())?,
-                    )?;
-                    let value = fields
+                        .ok_or_else(|| "assert-selected requires a boolean".to_owned())?,
+                )?;
+                if fields.next().is_some() {
+                    return Err("assert-selected accepts exactly two arguments".to_owned());
+                }
+                Self::assert_widget_selected(widget_id, selected)
+            }
+            "assert-enabled" => {
+                let widget_id = fields
+                    .next()
+                    .ok_or_else(|| "assert-enabled requires a widget id".to_owned())?;
+                let enabled = Self::parse_bool(
+                    fields
                         .next()
-                        .ok_or_else(|| "enter-text requires a value".to_owned())?;
-                    if fields.next().is_some() {
-                        return Err("enter-text accepts exactly three arguments".to_owned());
-                    }
-                    Self::enter_text(widget_id, &Self::decode_text_token(value), submit)
+                        .ok_or_else(|| "assert-enabled requires a boolean".to_owned())?,
+                )?;
+                if fields.next().is_some() {
+                    return Err("assert-enabled accepts exactly two arguments".to_owned());
                 }
-                "assert-label" => {
-                    let widget_id = fields
+                Self::assert_widget_enabled(widget_id, enabled)
+            }
+            "assert-pending" => {
+                let pending = Self::parse_pending(
+                    fields
                         .next()
-                        .ok_or_else(|| "assert-label requires a widget id".to_owned())?;
-                    let label = fields
-                        .next()
-                        .ok_or_else(|| "assert-label requires a label".to_owned())?;
-                    if fields.next().is_some() {
-                        return Err("assert-label accepts exactly two arguments".to_owned());
-                    }
-                    Self::assert_widget_label(widget_id, label)
+                        .ok_or_else(|| "assert-pending requires a pending label".to_owned())?,
+                )?;
+                if fields.next().is_some() {
+                    return Err("assert-pending accepts exactly one argument".to_owned());
                 }
-                "assert-value" => {
-                    let widget_id = fields
-                        .next()
-                        .ok_or_else(|| "assert-value requires a widget id".to_owned())?;
-                    let value = fields
-                        .next()
-                        .ok_or_else(|| "assert-value requires a value token".to_owned())?;
-                    if fields.next().is_some() {
-                        return Err("assert-value accepts exactly two arguments".to_owned());
-                    }
-                    let parsed_value = Self::parse_optional_value(value);
-                    Self::assert_widget_value(widget_id, parsed_value.as_deref())
+                Self::assert_pending(pending)
+            }
+            "complete-pending" => {
+                if fields.next().is_some() {
+                    return Err("complete-pending does not accept arguments".to_owned());
                 }
-                "assert-selected" => {
-                    let widget_id = fields
-                        .next()
-                        .ok_or_else(|| "assert-selected requires a widget id".to_owned())?;
-                    let selected = Self::parse_bool(
-                        fields
-                            .next()
-                            .ok_or_else(|| "assert-selected requires a boolean".to_owned())?,
-                    )?;
-                    if fields.next().is_some() {
-                        return Err("assert-selected accepts exactly two arguments".to_owned());
-                    }
-                    Self::assert_widget_selected(widget_id, selected)
+                Self::CompletePending
+            }
+            "cancel-pending" => {
+                if fields.next().is_some() {
+                    return Err("cancel-pending does not accept arguments".to_owned());
                 }
-                "assert-enabled" => {
-                    let widget_id = fields
-                        .next()
-                        .ok_or_else(|| "assert-enabled requires a widget id".to_owned())?;
-                    let enabled = Self::parse_bool(
-                        fields
-                            .next()
-                            .ok_or_else(|| "assert-enabled requires a boolean".to_owned())?,
-                    )?;
-                    if fields.next().is_some() {
-                        return Err("assert-enabled accepts exactly two arguments".to_owned());
-                    }
-                    Self::assert_widget_enabled(widget_id, enabled)
+                Self::CancelPending
+            }
+            "complete-pending-runtime" => {
+                if fields.next().is_some() {
+                    return Err("complete-pending-runtime does not accept arguments".to_owned());
                 }
-                "assert-pending" => {
-                    let pending =
-                        Self::parse_pending(fields.next().ok_or_else(|| {
-                            "assert-pending requires a pending label".to_owned()
-                        })?)?;
-                    if fields.next().is_some() {
-                        return Err("assert-pending accepts exactly one argument".to_owned());
-                    }
-                    Self::assert_pending(pending)
+                Self::CompletePendingRuntime
+            }
+            "close-modal" => {
+                if fields.next().is_some() {
+                    return Err("close-modal does not accept arguments".to_owned());
                 }
-                "complete-pending" => {
-                    if fields.next().is_some() {
-                        return Err("complete-pending does not accept arguments".to_owned());
-                    }
-                    Self::CompletePending
+                Self::CloseModal
+            }
+            "clear-notifications" => {
+                if fields.next().is_some() {
+                    return Err("clear-notifications does not accept arguments".to_owned());
                 }
-                "cancel-pending" => {
-                    if fields.next().is_some() {
-                        return Err("cancel-pending does not accept arguments".to_owned());
-                    }
-                    Self::CancelPending
-                }
-                "complete-pending-runtime" => {
-                    if fields.next().is_some() {
-                        return Err("complete-pending-runtime does not accept arguments".to_owned());
-                    }
-                    Self::CompletePendingRuntime
-                }
-                "close-modal" => {
-                    if fields.next().is_some() {
-                        return Err("close-modal does not accept arguments".to_owned());
-                    }
-                    Self::CloseModal
-                }
-                "clear-notifications" => {
-                    if fields.next().is_some() {
-                        return Err("clear-notifications does not accept arguments".to_owned());
-                    }
-                    Self::ClearNotifications
-                }
-                _ => return Err(format!("unknown semantic script command {command:?}")),
-            };
+                Self::ClearNotifications
+            }
+            _ => return Err(format!("unknown semantic script command {command:?}")),
+        };
 
         Ok(Some(step))
     }

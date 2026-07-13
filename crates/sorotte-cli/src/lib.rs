@@ -140,8 +140,8 @@ use self::notifications::{
     player_playback_telemetry_update_message_localized_legacy_compatible,
     reconnect_transition_notification_message,
     reconnect_transition_notification_message_localized_legacy_compatible,
-    user_change_notification_hidden_from_osd, user_change_notification_message,
-    user_change_notification_message_localized_legacy_compatible,
+    seek_preparation_diagnostic_messages, user_change_notification_hidden_from_osd,
+    user_change_notification_message, user_change_notification_message_localized_legacy_compatible,
 };
 use self::session_runner::run_client_network_loop_with_legacy_startup_overrides_and_stored_settings;
 #[cfg(test)]

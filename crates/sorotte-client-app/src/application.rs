@@ -1454,6 +1454,49 @@ where
         self.runtime.interrupt_external_playback_recovery()
     }
 
+    pub fn run_keep_waiting_for_seek_preparation(
+        &mut self,
+        now_seconds: f64,
+    ) -> Result<bool, PlayerError> {
+        self.runtime
+            .run_keep_waiting_for_seek_preparation(now_seconds)
+    }
+
+    pub fn run_cancel_seek_preparation(&mut self, now_seconds: f64) -> Result<bool, PlayerError> {
+        self.runtime.run_cancel_seek_preparation(now_seconds)
+    }
+
+    pub fn run_join_nearest_buffered_seek_preparation(
+        &mut self,
+        now_seconds: f64,
+    ) -> Result<bool, PlayerError> {
+        self.runtime
+            .run_join_nearest_buffered_seek_preparation(now_seconds)
+    }
+
+    pub fn keep_waiting_for_external_seek_preparation(
+        &mut self,
+        now_seconds: f64,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        self.runtime
+            .keep_waiting_for_external_seek_preparation(now_seconds)
+    }
+
+    pub fn cancel_external_seek_preparation(
+        &mut self,
+        now_seconds: f64,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        self.runtime.cancel_external_seek_preparation(now_seconds)
+    }
+
+    pub fn join_nearest_buffered_external_seek_preparation(
+        &mut self,
+        now_seconds: f64,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        self.runtime
+            .join_nearest_buffered_external_seek_preparation(now_seconds)
+    }
+
     pub fn report_external_coordinator_command_dispatch(
         &mut self,
         command_id: CoordinatorCommandId,
@@ -1945,6 +1988,45 @@ mod tests {
                 changed: true,
             }
         )));
+    }
+
+    #[test]
+    fn application_forwards_seek_preparation_actions_without_side_effects_when_inactive() {
+        let mut application =
+            ClientApplication::new(ClientSession::default(), TestPlayer::default());
+
+        assert!(
+            application
+                .keep_waiting_for_external_seek_preparation(1.0)
+                .is_empty()
+        );
+        assert!(
+            application
+                .join_nearest_buffered_external_seek_preparation(1.0)
+                .is_empty()
+        );
+        assert!(application.cancel_external_seek_preparation(1.0).is_empty());
+        assert!(
+            !application
+                .run_keep_waiting_for_seek_preparation(1.0)
+                .expect("inactive keep-waiting should remain a valid no-op")
+        );
+        assert!(
+            !application
+                .run_join_nearest_buffered_seek_preparation(1.0)
+                .expect("inactive nearest-buffered join should remain a valid no-op")
+        );
+        assert!(
+            !application
+                .run_cancel_seek_preparation(1.0)
+                .expect("inactive cancellation should remain a valid no-op")
+        );
+        assert!(
+            application
+                .playback_coordination_snapshot()
+                .seek_preparation
+                .is_none()
+        );
     }
 
     #[test]

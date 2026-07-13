@@ -192,9 +192,11 @@ pub use self::ping::ClientPingMetricsLegacyCompatible;
 pub(crate) use self::ping::unix_wall_clock_time_seconds_legacy_compatible;
 pub use self::playback_coordinator::{
     CoordinatorCommandId, CoordinatorPlayerCommand, DegradedPlaybackReason, DesiredRoomPlayback,
-    LogicalMediaId, MediaLoadIntent, MediaLoadPlan, MediaTransportKind, PlaybackCoordinator,
-    PlaybackCoordinatorAction, PlaybackCoordinatorConfig, PlaybackCoordinatorMetrics,
-    PlaybackDiagnostic, PlayerTransportObservation, RecoveryEpisodeSnapshot, RecoveryPolicy,
+    DesiredRoomPlaybackUpdateKind, LogicalMediaId, MediaLoadIntent, MediaLoadPlan,
+    MediaTransportKind, PlaybackCoordinator, PlaybackCoordinatorAction, PlaybackCoordinatorConfig,
+    PlaybackCoordinatorMetrics, PlaybackDiagnostic, PlayerTransportObservation,
+    RecoveryEpisodeSnapshot, RecoveryPolicy, SeekPreparationDegradedReason, SeekPreparationPhase,
+    SeekPreparationSnapshot, SeekPreparationTerminalOutcome, SeekTargetAvailability,
 };
 pub use self::runtime::{
     ClientPlayerIo, ClientRuntime, ClientSessionUpdate, PlaybackBarrierRoomBufferingConfig,

@@ -1,6 +1,192 @@
 use super::*;
 
 impl SorotteGuiShellAppState {
+    fn seek_preparation_panel(&self) -> Option<GuiWidgetNode> {
+        let Some(preparation) = self.seek_preparation.as_ref() else {
+            let reason = self.seek_preparation_degraded_reason?;
+            let status = match reason {
+                GuiSeekPreparationDegradedReason::NonSeekable => {
+                    "Could not complete seek: this stream is not seekable."
+                }
+                GuiSeekPreparationDegradedReason::OutsideLiveWindow => {
+                    "Could not complete seek: target is outside the current live window."
+                }
+                GuiSeekPreparationDegradedReason::TimedOut => "Buffer refill timed out.",
+                GuiSeekPreparationDegradedReason::TimelineWindowUnavailable => {
+                    "Could not determine a safe seek window for this stream."
+                }
+                GuiSeekPreparationDegradedReason::TransportFailed => {
+                    "Stream transport failed during seek preparation."
+                }
+                GuiSeekPreparationDegradedReason::ConvergenceDegraded => {
+                    "Seek completed, but room convergence degraded."
+                }
+            };
+            return Some(
+                GuiWidgetNode::branch(
+                    "main-window:seek-preparation",
+                    "Playback synchronization",
+                    GuiWidgetKind::Panel,
+                    vec![
+                        GuiWidgetNode::leaf(
+                            "main-window:seek-preparation:status",
+                            "Status",
+                            GuiWidgetKind::Status,
+                            Some(status.to_owned()),
+                            true,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            "main-window:seek-preparation:guidance",
+                            "Next step",
+                            GuiWidgetKind::Status,
+                            Some("Playback stayed in a safe degraded state. Choose a new seek or retry the stream when ready.".to_owned()),
+                            true,
+                            false,
+                        ),
+                    ],
+                )
+                .with_tooltip(
+                    "This status is scoped to the current media and clears on the next media or room transition.",
+                ),
+            );
+        };
+        let target = format_seek_preparation_timestamp(preparation.frozen_target_seconds);
+        let status = match preparation.phase {
+            GuiSeekPreparationPhase::Seeking => format!("Seeking to {target}"),
+            GuiSeekPreparationPhase::Fetching => "Fetching stream data".to_owned(),
+            GuiSeekPreparationPhase::Refilling => preparation.cache_refill_percent.map_or_else(
+                || "Buffer refill in progress".to_owned(),
+                |percent| format!("Buffer refill {percent:.0}%"),
+            ),
+            GuiSeekPreparationPhase::ReadyToJoin => "Ready; joining playback".to_owned(),
+            GuiSeekPreparationPhase::CatchingUp => "Catching up to the room".to_owned(),
+        };
+
+        let mut details = vec![
+            GuiWidgetNode::leaf(
+                "main-window:seek-preparation:status",
+                "Status",
+                GuiWidgetKind::Status,
+                Some(status),
+                true,
+                false,
+            ),
+            GuiWidgetNode::leaf(
+                "main-window:seek-preparation:target",
+                "Seek target",
+                GuiWidgetKind::Status,
+                Some(target),
+                true,
+                false,
+            ),
+        ];
+        if let Some(percent) = preparation.cache_refill_percent {
+            details.push(
+                GuiWidgetNode::leaf(
+                    "main-window:seek-preparation:refill",
+                    "Cache refill",
+                    GuiWidgetKind::Status,
+                    Some(format!("{percent:.0}%")),
+                    true,
+                    false,
+                )
+                .with_tooltip(
+                    "Player-reported cache refill progress. This is not file download progress.",
+                ),
+            );
+        }
+        if let Some(seconds) = preparation.buffered_ahead_seconds {
+            details.push(GuiWidgetNode::leaf(
+                "main-window:seek-preparation:buffered-ahead",
+                "Buffered ahead",
+                GuiWidgetKind::Status,
+                Some(format!("{seconds:.1} s")),
+                true,
+                false,
+            ));
+        }
+        if let Some(position) = preparation.nearest_safe_buffered_position_seconds {
+            details.push(GuiWidgetNode::leaf(
+                "main-window:seek-preparation:nearest-buffered",
+                "Nearest buffered position",
+                GuiWidgetKind::Status,
+                Some(format_seek_preparation_timestamp(position)),
+                true,
+                false,
+            ));
+        }
+
+        let mut actions = Vec::new();
+        if preparation.can_keep_waiting {
+            actions.push(
+                GuiWidgetNode::leaf(
+                    "main-window:seek-preparation:keep-waiting",
+                    "Keep waiting",
+                    GuiWidgetKind::Button,
+                    None,
+                    true,
+                    true,
+                )
+                .with_tooltip("Continue waiting for this stream position to refill."),
+            );
+        }
+        if preparation.can_cancel_and_remain {
+            actions.push(
+                GuiWidgetNode::leaf(
+                    "main-window:seek-preparation:cancel",
+                    "Cancel and remain here",
+                    GuiWidgetKind::Button,
+                    None,
+                    true,
+                    false,
+                )
+                .with_tooltip(
+                    "Cancel this local seek preparation and remain at the current position.",
+                ),
+            );
+        }
+        if preparation.can_join_nearest_buffered
+            && preparation.nearest_safe_buffered_position_seconds.is_some()
+        {
+            actions.push(
+                GuiWidgetNode::leaf(
+                    "main-window:seek-preparation:join-nearest",
+                    "Join nearest buffered position",
+                    GuiWidgetKind::Button,
+                    None,
+                    true,
+                    false,
+                )
+                .with_tooltip(
+                    "Opt in to the nearest position the player reports as safely buffered.",
+                ),
+            );
+        }
+        if !actions.is_empty() {
+            details.push(GuiWidgetNode::layout(
+                "main-window:seek-preparation:actions",
+                "Seek preparation actions",
+                GuiLayoutMode::ButtonWrap {
+                    min_button_width: 150.0,
+                },
+                actions,
+            ));
+        }
+
+        Some(
+            GuiWidgetNode::branch(
+                "main-window:seek-preparation",
+                "Playback synchronization",
+                GuiWidgetKind::Panel,
+                details,
+            )
+            .with_tooltip(
+                "Sorotte is holding the requested stream position steady while the player refills its cache.",
+            ),
+        )
+    }
+
     pub(super) fn main_window_summary_projection(&self) -> (Option<GuiWidgetNode>, GuiWidgetNode) {
         let can_edit_room = self.pending_operation.is_none();
         let can_set_local_room = can_edit_room && !self.commands.can_disconnect_session;
@@ -435,7 +621,10 @@ impl SorotteGuiShellAppState {
             "main-window:summary-column",
             "Summary Column",
             GuiLayoutMode::Stack,
-            vec![session_summary.clone()],
+            self.seek_preparation_panel()
+                .into_iter()
+                .chain([session_summary.clone()])
+                .collect(),
         );
 
         (player_setup_panel, summary_column)
@@ -472,6 +661,18 @@ impl SorotteGuiShellAppState {
         .with_tooltip(playlist_source_tooltip(&row.source_state));
         source_button.value = Some(row.source_state.status.label().to_owned());
         Some(source_button)
+    }
+}
+
+fn format_seek_preparation_timestamp(seconds: f64) -> String {
+    let total_seconds = seconds.max(0.0).round() as u64;
+    let hours = total_seconds / 3_600;
+    let minutes = (total_seconds % 3_600) / 60;
+    let seconds = total_seconds % 60;
+    if hours > 0 {
+        format!("{hours:02}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes:02}:{seconds:02}")
     }
 }
 

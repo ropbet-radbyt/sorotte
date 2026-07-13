@@ -184,6 +184,158 @@ fn emit_player_playback_drift_diagnostic(message: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn seek_target_clock_label(seconds: f64) -> String {
+    if !seconds.is_finite() {
+        return "unknown target".to_owned();
+    }
+    let total_seconds = seconds.max(0.0).round() as u64;
+    let hours = total_seconds / 3_600;
+    let minutes = total_seconds % 3_600 / 60;
+    let seconds = total_seconds % 60;
+    if hours == 0 {
+        format!("{minutes}:{seconds:02}")
+    } else {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    }
+}
+
+fn seek_target_availability_label(availability: SeekTargetAvailability) -> &'static str {
+    match availability {
+        SeekTargetAvailability::Cached => "cached",
+        SeekTargetAvailability::FetchRequired => "fetch-required",
+        SeekTargetAvailability::Unknown => "unknown",
+        SeekTargetAvailability::OutsideLiveWindow => "outside-live-window",
+        SeekTargetAvailability::NonSeekable => "non-seekable",
+    }
+}
+
+fn seek_preparation_terminal_label(outcome: SeekPreparationTerminalOutcome) -> String {
+    match outcome {
+        SeekPreparationTerminalOutcome::Ready => "ready".to_owned(),
+        SeekPreparationTerminalOutcome::Superseded => "superseded".to_owned(),
+        SeekPreparationTerminalOutcome::Cancelled => "cancelled".to_owned(),
+        SeekPreparationTerminalOutcome::Degraded(reason) => {
+            format!("degraded ({reason:?})")
+        }
+    }
+}
+
+/// Produces an observation-only diagnostic projection. In particular, mpv's
+/// cache percentage is called refill progress and no ETA is inferred from
+/// approximate input-rate or cache-duration telemetry.
+pub(crate) fn seek_preparation_diagnostic_messages(
+    preparation: Option<&SeekPreparationSnapshot>,
+    last_terminal_outcome: Option<SeekPreparationTerminalOutcome>,
+) -> Vec<String> {
+    let Some(preparation) = preparation else {
+        return last_terminal_outcome
+            .map(|outcome| {
+                vec![format!(
+                    "seek preparation: terminal={}",
+                    seek_preparation_terminal_label(outcome)
+                )]
+            })
+            .unwrap_or_default();
+    };
+
+    let target = seek_target_clock_label(preparation.frozen_target_seconds);
+    let availability = seek_target_availability_label(preparation.availability);
+    let status = match preparation.phase {
+        SeekPreparationPhase::Seeking => format!("Seeking to {target}"),
+        SeekPreparationPhase::Fetching => {
+            format!("Fetching stream data for {target}")
+        }
+        SeekPreparationPhase::Refilling => preparation.cache_buffering_percent.map_or_else(
+            || "Buffer refill in progress".to_owned(),
+            |percent| format!("Buffer refill: {:.0}%", percent.clamp(0.0, 100.0)),
+        ),
+        SeekPreparationPhase::ReadyToJoin => "Ready - joining the room".to_owned(),
+        SeekPreparationPhase::CatchingUp => "Catching up to the room".to_owned(),
+    };
+    let mut messages = vec![format!(
+        "seek preparation: {status}; availability={availability}"
+    )];
+    if let Some(buffered_ahead) = preparation
+        .buffered_ahead_seconds
+        .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
+    {
+        messages.push(format!(
+            "seek preparation: {buffered_ahead:.1} seconds buffered ahead"
+        ));
+    }
+
+    let mut actions = Vec::new();
+    if preparation.can_keep_waiting {
+        actions.push("keep-waiting");
+    }
+    if preparation.can_join_nearest_buffered {
+        actions.push("join-nearest-buffered-position");
+    }
+    if preparation.can_cancel_and_remain {
+        actions.push("cancel-and-remain");
+    }
+    if !actions.is_empty() {
+        messages.push(format!("seek preparation actions: {}", actions.join(",")));
+    }
+    messages
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct SeekPreparationNotificationState {
+    last_fingerprint: Option<String>,
+}
+
+pub(crate) fn next_seek_preparation_notification_messages(
+    preparation: Option<&SeekPreparationSnapshot>,
+    last_terminal: Option<&SeekPreparationSnapshot>,
+    state: &mut SeekPreparationNotificationState,
+) -> Vec<String> {
+    let (fingerprint, messages) = if let Some(preparation) = preparation {
+        let messages = seek_preparation_diagnostic_messages(Some(preparation), None);
+        (
+            Some(format!(
+                "active:{}:{}:{}:{messages:?}",
+                preparation.media_generation, preparation.load_attempt, preparation.id,
+            )),
+            messages,
+        )
+    } else if let Some(terminal) = last_terminal {
+        let outcome = terminal.terminal_outcome;
+        let messages = seek_preparation_diagnostic_messages(None, outcome);
+        (
+            outcome.map(|outcome| {
+                format!(
+                    "terminal:{}:{}:{}:{outcome:?}",
+                    terminal.media_generation, terminal.load_attempt, terminal.id,
+                )
+            }),
+            messages,
+        )
+    } else {
+        (None, Vec::new())
+    };
+
+    if state.last_fingerprint == fingerprint {
+        return Vec::new();
+    }
+    state.last_fingerprint = fingerprint;
+    messages
+}
+
+pub(crate) fn flush_seek_preparation_notifications(
+    runtime: &ClientApplication<MpvAdapter>,
+    state: &mut SeekPreparationNotificationState,
+) {
+    let coordination = runtime.playback_coordination_snapshot();
+    for message in next_seek_preparation_notification_messages(
+        coordination.seek_preparation.as_ref(),
+        coordination.last_seek_preparation_terminal.as_ref(),
+        state,
+    ) {
+        println!("{message}");
+    }
+}
+
 pub(crate) fn flush_player_playback_telemetry_diagnostics(
     runtime: &mut ClientApplication<MpvAdapter>,
     log_telemetry: bool,

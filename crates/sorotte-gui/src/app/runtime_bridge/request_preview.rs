@@ -434,7 +434,10 @@ impl GuiRuntimeRequest {
             | Self::CancelPlexPlaylistJobs { .. }
             | Self::SendChatMessage(_)
             | Self::SetPlaybackPaused(_)
-            | Self::TogglePlaybackPause => Vec::new(),
+            | Self::TogglePlaybackPause
+            | Self::KeepWaitingForSeekPreparation
+            | Self::CancelSeekPreparation
+            | Self::JoinNearestBufferedSeekPreparation => Vec::new(),
             Self::SeekOffset(offset_seconds) => {
                 let message = format!("Seek requested: {offset_seconds} seconds.");
                 vec![

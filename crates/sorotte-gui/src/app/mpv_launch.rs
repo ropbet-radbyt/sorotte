@@ -227,14 +227,22 @@ pub(crate) fn spawn_managed_mpv_and_attach(
         child,
         ipc_cleanup_path,
     };
-    let adapter = connect_mpv_adapter_with_retry(&ipc_path, connect_timeout, connect_poll_interval)
-        .map_err(|error| {
-            format!(
-                "managed mpv launched but GUI JSON IPC attach failed (mpv_bin={}, ipc={}): {error}",
-                config.program.display(),
-                ipc_path
-            )
-        })?;
+    let mut adapter = connect_mpv_adapter_with_retry(
+        &ipc_path,
+        connect_timeout,
+        connect_poll_interval,
+    )
+    .map_err(|error| {
+        format!(
+            "managed mpv launched but GUI JSON IPC attach failed (mpv_bin={}, ipc={}): {error}",
+            config.program.display(),
+            ipc_path
+        )
+    })?;
+    adapter.configure_ytdl_live_probe_environment(
+        downloader_path.map(Path::to_path_buf),
+        path_prefixes.to_vec(),
+    );
     Ok((adapter, guard))
 }
 

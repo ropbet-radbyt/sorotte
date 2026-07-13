@@ -70,6 +70,9 @@ impl SorotteGuiShellAppState {
             GuiShellAction::ApplyGuiPlayerSetupRuntimeSnapshot(snapshot) => {
                 self.apply_gui_player_setup_runtime_snapshot(snapshot)
             }
+            GuiShellAction::ApplyGuiSeekPreparationRuntimeSnapshot(snapshot) => {
+                self.apply_gui_seek_preparation_runtime_snapshot(snapshot)
+            }
             GuiShellAction::ApplyGuiStreamHelperRuntimeSnapshot(snapshot) => {
                 self.apply_gui_stream_helper_runtime_snapshot(snapshot)
             }

@@ -526,6 +526,7 @@ impl StreamingPlaybackConfig {
             stability_interval_seconds: self.recovery.stability_interval.get(),
             command_retry_budget: self.recovery.retry_budget,
             command_retry_cooldown_seconds: self.recovery.cooldown.get(),
+            seek_preparation_minimum_headroom_seconds: self.buffering.target.get(),
             ..sorotte_client_core::PlaybackCoordinatorConfig::default()
         }
     }
@@ -1974,6 +1975,7 @@ mod tests {
         );
         assert_eq!(coordinator.maximum_hard_seeks_per_episode, 1);
         assert_eq!(coordinator.maximum_catchup_rate, 1.08);
+        assert_eq!(coordinator.seek_preparation_minimum_headroom_seconds, 8.0);
     }
 
     #[test]
