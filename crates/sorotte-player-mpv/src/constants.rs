@@ -43,6 +43,7 @@ pub(crate) const MPV_PROPERTY_PATH: &str = "path";
 pub(crate) const MPV_PROPERTY_DURATION: &str = "duration";
 pub(crate) const MPV_PROPERTY_FILE_SIZE: &str = "file-size";
 pub(crate) const MPV_RESPONSE_SUCCESS: &str = "success";
+pub(crate) const MPV_RESPONSE_PROPERTY_UNAVAILABLE: &str = "property unavailable";
 pub(crate) const MPV_EVENT_PROPERTY_CHANGE: &str = "property-change";
 pub(crate) const MPV_EVENT_CLIENT_MESSAGE: &str = "client-message";
 pub(crate) const MPV_EVENT_FILE_LOADED: &str = "file-loaded";

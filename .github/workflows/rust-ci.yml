@@ -68,7 +68,7 @@ jobs:
 
   mpv-pr-semantics:
     if: github.event_name != 'schedule'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 15
     defaults:
       run:
@@ -85,10 +85,88 @@ jobs:
       - name: Install deterministic media-test player
         run: sudo apt-get update && sudo apt-get install --yes mpv
 
+      - name: Verify legacy mpv command layout
+        run: |
+          python - <<'PY'
+          import re
+          import subprocess
+
+          first_line = subprocess.check_output(["mpv", "--version"], text=True).splitlines()[0]
+          match = re.search(r"\b(\d+)\.(\d+)(?:\.|\b)", first_line)
+          assert match, f"could not parse mpv version: {first_line}"
+          version = tuple(map(int, match.groups()))
+          assert version < (0, 38), f"expected pre-0.38 mpv, received: {first_line}"
+          print(first_line)
+          PY
+
       - name: Required real mpv pause, seek, and resume semantics
         run: >-
           cargo test -p sorotte-sim --test mpv_rebuffer_harness
           real_mpv_pause_seek_resume_semantics -- --ignored --exact --nocapture
+
+  mpv-current-pr-semantics:
+    if: github.event_name != 'schedule'
+    name: Real mpv semantics (current v0.41.0)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      # This is the dependency image used by mpv's own upstream Linux CI.
+      image: registry.opensuse.org/home/mia/images/images/mpv-ci:stable-deps
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - name: Checkout Sorotte
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.96.0
+
+      - name: Checkout current official mpv
+        uses: actions/checkout@v4
+        with:
+          repository: mpv-player/mpv
+          ref: v0.41.0
+          path: target/mpv-current
+
+      - name: Build current mpv
+        working-directory: target/mpv-current
+        run: |
+          meson setup build \
+            -Dlibmpv=false \
+            -Dtests=false \
+            -Dmanpage-build=disabled
+          meson compile -C build mpv
+
+      - name: Verify current mpv command layout
+        run: |
+          export PATH="$GITHUB_WORKSPACE/target/mpv-current/build:$PATH"
+          python3 - <<'PY'
+          import re
+          import subprocess
+
+          first_line = subprocess.check_output(["mpv", "--version"], text=True).splitlines()[0]
+          match = re.search(r"\b(\d+)\.(\d+)(?:\.|\b)", first_line)
+          assert match, f"could not parse mpv version: {first_line}"
+          version = tuple(map(int, match.groups()))
+          assert version >= (0, 38), f"expected mpv 0.38 or newer, received: {first_line}"
+          print(first_line)
+          PY
+
+      - name: Required real mpv pause, seek, and resume semantics
+        run: |
+          export PATH="$GITHUB_WORKSPACE/target/mpv-current/build:$PATH"
+          cargo test -p sorotte-sim --test mpv_rebuffer_harness \
+            real_mpv_pause_seek_resume_semantics -- --ignored --exact --nocapture
+
+      - name: Full deterministic HTTP-stall and rebuffer harness
+        run: |
+          export PATH="$GITHUB_WORKSPACE/target/mpv-current/build:$PATH"
+          cargo test -p sorotte-sim --test mpv_rebuffer_harness \
+            real_mpv_clients_keep_seek_recovery_bounded_during_an_http_stall \
+            -- --ignored --exact --nocapture
 
   nightly-deep:
     if: github.event_name == 'schedule'

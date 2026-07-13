@@ -63,7 +63,12 @@ impl Default for PlaybackBarrierRoomBufferingConfig {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlaybackCoordinationSnapshot {
     pub media_generation: Option<u64>,
+    /// Compatibility view used by attached-player integrations. Dormant
+    /// controlled-room intent is deliberately hidden until fresh authority
+    /// for the current connection has been established.
     pub pending_local_pause_intent: Option<bool>,
+    pub pending_local_pause_intent_dormant: bool,
+    pub last_local_pause_intent_stage_accepted: Option<bool>,
     pub diagnostic: PlaybackDiagnostic,
     pub recovery_episode: Option<RecoveryEpisodeSnapshot>,
     pub metrics: PlaybackCoordinatorMetrics,
@@ -188,6 +193,37 @@ struct ReconnectReconciliation {
     target_revision: Option<u64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalIntentAuthorization {
+    Authorized,
+    AwaitingControlledRoomReauthentication,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalControlAuthorityFreshness {
+    Awaiting,
+    Authorized,
+    Denied,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConnectionLocalControlAuthority {
+    room: String,
+    username: Option<String>,
+    connection_generation: u64,
+    freshness: LocalControlAuthorityFreshness,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingLocalPauseIntent {
+    paused: bool,
+    room: String,
+    local_media_generation: u64,
+    connection_generation: u64,
+    authorization: LocalIntentAuthorization,
+    replay_player_after_reauthorization: bool,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct RuntimePlaybackCoordination {
     coordinator: PlaybackCoordinator,
@@ -203,7 +239,10 @@ pub(crate) struct RuntimePlaybackCoordination {
     desired_generation: Option<u64>,
     desired_revision: u64,
     desired_fingerprint: Option<RoomDesiredFingerprint>,
-    pending_local_pause_intent: Option<bool>,
+    pending_local_pause_intent: Option<PendingLocalPauseIntent>,
+    last_local_pause_intent_stage_accepted: Option<bool>,
+    connection_generation: u64,
+    local_control_authority: Option<ConnectionLocalControlAuthority>,
     pending_forced_seek_revision: Option<u64>,
     transport_telemetry_observed: bool,
     transport_telemetry_available: bool,
@@ -316,6 +355,7 @@ impl RuntimePlaybackCoordination {
             self.desired_generation = None;
             self.desired_fingerprint = None;
             self.pending_local_pause_intent = None;
+            self.last_local_pause_intent_stage_accepted = None;
             self.pending_forced_seek_revision = None;
             self.last_applied_revision = None;
             self.last_started_revision = None;
@@ -367,6 +407,7 @@ impl RuntimePlaybackCoordination {
         self.last_coordinator_now_seconds = None;
         self.transport_telemetry_observed = false;
         self.pending_local_pause_intent = None;
+        self.last_local_pause_intent_stage_accepted = None;
         self.last_reported_barrier_ready = None;
         self.last_reported_barrier_started = None;
         self.last_reported_room_buffering = None;
@@ -416,9 +457,20 @@ impl RuntimePlaybackCoordination {
     }
 
     pub(crate) fn snapshot(&self) -> PlaybackCoordinationSnapshot {
+        let active_local_pause_intent = self
+            .pending_local_pause_intent
+            .as_ref()
+            .filter(|intent| {
+                intent.connection_generation == self.connection_generation
+                    && intent.authorization == LocalIntentAuthorization::Authorized
+            })
+            .map(|intent| intent.paused);
         PlaybackCoordinationSnapshot {
             media_generation: self.coordinator.current_media_generation(),
-            pending_local_pause_intent: self.pending_local_pause_intent,
+            pending_local_pause_intent: active_local_pause_intent,
+            pending_local_pause_intent_dormant: self.pending_local_pause_intent.is_some()
+                && active_local_pause_intent.is_none(),
+            last_local_pause_intent_stage_accepted: self.last_local_pause_intent_stage_accepted,
             diagnostic: self.coordinator.diagnostic(),
             recovery_episode: self.coordinator.recovery_episode(),
             metrics: self.coordinator.metrics().clone(),
@@ -467,7 +519,72 @@ impl RuntimePlaybackCoordination {
         self.next_room_barrier_request_nonce
     }
 
-    pub(crate) fn begin_protocol_connection_generation(&mut self) {
+    fn bind_local_control_authority_context(
+        &mut self,
+        session: &ClientSession,
+        controlled_freshness: LocalControlAuthorityFreshness,
+    ) {
+        let room = session.room().unwrap_or_default().to_owned();
+        self.local_control_authority = Some(ConnectionLocalControlAuthority {
+            freshness: if controlled_room_name(&room) {
+                controlled_freshness
+            } else {
+                LocalControlAuthorityFreshness::Authorized
+            },
+            room,
+            username: session.username().map(str::to_owned),
+            connection_generation: self.connection_generation,
+        });
+    }
+
+    fn local_control_authority_freshness(
+        &self,
+        session: &ClientSession,
+    ) -> Option<LocalControlAuthorityFreshness> {
+        let authority = self.local_control_authority.as_ref()?;
+        (authority.connection_generation == self.connection_generation
+            && Some(authority.room.as_str()) == session.room()
+            && authority.username.as_deref() == session.username())
+        .then_some(authority.freshness)
+    }
+
+    fn current_connection_local_control_is_authorized(&self, session: &ClientSession) -> bool {
+        match self.local_control_authority_freshness(session) {
+            Some(LocalControlAuthorityFreshness::Authorized) => true,
+            Some(
+                LocalControlAuthorityFreshness::Awaiting | LocalControlAuthorityFreshness::Denied,
+            ) => false,
+            // Coordination used directly in lower-level tests has no
+            // connection lifecycle binding. Preserve that compatibility
+            // path, but never fall back to a cached session projection once
+            // connection-scoped authority tracking has begun.
+            None if self.local_control_authority.is_none() => {
+                session.local_can_control() == Some(true)
+            }
+            None => false,
+        }
+    }
+
+    pub(crate) fn begin_protocol_connection_generation(&mut self, session: &ClientSession) {
+        self.connection_generation = self.connection_generation.saturating_add(1).max(1);
+        self.bind_local_control_authority_context(
+            session,
+            LocalControlAuthorityFreshness::Awaiting,
+        );
+        if let Some(intent) = self.pending_local_pause_intent.as_mut() {
+            if controlled_room_name(&intent.room) {
+                // A controller projection restored from the previous session
+                // is not authority for the replacement transport. Keep the
+                // user's command as dormant semantic intent until this
+                // connection receives fresh controller evidence.
+                intent.authorization =
+                    LocalIntentAuthorization::AwaitingControlledRoomReauthentication;
+                intent.replay_player_after_reauthorization = true;
+            } else {
+                intent.connection_generation = self.connection_generation;
+                intent.authorization = LocalIntentAuthorization::Authorized;
+            }
+        }
         self.last_reported_barrier_ready = None;
         self.last_reported_barrier_started = None;
         self.last_reported_room_buffering = None;
@@ -713,6 +830,13 @@ impl RuntimePlaybackCoordination {
 
     pub(crate) fn handle_authoritative_playback_barrier_room_change(&mut self) {
         self.pending_local_pause_intent = None;
+        self.last_local_pause_intent_stage_accepted = None;
+        self.local_control_authority = Some(ConnectionLocalControlAuthority {
+            room: String::new(),
+            username: None,
+            connection_generation: self.connection_generation,
+            freshness: LocalControlAuthorityFreshness::Awaiting,
+        });
         if self.initiated_barrier.is_some()
             || self.accepted_barrier.is_some()
             || self.pending_barrier_recovery.is_some()
@@ -723,6 +847,13 @@ impl RuntimePlaybackCoordination {
             // may safely bind to the authoritative destination room.
             pending.room = None;
         }
+    }
+
+    pub(crate) fn bind_authoritative_room_control_context(&mut self, session: &ClientSession) {
+        self.bind_local_control_authority_context(
+            session,
+            LocalControlAuthorityFreshness::Awaiting,
+        );
     }
 
     pub(crate) fn observe_playback_barrier_server_extension(
@@ -1265,12 +1396,123 @@ impl RuntimePlaybackCoordination {
             .map(|observation| observation.observed_at_seconds)
     }
 
-    pub(crate) fn stage_local_pause_intent(&mut self, paused: bool) {
-        self.pending_local_pause_intent = Some(paused);
+    pub(crate) fn stage_local_pause_intent(&mut self, paused: bool, session: &ClientSession) {
+        let Some(room) = session.room() else {
+            self.pending_local_pause_intent = None;
+            self.last_local_pause_intent_stage_accepted = None;
+            return;
+        };
+        let Some(local_media_generation) = self.coordinator.current_media_generation() else {
+            self.pending_local_pause_intent = None;
+            self.last_local_pause_intent_stage_accepted = None;
+            return;
+        };
+        let controlled_room = controlled_room_name(room);
+        let authorization =
+            if !controlled_room || self.current_connection_local_control_is_authorized(session) {
+                LocalIntentAuthorization::Authorized
+            } else {
+                match self.local_control_authority_freshness(session) {
+                    Some(LocalControlAuthorityFreshness::Denied) => {
+                        // Fresh, correlated denial is conclusive for this
+                        // connection. Do not retain a command that could replay
+                        // after an unrelated authority transition.
+                        self.pending_local_pause_intent = None;
+                        self.last_local_pause_intent_stage_accepted = Some(false);
+                        return;
+                    }
+                    Some(LocalControlAuthorityFreshness::Awaiting) => {
+                        LocalIntentAuthorization::AwaitingControlledRoomReauthentication
+                    }
+                    None if self.local_control_authority.is_some() => {
+                        LocalIntentAuthorization::AwaitingControlledRoomReauthentication
+                    }
+                    None if session.local_can_control().is_none() => {
+                        LocalIntentAuthorization::AwaitingControlledRoomReauthentication
+                    }
+                    None => {
+                        // A direct coordination caller with a known
+                        // non-controller projection has no connection-scoped
+                        // evidence channel, so reject immediately.
+                        self.pending_local_pause_intent = None;
+                        self.last_local_pause_intent_stage_accepted = Some(false);
+                        return;
+                    }
+                    Some(LocalControlAuthorityFreshness::Authorized) => {
+                        unreachable!("authorized authority was handled above")
+                    }
+                }
+            };
+        self.pending_local_pause_intent = Some(PendingLocalPauseIntent {
+            paused,
+            room: room.to_owned(),
+            local_media_generation,
+            connection_generation: self.connection_generation,
+            authorization,
+            replay_player_after_reauthorization: authorization
+                == LocalIntentAuthorization::AwaitingControlledRoomReauthentication,
+        });
+        self.last_local_pause_intent_stage_accepted = Some(true);
     }
 
     pub(crate) fn rollback_local_pause_intent(&mut self, paused: bool) {
-        if self.pending_local_pause_intent == Some(paused) {
+        if self
+            .pending_local_pause_intent
+            .as_ref()
+            .is_some_and(|intent| intent.paused == paused)
+        {
+            self.pending_local_pause_intent = None;
+            self.last_local_pause_intent_stage_accepted = None;
+        }
+    }
+
+    pub(crate) fn observe_local_control_authority(
+        &mut self,
+        session: &ClientSession,
+        room: Option<&str>,
+        username: Option<&str>,
+        authorized: bool,
+    ) {
+        let target_room = room.or_else(|| session.room());
+        let target_username = username.or_else(|| session.username());
+        if target_room != session.room() || target_username != session.username() {
+            return;
+        }
+
+        let Some(target_room) = target_room else {
+            return;
+        };
+        let authority_allows_control = !controlled_room_name(target_room) || authorized;
+        self.local_control_authority = Some(ConnectionLocalControlAuthority {
+            room: target_room.to_owned(),
+            username: target_username.map(str::to_owned),
+            connection_generation: self.connection_generation,
+            freshness: if authority_allows_control {
+                LocalControlAuthorityFreshness::Authorized
+            } else {
+                LocalControlAuthorityFreshness::Denied
+            },
+        });
+
+        let pending_context_matches =
+            self.pending_local_pause_intent
+                .as_ref()
+                .is_some_and(|intent| {
+                    target_room == intent.room
+                        && self.coordinator.current_media_generation()
+                            == Some(intent.local_media_generation)
+                });
+        if !pending_context_matches {
+            return;
+        }
+        if authority_allows_control {
+            let intent = self
+                .pending_local_pause_intent
+                .as_mut()
+                .expect("matching pause intent must still exist");
+            intent.connection_generation = self.connection_generation;
+            intent.authorization = LocalIntentAuthorization::Authorized;
+        } else {
             self.pending_local_pause_intent = None;
         }
     }
@@ -1358,7 +1600,7 @@ impl RuntimePlaybackCoordination {
             | RoomPlaystateAuthority::LegacyLocalEcho
             | RoomPlaystateAuthority::ServerBarrier { .. } => (None, None),
         };
-        let local_intent_may_control_room = match authority {
+        let authority_may_accept_local_intent = match authority {
             RoomPlaystateAuthority::LegacyRemoteUser | RoomPlaystateAuthority::LegacyLocalEcho => {
                 true
             }
@@ -1373,20 +1615,66 @@ impl RuntimePlaybackCoordination {
             RoomPlaystateAuthority::ServerBufferingPolicy { .. } => false,
         };
         let mut local_intent_active = false;
-        if local_intent_may_control_room {
-            if let Some(local_paused) = self.pending_local_pause_intent {
-                if paused == local_paused {
-                    // The canonical echo has accepted the local command.
-                    self.pending_local_pause_intent = None;
-                } else {
-                    // Keep the local command authoritative across the
-                    // transport observation that can arrive before its
-                    // canonical server echo. Treating the overlay as a
-                    // local echo also prevents a forced seek or command
-                    // replay against the stale legacy state.
-                    paused = local_paused;
-                    local_intent_active = true;
-                }
+        let mut local_intent_requires_player_replay = false;
+        let intent_context_matches =
+            self.pending_local_pause_intent
+                .as_ref()
+                .is_some_and(|intent| {
+                    session.room() == Some(intent.room.as_str())
+                        && intent.local_media_generation == media_generation
+                });
+        if self.pending_local_pause_intent.is_some() && !intent_context_matches {
+            self.pending_local_pause_intent = None;
+        }
+        if canonical_local_echo
+            && self
+                .pending_local_pause_intent
+                .as_ref()
+                .is_some_and(|intent| intent.paused == paused)
+        {
+            // A matching canonical self-echo retires the command even if its
+            // originating connection is now dormant.
+            self.pending_local_pause_intent = None;
+        } else if authority_may_accept_local_intent {
+            let controlled_room = session.room().is_some_and(controlled_room_name);
+            let local_control_authority = session.local_can_control();
+            let connection_authority_allows_overlay =
+                !controlled_room || self.current_connection_local_control_is_authorized(session);
+            let may_overlay = self
+                .pending_local_pause_intent
+                .as_ref()
+                .is_some_and(|intent| {
+                    intent.connection_generation == self.connection_generation
+                        && intent.authorization == LocalIntentAuthorization::Authorized
+                        && connection_authority_allows_overlay
+                });
+            if controlled_room
+                && local_control_authority == Some(false)
+                && self
+                    .pending_local_pause_intent
+                    .as_ref()
+                    .is_some_and(|intent| {
+                        intent.authorization == LocalIntentAuthorization::Authorized
+                    })
+            {
+                // A known non-controller cannot retain a command for a later
+                // authority transition. A reconnect-dormant intent waits for
+                // fresh correlated auth/user evidence instead of trusting a
+                // provisional List projection.
+                self.pending_local_pause_intent = None;
+            } else if may_overlay
+                && let Some((local_paused, replay_player)) = self
+                    .pending_local_pause_intent
+                    .as_ref()
+                    .map(|intent| (intent.paused, intent.replay_player_after_reauthorization))
+                && paused != local_paused
+            {
+                // Keep an authorized command authoritative across the
+                // transport observation that can arrive before its canonical
+                // server echo. Dormant reconnect intent never reaches here.
+                paused = local_paused;
+                local_intent_active = true;
+                local_intent_requires_player_replay = replay_player;
             }
         } else {
             // Preparing/Committed start synchronization and room buffering
@@ -1394,7 +1682,8 @@ impl RuntimePlaybackCoordination {
             // a controller's ordinary play/pause command resolves it.
             self.pending_local_pause_intent = None;
         }
-        let local_echo = canonical_local_echo || local_intent_active;
+        let local_echo =
+            canonical_local_echo || (local_intent_active && !local_intent_requires_player_replay);
         if !position_seconds.is_finite() {
             return Vec::new();
         }
@@ -1577,6 +1866,16 @@ fn logical_media_ids_match(local: &str, room: &str) -> bool {
     // strings, and basenames are not safe equivalence relations: two distinct
     // YouTube videos or two private files can otherwise collapse together.
     local == room
+}
+
+fn controlled_room_name(room_name: &str) -> bool {
+    if !room_name.starts_with('+') {
+        return false;
+    }
+    let Some((_, hash)) = room_name.rsplit_once(':') else {
+        return false;
+    };
+    hash.len() == 12 && hash.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 fn normalized_positive_seconds(value: f64, fallback: f64) -> f64 {
@@ -1816,7 +2115,8 @@ where
         paused: bool,
         now_seconds: f64,
     ) -> Vec<PlaybackCoordinatorAction> {
-        self.playback_coordination.stage_local_pause_intent(paused);
+        self.playback_coordination
+            .stage_local_pause_intent(paused, &self.session);
         let actions = self
             .playback_coordination
             .update_desired_from_session_with_replay(&self.session, now_seconds, false);
@@ -2138,6 +2438,24 @@ mod tests {
         session
     }
 
+    fn controlled_session_with_authority(controller: bool) -> ClientSession {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.7.5","features":{"managedRooms":true,"sorottePlaybackBarrierV1":true}}}"#,
+            )
+            .expect("controlled-room hello should apply");
+        let controller_update = if controller {
+            r#"{"Set":{"user":{"alice":{"room":{"name":"+room:ABCDEF123456"},"controller":true}}}}"#
+        } else {
+            r#"{"Set":{"user":{"alice":{"room":{"name":"+room:ABCDEF123456"},"controller":false}}}}"#
+        };
+        session
+            .apply_message_json(controller_update)
+            .expect("local controller projection should apply");
+        session
+    }
+
     fn controlled_barrier_session() -> ClientSession {
         let mut session = ClientSession::default();
         session
@@ -2314,6 +2632,66 @@ mod tests {
             LogicalMediaId::new("reconnect-media").unwrap(),
             MediaTransportKind::NetworkVod,
             9.0,
+        );
+        runtime
+    }
+
+    fn controlled_runtime_after_reconnect_without_fresh_authority(
+        logical_media_id: &str,
+    ) -> ClientRuntime<CoordinatedTestPlayer, QueuedRuntimeControl> {
+        let mut session = controlled_session_with_authority(true);
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+                0.0,
+            )
+            .unwrap();
+        let mut runtime = ClientRuntime::new(
+            session,
+            CoordinatedTestPlayer::default(),
+            QueuedRuntimeControl::default(),
+        );
+        runtime.playback_coordination.prepare_media(
+            LogicalMediaId::new(logical_media_id).unwrap(),
+            MediaTransportKind::LocalFile,
+            0.0,
+        );
+        runtime.reconcile_external_player_playback(0.0);
+        runtime.observe_external_player_transport(
+            paused_transport(1, 0.0, PlayerTransportPhase::ReadyPaused, 10.0),
+            0.0,
+        );
+
+        runtime.begin_protocol_connection_generation();
+        runtime.session_mut().reset_sync_state_for_reconnect();
+        runtime
+            .session_mut()
+            .apply_message_json_at(
+                r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.7.5","features":{"managedRooms":true,"sorottePlaybackBarrierV1":true}}}"#,
+                1.0,
+            )
+            .unwrap();
+        assert_eq!(
+            runtime.session().local_can_control(),
+            Some(true),
+            "Hello restores the cached controller projection, which is deliberately not fresh authority"
+        );
+        runtime
+            .session_mut()
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+                1.05,
+            )
+            .unwrap();
+        let reconciliation = runtime.reconcile_external_player_playback(1.05);
+        for action in reconciliation {
+            if let PlaybackCoordinatorAction::Execute { command_id, .. } = action {
+                runtime.report_external_coordinator_command_dispatch(command_id, Ok(()), 1.05);
+            }
+        }
+        runtime.observe_external_player_transport(
+            paused_transport(1, 1.075, PlayerTransportPhase::ReadyPaused, 10.0),
+            1.075,
         );
         runtime
     }
@@ -4577,10 +4955,13 @@ mod tests {
             0.0,
         );
 
-        coordination.stage_local_pause_intent(false);
+        coordination.stage_local_pause_intent(false, &session);
         let staged = coordination.update_desired_from_session_with_replay(&session, 0.1, false);
         assert!(!has_pause_play_or_seek(&staged));
-        assert_eq!(coordination.pending_local_pause_intent, Some(false));
+        assert_eq!(
+            coordination.snapshot().pending_local_pause_intent,
+            Some(false)
+        );
         assert!(
             coordination
                 .desired_fingerprint
@@ -4612,7 +4993,10 @@ mod tests {
             )),
             "an extra reconciliation pump must retain the staged unpause"
         );
-        assert_eq!(coordination.pending_local_pause_intent, Some(false));
+        assert_eq!(
+            coordination.snapshot().pending_local_pause_intent,
+            Some(false)
+        );
 
         session
             .apply_message_json_at(
@@ -4623,7 +5007,8 @@ mod tests {
         let canonical_echo = coordination.update_desired_from_session(&session, 0.3);
         assert!(!has_pause_play_or_seek(&canonical_echo));
         assert_eq!(
-            coordination.pending_local_pause_intent, None,
+            coordination.snapshot().pending_local_pause_intent,
+            None,
             "the matching canonical echo must retire the staged intent"
         );
 
@@ -4668,11 +5053,11 @@ mod tests {
             0.0,
         );
         awaiting.update_desired_from_session(&awaiting_session, 0.0);
-        awaiting.stage_local_pause_intent(false);
+        awaiting.stage_local_pause_intent(false, &awaiting_session);
         let controller_decision =
             awaiting.update_desired_from_session_with_replay(&awaiting_session, 0.1, false);
         assert!(!has_pause_play_or_seek(&controller_decision));
-        assert_eq!(awaiting.pending_local_pause_intent, Some(false));
+        assert_eq!(awaiting.snapshot().pending_local_pause_intent, Some(false));
         assert!(
             awaiting
                 .desired_fingerprint
@@ -4728,12 +5113,13 @@ mod tests {
             0.0,
         );
         committed.update_desired_from_session(&committed_session, 0.0);
-        committed.stage_local_pause_intent(true);
+        committed.stage_local_pause_intent(true, &committed_session);
         let committed_reconciliation =
             committed.update_desired_from_session_with_replay(&committed_session, 0.1, false);
         assert!(!has_pause_play_or_seek(&committed_reconciliation));
         assert_eq!(
-            committed.pending_local_pause_intent, None,
+            committed.snapshot().pending_local_pause_intent,
+            None,
             "Committed remains server-owned until the client observes and acknowledges the synchronized start"
         );
         assert!(
@@ -4765,13 +5151,17 @@ mod tests {
             paused_transport(1, 0.0, PlayerTransportPhase::ReadyPaused, 10.0),
             0.0,
         );
-        coordination.stage_local_pause_intent(false);
+        coordination.stage_local_pause_intent(false, &session);
         coordination.update_desired_from_session_with_replay(&session, 0.1, false);
 
         // A protocol reconnect keeps the user's command for the same media;
         // adapter replacement and media preparation clear it separately.
+        coordination.begin_protocol_connection_generation(&session);
         session.reset_sync_state_for_reconnect();
-        assert_eq!(coordination.pending_local_pause_intent, Some(false));
+        assert_eq!(
+            coordination.snapshot().pending_local_pause_intent,
+            Some(false)
+        );
         session
             .apply_message_json_at(
                 r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sorottePlaybackBarrierV1":true}}}"#,
@@ -4785,7 +5175,10 @@ mod tests {
             )
             .unwrap();
         let stale_reconnect_state = coordination.update_desired_from_session(&session, 1.1);
-        assert_eq!(coordination.pending_local_pause_intent, Some(false));
+        assert_eq!(
+            coordination.snapshot().pending_local_pause_intent,
+            Some(false)
+        );
         assert!(!stale_reconnect_state.iter().any(|action| matches!(
             action,
             PlaybackCoordinatorAction::Execute {
@@ -4810,7 +5203,475 @@ mod tests {
             )
             .unwrap();
         coordination.update_desired_from_session(&session, 1.3);
-        assert_eq!(coordination.pending_local_pause_intent, None);
+        assert_eq!(coordination.snapshot().pending_local_pause_intent, None);
+    }
+
+    #[test]
+    fn controlled_room_reconnect_keeps_pause_intent_dormant_and_auth_failure_discards_it() {
+        let mut session = controlled_session_with_authority(true);
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+                0.0,
+            )
+            .unwrap();
+        let mut runtime = ClientRuntime::new(
+            session,
+            CoordinatedTestPlayer::default(),
+            QueuedRuntimeControl::default(),
+        );
+        runtime.playback_coordination.prepare_media(
+            LogicalMediaId::new("controlled-auth-failure").unwrap(),
+            MediaTransportKind::LocalFile,
+            0.0,
+        );
+        runtime.reconcile_external_player_playback(0.0);
+        runtime.observe_external_player_transport(
+            paused_transport(1, 0.0, PlayerTransportPhase::ReadyPaused, 10.0),
+            0.0,
+        );
+        runtime.stage_external_player_pause_intent(false, 0.1);
+        runtime.observe_external_player_transport(
+            transport(1, 0.1, PlayerTransportPhase::Playing, 10.0),
+            0.1,
+        );
+
+        runtime.begin_protocol_connection_generation();
+        runtime.session_mut().reset_sync_state_for_reconnect();
+        runtime
+            .session_mut()
+            .apply_message_json_at(
+                r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.7.5","features":{"managedRooms":true,"sorottePlaybackBarrierV1":true}}}"#,
+                1.0,
+            )
+            .unwrap();
+        runtime
+            .session_mut()
+            .apply_message_json_at(
+                r#"{"List":{"+room:ABCDEF123456":{"alice":{"controller":false}}}}"#,
+                1.05,
+            )
+            .unwrap();
+        runtime
+            .session_mut()
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+                1.1,
+            )
+            .unwrap();
+        let dormant_reconciliation = runtime.reconcile_external_player_playback(1.1);
+        assert!(dormant_reconciliation.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPaused(true),
+                ..
+            }
+        )));
+        assert_eq!(
+            runtime
+                .playback_coordination_snapshot()
+                .pending_local_pause_intent,
+            None,
+            "dormant semantic intent must not be exposed as an active player override"
+        );
+        assert!(
+            runtime
+                .playback_coordination_snapshot()
+                .pending_local_pause_intent_dormant,
+            "the semantic command should remain dormant for correlated reauthentication"
+        );
+        assert_eq!(
+            runtime
+                .playback_coordination
+                .pending_local_pause_intent
+                .as_ref()
+                .map(|intent| intent.authorization),
+            Some(LocalIntentAuthorization::AwaitingControlledRoomReauthentication)
+        );
+
+        runtime
+            .session_mut()
+            .apply_message_json_at(
+                r#"{"Set":{"controllerAuth":{"room":"+room:ABCDEF123456","user":"alice","success":false}}}"#,
+                1.2,
+            )
+            .unwrap();
+        assert_eq!(
+            runtime
+                .playback_coordination_snapshot()
+                .pending_local_pause_intent,
+            None,
+            "a correlated authentication failure must permanently discard the stale command"
+        );
+        runtime.reconcile_external_player_playback(1.2);
+        assert!(
+            runtime
+                .playback_coordination
+                .desired_fingerprint
+                .as_ref()
+                .is_some_and(|desired| desired.paused && !desired.local_echo)
+        );
+    }
+
+    #[test]
+    fn controlled_room_reconnect_reauthorizes_same_media_intent_only_after_success() {
+        let mut session = controlled_session_with_authority(true);
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+                0.0,
+            )
+            .unwrap();
+        let mut runtime = ClientRuntime::new(
+            session,
+            CoordinatedTestPlayer::default(),
+            QueuedRuntimeControl::default(),
+        );
+        runtime.playback_coordination.prepare_media(
+            LogicalMediaId::new("controlled-auth-success").unwrap(),
+            MediaTransportKind::LocalFile,
+            0.0,
+        );
+        runtime.reconcile_external_player_playback(0.0);
+        runtime.observe_external_player_transport(
+            paused_transport(1, 0.0, PlayerTransportPhase::ReadyPaused, 10.0),
+            0.0,
+        );
+        runtime.stage_external_player_pause_intent(false, 0.1);
+
+        runtime.begin_protocol_connection_generation();
+        runtime.session_mut().reset_sync_state_for_reconnect();
+        runtime
+            .session_mut()
+            .apply_message_json_at(
+                r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.7.5","features":{"managedRooms":true,"sorottePlaybackBarrierV1":true}}}"#,
+                1.0,
+            )
+            .unwrap();
+        runtime
+            .session_mut()
+            .apply_message_json_at(
+                r#"{"List":{"+room:ABCDEF123456":{"alice":{"controller":false}}}}"#,
+                1.05,
+            )
+            .unwrap();
+        runtime
+            .session_mut()
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+                1.1,
+            )
+            .unwrap();
+        let dormant_reconciliation = runtime.reconcile_external_player_playback(1.1);
+        assert!(
+            runtime
+                .playback_coordination
+                .desired_fingerprint
+                .as_ref()
+                .is_some_and(|desired| desired.paused && !desired.local_echo)
+        );
+        for action in dormant_reconciliation {
+            if let PlaybackCoordinatorAction::Execute { command_id, .. } = action {
+                runtime.report_external_coordinator_command_dispatch(command_id, Ok(()), 1.1);
+            }
+        }
+        runtime.observe_external_player_transport(
+            paused_transport(1, 1.15, PlayerTransportPhase::ReadyPaused, 10.0),
+            1.15,
+        );
+
+        runtime
+            .session_mut()
+            .apply_message_json_at(
+                r#"{"Set":{"controllerAuth":{"room":"+room:ABCDEF123456","user":"alice","success":true}}}"#,
+                1.2,
+            )
+            .unwrap();
+        let authorized_continuation = runtime.reconcile_external_player_playback(1.2);
+        assert!(
+            authorized_continuation.iter().any(|action| matches!(
+                action,
+                PlaybackCoordinatorAction::Execute {
+                    command: CoordinatorPlayerCommand::SetPaused(false)
+                        | CoordinatorPlayerCommand::Play(_),
+                    ..
+                }
+            )),
+            "fresh authority should resume the dormant command: {authorized_continuation:?}"
+        );
+        let intent = runtime
+            .playback_coordination
+            .pending_local_pause_intent
+            .as_ref()
+            .expect("successful reauthentication should safely continue the same intent");
+        assert_eq!(intent.authorization, LocalIntentAuthorization::Authorized);
+        assert_eq!(
+            intent.connection_generation,
+            runtime.playback_coordination.connection_generation
+        );
+
+        runtime
+            .session_mut()
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":10.1,"paused":false,"doSeek":false,"setBy":"alice"}}}"#,
+                1.3,
+            )
+            .unwrap();
+        runtime.reconcile_external_player_playback(1.3);
+        assert_eq!(
+            runtime
+                .playback_coordination_snapshot()
+                .pending_local_pause_intent,
+            None
+        );
+    }
+
+    #[test]
+    fn controlled_room_new_toggle_after_reconnect_waits_for_fresh_authority() {
+        let mut runtime =
+            controlled_runtime_after_reconnect_without_fresh_authority("controlled-new-toggle");
+
+        let dormant_actions = runtime.stage_external_player_pause_intent(false, 1.1);
+        assert!(
+            !dormant_actions.iter().any(|action| matches!(
+                action,
+                PlaybackCoordinatorAction::Execute {
+                    command: CoordinatorPlayerCommand::SetPaused(false)
+                        | CoordinatorPlayerCommand::Play(_),
+                    ..
+                }
+            )),
+            "a cached controller projection must not authorize a new command on the replacement connection"
+        );
+        let dormant = runtime.playback_coordination_snapshot();
+        assert_eq!(dormant.pending_local_pause_intent, None);
+        assert!(dormant.pending_local_pause_intent_dormant);
+        assert_eq!(dormant.last_local_pause_intent_stage_accepted, Some(true));
+        assert!(
+            runtime
+                .playback_coordination
+                .desired_fingerprint
+                .as_ref()
+                .is_some_and(|desired| desired.paused && !desired.local_echo)
+        );
+
+        runtime
+            .session_mut()
+            .apply_message_json_at(
+                r#"{"Set":{"user":{"alice":{"room":{"name":"+room:ABCDEF123456"},"controller":true}}}}"#,
+                1.2,
+            )
+            .unwrap();
+        let authorized_actions = runtime.reconcile_external_player_playback(1.2);
+        assert_eq!(
+            authorized_actions
+                .iter()
+                .filter(|action| matches!(
+                    action,
+                    PlaybackCoordinatorAction::Execute {
+                        command: CoordinatorPlayerCommand::SetPaused(false)
+                            | CoordinatorPlayerCommand::Play(_),
+                        ..
+                    }
+                ))
+                .count(),
+            1,
+            "fresh correlated Set.user authority should replay the dormant command exactly once: {authorized_actions:?}"
+        );
+        let authorized = runtime.playback_coordination_snapshot();
+        assert_eq!(authorized.pending_local_pause_intent, Some(false));
+        assert!(!authorized.pending_local_pause_intent_dormant);
+
+        runtime
+            .session_mut()
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":10.1,"paused":false,"doSeek":false,"setBy":"alice"}}}"#,
+                1.3,
+            )
+            .unwrap();
+        runtime.reconcile_external_player_playback(1.3);
+        let echoed = runtime.playback_coordination_snapshot();
+        assert_eq!(echoed.pending_local_pause_intent, None);
+        assert!(!echoed.pending_local_pause_intent_dormant);
+    }
+
+    #[test]
+    fn controlled_room_fresh_denial_clears_and_rejects_new_reconnect_toggle() {
+        let mut runtime = controlled_runtime_after_reconnect_without_fresh_authority(
+            "controlled-new-toggle-denied",
+        );
+
+        runtime.stage_external_player_pause_intent(false, 1.1);
+        assert!(
+            runtime
+                .playback_coordination_snapshot()
+                .pending_local_pause_intent_dormant
+        );
+        runtime
+            .session_mut()
+            .apply_message_json_at(
+                r#"{"Set":{"controllerAuth":{"room":"+room:ABCDEF123456","user":"alice","success":false}}}"#,
+                1.2,
+            )
+            .unwrap();
+        let denied = runtime.playback_coordination_snapshot();
+        assert_eq!(denied.pending_local_pause_intent, None);
+        assert!(!denied.pending_local_pause_intent_dormant);
+
+        let retry_actions = runtime.stage_external_player_pause_intent(false, 1.3);
+        let retry = runtime.playback_coordination_snapshot();
+        assert_eq!(retry.last_local_pause_intent_stage_accepted, Some(false));
+        assert_eq!(retry.pending_local_pause_intent, None);
+        assert!(!retry.pending_local_pause_intent_dormant);
+        assert!(
+            !retry_actions.iter().any(|action| matches!(
+                action,
+                PlaybackCoordinatorAction::Execute {
+                    command: CoordinatorPlayerCommand::SetPaused(false)
+                        | CoordinatorPlayerCommand::Play(_),
+                    ..
+                }
+            )),
+            "fresh denial must remain conclusive for the current connection"
+        );
+    }
+
+    #[test]
+    fn uncontrolled_room_new_toggle_after_reconnect_remains_active() {
+        let mut session = barrier_session();
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+                0.0,
+            )
+            .unwrap();
+        let mut coordination = RuntimePlaybackCoordination::default();
+        coordination.prepare_media(
+            LogicalMediaId::new("uncontrolled-new-toggle").unwrap(),
+            MediaTransportKind::LocalFile,
+            0.0,
+        );
+        coordination.update_desired_from_session(&session, 0.0);
+        coordination.begin_protocol_connection_generation(&session);
+        session.reset_sync_state_for_reconnect();
+        session
+            .apply_message_json_at(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sorottePlaybackBarrierV1":true}}}"#,
+                1.0,
+            )
+            .unwrap();
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+                1.05,
+            )
+            .unwrap();
+
+        coordination.stage_local_pause_intent(false, &session);
+        coordination.update_desired_from_session_with_replay(&session, 1.1, false);
+        let snapshot = coordination.snapshot();
+        assert_eq!(snapshot.pending_local_pause_intent, Some(false));
+        assert!(!snapshot.pending_local_pause_intent_dormant);
+    }
+
+    #[test]
+    fn controlled_room_noncontroller_toggle_is_reconciled_to_canonical_pause() {
+        let mut session = controlled_session_with_authority(false);
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+                0.0,
+            )
+            .unwrap();
+        let mut coordination = RuntimePlaybackCoordination::default();
+        coordination.prepare_media(
+            LogicalMediaId::new("noncontroller-toggle").unwrap(),
+            MediaTransportKind::LocalFile,
+            0.0,
+        );
+        coordination.update_desired_from_session(&session, 0.0);
+        coordination.observe_transport(
+            paused_transport(1, 0.0, PlayerTransportPhase::ReadyPaused, 10.0),
+            0.0,
+        );
+
+        coordination.stage_local_pause_intent(false, &session);
+        assert_eq!(coordination.snapshot().pending_local_pause_intent, None);
+        let correction = coordination
+            .observe_transport(transport(1, 0.1, PlayerTransportPhase::Playing, 10.0), 0.1);
+        assert!(correction.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPaused(true),
+                ..
+            }
+        )));
+
+        let mut playing_session = controlled_session_with_authority(false);
+        playing_session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":20.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+                2.0,
+            )
+            .unwrap();
+        let mut playing_coordination = RuntimePlaybackCoordination::default();
+        playing_coordination.prepare_media(
+            LogicalMediaId::new("noncontroller-pause-toggle").unwrap(),
+            MediaTransportKind::LocalFile,
+            2.0,
+        );
+        playing_coordination.update_desired_from_session(&playing_session, 2.0);
+        playing_coordination
+            .observe_transport(transport(1, 2.0, PlayerTransportPhase::Playing, 20.0), 2.0);
+        playing_coordination.stage_local_pause_intent(true, &playing_session);
+        assert_eq!(
+            playing_coordination.snapshot().pending_local_pause_intent,
+            None
+        );
+        let play_correction = playing_coordination.observe_transport(
+            paused_transport(1, 2.1, PlayerTransportPhase::ReadyPaused, 20.1),
+            2.1,
+        );
+        assert!(play_correction.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPaused(false)
+                    | CoordinatorPlayerCommand::Play(_),
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn staged_pause_intent_is_scoped_to_room_and_local_media_generation() {
+        let session = controlled_session_with_authority(true);
+        let mut coordination = RuntimePlaybackCoordination::default();
+        let first = coordination.prepare_media(
+            LogicalMediaId::new("scoped-intent-one").unwrap(),
+            MediaTransportKind::LocalFile,
+            0.0,
+        );
+        coordination.stage_local_pause_intent(true, &session);
+        let intent = coordination
+            .pending_local_pause_intent
+            .as_ref()
+            .expect("controller command should be staged");
+        assert_eq!(intent.room, "+room:ABCDEF123456");
+        assert_eq!(intent.local_media_generation, first.media_generation);
+        assert_eq!(
+            intent.connection_generation,
+            coordination.connection_generation
+        );
+
+        coordination.handle_authoritative_playback_barrier_room_change();
+        assert_eq!(coordination.snapshot().pending_local_pause_intent, None);
+        coordination.stage_local_pause_intent(true, &session);
+        coordination.prepare_media(
+            LogicalMediaId::new("scoped-intent-two").unwrap(),
+            MediaTransportKind::LocalFile,
+            1.0,
+        );
+        assert_eq!(coordination.snapshot().pending_local_pause_intent, None);
     }
 
     #[test]
@@ -4915,11 +5776,14 @@ mod tests {
             .unwrap();
         let self_echo = coordination.update_desired_from_session(&session, 1.0);
         assert!(!has_pause_play_or_seek(&self_echo));
-        coordination.stage_local_pause_intent(false);
+        coordination.stage_local_pause_intent(false, &session);
         let staged_unpause =
             coordination.update_desired_from_session_with_replay(&session, 1.05, false);
         assert!(!has_pause_play_or_seek(&staged_unpause));
-        assert_eq!(coordination.pending_local_pause_intent, Some(false));
+        assert_eq!(
+            coordination.snapshot().pending_local_pause_intent,
+            Some(false)
+        );
 
         let config = RoomBufferingPolicyPayload::new(7, RoomBufferingPolicy::PauseAnyEligible)
             .with_state_revision(3)
@@ -4939,7 +5803,8 @@ mod tests {
         );
         let authoritative = coordination.update_desired_from_session(&session, 1.1);
         assert_eq!(
-            coordination.pending_local_pause_intent, None,
+            coordination.snapshot().pending_local_pause_intent,
+            None,
             "server buffering authority must preempt a staged local unpause"
         );
         assert!(authoritative.iter().any(|action| matches!(

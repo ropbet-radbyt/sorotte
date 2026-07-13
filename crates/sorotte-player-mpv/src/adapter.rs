@@ -284,7 +284,11 @@ impl MpvAdapter {
         // replaced playlist entry. An attached mpv is authoritative; the cache
         // is safe only for simulation or other no-IPC operation.
         let active_path = match self.ipc_client.as_mut() {
-            Some(client) => client.get_property_string(MPV_PROPERTY_PATH).ok().flatten(),
+            Some(client) => match client.get_property_string_classified(MPV_PROPERTY_PATH) {
+                Ok(path) => path,
+                Err(error) if error.is_property_unavailable() => None,
+                Err(error) => return Err(PlayerError::OperationFailed(error.into_message())),
+            },
             None => self.current_path.clone(),
         };
         let Some(active_path) = active_path else {

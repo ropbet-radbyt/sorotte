@@ -1295,6 +1295,7 @@ fn active_network_option_reapply_uses_authoritative_network_path_over_stale_loca
     adapter
         .apply_network_media_options_to_active_media()
         .expect("an attached network file should accept file-local options");
+    assert!(adapter.is_connected());
 
     let payloads = state
         .writes()
@@ -1339,6 +1340,7 @@ fn active_network_option_reapply_uses_authoritative_local_path_over_stale_networ
     adapter
         .apply_network_media_options_to_active_media()
         .expect("an attached local file should be left unchanged");
+    assert!(adapter.is_connected());
 
     let writes = state.writes();
     assert_eq!(writes.len(), 2);
@@ -1359,6 +1361,119 @@ fn active_network_option_reapply_uses_authoritative_local_path_over_stale_networ
             "request_id": 2
         })
     );
+}
+
+#[test]
+fn active_network_option_reapply_treats_null_path_as_healthy_idle_player() {
+    let (transport, state) =
+        fake_transport_with_reads(&[r#"{"request_id":1,"error":"success","data":null}"#]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+
+    adapter
+        .apply_network_media_options_to_active_media()
+        .expect("an idle attached player should need no option changes");
+
+    assert!(adapter.is_connected());
+    assert_eq!(state.writes().len(), 1, "only the path should be queried");
+}
+
+#[test]
+fn active_network_option_reapply_treats_property_unavailable_as_healthy_idle_player() {
+    let (transport, state) =
+        fake_transport_with_reads(&[r#"{"request_id":1,"error":"property unavailable"}"#]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+
+    adapter
+        .apply_network_media_options_to_active_media()
+        .expect("mpv's canonical unavailable-path response should mean no active file");
+
+    assert!(adapter.is_connected());
+    assert_eq!(state.writes().len(), 1, "only the path should be queried");
+    assert!(matches!(
+        adapter.take_ipc_connection_events().as_slice(),
+        [MpvIpcConnectionEvent::Connected { .. }]
+    ));
+}
+
+#[test]
+fn active_network_option_reapply_does_not_swallow_other_server_rejection() {
+    let (transport, state) =
+        fake_transport_with_reads(&[r#"{"request_id":1,"error":"property not found"}"#]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+
+    let error = adapter
+        .apply_network_media_options_to_active_media()
+        .expect_err("only mpv's exact property-unavailable token should mean idle");
+
+    assert!(error.to_string().contains("property not found"));
+    assert!(
+        adapter.is_connected(),
+        "ordinary server rejection is nonfatal"
+    );
+    assert_eq!(state.writes().len(), 1, "only the path should be queried");
+}
+
+#[test]
+fn active_network_option_reapply_surfaces_path_query_timeout_and_disconnects() {
+    let mut adapter = MpvAdapter::with_test_transport_and_ipc_timeout(
+        NeverRespondingTransport,
+        Duration::from_millis(20),
+    );
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+
+    let error = adapter
+        .apply_network_media_options_to_active_media()
+        .expect_err("path-query timeout must not look like an idle player");
+
+    assert!(error.to_string().contains("timed out"));
+    assert!(!adapter.is_connected());
+}
+
+#[test]
+fn active_network_option_reapply_surfaces_path_query_disconnect() {
+    let (transport, _state) = fake_transport_with_reads(&[]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+
+    let error = adapter
+        .apply_network_media_options_to_active_media()
+        .expect_err("path-query EOF must not look like an idle player");
+
+    assert!(error.to_string().contains("unexpected EOF"));
+    assert!(!adapter.is_connected());
+}
+
+#[test]
+fn active_network_option_reapply_surfaces_malformed_path_response() {
+    let (transport, _state) = fake_transport_with_reads(&["not-json"]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+
+    let error = adapter
+        .apply_network_media_options_to_active_media()
+        .expect_err("malformed path response must not look like an idle player");
+
+    assert!(error.to_string().contains("invalid mpv IPC JSON"));
+    assert!(!adapter.is_connected());
+}
+
+#[test]
+fn active_network_option_reapply_surfaces_mismatched_path_response() {
+    let (transport, _state) = fake_transport_with_reads(&[
+        r#"{"request_id":999,"error":"success","data":"https://media.example/live.m3u8"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+
+    let error = adapter
+        .apply_network_media_options_to_active_media()
+        .expect_err("mismatched path response must not look like an idle player");
+
+    assert!(error.to_string().contains("request_id mismatch"));
+    assert!(!adapter.is_connected());
 }
 
 #[test]

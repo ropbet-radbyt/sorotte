@@ -56,7 +56,18 @@ impl GuiPersistedConfigRuntimeOwner {
                 | GuiAttachedPlayerRuntimeAction::Coordinator { .. } => true,
             })
             .collect();
-        self.pending_local_attached_pause_override = Some(target_paused);
+        self.pending_local_attached_pause_override = self
+            .session
+            .as_ref()
+            .and_then(|session| session.playback_coordination_snapshot())
+            .map_or(Some(target_paused), |snapshot| {
+                match snapshot.last_local_pause_intent_stage_accepted {
+                    Some(_) => snapshot.pending_local_pause_intent,
+                    // Legacy sessions without a prepared coordinator media
+                    // episode still need the GUI-side pre-echo guard.
+                    None => Some(target_paused),
+                }
+            });
         let _ =
             self.apply_attached_player_runtime_actions_impl(actions, "local pause-intent staging");
         Ok(())

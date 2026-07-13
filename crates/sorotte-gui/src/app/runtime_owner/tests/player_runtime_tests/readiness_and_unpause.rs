@@ -1427,6 +1427,104 @@ fn gui_direct_mpv_unpause_stages_before_same_pump_media_and_transport_updates() 
             .and_then(|session| session.playback_coordination_snapshot())
             .is_some_and(|snapshot| !snapshot.ordinary_correction_blocked)
     );
+
+    let controlled_player_state =
+        std::sync::Arc::new(std::sync::Mutex::new(DirectTogglePlayerState::default()));
+    let (mut controlled_owner, _controlled_transport) =
+        GuiPersistedConfigRuntimeOwner::with_config_path(None)
+            .with_client_core_chat_session_runtime("alice", "+room:ABCDEF123456")
+            .expect("controlled client-core runtime owner should bootstrap");
+    controlled_owner.player = Some(GuiOwnedPlayer::Custom(Box::new(DirectTogglePlayer {
+        state: controlled_player_state.clone(),
+    })));
+    controlled_owner.player_local_file = Some(
+        sorotte_player_api::LocalFileUpdate::new("controlled.mkv")
+            .with_path("C:/Media/controlled.mkv".to_owned()),
+    );
+    controlled_owner.player_paused = Some(true);
+    controlled_owner.player_position_seconds = Some(10.0);
+    let controlled_state =
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some("+room:ABCDEF123456".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+    controlled_owner
+        .session
+        .as_mut()
+        .expect("controlled session should exist")
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.7.5","features":{"managedRooms":true}}}"#,
+        )
+        .expect("controlled-room hello should apply");
+    controlled_owner
+        .session
+        .as_mut()
+        .expect("controlled session should exist")
+        .apply_message_json(
+            r#"{"Set":{"user":{"alice":{"room":{"name":"+room:ABCDEF123456"},"controller":false}}}}"#,
+        )
+        .expect("non-controller projection should apply");
+    controlled_owner
+        .session
+        .as_mut()
+        .expect("controlled session should exist")
+        .prepare_attached_playback_media(
+            sorotte_client_core::LogicalMediaId::new("controlled-noncontroller-media")
+                .expect("controlled logical id should be valid"),
+            sorotte_client_core::MediaTransportKind::LocalFile,
+            sorotte_client_core::MediaLoadIntent::TransportRefresh,
+            crate::app::support::system_time_seconds(),
+        )
+        .expect("controlled media should prepare");
+    controlled_owner
+        .session
+        .as_mut()
+        .expect("controlled session should exist")
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+        )
+        .expect("controlled-room canonical pause should apply");
+    {
+        let mut recorded = controlled_player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        recorded
+            .transport_updates
+            .push(transport(1, true, 10.0, 0.0));
+    }
+    controlled_owner.refresh_player_state_impl();
+    controlled_owner.sync_session_playstate_to_attached_player_impl(&controlled_state, false);
+    controlled_owner.pending_attached_player_pause_command = None;
+    {
+        let mut recorded = controlled_player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        recorded.set_paused_values.clear();
+        recorded.playback_updates.push(
+            sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(false)
+                .with_position_seconds(10.0),
+        );
+        recorded
+            .transport_updates
+            .push(transport(1, false, 10.0, 1.0));
+    }
+
+    controlled_owner.refresh_player_state_impl();
+    assert_eq!(
+        controlled_owner.pending_local_attached_pause_override, None,
+        "the GUI compatibility flag must mirror core rejection for a non-controller"
+    );
+    controlled_owner.sync_session_playstate_to_attached_player_impl(&controlled_state, false);
+    assert!(
+        controlled_player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_paused_values
+            .contains(&true),
+        "a direct mpv play by a non-controller must be returned to canonical pause"
+    );
 }
 
 #[test]

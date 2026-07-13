@@ -15,7 +15,7 @@ use sorotte_player_api::{
     PlayerAdapter, PlayerCommand, PlayerCommandId, PlayerCommandProgressState, PlayerCommandResult,
     PlayerPlayIntent, PlayerTransportPhase, PlayerTransportTelemetryUpdate,
 };
-use sorotte_player_mpv::ConnectedMpvPlayer;
+use sorotte_player_mpv::{ConnectedMpvPlayer, MpvAdapter};
 use sorotte_sim::{BurstStall, FaultInjectingHttpServer, HttpMediaFixture, NetworkFaultProfile};
 
 const TEST_DURATION: Duration = Duration::from_secs(20);
@@ -697,7 +697,7 @@ impl Drop for TemporaryMedia {
 
 struct RealMpvClient {
     _process: MpvProcess,
-    player: ConnectedMpvPlayer,
+    player: MpvAdapter,
     coordinator: PlaybackCoordinator,
     coordinator_generation: u64,
     adapter_generation: Option<u64>,
@@ -736,7 +736,20 @@ impl RealMpvClient {
         transport_kind: MediaTransportKind,
         mut desired: DesiredRoomPlayback,
     ) -> Self {
-        let (process, mut player) = MpvProcess::start(index);
+        let (process, player) = MpvProcess::start(index);
+        let mut player = player.into_inner();
+        // Exercise Sorotte's version-dependent network `loadfile` options
+        // against the real mpv binary used by this harness. CI runs this on
+        // both pre-0.38 and current mpv command layouts.
+        player.configure_network_media_options([
+            ("cache", "yes"),
+            ("cache-pause", "yes"),
+            ("cache-pause-initial", "yes"),
+            ("cache-pause-wait", "0.3"),
+            ("cache-secs", "1"),
+            ("demuxer-max-bytes", "524288"),
+            ("demuxer-max-back-bytes", "65536"),
+        ]);
         player
             .execute(PlayerCommand::SetPaused(true))
             .expect("coordinator real-mpv fixture should begin intentionally paused");

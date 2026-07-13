@@ -265,7 +265,10 @@ impl GuiPersistedConfigRuntimeOwner {
             .session
             .as_ref()
             .and_then(|session| session.playback_coordination_snapshot());
-        if let Some(snapshot) = coordination_snapshot.as_ref() {
+        if let Some(snapshot) = coordination_snapshot.as_ref()
+            && (snapshot.media_generation.is_some()
+                || snapshot.last_local_pause_intent_stage_accepted.is_some())
+        {
             self.pending_local_attached_pause_override = snapshot.pending_local_pause_intent;
         }
         let coordinator_owns_sync =
@@ -291,6 +294,8 @@ impl GuiPersistedConfigRuntimeOwner {
                 .session
                 .as_ref()
                 .and_then(|session| session.playback_coordination_snapshot())
+                && (snapshot.media_generation.is_some()
+                    || snapshot.last_local_pause_intent_stage_accepted.is_some())
             {
                 self.pending_local_attached_pause_override = snapshot.pending_local_pause_intent;
             }

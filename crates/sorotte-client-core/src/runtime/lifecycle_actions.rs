@@ -9,7 +9,7 @@ where
     pub fn begin_protocol_connection_generation(&mut self) {
         self.control.begin_protocol_connection_generation();
         self.playback_coordination
-            .begin_protocol_connection_generation();
+            .begin_protocol_connection_generation(&self.session);
     }
 
     pub fn run_readiness_unpause_attempt(
