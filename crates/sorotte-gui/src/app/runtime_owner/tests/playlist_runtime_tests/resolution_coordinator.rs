@@ -1281,8 +1281,7 @@ fn older_self_echo_preserves_newer_gui_row_identity_and_exact_origin() {
         "an older echo must not roll back the newer optimistic playlist"
     );
     assert_eq!(
-        state.main_window.active_playlist_index,
-        optimistic_active_index,
+        state.main_window.active_playlist_index, optimistic_active_index,
         "an older playlist echo must not change the optimistic active index"
     );
     assert_eq!(

@@ -72,6 +72,86 @@ fn client_runtime_set_playlist_index_dispatches_protocol_message() {
 }
 
 #[test]
+fn omitted_user_current_index_acknowledgement_does_not_queue_second_reset() {
+    let mut session = ClientSession::default();
+    session
+        .apply_hello_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json(
+            r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"alice"}}}"#,
+        )
+        .expect("playlist change should apply");
+    session
+        .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+        .expect("initial playlist index should apply");
+
+    let mut runtime = ClientRuntime::new(
+        session,
+        RecordingPlayer::default(),
+        QueuedRuntimeControl::default(),
+    );
+    assert!(
+        runtime
+            .run_set_playlist_index(1)
+            .expect("local playlist index change should succeed")
+    );
+    assert_eq!(
+        runtime
+            .session_mut_for_test()
+            .take_pending_playlist_index_reset_intent(),
+        Some(true),
+        "the local playlist switch should create its intended reset"
+    );
+    assert!(
+        runtime
+            .session()
+            .model
+            .playlist
+            .suppress_next_self_index_reset,
+        "consuming the intended reset should still leave its echo suppression armed"
+    );
+    assert!(!runtime.session().has_pending_playlist_index_reset_intent());
+
+    runtime
+        .session_mut_for_test()
+        .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1}}}"#)
+        .expect("matching omitted-user index echo should acknowledge the local selection");
+
+    assert!(
+        !runtime.session().has_pending_playlist_index_reset_intent(),
+        "the current local acknowledgement must not queue a second reset"
+    );
+    assert!(
+        !runtime
+            .session()
+            .model
+            .playlist
+            .suppress_next_self_index_reset,
+        "the current local acknowledgement should consume reset suppression"
+    );
+    assert_eq!(
+        runtime
+            .session()
+            .current_room_playlist()
+            .expect("playlist should remain projected")
+            .index,
+        Some(1)
+    );
+    assert!(
+        runtime
+            .session()
+            .model
+            .playlist
+            .pending_local_index_echoes
+            .is_empty(),
+        "the current acknowledgement should release index echo tracking"
+    );
+}
+
+#[test]
 fn client_runtime_set_playlist_index_is_omitted_before_server_hello() {
     let session = ClientSession::default();
     let player = RecordingPlayer::default();

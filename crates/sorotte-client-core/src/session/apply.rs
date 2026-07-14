@@ -628,6 +628,10 @@ impl ClientSession {
                     .as_deref()
                     .zip(self.model.connection.username.as_deref())
                     .is_some_and(|(set_by, local_username)| set_by == local_username);
+                let acknowledges_current_local_index = matches!(
+                    index_echo_disposition,
+                    LocalPlaylistEchoDisposition::AcknowledgedCurrent { .. }
+                );
                 if set_by_local {
                     self.model.playback.last_advanced_at_seconds = now_seconds;
                 }
@@ -642,7 +646,10 @@ impl ClientSession {
                     .zip(preserved_active_target.as_deref())
                     .is_some_and(|(next_target, previous_target)| next_target == previous_target);
 
-                let should_queue_playlist_reset = if !self
+                let should_queue_playlist_reset = if acknowledges_current_local_index {
+                    self.model.playlist.suppress_next_self_index_reset = false;
+                    false
+                } else if !self
                     .should_track_playlist_index_transition_for_room(room_name.as_deref())
                 {
                     false
