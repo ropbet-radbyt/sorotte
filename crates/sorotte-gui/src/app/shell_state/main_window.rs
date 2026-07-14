@@ -131,6 +131,7 @@ pub(in crate::app) struct GuiPlaylistResolutionStep {
 pub(in crate::app) struct GuiPlaylistSourceState {
     pub(in crate::app) current_provider_id: GuiMediaSourceProviderId,
     pub(in crate::app) current_label: String,
+    pub(in crate::app) provider_selection_is_explicit: bool,
     pub(in crate::app) status: GuiPlaylistSourceStatus,
     pub(in crate::app) detail: Option<String>,
     pub(in crate::app) options: Vec<GuiPlaylistSourceOption>,
@@ -139,7 +140,7 @@ pub(in crate::app) struct GuiPlaylistSourceState {
 
 impl GuiPlaylistSourceState {
     pub(in crate::app) fn inferred_for_entry(entry: &str) -> Self {
-        Self::for_provider(Self::inferred_provider_for_entry(entry))
+        Self::for_provider(Self::inferred_provider_for_entry(entry)).with_explicit_selection(false)
     }
 
     pub(in crate::app) fn inferred_provider_for_entry(entry: &str) -> GuiMediaSourceProviderId {
@@ -155,11 +156,17 @@ impl GuiPlaylistSourceState {
         Self {
             current_provider_id: provider_id.clone(),
             current_label,
+            provider_selection_is_explicit: true,
             status: GuiPlaylistSourceStatus::Available,
             detail: Some("Waiting for playlist activation.".to_owned()),
             options: default_playlist_source_options(&provider_id),
             resolution_steps: Vec::new(),
         }
+    }
+
+    pub(in crate::app) fn with_explicit_selection(mut self, explicit: bool) -> Self {
+        self.provider_selection_is_explicit = explicit;
+        self
     }
 }
 

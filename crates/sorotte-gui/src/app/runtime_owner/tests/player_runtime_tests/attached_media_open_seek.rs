@@ -112,6 +112,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
         last_published_local_file: None,
         last_published_media_match_signature: None,
         local_shared_playlist_media_match_signature_path: None,
+        local_shared_playlist_media_paths_by_target: std::collections::HashMap::new(),
         attached_media_search_index: None,
         attached_media_search_next_retry_at: None,
         pending_attached_media_resolution: None,

@@ -100,6 +100,7 @@ impl GuiPersistedConfigRuntimeOwner {
             media_resolution_completed |= self.pump_media_match_remote_lookup_worker();
             let _ = self.maybe_sync_media_match_wire_decisions(handle, &mut projected_state);
         }
+        self.reconcile_local_shared_playlist_media_paths(&projected_state);
         self.ensure_configured_player_attached_for_active_session();
         self.maybe_queue_media_match_exact_playlist_signature(handle, &mut projected_state);
         media_resolution_completed |= self.pump_media_match_remote_lookup_worker();

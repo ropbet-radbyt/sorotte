@@ -23,7 +23,8 @@ mod requests;
 mod traits;
 
 pub(in crate::app) use pending::{
-    GuiPendingCompletionRequest, GuiPendingRoomChangeRequest, GuiSharedPlaylistOpenDispatch,
+    GuiPendingCompletionRequest, GuiPendingRoomChangeRequest, GuiSharedPlaylistLocalFileBinding,
+    GuiSharedPlaylistOpenDispatch,
 };
 pub(in crate::app) use preview_bridge::GuiPreviewRuntimeBridge;
 pub(in crate::app) use requests::{GuiPlexPlaylistJobCancellationReason, GuiRuntimeRequest};

@@ -107,9 +107,16 @@ impl std::fmt::Debug for GuiPendingRoomChangeRequest {
 }
 
 #[derive(Clone, PartialEq, Eq)]
+pub(in crate::app) struct GuiSharedPlaylistLocalFileBinding {
+    pub(in crate::app) playlist_entry: String,
+    pub(in crate::app) local_path: String,
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub(in crate::app) struct GuiSharedPlaylistOpenDispatch {
     pub(in crate::app) playlist_entries: Vec<String>,
     pub(in crate::app) player_paths: Option<Vec<String>>,
+    pub(in crate::app) local_file_bindings: Vec<GuiSharedPlaylistLocalFileBinding>,
     pub(in crate::app) imported_from_file: bool,
 }
 
@@ -130,6 +137,8 @@ impl std::fmt::Debug for GuiSharedPlaylistOpenDispatch {
                 "player_path_count",
                 &self.player_paths.as_ref().map(Vec::len),
             )
+            .field("local_file_bindings", &sorotte_secret::REDACTED_SECRET)
+            .field("local_file_binding_count", &self.local_file_bindings.len())
             .field("imported_from_file", &self.imported_from_file)
             .finish()
     }
@@ -148,6 +157,10 @@ mod media_target_debug_tests {
         let dispatch = GuiSharedPlaylistOpenDispatch {
             playlist_entries: vec![secret.to_owned()],
             player_paths: Some(vec![secret.to_owned()]),
+            local_file_bindings: vec![GuiSharedPlaylistLocalFileBinding {
+                playlist_entry: secret.to_owned(),
+                local_path: secret.to_owned(),
+            }],
             imported_from_file: false,
         };
 

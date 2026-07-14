@@ -54,14 +54,19 @@ impl SorotteGuiShellAppState {
     }
 
     pub(super) fn playlist_source_state_for_entry(&self, entry: &str) -> GuiPlaylistSourceState {
-        let provider_id = self.playlist_default_provider_for_new_entry(entry);
+        let (provider_id, provider_selection_is_explicit) =
+            self.playlist_default_provider_for_new_entry(entry);
         self.refreshed_playlist_source_state_for_entry(
             entry,
-            GuiPlaylistSourceState::for_provider(provider_id),
+            GuiPlaylistSourceState::for_provider(provider_id)
+                .with_explicit_selection(provider_selection_is_explicit),
         )
     }
 
-    fn playlist_default_provider_for_new_entry(&self, entry: &str) -> GuiMediaSourceProviderId {
+    fn playlist_default_provider_for_new_entry(
+        &self,
+        entry: &str,
+    ) -> (GuiMediaSourceProviderId, bool) {
         let inferred_provider = GuiPlaylistSourceState::inferred_provider_for_entry(entry);
         let Some(default_provider) = self
             .main_window
@@ -70,7 +75,7 @@ impl SorotteGuiShellAppState {
             .provider_id()
             .cloned()
         else {
-            return inferred_provider;
+            return (inferred_provider, false);
         };
         let default_available = self
             .playlist_source_options_for_entry(entry, &default_provider)
@@ -78,9 +83,9 @@ impl SorotteGuiShellAppState {
             .find(|option| option.provider_id == default_provider)
             .is_some_and(|option| option.enabled);
         if default_available {
-            default_provider
+            (default_provider, true)
         } else {
-            inferred_provider
+            (inferred_provider, false)
         }
     }
 
@@ -177,6 +182,7 @@ impl SorotteGuiShellAppState {
         let source_state = GuiPlaylistSourceState {
             current_provider_id: option.provider_id.clone(),
             current_label: option.label.clone(),
+            provider_selection_is_explicit: true,
             status: GuiPlaylistSourceStatus::Resolving,
             detail: Some(format!("Resolving with {}.", option.label)),
             options: Vec::new(),

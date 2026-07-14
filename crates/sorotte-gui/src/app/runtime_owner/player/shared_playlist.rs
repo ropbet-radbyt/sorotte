@@ -2,7 +2,7 @@ use super::*;
 use sorotte_player_api::LocalFileUpdate;
 use sorotte_plex::{
     PlexClientConfig, PlexMatchedItem, PlexPlaylistUri, format_plex_playlist_uri,
-    server_scoped_cache_key_for_file,
+    parse_plex_playlist_uri, server_scoped_cache_key_for_file,
 };
 
 impl GuiPersistedConfigRuntimeOwner {
@@ -221,15 +221,25 @@ impl GuiPersistedConfigRuntimeOwner {
             return Ok(GuiSharedPlaylistOpenDispatch {
                 playlist_entries,
                 player_paths: None,
+                local_file_bindings: Vec::new(),
                 imported_from_file: true,
             });
         }
 
+        let mut local_file_bindings = Vec::new();
         let playlist_entries = paths
             .iter()
             .filter_map(|path| {
-                self.shared_playlist_plex_publish_target_for_path(state, path)
-                    .or_else(|| shared_playlist_entry_for_media_path(path))
+                let playlist_entry = self
+                    .shared_playlist_plex_publish_target_for_path(state, path)
+                    .or_else(|| shared_playlist_entry_for_media_path(path))?;
+                if Self::shared_playlist_local_file_update_for_path(path).is_some() {
+                    local_file_bindings.push(GuiSharedPlaylistLocalFileBinding {
+                        playlist_entry: playlist_entry.clone(),
+                        local_path: path.clone(),
+                    });
+                }
+                Some(playlist_entry)
             })
             .collect::<Vec<_>>();
         if playlist_entries.is_empty() {
@@ -241,6 +251,7 @@ impl GuiPersistedConfigRuntimeOwner {
         Ok(GuiSharedPlaylistOpenDispatch {
             playlist_entries,
             player_paths: Some(paths),
+            local_file_bindings,
             imported_from_file: false,
         })
     }
@@ -255,13 +266,24 @@ impl GuiPersistedConfigRuntimeOwner {
             return Ok(GuiSharedPlaylistOpenDispatch {
                 playlist_entries,
                 player_paths: None,
+                local_file_bindings: Vec::new(),
                 imported_from_file: true,
             });
         }
 
+        let mut local_file_bindings = Vec::new();
         let playlist_entries = paths
             .iter()
-            .filter_map(|path| shared_playlist_entry_for_media_path(path))
+            .filter_map(|path| {
+                let playlist_entry = shared_playlist_entry_for_media_path(path)?;
+                if Self::shared_playlist_local_file_update_for_path(path).is_some() {
+                    local_file_bindings.push(GuiSharedPlaylistLocalFileBinding {
+                        playlist_entry: playlist_entry.clone(),
+                        local_path: path.clone(),
+                    });
+                }
+                Some(playlist_entry)
+            })
             .collect::<Vec<_>>();
         if playlist_entries.is_empty() {
             return Err(
@@ -272,8 +294,105 @@ impl GuiPersistedConfigRuntimeOwner {
         Ok(GuiSharedPlaylistOpenDispatch {
             playlist_entries,
             player_paths: Some(paths),
+            local_file_bindings,
             imported_from_file: false,
         })
+    }
+
+    fn local_shared_playlist_media_target_key(target: &str) -> Option<String> {
+        let target = normalized_editable_text(target)?;
+        if let Ok(uri) = parse_plex_playlist_uri(&target) {
+            return Some(format!(
+                "plex:{}:{}",
+                uri.machine_identifier.to_ascii_lowercase(),
+                uri.rating_key
+            ));
+        }
+        Some(format!(
+            "entry:{}",
+            Self::normalized_current_player_match_key(&target)
+        ))
+    }
+
+    pub(in crate::app::runtime_owner) fn reconcile_local_shared_playlist_media_paths(
+        &mut self,
+        state: &SorotteGuiShellAppState,
+    ) {
+        let mut playlist_target_keys = state
+            .current_shared_playlist_entries()
+            .iter()
+            .filter_map(|entry| Self::local_shared_playlist_media_target_key(entry))
+            .collect::<BTreeSet<_>>();
+        playlist_target_keys.extend(
+            state
+                .playlist_undo_snapshot
+                .iter()
+                .flatten()
+                .filter_map(|entry| Self::local_shared_playlist_media_target_key(entry)),
+        );
+        let previous_count = self.local_shared_playlist_media_paths_by_target.len();
+        self.local_shared_playlist_media_paths_by_target
+            .retain(|key, _| playlist_target_keys.contains(key));
+        if previous_count != self.local_shared_playlist_media_paths_by_target.len() {
+            self.last_attached_media_resolution_trigger = None;
+        }
+    }
+
+    pub(super) fn remember_local_shared_playlist_media_paths(
+        &mut self,
+        state: &SorotteGuiShellAppState,
+        dispatch: &GuiSharedPlaylistOpenDispatch,
+        opened_entries: &[String],
+    ) {
+        self.reconcile_local_shared_playlist_media_paths(state);
+        let mut remembered_target_keys = BTreeSet::new();
+        let mut changed = false;
+        for opened_entry in opened_entries {
+            let Some(key) = Self::local_shared_playlist_media_target_key(opened_entry) else {
+                continue;
+            };
+            if !remembered_target_keys.insert(key.clone()) {
+                continue;
+            }
+            let Some(binding) = dispatch.local_file_bindings.iter().find(|binding| {
+                Self::local_shared_playlist_media_target_key(&binding.playlist_entry).as_ref()
+                    == Some(&key)
+            }) else {
+                continue;
+            };
+            let path = PathBuf::from(&binding.local_path);
+            if !path.is_file() {
+                continue;
+            }
+            changed |= self
+                .local_shared_playlist_media_paths_by_target
+                .insert(key, path.clone())
+                .as_ref()
+                != Some(&path);
+        }
+        if changed {
+            self.last_attached_media_resolution_trigger = None;
+        }
+    }
+
+    pub(super) fn local_shared_playlist_media_path_for_target(
+        &mut self,
+        state: &SorotteGuiShellAppState,
+        target: &str,
+    ) -> Option<String> {
+        self.reconcile_local_shared_playlist_media_paths(state);
+        let key = Self::local_shared_playlist_media_target_key(target)?;
+        let path = self
+            .local_shared_playlist_media_paths_by_target
+            .get(&key)?
+            .clone();
+        if path.is_file() {
+            return Some(path.to_string_lossy().into_owned());
+        }
+        self.local_shared_playlist_media_paths_by_target
+            .remove(&key);
+        self.last_attached_media_resolution_trigger = None;
+        None
     }
 
     pub(super) fn shared_playlist_open_success_message(

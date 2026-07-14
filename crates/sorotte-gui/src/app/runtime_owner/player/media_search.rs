@@ -146,13 +146,16 @@ impl GuiPersistedConfigRuntimeOwner {
     }
 
     fn quick_resolve_main_window_user_media_target(
-        &self,
+        &mut self,
         state: &SorotteGuiShellAppState,
         target: &str,
     ) -> Result<Option<String>, String> {
         let Some(target) = normalized_editable_text(target) else {
             return Ok(None);
         };
+        if let Some(path) = self.local_shared_playlist_media_path_for_target(state, &target) {
+            return Ok(Some(path));
+        }
         if browser_is_url(&target) {
             return Ok(Some(target.to_owned()));
         }
@@ -788,11 +791,17 @@ impl GuiPersistedConfigRuntimeOwner {
         };
         let mut plan = GuiMediaResolutionPlan::new(target);
         let source_override =
-            Self::selected_playlist_source_override_for_index(state, playlist_index, plan.target());
+            Self::selected_playlist_source_override_for_index(state, playlist_index);
         let source_provider = source_override
             .as_ref()
             .map(|provider_id| provider_id.as_str())
             .unwrap_or("automatic");
+
+        // Reconcile retained drag/drop paths before the resolution trigger short-circuit.
+        // Removing a dropped file must invalidate the previous local-first decision so
+        // Automatic can continue through media search and Plex fallback.
+        let retained_local_path =
+            self.local_shared_playlist_media_path_for_target(state, plan.target());
 
         let search_roots = self.automatic_media_search_roots(state);
         let roots = Self::automatic_media_search_root_keys(&search_roots);
@@ -827,6 +836,22 @@ impl GuiPersistedConfigRuntimeOwner {
                 state,
                 plan.target(),
                 provider_id,
+            );
+        }
+
+        if let Some(path) = retained_local_path {
+            self.clear_plex_stream_resolution_state();
+            plan.push_user_media_candidate(path, GuiUserMediaTargetResolutionSource::QuickLocal);
+            self.ensure_configured_player_attached();
+            if self.player.is_none() {
+                return SelectedPlaylistMediaSyncOutcome::NoChange;
+            }
+            return self.open_media_resolution_candidate(
+                plan.target(),
+                plan.best_candidate()
+                    .cloned()
+                    .expect("retained local-path candidate should exist"),
+                false,
             );
         }
 
@@ -913,17 +938,11 @@ impl GuiPersistedConfigRuntimeOwner {
     fn selected_playlist_source_override_for_index(
         state: &SorotteGuiShellAppState,
         index: usize,
-        target: &str,
     ) -> Option<GuiMediaSourceProviderId> {
-        let selected = state
-            .main_window
-            .playlist
-            .get(index)?
-            .source_state
-            .current_provider_id
-            .clone();
-        let inferred = GuiPlaylistSourceState::inferred_provider_for_entry(target);
-        (selected != inferred).then_some(selected)
+        let source_state = &state.main_window.playlist.get(index)?.source_state;
+        source_state
+            .provider_selection_is_explicit
+            .then(|| source_state.current_provider_id.clone())
     }
 
     pub(super) fn sync_selected_playlist_source_override_to_attached_player(

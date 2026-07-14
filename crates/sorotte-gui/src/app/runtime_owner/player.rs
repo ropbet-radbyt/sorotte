@@ -25,7 +25,9 @@ use super::super::media_search_cache::{
     load_persisted_media_search_root_index_at_root, normalized_media_search_root_key,
     persist_media_search_root_index_borrowed_at_root_if_cache_generation,
 };
-use super::super::runtime_bridge::GuiSharedPlaylistOpenDispatch;
+use super::super::runtime_bridge::{
+    GuiSharedPlaylistLocalFileBinding, GuiSharedPlaylistOpenDispatch,
+};
 use super::super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 use super::super::runtime_stack::{
     GuiAttachedPlayerRuntimeAction, GuiClientCoreChatSessionRuntimeAdapter,
@@ -33,10 +35,9 @@ use super::super::runtime_stack::{
 };
 use super::super::shell_state::{
     GuiMediaIndexRuntimeSnapshot, GuiMediaSourceProviderId, GuiPlaylistResolutionStep,
-    GuiPlaylistSourceState, GuiPlaylistSourceStatus, GuiPluginSelection, GuiShellAction,
-    GuiShellModal, GuiShellView, GuiStreamHelperHealth, GuiStreamTargetKind,
-    GuiTransientNotificationLevel, MainWindowRuntimeSnapshot, SorotteGuiShellAppState,
-    browser_is_url, browser_stream_target_kind,
+    GuiPlaylistSourceStatus, GuiPluginSelection, GuiShellAction, GuiShellModal, GuiShellView,
+    GuiStreamHelperHealth, GuiStreamTargetKind, GuiTransientNotificationLevel,
+    MainWindowRuntimeSnapshot, SorotteGuiShellAppState, browser_is_url, browser_stream_target_kind,
 };
 use super::super::startup_support::env_trimmed;
 use super::super::support::{
