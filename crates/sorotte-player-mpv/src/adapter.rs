@@ -1383,15 +1383,24 @@ impl MpvAdapter {
             }
         }
 
-        let cache_position_boundary = update.position_seconds.is_some()
-            && update.cache_buffering_percent.is_none()
-            && update.buffered_ahead_seconds.is_none()
-            && self
-                .pending_transport_telemetry_updates
+        let update_has_cache_metrics = update.cache_buffering_percent.is_some()
+            || update.buffered_ahead_seconds.is_some()
+            || update.buffered_ahead_bytes.is_some()
+            || update.input_rate_bytes_per_second.is_some();
+        let cache_position_boundary =
+            self.pending_transport_telemetry_updates
                 .back()
                 .is_some_and(|pending| {
-                    pending.cache_buffering_percent.is_some()
+                    let pending_has_cache_metrics = pending.cache_buffering_percent.is_some()
                         || pending.buffered_ahead_seconds.is_some()
+                        || pending.buffered_ahead_bytes.is_some()
+                        || pending.input_rate_bytes_per_second.is_some();
+                    (update.position_seconds.is_some()
+                        && !update_has_cache_metrics
+                        && pending_has_cache_metrics)
+                        || (update_has_cache_metrics
+                            && update.position_seconds.is_none()
+                            && pending.position_seconds.is_some())
                 });
         let lifecycle_boundary = cache_position_boundary
             || self
@@ -1429,6 +1438,7 @@ impl MpvAdapter {
                 pending.cache_buffering_percent = None;
                 pending.buffered_ahead_seconds = None;
                 pending.buffered_ahead_bytes = None;
+                pending.input_rate_bytes_per_second = None;
             }
         }
     }

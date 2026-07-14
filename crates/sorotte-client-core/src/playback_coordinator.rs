@@ -579,6 +579,7 @@ struct RecoveryEpisode {
     stable_since_seconds: Option<f64>,
     catchup_deadline_seconds: Option<f64>,
     decision_made: bool,
+    cache_metrics_frozen_until_decision: bool,
     catchup_active: bool,
     seek_active: bool,
     gentle_catchup_only: bool,
@@ -602,6 +603,7 @@ struct SeekPreparationEpisode {
     phase: SeekPreparationPhase,
     cache_buffering_percent: Option<f64>,
     buffered_ahead_seconds: Option<f64>,
+    input_rate_bytes_per_second: Option<u64>,
     nearest_safe_buffered_position_seconds: Option<f64>,
     started_at_seconds: f64,
     deadline_seconds: f64,
@@ -753,6 +755,7 @@ impl PlaybackCoordinator {
             episode.phase = SeekPreparationPhase::Seeking;
             episode.cache_buffering_percent = None;
             episode.buffered_ahead_seconds = None;
+            episode.input_rate_bytes_per_second = None;
             episode.nearest_safe_buffered_position_seconds = None;
             episode.primary_seek_observation_sequence = Some(self.observation_sequence);
             episode.refill_started_observation_sequence = None;
@@ -866,6 +869,7 @@ impl PlaybackCoordinator {
                 episode.phase = SeekPreparationPhase::Seeking;
                 episode.cache_buffering_percent = None;
                 episode.buffered_ahead_seconds = None;
+                episode.input_rate_bytes_per_second = None;
                 episode.nearest_safe_buffered_position_seconds = None;
                 episode.primary_seek_observation_sequence = None;
                 episode.refill_started_observation_sequence = None;
@@ -902,6 +906,7 @@ impl PlaybackCoordinator {
                     phase: SeekPreparationPhase::Seeking,
                     cache_buffering_percent: None,
                     buffered_ahead_seconds: None,
+                    input_rate_bytes_per_second: None,
                     nearest_safe_buffered_position_seconds: None,
                     started_at_seconds: terminal.started_at_seconds,
                     deadline_seconds: now_seconds + self.config.seek_preparation_timeout_seconds,
@@ -1219,14 +1224,6 @@ impl PlaybackCoordinator {
         }
         self.observation_sequence = self.observation_sequence.saturating_add(1);
 
-        self.metrics.last_buffered_ahead_seconds = observation
-            .buffered_ahead_seconds
-            .filter(|value| value.is_finite() && *value >= 0.0)
-            .or(self.metrics.last_buffered_ahead_seconds);
-        self.metrics.last_input_rate_bytes_per_second = observation
-            .input_rate_bytes_per_second
-            .or(self.metrics.last_input_rate_bytes_per_second);
-
         let position_sampled = observation
             .position_seconds
             .is_some_and(|value| value.is_finite() && value >= 0.0);
@@ -1321,6 +1318,30 @@ impl PlaybackCoordinator {
         }
         self.observed = Some(observed);
 
+        let target_scoped_cache_evidence = self.seek_preparation_accepts_target_cache_evidence(
+            observed,
+            &observation,
+            seek_preparation_evidence_is_fresh,
+        );
+        let recovery_cache_metrics_frozen = self.recovery.as_ref().is_some_and(|episode| {
+            episode.cache_metrics_frozen_until_decision && !episode.decision_made
+        });
+        let cache_metrics_update_allowed = seek_preparation_evidence_is_fresh
+            && !recovery_cache_metrics_frozen
+            && self
+                .seek_preparation
+                .as_ref()
+                .is_none_or(|episode| !episode.primary_seek_issued);
+        if cache_metrics_update_allowed {
+            self.metrics.last_buffered_ahead_seconds = observation
+                .buffered_ahead_seconds
+                .filter(|value| value.is_finite() && *value >= 0.0)
+                .or(self.metrics.last_buffered_ahead_seconds);
+            self.metrics.last_input_rate_bytes_per_second = observation
+                .input_rate_bytes_per_second
+                .or(self.metrics.last_input_rate_bytes_per_second);
+        }
+
         let advancing = previous
             .and_then(|previous| previous.position_seconds)
             .zip(observed.position_seconds)
@@ -1336,6 +1357,7 @@ impl PlaybackCoordinator {
             observed,
             &observation,
             seek_preparation_evidence_is_fresh,
+            target_scoped_cache_evidence,
             &mut actions,
         );
         if self.seek_preparation.is_none() {
@@ -1837,6 +1859,7 @@ impl PlaybackCoordinator {
             // this frozen target.
             cache_buffering_percent: None,
             buffered_ahead_seconds: None,
+            input_rate_bytes_per_second: None,
             nearest_safe_buffered_position_seconds: nearest,
             started_at_seconds: desired.anchor_observed_at_seconds,
             deadline_seconds: desired.anchor_observed_at_seconds
@@ -1870,6 +1893,7 @@ impl PlaybackCoordinator {
         observed: ObservedState,
         observation: &PlayerTransportObservation,
         seek_preparation_evidence_is_fresh: bool,
+        target_scoped_cache_evidence: bool,
         actions: &mut Vec<PlaybackCoordinatorAction>,
     ) {
         let Some(media_kind) = self.media.as_ref().map(|media| media.kind) else {
@@ -1974,7 +1998,7 @@ impl PlaybackCoordinator {
             .primary_seek_observation_sequence
             .is_some_and(|sequence| self.observation_sequence > sequence)
             && seek_preparation_evidence_is_fresh;
-        if post_seek_observation && at_target {
+        if target_scoped_cache_evidence {
             if let Some(percent) = observation
                 .cache_buffering_percent
                 .filter(|percent| percent.is_finite())
@@ -1986,6 +2010,9 @@ impl PlaybackCoordinator {
                 .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
             {
                 episode.buffered_ahead_seconds = Some(seconds);
+            }
+            if let Some(bytes_per_second) = observation.input_rate_bytes_per_second {
+                episode.input_rate_bytes_per_second = Some(bytes_per_second);
             }
         }
 
@@ -2111,6 +2138,43 @@ impl PlaybackCoordinator {
         };
     }
 
+    fn seek_preparation_accepts_target_cache_evidence(
+        &self,
+        observed: ObservedState,
+        observation: &PlayerTransportObservation,
+        evidence_is_fresh: bool,
+    ) -> bool {
+        let Some(episode) = self.seek_preparation.as_ref() else {
+            return false;
+        };
+        let target = episode.frozen_target_seconds;
+        let source_position_is_target = observation.position_seconds.is_some_and(|position| {
+            position.is_finite()
+                && (position - target).abs() <= self.config.position_tolerance_seconds
+        });
+        let source_ranges_cover_target =
+            observation
+                .seekable_ranges
+                .as_deref()
+                .is_some_and(|ranges| {
+                    ranges.iter().any(|range| {
+                        range.start_seconds.is_finite()
+                            && range.end_seconds.is_finite()
+                            && range.start_seconds <= target
+                            && target <= range.end_seconds
+                    })
+                });
+        episode.primary_seek_issued
+            && episode
+                .primary_seek_observation_sequence
+                .is_some_and(|sequence| self.observation_sequence > sequence)
+            && evidence_is_fresh
+            && observed.position_seconds.is_some_and(|position| {
+                (position - target).abs() <= self.config.position_tolerance_seconds
+            })
+            && (source_position_is_target || source_ranges_cover_target)
+    }
+
     fn begin_recovery_handoff(&mut self, now_seconds: f64) {
         if self.recovery.is_some() {
             return;
@@ -2125,6 +2189,7 @@ impl PlaybackCoordinator {
             stable_since_seconds: None,
             catchup_deadline_seconds: None,
             decision_made: false,
+            cache_metrics_frozen_until_decision: true,
             catchup_active: false,
             seek_active: false,
             gentle_catchup_only: false,
@@ -2136,6 +2201,13 @@ impl PlaybackCoordinator {
         let Some(mut episode) = self.seek_preparation.take() else {
             return;
         };
+        if outcome == SeekPreparationTerminalOutcome::Ready {
+            // Recovery may only inherit quantitative headroom proven for the
+            // frozen target. Assignment is intentional: telemetry-poor
+            // completion clears any value retained from the pre-seek epoch.
+            self.metrics.last_buffered_ahead_seconds = episode.buffered_ahead_seconds;
+            self.metrics.last_input_rate_bytes_per_second = episode.input_rate_bytes_per_second;
+        }
         if let Some(command_id) = episode.primary_seek_command_id {
             self.pending_commands
                 .retain(|command| command.id != command_id);
@@ -2195,6 +2267,7 @@ impl PlaybackCoordinator {
                     stable_since_seconds: None,
                     catchup_deadline_seconds: None,
                     decision_made: false,
+                    cache_metrics_frozen_until_decision: false,
                     catchup_active: false,
                     seek_active: false,
                     gentle_catchup_only: false,
@@ -2377,10 +2450,17 @@ impl PlaybackCoordinator {
                 // this observation, when primary_seek_issued was still false.
                 // Re-evaluate now so an already-satisfied ReadyPaused target
                 // cannot wait forever for telemetry that may never change.
+                let target_scoped_cache_evidence = self
+                    .seek_preparation_accepts_target_cache_evidence(
+                        observed,
+                        observation,
+                        seek_preparation_evidence_is_fresh,
+                    );
                 self.update_seek_preparation(
                     observed,
                     observation,
                     seek_preparation_evidence_is_fresh,
+                    target_scoped_cache_evidence,
                     actions,
                 );
             }
@@ -2658,11 +2738,13 @@ impl PlaybackCoordinator {
             episode.primary_seek_observation_sequence = Some(self.observation_sequence);
             episode.cache_buffering_percent = None;
             episode.buffered_ahead_seconds = None;
+            episode.input_rate_bytes_per_second = None;
             episode.refill_started_observation_sequence = None;
             episode.refill_released_after_seek = false;
             episode.stable_playable_since = None;
         }
         self.metrics.last_buffered_ahead_seconds = None;
+        self.metrics.last_input_rate_bytes_per_second = None;
         if let Some(observed) = self.observed.as_mut() {
             observed.cache_buffering_percent = None;
             observed.buffered_ahead_seconds = None;
@@ -5810,6 +5892,41 @@ mod tests {
         )
     }
 
+    fn begin_fetch_required_seek_after_pre_seek_cache_metrics(
+        coordinator: &mut PlaybackCoordinator,
+        generation: u64,
+        target: f64,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        let mut pre_seek = PlayerTransportObservation::new(generation, 0.5)
+            .with_phase(PlayerTransportPhase::ReadyPaused)
+            .with_position(5.0)
+            .with_logical_pause(true)
+            .with_cache_pause(false)
+            .with_seeking(false)
+            .with_seekable(true)
+            .with_seekable_ranges(vec![PlayerSeekableRange::new(0.0, 10.0)])
+            .with_cache_buffering_percent(100.0)
+            .with_buffered_ahead_seconds(10.0);
+        pre_seek.input_rate_bytes_per_second = Some(9_000_000);
+        coordinator.observe(pre_seek);
+        coordinator.update_desired_room_state_with_kind(
+            DesiredRoomPlayback {
+                force_seek: true,
+                ..desired(generation, 1, false, target)
+            },
+            DesiredRoomPlaybackUpdateKind::ExplicitSeek,
+        );
+        coordinator.observe(
+            PlayerTransportObservation::new(generation, 1.0)
+                .with_phase(PlayerTransportPhase::ReadyPaused)
+                .with_position(5.0)
+                .with_logical_pause(true)
+                .with_cache_pause(false)
+                .with_seeking(false)
+                .with_seekable(true),
+        )
+    }
+
     #[test]
     fn seekable_ranges_are_normalized_while_absent_and_present_empty_remain_distinct() {
         assert_eq!(
@@ -6433,6 +6550,187 @@ mod tests {
             coordinator.last_seek_preparation_terminal_outcome(),
             Some(SeekPreparationTerminalOutcome::Ready)
         );
+    }
+
+    #[test]
+    fn stale_pre_seek_cache_metrics_keep_post_seek_catchup_conservative() {
+        let mut coordinator = PlaybackCoordinator::new(PlaybackCoordinatorConfig {
+            maximum_catchup_rate: 1.25,
+            ..PlaybackCoordinatorConfig::default()
+        });
+        let generation = coordinator
+            .prepare_media(
+                LogicalMediaId::new("stale-pre-seek-recovery-metrics").unwrap(),
+                MediaTransportKind::NetworkVod,
+                0.0,
+            )
+            .media_generation;
+        let dispatched = begin_fetch_required_seek_after_pre_seek_cache_metrics(
+            &mut coordinator,
+            generation,
+            40.0,
+        );
+        assert!(dispatched.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPosition(position),
+                ..
+            } if (*position - 40.0).abs() <= f64::EPSILON
+        )));
+        assert_eq!(coordinator.metrics().last_buffered_ahead_seconds, None);
+        assert_eq!(coordinator.metrics().last_input_rate_bytes_per_second, None);
+
+        let mut delayed_old_position = PlayerTransportObservation::new(generation, 1.1)
+            .with_phase(PlayerTransportPhase::ReadyPaused)
+            .with_position(5.0)
+            .with_logical_pause(true)
+            .with_cache_pause(false)
+            .with_seeking(false)
+            .with_seekable(true)
+            .with_buffered_ahead_seconds(10.0);
+        delayed_old_position.input_rate_bytes_per_second = Some(9_000_000);
+        coordinator.observe(delayed_old_position);
+        assert_eq!(coordinator.metrics().last_buffered_ahead_seconds, None);
+        assert_eq!(coordinator.metrics().last_input_rate_bytes_per_second, None);
+
+        coordinator.observe(
+            PlayerTransportObservation::new(generation, 2.0)
+                .with_phase(PlayerTransportPhase::Rebuffering)
+                .with_position(40.0)
+                .with_logical_pause(true)
+                .with_cache_pause(true)
+                .with_seeking(false)
+                .with_seekable(true),
+        );
+        let mut delayed_after_target = PlayerTransportObservation::new(generation, 2.1)
+            .with_seekable_ranges(vec![PlayerSeekableRange::new(0.0, 10.0)])
+            .with_cache_buffering_percent(100.0)
+            .with_buffered_ahead_seconds(10.0);
+        delayed_after_target.input_rate_bytes_per_second = Some(9_000_000);
+        coordinator.observe(delayed_after_target);
+        let active = coordinator.seek_preparation_snapshot().unwrap();
+        assert_eq!(active.cache_buffering_percent, None);
+        assert_eq!(active.buffered_ahead_seconds, None);
+        assert_eq!(coordinator.metrics().last_buffered_ahead_seconds, None);
+        assert_eq!(coordinator.metrics().last_input_rate_bytes_per_second, None);
+
+        let mut stale_merged_replay = PlayerTransportObservation::new(generation, 2.2)
+            .with_phase(PlayerTransportPhase::Rebuffering)
+            .with_position(40.0)
+            .with_logical_pause(true)
+            .with_cache_pause(true)
+            .with_seeking(false)
+            .with_seekable(true)
+            .with_cache_buffering_percent(100.0)
+            .with_buffered_ahead_seconds(10.0);
+        stale_merged_replay.input_rate_bytes_per_second = Some(9_000_000);
+        coordinator.replay_observation(stale_merged_replay);
+        let active = coordinator.seek_preparation_snapshot().unwrap();
+        assert_eq!(active.cache_buffering_percent, None);
+        assert_eq!(active.buffered_ahead_seconds, None);
+        assert_eq!(coordinator.metrics().last_buffered_ahead_seconds, None);
+        assert_eq!(coordinator.metrics().last_input_rate_bytes_per_second, None);
+
+        coordinator.observe(
+            PlayerTransportObservation::new(generation, 3.0)
+                .with_phase(PlayerTransportPhase::ReadyPaused)
+                .with_position(40.0)
+                .with_logical_pause(true)
+                .with_cache_pause(false)
+                .with_seeking(false)
+                .with_seekable(true),
+        );
+        assert_eq!(
+            coordinator.last_seek_preparation_terminal_outcome(),
+            Some(SeekPreparationTerminalOutcome::Ready)
+        );
+        assert_eq!(coordinator.metrics().last_buffered_ahead_seconds, None);
+        assert_eq!(coordinator.metrics().last_input_rate_bytes_per_second, None);
+
+        let mut stale_after_ready = PlayerTransportObservation::new(generation, 3.1)
+            .with_phase(PlayerTransportPhase::ReadyPaused)
+            .with_position(40.0)
+            .with_logical_pause(true)
+            .with_cache_pause(false)
+            .with_seeking(false)
+            .with_seekable(true)
+            .with_cache_buffering_percent(100.0)
+            .with_buffered_ahead_seconds(10.0);
+        stale_after_ready.input_rate_bytes_per_second = Some(9_000_000);
+        coordinator.replay_observation(stale_after_ready);
+        assert_eq!(coordinator.metrics().last_buffered_ahead_seconds, None);
+        assert_eq!(coordinator.metrics().last_input_rate_bytes_per_second, None);
+
+        let mut fresh_delayed_after_ready = PlayerTransportObservation::new(generation, 3.2)
+            .with_seekable_ranges(vec![PlayerSeekableRange::new(0.0, 10.0)])
+            .with_cache_buffering_percent(100.0)
+            .with_buffered_ahead_seconds(10.0);
+        fresh_delayed_after_ready.input_rate_bytes_per_second = Some(9_000_000);
+        coordinator.observe(fresh_delayed_after_ready);
+        assert_eq!(coordinator.metrics().last_buffered_ahead_seconds, None);
+        assert_eq!(coordinator.metrics().last_input_rate_bytes_per_second, None);
+
+        let actions = coordinator.observe(playing(generation, 4.0, 40.5));
+        assert!(actions.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPlaybackRate(rate),
+                ..
+            } if (*rate - CONSERVATIVE_CATCHUP_RATE_WITHOUT_HEADROOM).abs() < f64::EPSILON
+        )));
+    }
+
+    #[test]
+    fn fresh_target_headroom_allows_configured_post_seek_catchup() {
+        let mut coordinator = PlaybackCoordinator::new(PlaybackCoordinatorConfig {
+            maximum_catchup_rate: 1.25,
+            ..PlaybackCoordinatorConfig::default()
+        });
+        let generation = coordinator
+            .prepare_media(
+                LogicalMediaId::new("target-scoped-recovery-metrics").unwrap(),
+                MediaTransportKind::NetworkVod,
+                0.0,
+            )
+            .media_generation;
+        begin_fetch_required_seek_after_pre_seek_cache_metrics(&mut coordinator, generation, 40.0);
+
+        let mut target_refill = PlayerTransportObservation::new(generation, 2.0)
+            .with_phase(PlayerTransportPhase::Rebuffering)
+            .with_position(40.0)
+            .with_logical_pause(true)
+            .with_cache_pause(true)
+            .with_seeking(false)
+            .with_seekable(true)
+            .with_buffered_ahead_seconds(2.0);
+        target_refill.input_rate_bytes_per_second = Some(2_000_000);
+        coordinator.observe(target_refill);
+        assert_eq!(coordinator.metrics().last_buffered_ahead_seconds, None);
+        assert_eq!(coordinator.metrics().last_input_rate_bytes_per_second, None);
+
+        coordinator.observe(
+            PlayerTransportObservation::new(generation, 3.0)
+                .with_phase(PlayerTransportPhase::ReadyPaused)
+                .with_position(40.0)
+                .with_logical_pause(true)
+                .with_cache_pause(false)
+                .with_seeking(false)
+                .with_seekable(true),
+        );
+        assert_eq!(coordinator.metrics().last_buffered_ahead_seconds, Some(2.0));
+        assert_eq!(
+            coordinator.metrics().last_input_rate_bytes_per_second,
+            Some(2_000_000)
+        );
+
+        let actions = coordinator.observe(playing(generation, 4.0, 40.5));
+        assert!(actions.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPlaybackRate(rate),
+                ..
+            } if (*rate - 1.25).abs() < f64::EPSILON
+        )));
     }
 
     #[test]
@@ -7336,6 +7634,7 @@ mod tests {
             stable_since_seconds: None,
             catchup_deadline_seconds: None,
             decision_made: true,
+            cache_metrics_frozen_until_decision: false,
             catchup_active: false,
             seek_active: false,
             gentle_catchup_only: false,
@@ -7453,6 +7752,7 @@ mod tests {
             stable_since_seconds: None,
             catchup_deadline_seconds: None,
             decision_made: true,
+            cache_metrics_frozen_until_decision: false,
             catchup_active: false,
             seek_active: false,
             gentle_catchup_only: false,

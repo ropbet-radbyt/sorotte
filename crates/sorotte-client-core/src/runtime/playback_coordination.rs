@@ -6330,6 +6330,12 @@ mod tests {
     #[test]
     fn runtime_merged_replay_cannot_relabel_pre_seek_cache_evidence_as_target_scoped() {
         let mut coordination = RuntimePlaybackCoordination::default();
+        coordination
+            .coordinator
+            .set_config(PlaybackCoordinatorConfig {
+                maximum_catchup_rate: 1.25,
+                ..PlaybackCoordinatorConfig::default()
+            });
         let generation = coordination
             .prepare_media(
                 LogicalMediaId::new("runtime-replay-cache-provenance").unwrap(),
@@ -6343,6 +6349,7 @@ mod tests {
         )]);
         pre_seek.cache_buffering_percent = Some(100.0);
         pre_seek.buffered_ahead_seconds = Some(10.0);
+        pre_seek.input_rate_bytes_per_second = Some(9_000_000);
         coordination.observe_transport(pre_seek, 0.1);
         coordination
             .coordinator
@@ -6361,10 +6368,33 @@ mod tests {
             paused_transport(1, 0.2, PlayerTransportPhase::ReadyPaused, 5.0),
             0.2,
         );
+        assert_eq!(
+            coordination.snapshot().metrics.last_buffered_ahead_seconds,
+            None
+        );
+        assert_eq!(
+            coordination
+                .snapshot()
+                .metrics
+                .last_input_rate_bytes_per_second,
+            None
+        );
         coordination.observe_transport(
-            paused_transport(1, 2.0, PlayerTransportPhase::ReadyPaused, 40.0),
+            paused_transport(1, 2.0, PlayerTransportPhase::Rebuffering, 40.0),
             2.0,
         );
+        let mut delayed_after_target = PlayerTransportTelemetryUpdate::new(
+            PlayerMediaGeneration::new(1),
+            PlayerObservationTimestamp::from_adapter_start(Duration::from_secs_f64(2.1)),
+        );
+        delayed_after_target.seekable_ranges =
+            Some(vec![sorotte_player_api::PlayerSeekableRange::new(
+                0.0, 10.0,
+            )]);
+        delayed_after_target.cache_buffering_percent = Some(100.0);
+        delayed_after_target.buffered_ahead_seconds = Some(10.0);
+        delayed_after_target.input_rate_bytes_per_second = Some(9_000_000);
+        coordination.observe_transport(delayed_after_target, 2.1);
 
         let replay = coordination
             .latest_observation
@@ -6372,6 +6402,7 @@ mod tests {
             .expect("runtime should retain a merged transport snapshot");
         assert_eq!(replay.cache_buffering_percent, Some(100.0));
         assert_eq!(replay.buffered_ahead_seconds, Some(10.0));
+        assert_eq!(replay.input_rate_bytes_per_second, Some(9_000_000));
         coordination.coordinator.replay_observation(replay);
 
         let active = coordination
@@ -6381,21 +6412,102 @@ mod tests {
         assert_eq!(active.cache_buffering_percent, None);
         assert_eq!(active.buffered_ahead_seconds, None);
         assert_eq!(
+            coordination.snapshot().metrics.last_buffered_ahead_seconds,
+            None
+        );
+        assert_eq!(
+            coordination
+                .snapshot()
+                .metrics
+                .last_input_rate_bytes_per_second,
+            None
+        );
+        assert_eq!(
             coordination
                 .snapshot()
                 .last_seek_preparation_terminal_outcome,
             None
         );
 
-        let mut fresh_target = paused_transport(1, 3.0, PlayerTransportPhase::ReadyPaused, 40.0);
-        fresh_target.buffered_ahead_seconds = Some(2.0);
-        coordination.observe_transport(fresh_target, 3.0);
+        coordination.observe_transport(
+            paused_transport(1, 3.0, PlayerTransportPhase::ReadyPaused, 40.0),
+            3.0,
+        );
         assert_eq!(
             coordination
                 .snapshot()
                 .last_seek_preparation_terminal_outcome,
             Some(SeekPreparationTerminalOutcome::Ready)
         );
+        assert_eq!(
+            coordination.snapshot().metrics.last_buffered_ahead_seconds,
+            None
+        );
+        assert_eq!(
+            coordination
+                .snapshot()
+                .metrics
+                .last_input_rate_bytes_per_second,
+            None
+        );
+
+        let replay_after_ready = coordination
+            .latest_observation
+            .clone()
+            .expect("runtime should retain stale quantitative cache fields after release");
+        assert_eq!(replay_after_ready.buffered_ahead_seconds, Some(10.0));
+        assert_eq!(
+            replay_after_ready.input_rate_bytes_per_second,
+            Some(9_000_000)
+        );
+        coordination
+            .coordinator
+            .replay_observation(replay_after_ready);
+        assert_eq!(
+            coordination.snapshot().metrics.last_buffered_ahead_seconds,
+            None
+        );
+        assert_eq!(
+            coordination
+                .snapshot()
+                .metrics
+                .last_input_rate_bytes_per_second,
+            None
+        );
+
+        let mut fresh_delayed_after_ready = PlayerTransportTelemetryUpdate::new(
+            PlayerMediaGeneration::new(1),
+            PlayerObservationTimestamp::from_adapter_start(Duration::from_secs_f64(3.2)),
+        );
+        fresh_delayed_after_ready.seekable_ranges =
+            Some(vec![sorotte_player_api::PlayerSeekableRange::new(
+                0.0, 10.0,
+            )]);
+        fresh_delayed_after_ready.cache_buffering_percent = Some(100.0);
+        fresh_delayed_after_ready.buffered_ahead_seconds = Some(10.0);
+        fresh_delayed_after_ready.input_rate_bytes_per_second = Some(9_000_000);
+        coordination.observe_transport(fresh_delayed_after_ready, 3.2);
+        assert_eq!(
+            coordination.snapshot().metrics.last_buffered_ahead_seconds,
+            None
+        );
+        assert_eq!(
+            coordination
+                .snapshot()
+                .metrics
+                .last_input_rate_bytes_per_second,
+            None
+        );
+
+        let catchup = coordination
+            .observe_transport(transport(1, 4.0, PlayerTransportPhase::Playing, 40.5), 4.0);
+        assert!(catchup.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPlaybackRate(rate),
+                ..
+            } if (*rate - 1.03).abs() < f64::EPSILON
+        )));
     }
 
     #[test]

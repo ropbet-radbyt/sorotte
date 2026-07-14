@@ -606,7 +606,7 @@ fn drained_ready_paused_cannot_finish_preparation_before_delayed_cache_pause() {
         r#"{"event":"property-change","name":"seeking","data":false}"#,
         r#"{"event":"property-change","name":"seekable","data":true}"#,
         r#"{"event":"property-change","name":"time-pos","data":5.0}"#,
-        r#"{"event":"property-change","name":"demuxer-cache-state","data":{"seekable-ranges":[{"start":0.0,"end":10.0}],"cache-duration":10.0}}"#,
+        r#"{"event":"property-change","name":"demuxer-cache-state","data":{"seekable-ranges":[{"start":0.0,"end":10.0}],"cache-duration":10.0,"raw-input-rate":5000000}}"#,
         r#"{"event":"property-change","name":"cache-buffering-state","data":100.0}"#,
         r#"{"event":"playback-restart"}"#,
         r#"{"request_id":1,"error":"success"}"#,
@@ -615,9 +615,14 @@ fn drained_ready_paused_cannot_finish_preparation_before_delayed_cache_pause() {
         // These delayed pre-seek cache values arrive after command dispatch.
         // A later target-position event must not inherit them.
         r#"{"event":"property-change","name":"cache-buffering-state","data":100.0}"#,
-        r#"{"event":"property-change","name":"demuxer-cache-state","data":{"seekable-ranges":[{"start":0.0,"end":10.0}],"cache-duration":10.0}}"#,
+        r#"{"event":"property-change","name":"demuxer-cache-state","data":{"seekable-ranges":[{"start":0.0,"end":10.0}],"cache-duration":10.0,"raw-input-rate":9000000}}"#,
         r#"{"event":"property-change","name":"seeking","data":true}"#,
+        // Input-rate/byte-only cache telemetry must also form a position boundary.
+        r#"{"event":"property-change","name":"demuxer-cache-state","data":{"fw-bytes":123456,"raw-input-rate":8000000}}"#,
         r#"{"event":"property-change","name":"time-pos","data":40.0}"#,
+        // The reverse ordering must not merge old cache evidence back into
+        // the already queued target-position update.
+        r#"{"event":"property-change","name":"demuxer-cache-state","data":{"seekable-ranges":[{"start":0.0,"end":10.0}],"cache-duration":10.0,"fw-bytes":654321,"raw-input-rate":9000000}}"#,
         r#"{"event":"property-change","name":"seeking","data":false}"#,
         r#"{"event":"playback-restart"}"#,
         r#"{"request_id":3,"error":"success"}"#,
@@ -625,6 +630,10 @@ fn drained_ready_paused_cannot_finish_preparation_before_delayed_cache_pause() {
         r#"{"request_id":4,"error":"success"}"#,
         r#"{"event":"property-change","name":"paused-for-cache","data":false}"#,
         r#"{"request_id":5,"error":"success"}"#,
+        // A fresh but delayed old-position sample after Ready must not change
+        // the recovery decision inherited from the target epoch.
+        r#"{"event":"property-change","name":"demuxer-cache-state","data":{"seekable-ranges":[{"start":0.0,"end":10.0}],"cache-duration":10.0,"raw-input-rate":9000000}}"#,
+        r#"{"request_id":6,"error":"success"}"#,
     ]);
     let mut adapter = MpvAdapter::with_test_transport_and_registered_observers(transport);
     let mut coordinator = PlaybackCoordinator::default();
@@ -692,7 +701,10 @@ fn drained_ready_paused_cannot_finish_preparation_before_delayed_cache_pause() {
                     .is_some_and(|position| (position - 40.0).abs() <= f64::EPSILON)
             })
             .all(|update| {
-                update.cache_buffering_percent.is_none() && update.buffered_ahead_seconds.is_none()
+                update.cache_buffering_percent.is_none()
+                    && update.buffered_ahead_seconds.is_none()
+                    && update.buffered_ahead_bytes.is_none()
+                    && update.input_rate_bytes_per_second.is_none()
             })
     );
     for update in transient_updates {
@@ -700,6 +712,8 @@ fn drained_ready_paused_cannot_finish_preparation_before_delayed_cache_pause() {
     }
     assert!(coordinator.seek_preparation_snapshot().is_some());
     assert_eq!(coordinator.last_seek_preparation_terminal_outcome(), None);
+    assert_eq!(coordinator.metrics().last_buffered_ahead_seconds, None);
+    assert_eq!(coordinator.metrics().last_input_rate_bytes_per_second, None);
 
     adapter
         .set_playback_rate(1.0)
@@ -709,6 +723,8 @@ fn drained_ready_paused_cannot_finish_preparation_before_delayed_cache_pause() {
     }
     assert!(coordinator.seek_preparation_snapshot().is_some());
     assert_eq!(coordinator.last_seek_preparation_terminal_outcome(), None);
+    assert_eq!(coordinator.metrics().last_buffered_ahead_seconds, None);
+    assert_eq!(coordinator.metrics().last_input_rate_bytes_per_second, None);
 
     adapter
         .set_playback_rate(1.0)
@@ -720,6 +736,17 @@ fn drained_ready_paused_cannot_finish_preparation_before_delayed_cache_pause() {
         coordinator.last_seek_preparation_terminal_outcome(),
         Some(SeekPreparationTerminalOutcome::Ready)
     );
+    assert_eq!(coordinator.metrics().last_buffered_ahead_seconds, None);
+    assert_eq!(coordinator.metrics().last_input_rate_bytes_per_second, None);
+
+    adapter
+        .set_playback_rate(1.0)
+        .expect("post-ready delayed old cache state should drain separately");
+    while let Some(update) = adapter.take_transport_telemetry_update() {
+        coordinator.observe(coordinator_observation(update, generation));
+    }
+    assert_eq!(coordinator.metrics().last_buffered_ahead_seconds, None);
+    assert_eq!(coordinator.metrics().last_input_rate_bytes_per_second, None);
 }
 
 #[test]
