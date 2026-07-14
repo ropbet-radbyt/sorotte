@@ -29,7 +29,9 @@ use sorotte_client_app::app_boundary::{
 use sorotte_client_core::FileDifferenceSummary;
 use sorotte_client_core::{
     AutoplayCountdownNotification, ChatNotification, ControllerAuthTransitionNotification,
-    ReconnectTransitionNotification, RoomPlaystateView, UserChangeNotification,
+    ReconnectTransitionNotification, RoomPlaystateView, SeekPreparationPhase,
+    SeekPreparationSnapshot, SeekPreparationTerminalOutcome, SeekTargetAvailability,
+    UserChangeNotification,
 };
 use sorotte_player_api::{PlayerError, PlayerPlaybackTelemetryUpdate};
 use sorotte_player_mpv::{LegacySyncplayOsdKind, MpvAdapter};
@@ -79,12 +81,17 @@ pub(super) use self::file_difference::{
     flush_file_difference_notifications_to_sink, format_file_difference_summary,
     localized_file_difference_summary_legacy_compatible,
 };
-pub(super) use self::playback_diagnostics::flush_player_playback_telemetry_diagnostics;
+pub(super) use self::playback_diagnostics::{
+    SeekPreparationNotificationState, flush_player_playback_telemetry_diagnostics,
+    flush_seek_preparation_notifications,
+};
 #[cfg(test)]
 pub(super) use self::playback_diagnostics::{
+    next_seek_preparation_notification_messages,
     player_playback_drift_diagnostic_messages_localized_legacy_compatible,
     player_playback_telemetry_update_message,
     player_playback_telemetry_update_message_localized_legacy_compatible,
+    seek_preparation_diagnostic_messages,
 };
 pub(super) use self::reconnect::flush_reconnect_notifications_legacy_compatible;
 #[cfg(test)]

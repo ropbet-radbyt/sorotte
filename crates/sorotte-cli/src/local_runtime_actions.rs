@@ -50,6 +50,7 @@ fn command_result(events: Vec<ClientEvent>) -> anyhow::Result<bool> {
 pub(super) fn run_planned_local_runtime_action_legacy_compatible(
     application: &mut ClientApplication<MpvAdapter>,
     user_offset_seconds: &mut f64,
+    now_seconds: f64,
     action: PlannedLocalRuntimeAction,
 ) -> anyhow::Result<bool> {
     let language = current_legacy_runtime_language_tag_legacy_compatible();
@@ -97,6 +98,15 @@ pub(super) fn run_planned_local_runtime_action_legacy_compatible(
             Some(ClientCommand::ShuffleEntirePlaylist)
         }
         Some(PlannedLocalRuntimeAction::UndoSeek) => Some(ClientCommand::UndoSeek),
+        Some(PlannedLocalRuntimeAction::KeepWaitingForSeekPreparation) => {
+            return Ok(application.run_keep_waiting_for_seek_preparation(now_seconds)?);
+        }
+        Some(PlannedLocalRuntimeAction::JoinNearestBufferedSeekPreparation) => {
+            return Ok(application.run_join_nearest_buffered_seek_preparation(now_seconds)?);
+        }
+        Some(PlannedLocalRuntimeAction::CancelSeekPreparation) => {
+            return Ok(application.run_cancel_seek_preparation(now_seconds)?);
+        }
         Some(PlannedLocalRuntimeAction::SetUserOffset(_)) => None,
         Some(PlannedLocalRuntimeAction::SeekToPosition(position_seconds)) => {
             Some(ClientCommand::SeekToPosition(position_seconds))

@@ -47,6 +47,42 @@ fn parse_local_input_command_parses_common_toggle_and_room_commands() {
 }
 
 #[test]
+fn seek_preparation_controls_parse_and_plan_as_runtime_actions() {
+    let cases = [
+        (
+            "keep-waiting",
+            LocalInputCommand::KeepWaitingForSeekPreparation,
+            PlannedLocalRuntimeAction::KeepWaitingForSeekPreparation,
+        ),
+        (
+            "join-nearest-buffered-position",
+            LocalInputCommand::JoinNearestBufferedSeekPreparation,
+            PlannedLocalRuntimeAction::JoinNearestBufferedSeekPreparation,
+        ),
+        (
+            "cancel-and-remain",
+            LocalInputCommand::CancelSeekPreparation,
+            PlannedLocalRuntimeAction::CancelSeekPreparation,
+        ),
+    ];
+
+    for (input, parsed, action) in cases {
+        assert_eq!(parse_local_input_command(input), Some(parsed.clone()));
+        let planned = plan_local_input_command_legacy_compatible(
+            parsed,
+            &LocalInputCommandPlanningContext {
+                current_room: Some("room1"),
+                configured_room: "room1",
+            },
+        );
+        assert_eq!(
+            plan_local_input_dispatch_legacy_compatible(planned, true),
+            PlannedLocalInputDispatch::Run(action)
+        );
+    }
+}
+
+#[test]
 fn parse_local_input_command_parses_seek_and_offset_variants() {
     assert_eq!(
         parse_local_input_command("s+0:10"),

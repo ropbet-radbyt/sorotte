@@ -46,6 +46,11 @@ const GUI_SEMANTIC_SCENARIO_PLAYER_SETUP_FLOW_SCRIPT: &str =
 static GUI_SEMANTIC_SCENARIO_PLAYER_SETUP_FLOW_SCRIPT_NORMALIZED: OnceLock<String> =
     OnceLock::new();
 const GUI_SEMANTIC_SCENARIO_PLAYER_SETUP_FLOW_DESCRIPTION: &str = "Applies first-run and recovery mpv setup runtime issues, verifies blocking modal behavior, then exercises Retry mpv through the semantic runtime dispatch path.";
+const GUI_SEMANTIC_SCENARIO_SEEK_PREPARATION_FLOW_SCRIPT: &str =
+    include_str!("../../semantic_scenarios/seek-preparation-flow.txt");
+static GUI_SEMANTIC_SCENARIO_SEEK_PREPARATION_FLOW_SCRIPT_NORMALIZED: OnceLock<String> =
+    OnceLock::new();
+const GUI_SEMANTIC_SCENARIO_SEEK_PREPARATION_FLOW_DESCRIPTION: &str = "Projects client-owned stream seek, cache refill, and convergence phases with truthful progress labels and capability-gated recovery actions.";
 const GUI_SEMANTIC_SCENARIO_PERSISTENCE_RESET_FLOW_SCRIPT: &str = "# Persistence, clear-GUI-data, and config-migration flow\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\nsetting\thost\tpersisted.example\nsetting\troom\tPersistenceRoom\nsetting\tplayer-path\tC:/Windows/System32/notepad.exe\n";
 const GUI_SEMANTIC_SCENARIO_PERSISTENCE_RESET_FLOW_DESCRIPTION: &str = "Seeds legacy GUI-side state next to sorotte.ini, verifies non-INI restore on startup, runs the clear-GUI-data flow through the runtime owner, and proves GUI-owned public-server state wins predictably over conflicting sorotte.ini rows during migration.";
 const GUI_SEMANTIC_SCENARIO_DETACHED_RUNTIME_OWNERSHIP_FLOW_SCRIPT: &str = "# Detached runtime ownership flow\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\nsetting\tusername\tsemantic-user\nsetting\troom\tsemantic-room\nsetting\tpublic-server\tPrimary\t127.0.0.1:8999\nsetting\tmedia-search-directory\tC:/Media\n";
@@ -126,6 +131,10 @@ pub(crate) fn gui_semantic_scenario_script(name: &str) -> Option<&'static str> {
         "live-python-peer-controlled-room-flow" => {
             Some(GUI_SEMANTIC_SCENARIO_LIVE_PYTHON_PEER_CONTROLLED_ROOM_FLOW_SCRIPT)
         }
+        "seek-preparation-flow" => Some(normalized_builtin_script(
+            GUI_SEMANTIC_SCENARIO_SEEK_PREPARATION_FLOW_SCRIPT,
+            &GUI_SEMANTIC_SCENARIO_SEEK_PREPARATION_FLOW_SCRIPT_NORMALIZED,
+        )),
         _ => None,
     }
 }
@@ -156,6 +165,7 @@ fn gui_semantic_scenario_description(name: &str) -> Option<&'static str> {
         "live-python-peer-controlled-room-flow" => {
             Some(GUI_SEMANTIC_SCENARIO_LIVE_PYTHON_PEER_CONTROLLED_ROOM_FLOW_DESCRIPTION)
         }
+        "seek-preparation-flow" => Some(GUI_SEMANTIC_SCENARIO_SEEK_PREPARATION_FLOW_DESCRIPTION),
         _ => None,
     }
 }
@@ -262,6 +272,15 @@ pub(super) fn gui_semantic_scenario_player_setup_flow() -> GuiSemanticScenario {
     )
 }
 
+pub(super) fn gui_semantic_scenario_seek_preparation_flow() -> GuiSemanticScenario {
+    gui_semantic_scenario_from_builtin_script(
+        "seek-preparation-flow",
+        "seek-preparation-flow",
+        gui_semantic_scenario_script("seek-preparation-flow")
+            .expect("seek preparation semantic scenario script should exist"),
+    )
+}
+
 pub(crate) fn gui_semantic_scenario_names() -> &'static [&'static str] {
     &[
         "configuration-surface-flow",
@@ -276,6 +295,7 @@ pub(crate) fn gui_semantic_scenario_names() -> &'static [&'static str] {
         "detached-runtime-ownership-flow",
         "live-python-peer-connect-flow",
         "live-python-peer-controlled-room-flow",
+        "seek-preparation-flow",
     ]
 }
 
@@ -291,6 +311,7 @@ pub(super) fn gui_semantic_scenario_named(name: &str) -> Option<GuiSemanticScena
         "drag-and-drop-ingest-flow" => Some(gui_semantic_scenario_drag_and_drop_ingest_flow()),
         "playlist-workflow-flow" => Some(gui_semantic_scenario_playlist_workflow_flow()),
         "player-setup-flow" => Some(gui_semantic_scenario_player_setup_flow()),
+        "seek-preparation-flow" => Some(gui_semantic_scenario_seek_preparation_flow()),
         _ => None,
     }
 }

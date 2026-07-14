@@ -1,7 +1,14 @@
 use super::*;
 use crate::control::client_effect_player_error;
 use sorotte_player_api::PlayerCommand;
-use sorotte_protocol::PlaybackBarrierSetExtension;
+use sorotte_protocol::{ControllerAuthPayload, PlaybackBarrierSetExtension};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LocalControlAuthorityEvidence {
+    room: Option<String>,
+    username: Option<String>,
+    authorized: bool,
+}
 
 pub struct ClientSessionUpdate<'a> {
     session: &'a mut ClientSession,
@@ -37,6 +44,7 @@ impl<'a> ClientSessionUpdate<'a> {
             }
             if let Some(playback_coordination) = self.playback_coordination.as_deref_mut() {
                 playback_coordination.handle_authoritative_playback_barrier_room_change();
+                playback_coordination.bind_authoritative_room_control_context(self.session);
             }
         }
     }
@@ -48,6 +56,35 @@ impl<'a> ClientSessionUpdate<'a> {
             return None;
         };
         set.set.playback_barrier_v1().ok().flatten()
+    }
+
+    fn local_control_authority_evidence(
+        message: &ProtocolMessage,
+        local_username: Option<&str>,
+    ) -> Option<LocalControlAuthorityEvidence> {
+        let ProtocolMessage::Set(set) = message else {
+            return None;
+        };
+        if let Some(ControllerAuthPayload {
+            room,
+            user,
+            success: Some(authorized),
+            ..
+        }) = set.set.controller_auth.as_ref()
+        {
+            return Some(LocalControlAuthorityEvidence {
+                room: room.clone(),
+                username: user.clone(),
+                authorized: *authorized,
+            });
+        }
+        let local_username = local_username?;
+        let user = set.set.user.as_ref()?.get(local_username)?;
+        Some(LocalControlAuthorityEvidence {
+            room: user.room.as_ref().map(|room| room.name.clone()),
+            username: Some(local_username.to_owned()),
+            authorized: user.controller?,
+        })
     }
 
     fn observe_playback_barrier_extension(
@@ -71,6 +108,20 @@ impl<'a> ClientSessionUpdate<'a> {
         }
     }
 
+    fn observe_local_control_authority(&mut self, evidence: Option<LocalControlAuthorityEvidence>) {
+        let Some(evidence) = evidence else {
+            return;
+        };
+        if let Some(playback_coordination) = self.playback_coordination.as_deref_mut() {
+            playback_coordination.observe_local_control_authority(
+                self.session,
+                evidence.room.as_deref(),
+                evidence.username.as_deref(),
+                evidence.authorized,
+            );
+        }
+    }
+
     pub fn apply_player_playback_telemetry_update(
         &mut self,
         update: &PlayerPlaybackTelemetryUpdate,
@@ -90,11 +141,14 @@ impl<'a> ClientSessionUpdate<'a> {
     ) -> Result<(), ProtocolError> {
         let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
         let extension = Self::playback_barrier_extension(&message);
+        let authority_evidence =
+            Self::local_control_authority_evidence(&message, self.session.username());
         let previous_room = self.session.room().map(str::to_owned);
         let result = self.session.apply_protocol_message(message);
         self.cancel_playback_barrier_request_after_room_change(previous_room);
         if result.is_ok() {
             self.observe_playback_barrier_extension(extension, now_seconds);
+            self.observe_local_control_authority(authority_evidence);
         }
         result
     }
@@ -105,11 +159,14 @@ impl<'a> ClientSessionUpdate<'a> {
         now_seconds: f64,
     ) -> Result<(), ProtocolError> {
         let extension = Self::playback_barrier_extension(&message);
+        let authority_evidence =
+            Self::local_control_authority_evidence(&message, self.session.username());
         let previous_room = self.session.room().map(str::to_owned);
         let result = self.session.apply_protocol_message_at(message, now_seconds);
         self.cancel_playback_barrier_request_after_room_change(previous_room);
         if result.is_ok() {
             self.observe_playback_barrier_extension(extension, now_seconds);
+            self.observe_local_control_authority(authority_evidence);
         }
         result
     }

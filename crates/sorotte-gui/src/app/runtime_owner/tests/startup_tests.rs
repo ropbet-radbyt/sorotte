@@ -91,6 +91,45 @@ fn gui_persisted_config_runtime_owner_uses_saved_player_path_for_managed_mpv_lau
 }
 
 #[test]
+fn explicit_mpv_ipc_launch_state_honors_selected_players_saved_streaming_overrides() {
+    let player_path = "C:/Program Files/mpv/mpv.exe";
+    let mut per_player_arguments = std::collections::BTreeMap::new();
+    per_player_arguments.insert(player_path.to_owned(), vec!["--cache-secs=75".to_owned()]);
+    let settings = StoredClientSettingsMvp {
+        player_path: Some(player_path.to_owned()),
+        per_player_arguments: Some(per_player_arguments),
+        ..StoredClientSettingsMvp::default()
+    };
+
+    let launch_state =
+        GuiPersistedConfigRuntimeOwner::configured_player_launch_state_from_lookup_and_settings(
+            &|name| match name {
+                "SOROTTE_CLIENT_MPV_IPC_PATH" => Some("test-explicit-ipc".to_owned()),
+                _ => None,
+            },
+            Some(&settings),
+        )
+        .expect("explicit mpv IPC launch state should resolve");
+
+    let GuiPlayerLaunchRuntimeState::ExplicitMpvIpc {
+        ipc_path,
+        effective_streaming_options,
+        ..
+    } = launch_state
+    else {
+        panic!("expected explicit mpv IPC launch state");
+    };
+    assert_eq!(ipc_path, "test-explicit-ipc");
+    let cache_secs = effective_streaming_options
+        .iter()
+        .find(|option| option.name == "cache-secs")
+        .expect("network cache duration should be configured");
+    assert_eq!(cache_secs.configured_value, "30");
+    assert_eq!(cache_secs.effective_value, "75");
+    assert!(cache_secs.overridden_by_advanced_arguments);
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_auto_attaches_configured_player_for_active_session() {
     let (mut owner, _session_transport) =
         GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player_lookup(

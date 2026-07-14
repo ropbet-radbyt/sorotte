@@ -14,10 +14,11 @@ use super::shell_state::{
     GuiCommandAvailabilityState, GuiConfigStorageChangeTarget, GuiConfigStorageRuntimeSnapshot,
     GuiMediaIndexStatusState, GuiMediaMatchRemediationState, GuiMediaMatchState,
     GuiPendingOperationState, GuiPlayerSetupIssue, GuiPlexPlaylistSearchState, GuiPlexState,
-    GuiPluginEnablementState, GuiSelectionState, GuiStreamHelperRemediationState,
-    GuiStreamHelperState, GuiValidationIssue, GuiValidationState, MainWindowShellState,
-    MediaSearchWorkflowShellState, MenuActionRuntimeOverride, MenuDialogShellState,
-    PublicServerBrowserShellState, SorotteGuiShellAppState,
+    GuiPluginEnablementState, GuiSeekPreparationDegradedReason, GuiSeekPreparationState,
+    GuiSelectionState, GuiStreamHelperRemediationState, GuiStreamHelperState, GuiValidationIssue,
+    GuiValidationState, MainWindowShellState, MediaSearchWorkflowShellState,
+    MenuActionRuntimeOverride, MenuDialogShellState, PublicServerBrowserShellState,
+    SorotteGuiShellAppState,
 };
 use super::ui_state::GuiUpdateCheckState;
 use sorotte_client_app::app_boundary::{
@@ -68,6 +69,13 @@ impl GuiClientCommand {
             }
             Request::SeekToPosition(position_seconds) => {
                 Self::Player(player::Command::SeekToPosition(position_seconds))
+            }
+            Request::KeepWaitingForSeekPreparation => {
+                Self::Player(player::Command::KeepWaitingForSeekPreparation)
+            }
+            Request::CancelSeekPreparation => Self::Player(player::Command::CancelSeekPreparation),
+            Request::JoinNearestBufferedSeekPreparation => {
+                Self::Player(player::Command::JoinNearestBufferedSeekPreparation)
             }
             Request::SetPlaybackPaused(paused) => Self::Player(player::Command::SetPaused(paused)),
             Request::TogglePlaybackPause => Self::Player(player::Command::TogglePause),
@@ -125,6 +133,9 @@ impl GuiClientCommand {
             | Request::RetryPlayerLaunch
             | Request::SeekOffset(_)
             | Request::SeekToPosition(_)
+            | Request::KeepWaitingForSeekPreparation
+            | Request::CancelSeekPreparation
+            | Request::JoinNearestBufferedSeekPreparation
             | Request::SetPlaybackPaused(_)
             | Request::TogglePlaybackPause => {
                 unreachable!("player requests are converted to typed player commands")
@@ -208,6 +219,9 @@ pub(super) mod player {
         RetryLaunch,
         SeekOffset(f64),
         SeekToPosition(f64),
+        KeepWaitingForSeekPreparation,
+        CancelSeekPreparation,
+        JoinNearestBufferedSeekPreparation,
         SetPaused(bool),
         TogglePause,
     }
@@ -226,6 +240,13 @@ pub(super) mod player {
                 Self::SeekToPosition(position_seconds) => {
                     GuiRuntimeRequest::SeekToPosition(position_seconds)
                 }
+                Self::KeepWaitingForSeekPreparation => {
+                    GuiRuntimeRequest::KeepWaitingForSeekPreparation
+                }
+                Self::CancelSeekPreparation => GuiRuntimeRequest::CancelSeekPreparation,
+                Self::JoinNearestBufferedSeekPreparation => {
+                    GuiRuntimeRequest::JoinNearestBufferedSeekPreparation
+                }
                 Self::SetPaused(paused) => GuiRuntimeRequest::SetPlaybackPaused(paused),
                 Self::TogglePause => GuiRuntimeRequest::TogglePlaybackPause,
             }
@@ -235,6 +256,8 @@ pub(super) mod player {
     #[derive(Debug, Clone, PartialEq)]
     pub(super) struct RuntimeView {
         pub(super) setup_issue: Option<GuiPlayerSetupIssue>,
+        pub(super) seek_preparation: Option<GuiSeekPreparationState>,
+        pub(super) seek_preparation_degraded_reason: Option<GuiSeekPreparationDegradedReason>,
         pub(super) stream_helper: GuiStreamHelperState,
         pub(super) stream_helper_remediation: GuiStreamHelperRemediationState,
     }
@@ -417,6 +440,8 @@ impl GuiRuntimeInput {
             },
             player: player::RuntimeView {
                 setup_issue: state.player_setup_issue.clone(),
+                seek_preparation: state.seek_preparation.clone(),
+                seek_preparation_degraded_reason: state.seek_preparation_degraded_reason,
                 stream_helper: state.stream_helper.clone(),
                 stream_helper_remediation: state.stream_helper_remediation.clone(),
             },
@@ -481,6 +506,9 @@ impl GuiRuntimeInput {
             && self.session.outgoing_chat_message == state.outgoing_chat_message
             && self.session.public_servers == state.public_servers
             && self.player.setup_issue == state.player_setup_issue
+            && self.player.seek_preparation == state.seek_preparation
+            && self.player.seek_preparation_degraded_reason
+                == state.seek_preparation_degraded_reason
             && self.player.stream_helper == state.stream_helper
             && self.player.stream_helper_remediation == state.stream_helper_remediation
             && self.playlist.main_window == state.main_window
@@ -529,6 +557,8 @@ impl GuiRuntimeInput {
         state.public_servers = self.session.public_servers.clone();
 
         state.player_setup_issue = self.player.setup_issue.clone();
+        state.seek_preparation = self.player.seek_preparation.clone();
+        state.seek_preparation_degraded_reason = self.player.seek_preparation_degraded_reason;
         state.stream_helper = self.player.stream_helper.clone();
         state.stream_helper_remediation = self.player.stream_helper_remediation.clone();
 
@@ -705,6 +735,9 @@ mod tests {
             GuiRuntimeRequest::RetryPlayerLaunch,
             GuiRuntimeRequest::SeekOffset(-5.0),
             GuiRuntimeRequest::SeekToPosition(42.0),
+            GuiRuntimeRequest::KeepWaitingForSeekPreparation,
+            GuiRuntimeRequest::CancelSeekPreparation,
+            GuiRuntimeRequest::JoinNearestBufferedSeekPreparation,
             GuiRuntimeRequest::SetPlaybackPaused(true),
             GuiRuntimeRequest::TogglePlaybackPause,
         ];

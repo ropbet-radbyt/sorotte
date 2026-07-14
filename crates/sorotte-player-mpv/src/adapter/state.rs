@@ -35,6 +35,12 @@ impl fmt::Debug for MpvAdapter {
                     .as_ref()
                     .map(|_| sorotte_secret::REDACTED_SECRET),
             )
+            .field(
+                "network_media_option_count",
+                &self.network_media_options.len(),
+            )
+            .field("loadfile_options_syntax", &self.loadfile_options_syntax)
+            .field("mpv_version", &self.mpv_version)
             .field("pending_local_file_update", &self.pending_local_file_update)
             .field(
                 "pending_playback_telemetry_update",
@@ -84,6 +90,32 @@ impl fmt::Debug for MpvAdapter {
             .field(
                 "active_generation_has_restarted",
                 &self.active_generation_has_restarted,
+            )
+            .field("timeline_kind", &self.timeline_kind)
+            .field("ytdl_is_live", &self.ytdl_is_live)
+            .field(
+                "ytdl_is_live_metadata_generation",
+                &self.ytdl_is_live_metadata_generation,
+            )
+            .field(
+                "latest_cached_seekable_window",
+                &self.latest_cached_seekable_window,
+            )
+            .field(
+                "ytdl_live_probe_executable_configured",
+                &self.ytdl_live_probe_executable.is_some(),
+            )
+            .field(
+                "ytdl_live_probe_path_prefix_count",
+                &self.ytdl_live_probe_path_prefixes.len(),
+            )
+            .field(
+                "ytdl_live_probe_started",
+                &self.ytdl_live_probe_identity.is_some(),
+            )
+            .field(
+                "pending_ytdl_live_probe",
+                &self.pending_ytdl_live_probe.is_some(),
             )
             .field("playback_restart_sequence", &self.playback_restart_sequence)
             .field("next_command_id", &self.next_command_id)
@@ -140,6 +172,9 @@ impl Default for MpvAdapter {
             window_maximized: false,
             window_minimized: false,
             current_path: None,
+            network_media_options: BTreeMap::new(),
+            loadfile_options_syntax: None,
+            mpv_version: None,
             pending_local_file_update: None,
             pending_playback_telemetry_update: None,
             pending_transport_telemetry_updates: VecDeque::new(),
@@ -162,6 +197,16 @@ impl Default for MpvAdapter {
             transport_phase: PlayerTransportPhase::Empty,
             active_file_loaded: false,
             active_generation_has_restarted: false,
+            timeline_kind: PlayerTimelineKind::Unknown,
+            ytdl_is_live: false,
+            ytdl_is_live_metadata_generation: None,
+            latest_cached_seekable_window: None,
+            path_metadata_generation: None,
+            duration_metadata_generation: None,
+            ytdl_live_probe_executable: None,
+            ytdl_live_probe_path_prefixes: Vec::new(),
+            ytdl_live_probe_identity: None,
+            pending_ytdl_live_probe: None,
             playback_restart_sequence: 0,
             next_command_id: 1,
             legacy_syncplay_ui_settings: LegacySyncplayUiSettings::default(),

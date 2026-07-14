@@ -208,6 +208,43 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         None
     }
 
+    fn keep_waiting_for_seek_preparation(
+        &mut self,
+        _now_seconds: f64,
+    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        Ok(Vec::new())
+    }
+
+    fn cancel_seek_preparation(
+        &mut self,
+        _now_seconds: f64,
+    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        Ok(Vec::new())
+    }
+
+    fn join_nearest_buffered_seek_preparation(
+        &mut self,
+        _now_seconds: f64,
+    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        Ok(Vec::new())
+    }
+
+    fn stage_attached_player_pause_intent(
+        &mut self,
+        _paused: bool,
+        _now_seconds: f64,
+    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        Ok(Vec::new())
+    }
+
+    fn rollback_attached_player_pause_intent(
+        &mut self,
+        _paused: bool,
+        _now_seconds: f64,
+    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        Ok(Vec::new())
+    }
+
     fn take_streaming_quality_downgrade_suggestion(
         &mut self,
     ) -> Option<StreamingQualityDowngradeSuggestion> {

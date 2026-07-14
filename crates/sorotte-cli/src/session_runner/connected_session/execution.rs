@@ -1,10 +1,15 @@
 use super::*;
 
+struct ConnectedSessionBranchOutputState<'a> {
+    reconnect_correction_diagnostics: &'a mut ReconnectCorrectionDiagnosticsState,
+    seek_preparation_notifications: &'a mut SeekPreparationNotificationState,
+    file_difference_notifications: &'a mut FileDifferenceNotificationState,
+}
+
 fn flush_connected_session_branch_outputs_legacy_compatible<F, G>(
     runtime: &mut ClientApplication<MpvAdapter>,
     diagnostics_config: &ClientLoopDiagnosticsConfig,
-    reconnect_correction_diagnostics_state: &mut ReconnectCorrectionDiagnosticsState,
-    file_difference_state: &mut FileDifferenceNotificationState,
+    output_state: ConnectedSessionBranchOutputState<'_>,
     plan: ConnectedSessionDrainPlan,
     notification_sink: &mut F,
     file_difference_sink: &mut G,
@@ -13,6 +18,15 @@ where
     F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
     G: FnMut(&str) -> anyhow::Result<()>,
 {
+    let ConnectedSessionBranchOutputState {
+        reconnect_correction_diagnostics,
+        seek_preparation_notifications,
+        file_difference_notifications,
+    } = output_state;
+    // Seek-preparation is an ordinary user-visible lifecycle, not verbose
+    // telemetry. Project changed states on every branch so the recovery
+    // controls remain discoverable with the default diagnostics settings.
+    flush_seek_preparation_notifications(runtime, seek_preparation_notifications);
     for action in connected_session_drain_actions_legacy_compatible(plan) {
         match action {
             ConnectedSessionDrainAction::FlushPlayerPlaybackDiagnostics => {
@@ -28,7 +42,7 @@ where
             ConnectedSessionDrainAction::FlushReconnectCorrectionDiagnostics(format) => {
                 flush_reconnect_correction_diagnostics_to_sink(
                     runtime,
-                    reconnect_correction_diagnostics_state,
+                    reconnect_correction_diagnostics,
                     &diagnostics_config.reconnect_correction_diagnostics_alert_thresholds,
                     format,
                     &mut emit_reconnect_correction_diagnostic,
@@ -49,7 +63,7 @@ where
             ConnectedSessionDrainAction::FlushFileDifferenceNotifications => {
                 flush_file_difference_notifications_legacy_compatible(
                     runtime,
-                    file_difference_state,
+                    file_difference_notifications,
                     file_difference_sink,
                 )?;
             }
@@ -250,6 +264,7 @@ where
         startup_playlist_file_on_connect,
         diagnostics_config,
         reconnect_correction_diagnostics_state,
+        seek_preparation_notification_state,
         file_difference_state,
         notification_sink,
         file_difference_sink,
@@ -283,8 +298,11 @@ where
     flush_connected_session_branch_outputs_legacy_compatible(
         runtime,
         diagnostics_config,
-        reconnect_correction_diagnostics_state,
-        file_difference_state,
+        ConnectedSessionBranchOutputState {
+            reconnect_correction_diagnostics: reconnect_correction_diagnostics_state,
+            seek_preparation_notifications: seek_preparation_notification_state,
+            file_difference_notifications: file_difference_state,
+        },
         plan.drain,
         notification_sink,
         file_difference_sink,
@@ -303,6 +321,7 @@ where
     pub(super) startup_playlist_file_on_connect: &'a mut Option<String>,
     pub(super) diagnostics_config: &'a ClientLoopDiagnosticsConfig,
     pub(super) reconnect_correction_diagnostics_state: &'a mut ReconnectCorrectionDiagnosticsState,
+    pub(super) seek_preparation_notification_state: &'a mut SeekPreparationNotificationState,
     pub(super) file_difference_state: &'a mut FileDifferenceNotificationState,
     pub(super) notification_sink: &'a mut F,
     pub(super) file_difference_sink: &'a mut G,

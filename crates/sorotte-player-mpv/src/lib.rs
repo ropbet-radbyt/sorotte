@@ -2,6 +2,7 @@ mod adapter;
 mod constants;
 mod ipc;
 mod legacy_ui;
+mod live_probe;
 mod players;
 
 /// Maximum absolute position error accepted when an mpv seek is acknowledged.

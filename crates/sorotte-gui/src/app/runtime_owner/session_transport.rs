@@ -72,21 +72,22 @@ impl GuiPersistedConfigRuntimeOwner {
             return;
         }
 
-        if let Some(player) = self.player.as_mut()
-            && let Err(error) = player.set_paused(true)
-        {
-            Self::push_actions_and_project(
-                handle,
-                projected_state,
-                vec![GuiShellAction::PushTransientNotification {
-                    level: GuiTransientNotificationLevel::Error,
-                    message: format!(
-                        "Pause-on-leave dispatch through the attached {} player failed: {error}",
-                        player.name()
-                    ),
-                }],
-            );
-            return;
+        if let Some(player) = self.player.as_mut() {
+            let player_name = player.name();
+            if let Err(error) = player.set_paused(true) {
+                Self::push_actions_and_project(
+                    handle,
+                    projected_state,
+                    vec![GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Error,
+                        message: format!(
+                            "Pause-on-leave dispatch through the attached {player_name} player failed: {error}"
+                        ),
+                    }],
+                );
+                return;
+            }
+            self.note_local_attached_player_pause_command(true);
         }
         self.refresh_player_state();
     }

@@ -228,7 +228,10 @@ impl SorotteGuiShellAppState {
             GuiShellAction::AnnouncePlaybackResumed => self.announce_playback_pause_state(false),
             GuiShellAction::RequestSeekPrompt
             | GuiShellAction::RequestOffsetPrompt
-            | GuiShellAction::RequestPlaybackUndoSeek => {
+            | GuiShellAction::RequestPlaybackUndoSeek
+            | GuiShellAction::RequestSeekPreparationKeepWaiting
+            | GuiShellAction::RequestSeekPreparationCancel
+            | GuiShellAction::RequestSeekPreparationJoinNearest => {
                 self.request_main_window_playback_control()
             }
             GuiShellAction::AnnounceLocalUserReady => self.announce_local_user_ready_state(true),

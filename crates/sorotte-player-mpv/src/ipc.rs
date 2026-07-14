@@ -155,6 +155,17 @@ impl MpvJsonIpcClient {
         self.send_command(command).map(|_| ())
     }
 
+    /// Sends a command whose server-side rejection may indicate an older mpv
+    /// command shape. A canonical mpv rejection is returned without emitting a
+    /// connection-failure event so the caller can try its compatibility form.
+    /// Transport, timeout, protocol, and client-side failures remain recorded.
+    pub(crate) fn send_compatibility_probe_expect_success(
+        &mut self,
+        command: Value,
+    ) -> Result<(), MpvIpcCommandFailure> {
+        self.send_command_classified(command, true).map(|_| ())
+    }
+
     pub(crate) fn observe_property(
         &mut self,
         observer_id: u64,
@@ -186,6 +197,29 @@ impl MpvJsonIpcClient {
             .map(ToOwned::to_owned))
     }
 
+    /// Queries a string property without erasing mpv's response classification.
+    ///
+    /// Callers that need to distinguish a genuine unavailable property from a
+    /// transport or protocol failure should use this rather than inspecting a
+    /// rendered error message.
+    pub(crate) fn get_property_string_classified(
+        &mut self,
+        property_name: &str,
+    ) -> Result<Option<String>, MpvIpcCommandFailure> {
+        // The caller receives ordinary server rejections directly and can
+        // classify an expected unavailable property. Do not also enqueue a
+        // misleading connection-failure event for that handled response.
+        // Fatal transport/protocol failures are still recorded regardless of
+        // this suppression flag.
+        let response =
+            self.send_command_classified(json!([MPV_COMMAND_GET_PROPERTY, property_name]), true)?;
+        Ok(response
+            .get("data")
+            .filter(|value| !value.is_null())
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned))
+    }
+
     pub(crate) fn get_property_f64(&mut self, property_name: &str) -> Result<Option<f64>, String> {
         let value = self.get_property(property_name)?;
         Ok(value.as_ref().and_then(Value::as_f64))
@@ -199,8 +233,19 @@ impl MpvJsonIpcClient {
     }
 
     fn send_command(&mut self, command: Value) -> Result<Value, String> {
+        self.send_command_classified(command, false)
+            .map_err(MpvIpcCommandFailure::into_message)
+    }
+
+    fn send_command_classified(
+        &mut self,
+        command: Value,
+        suppress_server_rejection_event: bool,
+    ) -> Result<Value, MpvIpcCommandFailure> {
         if !self.healthy {
-            return Err("mpv IPC connection is not connected".to_owned());
+            return Err(MpvIpcCommandFailure::disconnected(
+                "mpv IPC connection is not connected".to_owned(),
+            ));
         }
 
         let (response_tx, response_rx) = mpsc::channel();
@@ -216,15 +261,18 @@ impl MpvJsonIpcClient {
             })) {
             Ok(()) => {}
             Err(mpsc::TrySendError::Full(_)) => {
-                let message = "mpv IPC command queue is full".to_owned();
-                self.record_command_failure(&message);
-                return Err(message);
+                let failure = MpvIpcCommandFailure::command_failed(
+                    "mpv IPC command queue is full".to_owned(),
+                );
+                self.record_failure(&failure);
+                return Err(failure);
             }
             Err(mpsc::TrySendError::Disconnected(_)) => {
-                let message = "mpv IPC command worker disconnected".to_owned();
-                self.record_command_failure(&message);
-                self.mark_disconnected(message.clone());
-                return Err(message);
+                let failure = MpvIpcCommandFailure::disconnected(
+                    "mpv IPC command worker disconnected".to_owned(),
+                );
+                self.record_failure(&failure);
+                return Err(failure);
             }
         }
 
@@ -235,26 +283,29 @@ impl MpvJsonIpcClient {
         let outcome = match response_rx.recv_timeout(actor_response_timeout) {
             Ok(outcome) => outcome,
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                let message = format!(
+                let failure = MpvIpcCommandFailure::timed_out(format!(
                     "mpv IPC command timed out after {:.1} seconds",
                     self.command_timeout.as_secs_f64()
-                );
-                self.record_failure(&MpvIpcCommandFailure::timed_out(message.clone()));
-                return Err(message);
+                ));
+                self.record_failure(&failure);
+                return Err(failure);
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                let message = "mpv IPC command worker disconnected".to_owned();
-                self.record_failure(&MpvIpcCommandFailure::disconnected(message.clone()));
-                return Err(message);
+                let failure = MpvIpcCommandFailure::disconnected(
+                    "mpv IPC command worker disconnected".to_owned(),
+                );
+                self.record_failure(&failure);
+                return Err(failure);
             }
         };
         self.pending_events.extend(outcome.pending_events);
         match outcome.result {
             Ok(response) => Ok(response),
             Err(failure) => {
-                let message = failure.message.clone();
-                self.record_failure(&failure);
-                Err(message)
+                if !(suppress_server_rejection_event && failure.is_server_rejection()) {
+                    self.record_failure(&failure);
+                }
+                Err(failure)
             }
         }
     }
@@ -277,7 +328,7 @@ impl MpvJsonIpcClient {
 
     fn record_failure(&mut self, failure: &MpvIpcCommandFailure) {
         self.record_command_failure(&failure.message);
-        if failure.kind == MpvIpcCommandFailureKind::TimedOut {
+        if matches!(&failure.kind, MpvIpcCommandFailureKind::TimedOut) {
             self.pending_connection_events
                 .push_back(MpvIpcConnectionEvent::TimedOut {
                     generation: self.generation,
@@ -328,15 +379,16 @@ struct MpvIpcCommandOutcome {
     pending_events: Vec<Value>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum MpvIpcCommandFailureKind {
     CommandFailed,
+    ServerRejected { server_error: String },
     TimedOut,
     Disconnected,
     ProtocolCorruption,
 }
 
-struct MpvIpcCommandFailure {
+pub(crate) struct MpvIpcCommandFailure {
     kind: MpvIpcCommandFailureKind,
     message: String,
 }
@@ -345,6 +397,14 @@ impl MpvIpcCommandFailure {
     fn command_failed(message: String) -> Self {
         Self {
             kind: MpvIpcCommandFailureKind::CommandFailed,
+            message,
+        }
+    }
+
+    fn server_rejected(request_id: u64, server_error: String) -> Self {
+        let message = format!("mpv command failed for request_id={request_id}: {server_error}");
+        Self {
+            kind: MpvIpcCommandFailureKind::ServerRejected { server_error },
             message,
         }
     }
@@ -370,8 +430,33 @@ impl MpvIpcCommandFailure {
         }
     }
 
+    pub(crate) fn is_server_rejection(&self) -> bool {
+        matches!(&self.kind, MpvIpcCommandFailureKind::ServerRejected { .. })
+    }
+
+    pub(crate) fn is_property_unavailable(&self) -> bool {
+        matches!(
+            &self.kind,
+            MpvIpcCommandFailureKind::ServerRejected { server_error }
+                if server_error == crate::constants::MPV_RESPONSE_PROPERTY_UNAVAILABLE
+        )
+    }
+
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub(crate) fn into_message(self) -> String {
+        self.message
+    }
+
     fn is_connection_fatal(&self) -> bool {
-        self.kind != MpvIpcCommandFailureKind::CommandFailed
+        matches!(
+            &self.kind,
+            MpvIpcCommandFailureKind::TimedOut
+                | MpvIpcCommandFailureKind::Disconnected
+                | MpvIpcCommandFailureKind::ProtocolCorruption
+        )
     }
 
     fn from_read_error(error: io::Error, timeout: Duration) -> Self {
@@ -531,9 +616,10 @@ impl MpvIpcWorker {
             };
             if error != MPV_RESPONSE_SUCCESS {
                 return MpvIpcCommandOutcome {
-                    result: Err(MpvIpcCommandFailure::command_failed(format!(
-                        "mpv command failed for request_id={request_id}: {error}"
-                    ))),
+                    result: Err(MpvIpcCommandFailure::server_rejected(
+                        request_id,
+                        error.to_owned(),
+                    )),
                     pending_events,
                 };
             }

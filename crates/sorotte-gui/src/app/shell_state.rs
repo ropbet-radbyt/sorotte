@@ -172,6 +172,43 @@ pub(super) struct GuiPlayerSetupRuntimeSnapshot {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GuiSeekPreparationPhase {
+    Seeking,
+    Fetching,
+    Refilling,
+    ReadyToJoin,
+    CatchingUp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GuiSeekPreparationDegradedReason {
+    NonSeekable,
+    OutsideLiveWindow,
+    TimedOut,
+    TimelineWindowUnavailable,
+    TransportFailed,
+    ConvergenceDegraded,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct GuiSeekPreparationState {
+    pub(super) phase: GuiSeekPreparationPhase,
+    pub(super) frozen_target_seconds: f64,
+    pub(super) cache_refill_percent: Option<f64>,
+    pub(super) buffered_ahead_seconds: Option<f64>,
+    pub(super) nearest_safe_buffered_position_seconds: Option<f64>,
+    pub(super) can_keep_waiting: bool,
+    pub(super) can_cancel_and_remain: bool,
+    pub(super) can_join_nearest_buffered: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(super) struct GuiSeekPreparationRuntimeSnapshot {
+    pub(super) preparation: Option<GuiSeekPreparationState>,
+    pub(super) degraded_reason: Option<GuiSeekPreparationDegradedReason>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum GuiStreamTargetKind {
     LocalPath,
     DirectMediaUrl,
@@ -878,6 +915,8 @@ pub(super) struct SorotteGuiShellAppState {
     pub(super) playlist_shuffle_nonce: u64,
     pub(super) media_index_status: GuiMediaIndexStatusState,
     pub(super) player_setup_issue: Option<GuiPlayerSetupIssue>,
+    pub(super) seek_preparation: Option<GuiSeekPreparationState>,
+    pub(super) seek_preparation_degraded_reason: Option<GuiSeekPreparationDegradedReason>,
     pub(super) stream_helper: GuiStreamHelperState,
     pub(super) stream_helper_remediation: GuiStreamHelperRemediationState,
     pub(super) media_match: GuiMediaMatchState,

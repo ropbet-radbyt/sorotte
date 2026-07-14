@@ -6,7 +6,7 @@ use anyhow::anyhow;
 use sorotte_client_app::app_boundary::{
     application::ClientApplication,
     commands::parse_seek_time_seconds_legacy_like,
-    state::{StoredClientSettingsMvp, StreamingPlaybackConfig},
+    state::{ClientConfig, StoredClientSettingsMvp},
 };
 use sorotte_player_api::{PlayerAdapter, PlayerCommand, PlayerError};
 use sorotte_player_mpv::MpvAdapter;

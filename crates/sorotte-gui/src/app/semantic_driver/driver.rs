@@ -304,6 +304,11 @@ impl GuiSemanticDriver {
                         snapshot.clone(),
                     )]);
                 }
+                GuiSemanticStep::ApplySeekPreparationRuntimeSnapshot(snapshot) => {
+                    self.apply_actions([GuiShellAction::ApplyGuiSeekPreparationRuntimeSnapshot(
+                        snapshot.clone(),
+                    )]);
+                }
                 GuiSemanticStep::OpenMediaFiles(paths) => self.open_media_files(paths.clone())?,
                 GuiSemanticStep::DropMediaFiles { target, paths } => {
                     self.drop_media_files(*target, paths.clone())?

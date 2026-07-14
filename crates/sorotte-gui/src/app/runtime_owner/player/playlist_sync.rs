@@ -31,6 +31,7 @@ impl GuiPersistedConfigRuntimeOwner {
                                 "Attached player shared-playlist advance pause dispatch failed: {error}"
                             )
                         })?;
+                        self.note_local_attached_player_pause_command(paused);
                     }
                     self.player_paused = Some(paused);
                 }
@@ -166,6 +167,7 @@ impl GuiPersistedConfigRuntimeOwner {
         if pause_before_sync {
             match player.set_paused(true) {
                 Ok(()) => {
+                    self.note_local_attached_player_pause_command(true);
                     self.player_paused = Some(true);
                     state_changed = true;
                 }

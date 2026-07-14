@@ -60,8 +60,10 @@ use super::media_search_cache::clear_persisted_media_search_cache_at_root;
 use super::mpv_launch;
 use super::mpv_launch::{
     ManagedMpvProcessGuard, ManagedMpvSettingsDecision,
-    apply_effective_streaming_options_to_mpv_adapter,
-    apply_legacy_syncplay_ui_settings_to_mpv_adapter, managed_mpv_settings_decision_from_settings,
+    apply_effective_streaming_options_to_active_network_media,
+    apply_legacy_syncplay_ui_settings_to_mpv_adapter,
+    configure_effective_streaming_options_for_network_media,
+    managed_mpv_settings_decision_from_settings,
 };
 use super::runtime_bridge::GuiPendingRoomChangeRequest;
 use super::runtime_queue::GuiQueuedRuntimeBridgeHandle;

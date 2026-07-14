@@ -1,7 +1,7 @@
 use sorotte_client_core::{
-    CoordinatorCommandId, CoordinatorPlayerCommand, DesiredRoomPlayback, LogicalMediaId,
-    MediaTransportKind, PlaybackCoordinator, PlaybackCoordinatorAction, PlaybackCoordinatorConfig,
-    PlayerTransportObservation,
+    CoordinatorCommandId, CoordinatorPlayerCommand, DesiredRoomPlayback,
+    DesiredRoomPlaybackUpdateKind, LogicalMediaId, MediaTransportKind, PlaybackCoordinator,
+    PlaybackCoordinatorAction, PlaybackCoordinatorConfig, PlayerTransportObservation,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -69,17 +69,23 @@ impl MultiClientPlaybackHarness {
         anchor_observed_at_seconds: f64,
         force_seek: bool,
     ) {
+        let update_kind = if force_seek {
+            DesiredRoomPlaybackUpdateKind::ExplicitSeek
+        } else {
+            DesiredRoomPlaybackUpdateKind::Ordinary
+        };
         for client in &mut self.clients {
-            client
-                .coordinator
-                .update_desired_room_state(DesiredRoomPlayback {
+            client.coordinator.update_desired_room_state_with_kind(
+                DesiredRoomPlayback {
                     media_generation: client.media_generation,
                     state_revision,
                     paused,
                     anchor_position_seconds,
                     anchor_observed_at_seconds,
                     force_seek,
-                });
+                },
+                update_kind,
+            );
         }
     }
 
@@ -150,7 +156,7 @@ impl MultiClientPlaybackHarness {
 
 #[cfg(test)]
 mod tests {
-    use sorotte_player_api::PlayerTransportPhase;
+    use sorotte_player_api::{PlayerSeekableRange, PlayerTransportPhase};
 
     use super::*;
 
@@ -297,5 +303,201 @@ mod tests {
         assert_eq!(harness.coordinator(0).metrics().buffer_episode_count, 1);
         assert_eq!(harness.coordinator(1).metrics().buffer_episode_count, 0);
         assert_eq!(harness.coordinator(2).metrics().buffer_episode_count, 0);
+    }
+
+    #[test]
+    fn unbuffered_seek_preparation_freezes_one_target_until_an_explicit_seek_supersedes_it() {
+        use sorotte_client_core::{
+            SeekPreparationPhase, SeekPreparationTerminalOutcome, SeekTargetAvailability,
+        };
+
+        let mut harness = MultiClientPlaybackHarness::new(
+            1,
+            MediaTransportKind::NetworkVod,
+            PlaybackCoordinatorConfig::default(),
+        );
+        let generation = harness.media_generation(0);
+        let cached_range = PlayerSeekableRange::new(0.0, 20.0);
+        harness.observe(
+            0,
+            observation(
+                generation,
+                0.0,
+                PlayerTransportPhase::ReadyPaused,
+                10.0,
+                false,
+            )
+            .with_seekable_ranges(vec![cached_range]),
+        );
+
+        harness.set_desired_for_all(1, false, 80.0, 1.0, true);
+        harness.observe(
+            0,
+            observation(
+                generation,
+                1.0,
+                PlayerTransportPhase::ReadyPaused,
+                10.0,
+                false,
+            )
+            .with_seekable_ranges(vec![cached_range]),
+        );
+        harness.accept_recorded_commands(0);
+
+        let first = harness
+            .coordinator(0)
+            .seek_preparation_snapshot()
+            .expect("out-of-cache VOD seek should begin preparation");
+        assert_eq!(first.availability, SeekTargetAvailability::FetchRequired);
+        assert_eq!(first.phase, SeekPreparationPhase::Seeking);
+        assert_eq!(first.frozen_target_seconds, 80.0);
+        let first_episode_id = first.id;
+
+        harness.set_desired_for_all(2, false, 85.0, 2.0, false);
+        harness.observe(
+            0,
+            observation(
+                generation,
+                2.0,
+                PlayerTransportPhase::Rebuffering,
+                80.0,
+                true,
+            )
+            .with_seekable_ranges(vec![cached_range])
+            .with_cache_buffering_percent(45.0)
+            .with_buffered_ahead_seconds(1.5),
+        );
+        let fetching = harness
+            .coordinator(0)
+            .seek_preparation_snapshot()
+            .expect("ordinary room aging must retain preparation");
+        assert_eq!(fetching.id, first_episode_id);
+        assert_eq!(fetching.frozen_target_seconds, 80.0);
+        assert_eq!(fetching.latest_room_position_seconds, 85.0);
+        assert_eq!(fetching.phase, SeekPreparationPhase::Refilling);
+        assert_eq!(fetching.cache_buffering_percent, Some(45.0));
+        assert_eq!(fetching.buffered_ahead_seconds, Some(1.5));
+        assert_eq!(
+            harness
+                .recorded_commands()
+                .iter()
+                .filter(|command| matches!(
+                    command.command,
+                    CoordinatorPlayerCommand::SetPosition(_)
+                ))
+                .count(),
+            1,
+            "advancing room timestamps must not restart the primary seek"
+        );
+
+        harness.set_desired_for_all(3, false, 100.0, 3.0, true);
+        assert_eq!(
+            harness
+                .coordinator(0)
+                .last_seek_preparation_terminal_outcome(),
+            Some(SeekPreparationTerminalOutcome::Superseded)
+        );
+        harness.observe(
+            0,
+            observation(
+                generation,
+                3.0,
+                PlayerTransportPhase::ReadyPaused,
+                80.0,
+                false,
+            )
+            .with_seekable_ranges(vec![cached_range]),
+        );
+        let replacement = harness
+            .coordinator(0)
+            .seek_preparation_snapshot()
+            .expect("new explicit seek should create a replacement preparation");
+        assert_ne!(replacement.id, first_episode_id);
+        assert_eq!(replacement.frozen_target_seconds, 100.0);
+        assert_eq!(
+            harness
+                .recorded_commands()
+                .iter()
+                .filter(|command| matches!(
+                    command.command,
+                    CoordinatorPlayerCommand::SetPosition(_)
+                ))
+                .count(),
+            2,
+            "only a newer explicit seek may issue a replacement primary seek"
+        );
+    }
+
+    #[test]
+    fn missing_cache_ranges_are_unknown_and_local_files_bypass_seek_preparation() {
+        use sorotte_client_core::SeekTargetAvailability;
+
+        let mut network = MultiClientPlaybackHarness::new(
+            1,
+            MediaTransportKind::NetworkVod,
+            PlaybackCoordinatorConfig::default(),
+        );
+        let generation = network.media_generation(0);
+        network.observe(
+            0,
+            observation(
+                generation,
+                0.0,
+                PlayerTransportPhase::ReadyPaused,
+                5.0,
+                false,
+            ),
+        );
+        network.set_desired_for_all(1, false, 50.0, 1.0, true);
+        network.observe(
+            0,
+            observation(
+                generation,
+                1.0,
+                PlayerTransportPhase::ReadyPaused,
+                5.0,
+                false,
+            ),
+        );
+        assert_eq!(
+            network
+                .coordinator(0)
+                .seek_preparation_snapshot()
+                .expect("network seek without range telemetry still needs preparation")
+                .availability,
+            SeekTargetAvailability::Unknown
+        );
+
+        let mut local = MultiClientPlaybackHarness::new(
+            1,
+            MediaTransportKind::LocalFile,
+            PlaybackCoordinatorConfig::default(),
+        );
+        let generation = local.media_generation(0);
+        local.observe(
+            0,
+            observation(
+                generation,
+                0.0,
+                PlayerTransportPhase::ReadyPaused,
+                5.0,
+                false,
+            ),
+        );
+        local.set_desired_for_all(1, false, 50.0, 1.0, true);
+        local.observe(
+            0,
+            observation(
+                generation,
+                1.0,
+                PlayerTransportPhase::ReadyPaused,
+                5.0,
+                false,
+            ),
+        );
+        assert!(
+            local.coordinator(0).seek_preparation_snapshot().is_none(),
+            "local files must keep ordinary seek behavior"
+        );
     }
 }

@@ -118,6 +118,35 @@ impl GuiShellDispatchPlan {
                     plan.runtime_requests
                         .push(GuiRuntimeRequest::RetryPlayerLaunch);
                 }
+                GuiShellAction::RequestSeekPreparationKeepWaiting => {
+                    if state
+                        .seek_preparation
+                        .as_ref()
+                        .is_some_and(|preparation| preparation.can_keep_waiting)
+                    {
+                        plan.runtime_requests
+                            .push(GuiRuntimeRequest::KeepWaitingForSeekPreparation);
+                    }
+                }
+                GuiShellAction::RequestSeekPreparationCancel => {
+                    if state
+                        .seek_preparation
+                        .as_ref()
+                        .is_some_and(|preparation| preparation.can_cancel_and_remain)
+                    {
+                        plan.runtime_requests
+                            .push(GuiRuntimeRequest::CancelSeekPreparation);
+                    }
+                }
+                GuiShellAction::RequestSeekPreparationJoinNearest => {
+                    if state.seek_preparation.as_ref().is_some_and(|preparation| {
+                        preparation.can_join_nearest_buffered
+                            && preparation.nearest_safe_buffered_position_seconds.is_some()
+                    }) {
+                        plan.runtime_requests
+                            .push(GuiRuntimeRequest::JoinNearestBufferedSeekPreparation);
+                    }
+                }
                 GuiShellAction::SetPluginEnabled { plugin, enabled } => {
                     plan.shell_actions
                         .push(GuiShellAction::SetPluginEnabled { plugin, enabled });
@@ -493,6 +522,35 @@ fn extend_plan_for_runtime_action(
         }
         PlannedLocalRuntimeAction::UndoSeek => {
             plan.runtime_requests.push(GuiRuntimeRequest::UndoSeek);
+        }
+        PlannedLocalRuntimeAction::KeepWaitingForSeekPreparation => {
+            if state
+                .seek_preparation
+                .as_ref()
+                .is_some_and(|preparation| preparation.can_keep_waiting)
+            {
+                plan.runtime_requests
+                    .push(GuiRuntimeRequest::KeepWaitingForSeekPreparation);
+            }
+        }
+        PlannedLocalRuntimeAction::JoinNearestBufferedSeekPreparation => {
+            if state.seek_preparation.as_ref().is_some_and(|preparation| {
+                preparation.can_join_nearest_buffered
+                    && preparation.nearest_safe_buffered_position_seconds.is_some()
+            }) {
+                plan.runtime_requests
+                    .push(GuiRuntimeRequest::JoinNearestBufferedSeekPreparation);
+            }
+        }
+        PlannedLocalRuntimeAction::CancelSeekPreparation => {
+            if state
+                .seek_preparation
+                .as_ref()
+                .is_some_and(|preparation| preparation.can_cancel_and_remain)
+            {
+                plan.runtime_requests
+                    .push(GuiRuntimeRequest::CancelSeekPreparation);
+            }
         }
         PlannedLocalRuntimeAction::SetUserOffset(command) => {
             plan.runtime_requests

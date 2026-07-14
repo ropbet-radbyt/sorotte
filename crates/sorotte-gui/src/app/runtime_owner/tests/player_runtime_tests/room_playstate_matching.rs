@@ -1,4 +1,6 @@
 use super::*;
+use crate::app::GuiClientCoreChatSessionRuntimeAdapter;
+use sorotte_client_app::app_boundary::application::ClientCommand;
 use sorotte_client_core::{CoordinatorPlayerCommand, PlaybackCoordinationSnapshot};
 
 #[derive(Debug, Default)]
@@ -86,8 +88,14 @@ impl GuiSessionRuntimeAdapter for CoordinatorAuthoritySession {
     fn playback_coordination_snapshot(&self) -> Option<PlaybackCoordinationSnapshot> {
         Some(PlaybackCoordinationSnapshot {
             media_generation: Some(1),
+            pending_local_pause_intent: None,
+            pending_local_pause_intent_dormant: false,
+            last_local_pause_intent_stage_accepted: None,
             diagnostic: sorotte_client_core::PlaybackDiagnostic::ReadyWaitingForRoom,
             recovery_episode: None,
+            seek_preparation: None,
+            last_seek_preparation_terminal_outcome: None,
+            last_seek_preparation_terminal: None,
             metrics: Default::default(),
             transport_telemetry_observed: true,
             ordinary_correction_blocked: false,
@@ -140,6 +148,96 @@ fn run_self_attributed_coordinator_actions(
     let shell = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
     owner.sync_session_playstate_to_attached_player_impl(&shell, false);
     state
+}
+
+#[test]
+fn gui_controlled_reconnect_toggle_stays_dormant_before_transport_telemetry() {
+    const ROOM: &str = "+room:ABCDEF123456";
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", ROOM)
+        .expect("client-core GUI adapter should bootstrap");
+    let startup = adapter
+        .flush_outbound_protocol_lines()
+        .expect("startup Hello should encode");
+    assert_eq!(startup.len(), 1);
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.7.5","features":{"managedRooms":true,"sorottePlaybackBarrierV1":true}}}"#,
+        )
+        .expect("initial controlled-room Hello should apply");
+    adapter
+        .apply_message_json(
+            r#"{"Set":{"user":{"alice":{"room":{"name":"+room:ABCDEF123456"},"controller":true}}}}"#,
+        )
+        .expect("initial controller authority should apply");
+    adapter
+        .prepare_attached_playback_media(
+            sorotte_client_core::LogicalMediaId::new("gui-controlled-reconnect-toggle")
+                .expect("logical media ID should be valid"),
+            sorotte_client_core::MediaTransportKind::LocalFile,
+            sorotte_client_core::MediaLoadIntent::NewPlayback,
+            0.0,
+        )
+        .expect("GUI media preparation should succeed")
+        .expect("client-core adapter should prepare coordinator media");
+    adapter
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+        )
+        .expect("initial canonical pause should apply");
+    assert!(
+        !adapter
+            .playback_coordination_snapshot()
+            .expect("client-core snapshot should exist")
+            .transport_telemetry_observed
+    );
+
+    let _ = adapter
+        .runtime
+        .dispatch(ClientCommand::Reconnect { attempt: 0 });
+    adapter
+        .runtime
+        .session_mut()
+        .reset_sync_state_for_reconnect();
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.7.5","features":{"managedRooms":true,"sorottePlaybackBarrierV1":true}}}"#,
+        )
+        .expect("replacement controlled-room Hello should apply");
+    assert_eq!(
+        adapter.runtime.session().local_can_control(),
+        Some(true),
+        "the cached controller projection is intentionally restored before fresh authority"
+    );
+    adapter
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+        )
+        .expect("replacement canonical pause should apply");
+    assert!(
+        !adapter
+            .playback_coordination_snapshot()
+            .expect("client-core snapshot should exist")
+            .transport_telemetry_observed,
+        "the regression must exercise the GUI before replacement-connection player telemetry"
+    );
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.session = Some(Box::new(adapter));
+    owner
+        .stage_attached_player_pause_intent(false)
+        .expect("GUI pause intent staging should succeed");
+
+    assert_eq!(
+        owner.pending_local_attached_pause_override, None,
+        "the GUI must not mirror a dormant controlled-room command as active player authority"
+    );
+    let dormant = owner
+        .session
+        .as_ref()
+        .and_then(|session| session.playback_coordination_snapshot())
+        .expect("client-core snapshot should remain available");
+    assert_eq!(dormant.pending_local_pause_intent, None);
+    assert!(dormant.pending_local_pause_intent_dormant);
 }
 
 #[test]

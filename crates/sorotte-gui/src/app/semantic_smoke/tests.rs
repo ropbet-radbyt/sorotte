@@ -40,6 +40,7 @@ fn gui_semantic_scenarios_expose_named_catalog_and_parse_scripts() {
             "detached-runtime-ownership-flow",
             "live-python-peer-connect-flow",
             "live-python-peer-controlled-room-flow",
+            "seek-preparation-flow",
         ]
     );
     assert!(
@@ -103,11 +104,16 @@ fn gui_semantic_scenarios_expose_named_catalog_and_parse_scripts() {
             .contains("+interop-room:447CE7E3548D:AB-123-456")
     );
     assert!(
+        gui_semantic_scenario_script("seek-preparation-flow")
+            .expect("seek preparation scenario should expose a script")
+            .contains("Buffer refill 65%")
+    );
+    assert!(
         gui_semantic_scenario_script("missing-scenario").is_none(),
         "unknown semantic scenario scripts should not resolve"
     );
     let descriptors = gui_semantic_scenario_descriptors();
-    assert_eq!(descriptors.len(), 12);
+    assert_eq!(descriptors.len(), 13);
     assert_eq!(descriptors[0].name, "configuration-surface-flow");
     assert!(descriptors[0].description.contains("configuration fields"));
     assert!(
@@ -178,6 +184,8 @@ fn gui_semantic_scenarios_expose_named_catalog_and_parse_scripts() {
         descriptors[11].name,
         "live-python-peer-controlled-room-flow"
     );
+    assert_eq!(descriptors[12].name, "seek-preparation-flow");
+    assert!(descriptors[12].description.contains("truthful progress"));
     assert!(descriptors[11].description.contains("controlled room"));
     assert!(
         descriptors[11]
@@ -369,7 +377,7 @@ assert-selected\tconfiguration-root\ttrue\n",
         run_gui_semantic_scenario_named("missing-scenario")
             .expect_err("unknown scenario should fail")
             .contains(
-                "Available: configuration-surface-flow, core-shell-smoke-flow, localized-runtime-flow, runtime-chat-flow, runtime-transport-churn-flow, drag-and-drop-ingest-flow, playlist-workflow-flow, player-setup-flow, persistence-reset-flow, detached-runtime-ownership-flow, live-python-peer-connect-flow, live-python-peer-controlled-room-flow"
+                "Available: configuration-surface-flow, core-shell-smoke-flow, localized-runtime-flow, runtime-chat-flow, runtime-transport-churn-flow, drag-and-drop-ingest-flow, playlist-workflow-flow, player-setup-flow, persistence-reset-flow, detached-runtime-ownership-flow, live-python-peer-connect-flow, live-python-peer-controlled-room-flow, seek-preparation-flow"
             )
     );
 }

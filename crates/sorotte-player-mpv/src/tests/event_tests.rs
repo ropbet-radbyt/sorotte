@@ -1,5 +1,39 @@
 use super::*;
+use sorotte_client_core::{
+    CoordinatorPlayerCommand, DesiredRoomPlayback, DesiredRoomPlaybackUpdateKind, LogicalMediaId,
+    MediaTransportKind, PlaybackCoordinator, PlaybackCoordinatorAction, PlayerTransportObservation,
+    SeekPreparationTerminalOutcome,
+};
 use sorotte_player_api::PlayerTransportTelemetryUpdate;
+
+fn coordinator_observation(
+    update: PlayerTransportTelemetryUpdate,
+    media_generation: u64,
+) -> PlayerTransportObservation {
+    PlayerTransportObservation {
+        media_generation,
+        observed_at_seconds: update
+            .observed_at
+            .expect("mpv transport updates should be timestamped")
+            .elapsed_since_adapter_start()
+            .as_secs_f64(),
+        phase: update.phase,
+        position_seconds: update.position_seconds,
+        playback_rate: update.playback_rate,
+        logical_pause: update.logical_pause,
+        paused_for_cache: update.paused_for_cache,
+        seeking: update.seeking,
+        seekable: update.seekable,
+        timeline_kind: update.timeline_kind,
+        seekable_ranges: update.seekable_ranges,
+        known_live_seekable_window: update.known_live_seekable_window,
+        core_idle: update.core_idle,
+        playback_restart_sequence: update.playback_restart_sequence,
+        cache_buffering_percent: update.cache_buffering_percent,
+        buffered_ahead_seconds: update.buffered_ahead_seconds,
+        input_rate_bytes_per_second: update.input_rate_bytes_per_second,
+    }
+}
 
 #[test]
 fn take_local_file_update_polls_mpv_properties_and_emits_changes_once() {
@@ -247,7 +281,9 @@ fn paused_playback_telemetry_polls_time_pos_without_async_seek_event() {
         r#"{"request_id":13,"error":"success"}"#,
         r#"{"request_id":14,"error":"success"}"#,
         r#"{"request_id":15,"error":"success"}"#,
-        r#"{"request_id":16,"error":"success","data":222.5}"#,
+        r#"{"request_id":16,"error":"success"}"#,
+        r#"{"request_id":17,"error":"success"}"#,
+        r#"{"request_id":18,"error":"success","data":222.5}"#,
     ]);
     let mut adapter = MpvAdapter::with_test_transport(transport);
 
@@ -271,13 +307,13 @@ fn paused_playback_telemetry_polls_time_pos_without_async_seek_event() {
     assert_eq!(adapter.position_seconds(), 222.5);
 
     let writes = state.writes();
-    assert_eq!(writes.len(), 16);
-    let last_payload: Value = serde_json::from_str(writes[15].trim_end()).expect("valid json");
+    assert_eq!(writes.len(), 18);
+    let last_payload: Value = serde_json::from_str(writes[17].trim_end()).expect("valid json");
     assert_eq!(
         last_payload,
         json!({
             "command": ["get_property", "time-pos"],
-            "request_id": 16
+            "request_id": 18
         })
     );
 }
@@ -372,11 +408,13 @@ fn transport_lifecycle_and_cache_hints_are_generation_correlated() {
         r#"{"request_id":13,"error":"success"}"#,
         r#"{"request_id":14,"error":"success"}"#,
         r#"{"request_id":15,"error":"success"}"#,
+        r#"{"request_id":16,"error":"success"}"#,
+        r#"{"request_id":17,"error":"success"}"#,
         r#"{"event":"property-change","name":"paused-for-cache","data":false}"#,
         r#"{"event":"property-change","name":"core-idle","data":true}"#,
-        r#"{"request_id":16,"error":"success"}"#,
+        r#"{"request_id":18,"error":"success"}"#,
         r#"{"event":"property-change","name":"core-idle","data":false}"#,
-        r#"{"request_id":17,"error":"success"}"#,
+        r#"{"request_id":19,"error":"success"}"#,
     ]);
     let mut adapter = MpvAdapter::with_test_transport(transport);
 
@@ -454,11 +492,15 @@ fn transport_lifecycle_and_cache_hints_are_generation_correlated() {
     assert_eq!(resumed.phase, Some(PlayerTransportPhase::Playing));
 
     let writes = state.writes();
-    assert_eq!(writes.len(), 17);
+    assert_eq!(writes.len(), 19);
     let seeking_observer: Value =
         serde_json::from_str(writes[9].trim_end()).expect("valid seeking observer json");
     let cache_state_observer: Value =
         serde_json::from_str(writes[12].trim_end()).expect("valid cache observer json");
+    let ytdl_live_observer: Value =
+        serde_json::from_str(writes[14].trim_end()).expect("valid ytdl live observer json");
+    let metadata_observer: Value =
+        serde_json::from_str(writes[15].trim_end()).expect("valid metadata observer json");
     assert_eq!(
         seeking_observer,
         json!({
@@ -471,6 +513,20 @@ fn transport_lifecycle_and_cache_hints_are_generation_correlated() {
         json!({
             "command": ["observe_property", 12, "demuxer-cache-state"],
             "request_id": 13
+        })
+    );
+    assert_eq!(
+        ytdl_live_observer,
+        json!({
+            "command": ["observe_property", 15, "metadata/by-key/ytdl_is_live"],
+            "request_id": 15
+        })
+    );
+    assert_eq!(
+        metadata_observer,
+        json!({
+            "command": ["observe_property", 16, "metadata"],
+            "request_id": 16
         })
     );
 }
@@ -536,6 +592,161 @@ fn paused_load_binds_global_pause_and_core_idle_and_restores_pause_after_cache_r
     assert_eq!(latest.paused_for_cache, Some(false));
     assert_eq!(latest.core_idle, Some(true));
     assert_eq!(latest.playback_restart_sequence, Some(1));
+}
+
+#[test]
+fn drained_ready_paused_cannot_finish_preparation_before_delayed_cache_pause() {
+    let (transport, _) = fake_transport_with_reads(&[
+        r#"{"event":"start-file","playlist_entry_id":44}"#,
+        r#"{"event":"property-change","name":"path","data":"https://media.invalid/race.wav"}"#,
+        r#"{"event":"property-change","name":"duration","data":60.0}"#,
+        r#"{"event":"file-loaded"}"#,
+        r#"{"event":"property-change","name":"paused-for-cache","data":false}"#,
+        r#"{"event":"property-change","name":"pause","data":true}"#,
+        r#"{"event":"property-change","name":"seeking","data":false}"#,
+        r#"{"event":"property-change","name":"seekable","data":true}"#,
+        r#"{"event":"property-change","name":"time-pos","data":5.0}"#,
+        r#"{"event":"property-change","name":"demuxer-cache-state","data":{"seekable-ranges":[{"start":0.0,"end":10.0}],"cache-duration":10.0,"raw-input-rate":5000000}}"#,
+        r#"{"event":"property-change","name":"cache-buffering-state","data":100.0}"#,
+        r#"{"event":"playback-restart"}"#,
+        r#"{"request_id":1,"error":"success"}"#,
+        r#"{"event":"property-change","name":"time-pos","data":5.0}"#,
+        r#"{"request_id":2,"error":"success"}"#,
+        // These delayed pre-seek cache values arrive after command dispatch.
+        // A later target-position event must not inherit them.
+        r#"{"event":"property-change","name":"cache-buffering-state","data":100.0}"#,
+        r#"{"event":"property-change","name":"demuxer-cache-state","data":{"seekable-ranges":[{"start":0.0,"end":10.0}],"cache-duration":10.0,"raw-input-rate":9000000}}"#,
+        r#"{"event":"property-change","name":"seeking","data":true}"#,
+        // Input-rate/byte-only cache telemetry must also form a position boundary.
+        r#"{"event":"property-change","name":"demuxer-cache-state","data":{"fw-bytes":123456,"raw-input-rate":8000000}}"#,
+        r#"{"event":"property-change","name":"time-pos","data":40.0}"#,
+        // The reverse ordering must not merge old cache evidence back into
+        // the already queued target-position update.
+        r#"{"event":"property-change","name":"demuxer-cache-state","data":{"seekable-ranges":[{"start":0.0,"end":10.0}],"cache-duration":10.0,"fw-bytes":654321,"raw-input-rate":9000000}}"#,
+        r#"{"event":"property-change","name":"seeking","data":false}"#,
+        r#"{"event":"playback-restart"}"#,
+        r#"{"request_id":3,"error":"success"}"#,
+        r#"{"event":"property-change","name":"paused-for-cache","data":true}"#,
+        r#"{"request_id":4,"error":"success"}"#,
+        r#"{"event":"property-change","name":"paused-for-cache","data":false}"#,
+        r#"{"request_id":5,"error":"success"}"#,
+        // A fresh but delayed old-position sample after Ready must not change
+        // the recovery decision inherited from the target epoch.
+        r#"{"event":"property-change","name":"demuxer-cache-state","data":{"seekable-ranges":[{"start":0.0,"end":10.0}],"cache-duration":10.0,"raw-input-rate":9000000}}"#,
+        r#"{"request_id":6,"error":"success"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport_and_registered_observers(transport);
+    let mut coordinator = PlaybackCoordinator::default();
+    let generation = coordinator
+        .prepare_media(
+            LogicalMediaId::new("actual-mpv-ready-cache-race").unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        )
+        .media_generation;
+
+    adapter
+        .set_playback_rate(1.0)
+        .expect("initial paused media observations should drain");
+    while let Some(update) = adapter.take_transport_telemetry_update() {
+        coordinator.observe(coordinator_observation(update, generation));
+    }
+    coordinator.update_desired_room_state_with_kind(
+        DesiredRoomPlayback {
+            media_generation: generation,
+            state_revision: 1,
+            paused: false,
+            anchor_position_seconds: 40.0,
+            anchor_observed_at_seconds: 0.0,
+            force_seek: true,
+        },
+        DesiredRoomPlaybackUpdateKind::ExplicitSeek,
+    );
+
+    adapter
+        .set_playback_rate(1.0)
+        .expect("pre-seek position should trigger coordinator dispatch");
+    let mut dispatch_actions = Vec::new();
+    while let Some(update) = adapter.take_transport_telemetry_update() {
+        dispatch_actions.extend(coordinator.observe(coordinator_observation(update, generation)));
+    }
+    assert!(dispatch_actions.iter().any(|action| matches!(
+        action,
+        PlaybackCoordinatorAction::Execute {
+            command: CoordinatorPlayerCommand::SetPosition(position),
+            ..
+        } if (*position - 40.0).abs() <= f64::EPSILON
+    )));
+
+    adapter
+        .execute_tracked(PlayerCommand::SetPosition(40.0))
+        .expect("mpv should accept the primary seek");
+    let mut transient_updates = Vec::new();
+    while let Some(update) = adapter.take_transport_telemetry_update() {
+        transient_updates.push(update);
+    }
+    assert!(
+        transient_updates.iter().any(|update| {
+            update.phase == Some(PlayerTransportPhase::ReadyPaused)
+                && update.playback_restart_sequence.is_some()
+        }),
+        "transient updates: {transient_updates:#?}"
+    );
+    assert!(
+        transient_updates
+            .iter()
+            .filter(|update| {
+                update
+                    .position_seconds
+                    .is_some_and(|position| (position - 40.0).abs() <= f64::EPSILON)
+            })
+            .all(|update| {
+                update.cache_buffering_percent.is_none()
+                    && update.buffered_ahead_seconds.is_none()
+                    && update.buffered_ahead_bytes.is_none()
+                    && update.input_rate_bytes_per_second.is_none()
+            })
+    );
+    for update in transient_updates {
+        coordinator.observe(coordinator_observation(update, generation));
+    }
+    assert!(coordinator.seek_preparation_snapshot().is_some());
+    assert_eq!(coordinator.last_seek_preparation_terminal_outcome(), None);
+    assert_eq!(coordinator.metrics().last_buffered_ahead_seconds, None);
+    assert_eq!(coordinator.metrics().last_input_rate_bytes_per_second, None);
+
+    adapter
+        .set_playback_rate(1.0)
+        .expect("delayed cache pause should drain separately");
+    while let Some(update) = adapter.take_transport_telemetry_update() {
+        coordinator.observe(coordinator_observation(update, generation));
+    }
+    assert!(coordinator.seek_preparation_snapshot().is_some());
+    assert_eq!(coordinator.last_seek_preparation_terminal_outcome(), None);
+    assert_eq!(coordinator.metrics().last_buffered_ahead_seconds, None);
+    assert_eq!(coordinator.metrics().last_input_rate_bytes_per_second, None);
+
+    adapter
+        .set_playback_rate(1.0)
+        .expect("cache release should drain separately");
+    while let Some(update) = adapter.take_transport_telemetry_update() {
+        coordinator.observe(coordinator_observation(update, generation));
+    }
+    assert_eq!(
+        coordinator.last_seek_preparation_terminal_outcome(),
+        Some(SeekPreparationTerminalOutcome::Ready)
+    );
+    assert_eq!(coordinator.metrics().last_buffered_ahead_seconds, None);
+    assert_eq!(coordinator.metrics().last_input_rate_bytes_per_second, None);
+
+    adapter
+        .set_playback_rate(1.0)
+        .expect("post-ready delayed old cache state should drain separately");
+    while let Some(update) = adapter.take_transport_telemetry_update() {
+        coordinator.observe(coordinator_observation(update, generation));
+    }
+    assert_eq!(coordinator.metrics().last_buffered_ahead_seconds, None);
+    assert_eq!(coordinator.metrics().last_input_rate_bytes_per_second, None);
 }
 
 #[test]
@@ -613,8 +824,10 @@ fn stale_end_file_keeps_the_new_generation_loading() {
         r#"{"request_id":13,"error":"success"}"#,
         r#"{"request_id":14,"error":"success"}"#,
         r#"{"request_id":15,"error":"success"}"#,
-        r#"{"event":"end-file","playlist_entry_id":100,"reason":"stop"}"#,
         r#"{"request_id":16,"error":"success"}"#,
+        r#"{"request_id":17,"error":"success"}"#,
+        r#"{"event":"end-file","playlist_entry_id":100,"reason":"stop"}"#,
+        r#"{"request_id":18,"error":"success"}"#,
     ]);
     let mut adapter = MpvAdapter::with_test_transport(transport);
 

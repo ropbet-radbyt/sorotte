@@ -4,8 +4,9 @@ mod player_adapter;
 mod state;
 
 use std::{
-    collections::{HashMap, VecDeque},
-    path::Path,
+    collections::{BTreeMap, HashMap, VecDeque},
+    path::{Path, PathBuf},
+    sync::mpsc::TryRecvError,
     time::{Duration, Instant},
 };
 
@@ -14,7 +15,7 @@ use sorotte_player_api::{
     LocalFileUpdate, PlayerCommandFailureKind, PlayerCommandId, PlayerCommandProgress,
     PlayerCommandResult, PlayerError, PlayerMediaGeneration, PlayerMediaLoadFailureKind,
     PlayerMediaLoadOutcome, PlayerObservationTimestamp, PlayerPlayIntent,
-    PlayerPlaybackTelemetryUpdate, PlayerSeekableRange, PlayerTransportPhase,
+    PlayerPlaybackTelemetryUpdate, PlayerSeekableRange, PlayerTimelineKind, PlayerTransportPhase,
     PlayerTransportTelemetryUpdate,
 };
 
@@ -26,6 +27,10 @@ use crate::legacy_ui::{
     LegacySyncplayOsdKind, LegacySyncplayUiSettings, legacy_syncplayintf_script_name_for_path,
     sanitize_legacy_syncplay_script_message_text,
 };
+use crate::live_probe::{
+    PendingYtdlLiveProbe, YtdlLiveMetadataCapability, YtdlLiveProbeOutcome, spawn_ytdl_live_probe,
+    youtube_live_probe_execution_target,
+};
 
 use self::state::MpvObservedState;
 
@@ -35,6 +40,14 @@ const MAX_PENDING_COMMAND_PROGRESS_UPDATES: usize = 128;
 const PLAYER_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 const PLAYER_LOAD_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 const PLAYBACK_ADVANCEMENT_EPSILON_SECONDS: f64 = 0.01;
+const YTDL_LIVE_PROBE_TIMEOUT: Duration = Duration::from_secs(8);
+
+fn uses_network_media_options(path: &str) -> bool {
+    let Some((scheme, _)) = path.trim().split_once("://") else {
+        return false;
+    };
+    !scheme.eq_ignore_ascii_case("file")
+}
 
 #[derive(Debug)]
 struct PendingTrackedCommand {
@@ -133,6 +146,13 @@ enum TrackedCommandSupersession {
     PauseOrPlay,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MpvLoadfileOptionsSyntax {
+    Legacy,
+    InsertionIndex,
+    Unknown,
+}
+
 pub struct MpvAdapter {
     paused: bool,
     logical_pause_explicit: bool,
@@ -158,6 +178,9 @@ pub struct MpvAdapter {
     window_maximized: bool,
     window_minimized: bool,
     current_path: Option<String>,
+    network_media_options: BTreeMap<String, String>,
+    loadfile_options_syntax: Option<MpvLoadfileOptionsSyntax>,
+    mpv_version: Option<(u64, u64)>,
     pending_local_file_update: Option<LocalFileUpdate>,
     pending_playback_telemetry_update: Option<PlayerPlaybackTelemetryUpdate>,
     pending_transport_telemetry_updates: VecDeque<PlayerTransportTelemetryUpdate>,
@@ -180,6 +203,16 @@ pub struct MpvAdapter {
     transport_phase: PlayerTransportPhase,
     active_file_loaded: bool,
     active_generation_has_restarted: bool,
+    timeline_kind: PlayerTimelineKind,
+    ytdl_is_live: bool,
+    ytdl_is_live_metadata_generation: Option<PlayerMediaGeneration>,
+    latest_cached_seekable_window: Option<PlayerSeekableRange>,
+    path_metadata_generation: Option<PlayerMediaGeneration>,
+    duration_metadata_generation: Option<PlayerMediaGeneration>,
+    ytdl_live_probe_executable: Option<PathBuf>,
+    ytdl_live_probe_path_prefixes: Vec<PathBuf>,
+    ytdl_live_probe_identity: Option<(PlayerMediaGeneration, String)>,
+    pending_ytdl_live_probe: Option<PendingYtdlLiveProbe>,
     playback_restart_sequence: u64,
     next_command_id: u64,
     legacy_syncplay_ui_settings: LegacySyncplayUiSettings,
@@ -199,13 +232,22 @@ impl MpvAdapter {
     }
 
     pub fn connect_json_ipc(&mut self, path: impl AsRef<Path>) -> Result<(), PlayerError> {
-        let client =
+        let mut client =
             MpvJsonIpcClient::connect(path.as_ref()).map_err(PlayerError::OperationFailed)?;
+        let version = match client.get_property_string_classified(MPV_PROPERTY_VERSION) {
+            Ok(version) => version,
+            Err(error) if error.is_property_unavailable() => None,
+            Err(error) => return Err(PlayerError::OperationFailed(error.into_message())),
+        };
         self.collect_ipc_connection_events();
         self.simulation_mode = false;
         self.ipc_client = Some(client);
         self.observers_registered = false;
         self.transport_observers_registered = false;
+        self.loadfile_options_syntax = None;
+        self.mpv_version = version
+            .as_deref()
+            .and_then(Self::parse_mpv_major_minor_version);
         Ok(())
     }
 
@@ -237,6 +279,209 @@ impl MpvAdapter {
 
     pub fn current_path(&self) -> Option<&str> {
         self.current_path.as_deref()
+    }
+
+    /// Selects the yt-dlp executable used to recover live-timeline metadata
+    /// from stock mpv releases older than 0.39.
+    ///
+    /// When unset, the bounded probe tries `yt-dlp` and then `youtube-dl`
+    /// through the process `PATH`. A configured path is authoritative and is
+    /// never silently replaced with another executable.
+    pub fn configure_ytdl_live_probe_executable(&mut self, executable: Option<PathBuf>) {
+        self.configure_ytdl_live_probe_environment(executable, Vec::new());
+    }
+
+    /// Configures the bounded legacy live probe without changing the process
+    /// environment inherited by Sorotte itself.
+    pub fn configure_ytdl_live_probe_environment(
+        &mut self,
+        executable: Option<PathBuf>,
+        mut path_prefixes: Vec<PathBuf>,
+    ) {
+        if let Some(parent) = executable.as_deref().and_then(Path::parent)
+            && !parent.as_os_str().is_empty()
+            && !path_prefixes.iter().any(|prefix| prefix == parent)
+        {
+            path_prefixes.insert(0, parent.to_path_buf());
+        }
+        self.ytdl_live_probe_executable = executable;
+        self.ytdl_live_probe_path_prefixes = path_prefixes;
+        if self.pending_ytdl_live_probe.is_none()
+            && self.ytdl_live_probe_identity.is_none()
+            && let (Some(generation), Some(target)) =
+                (self.active_media_generation, self.current_path.clone())
+        {
+            self.maybe_start_ytdl_live_probe(generation, &target);
+        }
+    }
+
+    /// Configures options that mpv should apply only while playing network media.
+    ///
+    /// The options are attached to Sorotte-issued `loadfile` commands as mpv
+    /// per-file options. mpv restores the user's prior values when that media
+    /// ends, so a later local file keeps its normal mpv/user cache policy.
+    pub fn configure_network_media_options<I, K, V>(&mut self, options: I)
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        self.network_media_options = options
+            .into_iter()
+            .map(|(name, value)| (name.into(), value.into()))
+            .collect();
+    }
+
+    /// Applies the configured network options to an already-active network file.
+    ///
+    /// mpv's `file-local-options` namespace snapshots the prior option values
+    /// and restores them when the file ends. This is useful when Sorotte
+    /// attaches to an existing mpv session or changes settings in place. Local
+    /// files are deliberately left untouched.
+    pub fn apply_network_media_options_to_active_media(&mut self) -> Result<(), PlayerError> {
+        // `current_path` may describe a requested load or a prior externally
+        // replaced playlist entry. An attached mpv is authoritative; the cache
+        // is safe only for simulation or other no-IPC operation.
+        let active_path = match self.ipc_client.as_mut() {
+            Some(client) => match client.get_property_string_classified(MPV_PROPERTY_PATH) {
+                Ok(path) => path,
+                Err(error) if error.is_property_unavailable() => None,
+                Err(error) => return Err(PlayerError::OperationFailed(error.into_message())),
+            },
+            None => self.current_path.clone(),
+        };
+        let Some(active_path) = active_path else {
+            return Ok(());
+        };
+        if !uses_network_media_options(&active_path) {
+            return Ok(());
+        }
+
+        for (name, value) in self.network_media_options.clone() {
+            self.send_ipc_command_if_attached(json!([
+                MPV_COMMAND_SET_PROPERTY,
+                format!("file-local-options/{name}"),
+                value
+            ]))?;
+        }
+        Ok(())
+    }
+
+    fn network_media_options_map(&self) -> serde_json::Map<String, Value> {
+        self.network_media_options
+            .iter()
+            .map(|(name, value)| (name.clone(), Value::String(value.clone())))
+            .collect()
+    }
+
+    fn detect_loadfile_options_syntax(&mut self) -> MpvLoadfileOptionsSyntax {
+        if let Some(syntax) = self.loadfile_options_syntax {
+            return syntax;
+        }
+        let syntax = self
+            .mpv_version
+            .map(Self::loadfile_options_syntax_from_version_components)
+            .or_else(|| {
+                self.ipc_client
+                    .as_mut()
+                    .and_then(|client| {
+                        client
+                            .get_property_string(MPV_PROPERTY_VERSION)
+                            .ok()
+                            .flatten()
+                    })
+                    .as_deref()
+                    .and_then(Self::loadfile_options_syntax_from_version)
+            })
+            .unwrap_or(MpvLoadfileOptionsSyntax::Unknown);
+        self.loadfile_options_syntax = Some(syntax);
+        syntax
+    }
+
+    fn loadfile_options_syntax_from_version(version: &str) -> Option<MpvLoadfileOptionsSyntax> {
+        Self::parse_mpv_major_minor_version(version)
+            .map(Self::loadfile_options_syntax_from_version_components)
+    }
+
+    fn parse_mpv_major_minor_version(version: &str) -> Option<(u64, u64)> {
+        version
+            .split(|character: char| !(character.is_ascii_digit() || character == '.'))
+            .filter(|part| part.contains('.'))
+            .find_map(|part| {
+                let mut components = part.split('.');
+                Some((
+                    components.next()?.parse::<u64>().ok()?,
+                    components.next()?.parse::<u64>().ok()?,
+                ))
+            })
+    }
+
+    fn loadfile_options_syntax_from_version_components(
+        (major, minor): (u64, u64),
+    ) -> MpvLoadfileOptionsSyntax {
+        if major > 0 || minor >= 38 {
+            MpvLoadfileOptionsSyntax::InsertionIndex
+        } else {
+            MpvLoadfileOptionsSyntax::Legacy
+        }
+    }
+
+    fn send_network_media_loadfile(&mut self, path: &str) -> Result<(), PlayerError> {
+        let options = Value::Object(self.network_media_options_map());
+        let modern_command = || {
+            json!([
+                MPV_COMMAND_LOADFILE,
+                path,
+                MPV_LOADFILE_REPLACE,
+                -1,
+                options.clone()
+            ])
+        };
+        let legacy_command = || {
+            json!([
+                MPV_COMMAND_LOADFILE,
+                path,
+                MPV_LOADFILE_REPLACE,
+                options.clone()
+            ])
+        };
+
+        match self.detect_loadfile_options_syntax() {
+            MpvLoadfileOptionsSyntax::InsertionIndex => {
+                self.send_ipc_command_if_attached(modern_command())
+            }
+            MpvLoadfileOptionsSyntax::Legacy => self.send_ipc_command_if_attached(legacy_command()),
+            MpvLoadfileOptionsSyntax::Unknown => {
+                let Some(ipc_client) = self.ipc_client.as_mut() else {
+                    return self.send_ipc_command_if_attached(modern_command());
+                };
+                let modern_result =
+                    ipc_client.send_compatibility_probe_expect_success(modern_command());
+                self.drain_ipc_events_if_attached();
+                match modern_result {
+                    Ok(()) => {
+                        self.loadfile_options_syntax =
+                            Some(MpvLoadfileOptionsSyntax::InsertionIndex);
+                        Ok(())
+                    }
+                    Err(primary_error) if primary_error.is_server_rejection() => {
+                        let primary_message = primary_error.message().to_owned();
+                        let result = self.send_ipc_command_if_attached(legacy_command());
+                        if result.is_ok() {
+                            self.loadfile_options_syntax = Some(MpvLoadfileOptionsSyntax::Legacy);
+                            return Ok(());
+                        }
+                        Err(PlayerError::OperationFailed(format!(
+                            "mpv loadfile compatibility probe was rejected ({primary_message}); legacy fallback failed: {}",
+                            result.expect_err("failed result must contain its error")
+                        )))
+                    }
+                    Err(primary_error) => Err(PlayerError::OperationFailed(
+                        primary_error.message().to_owned(),
+                    )),
+                }
+            }
+        }
     }
 
     pub fn paused(&self) -> bool {
@@ -569,6 +814,13 @@ impl MpvAdapter {
                 MPV_OBS_DEMUXER_CACHE_IDLE_ID,
                 MPV_PROPERTY_DEMUXER_CACHE_IDLE,
             ),
+            // Observe both forms: the full metadata map itself is observable
+            // on the oldest supported mpv, while current mpv can report the
+            // narrower subproperty without retransmitting unrelated tags.
+            // Stock mpv before 0.39 does not publish this tag at all and is
+            // covered by the bounded external probe below.
+            (MPV_OBS_YTDL_IS_LIVE_ID, MPV_PROPERTY_YTDL_IS_LIVE),
+            (MPV_OBS_METADATA_ID, MPV_PROPERTY_METADATA),
             (MPV_OBS_EOF_REACHED_ID, MPV_PROPERTY_EOF_REACHED),
         ];
 
@@ -613,6 +865,17 @@ impl MpvAdapter {
         self.observed_state.duration_seconds = polled_update.duration_seconds;
         self.observed_state.size_bytes = polled_update.size_bytes;
         self.current_path = polled_update.path.clone();
+        self.path_metadata_generation = self.active_media_generation;
+        self.duration_metadata_generation = self.active_media_generation;
+        if self.refresh_timeline_kind_from_metadata() {
+            let update = self.transport_update();
+            self.queue_transport_telemetry_update(update);
+        }
+        if let (Some(generation), Some(target)) =
+            (self.active_media_generation, polled_update.path.as_deref())
+        {
+            self.maybe_start_ytdl_live_probe(generation, target);
+        }
         if Self::local_file_update_ready_for_sync(&polled_update) {
             self.record_local_file_update_if_changed(polled_update);
         }
@@ -717,6 +980,10 @@ impl MpvAdapter {
         self.observed_state.path = polled_update.path.clone();
         self.observed_state.duration_seconds = polled_update.duration_seconds;
         self.observed_state.size_bytes = polled_update.size_bytes;
+        self.path_metadata_generation = Some(generation);
+        self.duration_metadata_generation = Some(generation);
+        self.refresh_timeline_kind_from_metadata();
+        self.maybe_start_ytdl_live_probe(generation, &requested_target);
         self.record_local_file_update_if_changed(polled_update.clone());
         self.pending_media_load_outcomes
             .push_back(PlayerMediaLoadOutcome::success(
@@ -1054,13 +1321,18 @@ impl MpvAdapter {
     }
 
     fn transport_update(&self) -> PlayerTransportTelemetryUpdate {
-        PlayerTransportTelemetryUpdate {
+        let mut update = PlayerTransportTelemetryUpdate {
             media_generation: self
                 .active_media_generation
                 .or(self.pending_load_generation),
             observed_at: Some(self.observation_timestamp()),
             ..PlayerTransportTelemetryUpdate::default()
+        };
+        update.timeline_kind = Some(self.timeline_kind);
+        if self.timeline_kind == PlayerTimelineKind::SlidingLive {
+            update.known_live_seekable_window = self.latest_cached_seekable_window;
         }
+        update
     }
 
     fn observation_media_generation(&self) -> Option<PlayerMediaGeneration> {
@@ -1072,7 +1344,15 @@ impl MpvAdapter {
         &self,
         generation: PlayerMediaGeneration,
     ) -> PlayerTransportTelemetryUpdate {
-        PlayerTransportTelemetryUpdate::new(generation, self.observation_timestamp())
+        let mut update =
+            PlayerTransportTelemetryUpdate::new(generation, self.observation_timestamp());
+        if self.observation_media_generation() == Some(generation) {
+            update.timeline_kind = Some(self.timeline_kind);
+            if self.timeline_kind == PlayerTimelineKind::SlidingLive {
+                update.known_live_seekable_window = self.latest_cached_seekable_window;
+            }
+        }
+        update
     }
 
     fn queue_transport_telemetry_update(&mut self, mut update: PlayerTransportTelemetryUpdate) {
@@ -1103,8 +1383,28 @@ impl MpvAdapter {
             }
         }
 
-        let lifecycle_boundary =
+        let update_has_cache_metrics = update.cache_buffering_percent.is_some()
+            || update.buffered_ahead_seconds.is_some()
+            || update.buffered_ahead_bytes.is_some()
+            || update.input_rate_bytes_per_second.is_some();
+        let cache_position_boundary =
             self.pending_transport_telemetry_updates
+                .back()
+                .is_some_and(|pending| {
+                    let pending_has_cache_metrics = pending.cache_buffering_percent.is_some()
+                        || pending.buffered_ahead_seconds.is_some()
+                        || pending.buffered_ahead_bytes.is_some()
+                        || pending.input_rate_bytes_per_second.is_some();
+                    (update.position_seconds.is_some()
+                        && !update_has_cache_metrics
+                        && pending_has_cache_metrics)
+                        || (update_has_cache_metrics
+                            && update.position_seconds.is_none()
+                            && pending.position_seconds.is_some())
+                });
+        let lifecycle_boundary = cache_position_boundary
+            || self
+                .pending_transport_telemetry_updates
                 .back()
                 .is_none_or(|pending| {
                     pending.media_generation != update.media_generation
@@ -1127,6 +1427,20 @@ impl MpvAdapter {
             self.pending_transport_telemetry_updates.pop_front();
         }
         self.pending_transport_telemetry_updates.push_back(update);
+    }
+
+    fn begin_seek_cache_evidence_epoch(&mut self) {
+        let generation = self.observation_media_generation();
+        self.cache_buffering_percent = None;
+        self.observed_state.cache_buffering_percent = None;
+        for pending in &mut self.pending_transport_telemetry_updates {
+            if pending.media_generation == generation {
+                pending.cache_buffering_percent = None;
+                pending.buffered_ahead_seconds = None;
+                pending.buffered_ahead_bytes = None;
+                pending.input_rate_bytes_per_second = None;
+            }
+        }
     }
 
     fn set_transport_phase(&mut self, phase: PlayerTransportPhase) {
@@ -1187,7 +1501,7 @@ impl MpvAdapter {
         }
     }
 
-    fn cache_state_telemetry_update(&self, data: &Value) -> PlayerTransportTelemetryUpdate {
+    fn cache_state_telemetry_update(&mut self, data: &Value) -> PlayerTransportTelemetryUpdate {
         let mut update = self.transport_update();
         let Some(cache_state) = data.as_object() else {
             return update;
@@ -1209,6 +1523,21 @@ impl MpvAdapter {
                     })
                     .collect()
             });
+        if let Some(ranges) = update.seekable_ranges.as_deref() {
+            self.latest_cached_seekable_window = ranges
+                .iter()
+                .copied()
+                .filter(|range| {
+                    range.start_seconds.is_finite()
+                        && range.end_seconds.is_finite()
+                        && range.end_seconds > range.start_seconds
+                })
+                .max_by(|left, right| left.end_seconds.total_cmp(&right.end_seconds));
+        }
+        update.timeline_kind = Some(self.timeline_kind);
+        if self.timeline_kind == PlayerTimelineKind::SlidingLive {
+            update.known_live_seekable_window = self.latest_cached_seekable_window;
+        }
         update.buffered_ahead_seconds = cache_state
             .get("cache-duration")
             .and_then(Value::as_f64)
@@ -1222,8 +1551,165 @@ impl MpvAdapter {
         update
     }
 
+    fn refresh_timeline_kind_from_metadata(&mut self) -> bool {
+        let previous = self.timeline_kind;
+        let Some(generation) = self.active_media_generation else {
+            return false;
+        };
+        if !self.active_file_loaded || self.path_metadata_generation != Some(generation) {
+            return false;
+        }
+        let Some(path) = self.observed_state.path.as_deref() else {
+            return false;
+        };
+        self.timeline_kind = if !uses_network_media_options(path) {
+            PlayerTimelineKind::Vod
+        } else if self.ytdl_is_live && self.ytdl_is_live_metadata_generation == Some(generation) {
+            // mpv 0.39+ publishes yt-dlp's per-file live flag as metadata.
+            // Older stock mpv reaches this branch only through Sorotte's
+            // generation-bound external probe. Only positive evidence bound
+            // to this load is sufficient for a sliding timeline.
+            PlayerTimelineKind::SlidingLive
+        } else if self.duration_metadata_generation != Some(generation) {
+            return false;
+        } else if self.observed_state.duration_seconds.is_some() {
+            PlayerTimelineKind::Vod
+        } else {
+            // mpv's cache ranges are local cache state, not a source/DVR
+            // window. A durationless network source remains explicitly
+            // Unknown unless an upstream integration supplies positive live
+            // timeline evidence; guessing here can turn valid VOD seeks into
+            // destructive live-edge clamps.
+            PlayerTimelineKind::Unknown
+        };
+        previous != self.timeline_kind
+    }
+
+    fn reset_timeline_metadata(&mut self) {
+        self.timeline_kind = PlayerTimelineKind::Unknown;
+        self.ytdl_is_live = false;
+        self.ytdl_is_live_metadata_generation = None;
+        self.latest_cached_seekable_window = None;
+        self.path_metadata_generation = None;
+        self.duration_metadata_generation = None;
+        self.ytdl_live_probe_identity = None;
+        self.pending_ytdl_live_probe = None;
+    }
+
     fn nonnegative_u64_from_json(value: &Value) -> Option<u64> {
         value.as_u64().or_else(|| value.as_i64()?.try_into().ok())
+    }
+
+    fn metadata_boolean_is_true(value: &Value) -> bool {
+        value.as_bool() == Some(true)
+            || value
+                .as_str()
+                .is_some_and(|value| value.eq_ignore_ascii_case("true"))
+    }
+
+    fn full_metadata_ytdl_is_live(value: Option<&Value>) -> bool {
+        value
+            .and_then(Value::as_object)
+            .and_then(|metadata| {
+                metadata.iter().find_map(|(key, value)| {
+                    key.eq_ignore_ascii_case("ytdl_is_live").then_some(value)
+                })
+            })
+            .is_some_and(Self::metadata_boolean_is_true)
+    }
+
+    fn observe_ytdl_is_live_for_current_generation(&mut self, is_live: bool) {
+        let Some(generation) = self.active_media_generation else {
+            return;
+        };
+        if self.ytdl_is_live_metadata_generation != Some(generation) {
+            self.ytdl_is_live = false;
+            self.ytdl_is_live_metadata_generation = Some(generation);
+        }
+        // Once observed, positive per-file live evidence remains
+        // authoritative for this generation. mpv can briefly report either
+        // the full metadata map or its subproperty as unavailable during
+        // demuxer changes; that must not turn a sliding timeline back into
+        // VOD.
+        self.ytdl_is_live |= is_live;
+        if is_live {
+            // A patched legacy hook can expose the native tag even though its
+            // version number selected the compatibility probe. Positive
+            // native evidence makes that duplicate process unnecessary.
+            self.pending_ytdl_live_probe = None;
+        }
+        if self.refresh_timeline_kind_from_metadata() {
+            let update = self.transport_update();
+            self.queue_transport_telemetry_update(update);
+        }
+    }
+
+    fn maybe_start_ytdl_live_probe(
+        &mut self,
+        media_generation: PlayerMediaGeneration,
+        target: &str,
+    ) {
+        if YtdlLiveMetadataCapability::from_mpv_version(self.mpv_version)
+            != YtdlLiveMetadataCapability::ExternalProbeRequired
+            || self.active_media_generation != Some(media_generation)
+            || !self.active_file_loaded
+            || self.path_metadata_generation != Some(media_generation)
+            || self.duration_metadata_generation != Some(media_generation)
+            || self.observed_state.duration_seconds.is_some()
+            || self.timeline_kind != PlayerTimelineKind::Unknown
+            || self.ytdl_is_live
+            || self.ytdl_live_probe_identity.is_some()
+        {
+            return;
+        }
+
+        let target = target.trim().to_owned();
+        let Some(execution_target) =
+            youtube_live_probe_execution_target(&target).map(str::to_owned)
+        else {
+            return;
+        };
+        self.ytdl_live_probe_identity = Some((media_generation, target.clone()));
+        self.pending_ytdl_live_probe = Some(spawn_ytdl_live_probe(
+            self.ytdl_live_probe_executable.clone(),
+            self.ytdl_live_probe_path_prefixes.clone(),
+            media_generation,
+            target,
+            execution_target,
+            YTDL_LIVE_PROBE_TIMEOUT,
+        ));
+    }
+
+    fn poll_ytdl_live_probe_completion(&mut self) {
+        let completion = match self.pending_ytdl_live_probe.as_ref().map(|pending| {
+            pending
+                .completion_rx
+                .lock()
+                .map_err(|_| TryRecvError::Disconnected)?
+                .try_recv()
+        }) {
+            Some(Ok(completion)) => completion,
+            Some(Err(TryRecvError::Empty)) | None => return,
+            Some(Err(TryRecvError::Disconnected)) => {
+                self.pending_ytdl_live_probe = None;
+                return;
+            }
+        };
+        let Some(pending) = self.pending_ytdl_live_probe.take() else {
+            return;
+        };
+        if pending.media_generation != completion.media_generation
+            || pending.target != completion.target
+            || self.active_media_generation != Some(completion.media_generation)
+            || self.ytdl_live_probe_identity.as_ref()
+                != Some(&(completion.media_generation, completion.target.clone()))
+        {
+            return;
+        }
+
+        if completion.outcome == YtdlLiveProbeOutcome::IsLive(true) {
+            self.observe_ytdl_is_live_for_current_generation(true);
+        }
     }
 
     fn chat_input_polling_enabled(&self) -> bool {
@@ -1253,6 +1739,33 @@ impl MpvAdapter {
         for event in pending_events {
             self.handle_ipc_event(&event);
         }
+    }
+
+    fn observe_unhealthy_ipc_transport(&mut self) {
+        let disconnected = self
+            .ipc_client
+            .as_ref()
+            .is_some_and(|ipc_client| !ipc_client.is_healthy());
+        if !disconnected
+            || matches!(
+                self.transport_phase,
+                PlayerTransportPhase::Empty
+                    | PlayerTransportPhase::Ended
+                    | PlayerTransportPhase::Failed
+            )
+            || (!self.active_file_loaded && self.pending_load_generation.is_none())
+        {
+            return;
+        }
+        let Some(generation) = self.observation_media_generation() else {
+            return;
+        };
+        self.transport_phase = PlayerTransportPhase::Failed;
+        self.active_file_loaded = false;
+        let update = self
+            .transport_update_for(generation)
+            .with_phase(PlayerTransportPhase::Failed);
+        self.queue_transport_telemetry_update(update);
     }
 
     fn handle_ipc_event(&mut self, event: &Value) {
@@ -1311,11 +1824,18 @@ impl MpvAdapter {
                     self.queue_transport_telemetry_update(update);
                 }
                 self.current_path = next_path.clone();
-                self.observed_state.path = next_path;
+                self.observed_state.path = next_path.clone();
+                self.path_metadata_generation = self.active_media_generation;
+                if let (Some(generation), Some(target)) =
+                    (self.active_media_generation, next_path.as_deref())
+                {
+                    self.maybe_start_ytdl_live_probe(generation, target);
+                }
                 true
             }
             MPV_PROPERTY_DURATION => {
                 self.observed_state.duration_seconds = data.and_then(Value::as_f64);
+                self.duration_metadata_generation = self.active_media_generation;
                 true
             }
             MPV_PROPERTY_FILE_SIZE => {
@@ -1510,6 +2030,18 @@ impl MpvAdapter {
                 self.queue_transport_telemetry_update(update);
                 false
             }
+            MPV_PROPERTY_YTDL_IS_LIVE => {
+                self.observe_ytdl_is_live_for_current_generation(
+                    data.is_some_and(Self::metadata_boolean_is_true),
+                );
+                false
+            }
+            MPV_PROPERTY_METADATA => {
+                self.observe_ytdl_is_live_for_current_generation(Self::full_metadata_ytdl_is_live(
+                    data,
+                ));
+                false
+            }
             MPV_PROPERTY_DEMUXER_CACHE_IDLE => {
                 if let Some(demuxer_cache_idle) = data.and_then(Value::as_bool) {
                     self.observed_state.demuxer_cache_idle = Some(demuxer_cache_idle);
@@ -1538,6 +2070,19 @@ impl MpvAdapter {
         };
 
         if file_metadata_changed {
+            if self.refresh_timeline_kind_from_metadata() {
+                let update = self.transport_update();
+                self.queue_transport_telemetry_update(update);
+            }
+            let probe_target = self
+                .pending_load_request
+                .clone()
+                .or_else(|| self.current_path.clone());
+            if let (Some(generation), Some(target)) =
+                (self.active_media_generation, probe_target.as_deref())
+            {
+                self.maybe_start_ytdl_live_probe(generation, target);
+            }
             self.maybe_emit_local_file_update_from_observed_state();
         }
     }
@@ -1551,6 +2096,7 @@ impl MpvAdapter {
         let retained_logical_pause = self.observed_state.logical_pause;
         let retained_playback_rate = self.observed_state.playback_rate;
         let retained_core_idle = self.observed_state.core_idle;
+        let requested_probe_target = self.pending_load_request.clone();
         let playlist_entry_id = event.get("playlist_entry_id").and_then(Value::as_u64);
         let generation = playlist_entry_id
             .and_then(|entry_id| self.playlist_entry_generations.get(&entry_id).copied())
@@ -1565,10 +2111,15 @@ impl MpvAdapter {
         self.active_media_generation = Some(generation);
         self.active_file_loaded = false;
         self.active_generation_has_restarted = false;
+        self.reset_timeline_metadata();
+        self.current_path = None;
         self.paused_for_cache = false;
         self.cache_buffering_percent = None;
         self.observed_state.paused = retained_paused;
         self.observed_state.logical_pause = retained_logical_pause;
+        self.observed_state.path = None;
+        self.observed_state.duration_seconds = None;
+        self.observed_state.size_bytes = None;
         self.observed_state.position_seconds = None;
         self.observed_state.playback_rate = retained_playback_rate;
         self.observed_state.paused_for_cache = None;
@@ -1588,6 +2139,9 @@ impl MpvAdapter {
         update.core_idle = retained_core_idle;
         update.eof_reached = Some(false);
         self.queue_transport_telemetry_update(update);
+        if let Some(target) = requested_probe_target.as_deref() {
+            self.maybe_start_ytdl_live_probe(generation, target);
+        }
     }
 
     fn handle_seek_event(&mut self) {
@@ -1639,6 +2193,20 @@ impl MpvAdapter {
                 .or_else(|| Some(self.allocate_media_generation()));
         }
         self.active_file_loaded = true;
+        if self.refresh_timeline_kind_from_metadata() {
+            let update = self.transport_update();
+            self.queue_transport_telemetry_update(update);
+        }
+        let initial_probe_target = self
+            .pending_load_request
+            .clone()
+            .or_else(|| self.current_path.clone());
+        if let (Some(generation), Some(target)) = (
+            self.active_media_generation,
+            initial_probe_target.as_deref(),
+        ) {
+            self.maybe_start_ytdl_live_probe(generation, target);
+        }
         let phase = self.inferred_transport_phase();
         self.transport_phase = phase;
         let update = self.transport_update().with_phase(phase);
@@ -1652,16 +2220,29 @@ impl MpvAdapter {
         };
         self.pending_load_generation = None;
 
-        let loaded_update = self
+        let polled_update = self
             .ipc_client
             .as_mut()
             .and_then(|ipc_client| Self::poll_local_file_update_from_mpv(ipc_client).ok())
-            .flatten()
-            .unwrap_or_else(|| Self::local_file_update_for_path(&requested_target));
+            .flatten();
+        let metadata_is_current = polled_update.is_some();
+        let loaded_update =
+            polled_update.unwrap_or_else(|| Self::local_file_update_for_path(&requested_target));
         self.current_path = loaded_update.path.clone();
         self.observed_state.path = loaded_update.path.clone();
         self.observed_state.duration_seconds = loaded_update.duration_seconds;
         self.observed_state.size_bytes = loaded_update.size_bytes;
+        if metadata_is_current {
+            self.path_metadata_generation = self.active_media_generation;
+            self.duration_metadata_generation = self.active_media_generation;
+        }
+        if self.refresh_timeline_kind_from_metadata() {
+            let update = self.transport_update();
+            self.queue_transport_telemetry_update(update);
+        }
+        if let Some(generation) = self.active_media_generation {
+            self.maybe_start_ytdl_live_probe(generation, &requested_target);
+        }
         if Self::local_file_update_ready_for_sync(&loaded_update) {
             self.record_local_file_update_if_changed(loaded_update.clone());
         }
@@ -1730,6 +2311,7 @@ impl MpvAdapter {
         if affects_current_generation {
             self.transport_phase = phase;
             self.active_file_loaded = false;
+            self.reset_timeline_metadata();
             self.observed_state.eof_reached = Some(true);
             if self.active_playlist_entry_id == playlist_entry_id {
                 self.active_playlist_entry_id = None;
@@ -1756,6 +2338,7 @@ impl MpvAdapter {
         self.observed_state.path = None;
         self.observed_state.duration_seconds = None;
         self.observed_state.size_bytes = None;
+        self.reset_timeline_metadata();
         self.pending_media_load_outcomes
             .push_back(PlayerMediaLoadOutcome::failure(
                 requested_target,
@@ -1944,5 +2527,331 @@ impl MpvAdapter {
         self.legacy_syncplayintf_script_loaded = true;
         self.legacy_syncplayintf_options_applied = true;
         self.legacy_syncplay_ui_settings.chat_input_enabled = true;
+    }
+}
+
+#[cfg(test)]
+mod timeline_kind_tests {
+    use super::*;
+    use crate::live_probe::{YtdlLiveProbeCompletion, YtdlLiveProbeOutcome};
+
+    fn loaded_adapter(path: &str, duration_seconds: Option<f64>) -> MpvAdapter {
+        let generation = PlayerMediaGeneration::new(41);
+        let mut adapter = MpvAdapter {
+            active_file_loaded: true,
+            active_media_generation: Some(generation),
+            next_media_generation: 42,
+            current_path: Some(path.to_owned()),
+            path_metadata_generation: Some(generation),
+            duration_metadata_generation: Some(generation),
+            observed_state: MpvObservedState {
+                path: Some(path.to_owned()),
+                duration_seconds,
+                seekable: Some(true),
+                ..MpvObservedState::default()
+            },
+            ..MpvAdapter::default()
+        };
+        adapter.refresh_timeline_kind_from_metadata();
+        adapter
+    }
+
+    fn observe_ytdl_is_live(adapter: &mut MpvAdapter, data: Value) {
+        adapter.handle_ipc_event(&json!({
+            "event": MPV_EVENT_PROPERTY_CHANGE,
+            "name": MPV_PROPERTY_YTDL_IS_LIVE,
+            "data": data,
+        }));
+    }
+
+    fn observe_full_metadata(adapter: &mut MpvAdapter, data: Value) {
+        adapter.handle_ipc_event(&json!({
+            "event": MPV_EVENT_PROPERTY_CHANGE,
+            "name": MPV_PROPERTY_METADATA,
+            "data": data,
+        }));
+    }
+
+    fn install_test_live_probe(
+        adapter: &mut MpvAdapter,
+        media_generation: PlayerMediaGeneration,
+        target: &str,
+    ) -> std::sync::mpsc::Sender<YtdlLiveProbeCompletion> {
+        let (completion_tx, completion_rx) = std::sync::mpsc::channel();
+        adapter.ytdl_live_probe_identity = Some((media_generation, target.to_owned()));
+        adapter.pending_ytdl_live_probe = Some(PendingYtdlLiveProbe {
+            media_generation,
+            target: target.to_owned(),
+            completion_rx: std::sync::Mutex::new(completion_rx),
+            cancellation: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        });
+        completion_tx
+    }
+
+    #[test]
+    fn youtube_live_metadata_is_positive_sliding_timeline_evidence() {
+        let mut adapter = loaded_adapter("https://www.youtube.com/watch?v=live", None);
+
+        observe_ytdl_is_live(&mut adapter, json!("true"));
+
+        assert_eq!(adapter.timeline_kind, PlayerTimelineKind::SlidingLive);
+        assert_eq!(
+            adapter.ytdl_is_live_metadata_generation,
+            adapter.active_media_generation
+        );
+    }
+
+    #[test]
+    fn legacy_full_metadata_event_detects_youtube_live_media() {
+        let mut adapter = loaded_adapter("https://www.youtube.com/watch?v=live", None);
+
+        observe_full_metadata(
+            &mut adapter,
+            json!({ "title": "Live channel", "ytdl_is_live": "true" }),
+        );
+
+        assert_eq!(adapter.timeline_kind, PlayerTimelineKind::SlidingLive);
+        assert!(adapter.ytdl_is_live);
+    }
+
+    #[test]
+    fn current_generation_external_probe_promotes_stock_old_mpv_to_sliding_live() {
+        let target = "https://www.youtube.com/watch?v=live";
+        let mut adapter = loaded_adapter(target, None);
+        adapter.mpv_version = Some((0, 34));
+        let generation = adapter.active_media_generation.unwrap();
+        let completion_tx = install_test_live_probe(&mut adapter, generation, target);
+        completion_tx
+            .send(YtdlLiveProbeCompletion {
+                media_generation: generation,
+                target: target.to_owned(),
+                outcome: YtdlLiveProbeOutcome::IsLive(true),
+            })
+            .unwrap();
+
+        adapter.poll_ytdl_live_probe_completion();
+
+        assert_eq!(adapter.timeline_kind, PlayerTimelineKind::SlidingLive);
+        assert!(adapter.ytdl_is_live);
+        assert_eq!(adapter.ytdl_is_live_metadata_generation, Some(generation));
+        assert!(adapter.pending_ytdl_live_probe.is_none());
+        assert!(
+            adapter
+                .pending_transport_telemetry_updates
+                .iter()
+                .any(|update| update.timeline_kind == Some(PlayerTimelineKind::SlidingLive))
+        );
+    }
+
+    #[test]
+    fn failed_or_timed_out_external_probe_never_guesses_live_or_vod() {
+        for outcome in [YtdlLiveProbeOutcome::Failed, YtdlLiveProbeOutcome::TimedOut] {
+            let target = "https://www.youtube.com/watch?v=unknown";
+            let mut adapter = loaded_adapter(target, None);
+            adapter.mpv_version = Some((0, 34));
+            let generation = adapter.active_media_generation.unwrap();
+            let completion_tx = install_test_live_probe(&mut adapter, generation, target);
+            completion_tx
+                .send(YtdlLiveProbeCompletion {
+                    media_generation: generation,
+                    target: target.to_owned(),
+                    outcome,
+                })
+                .unwrap();
+
+            adapter.poll_ytdl_live_probe_completion();
+
+            assert_eq!(adapter.timeline_kind, PlayerTimelineKind::Unknown);
+            assert!(!adapter.ytdl_is_live);
+            assert!(adapter.pending_ytdl_live_probe.is_none());
+        }
+    }
+
+    #[test]
+    fn external_probe_completion_from_prior_start_file_generation_is_inert() {
+        let old_target = "https://www.youtube.com/watch?v=old";
+        let mut adapter = loaded_adapter(old_target, None);
+        adapter.mpv_version = Some((0, 34));
+        let old_generation = adapter.active_media_generation.unwrap();
+        let completion_tx = install_test_live_probe(&mut adapter, old_generation, old_target);
+        let cancellation = adapter
+            .pending_ytdl_live_probe
+            .as_ref()
+            .map(|pending| std::sync::Arc::clone(&pending.cancellation))
+            .unwrap();
+        completion_tx
+            .send(YtdlLiveProbeCompletion {
+                media_generation: old_generation,
+                target: old_target.to_owned(),
+                outcome: YtdlLiveProbeOutcome::IsLive(true),
+            })
+            .unwrap();
+
+        adapter.handle_start_file_event(&json!({ "playlist_entry_id": 9001 }));
+        adapter.poll_ytdl_live_probe_completion();
+
+        assert_ne!(adapter.active_media_generation, Some(old_generation));
+        assert_eq!(adapter.timeline_kind, PlayerTimelineKind::Unknown);
+        assert!(!adapter.ytdl_is_live);
+        assert_eq!(adapter.ytdl_is_live_metadata_generation, None);
+        assert!(adapter.pending_ytdl_live_probe.is_none());
+        assert!(adapter.ytdl_live_probe_identity.is_none());
+        assert!(cancellation.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
+    fn unknown_or_native_mpv_versions_do_not_launch_the_legacy_probe() {
+        let target = "https://www.youtube.com/watch?v=live";
+        for version in [None, Some((0, 39)), Some((1, 0))] {
+            let mut adapter = loaded_adapter(target, None);
+            adapter.mpv_version = version;
+            let generation = adapter.active_media_generation.unwrap();
+
+            adapter.maybe_start_ytdl_live_probe(generation, target);
+
+            assert!(adapter.pending_ytdl_live_probe.is_none());
+            assert!(adapter.ytdl_live_probe_identity.is_none());
+        }
+    }
+
+    #[test]
+    fn old_mpv_probe_waits_for_a_loaded_durationless_generation_and_skips_vod() {
+        let target = "https://www.youtube.com/watch?v=live";
+        let mut adapter = loaded_adapter(target, None);
+        adapter.mpv_version = Some((0, 34));
+        adapter.ytdl_live_probe_executable =
+            Some(PathBuf::from("definitely-missing-sorotte-ytdl-live-probe"));
+        let generation = adapter.active_media_generation.unwrap();
+        adapter.active_file_loaded = false;
+
+        adapter.maybe_start_ytdl_live_probe(generation, target);
+        assert!(adapter.pending_ytdl_live_probe.is_none());
+
+        adapter.active_file_loaded = true;
+        adapter.duration_metadata_generation = None;
+        adapter.maybe_start_ytdl_live_probe(generation, target);
+        assert!(adapter.pending_ytdl_live_probe.is_none());
+
+        adapter.duration_metadata_generation = Some(generation);
+        adapter.maybe_start_ytdl_live_probe(generation, target);
+        assert!(adapter.pending_ytdl_live_probe.is_some());
+        adapter.reset_timeline_metadata();
+
+        let mut vod = loaded_adapter(target, Some(120.0));
+        vod.mpv_version = Some((0, 34));
+        let vod_generation = vod.active_media_generation.unwrap();
+        vod.maybe_start_ytdl_live_probe(vod_generation, target);
+        assert!(vod.pending_ytdl_live_probe.is_none());
+        assert!(vod.ytdl_live_probe_identity.is_none());
+    }
+
+    #[test]
+    fn absent_or_false_live_metadata_keeps_durationless_network_media_unknown() {
+        for data in [Value::Null, json!(false), json!("false")] {
+            let mut adapter = loaded_adapter("https://media.invalid/unknown.m3u8", None);
+
+            observe_ytdl_is_live(&mut adapter, data);
+
+            assert_eq!(adapter.timeline_kind, PlayerTimelineKind::Unknown);
+            assert!(!adapter.ytdl_is_live);
+        }
+    }
+
+    #[test]
+    fn positive_live_metadata_is_sticky_for_the_active_generation() {
+        let mut adapter = loaded_adapter("https://www.youtube.com/watch?v=live", None);
+        observe_full_metadata(&mut adapter, json!({ "ytdl_is_live": "true" }));
+
+        observe_ytdl_is_live(&mut adapter, Value::Null);
+        observe_ytdl_is_live(&mut adapter, json!("false"));
+        observe_full_metadata(&mut adapter, json!({ "title": "metadata refresh" }));
+
+        assert_eq!(adapter.timeline_kind, PlayerTimelineKind::SlidingLive);
+        assert!(adapter.ytdl_is_live);
+
+        let mut reverse_order = loaded_adapter("https://www.youtube.com/watch?v=live", None);
+        observe_ytdl_is_live(&mut reverse_order, json!("true"));
+        observe_full_metadata(&mut reverse_order, json!({ "ytdl_is_live": "false" }));
+        assert_eq!(reverse_order.timeline_kind, PlayerTimelineKind::SlidingLive);
+        assert!(reverse_order.ytdl_is_live);
+    }
+
+    #[test]
+    fn finite_duration_network_media_is_vod_without_positive_live_metadata() {
+        let mut adapter = loaded_adapter("https://media.invalid/movie.m3u8", Some(120.0));
+        observe_ytdl_is_live(&mut adapter, json!("false"));
+
+        assert_eq!(adapter.timeline_kind, PlayerTimelineKind::Vod);
+    }
+
+    #[test]
+    fn local_paths_and_file_urls_are_always_vod() {
+        for path in ["C:/media/movie.mkv", "file:///C:/media/movie.mkv"] {
+            let mut adapter = loaded_adapter(path, None);
+            observe_ytdl_is_live(&mut adapter, json!("true"));
+
+            assert_eq!(adapter.timeline_kind, PlayerTimelineKind::Vod);
+        }
+    }
+
+    #[test]
+    fn new_generation_clears_live_evidence_and_rejects_stale_metadata() {
+        let mut adapter = loaded_adapter("https://www.youtube.com/watch?v=live", None);
+        observe_ytdl_is_live(&mut adapter, json!("true"));
+        let previous_generation = adapter.active_media_generation;
+        assert_eq!(adapter.timeline_kind, PlayerTimelineKind::SlidingLive);
+
+        adapter.handle_start_file_event(&json!({ "playlist_entry_id": 42 }));
+        let current_generation = adapter.active_media_generation;
+        assert_ne!(current_generation, previous_generation);
+        assert_eq!(adapter.timeline_kind, PlayerTimelineKind::Unknown);
+        assert!(!adapter.ytdl_is_live);
+        assert_eq!(adapter.ytdl_is_live_metadata_generation, None);
+
+        adapter.active_file_loaded = true;
+        adapter.current_path = Some("https://media.invalid/next.m3u8".to_owned());
+        adapter.observed_state.path = adapter.current_path.clone();
+        adapter.observed_state.duration_seconds = None;
+        adapter.path_metadata_generation = current_generation;
+        adapter.duration_metadata_generation = current_generation;
+        adapter.ytdl_is_live = true;
+        adapter.ytdl_is_live_metadata_generation = previous_generation;
+        adapter.refresh_timeline_kind_from_metadata();
+
+        assert_eq!(adapter.timeline_kind, PlayerTimelineKind::Unknown);
+    }
+
+    #[test]
+    fn ending_the_active_generation_clears_live_evidence() {
+        let mut adapter = loaded_adapter("https://www.youtube.com/watch?v=live", None);
+        observe_ytdl_is_live(&mut adapter, json!("true"));
+        assert_eq!(adapter.timeline_kind, PlayerTimelineKind::SlidingLive);
+
+        adapter.handle_end_file_event(&json!({ "reason": "eof" }));
+
+        assert_eq!(adapter.timeline_kind, PlayerTimelineKind::Unknown);
+        assert!(!adapter.ytdl_is_live);
+        assert_eq!(adapter.ytdl_is_live_metadata_generation, None);
+    }
+
+    #[test]
+    fn empty_cache_range_snapshot_clears_the_conservative_live_window() {
+        let mut adapter = loaded_adapter("https://www.youtube.com/watch?v=live", None);
+        observe_ytdl_is_live(&mut adapter, json!("true"));
+
+        let populated = adapter.cache_state_telemetry_update(&json!({
+            "seekable-ranges": [{ "start": 80.0, "end": 100.0 }],
+        }));
+        assert_eq!(
+            populated.known_live_seekable_window,
+            Some(PlayerSeekableRange::new(80.0, 100.0))
+        );
+
+        let cleared = adapter.cache_state_telemetry_update(&json!({
+            "seekable-ranges": [],
+        }));
+        assert_eq!(cleared.seekable_ranges, Some(Vec::new()));
+        assert_eq!(cleared.known_live_seekable_window, None);
+        assert_eq!(adapter.latest_cached_seekable_window, None);
     }
 }

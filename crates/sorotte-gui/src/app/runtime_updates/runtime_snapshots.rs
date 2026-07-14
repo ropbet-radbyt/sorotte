@@ -8,7 +8,8 @@ use super::super::shell_state::{
     GuiMediaMatchRemediationRuntimeSnapshot, GuiMediaMatchRuntimeSnapshot, GuiPendingOperationKind,
     GuiPendingOperationState, GuiPlayerSetupIssue, GuiPlayerSetupRuntimeSnapshot,
     GuiPlaylistTextEditSessionState, GuiPlexRuntimeSnapshot, GuiPlexServerRow,
-    GuiPublicServerEditSessionState, GuiSavedConfigurationRuntimeSnapshot, GuiStreamHelperHealth,
+    GuiPublicServerEditSessionState, GuiSavedConfigurationRuntimeSnapshot,
+    GuiSeekPreparationRuntimeSnapshot, GuiStreamHelperHealth,
     GuiStreamHelperRemediationRuntimeSnapshot, GuiStreamHelperRuntimeSnapshot,
     GuiTextEditSessionState, GuiTransientNotification, GuiUrlEditSessionState, GuiValidationIssue,
     MenuDialogRuntimeSnapshot, MenuDialogShellState, SorotteGuiShellAppState,
@@ -225,6 +226,65 @@ impl SorotteGuiShellAppState {
         {
             self.open_modal = Some(GuiShellModal::PlayerSetup);
         }
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    pub(in crate::app) fn apply_gui_seek_preparation_runtime_snapshot(
+        &mut self,
+        snapshot: GuiSeekPreparationRuntimeSnapshot,
+    ) -> bool {
+        if snapshot.preparation.is_some() && snapshot.degraded_reason.is_some() {
+            return self.record_action_error(
+                "GUI seek-preparation snapshots cannot be active and terminally degraded at the same time.",
+            );
+        }
+        let preparation = match snapshot.preparation {
+            Some(preparation) => {
+                if !preparation.frozen_target_seconds.is_finite()
+                    || preparation.frozen_target_seconds < 0.0
+                {
+                    return self.record_action_error(
+                        "GUI seek-preparation snapshots require a finite, non-negative target.",
+                    );
+                }
+                if preparation.cache_refill_percent.is_some_and(|percent| {
+                    !percent.is_finite() || !(0.0..=100.0).contains(&percent)
+                }) {
+                    return self.record_action_error(
+                        "GUI seek-preparation snapshots require cache refill between 0 and 100 percent.",
+                    );
+                }
+                if preparation
+                    .buffered_ahead_seconds
+                    .is_some_and(|seconds| !seconds.is_finite() || seconds < 0.0)
+                {
+                    return self.record_action_error(
+                        "GUI seek-preparation snapshots require finite, non-negative buffered-ahead time.",
+                    );
+                }
+                if preparation
+                    .nearest_safe_buffered_position_seconds
+                    .is_some_and(|seconds| !seconds.is_finite() || seconds < 0.0)
+                {
+                    return self.record_action_error(
+                        "GUI seek-preparation snapshots require a finite, non-negative nearest buffered position.",
+                    );
+                }
+                if preparation.can_join_nearest_buffered
+                    && preparation.nearest_safe_buffered_position_seconds.is_none()
+                {
+                    return self.record_action_error(
+                        "GUI seek-preparation snapshots cannot enable nearest-buffered joining without a safe position.",
+                    );
+                }
+                Some(preparation)
+            }
+            None => None,
+        };
+
+        self.seek_preparation = preparation;
+        self.seek_preparation_degraded_reason = snapshot.degraded_reason;
         self.clear_action_error_and_refresh();
         true
     }

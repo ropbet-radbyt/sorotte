@@ -182,6 +182,7 @@ fn run_planned_local_runtime_action_legacy_compatible_suppresses_out_of_range_pl
         !run_planned_local_runtime_action_legacy_compatible(
             &mut runtime,
             &mut user_offset_seconds,
+            1.0,
             PlannedLocalRuntimeAction::SetPlaylistIndex(3),
         )
         .expect("out-of-range select should not fail"),
@@ -191,6 +192,7 @@ fn run_planned_local_runtime_action_legacy_compatible_suppresses_out_of_range_pl
         !run_planned_local_runtime_action_legacy_compatible(
             &mut runtime,
             &mut user_offset_seconds,
+            1.0,
             PlannedLocalRuntimeAction::DeletePlaylistIndex(3),
         )
         .expect("out-of-range delete should not fail"),
@@ -206,6 +208,7 @@ fn run_planned_local_runtime_action_legacy_compatible_suppresses_out_of_range_pl
         run_planned_local_runtime_action_legacy_compatible(
             &mut runtime,
             &mut user_offset_seconds,
+            1.0,
             PlannedLocalRuntimeAction::SetPlaylistIndex(0),
         )
         .expect("in-range select should not fail"),

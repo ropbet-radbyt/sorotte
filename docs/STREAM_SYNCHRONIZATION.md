@@ -75,7 +75,23 @@ Other policies are:
 - `stay-closest`: prefer a bounded hard seek when outside negligible lag;
 - `pause-room`: ask the room controller to pause instead of locally chasing an unsafe target.
 
-Explicit room pause, explicit room seek, and source replacement remain authoritative and supersede the old recovery target. A recovery-owned catch-up rate is reset on every exit, including pause, media replacement, manual seek, adapter reset, degradation, disconnect, and barrier supersession; ownership is cleared only after the normal baseline rate is observed. Live/sliding seeks are clamped to the latest valid seekable range rather than sent beyond the window.
+Explicit room pause, explicit room seek, and source replacement remain authoritative and supersede the old recovery target. A recovery-owned catch-up rate is reset on every exit, including pause, media replacement, manual seek, adapter reset, degradation, disconnect, and barrier supersession; ownership is cleared only after the normal baseline rate is observed. Live/sliding seeks are clamped to a confirmed locally usable interval rather than sent beyond the window, except when the exact target is already present in another disjoint cached interval.
+
+### Preparing a seek outside the local cache
+
+A room-driven seek on network VOD may be valid even when its target is not in mpv's currently cached ranges. Sorotte therefore treats the ranges as a confidence signal, not as permission to clamp an ordinary VOD seek. The client normalizes, orders, and merges overlapping ranges, then classifies the requested target as cached, requiring a fetch, unknown because range telemetry is absent, outside a live window, or non-seekable. An absent range report is never interpreted as proof that the target is cached. For extractor-backed sources opened conservatively as VOD, the mpv adapter promotes only the current load to live/sliding on positive yt-dlp `is_live` evidence; finite-duration remote media is VOD, while a durationless remote source without positive evidence remains explicitly unknown. mpv 0.39 and newer expose that evidence as `ytdl_is_live` metadata. Stock mpv 0.34 through 0.38 do not, so Sorotte performs one bounded, asynchronous yt-dlp metadata probe only after the current YouTube load is known to be durationless. The probe reuses the managed/configured helper and PATH environment, is cancelled when the load is superseded, and can update only the exact media generation and source that launched it. Failure, timeout, an unknown mpv version, or a stale completion leaves the timeline unknown rather than guessing from duration or cache shape. Cache ranges remain local-cache evidence, not a claim about the source's complete DVR window. Live/sliding media is different from VOD: a target outside a known interval is clamped or rejected explicitly rather than sent as an unbounded seek, and Sorotte waits boundedly instead of guessing when no safe interval is known.
+
+When a network target may need data, the client creates one generation-scoped seek-preparation episode. It freezes the requested target and the room anchor, sends at most one primary seek, and retains newer room state without chasing its advancing timestamp. Only a newer explicit room seek, media replacement, or cancellation supersedes that target. Preparation latches local pause even when the room intends to play, preventing frames from the wrong position while timeline classification, seeking, or refill is unresolved; playback is released only after observation-backed alignment. Local-file seeks bypass this lifecycle and continue to use normal player behavior.
+
+Preparation and rebuffer recovery answer different questions. Preparation waits for the requested timestamp to become usable; recovery then makes one bounded decision about joining the room. Preparation is ready only after seeking and cache pause have ended, the observed position is within tolerance, and either the configured headroom is present or mpv has ended refill. The subsequent decision resumes normally for negligible lag, uses bounded gentle catch-up where safe, may spend the episode's one remaining hard alignment seek, or ends explicitly as degraded. An immediate post-seek stall remains part of the same lifecycle and does not reset the hard-seek allowance. Every episode terminates as ready, superseded, cancelled, or degraded.
+
+The visible status deliberately distinguishes `Seeking`, `Fetching stream data`, `Buffer refill`, `Ready`, `Catching up`, and `Degraded`. Cache buffering percentage is refill progress toward mpv's cache-pause target, not media download progress. Buffered-ahead seconds may be shown when observed, but Sorotte does not claim an ETA from approximate or missing cache-duration and input-rate telemetry.
+
+The current implementation is client-owned and does not pause other participants while one client fetches. Its panel offers `Keep waiting`, an opt-in `Join nearest buffered position` when a useful range is close enough, and `Cancel and remain here` while cancellation is still safe. Waiting never changes room state; joining a buffered position is explicit because it can skip content; and cancelling leaves the client at its current position. Asking the room to pause would require controller authority or a compatible room policy and is not part of this client-only increment.
+
+A future lower-quality retry must also be explicit. For YouTube, its transport contract is to reload one preset lower, keep the same logical room media identity, preserve the frozen target and preparation episode, and use a `transportRefresh` rather than create a new room generation. Changing `ytdl-format` after extraction does not replace already selected streams, so a reload is required. Plex can expose this action only when its integration has a real transcoder-quality API; changing a client label without requesting a different transcode would be misleading.
+
+A future optional room-level mid-play seek barrier could coordinate prepare, participant readiness, commit, and observed start across a controlled watch party. That protocol is intentionally outside the current client-only lifecycle; public rooms and rooms with legacy peers retain independent recovery.
 
 ## Streaming settings
 
@@ -92,7 +108,7 @@ Settings live in `[client_settings]` in `sorotte.ini` and are editable in the GU
 | `streamingMemoryCacheMiB` | `150` | `demuxer-max-bytes`. |
 | `streamingDiskCacheEnabled` | `false` | `cache-on-disk=yes/no`. |
 
-Sorotte also enables `cache=auto`, `cache-pause=yes`, and `cache-pause-initial=yes`. Typed options apply to managed and attached mpv. Later advanced player arguments win; the GUI shows both configured and effective values.
+Sorotte also enables `cache=auto`, `cache-pause=yes`, and `cache-pause-initial=yes` for Sorotte-opened network media. These are mpv per-file options in managed and attached players: mpv restores the prior values when the stream ends, so local files keep the player's cache defaults and user configuration. Later advanced player arguments win for network media; the GUI shows both configured and effective values.
 
 ### Recovery
 
@@ -173,7 +189,7 @@ $env:SOROTTE_CLIENT_LOG_PLAYER_DRIFT_DIAGNOSTICS = "1"
 $env:SOROTTE_CLIENT_LOG_RECONNECT_CORRECTION_DIAGNOSTICS = "1"
 ```
 
-Telemetry diagnostics include coordinator phase, active recovery episode, degradation reason, buffer episode count, hard-seek count, and any quality downgrade suggestion. `PlaybackCoordinationSnapshot` and `PlaybackCoordinatorMetrics` also expose first-frame/start acknowledgement latency, total buffer duration, gentle catch-ups, stale generation/timestamp observations, command timeouts, applied revisions, skew, buffer headroom, and input rate.
+Telemetry diagnostics include coordinator phase, active recovery episode, active seek-preparation state, target availability, refill progress or observed headroom, degradation reason, buffer episode count, hard-seek count, and any quality downgrade suggestion. Seek diagnostics report observed state only: they do not invent download progress or an ETA. `PlaybackCoordinationSnapshot` and `PlaybackCoordinatorMetrics` also expose first-frame/start acknowledgement latency, total buffer duration, gentle catch-ups, stale generation/timestamp observations, command timeouts, applied revisions, skew, buffer headroom, and input rate.
 
 The GUI exposes effective mpv settings and gives one-shot warnings for quality suggestions and controller timeout decisions. Diagnostics redact logical IDs and private media arguments. Never include Plex tokens, signed URLs, cookies, or authorization headers in reports.
 
@@ -181,7 +197,7 @@ The GUI exposes effective mpv settings and gives one-shot warnings for quality s
 
 The default workspace suite is hermetic:
 
-- pure coordinator tests cover cache loops, retained play during load, advancement-backed completion, bounded catch-up/seek/retry budgets, live-range clamping, URL refresh, and local-file non-regression;
+- pure coordinator tests cover cache loops, retained play during load, advancement-backed completion, frozen out-of-cache seek targets, explicit seek supersession, bounded catch-up/seek/retry budgets, live-range clamping, transport-quality refresh identity, and local-file non-regression;
 - synthetic mpv JSON IPC tests cover lifecycle phases, command IDs, cache/seeking properties, failures, and stale generations;
 - protocol/client/server tests cover prepare/ready/commit/started, strict identity/revision validation, quorum rounding, mixed legacy rooms, authorization, disconnects, debounce/hysteresis, atomic start-timeout policies, and bounded room-buffering fail-open behavior;
 - `sorotte-sim` provides a deterministic HTTP media server with first-byte delay, bandwidth limits, burst stalls, range delay, temporary disconnects, and multi-client convergence assertions;

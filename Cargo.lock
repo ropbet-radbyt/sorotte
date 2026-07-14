@@ -3474,6 +3474,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "serde_json",
+ "sorotte-client-core",
  "sorotte-player-api",
  "sorotte-secret",
  "windows-sys 0.61.2",

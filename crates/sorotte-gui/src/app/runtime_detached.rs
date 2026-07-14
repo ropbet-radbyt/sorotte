@@ -17,8 +17,8 @@ use super::remote_services;
 use super::runtime_owner::GuiPersistedConfigRuntimeOwner;
 use super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 use super::runtime_stack::{
-    GuiClientCoreChatSessionRuntimeAdapter, GuiQueuedSessionTransportHandle,
-    GuiThreadedTcpSessionTransportDriver,
+    GuiClientCoreChatSessionRuntimeAdapter, GuiLocalPlayerUnpauseDecision,
+    GuiQueuedSessionTransportHandle, GuiThreadedTcpSessionTransportDriver,
 };
 use super::shell_state::{
     GuiCommandRuntimeSnapshot, GuiSavedConfigurationRuntimeSnapshot, GuiShellAction,
@@ -245,10 +245,40 @@ impl GuiPersistedConfigRuntimeOwner {
                         previous_session_paused,
                         self.player_position_seconds,
                     )?;
-                    let _ = session.set_playback_paused(target_paused)?;
-                    if let Some(corrected_paused) = session.local_pause_state()
-                        && Some(corrected_paused) != self.player_paused
-                    {
+                    let direct_unpause_decision = if !target_paused {
+                        session.handle_local_player_unpause_attempt()?
+                    } else {
+                        GuiLocalPlayerUnpauseDecision::NotApplicable
+                    };
+                    if direct_unpause_decision == GuiLocalPlayerUnpauseDecision::Block {
+                        session.sync_local_playback_telemetry(
+                            Some(true),
+                            self.player_position_seconds,
+                        )?;
+                        self.rollback_attached_player_pause_intent(target_paused);
+                        if let Some(player) = self.player.as_mut() {
+                            player.set_paused(true).map_err(|error| {
+                                format!(
+                                    "Attached player readiness/pause correction failed while restoring the paused state: {error}"
+                                )
+                            })?;
+                            self.note_local_attached_player_pause_command(true);
+                        }
+                        self.player_paused = Some(true);
+                    } else {
+                        let Some(session) = self.session.as_mut() else {
+                            return Ok(());
+                        };
+                        let _ = session.set_playback_paused(target_paused)?;
+                    }
+                    let Some(session) = self.session.as_mut() else {
+                        return Ok(());
+                    };
+                    let corrected_paused = session
+                        .local_pause_state()
+                        .filter(|corrected_paused| Some(*corrected_paused) != self.player_paused);
+                    if let Some(corrected_paused) = corrected_paused {
+                        self.rollback_attached_player_pause_intent(target_paused);
                         if let Some(player) = self.player.as_mut() {
                             player
                                 .set_paused(corrected_paused)
@@ -257,9 +287,13 @@ impl GuiPersistedConfigRuntimeOwner {
                                         "Attached player readiness/pause correction failed while restoring the paused state: {error}"
                                     )
                                 })?;
+                            self.note_local_attached_player_pause_command(corrected_paused);
                         }
                         self.player_paused = Some(corrected_paused);
                     }
+                    let Some(session) = self.session.as_mut() else {
+                        return Ok(());
+                    };
                     session.sync_local_playback_telemetry(
                         self.player_paused,
                         self.player_position_seconds,

@@ -7,15 +7,16 @@ use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sorotte_client_core::{
-    CoordinatorCommandId, CoordinatorPlayerCommand, DesiredRoomPlayback, LogicalMediaId,
-    MediaTransportKind, PlaybackCoordinator, PlaybackCoordinatorAction, PlaybackCoordinatorConfig,
-    PlayerTransportObservation,
+    CoordinatorCommandId, CoordinatorPlayerCommand, DesiredRoomPlayback,
+    DesiredRoomPlaybackUpdateKind, LogicalMediaId, MediaTransportKind, PlaybackCoordinator,
+    PlaybackCoordinatorAction, PlaybackCoordinatorConfig, PlayerTransportObservation,
+    SeekPreparationTerminalOutcome, SeekTargetAvailability,
 };
 use sorotte_player_api::{
     PlayerAdapter, PlayerCommand, PlayerCommandId, PlayerCommandProgressState, PlayerCommandResult,
     PlayerPlayIntent, PlayerTransportPhase, PlayerTransportTelemetryUpdate,
 };
-use sorotte_player_mpv::ConnectedMpvPlayer;
+use sorotte_player_mpv::{ConnectedMpvPlayer, MpvAdapter};
 use sorotte_sim::{BurstStall, FaultInjectingHttpServer, HttpMediaFixture, NetworkFaultProfile};
 
 const TEST_DURATION: Duration = Duration::from_secs(20);
@@ -161,6 +162,7 @@ fn real_mpv_pause_seek_resume_semantics() {
 
     verify_barrier_start_then_ordinary_pause_with_real_mpv(&media);
     verify_one_bounded_rebuffer_episode_with_real_mpv();
+    verify_mid_play_unbuffered_seek_is_bounded_with_real_mpv();
 }
 
 #[test]
@@ -172,7 +174,11 @@ fn real_mpv_clients_keep_seek_recovery_bounded_during_an_http_stall() {
             "/healthy.wav".to_owned(),
             HttpMediaFixture::static_bytes("audio/wav", media.clone()).with_faults(
                 NetworkFaultProfile {
-                    bytes_per_second: Some(180_000),
+                    // Keep this route comfortably above the PCM consumption
+                    // rate so any post-start recovery command is a genuine
+                    // isolation failure, not an independent healthy-route
+                    // underflow.
+                    bytes_per_second: Some(1_000_000),
                     ..NetworkFaultProfile::default()
                 },
             ),
@@ -180,9 +186,12 @@ fn real_mpv_clients_keep_seek_recovery_bounded_during_an_http_stall() {
         (
             "/stalling.wav".to_owned(),
             HttpMediaFixture::static_bytes("audio/wav", media).with_faults(NetworkFaultProfile {
-                bytes_per_second: Some(115_000),
+                bytes_per_second: Some(220_000),
                 burst_stalls: vec![BurstStall {
-                    after_body_bytes: 360_000,
+                    // Delay the injected fault until both clients have
+                    // completed startup and their ordinary convergence
+                    // episodes have closed.
+                    after_body_bytes: 1_000_000,
                     duration: Duration::from_secs(4),
                 }],
                 ..NetworkFaultProfile::default()
@@ -193,6 +202,27 @@ fn real_mpv_clients_keep_seek_recovery_bounded_during_an_http_stall() {
 
     let mut healthy = RealMpvClient::start(0, &server.url("/healthy.wav"));
     let mut stalling = RealMpvClient::start(1, &server.url("/stalling.wav"));
+    let startup = Instant::now();
+    while startup.elapsed() < SEMANTICS_TIMEOUT
+        && (!healthy.post_start_baseline_ready() || !stalling.post_start_baseline_ready())
+    {
+        healthy.poll();
+        stalling.poll();
+        sleep(POLL_INTERVAL);
+    }
+    assert!(
+        healthy.post_start_baseline_ready() && stalling.post_start_baseline_ready(),
+        "clients did not establish a post-start transport/recovery-decision baseline before the injected stall; healthy={:?} healthy_recovery={:?} healthy_metrics={:?} stalling={:?} stalling_recovery={:?} stalling_metrics={:?}",
+        healthy.latest_transport,
+        healthy.coordinator.recovery_episode(),
+        healthy.coordinator.metrics(),
+        stalling.latest_transport,
+        stalling.coordinator.recovery_episode(),
+        stalling.coordinator.metrics(),
+    );
+    let healthy_startup_position_commands = healthy.begin_steady_state_observation_window();
+    let stalling_startup_position_commands = stalling.begin_steady_state_observation_window();
+
     let started = Instant::now();
     while started.elapsed() < TEST_DURATION {
         healthy.poll();
@@ -233,7 +263,11 @@ fn real_mpv_clients_keep_seek_recovery_bounded_during_an_http_stall() {
     assert_eq!(
         healthy.position_commands_by_episode.values().sum::<usize>(),
         0,
-        "a healthy peer should not inherit another client's recovery commands"
+        "a healthy peer emitted a recovery seek after both clients reached steady state; startup commands are excluded because current mpv may legitimately seek while releasing cache-pause-initial (healthy_startup={healthy_startup_position_commands:?}, stalling_startup={stalling_startup_position_commands:?}, healthy_post_start={:?}, healthy_transport={:?}, healthy_metrics={:?}, healthy_commands={:?})",
+        healthy.position_commands_by_episode,
+        healthy.latest_transport,
+        healthy.coordinator.metrics(),
+        healthy.executed_commands,
     );
     drop(healthy);
     drop(stalling);
@@ -264,6 +298,9 @@ fn verify_barrier_start_then_ordinary_pause_with_real_mpv(media: &TemporaryMedia
             anchor_observed_at_seconds: 0.0,
             force_seek: true,
         },
+        // The startup barrier owns this alignment. It is not a new ordinary
+        // mid-play seek and must not create an unbuffered-seek episode.
+        DesiredRoomPlaybackUpdateKind::Ordinary,
     );
     wait_for_real_mpv_client(
         &mut client,
@@ -402,6 +439,153 @@ fn verify_one_bounded_rebuffer_episode_with_real_mpv() {
     assert!(
         server.wait_for_requests(1, Duration::from_secs(3)),
         "real mpv should fetch the short deterministic stall route"
+    );
+}
+
+fn verify_mid_play_unbuffered_seek_is_bounded_with_real_mpv() {
+    const SEEK_REVISION: u64 = 2;
+    const SEEK_TARGET_SECONDS: f64 = 22.0;
+    const ADVANCED_ROOM_TARGET_SECONDS: f64 = 24.0;
+
+    let server = FaultInjectingHttpServer::start(BTreeMap::from([(
+        "/unbuffered-seek.wav".to_owned(),
+        HttpMediaFixture::static_bytes("audio/wav", pcm_wav(30)).with_faults(NetworkFaultProfile {
+            // The bounded cache cannot reach the target during startup,
+            // and the delayed range response keeps the preparation
+            // episode observable before mpv can refill at the target.
+            range_response_delay: Duration::from_millis(1_200),
+            bytes_per_second: Some(180_000),
+            ..NetworkFaultProfile::default()
+        }),
+    )]))
+    .expect("unbuffered-seek HTTP server should start");
+    let mut client = RealMpvClient::start(10_004, &server.url("/unbuffered-seek.wav"));
+
+    wait_for_real_mpv_client(
+        &mut client,
+        "playing baseline with the explicit seek target outside mpv's cache",
+        SEMANTICS_TIMEOUT,
+        |state| {
+            state.post_start_baseline_ready()
+                && state
+                    .latest_transport
+                    .seekable_ranges
+                    .as_ref()
+                    .is_some_and(|ranges| {
+                        !ranges.is_empty()
+                            && ranges.iter().all(|range| {
+                                SEEK_TARGET_SECONDS < range.start_seconds
+                                    || SEEK_TARGET_SECONDS > range.end_seconds
+                            })
+                    })
+        },
+    );
+
+    let command_start = client.executed_commands.len();
+    client.set_desired(SEEK_REVISION, false, SEEK_TARGET_SECONDS, true);
+
+    let initial = client
+        .coordinator
+        .seek_preparation_snapshot()
+        .expect("an out-of-cache explicit VOD seek should enter preparation");
+    assert_eq!(initial.availability, SeekTargetAvailability::FetchRequired);
+    assert_eq!(initial.frozen_target_seconds, SEEK_TARGET_SECONDS);
+    let preparation_id = initial.id;
+    let primary_seek_count = client.executed_commands[command_start..]
+        .iter()
+        .filter(|command| {
+            matches!(
+                command,
+                CoordinatorPlayerCommand::SetPosition(position)
+                    if (*position - SEEK_TARGET_SECONDS).abs() <= 0.5
+            )
+        })
+        .count();
+    assert_eq!(
+        primary_seek_count,
+        1,
+        "the explicit out-of-cache seek must issue exactly one primary seek: {:?}",
+        &client.executed_commands[command_start..]
+    );
+
+    // A normal canonical update may advance while this client is fetching.
+    // It must update convergence intent without replacing the frozen target
+    // or issuing another primary seek.
+    client.set_desired(SEEK_REVISION, false, ADVANCED_ROOM_TARGET_SECONDS, false);
+    let retained = client
+        .coordinator
+        .seek_preparation_snapshot()
+        .expect("ordinary room advancement must retain the active preparation");
+    assert_eq!(retained.id, preparation_id);
+    assert_eq!(retained.frozen_target_seconds, SEEK_TARGET_SECONDS);
+    assert!(
+        retained.latest_room_position_seconds >= ADVANCED_ROOM_TARGET_SECONDS,
+        "the preparation should retain the latest convergence target: {retained:?}"
+    );
+    assert_eq!(
+        client.executed_commands[command_start..]
+            .iter()
+            .filter(|command| matches!(command, CoordinatorPlayerCommand::SetPosition(_)))
+            .count(),
+        1,
+        "advancing room time must not restart the unbuffered seek: {:?}",
+        &client.executed_commands[command_start..]
+    );
+
+    wait_for_real_mpv_client(
+        &mut client,
+        "bounded unbuffered seek preparation and recovery",
+        PR_STALL_TIMEOUT,
+        |state| {
+            state.coordinator.last_seek_preparation_terminal_outcome()
+                == Some(SeekPreparationTerminalOutcome::Ready)
+                && state.started_revisions.contains(&SEEK_REVISION)
+                && state.latest_transport.paused_for_cache == Some(false)
+                && state.latest_transport.seeking == Some(false)
+        },
+    );
+
+    let terminal = client
+        .coordinator
+        .last_seek_preparation_terminal_snapshot()
+        .expect("completed preparation should retain its terminal snapshot");
+    assert_eq!(terminal.id, preparation_id);
+    assert_eq!(terminal.frozen_target_seconds, SEEK_TARGET_SECONDS);
+    assert_eq!(
+        terminal.terminal_outcome,
+        Some(SeekPreparationTerminalOutcome::Ready)
+    );
+    let position_commands = client.executed_commands[command_start..]
+        .iter()
+        .filter(|command| matches!(command, CoordinatorPlayerCommand::SetPosition(_)))
+        .count();
+    assert!(
+        position_commands <= 2,
+        "one primary seek and at most one recovery alignment are allowed: {:?}",
+        &client.executed_commands[command_start..]
+    );
+    assert!(
+        client
+            .position_commands_by_episode
+            .values()
+            .all(|count| *count <= 1),
+        "post-fetch recovery exceeded its one-seek budget: {:?}",
+        client.position_commands_by_episode
+    );
+
+    drop(client);
+    assert!(
+        server.wait_for_requests(2, Duration::from_secs(3)),
+        "mpv should issue a second HTTP request for the uncached target"
+    );
+    assert!(
+        server.requests().iter().any(|request| {
+            request.path == "/unbuffered-seek.wav"
+                && request.status_code == 206
+                && request.range_start.is_some_and(|start| start > 1_000_000)
+        }),
+        "the explicit seek should fetch a nonzero range near the distant target: {:?}",
+        server.requests()
     );
 }
 
@@ -697,7 +881,7 @@ impl Drop for TemporaryMedia {
 
 struct RealMpvClient {
     _process: MpvProcess,
-    player: ConnectedMpvPlayer,
+    player: MpvAdapter,
     coordinator: PlaybackCoordinator,
     coordinator_generation: u64,
     adapter_generation: Option<u64>,
@@ -727,6 +911,7 @@ impl RealMpvClient {
                 anchor_observed_at_seconds: 0.0,
                 force_seek: false,
             },
+            DesiredRoomPlaybackUpdateKind::Ordinary,
         )
     }
 
@@ -735,8 +920,22 @@ impl RealMpvClient {
         target: &str,
         transport_kind: MediaTransportKind,
         mut desired: DesiredRoomPlayback,
+        desired_update_kind: DesiredRoomPlaybackUpdateKind,
     ) -> Self {
-        let (process, mut player) = MpvProcess::start(index);
+        let (process, player) = MpvProcess::start(index);
+        let mut player = player.into_inner();
+        // Exercise Sorotte's version-dependent network `loadfile` options
+        // against the real mpv binary used by this harness. CI runs this on
+        // both pre-0.38 and current mpv command layouts.
+        player.configure_network_media_options([
+            ("cache", "yes"),
+            ("cache-pause", "yes"),
+            ("cache-pause-initial", "yes"),
+            ("cache-pause-wait", "0.3"),
+            ("cache-secs", "1"),
+            ("demuxer-max-bytes", "524288"),
+            ("demuxer-max-back-bytes", "65536"),
+        ]);
         player
             .execute(PlayerCommand::SetPaused(true))
             .expect("coordinator real-mpv fixture should begin intentionally paused");
@@ -763,7 +962,7 @@ impl RealMpvClient {
             )
             .media_generation;
         desired.media_generation = coordinator_generation;
-        coordinator.update_desired_room_state(desired);
+        coordinator.update_desired_room_state_with_kind(desired, desired_update_kind);
 
         Self {
             _process: process,
@@ -859,9 +1058,12 @@ impl RealMpvClient {
             paused_for_cache: update.paused_for_cache,
             seeking: update.seeking,
             seekable: update.seekable,
+            timeline_kind: update.timeline_kind,
             seekable_ranges: update.seekable_ranges,
+            known_live_seekable_window: update.known_live_seekable_window,
             core_idle: update.core_idle,
             playback_restart_sequence: update.playback_restart_sequence,
+            cache_buffering_percent: update.cache_buffering_percent,
             buffered_ahead_seconds: update.buffered_ahead_seconds,
             input_rate_bytes_per_second: update.input_rate_bytes_per_second,
         })
@@ -936,6 +1138,28 @@ impl RealMpvClient {
         self.observed_rebuffer && !self.position_commands_by_episode.is_empty()
     }
 
+    fn post_start_baseline_ready(&self) -> bool {
+        let recovery_decision_observed =
+            self.coordinator.recovery_episode().is_none_or(|episode| {
+                episode.catchup_deadline_seconds.is_some()
+                    || episode.hard_seek_attempts > 0
+                    || episode.stable_since_seconds.is_some()
+                    || episode.degraded
+            });
+        self.started_revisions.contains(&1)
+            && recovery_decision_observed
+            && self.latest_transport.phase == Some(PlayerTransportPhase::Playing)
+            && self.latest_transport.logical_pause == Some(false)
+            && self.latest_transport.paused_for_cache == Some(false)
+            && self.latest_transport.seeking == Some(false)
+    }
+
+    fn begin_steady_state_observation_window(&mut self) -> BTreeMap<u64, usize> {
+        self.observed_rebuffer = false;
+        self.last_cache_pause_at = None;
+        std::mem::take(&mut self.position_commands_by_episode)
+    }
+
     fn seconds_since_last_cache_pause(&self) -> Option<f64> {
         self.last_cache_pause_at
             .map(|last| (self.now_seconds() - last).max(0.0))
@@ -952,16 +1176,22 @@ impl RealMpvClient {
         position_seconds: f64,
         force_seek: bool,
     ) {
-        let mut actions = self
-            .coordinator
-            .update_desired_room_state(DesiredRoomPlayback {
+        let update_kind = if force_seek {
+            DesiredRoomPlaybackUpdateKind::ExplicitSeek
+        } else {
+            DesiredRoomPlaybackUpdateKind::Ordinary
+        };
+        let mut actions = self.coordinator.update_desired_room_state_with_kind(
+            DesiredRoomPlayback {
                 media_generation: self.coordinator_generation,
                 state_revision,
                 paused,
                 anchor_position_seconds: position_seconds,
                 anchor_observed_at_seconds: self.now_seconds(),
                 force_seek,
-            });
+            },
+            update_kind,
+        );
         if let Some(observation) = self.coordinator_observation(self.latest_transport.clone()) {
             actions.extend(self.coordinator.observe(observation));
         }

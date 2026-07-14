@@ -5,8 +5,9 @@ use super::super::remote_services::{
 };
 use crate::app::{
     GuiDraftRuntimeSnapshot, GuiPlexPlaylistJobCancellationReason, GuiPlexPlaylistSearchResult,
-    GuiPluginSelection, GuiRuntimeRequest, GuiShellAction, MainWindowRuntimeSnapshot,
-    MainWindowRuntimeUserSnapshot, SorotteGuiShellAppState, StoredClientSettingsMvp,
+    GuiPluginSelection, GuiRuntimeRequest, GuiSeekPreparationPhase, GuiSeekPreparationState,
+    GuiShellAction, MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot,
+    SorotteGuiShellAppState, StoredClientSettingsMvp,
 };
 use sorotte_plex::PlexMediaType;
 
@@ -698,4 +699,101 @@ fn gui_shell_dispatch_plan_routes_media_match_settings_to_shell_and_runtime() {
             ),
         ]
     );
+}
+
+#[test]
+fn gui_shell_dispatch_plan_routes_only_safe_seek_preparation_controls() {
+    let mut state = runtime_ready_state();
+    state.seek_preparation = Some(GuiSeekPreparationState {
+        phase: GuiSeekPreparationPhase::Refilling,
+        frozen_target_seconds: 120.0,
+        cache_refill_percent: Some(50.0),
+        buffered_ahead_seconds: Some(5.0),
+        nearest_safe_buffered_position_seconds: Some(115.0),
+        can_keep_waiting: true,
+        can_cancel_and_remain: false,
+        can_join_nearest_buffered: true,
+    });
+
+    let plan = GuiShellDispatchPlan::from_shell_actions(
+        &state,
+        vec![
+            GuiShellAction::RequestSeekPreparationKeepWaiting,
+            GuiShellAction::RequestSeekPreparationCancel,
+            GuiShellAction::RequestSeekPreparationJoinNearest,
+        ],
+    );
+    assert_eq!(
+        plan.runtime_requests,
+        vec![
+            GuiRuntimeRequest::KeepWaitingForSeekPreparation,
+            GuiRuntimeRequest::JoinNearestBufferedSeekPreparation,
+        ]
+    );
+    assert!(plan.shell_actions.is_empty());
+
+    if let Some(preparation) = state.seek_preparation.as_mut() {
+        preparation.can_cancel_and_remain = true;
+        preparation.can_join_nearest_buffered = false;
+    }
+    let cancellable = GuiShellDispatchPlan::from_shell_actions(
+        &state,
+        vec![GuiShellAction::RequestSeekPreparationCancel],
+    );
+    assert_eq!(
+        cancellable.runtime_requests,
+        vec![GuiRuntimeRequest::CancelSeekPreparation]
+    );
+
+    state.seek_preparation = None;
+    let unavailable = GuiShellDispatchPlan::from_shell_actions(
+        &state,
+        vec![
+            GuiShellAction::RequestSeekPreparationKeepWaiting,
+            GuiShellAction::RequestSeekPreparationCancel,
+            GuiShellAction::RequestSeekPreparationJoinNearest,
+        ],
+    );
+    assert!(unavailable.runtime_requests.is_empty());
+    assert!(unavailable.shell_actions.is_empty());
+}
+
+#[test]
+fn gui_local_commands_route_only_available_seek_preparation_controls() {
+    let mut state = runtime_ready_state();
+    state.seek_preparation = Some(GuiSeekPreparationState {
+        phase: GuiSeekPreparationPhase::Refilling,
+        frozen_target_seconds: 120.0,
+        cache_refill_percent: Some(50.0),
+        buffered_ahead_seconds: Some(5.0),
+        nearest_safe_buffered_position_seconds: Some(115.0),
+        can_keep_waiting: true,
+        can_cancel_and_remain: false,
+        can_join_nearest_buffered: true,
+    });
+
+    let plan = GuiShellDispatchPlan::from_shell_actions(
+        &state,
+        vec![
+            GuiShellAction::BeginLocalChatSend("/keep-waiting".to_owned()),
+            GuiShellAction::BeginLocalChatSend("/cancel-and-remain".to_owned()),
+            GuiShellAction::BeginLocalChatSend("/join-nearest-buffered-position".to_owned()),
+        ],
+    );
+    assert_eq!(
+        plan.runtime_requests,
+        vec![
+            GuiRuntimeRequest::KeepWaitingForSeekPreparation,
+            GuiRuntimeRequest::JoinNearestBufferedSeekPreparation,
+        ]
+    );
+
+    state.seek_preparation = None;
+    let unavailable = GuiShellDispatchPlan::from_shell_actions(
+        &state,
+        vec![GuiShellAction::BeginLocalChatSend(
+            "/keep-waiting".to_owned(),
+        )],
+    );
+    assert!(unavailable.runtime_requests.is_empty());
 }

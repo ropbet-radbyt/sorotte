@@ -526,11 +526,16 @@ impl StreamingPlaybackConfig {
             stability_interval_seconds: self.recovery.stability_interval.get(),
             command_retry_budget: self.recovery.retry_budget,
             command_retry_cooldown_seconds: self.recovery.cooldown.get(),
+            seek_preparation_minimum_headroom_seconds: self.buffering.target.get(),
             ..sorotte_client_core::PlaybackCoordinatorConfig::default()
         }
     }
 
-    pub fn mpv_arguments(&self) -> Vec<String> {
+    /// Returns options intended for mpv's per-file network-media load map.
+    ///
+    /// These must not be installed as process-wide defaults: in particular,
+    /// `cache-secs` would otherwise cap local-file read-ahead as well.
+    pub fn network_media_mpv_arguments(&self) -> Vec<String> {
         let mut options = vec![
             ("cache", "auto".to_owned()),
             ("cache-pause", "yes".to_owned()),
@@ -570,7 +575,7 @@ impl StreamingPlaybackConfig {
         advanced_arguments: &[String],
     ) -> Vec<EffectiveMpvStreamingOption> {
         let advanced = parse_mpv_option_arguments(advanced_arguments);
-        self.mpv_arguments()
+        self.network_media_mpv_arguments()
             .into_iter()
             .filter_map(|argument| {
                 let body = argument.strip_prefix("--")?;
@@ -1917,13 +1922,13 @@ mod tests {
         );
         assert!(
             config
-                .mpv_arguments()
+                .network_media_mpv_arguments()
                 .contains(&"--cache-pause-wait=5".to_owned())
         );
     }
 
     #[test]
-    fn streaming_settings_resolve_to_typed_policy_and_mpv_arguments() {
+    fn streaming_settings_resolve_to_typed_policy_and_network_media_mpv_arguments() {
         let settings = StoredClientSettingsV1 {
             streaming_quality_preset: Some("720p".to_owned()),
             streaming_buffer_target_seconds: Some(8.0),
@@ -1950,17 +1955,17 @@ mod tests {
             config.start_synchronization.policy,
             StartSynchronizationPolicy::WaitForAllEligible
         );
-        assert!(config.mpv_arguments().iter().any(|argument| {
+        assert!(config.network_media_mpv_arguments().iter().any(|argument| {
             argument == "--ytdl-format=bestvideo*[height<=720]+bestaudio/best[height<=720]"
         }));
         assert!(
             config
-                .mpv_arguments()
+                .network_media_mpv_arguments()
                 .contains(&"--demuxer-max-bytes=256MiB".to_owned())
         );
         assert!(
             config
-                .mpv_arguments()
+                .network_media_mpv_arguments()
                 .contains(&"--cache-on-disk=yes".to_owned())
         );
         let coordinator = config.playback_coordinator_config();
@@ -1970,6 +1975,7 @@ mod tests {
         );
         assert_eq!(coordinator.maximum_hard_seeks_per_episode, 1);
         assert_eq!(coordinator.maximum_catchup_rate, 1.08);
+        assert_eq!(coordinator.seek_preparation_minimum_headroom_seconds, 8.0);
     }
 
     #[test]
