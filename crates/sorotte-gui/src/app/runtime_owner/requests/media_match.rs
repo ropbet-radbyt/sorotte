@@ -2299,6 +2299,7 @@ mod tests {
     use crate::app::runtime_stack::{
         GuiOwnedPlayer, GuiSessionRuntimeAdapter, GuiTestPlayerAdapter,
     };
+    use crate::app::testing::support::test_temp_root;
     use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
 
     struct MediaMatchTargetSession {
@@ -2450,14 +2451,7 @@ mod tests {
 
     #[test]
     fn automatic_and_preferred_media_match_wait_for_pending_local_index() {
-        let mut root = std::env::temp_dir();
-        root.push(format!(
-            "sorotte-gui-media-match-local-priority-{}",
-            std::process::id()
-        ));
-        if root.exists() {
-            let _ = std::fs::remove_dir_all(&root);
-        }
+        let root = test_temp_root("media-match-local-priority");
         let media_root = root.join("media");
         std::fs::create_dir_all(&media_root).expect("test media root should be created");
         let target = "episode2.mkv";
@@ -2644,15 +2638,7 @@ mod tests {
 
     #[test]
     fn background_worker_with_attached_index_and_no_current_file_inventories_only() {
-        let mut root = std::env::temp_dir();
-        root.push(format!(
-            "sorotte-gui-media-match-runtime-inventory-{}",
-            std::process::id()
-        ));
-        if root.exists() {
-            let _ = std::fs::remove_dir_all(&root);
-        }
-        std::fs::create_dir_all(&root).expect("test root should be created");
+        let root = test_temp_root("media-match-runtime-inventory");
         let config_path = root.join("sorotte.ini");
         let media_root = root.join("media");
         std::fs::create_dir_all(&media_root).expect("media root should be created");
@@ -2732,15 +2718,7 @@ mod tests {
 
     #[test]
     fn media_match_current_path_resolves_room_target_file_without_player_update() {
-        let mut root = std::env::temp_dir();
-        root.push(format!(
-            "sorotte-gui-media-match-runtime-room-target-current-{}",
-            std::process::id()
-        ));
-        if root.exists() {
-            let _ = std::fs::remove_dir_all(&root);
-        }
-        std::fs::create_dir_all(&root).expect("test root should be created");
+        let root = test_temp_root("media-match-runtime-room-target-current");
         let config_path = root.join("sorotte.ini");
         let media_root = root.join("media");
         let nested_directory = media_root.join("Bakemonogatari");
@@ -2790,15 +2768,7 @@ mod tests {
 
     #[test]
     fn media_match_current_path_resolves_active_shared_playlist_file_without_player_update() {
-        let mut root = std::env::temp_dir();
-        root.push(format!(
-            "sorotte-gui-media-match-runtime-playlist-current-{}",
-            std::process::id()
-        ));
-        if root.exists() {
-            let _ = std::fs::remove_dir_all(&root);
-        }
-        std::fs::create_dir_all(&root).expect("test root should be created");
+        let root = test_temp_root("media-match-runtime-playlist-current");
         let config_path = root.join("sorotte.ini");
         let media_root = root.join("media");
         std::fs::create_dir_all(&media_root).expect("media root should be created");
@@ -2825,15 +2795,7 @@ mod tests {
 
     #[test]
     fn media_match_current_path_ignores_previous_player_file_for_new_playlist_target() {
-        let mut root = std::env::temp_dir();
-        root.push(format!(
-            "sorotte-gui-media-match-runtime-playlist-previous-{}",
-            std::process::id()
-        ));
-        if root.exists() {
-            let _ = std::fs::remove_dir_all(&root);
-        }
-        std::fs::create_dir_all(&root).expect("test root should be created");
+        let root = test_temp_root("media-match-runtime-playlist-previous");
         let config_path = root.join("sorotte.ini");
         let media_root = root.join("media");
         std::fs::create_dir_all(&media_root).expect("media root should be created");
@@ -2884,15 +2846,7 @@ mod tests {
 
     #[test]
     fn media_match_wire_status_uses_open_alternate_encode_for_playlist_target() {
-        let mut root = std::env::temp_dir();
-        root.push(format!(
-            "sorotte-gui-media-match-runtime-wire-alternate-{}",
-            std::process::id()
-        ));
-        if root.exists() {
-            let _ = std::fs::remove_dir_all(&root);
-        }
-        std::fs::create_dir_all(&root).expect("test root should be created");
+        let root = test_temp_root("media-match-runtime-wire-alternate");
         let config_path = root.join("sorotte.ini");
         let media_root = root.join("media");
         std::fs::create_dir_all(&media_root).expect("media root should be created");
@@ -3216,15 +3170,7 @@ mod tests {
 
     #[test]
     fn exact_shared_playlist_match_skips_background_fingerprinting_without_wire_sharing() {
-        let mut root = std::env::temp_dir();
-        root.push(format!(
-            "sorotte-gui-media-match-runtime-exact-skip-{}",
-            std::process::id()
-        ));
-        if root.exists() {
-            let _ = std::fs::remove_dir_all(&root);
-        }
-        std::fs::create_dir_all(&root).expect("test root should be created");
+        let root = test_temp_root("media-match-runtime-exact-skip");
         let config_path = root.join("sorotte.ini");
         let media_path = root.join("episode.mkv");
         std::fs::write(&media_path, b"not real media").expect("media file should be created");
@@ -3270,15 +3216,7 @@ mod tests {
 
     #[test]
     fn local_exact_shared_playlist_match_needs_only_signature_fingerprint_when_sharing_enabled() {
-        let mut root = std::env::temp_dir();
-        root.push(format!(
-            "sorotte-gui-media-match-runtime-exact-signature-{}",
-            std::process::id()
-        ));
-        if root.exists() {
-            let _ = std::fs::remove_dir_all(&root);
-        }
-        std::fs::create_dir_all(&root).expect("test root should be created");
+        let root = test_temp_root("media-match-runtime-exact-signature");
         let config_path = root.join("sorotte.ini");
         let media_path = root.join("episode.mkv");
         std::fs::write(&media_path, b"not real media").expect("media file should be created");
@@ -3312,15 +3250,7 @@ mod tests {
     #[test]
     fn remote_exact_shared_playlist_match_does_not_need_signature_fingerprint_when_sharing_enabled()
     {
-        let mut root = std::env::temp_dir();
-        root.push(format!(
-            "sorotte-gui-media-match-runtime-remote-exact-no-signature-{}",
-            std::process::id()
-        ));
-        if root.exists() {
-            let _ = std::fs::remove_dir_all(&root);
-        }
-        std::fs::create_dir_all(&root).expect("test root should be created");
+        let root = test_temp_root("media-match-runtime-remote-exact-no-signature");
         let config_path = root.join("sorotte.ini");
         let media_path = root.join("episode.mkv");
         std::fs::write(&media_path, b"not real media").expect("media file should be created");
@@ -3363,15 +3293,7 @@ mod tests {
 
     #[test]
     fn exact_playlist_signature_sharing_runs_when_background_warmup_is_disabled() {
-        let mut root = std::env::temp_dir();
-        root.push(format!(
-            "sorotte-gui-media-match-runtime-exact-no-warmup-{}",
-            std::process::id()
-        ));
-        if root.exists() {
-            let _ = std::fs::remove_dir_all(&root);
-        }
-        std::fs::create_dir_all(&root).expect("test root should be created");
+        let root = test_temp_root("media-match-runtime-exact-no-warmup");
         let config_path = root.join("sorotte.ini");
         let media_path = root.join("episode.mkv");
         std::fs::write(&media_path, b"not real media").expect("media file should be created");
@@ -3422,15 +3344,7 @@ mod tests {
 
     #[test]
     fn exact_shared_playlist_plan_does_not_treat_different_path_bearing_target_as_exact() {
-        let mut root = std::env::temp_dir();
-        root.push(format!(
-            "sorotte-gui-media-match-runtime-exact-path-context-{}",
-            std::process::id()
-        ));
-        if root.exists() {
-            let _ = std::fs::remove_dir_all(&root);
-        }
-        std::fs::create_dir_all(&root).expect("test root should be created");
+        let root = test_temp_root("media-match-runtime-exact-path-context");
         let config_path = root.join("sorotte.ini");
         let media_path = root.join("episode.mkv");
         let other_root = root.join("other");
