@@ -1641,9 +1641,22 @@ impl PlaybackCoordinator {
             })
     }
 
+    fn authoritative_alignment_guards_active_preparation(&self) -> bool {
+        self.seek_preparation.as_ref().is_some_and(|episode| {
+            self.authoritative_alignment_guard_revision == Some(episode.latest_room_revision)
+        })
+    }
+
     pub fn seek_preparation_snapshot(&self) -> Option<SeekPreparationSnapshot> {
         if let Some(episode) = self.seek_preparation.as_ref() {
-            return Some(episode.snapshot(None));
+            let mut snapshot = episode.snapshot(None);
+            if self.authoritative_alignment_guards_active_preparation() {
+                // A guarded revision must reach its canonical target. Offering
+                // a local alternative would only cause the guard to reissue
+                // the original seek as soon as the alternative completed.
+                snapshot.can_join_nearest_buffered = false;
+            }
+            return Some(snapshot);
         }
         let mut terminal = self.last_seek_preparation_terminal.clone()?;
         let recovery = self.recovery.as_ref();
@@ -1739,7 +1752,10 @@ impl PlaybackCoordinator {
         &mut self,
         now_seconds: f64,
     ) -> Vec<PlaybackCoordinatorAction> {
-        if !now_seconds.is_finite() || self.desired.is_none_or(|desired| desired.paused) {
+        if !now_seconds.is_finite()
+            || self.desired.is_none_or(|desired| desired.paused)
+            || self.authoritative_alignment_guards_active_preparation()
+        {
             return Vec::new();
         }
         let Some((target, revision, restart_sequence)) = self
@@ -1775,9 +1791,10 @@ impl PlaybackCoordinator {
             self.begin_recovery_handoff(now_seconds);
             if let Some(recovery) = self.recovery.as_mut() {
                 // The user explicitly chose this nearby cached point to avoid
-                // another unbuffered hard seek. Converge with bounded gentle
-                // catch-up; if that cannot succeed, degrade instead of
-                // jumping straight back into the same buffer loop.
+                // another unbuffered hard seek. Converge at the conservative
+                // catch-up rate regardless of later cache telemetry; if that
+                // cannot succeed, degrade instead of jumping straight back
+                // into the same buffer loop.
                 recovery.gentle_catchup_only = true;
             }
         } else {
@@ -2743,6 +2760,10 @@ impl PlaybackCoordinator {
             episode.refill_released_after_seek = false;
             episode.stable_playable_since = None;
         }
+        self.invalidate_cache_metrics_for_seek();
+    }
+
+    fn invalidate_cache_metrics_for_seek(&mut self) {
         self.metrics.last_buffered_ahead_seconds = None;
         self.metrics.last_input_rate_bytes_per_second = None;
         if let Some(observed) = self.observed.as_mut() {
@@ -2807,7 +2828,9 @@ impl PlaybackCoordinator {
                         if let Some(episode) = self.recovery.as_mut() {
                             episode.catchup_active = true;
                         }
-                        let target_rate = if observation_has_catchup_headroom(&self.metrics) {
+                        let full_catchup_rate_allowed = !episode_snapshot.gentle_catchup_only
+                            && observation_has_catchup_headroom(&self.metrics);
+                        let target_rate = if full_catchup_rate_allowed {
                             self.config.maximum_catchup_rate
                         } else {
                             self.config
@@ -2853,6 +2876,16 @@ impl PlaybackCoordinator {
                 RecoveryPolicy::Balanced | RecoveryPolicy::StayClosest => {
                     if lag <= self.config.negligible_lag_seconds {
                         // Already converged.
+                    } else if episode_snapshot.gentle_catchup_only {
+                        // Joining the nearest buffered point is an explicit
+                        // request to avoid another discontinuity. If gentle
+                        // convergence is no longer viable, remain there and
+                        // degrade instead of seeking back to the uncached room
+                        // target that prompted the alternative.
+                        self.enter_degraded_recovery(
+                            DegradedPlaybackReason::CatchupDidNotConverge,
+                            actions,
+                        );
                     } else if self.observed_seekable(observed)
                         && episode_snapshot.hard_seek_attempts
                             < self.config.maximum_hard_seeks_per_episode
@@ -2979,6 +3012,13 @@ impl PlaybackCoordinator {
             })
         {
             return None;
+        }
+        if matches!(kind, PendingCommandKind::Seek { .. }) {
+            // Buffered duration and input rate describe the current playback
+            // position. Once a seek is actually admitted, they cannot safely
+            // describe the destination, regardless of which lifecycle issued
+            // the discontinuity.
+            self.invalidate_cache_metrics_for_seek();
         }
         self.next_command_id = self.next_command_id.saturating_add(1).max(1);
         let command_id = CoordinatorCommandId(self.next_command_id);
@@ -8112,8 +8152,207 @@ mod tests {
     }
 
     #[test]
-    fn join_nearest_stays_coordinator_owned_and_uses_gentle_convergence() {
+    fn authoritative_alignment_guard_rejects_nearest_buffered_alternative() {
         let (mut coordinator, generation) = coordinator(MediaTransportKind::NetworkVod);
+        begin_fetch_required_seek(&mut coordinator, generation, 1, 20.0);
+        assert!(
+            coordinator
+                .seek_preparation
+                .as_ref()
+                .is_some_and(|episode| {
+                    episode.primary_seek_issued
+                        && episode.nearest_safe_buffered_position_seconds == Some(10.0)
+                })
+        );
+
+        coordinator.update_desired_room_state_with_kind(
+            DesiredRoomPlayback {
+                media_generation: generation,
+                state_revision: 2,
+                paused: false,
+                anchor_position_seconds: 20.0,
+                anchor_observed_at_seconds: 2.0,
+                force_seek: true,
+            },
+            DesiredRoomPlaybackUpdateKind::AuthoritativeSeekAfterSupersededDispatch,
+        );
+        assert_eq!(coordinator.authoritative_alignment_guard_revision, Some(2));
+        let guarded = coordinator
+            .seek_preparation_snapshot()
+            .expect("guarded preparation should remain active");
+        assert_eq!(guarded.nearest_safe_buffered_position_seconds, Some(10.0));
+        assert!(!guarded.can_join_nearest_buffered);
+        assert!(
+            coordinator
+                .join_nearest_buffered_seek_preparation(2.1)
+                .is_empty(),
+            "a stale UI request must not bypass authoritative alignment"
+        );
+        assert_eq!(coordinator.authoritative_alignment_guard_revision, Some(2));
+    }
+
+    #[test]
+    fn join_nearest_before_primary_seek_invalidates_old_headroom_and_stays_conservative() {
+        let mut coordinator = PlaybackCoordinator::new(PlaybackCoordinatorConfig {
+            maximum_catchup_rate: 1.25,
+            ..PlaybackCoordinatorConfig::default()
+        });
+        let generation = coordinator
+            .prepare_media(
+                LogicalMediaId::new("nearest-before-primary").unwrap(),
+                MediaTransportKind::NetworkVod,
+                0.0,
+            )
+            .media_generation;
+
+        let mut old_position = PlayerTransportObservation::new(generation, 0.5)
+            .with_phase(PlayerTransportPhase::ReadyPaused)
+            .with_position(5.0)
+            .with_logical_pause(true)
+            .with_cache_pause(false)
+            .with_seeking(false)
+            .with_seekable(true)
+            .with_seekable_ranges(vec![PlayerSeekableRange::new(0.0, 35.0)])
+            .with_buffered_ahead_seconds(30.0);
+        old_position.input_rate_bytes_per_second = Some(9_000_000);
+        coordinator.observe(old_position);
+        assert_eq!(
+            coordinator.metrics().last_buffered_ahead_seconds,
+            Some(30.0)
+        );
+        assert_eq!(
+            coordinator.metrics().last_input_rate_bytes_per_second,
+            Some(9_000_000)
+        );
+
+        coordinator.update_desired_room_state_with_kind(
+            DesiredRoomPlayback {
+                force_seek: true,
+                ..desired(generation, 1, false, 40.0)
+            },
+            DesiredRoomPlaybackUpdateKind::ExplicitSeek,
+        );
+        let blocked = coordinator.observe(
+            PlayerTransportObservation::new(generation, 1.0)
+                .with_phase(PlayerTransportPhase::Rebuffering)
+                .with_position(5.0)
+                .with_logical_pause(true)
+                .with_cache_pause(true)
+                .with_seeking(false)
+                .with_seekable(true)
+                .with_seekable_ranges(vec![PlayerSeekableRange::new(0.0, 35.0)]),
+        );
+        assert!(!blocked.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPosition(_),
+                ..
+            }
+        )));
+        assert!(
+            coordinator
+                .seek_preparation
+                .as_ref()
+                .is_some_and(|episode| {
+                    !episode.primary_seek_issued
+                        && episode.nearest_safe_buffered_position_seconds == Some(35.0)
+                })
+        );
+        assert!(
+            coordinator
+                .seek_preparation_snapshot()
+                .is_some_and(|preparation| preparation.can_join_nearest_buffered)
+        );
+        assert_eq!(
+            coordinator.metrics().last_buffered_ahead_seconds,
+            Some(30.0)
+        );
+
+        let join = coordinator.join_nearest_buffered_seek_preparation(1.1);
+        assert_eq!(
+            join.iter()
+                .filter(|action| matches!(
+                    action,
+                    PlaybackCoordinatorAction::Execute {
+                        command: CoordinatorPlayerCommand::SetPosition(position),
+                        ..
+                    } if (*position - 35.0).abs() <= f64::EPSILON
+                ))
+                .count(),
+            1
+        );
+        assert!(!join.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPosition(position),
+                ..
+            } if (*position - 40.0).abs() <= f64::EPSILON
+        )));
+        assert_eq!(coordinator.metrics().last_buffered_ahead_seconds, None);
+        assert_eq!(coordinator.metrics().last_input_rate_bytes_per_second, None);
+        assert_eq!(
+            coordinator.last_seek_preparation_terminal_outcome(),
+            Some(SeekPreparationTerminalOutcome::Superseded)
+        );
+        assert!(coordinator.recovery.as_ref().is_some_and(|episode| {
+            episode.gentle_catchup_only && episode.hard_seek_attempts == 0
+        }));
+        assert!(
+            coordinator
+                .join_nearest_buffered_seek_preparation(1.2)
+                .is_empty(),
+            "the consumed alternative must not emit a duplicate seek"
+        );
+
+        let nearest_applied = coordinator.observe(
+            PlayerTransportObservation::new(generation, 2.0)
+                .with_phase(PlayerTransportPhase::ReadyPaused)
+                .with_position(35.0)
+                .with_logical_pause(true)
+                .with_cache_pause(false)
+                .with_seeking(false)
+                .with_seekable(true),
+        );
+        let baseline = coordinator.observe(playing(generation, 3.0, 35.0));
+        let convergence = coordinator.observe(playing(generation, 4.0, 35.5));
+        assert_eq!(coordinator.metrics().last_buffered_ahead_seconds, None);
+        assert_eq!(coordinator.metrics().last_input_rate_bytes_per_second, None);
+        assert!(convergence.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPlaybackRate(rate),
+                ..
+            } if (*rate - CONSERVATIVE_CATCHUP_RATE_WITHOUT_HEADROOM).abs() < f64::EPSILON
+        )));
+        assert!(
+            nearest_applied
+                .iter()
+                .chain(&baseline)
+                .chain(&convergence)
+                .all(|action| !matches!(
+                    action,
+                    PlaybackCoordinatorAction::Execute {
+                        command: CoordinatorPlayerCommand::SetPosition(_),
+                        ..
+                    }
+                )),
+            "nearest recovery must not hard-seek back to the original target"
+        );
+    }
+
+    #[test]
+    fn join_nearest_stays_coordinator_owned_and_uses_gentle_convergence() {
+        let mut coordinator = PlaybackCoordinator::new(PlaybackCoordinatorConfig {
+            maximum_catchup_rate: 1.25,
+            ..PlaybackCoordinatorConfig::default()
+        });
+        let generation = coordinator
+            .prepare_media(
+                LogicalMediaId::new("nearest-with-headroom").unwrap(),
+                MediaTransportKind::NetworkVod,
+                0.0,
+            )
+            .media_generation;
         begin_fetch_required_seek(&mut coordinator, generation, 1, 40.0);
         coordinator.observe(
             PlayerTransportObservation::new(generation, 2.0)
@@ -8174,7 +8413,7 @@ mod tests {
             PlaybackCoordinatorAction::Execute {
                 command: CoordinatorPlayerCommand::SetPlaybackRate(rate),
                 ..
-            } if *rate > NORMAL_PLAYBACK_RATE
+            } if (*rate - CONSERVATIVE_CATCHUP_RATE_WITHOUT_HEADROOM).abs() < f64::EPSILON
         )));
         assert!(!convergence.iter().any(|action| matches!(
             action,
