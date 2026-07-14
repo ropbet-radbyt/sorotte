@@ -71,7 +71,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     .clone(),
             )?;
             session.apply_runtime_settings_snapshot(&runtime_settings)?;
-            self.session = Some(Box::new(session));
+            self.install_session_runtime(Box::new(session));
             self.session_projects_to_shell = false;
             self.last_published_local_file = None;
             self.last_published_media_match_signature = None;
@@ -501,7 +501,13 @@ impl GuiPersistedConfigRuntimeOwner {
         snapshot.can_adjust_autoplay_threshold = true;
         snapshot.can_manage_playlist = player_runtime_available && snapshot.shared_playlist_enabled;
         if !snapshot.shared_playlist_enabled {
-            snapshot.playlist = self.player_local_file_playlist_entries();
+            let player_playlist = self.player_local_file_playlist_entries();
+            if snapshot.playlist != player_playlist {
+                snapshot.playlist = player_playlist;
+                snapshot.playlist_entry_ids.clear();
+                snapshot.playlist_source_states.clear();
+                snapshot.active_playlist_index = None;
+            }
         }
         if self.player.is_some()
             && let Some(paused) = self.player_paused
@@ -709,7 +715,7 @@ impl GuiPersistedConfigRuntimeOwner {
             return;
         }
 
-        self.session = Some(Box::new(session));
+        self.install_session_runtime(Box::new(session));
         self.session_projects_to_shell = true;
         self.reset_session_transport_reconnect_state();
         self.session_default_room = Some(default_room);
@@ -753,7 +759,7 @@ impl GuiPersistedConfigRuntimeOwner {
         if let Some(session_transport) = self.session_transport.as_ref() {
             session_transport.clear_protocol_lines();
         }
-        self.session = None;
+        self.remove_session_runtime();
         self.session_projects_to_shell = false;
         self.session_transport = None;
         self.session_transport_driver = None;

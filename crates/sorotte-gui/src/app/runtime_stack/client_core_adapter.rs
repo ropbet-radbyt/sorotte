@@ -447,7 +447,9 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         current: &RoomPlaylistView,
         optimistic: &RoomPlaylistView,
     ) -> bool {
-        current.files == optimistic.files && current.index == optimistic.index
+        current.files == optimistic.files
+            && current.index == optimistic.index
+            && current.revision >= optimistic.revision
     }
 
     pub(in crate::app) fn projected_current_room_playlist(&self) -> Option<&RoomPlaylistView> {
@@ -527,12 +529,17 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                 .and_then(|index| i64::try_from(index).ok())
                 .or(Some(0))
         };
+        let revision = self
+            .projected_current_room_playlist()
+            .map(|playlist| playlist.revision)
+            .unwrap_or(1);
         self.optimistic_room_playlist = Some((
             room_name,
             RoomPlaylistView {
                 files,
                 index,
                 set_by: Some(self.username.clone()),
+                revision,
             },
         ));
     }

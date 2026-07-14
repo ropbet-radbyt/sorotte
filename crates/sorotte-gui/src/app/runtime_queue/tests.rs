@@ -21,11 +21,22 @@ use crate::app::{
     runtime_queue::{
         GuiQueuedRuntimeBridgeHandle, GuiQueuedRuntimeOwnerPump, GuiThreadedRuntimeOwnerPump,
     },
+    testing::support::test_temp_root,
 };
 use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
 
 #[test]
 fn gui_queued_runtime_bridge_and_preview_owner_cover_runtime_requests() {
+    let media_root = test_temp_root("queued-runtime-preview-media");
+    let movie_path = media_root.join("movie.mkv");
+    let episode1_path = media_root.join("episode1.mkv");
+    let episode2_path = media_root.join("episode2.mkv");
+    for path in [&movie_path, &episode1_path, &episode2_path] {
+        std::fs::write(path, b"test").expect("queued runtime media fixture should be written");
+    }
+    let movie_path_text = movie_path.to_string_lossy().into_owned();
+    let episode1_path_text = episode1_path.to_string_lossy().into_owned();
+    let episode2_path_text = episode2_path.to_string_lossy().into_owned();
     let (_host, host_handle) = GuiEframeNativeHost::with_queued_runtime();
     assert!(host_handle.drain_requests().is_empty());
 
@@ -110,13 +121,13 @@ fn gui_queued_runtime_bridge_and_preview_owner_cover_runtime_requests() {
 
     assert!(
         runtime
-            .actions_for_selected_media_files(&state, vec!["C:/Media/movie.mkv".to_owned()])
+            .actions_for_selected_media_files(&state, vec![movie_path_text.clone()])
             .is_empty()
     );
     assert_eq!(
         handle.drain_requests(),
         vec![GuiRuntimeRequest::OpenMediaFiles {
-            paths: vec!["C:/Media/movie.mkv".to_owned()],
+            paths: vec![movie_path_text],
             load_into_shared_playlist: true,
             playlist_insert_slot: None,
         }]
@@ -211,10 +222,7 @@ fn gui_queued_runtime_bridge_and_preview_owner_cover_runtime_requests() {
         vec![GuiRuntimeRequest::SeekToPosition(42.0)]
     );
     handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
-        paths: vec![
-            "C:/Media/episode1.mkv".to_owned(),
-            "C:/Media/episode2.mkv".to_owned(),
-        ],
+        paths: vec![episode1_path_text, episode2_path_text],
         load_into_shared_playlist: true,
         playlist_insert_slot: None,
     });
@@ -334,6 +342,8 @@ fn gui_queued_runtime_bridge_and_preview_owner_cover_runtime_requests() {
             GuiPendingCompletionRequest::SendChatMessage("hello".to_owned())
         )]
     );
+
+    let _ = std::fs::remove_dir_all(media_root);
 }
 
 fn wait_for_runtime_actions(

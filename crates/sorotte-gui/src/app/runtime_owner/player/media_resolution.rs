@@ -73,6 +73,25 @@ struct GuiMediaResolutionPendingStep {
     execution: GuiMediaResolutionExecution,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GuiMediaResolutionFallbackPolicy {
+    /// Preserve the declared resolution priority while higher-priority work is live.
+    /// Provider workers own their timeout policy; once they finish or time out, their
+    /// pending step disappears and the best ready fallback can be selected.
+    WaitForHigherPriority,
+    /// Select the best ready candidate without waiting for other providers. This is
+    /// used for an explicit provider choice, where Automatic's fallback ordering does
+    /// not apply.
+    AllowReadyFallback,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum GuiMediaResolutionDecision {
+    Ready(GuiMediaResolutionCandidate),
+    WaitingForHigherPriority,
+    Exhausted,
+}
+
 #[derive(Clone, PartialEq)]
 pub(super) struct GuiMediaResolutionPlan {
     target: String,
@@ -195,13 +214,30 @@ impl GuiMediaResolutionPlan {
             .min_by_key(|candidate| candidate.selection_key())
     }
 
-    pub(super) fn has_pending_media_search_above(
+    pub(super) fn decision(
         &self,
-        priority: GuiMediaResolutionPriority,
-    ) -> bool {
-        self.pending_steps.iter().any(|step| {
-            step.provider == GuiMediaResolutionProviderKind::MediaSearch && step.priority < priority
-        })
+        fallback_policy: GuiMediaResolutionFallbackPolicy,
+    ) -> GuiMediaResolutionDecision {
+        let best_candidate = self.best_candidate();
+        if matches!(
+            fallback_policy,
+            GuiMediaResolutionFallbackPolicy::WaitForHigherPriority
+        ) {
+            let candidate_priority = best_candidate.map(|candidate| candidate.priority);
+            let has_blocking_pending_step = self
+                .pending_steps
+                .iter()
+                .any(|step| candidate_priority.is_none_or(|priority| step.priority < priority));
+            if has_blocking_pending_step {
+                return GuiMediaResolutionDecision::WaitingForHigherPriority;
+            }
+        }
+
+        match best_candidate {
+            Some(candidate) => GuiMediaResolutionDecision::Ready(candidate.clone()),
+            None if self.pending_steps.is_empty() => GuiMediaResolutionDecision::Exhausted,
+            None => GuiMediaResolutionDecision::WaitingForHigherPriority,
+        }
     }
 
     fn record_pending_background(
@@ -234,10 +270,6 @@ impl GuiMediaResolutionCandidate {
         (self.priority, self.provider, self.phase, self.execution)
     }
 
-    pub(super) fn priority(&self) -> GuiMediaResolutionPriority {
-        self.priority
-    }
-
     pub(super) fn target(&self) -> &GuiMediaResolutionTarget {
         &self.target
     }
@@ -268,5 +300,94 @@ mod credential_debug_tests {
             assert!(debug.contains(sorotte_secret::REDACTED_SECRET));
             assert!(!debug.contains("resolution-canary"));
         }
+    }
+}
+
+#[cfg(test)]
+mod decision_tests {
+    use super::*;
+
+    fn plex_stream_target() -> PlexStreamTarget {
+        let playlist_uri = sorotte_plex::PlexPlaylistUri {
+            machine_identifier: "machine".to_owned(),
+            rating_key: "123".to_owned(),
+            title: Some("Episode".to_owned()),
+            file_name: Some("episode.mkv".to_owned()),
+            duration_millis: None,
+            size_bytes: None,
+            media_type: Some(sorotte_plex::PlexMediaType::Episode),
+        };
+        PlexStreamTarget {
+            logical_file: sorotte_player_api::LocalFileUpdate::new("episode.mkv"),
+            matched_item: sorotte_plex::PlexMatchedItem {
+                rating_key: "123".to_owned(),
+                title: "Episode".to_owned(),
+                media_type: sorotte_plex::PlexMediaType::Episode,
+                duration_millis: None,
+            },
+            playlist_uri,
+            playback_url: sorotte_plex::SecretPlexPlaybackUrl::new(
+                "https://plex.example/video?token=secret",
+            ),
+        }
+    }
+
+    #[test]
+    fn decision_waits_for_all_higher_priority_work_before_ready_plex() {
+        let mut pending_search_plan = GuiMediaResolutionPlan::new("episode.mkv");
+        pending_search_plan.record_pending_media_search();
+        pending_search_plan.push_plex_stream_candidate(plex_stream_target());
+        assert_eq!(
+            pending_search_plan.decision(GuiMediaResolutionFallbackPolicy::WaitForHigherPriority),
+            GuiMediaResolutionDecision::WaitingForHigherPriority
+        );
+
+        let mut pending_media_match_plan = GuiMediaResolutionPlan::new("episode.mkv");
+        pending_media_match_plan.record_pending_media_match();
+        pending_media_match_plan.push_plex_stream_candidate(plex_stream_target());
+        assert_eq!(
+            pending_media_match_plan
+                .decision(GuiMediaResolutionFallbackPolicy::WaitForHigherPriority),
+            GuiMediaResolutionDecision::WaitingForHigherPriority
+        );
+        assert!(matches!(
+            pending_media_match_plan
+                .decision(GuiMediaResolutionFallbackPolicy::AllowReadyFallback),
+            GuiMediaResolutionDecision::Ready(candidate)
+                if matches!(candidate.target(), GuiMediaResolutionTarget::PlexStream(_))
+        ));
+    }
+
+    #[test]
+    fn decision_waits_without_candidates_and_is_exhausted_after_pending_work_settles() {
+        let mut pending_plan = GuiMediaResolutionPlan::new("episode.mkv");
+        pending_plan.record_pending_media_search();
+        assert_eq!(
+            pending_plan.decision(GuiMediaResolutionFallbackPolicy::WaitForHigherPriority),
+            GuiMediaResolutionDecision::WaitingForHigherPriority
+        );
+
+        let exhausted_plan = GuiMediaResolutionPlan::new("episode.mkv");
+        assert_eq!(
+            exhausted_plan.decision(GuiMediaResolutionFallbackPolicy::WaitForHigherPriority),
+            GuiMediaResolutionDecision::Exhausted
+        );
+    }
+
+    #[test]
+    fn decision_uses_ready_higher_priority_candidate_despite_lower_pending_work() {
+        let mut plan = GuiMediaResolutionPlan::new("episode.mkv");
+        plan.push_user_media_candidate(
+            "C:\\media\\episode.mkv".to_owned(),
+            GuiUserMediaTargetResolutionSource::QuickLocal,
+        );
+        plan.record_pending_media_match();
+        plan.record_pending_plex_stream();
+
+        assert!(matches!(
+            plan.decision(GuiMediaResolutionFallbackPolicy::WaitForHigherPriority),
+            GuiMediaResolutionDecision::Ready(candidate)
+                if matches!(candidate.target(), GuiMediaResolutionTarget::LocalPath(_))
+        ));
     }
 }

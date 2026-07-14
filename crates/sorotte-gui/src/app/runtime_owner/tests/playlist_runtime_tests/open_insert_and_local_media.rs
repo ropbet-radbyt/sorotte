@@ -60,6 +60,46 @@ fn seeded_loopback_shared_playlist_owner(
     (owner, handle, state)
 }
 
+fn seed_cached_plex_match_for_local_path(
+    root: &std::path::Path,
+    media_path: &std::path::Path,
+    rating_key: &str,
+    title: &str,
+) {
+    let plex_config = PlexClientConfig {
+        enabled: true,
+        streaming_enabled: true,
+        user_token: Some("user-token".into()),
+        selected_server_id: Some("machine-1".to_owned()),
+        selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
+        selected_server_token: Some("server-token".into()),
+    };
+    let metadata = std::fs::metadata(media_path)
+        .expect("cached Plex local-media fixture metadata should be readable");
+    let file_name = media_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("cached Plex local-media fixture should have a UTF-8 file name");
+    let local_file = sorotte_player_api::LocalFileUpdate::new(file_name)
+        .with_path(media_path.to_string_lossy().into_owned())
+        .with_size_bytes(metadata.len());
+    let cache_key = server_scoped_cache_key_for_file(&plex_config, &local_file)
+        .expect("server-scoped cache key should be available");
+    let mut cache = PlexMatchCache::default();
+    cache.entries.insert(
+        cache_key,
+        PlexCachedMatch {
+            rating_key: rating_key.to_owned(),
+            title: title.to_owned(),
+            media_type: PlexMediaType::Episode,
+            duration_millis: Some(90_000),
+        },
+    );
+    cache
+        .save_to_path(&root.join("cache").join("plex-watch-cache.json"))
+        .expect("Plex cache should be written");
+}
+
 #[test]
 fn gui_persisted_config_runtime_owner_publishes_cached_plex_uri_for_shared_local_media_open() {
     let root = test_temp_root("shared-playlist-local-plex-uri");
@@ -154,6 +194,449 @@ fn gui_persisted_config_runtime_owner_publishes_cached_plex_uri_for_shared_local
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_automatic_cached_plex_drop_prefers_exact_local_media() {
+    let root = test_temp_root("shared-playlist-automatic-cached-plex-local");
+    let config_path = root.join("sorotte.ini");
+    let drop_dir = root.join("Dropped");
+    std::fs::create_dir_all(&drop_dir)
+        .expect("cached Plex local-drop fixture directory should be created");
+    let media_path = drop_dir.join("episode1.mkv");
+    std::fs::write(&media_path, b"test").expect("cached Plex local-drop fixture should be written");
+    let media_path_text = media_path.to_string_lossy().into_owned();
+    seed_cached_plex_match_for_local_path(&root, &media_path, "123", "Episode 1");
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
+        .with_client_core_chat_loopback_session_runtime("alice", "room1")
+        .expect("client-core loopback runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        player_path: Some("mpv".to_owned()),
+        shared_playlist_enabled: Some(true),
+        plex_plugin_enabled: Some(true),
+        plex_sync_enabled: Some(true),
+        plex_streaming_enabled: Some(true),
+        plex_user_token: Some("user-token".into()),
+        plex_selected_server_id: Some("machine-1".to_owned()),
+        plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
+        plex_selected_server_token: Some("server-token".into()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    assert_eq!(
+        state.main_window.playlist_default_source.current_source_id,
+        GuiPlaylistDefaultSourceId::automatic()
+    );
+
+    handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
+        paths: vec![media_path_text.clone()],
+        load_into_shared_playlist: true,
+        playlist_insert_slot: None,
+    });
+    pump_and_apply_runtime_owner_actions_until(
+        &mut owner,
+        &handle,
+        &mut state,
+        std::time::Duration::from_secs(1),
+        |state| state.current_shared_playlist_entries().len() == 1,
+        "Automatic cached-Plex local drop should project into the shared playlist",
+    );
+
+    let entries = state.current_shared_playlist_entries();
+    let uri = parse_plex_playlist_uri(&entries[0])
+        .expect("peer-facing shared playlist entry should remain a Plex URI");
+    assert_eq!(uri.machine_identifier, "machine-1");
+    assert_eq!(uri.rating_key, "123");
+    assert_eq!(
+        state.main_window.playlist[0]
+            .source_state
+            .current_provider_id,
+        GuiMediaSourceProviderId::local(),
+        "Automatic should project a known local drop as Local even when its peer-facing entry is a Plex URI"
+    );
+    assert_eq!(
+        owner
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.as_deref()),
+        Some(media_path_text.as_str()),
+        "the selected drop should open the exact local filesystem path"
+    );
+    assert!(
+        owner.plex_stream_resolve_rx.is_none(),
+        "Automatic local precedence must not queue Plex stream resolution"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_automatic_cached_plex_duplicate_drop_retains_exact_local_media()
+ {
+    let root = test_temp_root("shared-playlist-automatic-cached-plex-duplicate-local");
+    let config_path = root.join("sorotte.ini");
+    let drop_dir = root.join("DroppedOutsideSearchRoots");
+    std::fs::create_dir_all(&drop_dir)
+        .expect("cached Plex duplicate-drop fixture directory should be created");
+    let current_media_path = drop_dir.join("current.mkv");
+    let media_path = drop_dir.join("episode1.mkv");
+    std::fs::write(&current_media_path, b"current")
+        .expect("current local-media fixture should be written");
+    std::fs::write(&media_path, b"test")
+        .expect("cached Plex duplicate-drop fixture should be written");
+    let current_media_path_text = current_media_path.to_string_lossy().into_owned();
+    let media_path_text = media_path.to_string_lossy().into_owned();
+    seed_cached_plex_match_for_local_path(&root, &media_path, "123", "Episode 1");
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
+        .with_client_core_chat_loopback_session_runtime("alice", "room1")
+        .expect("client-core loopback runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    owner.player_local_file = Some(
+        sorotte_player_api::LocalFileUpdate::new("current.mkv")
+            .with_path(current_media_path_text.clone()),
+    );
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        player_path: Some("mpv".to_owned()),
+        shared_playlist_enabled: Some(true),
+        plex_plugin_enabled: Some(true),
+        plex_sync_enabled: Some(true),
+        plex_streaming_enabled: Some(true),
+        plex_user_token: Some("user-token".into()),
+        plex_selected_server_id: Some("machine-1".to_owned()),
+        plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
+        plex_selected_server_token: Some("server-token".into()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let dispatch = owner
+        .shared_playlist_open_dispatch_for_selected_paths_impl(
+            &state,
+            vec![media_path_text.clone()],
+        )
+        .expect("cached local file should produce a shared-playlist dispatch");
+    let plex_uri = dispatch
+        .playlist_entries()
+        .first()
+        .cloned()
+        .expect("cached local file should produce a Plex playlist URI");
+    parse_plex_playlist_uri(&plex_uri)
+        .expect("cached local file should publish a peer-facing Plex URI");
+
+    handle.push_request(GuiRuntimeRequest::ReplacePlaylist {
+        files: vec!["current.mkv".to_owned(), plex_uri.clone()],
+        selected_index: Some(0),
+    });
+    pump_and_apply_runtime_owner_actions_until(
+        &mut owner,
+        &handle,
+        &mut state,
+        std::time::Duration::from_secs(1),
+        |state| {
+            state.current_shared_playlist_entries() == ["current.mkv".to_owned(), plex_uri.clone()]
+                && state.main_window.active_playlist_index == Some(0)
+        },
+        "Automatic Plex row should be seeded behind the active local row",
+    );
+    assert_eq!(
+        state.main_window.playlist[1]
+            .source_state
+            .current_provider_id,
+        GuiMediaSourceProviderId::plex_stream()
+    );
+    assert_eq!(
+        state.main_window.playlist[1].source_state.policy,
+        GuiPlaylistSourcePolicy::Automatic
+    );
+    assert_eq!(
+        state.main_window.playlist[1].source_state.selection_origin,
+        GuiPlaylistSourceSelectionOrigin::Inferred,
+        "the seeded Plex source should be inferred by Automatic"
+    );
+
+    handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
+        paths: vec![media_path_text.clone()],
+        load_into_shared_playlist: true,
+        playlist_insert_slot: Some(2),
+    });
+    pump_and_apply_runtime_owner_actions_until(
+        &mut owner,
+        &handle,
+        &mut state,
+        std::time::Duration::from_secs(1),
+        |state| {
+            state.main_window.playlist[1]
+                .source_state
+                .current_provider_id
+                == GuiMediaSourceProviderId::local()
+        },
+        "duplicate cached-Plex drop should update the existing Automatic row to Local",
+    );
+
+    assert_eq!(
+        state.current_shared_playlist_entries(),
+        vec!["current.mkv".to_owned(), plex_uri],
+        "duplicate append should remain a playlist no-op"
+    );
+    assert_eq!(
+        state.main_window.playlist[1].source_state.policy,
+        GuiPlaylistSourcePolicy::Automatic,
+        "Automatic local precedence should remain policy-driven"
+    );
+    assert_eq!(
+        state.main_window.playlist[1].source_state.selection_origin,
+        GuiPlaylistSourceSelectionOrigin::Inferred,
+        "Automatic local precedence should remain inferred rather than becoming a manual override"
+    );
+    assert_eq!(state.main_window.active_playlist_index, Some(0));
+    assert_eq!(
+        owner
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.as_deref()),
+        Some(current_media_path_text.as_str()),
+        "the duplicate append should not interrupt the active local row"
+    );
+    assert!(owner.plex_stream_resolve_rx.is_none());
+
+    handle.push_request(GuiRuntimeRequest::SetPlaylistIndex(1));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while std::time::Instant::now() < deadline {
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+        if owner
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.as_deref())
+            == Some(media_path_text.as_str())
+            || owner.plex_stream_resolve_rx.is_some()
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    assert_eq!(state.main_window.active_playlist_index, Some(1));
+    assert_eq!(
+        owner
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.as_deref()),
+        Some(media_path_text.as_str()),
+        "activating the deduplicated row should use the exact dropped filesystem path"
+    );
+    assert!(
+        owner.plex_stream_resolve_rx.is_none(),
+        "activating a deduplicated local drop must not queue Plex stream resolution"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_deduplicated_local_drop_retains_first_exact_path() {
+    let root = test_temp_root("shared-playlist-deduplicated-local-path-order");
+    let first_dir = root.join("First");
+    let second_dir = root.join("Second");
+    std::fs::create_dir_all(&first_dir).expect("first duplicate-path directory should be created");
+    std::fs::create_dir_all(&second_dir)
+        .expect("second duplicate-path directory should be created");
+    let first_path = first_dir.join("episode.mkv");
+    let second_path = second_dir.join("episode.mkv");
+    std::fs::write(&first_path, b"first").expect("first duplicate-path file should be written");
+    std::fs::write(&second_path, b"second").expect("second duplicate-path file should be written");
+    let first_path_text = first_path.to_string_lossy().into_owned();
+    let second_path_text = second_path.to_string_lossy().into_owned();
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_loopback_session_runtime("alice", "room1")
+        .expect("client-core loopback runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        player_path: Some("mpv".to_owned()),
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    owner.open_media_files_through_shared_playlist_runtime_impl(
+        &handle,
+        &mut state,
+        vec![first_path_text.clone(), second_path_text],
+        Some(0),
+    );
+
+    assert_eq!(
+        state
+            .current_shared_playlist_entries()
+            .iter()
+            .filter(|entry| entry.as_str() == "episode.mkv")
+            .count(),
+        1,
+        "duplicate local targets should collapse to one accepted playlist entry"
+    );
+    assert_eq!(owner.playlist_resolution.local_origins_by_row.len(), 1);
+    assert_eq!(
+        owner
+            .playlist_resolution
+            .local_origins_by_row
+            .values()
+            .next(),
+        Some(&std::path::PathBuf::from(&first_path_text)),
+        "deduplication must retain the exact path paired with the first accepted entry"
+    );
+    assert_eq!(
+        owner
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.as_deref()),
+        Some(first_path_text.as_str())
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_reactivates_cached_plex_append_from_exact_dropped_path() {
+    let root = test_temp_root("shared-playlist-cached-plex-append-local-hint");
+    let config_path = root.join("sorotte.ini");
+    let search_dir = root.join("ConfiguredMedia");
+    let drop_dir = root.join("DroppedOutsideSearchRoots");
+    std::fs::create_dir_all(&search_dir)
+        .expect("configured media-search fixture directory should be created");
+    std::fs::create_dir_all(&drop_dir)
+        .expect("outside-root local-drop fixture directory should be created");
+    let current_media_path = search_dir.join("episode1.mkv");
+    let dropped_media_path = drop_dir.join("episode2.mkv");
+    std::fs::write(&current_media_path, b"first")
+        .expect("active local-media fixture should be written");
+    std::fs::write(&dropped_media_path, b"second")
+        .expect("appended local-media fixture should be written");
+    let current_media_path_text = current_media_path.to_string_lossy().into_owned();
+    let dropped_media_path_text = dropped_media_path.to_string_lossy().into_owned();
+    seed_cached_plex_match_for_local_path(&root, &dropped_media_path, "456", "Episode 2");
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
+        .with_client_core_chat_loopback_session_runtime("alice", "room1")
+        .expect("client-core loopback runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        player_path: Some("mpv".to_owned()),
+        shared_playlist_enabled: Some(true),
+        media_search_directories: Some(vec![search_dir.to_string_lossy().into_owned()]),
+        plex_plugin_enabled: Some(true),
+        plex_sync_enabled: Some(true),
+        plex_streaming_enabled: Some(true),
+        plex_user_token: Some("user-token".into()),
+        plex_selected_server_id: Some("machine-1".to_owned()),
+        plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
+        plex_selected_server_token: Some("server-token".into()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
+        paths: vec![current_media_path_text.clone()],
+        load_into_shared_playlist: true,
+        playlist_insert_slot: None,
+    });
+    pump_and_apply_runtime_owner_actions_until(
+        &mut owner,
+        &handle,
+        &mut state,
+        std::time::Duration::from_secs(1),
+        |state| {
+            state.current_shared_playlist_entries().len() == 1
+                && state.main_window.active_playlist_index == Some(0)
+        },
+        "initial local row should remain active before the cached-Plex append",
+    );
+    assert_eq!(
+        owner
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.as_deref()),
+        Some(current_media_path_text.as_str())
+    );
+
+    handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
+        paths: vec![dropped_media_path_text.clone()],
+        load_into_shared_playlist: true,
+        playlist_insert_slot: Some(1),
+    });
+    pump_and_apply_runtime_owner_actions_until(
+        &mut owner,
+        &handle,
+        &mut state,
+        std::time::Duration::from_secs(1),
+        |state| state.current_shared_playlist_entries().len() == 2,
+        "cached-Plex local drop should append without switching the active row",
+    );
+
+    assert_eq!(state.main_window.active_playlist_index, Some(0));
+    assert!(
+        parse_plex_playlist_uri(&state.current_shared_playlist_entries()[1]).is_ok(),
+        "peer-facing appended entry should remain a Plex URI"
+    );
+    assert_eq!(
+        owner
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.as_deref()),
+        Some(current_media_path_text.as_str()),
+        "appending should not interrupt the currently active local row"
+    );
+    assert!(owner.plex_stream_resolve_rx.is_none());
+
+    handle.push_request(GuiRuntimeRequest::SetPlaylistIndex(1));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while std::time::Instant::now() < deadline {
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+        if owner
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.as_deref())
+            == Some(dropped_media_path_text.as_str())
+            || owner.plex_stream_resolve_rx.is_some()
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    assert_eq!(state.main_window.active_playlist_index, Some(1));
+    assert_eq!(
+        owner
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.as_deref()),
+        Some(dropped_media_path_text.as_str()),
+        "later activation should reopen the exact appended path even though it is outside configured search roots"
+    );
+    assert!(
+        owner.plex_stream_resolve_rx.is_none(),
+        "later activation of a retained local drop must not queue Plex stream resolution"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_keeps_uncached_plex_local_add_on_fast_path() {
     let root = test_temp_root("shared-playlist-local-plex-cache-miss");
     let config_path = root.join("sorotte.ini");
@@ -183,8 +666,11 @@ fn gui_persisted_config_runtime_owner_keeps_uncached_plex_local_add_on_fast_path
         )
         .expect("uncached Plex local add should still produce a playlist entry");
 
-    assert_eq!(dispatch.playlist_entries, vec!["episode1.mkv".to_owned()]);
-    assert_eq!(dispatch.player_paths, Some(vec![media_path_text]));
+    assert_eq!(dispatch.playlist_entries(), vec!["episode1.mkv".to_owned()]);
+    assert_eq!(
+        dispatch.items[0].local_origin.as_deref(),
+        Some(media_path_text.as_str())
+    );
     assert!(
         owner.pending_stream_feedback.is_empty(),
         "playlist publication must not run uncached Plex stream resolution before the row is projected"
@@ -211,11 +697,17 @@ fn gui_persisted_config_runtime_owner_routes_shared_playlist_open_through_client
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let media_root = test_temp_root("shared-playlist-loopback-player");
+    let episode1_path = media_root.join("episode1.mkv");
+    let episode2_path = media_root.join("episode2.mkv");
+    std::fs::write(&episode1_path, b"one").expect("first media fixture should be written");
+    std::fs::write(&episode2_path, b"two").expect("second media fixture should be written");
+    let episode1_path_text = episode1_path.to_string_lossy().into_owned();
 
     handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
         paths: vec![
-            "C:/Media/episode1.mkv".to_owned(),
-            "C:/Media/episode2.mkv".to_owned(),
+            episode1_path_text.clone(),
+            episode2_path.to_string_lossy().into_owned(),
         ],
         load_into_shared_playlist: true,
         playlist_insert_slot: None,
@@ -261,8 +753,9 @@ fn gui_persisted_config_runtime_owner_routes_shared_playlist_open_through_client
             .player_local_file
             .as_ref()
             .and_then(|file| file.path.as_deref()),
-        Some("C:/Media/episode1.mkv")
+        Some(episode1_path_text.as_str())
     );
+    let _ = std::fs::remove_dir_all(media_root);
 }
 
 #[test]
@@ -311,9 +804,12 @@ fn gui_persisted_config_runtime_owner_flushes_shared_playlist_before_player_open
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     let _ = transport.drain_outbound_protocol_lines();
+    let media_root = test_temp_root("shared-playlist-flush-before-open");
+    let media_path = media_root.join("episode1.mkv");
+    std::fs::write(&media_path, b"test").expect("media fixture should be written");
 
     handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
-        paths: vec!["C:/Media/episode1.mkv".to_owned()],
+        paths: vec![media_path.to_string_lossy().into_owned()],
         load_into_shared_playlist: true,
         playlist_insert_slot: None,
     });
@@ -331,6 +827,7 @@ fn gui_persisted_config_runtime_owner_flushes_shared_playlist_before_player_open
             .any(|line| line.contains("episode1.mkv")),
         "shared playlist transport update must be flushed before player open; outbound_at_open={outbound_at_open:?}"
     );
+    let _ = std::fs::remove_dir_all(media_root);
 }
 
 #[test]
@@ -393,7 +890,43 @@ fn gui_persisted_config_runtime_owner_prioritizes_player_setup_before_stream_hel
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_opens_playlist_url_without_a_local_origin() {
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        trusted_domains: Some(vec!["media.example.test".to_owned()]),
+        ..StoredClientSettingsMvp::default()
+    });
+    let stream_url = "https://media.example.test/video.mp4";
+
+    owner.open_media_files_through_shared_playlist_runtime_impl(
+        &handle,
+        &mut state,
+        vec![stream_url.to_owned()],
+        None,
+    );
+
+    assert_eq!(
+        state.current_shared_playlist_entries(),
+        vec![stream_url.to_owned()]
+    );
+    assert_eq!(
+        owner
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.as_deref()),
+        Some(stream_url),
+        "Automatic should continue through ordinary URL resolution when no local origin exists"
+    );
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_inserts_shared_playlist_media_at_requested_slot() {
+    let media_root = test_temp_root("shared-playlist-requested-slot");
+    let inserted_path = media_root.join("episode2.mkv");
+    std::fs::write(&inserted_path, b"test").expect("inserted media fixture should be written");
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_loopback_session_runtime("alice", "room1")
         .expect("client-core loopback runtime owner should bootstrap");
@@ -435,7 +968,7 @@ fn gui_persisted_config_runtime_owner_inserts_shared_playlist_media_at_requested
     );
 
     handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
-        paths: vec!["C:/Media/episode2.mkv".to_owned()],
+        paths: vec![inserted_path.to_string_lossy().into_owned()],
         load_into_shared_playlist: true,
         playlist_insert_slot: Some(1),
     });
@@ -486,10 +1019,14 @@ fn gui_persisted_config_runtime_owner_inserts_shared_playlist_media_at_requested
             .and_then(|file| file.path.as_deref()),
         Some("C:/Media/episode1.mkv")
     );
+    let _ = std::fs::remove_dir_all(media_root);
 }
 
 #[test]
 fn gui_persisted_config_runtime_owner_applies_playlist_default_source_to_local_media_insert() {
+    let media_root = test_temp_root("shared-playlist-default-source-insert");
+    let media_path = media_root.join("episode1.mkv");
+    std::fs::write(&media_path, b"test").expect("default-source media fixture should be written");
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_loopback_session_runtime("alice", "room1")
         .expect("client-core loopback runtime owner should bootstrap");
@@ -517,7 +1054,7 @@ fn gui_persisted_config_runtime_owner_applies_playlist_default_source_to_local_m
     owner.open_media_files_through_shared_playlist_runtime_impl(
         &handle,
         &mut state,
-        vec!["C:/Media/episode1.mkv".to_owned()],
+        vec![media_path.to_string_lossy().into_owned()],
         Some(0),
     );
 
@@ -544,6 +1081,84 @@ fn gui_persisted_config_runtime_owner_applies_playlist_default_source_to_local_m
         owner.player_local_file.is_none(),
         "the selected local path must not be opened directly when the row source is Plex Stream"
     );
+    let _ = std::fs::remove_dir_all(media_root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_explicit_plex_default_wins_for_cached_plex_local_media_insert()
+ {
+    let root = test_temp_root("shared-playlist-explicit-plex-cached-local");
+    let config_path = root.join("sorotte.ini");
+    let media_dir = root.join("Dropped");
+    std::fs::create_dir_all(&media_dir)
+        .expect("explicit Plex cached-local fixture directory should be created");
+    let media_path = media_dir.join("episode1.mkv");
+    std::fs::write(&media_path, b"test")
+        .expect("explicit Plex cached-local fixture should be written");
+    let media_path_text = media_path.to_string_lossy().into_owned();
+    seed_cached_plex_match_for_local_path(&root, &media_path, "123", "Episode 1");
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
+        .with_client_core_chat_loopback_session_runtime("alice", "room1")
+        .expect("client-core loopback runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        player_path: Some("mpv".to_owned()),
+        shared_playlist_enabled: Some(true),
+        plex_plugin_enabled: Some(true),
+        plex_sync_enabled: Some(true),
+        plex_streaming_enabled: Some(true),
+        plex_user_token: Some("user-token".into()),
+        plex_selected_server_id: Some("machine-1".to_owned()),
+        plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
+        plex_selected_server_token: Some("server-token".into()),
+        ..StoredClientSettingsMvp::default()
+    });
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    assert!(state.apply(GuiShellAction::SelectMainWindowPlaylistDefaultSource {
+        source_id: GuiPlaylistDefaultSourceId::provider(GuiMediaSourceProviderId::plex_stream()),
+    }));
+
+    owner.open_media_files_through_shared_playlist_runtime_impl(
+        &handle,
+        &mut state,
+        vec![media_path_text.clone()],
+        None,
+    );
+
+    let entries = state.current_shared_playlist_entries();
+    parse_plex_playlist_uri(
+        entries
+            .first()
+            .expect("cached local drop should project a shared-playlist row"),
+    )
+    .expect("cached local drop should retain its peer-facing Plex URI");
+    assert_eq!(
+        state.main_window.playlist[0]
+            .source_state
+            .current_provider_id,
+        GuiMediaSourceProviderId::plex_stream(),
+        "an explicit Plex default must override local precedence"
+    );
+    assert_eq!(
+        state.main_window.playlist[0].source_state.policy,
+        GuiPlaylistSourcePolicy::ForcePlex
+    );
+    assert_eq!(
+        state.main_window.playlist[0].source_state.selection_origin,
+        GuiPlaylistSourceSelectionOrigin::PlaylistDefault,
+        "the Plex default should be recorded distinctly from a per-row override"
+    );
+    assert!(
+        owner.player_local_file.is_none(),
+        "the exact local path must not open directly when Plex was explicitly selected"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -571,11 +1186,15 @@ fn gui_persisted_config_runtime_owner_uses_local_for_media_match_default_local_m
             ),
         })
     );
+    let media_root = test_temp_root("media-match-default-local-drop");
+    let media_path = media_root.join("episode1.mkv");
+    std::fs::write(&media_path, b"test").expect("media fixture should be written");
+    let media_path_text = media_path.to_string_lossy().into_owned();
 
     owner.open_media_files_through_shared_playlist_runtime_impl(
         &handle,
         &mut state,
-        vec!["C:/Media/episode1.mkv".to_owned()],
+        vec![media_path_text.clone()],
         Some(0),
     );
 
@@ -599,16 +1218,83 @@ fn gui_persisted_config_runtime_owner_uses_local_for_media_match_default_local_m
             .player_local_file
             .as_ref()
             .and_then(|file| file.path.as_deref()),
-        Some("C:/Media/episode1.mkv")
+        Some(media_path_text.as_str())
     );
     assert!(
         owner.media_match_remote_lookup_rx.is_none(),
         "Media Matching should not run when the local file path is already available"
     );
+    let _ = std::fs::remove_dir_all(media_root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_keeps_manual_media_match_after_same_row_local_drop() {
+    let media_root = test_temp_root("manual-media-match-then-local-drop");
+    let media_path = media_root.join("episode1.mkv");
+    std::fs::write(&media_path, b"test")
+        .expect("manual Media Match drop fixture should be written");
+    let media_path_text = media_path.to_string_lossy().into_owned();
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    owner.active_shared_playlist_index = Some(0);
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        media_matching_plugin_enabled: Some(true),
+        media_match_fingerprinting_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.apply_shared_playlist_entries(vec!["episode1.mkv".to_owned()], Some(0), false);
+    state.main_window.active_playlist_index = Some(0);
+    assert!(state.apply(GuiShellAction::SelectMainWindowPlaylistSource {
+        index: 0,
+        provider_id: GuiMediaSourceProviderId::media_matching(),
+    }));
+    let entry_id = state.main_window.playlist[0].entry_id;
+
+    owner.open_media_files_through_shared_playlist_runtime_impl(
+        &handle,
+        &mut state,
+        vec![media_path_text],
+        Some(0),
+    );
+
+    let row = &state.main_window.playlist[0];
+    assert_eq!(
+        row.entry_id, entry_id,
+        "the deduplicated drop should target the existing row"
+    );
+    assert_eq!(
+        row.source_state.policy,
+        GuiPlaylistSourcePolicy::ForceMediaMatching
+    );
+    assert_eq!(
+        row.source_state.selection_origin,
+        GuiPlaylistSourceSelectionOrigin::UserOverride
+    );
+    assert_ne!(
+        row.source_state.current_provider_id,
+        GuiMediaSourceProviderId::local(),
+        "a local drop must not erase a per-row Media Matching override"
+    );
+    assert!(
+        owner.player_local_file.is_none(),
+        "the retained exact local origin must remain ineligible under ForceMediaMatching"
+    );
+    assert!(
+        owner.pending_attached_media_resolution.is_none(),
+        "strict Media Matching must not start ordinary local indexing after the drop"
+    );
+
+    let _ = std::fs::remove_dir_all(media_root);
 }
 
 #[test]
 fn gui_persisted_config_runtime_owner_appends_shared_playlist_media_without_switching_selection() {
+    let media_root = test_temp_root("shared-playlist-append-selection");
+    let appended_path = media_root.join("episode3.mkv");
+    std::fs::write(&appended_path, b"test").expect("appended media fixture should be written");
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_loopback_session_runtime("alice", "room1")
         .expect("client-core loopback runtime owner should bootstrap");
@@ -650,7 +1336,7 @@ fn gui_persisted_config_runtime_owner_appends_shared_playlist_media_without_swit
     );
 
     handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
-        paths: vec!["C:/Media/episode3.mkv".to_owned()],
+        paths: vec![appended_path.to_string_lossy().into_owned()],
         load_into_shared_playlist: true,
         playlist_insert_slot: Some(2),
     });
@@ -701,18 +1387,22 @@ fn gui_persisted_config_runtime_owner_appends_shared_playlist_media_without_swit
             .and_then(|file| file.path.as_deref()),
         Some("C:/Media/episode1.mkv")
     );
+    let _ = std::fs::remove_dir_all(media_root);
 }
 
 #[test]
 fn gui_persisted_config_runtime_owner_preserves_session_playlist_index_when_local_selection_is_stale_on_append()
  {
+    let media_root = test_temp_root("shared-playlist-stale-selection-append");
+    let appended_path = media_root.join("episode4.mkv");
+    std::fs::write(&appended_path, b"test").expect("appended media fixture should be written");
     let (mut owner, handle, mut state) = seeded_loopback_shared_playlist_owner(2);
 
     assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(1)));
     assert!(state.main_window_playlist_selection_is_local);
 
     handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
-        paths: vec!["C:/Media/episode4.mkv".to_owned()],
+        paths: vec![appended_path.to_string_lossy().into_owned()],
         load_into_shared_playlist: true,
         playlist_insert_slot: Some(3),
     });
@@ -753,17 +1443,21 @@ fn gui_persisted_config_runtime_owner_preserves_session_playlist_index_when_loca
             .and_then(|file| file.path.as_deref()),
         Some("C:/Media/episode3.mkv")
     );
+    let _ = std::fs::remove_dir_all(media_root);
 }
 
 #[test]
 fn gui_persisted_config_runtime_owner_remaps_active_playlist_index_when_inserting_before_active() {
+    let media_root = test_temp_root("shared-playlist-insert-before-active");
+    let inserted_path = media_root.join("episode1-5.mkv");
+    std::fs::write(&inserted_path, b"test").expect("inserted media fixture should be written");
     let (mut owner, handle, mut state) = seeded_loopback_shared_playlist_owner(2);
 
     assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(1)));
     assert!(state.main_window_playlist_selection_is_local);
 
     handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
-        paths: vec!["C:/Media/episode1-5.mkv".to_owned()],
+        paths: vec![inserted_path.to_string_lossy().into_owned()],
         load_into_shared_playlist: true,
         playlist_insert_slot: Some(1),
     });
@@ -804,6 +1498,7 @@ fn gui_persisted_config_runtime_owner_remaps_active_playlist_index_when_insertin
             .and_then(|file| file.path.as_deref()),
         Some("C:/Media/episode3.mkv")
     );
+    let _ = std::fs::remove_dir_all(media_root);
 }
 
 #[test]
@@ -820,9 +1515,13 @@ fn gui_persisted_config_runtime_owner_coerces_local_media_open_into_playlist_con
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let media_root = test_temp_root("coerced-shared-playlist-local-open");
+    let media_path = media_root.join("local-only.mkv");
+    std::fs::write(&media_path, b"test").expect("media fixture should be written");
+    let media_path_text = media_path.to_string_lossy().into_owned();
 
     handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
-        paths: vec!["C:/Media/local-only.mkv".to_owned()],
+        paths: vec![media_path_text.clone()],
         load_into_shared_playlist: false,
         playlist_insert_slot: None,
     });
@@ -871,8 +1570,9 @@ fn gui_persisted_config_runtime_owner_coerces_local_media_open_into_playlist_con
             .player_local_file
             .as_ref()
             .and_then(|file| file.path.as_deref()),
-        Some("C:/Media/local-only.mkv")
+        Some(media_path_text.as_str())
     );
+    let _ = std::fs::remove_dir_all(media_root);
 }
 
 #[test]
@@ -888,9 +1588,13 @@ fn gui_persisted_config_runtime_owner_coerces_local_media_open_into_playlist_con
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let media_root = test_temp_root("coerced-legacy-toggle-local-open");
+    let media_path = media_root.join("local-drop.mkv");
+    std::fs::write(&media_path, b"test").expect("media fixture should be written");
+    let media_path_text = media_path.to_string_lossy().into_owned();
 
     handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
-        paths: vec!["C:/Media/local-drop.mkv".to_owned()],
+        paths: vec![media_path_text.clone()],
         load_into_shared_playlist: false,
         playlist_insert_slot: None,
     });
@@ -931,13 +1635,17 @@ fn gui_persisted_config_runtime_owner_coerces_local_media_open_into_playlist_con
             .player_local_file
             .as_ref()
             .and_then(|file| file.path.as_deref()),
-        Some("C:/Media/local-drop.mkv")
+        Some(media_path_text.as_str())
     );
+    let _ = std::fs::remove_dir_all(media_root);
 }
 
 #[test]
 fn gui_persisted_config_runtime_owner_blocks_local_media_open_when_room_playlist_control_is_unavailable()
  {
+    let media_root = test_temp_root("shared-playlist-control-unavailable");
+    let media_path = media_root.join("blocked-drop.mkv");
+    std::fs::write(&media_path, b"test").expect("blocked-drop fixture should be written");
     #[derive(Debug, Default)]
     struct NoControlSessionState {
         replace_playlist_calls: usize,
@@ -1018,7 +1726,7 @@ fn gui_persisted_config_runtime_owner_blocks_local_media_open_when_room_playlist
         .collect::<Vec<_>>();
 
     handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
-        paths: vec!["C:/Media/blocked-drop.mkv".to_owned()],
+        paths: vec![media_path.to_string_lossy().into_owned()],
         load_into_shared_playlist: false,
         playlist_insert_slot: None,
     });
@@ -1055,4 +1763,5 @@ fn gui_persisted_config_runtime_owner_blocks_local_media_open_when_room_playlist
             == 0,
         "blocked non-controller media drops must not attempt a session playlist mutation",
     );
+    let _ = std::fs::remove_dir_all(media_root);
 }

@@ -339,6 +339,9 @@ impl GuiPersistedConfigRuntimeOwner {
             desired_main_window.can_manage_playlist = can_manage_playlist;
             if let Some(desired_playlist) = desired_playlist {
                 desired_main_window.playlist = desired_playlist;
+                desired_main_window.playlist_entry_ids.clear();
+                desired_main_window.playlist_source_states.clear();
+                desired_main_window.active_playlist_index = None;
             }
             if let Some(paused) = desired_paused {
                 desired_main_window.playback_paused = paused;

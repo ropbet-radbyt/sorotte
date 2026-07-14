@@ -44,6 +44,7 @@ pub struct RoomPlaylistView {
     pub files: Vec<String>,
     pub index: Option<i64>,
     pub set_by: Option<String>,
+    pub revision: u64,
 }
 
 impl std::fmt::Debug for RoomPlaylistView {
@@ -53,6 +54,7 @@ impl std::fmt::Debug for RoomPlaylistView {
             .field("files_count", &self.files.len())
             .field("index", &self.index)
             .field("set_by", &self.set_by)
+            .field("revision", &self.revision)
             .finish()
     }
 }

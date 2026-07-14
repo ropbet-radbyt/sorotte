@@ -107,28 +107,39 @@ impl std::fmt::Debug for GuiPendingRoomChangeRequest {
 }
 
 #[derive(Clone, PartialEq, Eq)]
+pub(in crate::app) struct GuiSharedPlaylistOpenItem {
+    pub(in crate::app) published_entry: String,
+    pub(in crate::app) local_origin: Option<String>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub(in crate::app) struct GuiSharedPlaylistOpenDispatch {
-    pub(in crate::app) playlist_entries: Vec<String>,
-    pub(in crate::app) player_paths: Option<Vec<String>>,
+    pub(in crate::app) items: Vec<GuiSharedPlaylistOpenItem>,
     pub(in crate::app) imported_from_file: bool,
+}
+
+impl GuiSharedPlaylistOpenDispatch {
+    pub(in crate::app) fn playlist_entries(&self) -> Vec<String> {
+        self.items
+            .iter()
+            .map(|item| item.published_entry.clone())
+            .collect()
+    }
 }
 
 impl std::fmt::Debug for GuiSharedPlaylistOpenDispatch {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("GuiSharedPlaylistOpenDispatch")
-            .field("playlist_entries", &sorotte_secret::REDACTED_SECRET)
-            .field("playlist_entry_count", &self.playlist_entries.len())
+            .field("items", &sorotte_secret::REDACTED_SECRET)
+            .field("item_count", &self.items.len())
             .field(
-                "player_paths",
+                "local_origin_count",
                 &self
-                    .player_paths
-                    .as_ref()
-                    .map(|_| sorotte_secret::REDACTED_SECRET),
-            )
-            .field(
-                "player_path_count",
-                &self.player_paths.as_ref().map(Vec::len),
+                    .items
+                    .iter()
+                    .filter(|item| item.local_origin.is_some())
+                    .count(),
             )
             .field("imported_from_file", &self.imported_from_file)
             .finish()
@@ -146,8 +157,10 @@ mod media_target_debug_tests {
             requested_room: secret.to_owned(),
         };
         let dispatch = GuiSharedPlaylistOpenDispatch {
-            playlist_entries: vec![secret.to_owned()],
-            player_paths: Some(vec![secret.to_owned()]),
+            items: vec![GuiSharedPlaylistOpenItem {
+                published_entry: secret.to_owned(),
+                local_origin: Some(secret.to_owned()),
+            }],
             imported_from_file: false,
         };
 

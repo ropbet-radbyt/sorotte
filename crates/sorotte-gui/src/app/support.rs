@@ -152,7 +152,12 @@ pub(super) fn joined_room_name_text(value: &str) -> Option<&str> {
 
 pub(super) fn shared_playlist_entry_for_media_path(path: &str) -> Option<String> {
     let trimmed = normalized_editable_text(path)?;
-    if trimmed.contains("://") {
+    let bytes = trimmed.as_bytes();
+    let is_absolute_path = Path::new(&trimmed).is_absolute()
+        || trimmed.starts_with('\\')
+        || trimmed.starts_with('/')
+        || matches!(bytes, [drive, b':', ..] if drive.is_ascii_alphabetic());
+    if trimmed.contains("://") && !is_absolute_path {
         return Some(trimmed);
     }
     Some(

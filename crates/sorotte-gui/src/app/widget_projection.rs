@@ -17,6 +17,12 @@ impl SorotteGuiShellAppState {
             &MainWindowShellState::from_stored_settings(previous_settings),
         );
         let preserve_connected_room_surface = self.commands.can_disconnect_session;
+        let configured_playlist = self
+            .main_window
+            .playlist
+            .iter()
+            .map(|row| row.label.clone())
+            .collect::<Vec<_>>();
 
         if preserve_connected_room_surface
             || current_snapshot.room_name != previous_baseline.room_name
@@ -82,9 +88,9 @@ impl SorotteGuiShellAppState {
                 })
                 .collect();
         }
-        if current_snapshot.playlist != previous_baseline.playlist
-            || current_snapshot.playlist_source_states != previous_baseline.playlist_source_states
-        {
+        let preserve_runtime_playlist = current_snapshot.playlist != previous_baseline.playlist
+            || configured_playlist == previous_baseline.playlist;
+        if preserve_runtime_playlist {
             self.remember_shared_playlist_undo_snapshot_if_changed(&current_snapshot.playlist);
             let previous_rows = self.main_window.playlist.clone();
             let mut used_previous_rows = vec![false; previous_rows.len()];
@@ -93,24 +99,33 @@ impl SorotteGuiShellAppState {
                 .iter()
                 .enumerate()
                 .map(|(index, label)| {
-                    let source_state = current_snapshot
+                    let previous_row = Self::reconciled_playlist_row(
+                        &previous_rows,
+                        &mut used_previous_rows,
+                        index,
+                        label,
+                        current_snapshot.playlist_entry_ids.get(index).copied(),
+                    );
+                    let mut source_state = current_snapshot
                         .playlist_source_states
                         .get(index)
                         .cloned()
                         .map(|state| self.refreshed_playlist_source_state_for_entry(label, state))
                         .or_else(|| {
-                            Self::reconciled_playlist_source_state(
-                                &previous_rows,
-                                &mut used_previous_rows,
-                                index,
-                                label,
-                            )
-                            .map(|state| {
-                                self.refreshed_playlist_source_state_for_entry(label, state)
+                            previous_row.as_ref().map(|row| {
+                                self.refreshed_playlist_source_state_for_entry(
+                                    label,
+                                    row.source_state.clone(),
+                                )
                             })
                         })
                         .unwrap_or_else(|| self.playlist_source_state_for_entry(label));
+                    if let Some(entry_id) = current_snapshot.playlist_entry_ids.get(index).copied()
+                    {
+                        source_state.entry_id = entry_id;
+                    }
                     super::shell_state::MainWindowPlaylistRow {
+                        entry_id: source_state.entry_id,
                         label: label.clone(),
                         is_selected: false,
                         source_state,
@@ -119,6 +134,7 @@ impl SorotteGuiShellAppState {
                 .collect();
         }
         if current_snapshot.playlist != previous_baseline.playlist
+            || current_snapshot.playlist_entry_ids != previous_baseline.playlist_entry_ids
             || current_snapshot.active_playlist_index != previous_baseline.active_playlist_index
         {
             self.main_window.active_playlist_index = current_snapshot
@@ -332,6 +348,8 @@ impl SorotteGuiShellAppState {
         let last_media_dialog_directory = self.last_media_dialog_directory.clone();
         let last_action_error = self.validation.last_action_error.clone();
         let playlist_undo_snapshot = self.playlist_undo_snapshot.clone();
+        let playlist_source_undo_snapshot = self.playlist_source_undo_snapshot.clone();
+        let playlist_entry_id_undo_snapshot = self.playlist_entry_id_undo_snapshot.clone();
         let playlist_shuffle_nonce = self.playlist_shuffle_nonce;
         let media_index_status = self.media_index_status.clone();
         let player_setup_issue = self.player_setup_issue.clone();
@@ -383,6 +401,8 @@ impl SorotteGuiShellAppState {
         self.notifications = notifications;
         self.last_media_dialog_directory = last_media_dialog_directory;
         self.playlist_undo_snapshot = playlist_undo_snapshot;
+        self.playlist_source_undo_snapshot = playlist_source_undo_snapshot;
+        self.playlist_entry_id_undo_snapshot = playlist_entry_id_undo_snapshot;
         self.playlist_shuffle_nonce = playlist_shuffle_nonce;
         self.media_index_status = media_index_status;
         self.player_setup_issue = player_setup_issue;

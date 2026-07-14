@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use md5::Md5;
@@ -51,6 +51,7 @@ const LEGACY_CHAT_MIN_VERSION: &str = "1.5.0";
 const LEGACY_USER_READY_MIN_VERSION: &str = "1.3.0";
 const LEGACY_MANAGED_ROOMS_MIN_VERSION: &str = "1.3.0";
 const LEGACY_SHARED_PLAYLIST_MIN_VERSION: &str = "1.4.0";
+const MAX_PENDING_LOCAL_PLAYLIST_ECHOES: usize = 64;
 const LEGACY_SET_OTHERS_READINESS_MIN_VERSION: &str = "1.7.2";
 const LEGACY_SHOW_SAME_ROOM_OSD: bool = true;
 const LEGACY_SHOW_OSD_WARNINGS: bool = true;

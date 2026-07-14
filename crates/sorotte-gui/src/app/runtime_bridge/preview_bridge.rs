@@ -10,6 +10,30 @@ impl GuiPreviewRuntimeBridge {
         load_into_shared_playlist: bool,
         playlist_insert_slot: Option<usize>,
     ) -> Vec<GuiShellAction> {
+        Self::preview_open_media_file_actions_with_shuffle(
+            state,
+            paths,
+            load_into_shared_playlist,
+            playlist_insert_slot,
+            false,
+        )
+    }
+
+    pub(in crate::app) fn preview_import_shared_playlist_file_actions(
+        state: Option<&SorotteGuiShellAppState>,
+        path: String,
+        shuffled: bool,
+    ) -> Vec<GuiShellAction> {
+        Self::preview_open_media_file_actions_with_shuffle(state, vec![path], true, None, shuffled)
+    }
+
+    fn preview_open_media_file_actions_with_shuffle(
+        state: Option<&SorotteGuiShellAppState>,
+        paths: Vec<String>,
+        load_into_shared_playlist: bool,
+        playlist_insert_slot: Option<usize>,
+        shuffled: bool,
+    ) -> Vec<GuiShellAction> {
         if paths.is_empty() {
             return Vec::new();
         }
@@ -17,7 +41,13 @@ impl GuiPreviewRuntimeBridge {
         let mut actions = vec![GuiShellAction::SwitchView(GuiShellView::Room)];
         if load_into_shared_playlist {
             match GuiPersistedConfigRuntimeOwner::shared_playlist_open_dispatch_for_paths(paths) {
-                Ok(dispatch) => {
+                Ok(mut dispatch) => {
+                    if shuffled && dispatch.items.len() > 1 {
+                        shuffle_playlist_entries_in_place(
+                            &mut dispatch.items,
+                            0x9E37_79B9_7F4A_7C15,
+                        );
+                    }
                     let (playlist_entries, opened_entry_count) = state
                         .map(|state| {
                             let current_count = state.main_window.playlist.len();
@@ -31,7 +61,7 @@ impl GuiPreviewRuntimeBridge {
                                 });
                             let (playlist_entries, _) = state
                                 .shared_playlist_entries_after_media_open_from_state_with_current_index(
-                                    dispatch.playlist_entries.clone(),
+                                    dispatch.playlist_entries(),
                                     playlist_insert_slot,
                                     current_index,
                                 );
@@ -43,7 +73,7 @@ impl GuiPreviewRuntimeBridge {
                             (playlist_entries, opened_entry_count)
                         })
                         .unwrap_or_else(|| {
-                            let playlist_entries = dispatch.playlist_entries.clone();
+                            let playlist_entries = dispatch.playlist_entries();
                             let opened_entry_count = playlist_entries.len();
                             (playlist_entries, opened_entry_count)
                         });

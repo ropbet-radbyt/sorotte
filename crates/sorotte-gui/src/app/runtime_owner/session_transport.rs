@@ -5,9 +5,23 @@ impl GuiPersistedConfigRuntimeOwner {
         mut self,
         session: Box<dyn GuiSessionRuntimeAdapter + Send>,
     ) -> Self {
-        self.session = Some(session);
+        self.install_session_runtime(session);
         self.session_projects_to_shell = true;
         self
+    }
+
+    pub(in crate::app) fn install_session_runtime(
+        &mut self,
+        session: Box<dyn GuiSessionRuntimeAdapter + Send>,
+    ) {
+        self.session_generation = self.session_generation.wrapping_add(1);
+        self.session = Some(session);
+    }
+
+    pub(in crate::app) fn remove_session_runtime(&mut self) {
+        if self.session.take().is_some() {
+            self.session_generation = self.session_generation.wrapping_add(1);
+        }
     }
 
     fn with_session_default_room(mut self, room: impl Into<String>) -> Self {
@@ -257,7 +271,7 @@ impl GuiPersistedConfigRuntimeOwner {
         if let Some(session_transport) = self.session_transport.as_ref() {
             session_transport.clear_protocol_lines();
         }
-        self.session = None;
+        self.remove_session_runtime();
         self.session_projects_to_shell = false;
         self.session_transport = None;
         self.session_transport_driver = None;
@@ -302,6 +316,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.drain_session_runtime_actions(handle, projected_state);
         self.sync_session_transport_reconnect_state_from_handshake();
         self.finish_pending_session_transport_disconnect(handle, projected_state);
+        self.reconcile_playlist_resolution_scope(handle, projected_state);
     }
 
     pub(in crate::app) fn with_client_core_chat_session_runtime(
@@ -538,6 +553,7 @@ impl GuiPersistedConfigRuntimeOwner {
             if let Some(session) = self.session.as_mut() {
                 let _ = session.drain_gui_actions(projected_state);
             }
+            self.reconcile_playlist_resolution_scope(handle, projected_state);
             return;
         }
         let actions = {
@@ -549,6 +565,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let actions = self.augment_runtime_actions_for_room_transitions(projected_state, actions);
         self.emit_gui_actions_to_attached_player(&actions);
         Self::push_actions_and_project(handle, projected_state, actions);
+        self.reconcile_playlist_resolution_scope(handle, projected_state);
         self.sync_active_shared_playlist_media_and_playstate_impl(projected_state);
     }
 

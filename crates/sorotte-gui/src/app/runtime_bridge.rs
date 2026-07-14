@@ -12,7 +12,7 @@ use super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 use super::shell_state::{
     GuiConfigStorageChangeTarget, GuiMediaSourceProviderId, GuiPendingOperationKind,
     GuiPluginSelection, GuiSavedConfigurationRuntimeSnapshot, GuiShellAction, GuiShellView,
-    GuiTransientNotificationLevel, SorotteGuiShellAppState,
+    GuiTransientNotificationLevel, SorotteGuiShellAppState, shuffle_playlist_entries_in_place,
 };
 use super::support::format_offset_command;
 
@@ -24,6 +24,7 @@ mod traits;
 
 pub(in crate::app) use pending::{
     GuiPendingCompletionRequest, GuiPendingRoomChangeRequest, GuiSharedPlaylistOpenDispatch,
+    GuiSharedPlaylistOpenItem,
 };
 pub(in crate::app) use preview_bridge::GuiPreviewRuntimeBridge;
 pub(in crate::app) use requests::{GuiPlexPlaylistJobCancellationReason, GuiRuntimeRequest};

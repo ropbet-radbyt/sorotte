@@ -11,6 +11,16 @@ impl GuiPersistedConfigRuntimeOwner {
         Self::shared_playlist_open_dispatch_for_paths_impl(paths)
     }
 
+    pub(super) fn import_shared_playlist_file_runtime(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        path: String,
+        shuffled: bool,
+    ) {
+        self.import_shared_playlist_file_runtime_impl(handle, projected_state, path, shuffled);
+    }
+
     pub(super) fn seek_unavailable_message(&self, offset_seconds: f64) -> String {
         self.seek_unavailable_message_impl(offset_seconds)
     }

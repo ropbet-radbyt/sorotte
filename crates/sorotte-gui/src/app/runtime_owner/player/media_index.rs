@@ -110,12 +110,16 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn automatic_media_resolution_trigger(
         &self,
         target: &str,
+        playlist_entry_id: Option<GuiPlaylistEntryId>,
+        playlist_generation: u64,
         source_provider: &str,
         roots: &[String],
         media_match_remote_targets: String,
     ) -> GuiAutomaticMediaResolutionTrigger {
         GuiAutomaticMediaResolutionTrigger {
             target: target.to_owned(),
+            playlist_entry_id,
+            playlist_generation,
             source_provider: source_provider.to_owned(),
             roots: roots.to_vec(),
             media_match_remote_targets,

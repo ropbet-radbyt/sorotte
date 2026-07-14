@@ -2,7 +2,8 @@ use super::*;
 
 use crate::app::runtime_owner::{GuiPlexStreamResolveOutcome, GuiPlexStreamResolveWorkerResult};
 use crate::app::{
-    GuiClientCoreChatSessionRuntimeAdapter, GuiMediaSourceProviderId, GuiPlaylistSourceState,
+    GuiClientCoreChatSessionRuntimeAdapter, GuiMediaSourceProviderId, GuiPlaylistDefaultSourceId,
+    GuiPlaylistSourcePolicy, GuiPlaylistSourceSelectionOrigin, GuiPlaylistSourceState,
     GuiPlaylistSourceStatus,
 };
 
@@ -816,11 +817,11 @@ fn gui_persisted_config_runtime_owner_honors_selected_plex_source_when_local_med
 }
 
 #[test]
-fn gui_persisted_config_runtime_owner_prefers_local_media_for_selected_media_match_source() {
-    let root = test_temp_root("selected-media-match-local-first-playlist-activation");
+fn gui_persisted_config_runtime_owner_honors_forced_media_match_over_available_local_media() {
+    let root = test_temp_root("selected-media-match-forced-playlist-activation");
     let selected_media_path = root.join("Episode 2.mkv");
     std::fs::write(&selected_media_path, b"test")
-        .expect("selected Media Match local-first fixture should be written");
+        .expect("selected Media Match force-policy fixture should be written");
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
@@ -834,8 +835,68 @@ fn gui_persisted_config_runtime_owner_prefers_local_media_for_selected_media_mat
         ..StoredClientSettingsMvp::default()
     });
     state.apply_shared_playlist_entries(vec!["Episode 2.mkv".to_owned()], Some(0), false);
-    state.main_window.playlist[0].source_state =
-        GuiPlaylistSourceState::for_provider(GuiMediaSourceProviderId::media_matching());
+    assert!(state.apply(GuiShellAction::SelectMainWindowPlaylistSource {
+        index: 0,
+        provider_id: GuiMediaSourceProviderId::media_matching(),
+    }));
+    assert_eq!(
+        state.main_window.playlist[0].source_state.policy,
+        GuiPlaylistSourcePolicy::ForceMediaMatching
+    );
+    assert_eq!(
+        state.main_window.playlist[0].source_state.selection_origin,
+        GuiPlaylistSourceSelectionOrigin::UserOverride
+    );
+
+    let outcome = owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
+
+    assert_eq!(outcome, SelectedPlaylistMediaSyncOutcome::NoChange);
+    assert!(
+        owner.player_local_file.is_none(),
+        "a manual Media Matching override must not be displaced by an exact local filename match"
+    );
+    assert!(
+        owner.pending_attached_media_resolution.is_none(),
+        "ForceMediaMatching must not start the ordinary local media-search path"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_playlist_default_media_match_remains_local_first() {
+    let root = test_temp_root("default-media-match-local-first-playlist-activation");
+    let selected_media_path = root.join("Episode 2.mkv");
+    std::fs::write(&selected_media_path, b"test")
+        .expect("default Media Match local-first fixture should be written");
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    owner.active_shared_playlist_index = Some(0);
+
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
+        media_matching_plugin_enabled: Some(true),
+        media_match_fingerprinting_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    assert!(
+        state.apply(GuiShellAction::SelectMainWindowPlaylistDefaultSource {
+            source_id: GuiPlaylistDefaultSourceId::provider(
+                GuiMediaSourceProviderId::media_matching()
+            ),
+        })
+    );
+    state.apply_shared_playlist_entries(vec!["Episode 2.mkv".to_owned()], Some(0), false);
+    assert_eq!(
+        state.main_window.playlist[0].source_state.policy,
+        GuiPlaylistSourcePolicy::PreferMediaMatching
+    );
+    assert_eq!(
+        state.main_window.playlist[0].source_state.selection_origin,
+        GuiPlaylistSourceSelectionOrigin::PlaylistDefault
+    );
 
     let outcome = owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
     let selected_media_path = selected_media_path.to_string_lossy().into_owned();
@@ -847,11 +908,11 @@ fn gui_persisted_config_runtime_owner_prefers_local_media_for_selected_media_mat
             .as_ref()
             .and_then(|file| file.path.as_deref()),
         Some(selected_media_path.as_str()),
-        "Media Matching selection should not displace an available local match"
+        "a Media Matching playlist default should preserve local-first resolution"
     );
     assert!(
         owner.media_match_remote_lookup_rx.is_none(),
-        "Media Matching lookup should not run when local media resolved first"
+        "preferred Media Matching should not run when local media resolved first"
     );
 
     let _ = std::fs::remove_dir_all(&root);
@@ -889,6 +950,145 @@ fn gui_persisted_config_runtime_owner_queues_plex_stream_while_media_search_inde
     assert!(
         owner.player_local_file.is_none(),
         "the player should wait until the Plex stream worker resolves a playable URL"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_waits_for_pending_local_index_before_ready_plex_fallback() {
+    let root = test_temp_root("ready-plex-waits-for-pending-local-index");
+    std::fs::create_dir_all(&root).expect("pending local index fixture root should be created");
+
+    let playlist_uri = sorotte_plex::PlexPlaylistUri {
+        machine_identifier: "machine-1".to_owned(),
+        rating_key: "123".to_owned(),
+        title: Some("Episode 1".to_owned()),
+        file_name: Some("Episode 1.mkv".to_owned()),
+        duration_millis: Some(90_000),
+        size_bytes: Some(123_456),
+        media_type: Some(sorotte_plex::PlexMediaType::Episode),
+    };
+    let plex_uri = sorotte_plex::format_plex_playlist_uri(&playlist_uri);
+    let logical_file = sorotte_player_api::LocalFileUpdate::new("Episode 1.mkv")
+        .with_path(plex_uri.clone())
+        .with_duration_seconds(90.0)
+        .with_size_bytes(123_456);
+    let stream_target = sorotte_plex::PlexStreamTarget {
+        playlist_uri,
+        matched_item: sorotte_plex::PlexMatchedItem {
+            rating_key: "123".to_owned(),
+            title: "Episode 1".to_owned(),
+            media_type: sorotte_plex::PlexMediaType::Episode,
+            duration_millis: Some(90_000),
+        },
+        logical_file: logical_file.clone(),
+        playback_url: sorotte_plex::SecretPlexPlaybackUrl::new(
+            "http://127.0.0.1:32400/library/parts/1/file.mkv?X-Plex-Token=secret-token",
+        ),
+    };
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    owner.active_shared_playlist_index = Some(0);
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
+        folder_search_timeout_seconds: Some(0.1),
+        plex_plugin_enabled: Some(true),
+        plex_streaming_enabled: Some(true),
+        plex_user_token: Some("user-token".into()),
+        plex_selected_server_id: Some("machine-1".to_owned()),
+        plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
+        plex_selected_server_token: Some("server-token".into()),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.apply_shared_playlist_entries(vec![plex_uri], Some(0), false);
+
+    let first_outcome = owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
+    assert_eq!(first_outcome, SelectedPlaylistMediaSyncOutcome::NoChange);
+    let original_pending_search = owner
+        .pending_attached_media_resolution
+        .take()
+        .expect("automatic resolution should start local indexing");
+    original_pending_search
+        .cancel_flag
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let search_roots = original_pending_search.roots.clone();
+    let (search_tx, search_rx) = std::sync::mpsc::channel();
+    owner.pending_attached_media_resolution = Some(GuiPendingAttachedMediaResolution {
+        roots: search_roots.clone(),
+        cancel_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        latest_progress: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        result_rx: search_rx,
+    });
+
+    let trigger_key = owner
+        .plex_stream_resolve_trigger_key
+        .clone()
+        .expect("automatic resolution should queue Plex concurrently");
+    let operation_context = owner
+        .plex_stream_resolve_context
+        .clone()
+        .expect("queued Plex resolution should retain its operation context");
+    let (plex_tx, plex_rx) = std::sync::mpsc::channel();
+    plex_tx
+        .send(GuiPlexStreamResolveWorkerResult {
+            operation_context: operation_context.clone(),
+            trigger_key: trigger_key.clone(),
+            result: Ok(GuiPlexStreamResolveOutcome {
+                stream_target: Some(stream_target.clone()),
+                cache: sorotte_plex::PlexMatchCache::default(),
+            }),
+            staged_cache_write: None,
+        })
+        .expect("ready Plex fallback should be queued");
+    owner.plex_stream_resolve_rx = Some(plex_rx);
+    owner.plex_stream_resolve_result = None;
+    assert!(owner.pump_plex_stream_resolution_worker(&state));
+
+    let waiting_outcome = owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
+    assert_eq!(waiting_outcome, SelectedPlaylistMediaSyncOutcome::NoChange);
+    assert!(
+        owner.player_local_file.is_none(),
+        "a ready Plex stream must remain a fallback while higher-priority local indexing is pending"
+    );
+    assert!(owner.pending_attached_media_resolution.is_some());
+    assert!(
+        owner.plex_stream_resolve_result.is_some(),
+        "the ready Plex result must remain available while the local index has priority"
+    );
+
+    let root_key = search_roots
+        .first()
+        .cloned()
+        .expect("the configured search root should have a normalized key");
+    search_tx
+        .send(GuiAttachedMediaSearchBuildStatus::Completed(vec![
+            GuiAttachedMediaSearchRootRefreshResult {
+                root_key: root_key.clone(),
+                index: Some(GuiAttachedMediaSearchRootIndex {
+                    root_key,
+                    root_path: root.clone(),
+                    built_at_unix_ms: 1,
+                    candidates_by_name: std::collections::HashMap::new(),
+                }),
+                error: None,
+            },
+        ]))
+        .expect("local indexing completion should be queued");
+    let _ = owner.poll_attached_media_search_index_build(std::time::Duration::from_secs(1));
+
+    let fallback_outcome =
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
+    assert_eq!(
+        fallback_outcome,
+        SelectedPlaylistMediaSyncOutcome::OpenedNewMedia
+    );
+    assert_eq!(
+        owner.player_local_file,
+        Some(logical_file),
+        "Plex should become eligible once the configured local-search worker settles without a match"
     );
 
     let _ = std::fs::remove_dir_all(&root);
@@ -1034,6 +1234,232 @@ fn gui_persisted_config_runtime_owner_queues_selected_plex_stream_without_blocki
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_releases_only_the_matching_ready_plex_fallback_for_non_plex_policy()
+ {
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.active_shared_playlist_index = Some(0);
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        plex_plugin_enabled: Some(true),
+        plex_streaming_enabled: Some(true),
+        plex_user_token: Some("user-token".into()),
+        plex_selected_server_id: Some("machine-1".to_owned()),
+        plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
+        plex_selected_server_token: Some("server-token".into()),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.apply_shared_playlist_entries(
+        vec!["Episode A.mkv".to_owned(), "Episode B.mkv".to_owned()],
+        Some(0),
+        false,
+    );
+    state.main_window.active_playlist_index = Some(0);
+
+    let (_sync_tx, sync_rx) = std::sync::mpsc::channel();
+    owner.plex_sync_rx = Some(sync_rx);
+    assert_eq!(
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+        SelectedPlaylistMediaSyncOutcome::NoChange
+    );
+    let trigger_key = owner
+        .plex_stream_resolve_trigger_key
+        .take()
+        .expect("automatic resolution should retain the active row's Plex trigger");
+    let operation_context = owner
+        .plex_stream_resolve_context
+        .take()
+        .expect("automatic resolution should retain its Plex operation context");
+    owner.plex_sync_rx = None;
+    let ready_result = || GuiPlexStreamResolveWorkerResult {
+        operation_context: operation_context.clone(),
+        trigger_key: trigger_key.clone(),
+        result: Ok(GuiPlexStreamResolveOutcome {
+            stream_target: None,
+            cache: sorotte_plex::PlexMatchCache::default(),
+        }),
+        staged_cache_write: None,
+    };
+    owner.plex_stream_resolve_result = Some(ready_result());
+    assert!(owner.plex_stream_resolution_owns_cache_snapshot());
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    assert!(owner.handle_resolve_playlist_source_request(
+        &handle,
+        &mut state,
+        1,
+        GuiMediaSourceProviderId::local(),
+    ));
+    assert!(
+        owner.plex_stream_resolution_owns_cache_snapshot(),
+        "resolving another row must not discard the active row's ready Plex fallback"
+    );
+
+    assert!(owner.handle_resolve_playlist_source_request(
+        &handle,
+        &mut state,
+        0,
+        GuiMediaSourceProviderId::local(),
+    ));
+    assert!(
+        !owner.plex_stream_resolution_owns_cache_snapshot(),
+        "a manual non-Plex selection must release the matching ready Plex fallback"
+    );
+
+    owner.plex_stream_resolve_result = Some(ready_result());
+    let source_state = &mut state.main_window.playlist[0].source_state;
+    source_state.policy = GuiPlaylistSourcePolicy::ForceMediaMatching;
+    source_state.selection_origin = GuiPlaylistSourceSelectionOrigin::UserOverride;
+    source_state.current_provider_id = GuiMediaSourceProviderId::media_matching();
+    owner.last_attached_media_resolution_trigger = None;
+    assert_eq!(
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+        SelectedPlaylistMediaSyncOutcome::NoChange
+    );
+    assert!(
+        !owner.plex_stream_resolution_owns_cache_snapshot(),
+        "an observed non-Plex row policy must release the matching ready Plex fallback"
+    );
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_releases_plex_result_completed_after_active_target_switch() {
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.active_shared_playlist_index = Some(0);
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        plex_plugin_enabled: Some(true),
+        plex_streaming_enabled: Some(true),
+        plex_user_token: Some("user-token".into()),
+        plex_selected_server_id: Some("machine-1".to_owned()),
+        plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
+        plex_selected_server_token: Some("server-token".into()),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.apply_shared_playlist_entries(
+        vec!["Episode A.mkv".to_owned(), "Episode B.mkv".to_owned()],
+        Some(0),
+        false,
+    );
+    state.main_window.active_playlist_index = Some(0);
+
+    let (_sync_tx, sync_rx) = std::sync::mpsc::channel();
+    owner.plex_sync_rx = Some(sync_rx);
+    assert_eq!(
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+        SelectedPlaylistMediaSyncOutcome::NoChange
+    );
+    let trigger_key = owner
+        .plex_stream_resolve_trigger_key
+        .clone()
+        .expect("automatic resolution should retain row A's Plex trigger");
+    let operation_context = owner
+        .plex_stream_resolve_context
+        .clone()
+        .expect("automatic resolution should retain row A's Plex context");
+    owner.plex_sync_rx = None;
+    let (result_tx, result_rx) = std::sync::mpsc::channel();
+    result_tx
+        .send(GuiPlexStreamResolveWorkerResult {
+            operation_context,
+            trigger_key,
+            result: Ok(GuiPlexStreamResolveOutcome {
+                stream_target: None,
+                cache: sorotte_plex::PlexMatchCache::default(),
+            }),
+            staged_cache_write: None,
+        })
+        .expect("row A's Plex result should queue");
+    owner.plex_stream_resolve_rx = Some(result_rx);
+
+    state.main_window.active_playlist_index = Some(1);
+    owner.active_shared_playlist_index = Some(1);
+    let source_state = &mut state.main_window.playlist[1].source_state;
+    source_state.policy = GuiPlaylistSourcePolicy::ForceLocal;
+    source_state.selection_origin = GuiPlaylistSourceSelectionOrigin::UserOverride;
+    source_state.current_provider_id = GuiMediaSourceProviderId::local();
+
+    assert!(owner.pump_plex_stream_resolution_worker(&state));
+    assert!(
+        owner.plex_stream_resolution_owns_cache_snapshot(),
+        "the late row-A result should first be retained by the worker handoff"
+    );
+    assert_eq!(
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+        SelectedPlaylistMediaSyncOutcome::NoChange
+    );
+    assert!(
+        !owner.plex_stream_resolution_owns_cache_snapshot(),
+        "row A's completed result must be released once active row B supersedes it"
+    );
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_consumes_terminal_plex_results_without_candidates() {
+    let terminal_results = [
+        (
+            "no match",
+            Ok(GuiPlexStreamResolveOutcome {
+                stream_target: None,
+                cache: sorotte_plex::PlexMatchCache::default(),
+            }),
+        ),
+        ("resolution error", Err("terminal Plex failure".to_owned())),
+    ];
+
+    for (case, terminal_result) in terminal_results {
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        owner.active_shared_playlist_index = Some(0);
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            shared_playlist_enabled: Some(true),
+            plex_plugin_enabled: Some(true),
+            plex_streaming_enabled: Some(true),
+            plex_user_token: Some("user-token".into()),
+            plex_selected_server_id: Some("machine-1".to_owned()),
+            plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
+            plex_selected_server_token: Some("server-token".into()),
+            ..StoredClientSettingsMvp::default()
+        });
+        state.apply_shared_playlist_entries(vec!["Episode A.mkv".to_owned()], Some(0), false);
+        state.main_window.active_playlist_index = Some(0);
+
+        let (_sync_tx, sync_rx) = std::sync::mpsc::channel();
+        owner.plex_sync_rx = Some(sync_rx);
+        assert_eq!(
+            owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+            SelectedPlaylistMediaSyncOutcome::NoChange,
+            "{case} fixture should first queue Plex resolution"
+        );
+        let trigger_key = owner
+            .plex_stream_resolve_trigger_key
+            .take()
+            .expect("automatic resolution should retain its Plex trigger");
+        let operation_context = owner
+            .plex_stream_resolve_context
+            .take()
+            .expect("automatic resolution should retain its Plex operation context");
+        owner.plex_sync_rx = None;
+        owner.plex_stream_resolve_result = Some(GuiPlexStreamResolveWorkerResult {
+            operation_context,
+            trigger_key,
+            result: terminal_result,
+            staged_cache_write: None,
+        });
+        owner.last_attached_media_resolution_trigger = None;
+        assert!(owner.plex_stream_resolution_owns_cache_snapshot());
+
+        assert_eq!(
+            owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+            SelectedPlaylistMediaSyncOutcome::NoChange,
+            "{case} has no playable fallback"
+        );
+        assert!(
+            !owner.plex_stream_resolution_owns_cache_snapshot(),
+            "{case} must be consumed instead of blocking Plex watch sync indefinitely"
+        );
+    }
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_retries_selected_plex_source_when_worker_finishes() {
     let local_entry = "Episode 1.mkv";
     let playlist_uri = sorotte_plex::PlexPlaylistUri {
@@ -1156,6 +1582,210 @@ fn gui_persisted_config_runtime_owner_retries_selected_plex_source_when_worker_f
         state.main_window.playlist[0].source_state.detail.as_deref(),
         Some("Loaded Plex stream target.")
     );
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_pending_duplicate_source_tracks_entry_id_across_reorders() {
+    let duplicate_label = "Episode 1.mkv";
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        plex_plugin_enabled: Some(true),
+        plex_streaming_enabled: Some(true),
+        plex_user_token: Some("user-token".into()),
+        plex_selected_server_id: Some("machine-1".to_owned()),
+        plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
+        plex_selected_server_token: Some("server-token".into()),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.apply_shared_playlist_entries(
+        vec![
+            duplicate_label.to_owned(),
+            "Interlude.mkv".to_owned(),
+            duplicate_label.to_owned(),
+            "Finale.mkv".to_owned(),
+        ],
+        Some(2),
+        false,
+    );
+    state.main_window.playback.can_manage_playlist = true;
+    let first_duplicate_id = state.main_window.playlist[0].entry_id;
+    let target_entry_id = state.main_window.playlist[2].entry_id;
+    assert_ne!(first_duplicate_id, target_entry_id);
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    assert!(owner.handle_resolve_playlist_source_request(
+        &handle,
+        &mut state,
+        2,
+        GuiMediaSourceProviderId::plex_stream(),
+    ));
+    for action in handle.drain_actions() {
+        assert!(state.apply(action));
+    }
+    assert!(
+        owner
+            .pending_playlist_source_resolution
+            .as_ref()
+            .is_some_and(|pending| {
+                pending.index == 2
+                    && pending.entry_id == target_entry_id
+                    && pending.target == duplicate_label
+            })
+    );
+
+    assert!(state.apply(GuiShellAction::MoveMainWindowPlaylistRow {
+        from_index: 2,
+        to_index: 0,
+    }));
+    assert_eq!(state.main_window.playlist[0].entry_id, target_entry_id);
+    assert_eq!(state.main_window.playlist[1].entry_id, first_duplicate_id);
+    assert!(owner.retry_pending_playlist_source_resolution(&handle, &mut state));
+    for action in handle.drain_actions() {
+        assert!(state.apply(action));
+    }
+    assert!(
+        owner
+            .pending_playlist_source_resolution
+            .as_ref()
+            .is_some_and(|pending| pending.index == 0 && pending.entry_id == target_entry_id),
+        "the pending source must follow the moved duplicate row"
+    );
+
+    state.apply_shared_playlist_entries(
+        vec![
+            "Interlude.mkv".to_owned(),
+            duplicate_label.to_owned(),
+            "Finale.mkv".to_owned(),
+            duplicate_label.to_owned(),
+        ],
+        Some(3),
+        false,
+    );
+    let first_matching_index = state
+        .main_window
+        .playlist
+        .iter()
+        .position(|row| row.label == duplicate_label)
+        .expect("a duplicate row should remain");
+    let target_index = state
+        .main_window
+        .playlist
+        .iter()
+        .position(|row| row.entry_id == target_entry_id)
+        .expect("the pending row identity should survive projection");
+    assert_eq!(first_matching_index, 1);
+    assert_eq!(target_index, 3);
+    assert_eq!(
+        state.main_window.playlist[first_matching_index].entry_id,
+        first_duplicate_id
+    );
+
+    assert!(owner.retry_pending_playlist_source_resolution(&handle, &mut state));
+    for action in handle.drain_actions() {
+        assert!(state.apply(action));
+    }
+    assert!(
+        owner
+            .pending_playlist_source_resolution
+            .as_ref()
+            .is_some_and(|pending| pending.index == 3 && pending.entry_id == target_entry_id),
+        "retry must resolve by entry_id instead of choosing the first duplicate label"
+    );
+    assert_eq!(
+        state.main_window.playlist[target_index]
+            .source_state
+            .current_provider_id,
+        GuiMediaSourceProviderId::plex_stream()
+    );
+    assert_eq!(
+        state.main_window.playlist[target_index].source_state.status,
+        GuiPlaylistSourceStatus::Pending
+    );
+    assert_eq!(
+        state.main_window.playlist[first_matching_index]
+            .source_state
+            .current_provider_id,
+        GuiMediaSourceProviderId::local()
+    );
+    assert_ne!(
+        state.main_window.playlist[first_matching_index]
+            .source_state
+            .status,
+        GuiPlaylistSourceStatus::Pending
+    );
+
+    let order_before_shuffle = state
+        .main_window
+        .playlist
+        .iter()
+        .map(|row| row.entry_id)
+        .collect::<Vec<_>>();
+    for _ in 0..16 {
+        assert!(state.apply(GuiShellAction::ShuffleEntireSharedPlaylist));
+        if state
+            .main_window
+            .playlist
+            .iter()
+            .map(|row| row.entry_id)
+            .collect::<Vec<_>>()
+            != order_before_shuffle
+        {
+            break;
+        }
+    }
+    let shuffled_target_index = state
+        .main_window
+        .playlist
+        .iter()
+        .position(|row| row.entry_id == target_entry_id)
+        .expect("the pending duplicate identity should survive an actual shuffle");
+    assert!(owner.retry_pending_playlist_source_resolution(&handle, &mut state));
+    for action in handle.drain_actions() {
+        assert!(state.apply(action));
+    }
+    assert!(
+        owner
+            .pending_playlist_source_resolution
+            .as_ref()
+            .is_some_and(|pending| {
+                pending.index == shuffled_target_index && pending.entry_id == target_entry_id
+            }),
+        "an actual shuffle must keep pending resolution attached to the exact duplicate row"
+    );
+    assert_eq!(
+        state.main_window.playlist[shuffled_target_index]
+            .source_state
+            .status,
+        GuiPlaylistSourceStatus::Pending
+    );
+    assert!(state.main_window.playlist.iter().any(|row| {
+        row.entry_id == first_duplicate_id
+            && row.source_state.status != GuiPlaylistSourceStatus::Pending
+    }));
+
+    let source_states_before_stale_retry = state
+        .main_window
+        .playlist
+        .iter()
+        .map(|row| row.source_state.clone())
+        .collect::<Vec<_>>();
+    owner.playlist_resolution.generation = owner.playlist_resolution.generation.wrapping_add(1);
+    assert!(
+        !owner.retry_pending_playlist_source_resolution(&handle, &mut state),
+        "a request from an earlier playlist generation must not be rewritten onto a surviving row ID"
+    );
+    assert!(owner.pending_playlist_source_resolution.is_none());
+    assert_eq!(
+        state
+            .main_window
+            .playlist
+            .iter()
+            .map(|row| row.source_state.clone())
+            .collect::<Vec<_>>(),
+        source_states_before_stale_retry
+    );
+    assert!(handle.drain_actions().is_empty());
 }
 
 #[test]

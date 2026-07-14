@@ -26,6 +26,18 @@ impl SorotteGuiShellAppState {
                 entries,
                 shuffled,
             } => self.load_shared_playlist_from_file(path, entries, shuffled),
+            GuiShellAction::RequestSharedPlaylistFileImport { path, .. } => {
+                self.remember_media_dialog_directory(&path);
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::RequestSharedPlaylistMediaFilesAdd { paths, .. } => {
+                if let Some(path) = paths.first() {
+                    self.remember_media_dialog_directory(path);
+                }
+                self.clear_action_error_and_refresh();
+                true
+            }
             GuiShellAction::SaveSharedPlaylistToFile(path) => {
                 self.save_shared_playlist_to_file(path)
             }

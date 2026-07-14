@@ -30,6 +30,10 @@ pub(in crate::app) enum GuiRuntimeRequest {
         load_into_shared_playlist: bool,
         playlist_insert_slot: Option<usize>,
     },
+    ImportSharedPlaylistFile {
+        path: String,
+        shuffled: bool,
+    },
     OpenMainWindowUserMedia(String),
     OpenMainWindowUserContainingFolder(String),
     UndoSeek,
@@ -134,6 +138,11 @@ impl std::fmt::Debug for GuiRuntimeRequest {
                 .field("load_into_shared_playlist", load_into_shared_playlist)
                 .field("playlist_insert_slot", playlist_insert_slot)
                 .finish(),
+            Self::ImportSharedPlaylistFile { shuffled, .. } => formatter
+                .debug_struct("ImportSharedPlaylistFile")
+                .field("path", &sorotte_secret::REDACTED_SECRET)
+                .field("shuffled", shuffled)
+                .finish(),
             Self::OpenMainWindowUserMedia(_) => formatter
                 .debug_tuple("OpenMainWindowUserMedia")
                 .field(&sorotte_secret::REDACTED_SECRET)
@@ -194,6 +203,10 @@ mod media_target_debug_tests {
                 paths: vec![secret.to_owned()],
                 load_into_shared_playlist: false,
                 playlist_insert_slot: None,
+            },
+            GuiRuntimeRequest::ImportSharedPlaylistFile {
+                path: secret.to_owned(),
+                shuffled: false,
             },
             GuiRuntimeRequest::OpenMainWindowUserMedia(secret.to_owned()),
             GuiRuntimeRequest::OpenMainWindowUserContainingFolder(secret.to_owned()),

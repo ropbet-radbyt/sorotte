@@ -6,7 +6,7 @@ use rfd::FileDialog;
 use super::render_egui::GuiWidgetEguiRenderer;
 use super::shell_state::SorotteGuiShellAppState;
 use super::startup_support::env_trimmed;
-use super::support::{normalized_editable_text, shared_playlist_entry_for_media_path};
+use super::support::normalized_editable_text;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum GuiDroppedFilesTarget {
@@ -50,13 +50,6 @@ impl std::fmt::Debug for GuiDroppedFilesRequest {
 }
 
 impl GuiWidgetEguiRenderer {
-    pub(super) fn shared_playlist_entries_for_media_paths(paths: Vec<String>) -> Vec<String> {
-        paths
-            .iter()
-            .filter_map(|path| shared_playlist_entry_for_media_path(path))
-            .collect()
-    }
-
     pub(super) fn dropped_files_request_for_input(
         state: &SorotteGuiShellAppState,
         playlist_drop_target_hovered: bool,

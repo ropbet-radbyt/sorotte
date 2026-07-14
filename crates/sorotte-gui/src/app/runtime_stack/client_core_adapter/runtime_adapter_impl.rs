@@ -58,6 +58,17 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         self.shared_playlist_control_available()
     }
 
+    fn current_room_playlist_revision(&self) -> Option<u64> {
+        self.projected_current_room_playlist()
+            .map(|playlist| playlist.revision)
+    }
+
+    fn current_room_playlist_remote_revision(&self) -> u64 {
+        self.runtime
+            .session()
+            .current_room_playlist_remote_revision()
+    }
+
     fn begin_outbound_protocol_delivery(
         &mut self,
     ) -> Result<Option<GuiOutboundProtocolDelivery>, String> {
@@ -434,6 +445,20 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         files: Vec<String>,
         selected_index: Option<usize>,
     ) -> Result<(), String> {
+        let already_matches_projection =
+            self.projected_current_room_playlist()
+                .is_some_and(|playlist| {
+                    playlist.files.as_slice() == files.as_slice()
+                        && selected_index.is_none_or(|requested_index| {
+                            i64::try_from(requested_index).is_ok_and(|requested_index| {
+                                playlist.index == Some(requested_index)
+                            })
+                        })
+                });
+        if already_matches_projection && self.shared_playlist_control_available() {
+            return Ok(());
+        }
+
         match self
             .runtime
             .run_replace_playlist(files.clone(), selected_index)

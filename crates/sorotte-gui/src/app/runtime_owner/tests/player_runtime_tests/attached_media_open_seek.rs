@@ -84,6 +84,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
         config_path: None,
         legacy_projection: None,
         session: None,
+        session_generation: 0,
         session_projects_to_shell: false,
         session_transport: None,
         session_transport_driver: None,
@@ -112,6 +113,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
         last_published_local_file: None,
         last_published_media_match_signature: None,
         local_shared_playlist_media_match_signature_path: None,
+        playlist_resolution: GuiPlaylistResolutionCoordinator::default(),
         attached_media_search_index: None,
         attached_media_search_next_retry_at: None,
         pending_attached_media_resolution: None,
@@ -182,17 +184,51 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
         player_path: Some("mpv".to_owned()),
         ..StoredClientSettingsMvp::default()
     });
+    let media_root = test_temp_root("attached-media-open-seek");
+    let episode1_path = media_root.join("episode1.mkv");
+    let episode2_path = media_root.join("episode2.mkv");
+    std::fs::write(&episode1_path, b"one").expect("first media fixture should be written");
+    std::fs::write(&episode2_path, b"two").expect("second media fixture should be written");
 
     handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
         paths: vec![
-            "C:/Media/episode1.mkv".to_owned(),
-            "C:/Media/episode2.mkv".to_owned(),
+            episode1_path.to_string_lossy().into_owned(),
+            episode2_path.to_string_lossy().into_owned(),
         ],
         load_into_shared_playlist: false,
         playlist_insert_slot: None,
     });
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     let open_actions = without_media_match_runtime_snapshots(handle.drain_actions());
+    let playlist_snapshots = open_actions
+        .iter()
+        .filter_map(|action| match action {
+            GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot)
+                if snapshot.playlist.len() == 2 =>
+            {
+                Some(snapshot)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(playlist_snapshots.len(), 2);
+    let opened_entry_ids = playlist_snapshots[0].playlist_entry_ids.clone();
+    assert_eq!(opened_entry_ids.len(), 2);
+    for snapshot in playlist_snapshots {
+        assert_eq!(snapshot.playlist_entry_ids, opened_entry_ids);
+        assert_eq!(
+            snapshot.playlist_source_states.len(),
+            opened_entry_ids.len()
+        );
+        assert!(
+            snapshot
+                .playlist_source_states
+                .iter()
+                .zip(&opened_entry_ids)
+                .all(|(source_state, entry_id)| source_state.entry_id == *entry_id),
+            "runtime snapshots should keep source states aligned with stable playlist row IDs",
+        );
+    }
     assert_eq!(
         open_actions,
         vec![
@@ -209,6 +245,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
                     false,
                 )],
                 playlist: vec!["episode1.mkv".to_owned(), "episode2.mkv".to_owned()],
+                playlist_entry_ids: opened_entry_ids.clone(),
                 playlist_source_states: expected_playlist_source_states_for_entries(
                     &state,
                     &["episode1.mkv", "episode2.mkv"],
@@ -259,6 +296,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
                     false,
                 )],
                 playlist: vec!["episode1.mkv".to_owned(), "episode2.mkv".to_owned()],
+                playlist_entry_ids: opened_entry_ids,
                 playlist_source_states: expected_playlist_source_states_for_entries(
                     &state,
                     &["episode1.mkv", "episode2.mkv"],
@@ -387,7 +425,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .opened_paths,
-        vec!["C:/Media/episode1.mkv".to_owned()]
+        vec![episode1_path.to_string_lossy().into_owned()]
     );
     assert_eq!(
         player_state
@@ -515,6 +553,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
             .set_paused_values,
         vec![true, false, true]
     );
+    let _ = std::fs::remove_dir_all(media_root);
 }
 
 #[test]

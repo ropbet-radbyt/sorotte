@@ -142,6 +142,43 @@ fn gui_shell_dispatch_plan_routes_plugin_enablement_to_runtime_owner() {
 }
 
 #[test]
+fn gui_shell_dispatch_plan_routes_playlist_file_import_and_add_files_with_exact_paths() {
+    let state = runtime_ready_state();
+    let import = GuiShellAction::RequestSharedPlaylistFileImport {
+        path: "C:/Users/alice/Lists/room.m3u".to_owned(),
+        shuffled: true,
+    };
+    let add_files = GuiShellAction::RequestSharedPlaylistMediaFilesAdd {
+        paths: vec![
+            "C:/Users/alice/Videos/one/episode.mkv".to_owned(),
+            "C:/Users/alice/Videos/two/episode.mkv".to_owned(),
+        ],
+        playlist_insert_slot: 2,
+    };
+    let plan =
+        GuiShellDispatchPlan::from_shell_actions(&state, vec![import.clone(), add_files.clone()]);
+
+    assert_eq!(plan.shell_actions, vec![import, add_files]);
+    assert_eq!(
+        plan.runtime_requests,
+        vec![
+            GuiRuntimeRequest::ImportSharedPlaylistFile {
+                path: "C:/Users/alice/Lists/room.m3u".to_owned(),
+                shuffled: true,
+            },
+            GuiRuntimeRequest::OpenMediaFiles {
+                paths: vec![
+                    "C:/Users/alice/Videos/one/episode.mkv".to_owned(),
+                    "C:/Users/alice/Videos/two/episode.mkv".to_owned(),
+                ],
+                load_into_shared_playlist: true,
+                playlist_insert_slot: Some(2),
+            },
+        ]
+    );
+}
+
+#[test]
 fn gui_shell_dispatch_plan_routes_plex_playlist_picker_requests_to_runtime_owner() {
     let mut state = runtime_ready_state();
     state.plex_playlist_search = Some(super::super::shell_state::GuiPlexPlaylistSearchState {

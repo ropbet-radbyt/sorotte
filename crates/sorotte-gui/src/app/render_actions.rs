@@ -11,8 +11,7 @@ use super::shell_state::{
     GuiConfigurationTab, GuiDialogControlKind, GuiDraftRuntimeSnapshot, GuiMediaSourceProviderId,
     GuiPlaylistDefaultSourceId, GuiPluginSelection, GuiShellAction, GuiShellModal, GuiShellView,
     GuiTransientNotificationLevel, SorotteGuiShellAppState, browser_domain_from_url,
-    load_playlist_entries_from_path, playlist_entries_from_multiline_text,
-    save_playlist_entries_to_path,
+    playlist_entries_from_multiline_text, save_playlist_entries_to_path,
 };
 use super::support::{nonempty_room_name_text, normalized_editable_text};
 use super::widget_tree::GuiWidgetNode;

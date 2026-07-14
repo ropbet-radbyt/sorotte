@@ -153,6 +153,14 @@ pub(in crate::app) enum GuiShellAction {
         entries: Vec<String>,
         shuffled: bool,
     },
+    RequestSharedPlaylistFileImport {
+        path: String,
+        shuffled: bool,
+    },
+    RequestSharedPlaylistMediaFilesAdd {
+        paths: Vec<String>,
+        playlist_insert_slot: usize,
+    },
     SaveSharedPlaylistToFile(String),
     SelectMainWindowUser(usize),
     AddMainWindowUser(String),
@@ -369,6 +377,10 @@ mod media_target_debug_tests {
         let actions = [
             GuiShellAction::RequestMainWindowUserMediaOpen(secret.to_owned()),
             GuiShellAction::RequestMainWindowUserContainingFolderOpen(secret.to_owned()),
+            GuiShellAction::RequestSharedPlaylistFileImport {
+                path: secret.to_owned(),
+                shuffled: false,
+            },
         ];
 
         let debug = format!("{actions:?}");

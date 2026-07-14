@@ -1,6 +1,148 @@
 use super::*;
+use crate::model::PlaylistFilesDigest;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LocalPlaylistEchoDisposition {
+    Authoritative,
+    AcknowledgedCurrent { revision: u64 },
+    AcknowledgedSuperseded,
+}
 
 impl ClientSession {
+    fn classify_local_playlist_echo(
+        &mut self,
+        room_name: &str,
+        files: &[String],
+        set_by: Option<&str>,
+    ) -> LocalPlaylistEchoDisposition {
+        if set_by.is_some_and(|set_by| self.model.connection.username.as_deref() != Some(set_by)) {
+            self.model
+                .playlist
+                .pending_local_change_echoes
+                .remove(room_name);
+            return LocalPlaylistEchoDisposition::Authoritative;
+        }
+
+        let digest = PlaylistFilesDigest::new(files);
+        let (disposition, remove_tracker) = match self
+            .model
+            .playlist
+            .pending_local_change_echoes
+            .get_mut(room_name)
+        {
+            None => (LocalPlaylistEchoDisposition::Authoritative, false),
+            Some(tracker) if tracker.invalidated => {
+                (LocalPlaylistEchoDisposition::Authoritative, true)
+            }
+            Some(tracker) => {
+                let Some(matched_index) = tracker
+                    .pending
+                    .iter()
+                    .position(|pending| pending.files_digest == digest)
+                else {
+                    return {
+                        self.model
+                            .playlist
+                            .pending_local_change_echoes
+                            .remove(room_name);
+                        LocalPlaylistEchoDisposition::Authoritative
+                    };
+                };
+                let acknowledged = tracker.pending[matched_index];
+                drop(tracker.pending.drain(..=matched_index));
+                if tracker.pending.is_empty() {
+                    (
+                        LocalPlaylistEchoDisposition::AcknowledgedCurrent {
+                            revision: acknowledged.revision,
+                        },
+                        true,
+                    )
+                } else {
+                    (LocalPlaylistEchoDisposition::AcknowledgedSuperseded, false)
+                }
+            }
+        };
+        if remove_tracker {
+            self.model
+                .playlist
+                .pending_local_change_echoes
+                .remove(room_name);
+        }
+        disposition
+    }
+
+    fn classify_local_playlist_index_echo(
+        &mut self,
+        room_name: &str,
+        index: Option<i64>,
+        set_by: Option<&str>,
+    ) -> LocalPlaylistEchoDisposition {
+        if set_by.is_some_and(|set_by| self.model.connection.username.as_deref() != Some(set_by)) {
+            self.model
+                .playlist
+                .pending_local_index_echoes
+                .remove(room_name);
+            return LocalPlaylistEchoDisposition::Authoritative;
+        }
+
+        let current_revision = self
+            .model
+            .playlist
+            .rooms
+            .get(room_name)
+            .map_or(0, |playlist| playlist.revision);
+        let (disposition, remove_tracker) = match self
+            .model
+            .playlist
+            .pending_local_index_echoes
+            .get_mut(room_name)
+        {
+            None => (LocalPlaylistEchoDisposition::Authoritative, false),
+            Some(tracker) if tracker.invalidated => {
+                (LocalPlaylistEchoDisposition::Authoritative, true)
+            }
+            Some(tracker) => {
+                let Some(matched_index) = index.and_then(|index| {
+                    tracker
+                        .pending
+                        .iter()
+                        .position(|pending| pending.index == index)
+                }) else {
+                    return {
+                        self.model
+                            .playlist
+                            .pending_local_index_echoes
+                            .remove(room_name);
+                        LocalPlaylistEchoDisposition::Authoritative
+                    };
+                };
+                let acknowledged = tracker.pending[matched_index];
+                drop(tracker.pending.drain(..=matched_index));
+                if tracker.pending.is_empty() && acknowledged.playlist_revision == current_revision
+                {
+                    (
+                        LocalPlaylistEchoDisposition::AcknowledgedCurrent {
+                            revision: acknowledged.playlist_revision,
+                        },
+                        true,
+                    )
+                } else {
+                    (
+                        LocalPlaylistEchoDisposition::AcknowledgedSuperseded,
+                        tracker.pending.is_empty(),
+                    )
+                }
+            }
+        };
+        if remove_tracker {
+            self.model
+                .playlist
+                .pending_local_index_echoes
+                .remove(room_name);
+        }
+        disposition
+    }
+
     fn migrate_provisional_local_identity(&mut self, assigned_username: &str) -> bool {
         let Some(provisional_username) = self.model.connection.username.clone() else {
             return false;
@@ -96,6 +238,10 @@ impl ClientSession {
         if let Some(current_room) = self.model.room.name.clone()
             && let Some(pending_playlist) = self.model.playlist.pending.take()
         {
+            self.model.playlist.remote_revisions.insert(
+                current_room.clone(),
+                std::mem::take(&mut self.model.playlist.pending_remote_revision),
+            );
             self.model
                 .playlist
                 .rooms
@@ -363,6 +509,21 @@ impl ClientSession {
                     if let Some(room_name) =
                         self.resolve_room_for_playlist_update(playlist_change_user.as_deref())
                     {
+                        let echo_disposition = self.classify_local_playlist_echo(
+                            &room_name,
+                            &playlist_change_files,
+                            playlist_change_user.as_deref(),
+                        );
+                        if echo_disposition == LocalPlaylistEchoDisposition::AcknowledgedSuperseded
+                        {
+                            continue;
+                        }
+                        if echo_disposition == LocalPlaylistEchoDisposition::Authoritative {
+                            self.model
+                                .playlist
+                                .pending_local_index_echoes
+                                .remove(&room_name);
+                        }
                         let previous_active_target = self
                             .model
                             .playlist
@@ -397,7 +558,28 @@ impl ClientSession {
                             &playlist_change_files,
                         );
 
+                        let acknowledges_local_change = matches!(
+                            echo_disposition,
+                            LocalPlaylistEchoDisposition::AcknowledgedCurrent { .. }
+                        );
+                        if !acknowledges_local_change {
+                            let remote_revision = self
+                                .model
+                                .playlist
+                                .remote_revisions
+                                .entry(room_name.clone())
+                                .or_default();
+                            *remote_revision = remote_revision.wrapping_add(1);
+                        }
                         let playlist = self.model.playlist.rooms.entry(room_name).or_default();
+                        if !acknowledges_local_change {
+                            playlist.revision = playlist.revision.wrapping_add(1);
+                        } else if let LocalPlaylistEchoDisposition::AcknowledgedCurrent {
+                            revision,
+                        } = echo_disposition
+                        {
+                            debug_assert_eq!(playlist.revision, revision);
+                        }
                         playlist.files = playlist_change_files;
                         playlist.set_by = playlist_change_user;
                     } else {
@@ -406,6 +588,9 @@ impl ClientSession {
                             .playlist
                             .pending
                             .get_or_insert_with(Default::default);
+                        pending_playlist.revision = pending_playlist.revision.wrapping_add(1);
+                        self.model.playlist.pending_remote_revision =
+                            self.model.playlist.pending_remote_revision.wrapping_add(1);
                         pending_playlist.files = playlist_change_files;
                         pending_playlist.set_by = playlist_change_user;
                     }
@@ -413,12 +598,25 @@ impl ClientSession {
             }
 
             if let Some((playlist_index_value, playlist_index_user)) = playlist_index {
+                let room_name =
+                    self.resolve_room_for_playlist_update(playlist_index_user.as_deref());
+                let index_echo_disposition = room_name.as_deref().map_or(
+                    LocalPlaylistEchoDisposition::Authoritative,
+                    |room_name| {
+                        self.classify_local_playlist_index_echo(
+                            room_name,
+                            playlist_index_value,
+                            playlist_index_user.as_deref(),
+                        )
+                    },
+                );
+                if index_echo_disposition == LocalPlaylistEchoDisposition::AcknowledgedSuperseded {
+                    continue;
+                }
                 if playlist_index_user.is_some() {
                     self.model.reconnect.playlist_restore_snapshot = None;
                 }
 
-                let room_name =
-                    self.resolve_room_for_playlist_update(playlist_index_user.as_deref());
                 let preserved_active_target = room_name.as_deref().and_then(|room_name| {
                     self.model
                         .playlist
@@ -430,6 +628,10 @@ impl ClientSession {
                     .as_deref()
                     .zip(self.model.connection.username.as_deref())
                     .is_some_and(|(set_by, local_username)| set_by == local_username);
+                let acknowledges_current_local_index = matches!(
+                    index_echo_disposition,
+                    LocalPlaylistEchoDisposition::AcknowledgedCurrent { .. }
+                );
                 if set_by_local {
                     self.model.playback.last_advanced_at_seconds = now_seconds;
                 }
@@ -444,7 +646,10 @@ impl ClientSession {
                     .zip(preserved_active_target.as_deref())
                     .is_some_and(|(next_target, previous_target)| next_target == previous_target);
 
-                let should_queue_playlist_reset = if !self
+                let should_queue_playlist_reset = if acknowledges_current_local_index {
+                    self.model.playlist.suppress_next_self_index_reset = false;
+                    false
+                } else if !self
                     .should_track_playlist_index_transition_for_room(room_name.as_deref())
                 {
                     false

@@ -123,6 +123,7 @@ impl GuiClientCommand {
             | Request::CompletePendingOperation(_)
             | Request::CancelPendingOperation(_) => GuiFeature::Session,
             Request::OpenMediaFiles { .. }
+            | Request::ImportSharedPlaylistFile { .. }
             | Request::OpenMainWindowUserMedia(_)
             | Request::OpenMainWindowUserContainingFolder(_)
             | Request::RetryPendingStreamMediaOpen => GuiFeature::MediaResolution,
@@ -274,6 +275,8 @@ pub(super) mod playlist {
         pub(super) undo_snapshot: Option<Vec<String>>,
         pub(super) source_undo_snapshot:
             Option<Vec<super::super::shell_state::GuiPlaylistSourceState>>,
+        pub(super) entry_id_undo_snapshot:
+            Option<Vec<super::super::shell_state::GuiPlaylistEntryId>>,
         pub(super) shuffle_nonce: u64,
     }
 }
@@ -451,6 +454,7 @@ impl GuiRuntimeInput {
                 selection_is_local: state.main_window_playlist_selection_is_local,
                 undo_snapshot: state.playlist_undo_snapshot.clone(),
                 source_undo_snapshot: state.playlist_source_undo_snapshot.clone(),
+                entry_id_undo_snapshot: state.playlist_entry_id_undo_snapshot.clone(),
                 shuffle_nonce: state.playlist_shuffle_nonce,
             },
             media_resolution: media_resolution::RuntimeView {
@@ -516,6 +520,7 @@ impl GuiRuntimeInput {
             && self.playlist.selection_is_local == state.main_window_playlist_selection_is_local
             && self.playlist.undo_snapshot == state.playlist_undo_snapshot
             && self.playlist.source_undo_snapshot == state.playlist_source_undo_snapshot
+            && self.playlist.entry_id_undo_snapshot == state.playlist_entry_id_undo_snapshot
             && self.playlist.shuffle_nonce == state.playlist_shuffle_nonce
             && self.media_resolution.index_status == state.media_index_status
             && self.media_resolution.search == state.media_search
@@ -567,6 +572,7 @@ impl GuiRuntimeInput {
         state.main_window_playlist_selection_is_local = self.playlist.selection_is_local;
         state.playlist_undo_snapshot = self.playlist.undo_snapshot.clone();
         state.playlist_source_undo_snapshot = self.playlist.source_undo_snapshot.clone();
+        state.playlist_entry_id_undo_snapshot = self.playlist.entry_id_undo_snapshot.clone();
         state.playlist_shuffle_nonce = self.playlist.shuffle_nonce;
 
         state.media_index_status = self.media_resolution.index_status.clone();

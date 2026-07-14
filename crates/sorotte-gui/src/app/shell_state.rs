@@ -36,9 +36,8 @@ pub(super) use self::actions::GuiShellAction;
 pub(super) use self::browser_support::{
     browser_domain_from_url, browser_format_duration_label, browser_format_size_label,
     browser_is_url, browser_stream_target_kind, browser_uri_is_trusted,
-    load_playlist_entries_from_path, playlist_entries_from_multiline_text,
-    playlist_entries_multiline_text, save_playlist_entries_to_path,
-    shuffle_playlist_entries_in_place,
+    playlist_entries_from_multiline_text, playlist_entries_multiline_text,
+    save_playlist_entries_to_path, shuffle_playlist_entries_in_place,
 };
 pub(super) use self::configuration_dialog::{
     FirstRunConfigurationDialogDraft, FirstRunConfigurationDialogState, GuiChatSection,
@@ -50,7 +49,8 @@ pub(super) use self::configuration_dialog::{
 pub(super) use self::main_window::MainWindowRuntimeChatSnapshot;
 pub(super) use self::main_window::{
     GuiMediaSourceProviderId, GuiPlaylistDefaultSourceId, GuiPlaylistDefaultSourceOption,
-    GuiPlaylistDefaultSourceState, GuiPlaylistResolutionStep, GuiPlaylistSourceOption,
+    GuiPlaylistDefaultSourceState, GuiPlaylistEntryId, GuiPlaylistResolutionStep,
+    GuiPlaylistSourceOption, GuiPlaylistSourcePolicy, GuiPlaylistSourceSelectionOrigin,
     GuiPlaylistSourceState, GuiPlaylistSourceStatus, MainWindowChatRow, MainWindowPlaybackControls,
     MainWindowPlaylistRow, MainWindowRoomRow, MainWindowRuntimeRoomSnapshot,
     MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot, MainWindowShellState,
@@ -912,6 +912,7 @@ pub(super) struct SorotteGuiShellAppState {
     pub(super) last_media_dialog_directory: Option<String>,
     pub(super) playlist_undo_snapshot: Option<Vec<String>>,
     pub(super) playlist_source_undo_snapshot: Option<Vec<GuiPlaylistSourceState>>,
+    pub(super) playlist_entry_id_undo_snapshot: Option<Vec<GuiPlaylistEntryId>>,
     pub(super) playlist_shuffle_nonce: u64,
     pub(super) media_index_status: GuiMediaIndexStatusState,
     pub(super) player_setup_issue: Option<GuiPlayerSetupIssue>,

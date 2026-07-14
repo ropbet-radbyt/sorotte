@@ -1,5 +1,6 @@
 use super::super::feature_slices::GuiClientCommand;
 use super::super::remote_services;
+use super::super::shell_state::MainWindowRuntimeSnapshot;
 use super::*;
 
 impl Default for GuiPersistedConfigRuntimeOwner {
@@ -35,6 +36,7 @@ impl GuiPersistedConfigRuntimeOwner {
             handle,
             &mut projected_state,
         );
+        self.reconcile_playlist_resolution_scope(handle, &mut projected_state);
         self.drain_player_chat_input(handle, &mut projected_state);
         self.sync_detached_session_runtime_state_or_notify(handle, &mut projected_state);
         self.flush_session_transport_outbound(handle, &mut projected_state);
@@ -44,6 +46,7 @@ impl GuiPersistedConfigRuntimeOwner {
             handle,
             &mut projected_state,
         );
+        self.reconcile_playlist_resolution_scope(handle, &mut projected_state);
         self.drain_player_chat_input(handle, &mut projected_state);
         self.sync_detached_session_runtime_state_or_notify(handle, &mut projected_state);
         self.pump_media_match_tool_worker(handle, &mut projected_state);
@@ -65,6 +68,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     handle,
                     &mut projected_state,
                 );
+                self.reconcile_playlist_resolution_scope(handle, &mut projected_state);
                 self.drain_player_chat_input(handle, &mut projected_state);
                 self.sync_detached_session_runtime_state_or_notify(handle, &mut projected_state);
             }
@@ -93,6 +97,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 handle,
                 &mut projected_state,
             );
+            self.reconcile_playlist_resolution_scope(handle, &mut projected_state);
             self.drain_player_chat_input(handle, &mut projected_state);
             self.sync_detached_session_runtime_state_or_notify(handle, &mut projected_state);
             self.pump_media_match_tool_worker(handle, &mut projected_state);
@@ -100,6 +105,7 @@ impl GuiPersistedConfigRuntimeOwner {
             media_resolution_completed |= self.pump_media_match_remote_lookup_worker();
             let _ = self.maybe_sync_media_match_wire_decisions(handle, &mut projected_state);
         }
+        self.reconcile_playlist_resolution_scope(handle, &mut projected_state);
         self.ensure_configured_player_attached_for_active_session();
         self.maybe_queue_media_match_exact_playlist_signature(handle, &mut projected_state);
         media_resolution_completed |= self.pump_media_match_remote_lookup_worker();
@@ -111,13 +117,6 @@ impl GuiPersistedConfigRuntimeOwner {
         if media_resolution_completed {
             let _ = self.retry_pending_playlist_source_resolution(handle, &mut projected_state);
             self.sync_active_shared_playlist_media_and_playstate_impl(&projected_state);
-        }
-        if plex_stream_resolution_completed {
-            // The immediate retry paths above are the only consumers of an
-            // asynchronous stream result. If neither still owns its trigger,
-            // release the cache snapshot and staged temporary file before
-            // periodic watch sync is allowed to run again.
-            self.discard_unconsumed_plex_stream_resolution_result();
         }
         self.sync_player_runtime_state(handle, &projected_state);
         self.pump_startup_plex_server_refresh(handle, &mut projected_state);
@@ -133,6 +132,19 @@ impl GuiPersistedConfigRuntimeOwner {
         self.update_runtime.pump_background_check(handle);
         self.run_deferred_startup_stream_helper_probe(handle, &mut projected_state);
         projected_state
+    }
+
+    pub(super) fn reconcile_playlist_resolution_scope(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+    ) {
+        self.reconcile_local_shared_playlist_media_paths(projected_state);
+        if self.apply_pending_playlist_row_scope_reset(projected_state) {
+            handle.push_action(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+                MainWindowRuntimeSnapshot::from_shell_state(&projected_state.main_window),
+            ));
+        }
     }
 
     fn run_deferred_startup_remote_actions(

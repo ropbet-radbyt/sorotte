@@ -71,6 +71,8 @@ pub(super) fn verify_drag_and_drop_contract<D: NativeGuiDriver>(
         "drag-episode-1.mkv\ndrag-episode-2.mkv\n",
     )
     .map_err(|error| format!("failed to create native smoke drag-drop playlist file: {error}"))?;
+    let playlist_drop_entry_1 = "drag-episode-1.mkv";
+    let playlist_drop_entry_2 = "drag-episode-2.mkv";
     upsert_sorotte_ini_stored_client_settings_mvp_at_path(
         &playlist_drop_config_path,
         &StoredClientSettingsMvp {
@@ -108,8 +110,8 @@ pub(super) fn verify_drag_and_drop_contract<D: NativeGuiDriver>(
             step_timeout,
         )?;
         wait_for_accessible_name(driver, playlist_handle, "view: room", step_timeout)?;
-        wait_for_accessible_name(driver, playlist_handle, "drag-episode-1.mkv", step_timeout)?;
-        wait_for_accessible_name(driver, playlist_handle, "drag-episode-2.mkv", step_timeout)?;
+        wait_for_accessible_name(driver, playlist_handle, playlist_drop_entry_1, step_timeout)?;
+        wait_for_accessible_name(driver, playlist_handle, playlist_drop_entry_2, step_timeout)?;
         wait_for_accessible_name_fragment(
             driver,
             playlist_handle,

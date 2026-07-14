@@ -2,6 +2,11 @@ use super::*;
 
 #[test]
 fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
+    let media_root = test_temp_root("runtime-gap-open-media");
+    let episode_path = media_root.join("episode1.mkv");
+    let movie_path = media_root.join("movie.mkv");
+    std::fs::write(&episode_path, b"episode").expect("episode fixture should be written");
+    std::fs::write(&movie_path, b"movie").expect("movie fixture should be written");
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
@@ -10,7 +15,7 @@ fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
     });
 
     handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
-        paths: vec!["C:/Media/episode1.mkv".to_owned()],
+        paths: vec![episode_path.to_string_lossy().into_owned()],
         load_into_shared_playlist: true,
         playlist_insert_slot: None,
     });
@@ -30,7 +35,7 @@ fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
     )));
 
     handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
-        paths: vec!["C:/Media/movie.mkv".to_owned()],
+        paths: vec![movie_path.to_string_lossy().into_owned()],
         load_into_shared_playlist: false,
         playlist_insert_slot: None,
     });
@@ -208,6 +213,7 @@ fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
     }
     assert_eq!(chat_state.outgoing_chat_message, None);
     assert!(chat_state.pending_operation.is_none());
+    let _ = std::fs::remove_dir_all(media_root);
 }
 
 #[test]

@@ -263,6 +263,195 @@ fn gui_shell_app_state_moves_playlist_rows_to_arbitrary_targets() {
 }
 
 #[test]
+fn gui_shell_app_state_keeps_active_duplicate_attached_to_its_row_identity() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.main_window.playback.can_manage_playlist = true;
+    state.apply_shared_playlist_entries(
+        vec![
+            "episode.mkv".to_owned(),
+            "episode.mkv".to_owned(),
+            "episode.mkv".to_owned(),
+        ],
+        Some(0),
+        false,
+    );
+    let active_entry_id = state.main_window.playlist[1].entry_id;
+    state.main_window.active_playlist_index = Some(1);
+
+    assert!(state.move_main_window_playlist_row(0, 2));
+    assert_eq!(state.main_window.active_playlist_index, Some(0));
+    assert_eq!(state.main_window.playlist[0].entry_id, active_entry_id);
+
+    state.set_main_window_playlist_selection(Some(1), true);
+    assert!(state.move_selected_main_window_playlist(-1));
+    assert_eq!(state.main_window.active_playlist_index, Some(1));
+    assert_eq!(state.main_window.playlist[1].entry_id, active_entry_id);
+
+    state.set_main_window_playlist_selection(Some(0), true);
+    assert!(state.remove_selected_main_window_playlist());
+    assert_eq!(state.main_window.active_playlist_index, Some(0));
+    assert_eq!(state.main_window.playlist[0].entry_id, active_entry_id);
+
+    state.set_main_window_playlist_selection(Some(0), true);
+    assert!(state.remove_selected_main_window_playlist());
+    assert_eq!(state.main_window.active_playlist_index, Some(0));
+    assert_ne!(state.main_window.playlist[0].entry_id, active_entry_id);
+}
+
+#[test]
+fn gui_shell_app_state_preserves_distinct_duplicate_entry_ids_across_reorder_and_undo() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.main_window.playback.can_manage_playlist = true;
+    let original_entries = vec![
+        "Duplicate.mkv".to_owned(),
+        "Middle.mkv".to_owned(),
+        "Duplicate.mkv".to_owned(),
+        "Tail.mkv".to_owned(),
+    ];
+    assert!(state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(
+        original_entries.clone(),
+    )));
+
+    let original_ids = state
+        .main_window
+        .playlist
+        .iter()
+        .map(|row| row.entry_id)
+        .collect::<Vec<_>>();
+    assert_ne!(original_ids[0], original_ids[2]);
+    assert_eq!(
+        original_ids
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        original_ids.len(),
+        "each duplicate occurrence must receive its own row identity"
+    );
+
+    assert!(state.apply(GuiShellAction::MoveMainWindowPlaylistRow {
+        from_index: 0,
+        to_index: 2,
+    }));
+    assert_eq!(
+        state
+            .main_window
+            .playlist
+            .iter()
+            .map(|row| row.entry_id)
+            .collect::<Vec<_>>(),
+        vec![
+            original_ids[1],
+            original_ids[2],
+            original_ids[0],
+            original_ids[3],
+        ],
+        "moving a duplicate must move that occurrence's identity"
+    );
+
+    assert!(state.apply(GuiShellAction::UndoSharedPlaylistChange));
+    assert_eq!(state.current_shared_playlist_entries(), original_entries);
+    assert_eq!(
+        state
+            .main_window
+            .playlist
+            .iter()
+            .map(|row| row.entry_id)
+            .collect::<Vec<_>>(),
+        original_ids,
+        "undo must restore the original identity at every occurrence"
+    );
+}
+
+#[test]
+fn gui_shell_app_state_reuses_duplicate_entry_ids_through_shuffle_and_undo() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.main_window.playback.can_manage_playlist = true;
+    let original_entries = vec![
+        "Duplicate.mkv".to_owned(),
+        "Alpha.mkv".to_owned(),
+        "Duplicate.mkv".to_owned(),
+        "Beta.mkv".to_owned(),
+        "Duplicate.mkv".to_owned(),
+        "Gamma.mkv".to_owned(),
+    ];
+    assert!(state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(
+        original_entries.clone(),
+    )));
+
+    let original_ids = state
+        .main_window
+        .playlist
+        .iter()
+        .map(|row| row.entry_id)
+        .collect::<Vec<_>>();
+    let original_id_set = original_ids
+        .iter()
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
+    let original_duplicate_ids = state
+        .main_window
+        .playlist
+        .iter()
+        .filter(|row| row.label == "Duplicate.mkv")
+        .map(|row| row.entry_id)
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(original_id_set.len(), original_entries.len());
+    assert_eq!(original_duplicate_ids.len(), 3);
+
+    let mut shuffled = false;
+    for _ in 0..16 {
+        assert!(state.apply(GuiShellAction::ShuffleEntireSharedPlaylist));
+        if state.current_shared_playlist_entries() != original_entries {
+            shuffled = true;
+            break;
+        }
+    }
+    assert!(
+        shuffled,
+        "shuffle should eventually change the row ordering"
+    );
+
+    let shuffled_ids = state
+        .main_window
+        .playlist
+        .iter()
+        .map(|row| row.entry_id)
+        .collect::<std::collections::HashSet<_>>();
+    let shuffled_duplicate_ids = state
+        .main_window
+        .playlist
+        .iter()
+        .filter(|row| row.label == "Duplicate.mkv")
+        .map(|row| row.entry_id)
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(shuffled_ids, original_id_set);
+    assert_eq!(shuffled_duplicate_ids, original_duplicate_ids);
+
+    assert!(state.apply(GuiShellAction::UndoSharedPlaylistChange));
+    assert_eq!(state.current_shared_playlist_entries(), original_entries);
+    assert_eq!(
+        state
+            .main_window
+            .playlist
+            .iter()
+            .map(|row| row.entry_id)
+            .collect::<Vec<_>>(),
+        original_ids,
+        "undo must restore the original order without reusing or colliding IDs"
+    );
+}
+
+#[test]
 fn gui_shell_app_state_preserves_selected_playlist_entry_when_reordering_another_row() {
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
@@ -1035,20 +1224,6 @@ fn gui_playlist_file_helpers_roundtrip_and_track_file_actions() {
     assert_eq!(
         std::fs::read_to_string(&playlist_path).expect("saved playlist file should be readable"),
         "Episode 1.mkv\nhttps://example.com/live"
-    );
-
-    std::fs::write(
-        &playlist_path,
-        " Episode 1.mkv \n\n https://example.com/live \n",
-    )
-    .expect("playlist fixture should be updated");
-    assert_eq!(
-        super::load_playlist_entries_from_path(&playlist_path_string)
-            .expect("playlist entries should load from disk"),
-        vec![
-            "Episode 1.mkv".to_owned(),
-            "https://example.com/live".to_owned(),
-        ]
     );
 
     assert_eq!(

@@ -204,17 +204,6 @@ pub(in crate::app) fn playlist_entries_multiline_text(entries: &[String]) -> Str
     entries.join("\n")
 }
 
-pub(in crate::app) fn load_playlist_entries_from_path(path: &str) -> Result<Vec<String>, String> {
-    std::fs::read_to_string(path)
-        .map_err(|error| format!("Failed to read playlist file '{path}': {error}"))
-        .map(|contents| {
-            contents
-                .lines()
-                .filter_map(normalized_editable_text)
-                .collect()
-        })
-}
-
 pub(in crate::app) fn save_playlist_entries_to_path(
     path: &str,
     entries: &[String],
@@ -230,7 +219,7 @@ pub(in crate::app) fn playlist_next_shuffle_state(state: &mut u64) -> u64 {
     *state
 }
 
-pub(in crate::app) fn shuffle_playlist_entries_in_place(entries: &mut [String], seed: u64) {
+pub(in crate::app) fn shuffle_playlist_entries_in_place<T>(entries: &mut [T], seed: u64) {
     if entries.len() <= 1 {
         return;
     }

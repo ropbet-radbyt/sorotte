@@ -265,6 +265,9 @@ impl GuiPersistedConfigRuntimeOwner {
                     );
                 }
             }
+            GuiRuntimeRequest::ImportSharedPlaylistFile { path, shuffled } => {
+                self.import_shared_playlist_file_runtime(handle, projected_state, path, shuffled);
+            }
             GuiRuntimeRequest::OpenMainWindowUserMedia(target) => {
                 self.open_main_window_user_media_runtime(handle, projected_state, target);
             }

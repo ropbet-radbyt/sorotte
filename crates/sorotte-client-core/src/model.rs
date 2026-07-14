@@ -461,6 +461,10 @@ impl ClientModel {
 pub struct PlaylistState {
     pub(crate) rooms: BTreeMap<String, RoomPlaylistView>,
     pub(crate) pending: Option<RoomPlaylistView>,
+    pub(crate) pending_remote_revision: u64,
+    pub(crate) pending_local_change_echoes: BTreeMap<String, PendingLocalPlaylistEchoTracker>,
+    pub(crate) pending_local_index_echoes: BTreeMap<String, PendingLocalPlaylistIndexEchoTracker>,
+    pub(crate) remote_revisions: BTreeMap<String, u64>,
     pub(crate) active_targets_before_index_update: BTreeMap<String, String>,
     pub(crate) undo_snapshots: BTreeMap<String, Vec<String>>,
     pub(crate) shuffle_nonce: u64,
@@ -477,6 +481,40 @@ impl std::fmt::Debug for PlaylistState {
             .debug_struct("PlaylistState")
             .field("rooms", &self.rooms)
             .field("pending", &self.pending)
+            .field("pending_remote_revision", &self.pending_remote_revision)
+            .field(
+                "pending_local_change_echo_count",
+                &self
+                    .pending_local_change_echoes
+                    .values()
+                    .map(|tracker| tracker.pending.len())
+                    .sum::<usize>(),
+            )
+            .field(
+                "invalidated_local_change_echo_room_count",
+                &self
+                    .pending_local_change_echoes
+                    .values()
+                    .filter(|tracker| tracker.invalidated)
+                    .count(),
+            )
+            .field(
+                "pending_local_index_echo_count",
+                &self
+                    .pending_local_index_echoes
+                    .values()
+                    .map(|tracker| tracker.pending.len())
+                    .sum::<usize>(),
+            )
+            .field(
+                "invalidated_local_index_echo_room_count",
+                &self
+                    .pending_local_index_echoes
+                    .values()
+                    .filter(|tracker| tracker.invalidated)
+                    .count(),
+            )
+            .field("remote_revision_room_count", &self.remote_revisions.len())
             .field(
                 "active_targets_before_index_update_count",
                 &self.active_targets_before_index_update.len(),
@@ -501,6 +539,79 @@ impl std::fmt::Debug for PlaylistState {
                 &self.last_seek_position_before_manual_seek,
             )
             .finish()
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PlaylistFilesDigest([u8; 32]);
+
+impl PlaylistFilesDigest {
+    pub(crate) fn new(files: &[String]) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(u64::try_from(files.len()).unwrap_or(u64::MAX).to_le_bytes());
+        for file in files {
+            hasher.update(u64::try_from(file.len()).unwrap_or(u64::MAX).to_le_bytes());
+            hasher.update(file.as_bytes());
+        }
+        Self(hasher.finalize().into())
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct PendingLocalPlaylistEcho {
+    pub(crate) revision: u64,
+    pub(crate) files_digest: PlaylistFilesDigest,
+}
+
+#[derive(Default)]
+pub(crate) struct PendingLocalPlaylistEchoTracker {
+    pub(crate) pending: VecDeque<PendingLocalPlaylistEcho>,
+    pub(crate) invalidated: bool,
+}
+
+impl PendingLocalPlaylistEchoTracker {
+    pub(crate) fn record(&mut self, revision: u64, files: &[String]) {
+        if self.invalidated {
+            return;
+        }
+        if self.pending.len() >= MAX_PENDING_LOCAL_PLAYLIST_ECHOES {
+            self.pending.clear();
+            self.invalidated = true;
+            return;
+        }
+        self.pending.push_back(PendingLocalPlaylistEcho {
+            revision,
+            files_digest: PlaylistFilesDigest::new(files),
+        });
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct PendingLocalPlaylistIndexEcho {
+    pub(crate) playlist_revision: u64,
+    pub(crate) index: i64,
+}
+
+#[derive(Default)]
+pub(crate) struct PendingLocalPlaylistIndexEchoTracker {
+    pub(crate) pending: VecDeque<PendingLocalPlaylistIndexEcho>,
+    pub(crate) invalidated: bool,
+}
+
+impl PendingLocalPlaylistIndexEchoTracker {
+    pub(crate) fn record(&mut self, playlist_revision: u64, index: i64) {
+        if self.invalidated {
+            return;
+        }
+        if self.pending.len() >= MAX_PENDING_LOCAL_PLAYLIST_ECHOES {
+            self.pending.clear();
+            self.invalidated = true;
+            return;
+        }
+        self.pending.push_back(PendingLocalPlaylistIndexEcho {
+            playlist_revision,
+            index,
+        });
     }
 }
 
@@ -854,9 +965,29 @@ mod tests {
             .playlist
             .undo_snapshots
             .insert("room".to_owned(), vec![target]);
+        model
+            .playlist
+            .pending_local_change_echoes
+            .entry("room".to_owned())
+            .or_default()
+            .record(
+                7,
+                &[format!(
+                    "https://media.example/pending?X-Plex-Token={MARKER}"
+                )],
+            );
+        model
+            .playlist
+            .pending_local_index_echoes
+            .entry("room".to_owned())
+            .or_default()
+            .record(7, 42);
 
         let debug = format!("{model:?}");
 
         assert!(!debug.contains(MARKER));
+        assert!(debug.contains("pending_local_change_echo_count: 1"));
+        assert!(debug.contains("pending_local_index_echo_count: 1"));
+        assert!(!debug.contains("files_digest"));
     }
 }

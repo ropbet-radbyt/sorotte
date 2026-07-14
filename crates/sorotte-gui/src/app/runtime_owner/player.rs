@@ -25,18 +25,19 @@ use super::super::media_search_cache::{
     load_persisted_media_search_root_index_at_root, normalized_media_search_root_key,
     persist_media_search_root_index_borrowed_at_root_if_cache_generation,
 };
-use super::super::runtime_bridge::GuiSharedPlaylistOpenDispatch;
+use super::super::runtime_bridge::{GuiSharedPlaylistOpenDispatch, GuiSharedPlaylistOpenItem};
 use super::super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 use super::super::runtime_stack::{
     GuiAttachedPlayerRuntimeAction, GuiClientCoreChatSessionRuntimeAdapter,
     GuiLocalPlayerUnpauseDecision, GuiOwnedPlayer,
 };
 use super::super::shell_state::{
-    GuiMediaIndexRuntimeSnapshot, GuiMediaSourceProviderId, GuiPlaylistResolutionStep,
-    GuiPlaylistSourceState, GuiPlaylistSourceStatus, GuiPluginSelection, GuiShellAction,
-    GuiShellModal, GuiShellView, GuiStreamHelperHealth, GuiStreamTargetKind,
-    GuiTransientNotificationLevel, MainWindowRuntimeSnapshot, SorotteGuiShellAppState,
-    browser_is_url, browser_stream_target_kind,
+    GuiMediaIndexRuntimeSnapshot, GuiMediaSourceProviderId, GuiPlaylistEntryId,
+    GuiPlaylistResolutionStep, GuiPlaylistSourcePolicy, GuiPlaylistSourceSelectionOrigin,
+    GuiPlaylistSourceStatus, GuiPluginSelection, GuiShellAction, GuiShellModal, GuiShellView,
+    GuiStreamHelperHealth, GuiStreamTargetKind, GuiTransientNotificationLevel,
+    MainWindowRuntimeSnapshot, SorotteGuiShellAppState, browser_is_url, browser_stream_target_kind,
+    shuffle_playlist_entries_in_place,
 };
 use super::super::startup_support::env_trimmed;
 use super::super::support::{
@@ -62,7 +63,8 @@ use super::{
     GuiAttachedMediaSearchRootRefreshResult, GuiAutomaticMediaResolutionTrigger,
     GuiPendingAttachedMediaResolution, GuiPendingAttachedPlayerPauseCommand,
     GuiPendingAttachedRoomUnpauseObservation, GuiPersistedConfigRuntimeOwner,
-    GuiPlexStreamResolveOutcome, GuiPlexStreamResolveWorkerResult, GuiUserMediaTargetResolution,
+    GuiPlaylistLocalOriginBindingOutcome, GuiPlexStreamResolveOutcome,
+    GuiPlexStreamResolveWorkerResult, GuiUserMediaTargetResolution,
     GuiUserMediaTargetResolutionSource,
 };
 

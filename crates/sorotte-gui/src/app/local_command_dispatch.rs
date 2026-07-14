@@ -333,6 +333,31 @@ impl GuiShellDispatchPlan {
                             .push(GuiRuntimeRequest::ResolvePlaylistSource { index, provider_id });
                     }
                 }
+                GuiShellAction::RequestSharedPlaylistFileImport { path, shuffled } => {
+                    plan.shell_actions
+                        .push(GuiShellAction::RequestSharedPlaylistFileImport {
+                            path: path.clone(),
+                            shuffled,
+                        });
+                    plan.runtime_requests
+                        .push(GuiRuntimeRequest::ImportSharedPlaylistFile { path, shuffled });
+                }
+                GuiShellAction::RequestSharedPlaylistMediaFilesAdd {
+                    paths,
+                    playlist_insert_slot,
+                } => {
+                    plan.shell_actions
+                        .push(GuiShellAction::RequestSharedPlaylistMediaFilesAdd {
+                            paths: paths.clone(),
+                            playlist_insert_slot,
+                        });
+                    plan.runtime_requests
+                        .push(GuiRuntimeRequest::OpenMediaFiles {
+                            paths,
+                            load_into_shared_playlist: true,
+                            playlist_insert_slot: Some(playlist_insert_slot),
+                        });
+                }
                 other => plan.shell_actions.push(other),
             }
         }

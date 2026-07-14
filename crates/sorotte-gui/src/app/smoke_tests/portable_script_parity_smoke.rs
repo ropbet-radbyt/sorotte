@@ -10,7 +10,17 @@ fn gui_portable_smoke_regression_covers_nontransport_script_parity() {
         "sorotte-gui-portable-nontransport-{}-{unique_suffix}.ini",
         std::process::id()
     ));
+    let preview_media_root = std::env::temp_dir().join(format!(
+        "sorotte-gui-portable-open-target-{}-{unique_suffix}",
+        std::process::id()
+    ));
+    let preview_media_path = preview_media_root.join("open-target.mkv");
     let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_dir_all(&preview_media_root);
+    std::fs::create_dir_all(&preview_media_root)
+        .expect("portable preview media fixture directory should be created");
+    std::fs::write(&preview_media_path, b"test")
+        .expect("portable preview media fixture should be written");
 
     let mut persisted_owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(path.clone()));
     let persisted_handle = GuiQueuedRuntimeBridgeHandle::default();
@@ -319,7 +329,7 @@ fn gui_portable_smoke_regression_covers_nontransport_script_parity() {
 
     let preview_open_actions = GuiPreviewRuntimeBridge::preview_open_media_file_actions(
         None,
-        vec!["C:/SmokeMedia/open-target.mkv".to_owned()],
+        vec![preview_media_path.to_string_lossy().into_owned()],
         true,
         None,
     );
@@ -345,4 +355,5 @@ fn gui_portable_smoke_regression_covers_nontransport_script_parity() {
     );
 
     let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_dir_all(&preview_media_root);
 }
