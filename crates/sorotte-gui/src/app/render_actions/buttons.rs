@@ -113,8 +113,10 @@ impl GuiWidgetEguiRenderer {
         }
         if node.id == "main-window:playlist:add-files" {
             return Self::pick_media_files(state)
-                .map(Self::shared_playlist_entries_for_media_paths)
-                .map(GuiShellAction::AppendSharedPlaylistEntries)
+                .map(|paths| GuiShellAction::RequestSharedPlaylistMediaFilesAdd {
+                    paths,
+                    playlist_insert_slot: state.main_window.playlist.len(),
+                })
                 .into_iter()
                 .collect();
         }
@@ -131,20 +133,10 @@ impl GuiWidgetEguiRenderer {
             let Some(path) = Self::pick_playlist_load_file(state) else {
                 return Vec::new();
             };
-            return match load_playlist_entries_from_path(&path) {
-                Ok(entries) => vec![GuiShellAction::LoadSharedPlaylistFromFile {
-                    path,
-                    entries,
-                    shuffled: node.id == "main-window:playlist:load-shuffle",
-                }],
-                Err(error) => vec![
-                    GuiShellAction::PushTransientNotification {
-                        level: GuiTransientNotificationLevel::Error,
-                        message: error.clone(),
-                    },
-                    GuiShellAction::AnnounceSystemChatEvent(error),
-                ],
-            };
+            return vec![GuiShellAction::RequestSharedPlaylistFileImport {
+                path,
+                shuffled: node.id == "main-window:playlist:load-shuffle",
+            }];
         }
         if node.id == "main-window:playlist:save" {
             let Some(path) = Self::pick_playlist_save_file(state) else {

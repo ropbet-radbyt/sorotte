@@ -137,18 +137,3 @@ fn gui_widget_egui_renderer_defaults_playlist_drops_to_append_slot_when_hover_sl
         }
     );
 }
-
-#[test]
-fn gui_widget_egui_renderer_shared_playlist_entries_for_media_paths_use_playlist_labels() {
-    assert_eq!(
-        GuiWidgetEguiRenderer::shared_playlist_entries_for_media_paths(vec![
-            "C:/Media/Episode 1.mkv".to_owned(),
-            "https://example.com/live".to_owned(),
-            "   ".to_owned(),
-        ]),
-        vec![
-            "Episode 1.mkv".to_owned(),
-            "https://example.com/live".to_owned(),
-        ]
-    );
-}

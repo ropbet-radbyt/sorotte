@@ -37,6 +37,7 @@ use super::super::shell_state::{
     GuiPlaylistSourceStatus, GuiPluginSelection, GuiShellAction, GuiShellModal, GuiShellView,
     GuiStreamHelperHealth, GuiStreamTargetKind, GuiTransientNotificationLevel,
     MainWindowRuntimeSnapshot, SorotteGuiShellAppState, browser_is_url, browser_stream_target_kind,
+    shuffle_playlist_entries_in_place,
 };
 use super::super::startup_support::env_trimmed;
 use super::super::support::{

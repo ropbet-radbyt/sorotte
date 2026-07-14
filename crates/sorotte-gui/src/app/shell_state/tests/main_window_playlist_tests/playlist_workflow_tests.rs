@@ -1226,20 +1226,6 @@ fn gui_playlist_file_helpers_roundtrip_and_track_file_actions() {
         "Episode 1.mkv\nhttps://example.com/live"
     );
 
-    std::fs::write(
-        &playlist_path,
-        " Episode 1.mkv \n\n https://example.com/live \n",
-    )
-    .expect("playlist fixture should be updated");
-    assert_eq!(
-        super::load_playlist_entries_from_path(&playlist_path_string)
-            .expect("playlist entries should load from disk"),
-        vec![
-            "Episode 1.mkv".to_owned(),
-            "https://example.com/live".to_owned(),
-        ]
-    );
-
     assert_eq!(
         GuiWidgetEguiRenderer::playlist_load_override_path_from_lookup(&|name| {
             (name == "SOROTTE_GUI_TEST_LOAD_PLAYLIST_PATH")

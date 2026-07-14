@@ -135,6 +135,8 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::AppendSharedPlaylistEntries(_)
             | GuiShellAction::ReplaceSharedPlaylistEntries(_)
             | GuiShellAction::LoadSharedPlaylistFromFile { .. }
+            | GuiShellAction::RequestSharedPlaylistFileImport { .. }
+            | GuiShellAction::RequestSharedPlaylistMediaFilesAdd { .. }
             | GuiShellAction::SaveSharedPlaylistToFile(_)
             | GuiShellAction::SelectMainWindowUser(_)
             | GuiShellAction::AddMainWindowUser(_)

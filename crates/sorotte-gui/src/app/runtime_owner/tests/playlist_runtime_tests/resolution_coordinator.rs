@@ -1178,6 +1178,177 @@ fn client_core_self_echo_preserves_origins_but_partial_remote_replacement_freshe
 }
 
 #[test]
+fn older_self_echo_preserves_newer_gui_row_identity_and_exact_origin() {
+    let root = test_temp_root("playlist-origin-ordered-optimistic-echoes");
+    let first_path = root.join("first.mkv");
+    let second_path = root.join("second.mkv");
+    let newest_path = root.join("newest.mkv");
+    std::fs::create_dir_all(&root).expect("ordered echo fixture directory should be created");
+    std::fs::write(&first_path, b"first").expect("first ordered echo fixture should be written");
+    std::fs::write(&second_path, b"second").expect("second ordered echo fixture should be written");
+    std::fs::write(&newest_path, b"newest").expect("newest ordered echo fixture should be written");
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_session_runtime(Box::new(active_client_core_playlist_adapter()));
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        player_path: Some("mpv".to_owned()),
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    owner.open_media_files_through_shared_playlist_runtime_impl(
+        &handle,
+        &mut state,
+        vec![first_path.to_string_lossy().into_owned()],
+        None,
+    );
+    owner
+        .session
+        .as_mut()
+        .expect("session should remain attached")
+        .apply_message_json(r#"{"Set":{"playlistChange":{"files":["first.mkv"],"user":"alice"}}}"#)
+        .expect("initial self-echo should clear the baseline optimistic mutation");
+    apply_session_runtime_actions(&mut owner, &mut state);
+
+    owner.open_media_files_through_shared_playlist_runtime_impl(
+        &handle,
+        &mut state,
+        vec![second_path.to_string_lossy().into_owned()],
+        Some(1),
+    );
+    owner.open_media_files_through_shared_playlist_runtime_impl(
+        &handle,
+        &mut state,
+        vec![newest_path.to_string_lossy().into_owned()],
+        Some(2),
+    );
+    assert_eq!(
+        state.current_shared_playlist_entries(),
+        vec![
+            "first.mkv".to_owned(),
+            "second.mkv".to_owned(),
+            "newest.mkv".to_owned(),
+        ]
+    );
+    let optimistic_active_index = state.main_window.active_playlist_index;
+    assert_eq!(optimistic_active_index, Some(0));
+    let row_ids = state
+        .main_window
+        .playlist
+        .iter()
+        .map(|row| row.entry_id)
+        .collect::<Vec<_>>();
+    let newest_id = row_ids[2];
+    let undo_entries = state.playlist_undo_snapshot.clone();
+    let undo_sources = state.playlist_source_undo_snapshot.clone();
+    let undo_entry_ids = state.playlist_entry_id_undo_snapshot.clone();
+    let optimistic_revision = owner
+        .session
+        .as_ref()
+        .and_then(|session| session.current_room_playlist_revision());
+    let remote_revision = owner
+        .session
+        .as_ref()
+        .expect("session should remain attached")
+        .current_room_playlist_remote_revision();
+
+    owner
+        .session
+        .as_mut()
+        .expect("session should remain attached")
+        .apply_message_json(
+            r#"{"Set":{"playlistChange":{"files":["first.mkv","second.mkv"],"user":"alice"}}}"#,
+        )
+        .expect("older matching self-echo should apply as an acknowledgement");
+    apply_session_runtime_actions(&mut owner, &mut state);
+    owner.reconcile_local_shared_playlist_media_paths(&state);
+    assert!(
+        !owner.apply_pending_playlist_row_scope_reset(&mut state),
+        "an older acknowledgement must not create a remote row scope"
+    );
+
+    assert_eq!(
+        state.current_shared_playlist_entries(),
+        vec![
+            "first.mkv".to_owned(),
+            "second.mkv".to_owned(),
+            "newest.mkv".to_owned(),
+        ],
+        "an older echo must not roll back the newer optimistic playlist"
+    );
+    assert_eq!(
+        state.main_window.active_playlist_index,
+        optimistic_active_index,
+        "an older playlist echo must not change the optimistic active index"
+    );
+    assert_eq!(
+        state
+            .main_window
+            .playlist
+            .iter()
+            .map(|row| row.entry_id)
+            .collect::<Vec<_>>(),
+        row_ids
+    );
+    assert_eq!(
+        owner
+            .playlist_resolution
+            .local_origins_by_row
+            .get(&newest_id),
+        Some(&newest_path),
+        "the newest row must retain its exact client-local origin"
+    );
+    assert_eq!(state.playlist_undo_snapshot, undo_entries);
+    assert_eq!(state.playlist_source_undo_snapshot, undo_sources);
+    assert_eq!(state.playlist_entry_id_undo_snapshot, undo_entry_ids);
+    assert_eq!(
+        owner
+            .session
+            .as_ref()
+            .and_then(|session| session.current_room_playlist_revision()),
+        optimistic_revision
+    );
+    assert_eq!(
+        owner
+            .session
+            .as_ref()
+            .expect("session should remain attached")
+            .current_room_playlist_remote_revision(),
+        remote_revision
+    );
+
+    owner
+        .session
+        .as_mut()
+        .expect("session should remain attached")
+        .apply_message_json(
+            r#"{"Set":{"playlistChange":{"files":["first.mkv","second.mkv","newest.mkv"],"user":"alice"}}}"#,
+        )
+        .expect("newest matching self-echo should clear the remaining acknowledgement");
+    apply_session_runtime_actions(&mut owner, &mut state);
+    owner.reconcile_local_shared_playlist_media_paths(&state);
+    assert!(!owner.apply_pending_playlist_row_scope_reset(&mut state));
+    assert_eq!(
+        state.main_window.active_playlist_index,
+        optimistic_active_index
+    );
+    assert_eq!(state.main_window.playlist[2].entry_id, newest_id);
+    assert_eq!(
+        owner
+            .playlist_resolution
+            .local_origins_by_row
+            .get(&newest_id),
+        Some(&newest_path)
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn separated_session_remove_and_install_each_freshen_same_label_row_scope() {
     let root = test_temp_root("playlist-origin-session-generation-transitions");
     let media_path = root.join("episode.mkv");

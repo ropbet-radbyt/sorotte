@@ -36,9 +36,8 @@ pub(super) use self::actions::GuiShellAction;
 pub(super) use self::browser_support::{
     browser_domain_from_url, browser_format_duration_label, browser_format_size_label,
     browser_is_url, browser_stream_target_kind, browser_uri_is_trusted,
-    load_playlist_entries_from_path, playlist_entries_from_multiline_text,
-    playlist_entries_multiline_text, save_playlist_entries_to_path,
-    shuffle_playlist_entries_in_place,
+    playlist_entries_from_multiline_text, playlist_entries_multiline_text,
+    save_playlist_entries_to_path, shuffle_playlist_entries_in_place,
 };
 pub(super) use self::configuration_dialog::{
     FirstRunConfigurationDialogDraft, FirstRunConfigurationDialogState, GuiChatSection,

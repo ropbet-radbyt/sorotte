@@ -1,4 +1,5 @@
 use super::*;
+use crate::MAX_PENDING_LOCAL_PLAYLIST_ECHOES;
 
 #[test]
 fn queued_runtime_control_set_playlist_and_index_emit_protocol_messages() {
@@ -447,6 +448,496 @@ fn local_playlist_revision_advances_once_across_matching_server_echo() {
 }
 
 #[test]
+fn older_explicit_self_echoes_preserve_newer_optimistic_playlist_and_index_state() {
+    let mut session = ClientSession::default();
+    session
+        .apply_hello_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json(r#"{"Set":{"playlistChange":{"files":["A"],"user":"bob"}}}"#)
+        .expect("initial playlist should apply");
+    session
+        .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"bob"}}}"#)
+        .expect("initial index should apply");
+
+    let initial_remote_revision = session.current_room_playlist_remote_revision();
+    let mut runtime = ClientRuntime::new(
+        session,
+        RecordingPlayer::default(),
+        QueuedRuntimeControl::default(),
+    );
+    assert!(
+        runtime
+            .run_queue_playlist_item("B", true)
+            .expect("first local mutation should apply")
+    );
+    assert!(
+        runtime
+            .run_queue_playlist_item("C", true)
+            .expect("second local mutation should apply")
+    );
+
+    let latest_optimistic_playlist = runtime
+        .session()
+        .current_room_playlist()
+        .expect("latest optimistic playlist should exist")
+        .clone();
+    let latest_undo_snapshot = runtime
+        .session()
+        .model
+        .playlist
+        .undo_snapshots
+        .get("room1")
+        .cloned();
+    let active_target_state = runtime
+        .session()
+        .model
+        .playlist
+        .active_targets_before_index_update
+        .clone();
+    assert_eq!(latest_optimistic_playlist.files, vec!["A", "B", "C"]);
+    assert_eq!(latest_optimistic_playlist.index, Some(2));
+    assert_eq!(latest_optimistic_playlist.set_by.as_deref(), Some("alice"));
+    assert_eq!(
+        runtime.session().model.playlist.pending_local_change_echoes["room1"]
+            .pending
+            .len(),
+        2
+    );
+    assert_eq!(
+        runtime.session().model.playlist.pending_local_index_echoes["room1"]
+            .pending
+            .len(),
+        2
+    );
+
+    runtime
+        .session_mut()
+        .apply_message_json(r#"{"Set":{"playlistChange":{"files":["A","B"],"user":"alice"}}}"#)
+        .expect("older explicit playlist echo should apply as an acknowledgement");
+    assert_eq!(
+        runtime.session().current_room_playlist(),
+        Some(&latest_optimistic_playlist),
+        "an older playlist echo must not roll back files, index, setter, or revision"
+    );
+    assert_eq!(
+        runtime.session().model.playlist.undo_snapshots.get("room1"),
+        latest_undo_snapshot.as_ref(),
+        "an older playlist echo must not overwrite undo state"
+    );
+    assert_eq!(
+        runtime
+            .session()
+            .model
+            .playlist
+            .active_targets_before_index_update,
+        active_target_state,
+        "an older playlist echo must not alter active-target bookkeeping"
+    );
+    assert_eq!(
+        runtime.session().current_room_playlist_remote_revision(),
+        initial_remote_revision
+    );
+    assert_eq!(
+        runtime.session().model.playlist.pending_local_change_echoes["room1"]
+            .pending
+            .len(),
+        1
+    );
+
+    runtime
+        .session_mut()
+        .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"alice"}}}"#)
+        .expect("older explicit index echo should apply as an acknowledgement");
+    assert_eq!(
+        runtime.session().current_room_playlist(),
+        Some(&latest_optimistic_playlist),
+        "an older index echo must not roll back the latest optimistic index"
+    );
+    assert_eq!(
+        runtime.session().model.playlist.pending_local_index_echoes["room1"]
+            .pending
+            .len(),
+        1
+    );
+
+    runtime
+        .session_mut()
+        .apply_message_json(r#"{"Set":{"playlistChange":{"files":["A","B","C"],"user":"alice"}}}"#)
+        .expect("latest explicit playlist echo should acknowledge the final mutation");
+    runtime
+        .session_mut()
+        .apply_message_json(r#"{"Set":{"playlistIndex":{"index":2,"user":"alice"}}}"#)
+        .expect("latest explicit index echo should acknowledge the final selection");
+    assert_eq!(
+        runtime.session().current_room_playlist(),
+        Some(&latest_optimistic_playlist)
+    );
+    assert_eq!(
+        runtime.session().current_room_playlist_remote_revision(),
+        initial_remote_revision
+    );
+    assert!(
+        !runtime
+            .session()
+            .model
+            .playlist
+            .pending_local_change_echoes
+            .contains_key("room1"),
+        "the final acknowledgement should release playlist echo tracking"
+    );
+    assert!(
+        !runtime
+            .session()
+            .model
+            .playlist
+            .pending_local_index_echoes
+            .contains_key("room1"),
+        "the final acknowledgement should release index echo tracking"
+    );
+}
+
+#[test]
+fn older_omitted_user_echoes_preserve_newer_optimistic_setter_and_index() {
+    let mut session = ClientSession::default();
+    session
+        .apply_hello_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json(r#"{"Set":{"playlistChange":{"files":["A"],"user":"bob"}}}"#)
+        .expect("initial playlist should apply");
+    let mut runtime = ClientRuntime::new(
+        session,
+        RecordingPlayer::default(),
+        QueuedRuntimeControl::default(),
+    );
+    assert!(
+        runtime
+            .run_queue_playlist_item("B", true)
+            .expect("first local mutation should apply")
+    );
+    assert!(
+        runtime
+            .run_queue_playlist_item("C", true)
+            .expect("second local mutation should apply")
+    );
+    let optimistic_revision = runtime
+        .session()
+        .current_room_playlist()
+        .expect("optimistic playlist should exist")
+        .revision;
+    let remote_revision = runtime.session().current_room_playlist_remote_revision();
+
+    runtime
+        .session_mut()
+        .apply_message_json(r#"{"Set":{"playlistChange":{"files":["A","B"]}}}"#)
+        .expect("older omitted-user playlist echo should be acknowledged");
+    runtime
+        .session_mut()
+        .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1}}}"#)
+        .expect("older omitted-user index echo should be acknowledged");
+    let playlist = runtime
+        .session()
+        .current_room_playlist()
+        .expect("newer optimistic playlist should remain projected");
+    assert_eq!(playlist.files, vec!["A", "B", "C"]);
+    assert_eq!(playlist.index, Some(2));
+    assert_eq!(playlist.set_by.as_deref(), Some("alice"));
+    assert_eq!(playlist.revision, optimistic_revision);
+    assert_eq!(
+        runtime.session().current_room_playlist_remote_revision(),
+        remote_revision
+    );
+
+    runtime
+        .session_mut()
+        .apply_message_json(r#"{"Set":{"playlistChange":{"files":["A","B","C"]}}}"#)
+        .expect("latest omitted-user playlist echo should acknowledge the final mutation");
+    runtime
+        .session_mut()
+        .apply_message_json(r#"{"Set":{"playlistIndex":{"index":2}}}"#)
+        .expect("latest omitted-user index echo should acknowledge the final selection");
+    assert_eq!(
+        runtime
+            .session()
+            .current_room_playlist()
+            .expect("final playlist should remain projected")
+            .revision,
+        optimistic_revision
+    );
+    assert_eq!(
+        runtime.session().current_room_playlist_remote_revision(),
+        remote_revision
+    );
+    assert!(
+        runtime
+            .session()
+            .model
+            .playlist
+            .pending_local_change_echoes
+            .is_empty()
+    );
+    assert!(
+        runtime
+            .session()
+            .model
+            .playlist
+            .pending_local_index_echoes
+            .is_empty()
+    );
+}
+
+#[test]
+fn local_playlist_echo_tracking_is_bounded_and_recovers_after_authoritative_overflow() {
+    let mut session = ClientSession::default();
+    session
+        .apply_hello_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+
+    let mut latest_files = Vec::new();
+    for mutation in 0..=MAX_PENDING_LOCAL_PLAYLIST_ECHOES {
+        latest_files = vec![format!("mutation-{mutation}.mkv")];
+        session.apply_local_playlist_runtime_actions_legacy_compatible(&[
+            ClientRuntimeAction::SetPlaylist {
+                files: latest_files.clone(),
+            },
+        ]);
+    }
+
+    let optimistic_revision = session
+        .current_room_playlist()
+        .expect("overflowing optimistic playlist should remain projected")
+        .revision;
+    let remote_revision = session.current_room_playlist_remote_revision();
+    let tracker = &session.model.playlist.pending_local_change_echoes["room1"];
+    assert!(tracker.invalidated);
+    assert!(tracker.pending.is_empty());
+    let model_debug = format!("{:?}", session.model.playlist);
+    assert!(model_debug.contains("invalidated_local_change_echo_room_count: 1"));
+    assert!(
+        !model_debug.contains("mutation-"),
+        "playlist echo fingerprints and host-provided targets must remain absent from Debug"
+    );
+
+    let echoed_files_json = serde_json::to_string(&latest_files).expect("files should serialize");
+    session
+        .apply_message_json(&format!(
+            r#"{{"Set":{{"playlistChange":{{"files":{echoed_files_json},"user":"alice"}}}}}}"#
+        ))
+        .expect("the first update after overflow should apply authoritatively");
+    let playlist = session
+        .current_room_playlist()
+        .expect("authoritative overflow update should remain projected");
+    assert_eq!(playlist.files, latest_files);
+    assert_eq!(playlist.revision, optimistic_revision.wrapping_add(1));
+    assert_eq!(
+        session.current_room_playlist_remote_revision(),
+        remote_revision.wrapping_add(1)
+    );
+    assert!(
+        session
+            .model
+            .playlist
+            .pending_local_change_echoes
+            .is_empty()
+    );
+
+    let recovered_files = vec!["recovered.mkv".to_owned()];
+    session.apply_local_playlist_runtime_actions_legacy_compatible(&[
+        ClientRuntimeAction::SetPlaylist {
+            files: recovered_files.clone(),
+        },
+    ]);
+    let recovered_revision = session
+        .current_room_playlist()
+        .expect("new optimistic mutation should be tracked after overflow recovery")
+        .revision;
+    let recovered_remote_revision = session.current_room_playlist_remote_revision();
+    assert_eq!(
+        session.model.playlist.pending_local_change_echoes["room1"]
+            .pending
+            .len(),
+        1
+    );
+    session
+        .apply_message_json(
+            r#"{"Set":{"playlistChange":{"files":["recovered.mkv"],"user":"alice"}}}"#,
+        )
+        .expect("post-overflow matching echo should acknowledge normally");
+    assert_eq!(
+        session
+            .current_room_playlist()
+            .expect("recovered playlist should remain projected")
+            .revision,
+        recovered_revision
+    );
+    assert_eq!(
+        session.current_room_playlist_remote_revision(),
+        recovered_remote_revision
+    );
+    assert!(
+        session
+            .model
+            .playlist
+            .pending_local_change_echoes
+            .is_empty()
+    );
+}
+
+#[test]
+fn local_playlist_index_echo_tracking_is_bounded_and_recovers_after_overflow() {
+    let mut session = ClientSession::default();
+    session
+        .apply_hello_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+    session.apply_local_playlist_runtime_actions_legacy_compatible(&[
+        ClientRuntimeAction::SetPlaylist {
+            files: vec!["first.mkv".to_owned(), "second.mkv".to_owned()],
+        },
+    ]);
+    session
+        .apply_message_json(
+            r#"{"Set":{"playlistChange":{"files":["first.mkv","second.mkv"],"user":"alice"}}}"#,
+        )
+        .expect("initial playlist echo should clear file tracking");
+
+    for mutation in 0..=MAX_PENDING_LOCAL_PLAYLIST_ECHOES {
+        session.apply_local_playlist_runtime_actions_legacy_compatible(&[
+            ClientRuntimeAction::SetPlaylistIndex {
+                index: i64::try_from(mutation % 2).expect("bounded test index should fit"),
+            },
+        ]);
+    }
+    let playlist_before_echo = session
+        .current_room_playlist()
+        .expect("optimistic index should be projected")
+        .clone();
+    let remote_revision = session.current_room_playlist_remote_revision();
+    let tracker = &session.model.playlist.pending_local_index_echoes["room1"];
+    assert!(tracker.invalidated);
+    assert!(tracker.pending.is_empty());
+    let model_debug = format!("{:?}", session.model.playlist);
+    assert!(model_debug.contains("pending_local_index_echo_count: 0"));
+    assert!(model_debug.contains("invalidated_local_index_echo_room_count: 1"));
+    assert!(!model_debug.contains("files_digest"));
+
+    session
+        .apply_message_json(&format!(
+            r#"{{"Set":{{"playlistIndex":{{"index":{},"user":"alice"}}}}}}"#,
+            playlist_before_echo
+                .index
+                .expect("latest optimistic index should be set")
+        ))
+        .expect("first index echo after overflow should apply authoritatively");
+    assert_eq!(
+        session.current_room_playlist(),
+        Some(&playlist_before_echo),
+        "an authoritative index echo does not create a playlist content revision"
+    );
+    assert_eq!(
+        session.current_room_playlist_remote_revision(),
+        remote_revision
+    );
+    assert!(session.model.playlist.pending_local_index_echoes.is_empty());
+
+    let recovered_index = if playlist_before_echo.index == Some(0) {
+        1
+    } else {
+        0
+    };
+    session.apply_local_playlist_runtime_actions_legacy_compatible(&[
+        ClientRuntimeAction::SetPlaylistIndex {
+            index: recovered_index,
+        },
+    ]);
+    assert_eq!(
+        session.model.playlist.pending_local_index_echoes["room1"]
+            .pending
+            .len(),
+        1
+    );
+    session
+        .apply_message_json(&format!(
+            r#"{{"Set":{{"playlistIndex":{{"index":{recovered_index},"user":"alice"}}}}}}"#
+        ))
+        .expect("post-overflow matching index echo should acknowledge normally");
+    assert_eq!(
+        session
+            .current_room_playlist()
+            .expect("recovered index should remain projected")
+            .index,
+        Some(recovered_index)
+    );
+    assert!(session.model.playlist.pending_local_index_echoes.is_empty());
+}
+
+#[test]
+fn local_playlist_echo_trackers_clear_across_room_and_reconnect_boundaries() {
+    let mut session = ClientSession::default();
+    session
+        .apply_hello_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+    session.apply_local_playlist_runtime_actions_legacy_compatible(&[
+        ClientRuntimeAction::SetPlaylist {
+            files: vec!["room1.mkv".to_owned()],
+        },
+        ClientRuntimeAction::SetPlaylistIndex { index: 0 },
+    ]);
+    assert!(
+        !session
+            .model
+            .playlist
+            .pending_local_change_echoes
+            .is_empty()
+    );
+    assert!(!session.model.playlist.pending_local_index_echoes.is_empty());
+
+    session.update_local_room("room2".to_owned());
+    assert!(
+        session
+            .model
+            .playlist
+            .pending_local_change_echoes
+            .is_empty()
+    );
+    assert!(session.model.playlist.pending_local_index_echoes.is_empty());
+
+    session.apply_local_playlist_runtime_actions_legacy_compatible(&[
+        ClientRuntimeAction::SetPlaylist {
+            files: vec!["room2.mkv".to_owned()],
+        },
+        ClientRuntimeAction::SetPlaylistIndex { index: 0 },
+    ]);
+    assert!(
+        !session
+            .model
+            .playlist
+            .pending_local_change_echoes
+            .is_empty()
+    );
+    assert!(!session.model.playlist.pending_local_index_echoes.is_empty());
+    session.reset_sync_state_for_reconnect();
+    assert!(
+        session
+            .model
+            .playlist
+            .pending_local_change_echoes
+            .is_empty()
+    );
+    assert!(session.model.playlist.pending_local_index_echoes.is_empty());
+}
+
+#[test]
 fn remote_playlist_change_invalidates_an_unacknowledged_local_echo() {
     let mut session = ClientSession::default();
     session
@@ -467,6 +958,22 @@ fn remote_playlist_change_invalidates_an_unacknowledged_local_echo() {
             .run_queue_playlist_item("local.mkv", false)
             .expect("local queue should apply optimistically")
     );
+    assert!(
+        runtime
+            .session()
+            .model
+            .playlist
+            .pending_local_change_echoes
+            .contains_key("room1")
+    );
+    assert!(
+        runtime
+            .session()
+            .model
+            .playlist
+            .pending_local_index_echoes
+            .contains_key("room1")
+    );
 
     runtime
         .session_mut()
@@ -478,6 +985,23 @@ fn remote_playlist_change_invalidates_an_unacknowledged_local_echo() {
         .current_room_playlist()
         .expect("remote playlist should be projected")
         .revision;
+    assert!(
+        !runtime
+            .session()
+            .model
+            .playlist
+            .pending_local_change_echoes
+            .contains_key("room1")
+    );
+    assert!(
+        !runtime
+            .session()
+            .model
+            .playlist
+            .pending_local_index_echoes
+            .contains_key("room1"),
+        "an authoritative playlist replacement should invalidate stale index echoes too"
+    );
 
     runtime
         .session_mut()

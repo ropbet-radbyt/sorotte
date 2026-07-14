@@ -70,6 +70,7 @@ impl ClientSession {
         self.model.playlist.pending = None;
         self.model.playlist.pending_remote_revision = 0;
         self.model.playlist.pending_local_change_echoes.clear();
+        self.model.playlist.pending_local_index_echoes.clear();
         self.model.playlist.remote_revisions.clear();
         self.model.playlist.undo_snapshots.clear();
         self.model.playlist.shuffle_nonce = 0;

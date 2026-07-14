@@ -24,6 +24,13 @@ impl GuiRuntimeRequest {
                 *load_into_shared_playlist || state.playlist_backed_media_opens_preferred(),
                 *playlist_insert_slot,
             ),
+            Self::ImportSharedPlaylistFile { path, shuffled } => {
+                GuiPreviewRuntimeBridge::preview_import_shared_playlist_file_actions(
+                    Some(state),
+                    path.clone(),
+                    *shuffled,
+                )
+            }
             Self::OpenMainWindowUserMedia(target) => {
                 GuiPreviewRuntimeBridge::preview_open_media_file_actions(
                     Some(state),
@@ -237,6 +244,13 @@ impl GuiRuntimeRequest {
                 *load_into_shared_playlist,
                 *playlist_insert_slot,
             ),
+            Self::ImportSharedPlaylistFile { path, shuffled } => {
+                GuiPreviewRuntimeBridge::preview_import_shared_playlist_file_actions(
+                    None,
+                    path.clone(),
+                    *shuffled,
+                )
+            }
             Self::OpenMainWindowUserMedia(target) => {
                 GuiPreviewRuntimeBridge::preview_open_media_file_actions(
                     None,

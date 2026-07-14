@@ -123,6 +123,7 @@ impl GuiClientCommand {
             | Request::CompletePendingOperation(_)
             | Request::CancelPendingOperation(_) => GuiFeature::Session,
             Request::OpenMediaFiles { .. }
+            | Request::ImportSharedPlaylistFile { .. }
             | Request::OpenMainWindowUserMedia(_)
             | Request::OpenMainWindowUserContainingFolder(_)
             | Request::RetryPendingStreamMediaOpen => GuiFeature::MediaResolution,

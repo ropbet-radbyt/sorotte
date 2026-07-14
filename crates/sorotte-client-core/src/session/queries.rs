@@ -389,7 +389,7 @@ impl ClientSession {
                         .pending_local_change_echoes
                         .entry(room_name.clone())
                         .or_default()
-                        .push_back(files.clone());
+                        .record(playlist.revision, files);
                     playlist_changed = true;
                 }
                 ClientRuntimeAction::SetPlaylistIndex { index } => {
@@ -401,6 +401,12 @@ impl ClientSession {
                     }
                     playlist.index = Some(*index);
                     playlist.set_by = Some(local_username.clone());
+                    self.model
+                        .playlist
+                        .pending_local_index_echoes
+                        .entry(room_name.clone())
+                        .or_default()
+                        .record(playlist.revision, *index);
                     playlist_changed = true;
                 }
                 _ => {}

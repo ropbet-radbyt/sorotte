@@ -102,7 +102,7 @@ fn gui_preview_runtime_bridge_imports_playlist_files_for_shared_playlist_ingest(
         vec![
             GuiShellAction::SwitchView(GuiShellView::Room),
             GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
-                root.join("episode1.mkv").to_string_lossy().into_owned(),
+                "episode1.mkv".to_owned(),
                 "https://example.com/live".to_owned(),
             ]),
         ]
