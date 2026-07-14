@@ -39,6 +39,14 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         false
     }
 
+    fn current_room_playlist_revision(&self) -> Option<u64> {
+        None
+    }
+
+    fn current_room_playlist_remote_revision(&self) -> u64 {
+        0
+    }
+
     fn adjust_command_availability(
         &self,
         _state: &SorotteGuiShellAppState,

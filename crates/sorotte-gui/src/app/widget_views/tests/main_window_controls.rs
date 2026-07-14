@@ -312,6 +312,8 @@ fn gui_shell_app_state_disables_playback_controls_when_playlist_is_empty() {
     snapshot.can_set_ready = true;
     snapshot.users = vec![browser_runtime_user("alice", "Lounge", true, false, false)];
     snapshot.playlist = Vec::new();
+    snapshot.playlist_entry_ids.clear();
+    snapshot.playlist_source_states.clear();
 
     assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
         snapshot.clone(),

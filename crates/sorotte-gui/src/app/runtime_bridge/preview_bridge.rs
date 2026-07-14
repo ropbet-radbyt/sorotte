@@ -31,7 +31,7 @@ impl GuiPreviewRuntimeBridge {
                                 });
                             let (playlist_entries, _) = state
                                 .shared_playlist_entries_after_media_open_from_state_with_current_index(
-                                    dispatch.playlist_entries.clone(),
+                                    dispatch.playlist_entries(),
                                     playlist_insert_slot,
                                     current_index,
                                 );
@@ -43,7 +43,7 @@ impl GuiPreviewRuntimeBridge {
                             (playlist_entries, opened_entry_count)
                         })
                         .unwrap_or_else(|| {
-                            let playlist_entries = dispatch.playlist_entries.clone();
+                            let playlist_entries = dispatch.playlist_entries();
                             let opened_entry_count = playlist_entries.len();
                             (playlist_entries, opened_entry_count)
                         });

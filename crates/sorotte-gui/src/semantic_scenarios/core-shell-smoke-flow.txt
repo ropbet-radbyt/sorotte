@@ -84,7 +84,7 @@ activate	media-search:command:search
 assert-pending	search-missing-media
 cancel-pending
 assert-pending	none
-open-media-files	C:/SmokeMedia/open-target.mkv
+open-media-files	fixture-media://open-target.mkv
 assert-selected	main-window-root	true
 assert-value	shell:active-view	room
 assert-label	main-window:playlist:0	open-target.mkv

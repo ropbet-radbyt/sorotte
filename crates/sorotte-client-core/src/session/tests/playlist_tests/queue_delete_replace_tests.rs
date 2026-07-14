@@ -336,6 +336,171 @@ fn client_runtime_queue_playlist_item_dispatches_playlist_change_and_preserves_i
 }
 
 #[test]
+fn local_playlist_revision_advances_once_across_matching_server_echo() {
+    let mut session = ClientSession::default();
+    session
+        .apply_hello_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json(r#"{"Set":{"playlistChange":{"files":["episode1.mkv"],"user":"bob"}}}"#)
+        .expect("initial remote playlist should apply");
+    let initial_revision = session
+        .current_room_playlist()
+        .expect("initial playlist should be projected")
+        .revision;
+    let initial_remote_revision = session.current_room_playlist_remote_revision();
+
+    let mut runtime = ClientRuntime::new(
+        session,
+        RecordingPlayer::default(),
+        QueuedRuntimeControl::default(),
+    );
+    assert!(
+        runtime
+            .run_queue_playlist_item("episode2.mkv", false)
+            .expect("local queue should not fail")
+    );
+    let optimistic_revision = runtime
+        .session()
+        .current_room_playlist()
+        .expect("local queue should project immediately")
+        .revision;
+    assert_eq!(optimistic_revision, initial_revision.wrapping_add(1));
+
+    runtime
+        .session_mut()
+        .apply_message_json(
+            r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"alice"}}}"#,
+        )
+        .expect("matching local server echo should apply");
+    assert_eq!(
+        runtime
+            .session()
+            .current_room_playlist()
+            .expect("echoed playlist should remain projected")
+            .revision,
+        optimistic_revision,
+        "a matching self-echo acknowledges the optimistic mutation without creating a new revision"
+    );
+    assert_eq!(
+        runtime.session().current_room_playlist_remote_revision(),
+        initial_remote_revision,
+        "a matching self-echo must not advance the remote playlist generation"
+    );
+
+    runtime
+        .session_mut()
+        .apply_message_json(
+            r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"bob"}}}"#,
+        )
+        .expect("same-content remote replacement should apply");
+    assert_eq!(
+        runtime
+            .session()
+            .current_room_playlist()
+            .expect("remote playlist should remain projected")
+            .revision,
+        optimistic_revision.wrapping_add(1),
+        "a distinguishable same-content remote replacement remains a new revision"
+    );
+    assert_eq!(
+        runtime.session().current_room_playlist_remote_revision(),
+        initial_remote_revision.wrapping_add(1),
+        "a distinguishable remote replacement advances the remote playlist generation"
+    );
+
+    assert!(
+        runtime
+            .run_queue_playlist_item("episode3.mkv", false)
+            .expect("second local queue should not fail")
+    );
+    let second_optimistic_revision = runtime
+        .session()
+        .current_room_playlist()
+        .expect("second local queue should project immediately")
+        .revision;
+    let remote_revision_before_omitted_user_echo =
+        runtime.session().current_room_playlist_remote_revision();
+
+    runtime
+        .session_mut()
+        .apply_message_json(
+            r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv","episode3.mkv"]}}}"#,
+        )
+        .expect("matching omitted-user server echo should apply");
+    assert_eq!(
+        runtime
+            .session()
+            .current_room_playlist()
+            .expect("omitted-user echo should remain projected")
+            .revision,
+        second_optimistic_revision,
+        "a matching omitted-user echo acknowledges the optimistic mutation"
+    );
+    assert_eq!(
+        runtime.session().current_room_playlist_remote_revision(),
+        remote_revision_before_omitted_user_echo,
+        "a matching omitted-user echo must not advance the remote playlist generation"
+    );
+}
+
+#[test]
+fn remote_playlist_change_invalidates_an_unacknowledged_local_echo() {
+    let mut session = ClientSession::default();
+    session
+        .apply_hello_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json(r#"{"Set":{"playlistChange":{"files":["initial.mkv"],"user":"bob"}}}"#)
+        .expect("initial playlist should apply");
+    let mut runtime = ClientRuntime::new(
+        session,
+        RecordingPlayer::default(),
+        QueuedRuntimeControl::default(),
+    );
+    assert!(
+        runtime
+            .run_queue_playlist_item("local.mkv", false)
+            .expect("local queue should apply optimistically")
+    );
+
+    runtime
+        .session_mut()
+        .apply_message_json(r#"{"Set":{"playlistChange":{"files":["remote.mkv"]}}}"#)
+        .expect("intervening omitted-user remote replacement should apply");
+    let remote_revision = runtime.session().current_room_playlist_remote_revision();
+    let total_revision = runtime
+        .session()
+        .current_room_playlist()
+        .expect("remote playlist should be projected")
+        .revision;
+
+    runtime
+        .session_mut()
+        .apply_message_json(
+            r#"{"Set":{"playlistChange":{"files":["initial.mkv","local.mkv"],"user":"alice"}}}"#,
+        )
+        .expect("late stale self-authored update should apply authoritatively");
+    assert_eq!(
+        runtime.session().current_room_playlist_remote_revision(),
+        remote_revision.wrapping_add(1),
+        "an intervening remote replacement must invalidate the queued self-echo acknowledgement"
+    );
+    assert_eq!(
+        runtime
+            .session()
+            .current_room_playlist()
+            .expect("late update should remain projected")
+            .revision,
+        total_revision.wrapping_add(1)
+    );
+}
+
+#[test]
 fn client_runtime_queue_playlist_item_preserves_whitespace_only_file_name() {
     let mut session = ClientSession::default();
     session

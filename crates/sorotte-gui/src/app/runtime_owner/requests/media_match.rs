@@ -909,7 +909,9 @@ impl GuiPersistedConfigRuntimeOwner {
             .map(|result| result.candidate_path.clone())
     }
 
-    fn cancel_attached_media_search_after_media_match_resolution(&mut self) {
+    pub(in crate::app::runtime_owner) fn cancel_attached_media_search_after_media_match_resolution(
+        &mut self,
+    ) {
         self.unresolved_attached_media_target = None;
         self.attached_media_search_next_retry_at = None;
         if self.pending_attached_media_resolution.is_some() {
@@ -1049,9 +1051,6 @@ impl GuiPersistedConfigRuntimeOwner {
         if let Some(candidate_path) =
             self.cached_media_match_remote_lookup_result(&lookup.trigger_key)
         {
-            if candidate_path.is_some() {
-                self.cancel_attached_media_search_after_media_match_resolution();
-            }
             return candidate_path;
         }
         self.queue_media_match_remote_lookup_worker(
@@ -1124,7 +1123,6 @@ impl GuiPersistedConfigRuntimeOwner {
         {
             return None;
         }
-        self.cancel_attached_media_search_after_media_match_resolution();
         Some(current_path.to_owned())
     }
 
@@ -2292,11 +2290,15 @@ impl GuiPersistedConfigRuntimeOwner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::runtime_owner::player::SelectedPlaylistMediaSyncOutcome;
     use crate::app::runtime_owner::{
         GuiAttachedMediaSearchBuildStatus, GuiAttachedMediaSearchIndex,
-        GuiAttachedMediaSearchRootIndex, GuiPendingAttachedMediaResolution,
+        GuiAttachedMediaSearchRootIndex, GuiAttachedMediaSearchRootRefreshResult,
+        GuiPendingAttachedMediaResolution,
     };
-    use crate::app::runtime_stack::GuiSessionRuntimeAdapter;
+    use crate::app::runtime_stack::{
+        GuiOwnedPlayer, GuiSessionRuntimeAdapter, GuiTestPlayerAdapter,
+    };
     use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
 
     struct MediaMatchTargetSession {
@@ -2444,6 +2446,200 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         panic!("timed out waiting for cached media-match remote lookup completion");
+    }
+
+    #[test]
+    fn automatic_and_preferred_media_match_wait_for_pending_local_index() {
+        let mut root = std::env::temp_dir();
+        root.push(format!(
+            "sorotte-gui-media-match-local-priority-{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            let _ = std::fs::remove_dir_all(&root);
+        }
+        let media_root = root.join("media");
+        std::fs::create_dir_all(&media_root).expect("test media root should be created");
+        let target = "episode2.mkv";
+        let exact_local_relative_path = std::path::PathBuf::from("discovered").join(target);
+        let exact_local_path = media_root.join(&exact_local_relative_path);
+        let media_match_path = media_root.join("alternate-episode2.mkv");
+        std::fs::write(&media_match_path, b"alternate encode")
+            .expect("media-match fixture should be written");
+
+        let mut cache = sorotte_media_match::MediaMatchCache::default();
+        cache.insert(media_match_test_record_for_path(&media_match_path, 100));
+        crate::app::media_match_support::save_media_match_cache_for_test(&root, &cache)
+            .expect("media-match cache should be written");
+        let remote_signature = sorotte_media_match::media_match_wire_value_from_records(&[
+            remote_media_match_test_record(target, 100),
+        ])
+        .expect("remote media-match signature should serialize");
+
+        let mut owner =
+            GuiPersistedConfigRuntimeOwner::with_config_path(Some(root.join("sorotte.ini")))
+                .with_session_runtime(Box::new(MediaMatchPeerStateSession {
+                    peer_files: vec![sorotte_client_core::ClientMediaMatchPeerFileState {
+                        username: "bob".to_owned(),
+                        has_file: true,
+                        file_name: Some(target.to_owned()),
+                        file_size: None,
+                        file_duration: None,
+                        media_match_signature: Some(
+                            sorotte_media_match::media_match_wire_signature_from_value(
+                                &remote_signature,
+                            )
+                            .expect("remote signature should validate"),
+                        ),
+                    }],
+                }));
+        owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+        owner.active_shared_playlist_index = Some(0);
+        owner.media_match_runtime_snapshot.health = GuiMediaMatchToolHealth::Healthy;
+
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            shared_playlist_enabled: Some(true),
+            media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
+            media_matching_plugin_enabled: Some(true),
+            media_match_fingerprinting_enabled: Some(true),
+            media_match_wire_sharing_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+        state.apply_shared_playlist_entries(vec![target.to_owned()], Some(0), false);
+
+        let root_key =
+            crate::app::media_search_cache::normalized_media_search_root_key(&media_root);
+        owner.attached_media_search_index = Some(GuiAttachedMediaSearchIndex {
+            roots: vec![root_key.clone()],
+            root_indexes_by_key: std::collections::HashMap::from([(
+                root_key.clone(),
+                GuiAttachedMediaSearchRootIndex {
+                    root_key: root_key.clone(),
+                    root_path: media_root.clone(),
+                    built_at_unix_ms: 1,
+                    candidates_by_name: std::collections::HashMap::from([(
+                        "alternate-episode2.mkv".to_owned(),
+                        vec!["alternate-episode2.mkv".to_owned()],
+                    )]),
+                },
+            )]),
+            roots_requiring_refresh: std::collections::BTreeSet::from([root_key.clone()]),
+        });
+        let (index_tx, index_rx) = mpsc::channel();
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        owner.pending_attached_media_resolution = Some(GuiPendingAttachedMediaResolution {
+            roots: vec![root_key.clone()],
+            cancel_flag: Arc::clone(&cancel_flag),
+            latest_progress: Arc::new(std::sync::Mutex::new(None)),
+            result_rx: index_rx,
+        });
+
+        assert_eq!(
+            owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+            SelectedPlaylistMediaSyncOutcome::NoChange,
+            "automatic resolution should queue Media Matching while local indexing continues"
+        );
+        wait_for_media_match_remote_lookup(&mut owner);
+        assert_eq!(
+            owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+            SelectedPlaylistMediaSyncOutcome::NoChange,
+            "a ready Media Matching result must wait for the higher-priority local index"
+        );
+        assert!(owner.pending_attached_media_resolution.is_some());
+        assert!(!cancel_flag.load(Ordering::Relaxed));
+        assert!(
+            owner.player_local_file.is_none(),
+            "the ready Media Matching candidate must not open while local indexing is pending"
+        );
+
+        std::fs::create_dir_all(
+            exact_local_path
+                .parent()
+                .expect("exact local fixture should have a parent"),
+        )
+        .expect("exact local fixture parent should be created");
+        std::fs::write(&exact_local_path, b"exact local")
+            .expect("exact local fixture should be written before indexing completes");
+        index_tx
+            .send(GuiAttachedMediaSearchBuildStatus::Completed(vec![
+                GuiAttachedMediaSearchRootRefreshResult {
+                    root_key: root_key.clone(),
+                    index: Some(GuiAttachedMediaSearchRootIndex {
+                        root_key: root_key.clone(),
+                        root_path: media_root.clone(),
+                        built_at_unix_ms: 1,
+                        candidates_by_name: std::collections::HashMap::from([(
+                            target.to_owned(),
+                            vec![exact_local_relative_path.to_string_lossy().into_owned()],
+                        )]),
+                    }),
+                    error: None,
+                },
+            ]))
+            .expect("completed local index should be queued");
+        let _ = owner.poll_attached_media_search_index_build(std::time::Duration::from_secs(1));
+
+        assert_eq!(
+            owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+            SelectedPlaylistMediaSyncOutcome::OpenedNewMedia
+        );
+        let exact_local_path = exact_local_path.to_string_lossy().into_owned();
+        assert_eq!(
+            owner
+                .player_local_file
+                .as_ref()
+                .and_then(|file| file.path.as_deref()),
+            Some(exact_local_path.as_str()),
+            "the exact local candidate must win after indexing completes"
+        );
+
+        std::fs::remove_file(&exact_local_path)
+            .expect("exact local fixture should be removed for the preferred-source check");
+        owner.player_local_file = None;
+        owner.attached_media_search_index = Some(GuiAttachedMediaSearchIndex {
+            roots: vec![root_key.clone()],
+            root_indexes_by_key: std::collections::HashMap::from([(
+                root_key.clone(),
+                GuiAttachedMediaSearchRootIndex {
+                    root_key: root_key.clone(),
+                    root_path: media_root.clone(),
+                    built_at_unix_ms: 1,
+                    candidates_by_name: std::collections::HashMap::from([(
+                        "alternate-episode2.mkv".to_owned(),
+                        vec!["alternate-episode2.mkv".to_owned()],
+                    )]),
+                },
+            )]),
+            roots_requiring_refresh: std::collections::BTreeSet::from([root_key.clone()]),
+        });
+        owner.last_attached_media_resolution_trigger = None;
+        state.main_window.playlist[0].source_state =
+            crate::app::GuiPlaylistSourceState::for_playlist_default(
+                GuiMediaSourceProviderId::media_matching(),
+            );
+        let (_preferred_index_tx, preferred_index_rx) = mpsc::channel();
+        let preferred_cancel_flag = Arc::new(AtomicBool::new(false));
+        owner.pending_attached_media_resolution = Some(GuiPendingAttachedMediaResolution {
+            roots: vec![root_key],
+            cancel_flag: Arc::clone(&preferred_cancel_flag),
+            latest_progress: Arc::new(std::sync::Mutex::new(None)),
+            result_rx: preferred_index_rx,
+        });
+        assert_eq!(
+            owner.media_match_cached_room_candidate_for_target(&state, target),
+            Some(sorotte_media_match::normalize_media_path(&media_match_path)),
+            "the preferred-source check requires an already-ready Media Matching fallback"
+        );
+        assert_eq!(
+            owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+            SelectedPlaylistMediaSyncOutcome::NoChange,
+            "PreferMediaMatching must preserve local-first priority while local indexing is pending"
+        );
+        assert!(owner.pending_attached_media_resolution.is_some());
+        assert!(!preferred_cancel_flag.load(Ordering::Relaxed));
+        assert!(owner.player_local_file.is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -2782,19 +2978,19 @@ mod tests {
             Some(sorotte_media_match::normalize_media_path(&local_media_path))
         );
         assert!(
-            cancel_flag.load(Ordering::Relaxed),
-            "using a cached media-match candidate should cancel an obsolete attached-media scan"
+            !cancel_flag.load(Ordering::Relaxed),
+            "observing a cached media-match candidate must not cancel a higher-priority attached-media scan"
         );
-        assert!(owner.pending_attached_media_resolution.is_none());
-        assert!(owner.attached_media_search_next_retry_at.is_none());
+        assert!(owner.pending_attached_media_resolution.is_some());
+        assert!(owner.attached_media_search_next_retry_at.is_some());
         assert_eq!(
             owner.media_match_current_local_path_for_state(&state),
             Some(local_media_path_text.clone()),
             "a cached probable media-match candidate should count as the current local file"
         );
         assert!(
-            owner.pending_attached_media_resolution.is_none(),
-            "using a cached media-match candidate as the current local file should not queue an attached media search"
+            owner.pending_attached_media_resolution.is_some(),
+            "using a cached media-match candidate for wire status must not consume an in-flight attached-media search"
         );
         assert!(
             owner.attached_media_search_index.is_none(),

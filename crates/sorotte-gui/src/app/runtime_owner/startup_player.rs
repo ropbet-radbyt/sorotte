@@ -9,6 +9,7 @@ impl GuiPersistedConfigRuntimeOwner {
             config_path,
             legacy_projection: None,
             session: None,
+            session_generation: 0,
             session_projects_to_shell: false,
             session_transport: None,
             session_transport_driver: None,
@@ -34,7 +35,7 @@ impl GuiPersistedConfigRuntimeOwner {
             last_published_local_file: None,
             last_published_media_match_signature: None,
             local_shared_playlist_media_match_signature_path: None,
-            local_shared_playlist_media_paths_by_target: HashMap::new(),
+            playlist_resolution: GuiPlaylistResolutionCoordinator::default(),
             attached_media_search_index: None,
             attached_media_search_next_retry_at: None,
             pending_attached_media_resolution: None,
@@ -814,7 +815,7 @@ impl GuiPersistedConfigRuntimeOwner {
             clear_persisted_media_match_cache_at_root(&root)?;
         }
         self.clear_persisted_plex_match_cache()?;
-        self.session = None;
+        self.remove_session_runtime();
         self.session_projects_to_shell = false;
         self.session_transport = None;
         self.session_transport_driver = None;

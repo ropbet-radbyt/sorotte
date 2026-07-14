@@ -76,6 +76,7 @@ impl SorotteGuiShellAppState {
             last_media_dialog_directory: None,
             playlist_undo_snapshot: None,
             playlist_source_undo_snapshot: None,
+            playlist_entry_id_undo_snapshot: None,
             playlist_shuffle_nonce: 0,
             media_index_status: Default::default(),
             player_setup_issue: None,

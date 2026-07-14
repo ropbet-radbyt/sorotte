@@ -461,6 +461,9 @@ impl ClientModel {
 pub struct PlaylistState {
     pub(crate) rooms: BTreeMap<String, RoomPlaylistView>,
     pub(crate) pending: Option<RoomPlaylistView>,
+    pub(crate) pending_remote_revision: u64,
+    pub(crate) pending_local_change_echoes: BTreeMap<String, VecDeque<Vec<String>>>,
+    pub(crate) remote_revisions: BTreeMap<String, u64>,
     pub(crate) active_targets_before_index_update: BTreeMap<String, String>,
     pub(crate) undo_snapshots: BTreeMap<String, Vec<String>>,
     pub(crate) shuffle_nonce: u64,
@@ -477,6 +480,16 @@ impl std::fmt::Debug for PlaylistState {
             .debug_struct("PlaylistState")
             .field("rooms", &self.rooms)
             .field("pending", &self.pending)
+            .field("pending_remote_revision", &self.pending_remote_revision)
+            .field(
+                "pending_local_change_echo_count",
+                &self
+                    .pending_local_change_echoes
+                    .values()
+                    .map(VecDeque::len)
+                    .sum::<usize>(),
+            )
+            .field("remote_revision_room_count", &self.remote_revisions.len())
             .field(
                 "active_targets_before_index_update_count",
                 &self.active_targets_before_index_update.len(),

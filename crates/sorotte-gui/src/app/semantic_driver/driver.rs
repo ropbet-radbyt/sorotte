@@ -9,11 +9,15 @@ use super::GuiSemanticStep;
 
 pub(in crate::app) struct GuiSemanticDriver {
     state: SorotteGuiShellAppState,
+    media_fixture_root: Option<std::path::PathBuf>,
 }
 
 impl GuiSemanticDriver {
     fn new(state: SorotteGuiShellAppState) -> Self {
-        Self { state }
+        Self {
+            state,
+            media_fixture_root: None,
+        }
     }
 
     pub(in crate::app) fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
@@ -214,6 +218,7 @@ impl GuiSemanticDriver {
     }
 
     fn open_media_files(&mut self, paths: Vec<String>) -> Result<(), String> {
+        let paths = self.materialize_media_fixture_paths(paths)?;
         let actions = GuiPreviewRuntimeBridge::preview_open_media_file_actions(
             Some(&self.state),
             paths,
@@ -234,6 +239,7 @@ impl GuiSemanticDriver {
         target: GuiDroppedFilesTarget,
         paths: Vec<String>,
     ) -> Result<(), String> {
+        let paths = self.materialize_media_fixture_paths(paths)?;
         let playlist_insert_slot = matches!(target, GuiDroppedFilesTarget::Playlist)
             .then_some(self.state.main_window.playlist.len());
         let actions = GuiPreviewRuntimeBridge::preview_open_media_file_actions(
@@ -250,6 +256,51 @@ impl GuiSemanticDriver {
         }
         self.apply_actions(actions);
         Ok(())
+    }
+
+    fn materialize_media_fixture_paths(
+        &mut self,
+        paths: Vec<String>,
+    ) -> Result<Vec<String>, String> {
+        paths
+            .into_iter()
+            .map(|path| {
+                let Some(relative_path) = path.strip_prefix("fixture-media://") else {
+                    return Ok(path);
+                };
+                let relative_path = std::path::Path::new(relative_path);
+                if relative_path.as_os_str().is_empty()
+                    || relative_path.is_absolute()
+                    || relative_path
+                        .components()
+                        .any(|component| matches!(component, std::path::Component::ParentDir))
+                {
+                    return Err(format!(
+                        "semantic media fixture path must be a safe relative path: {path}"
+                    ));
+                }
+                let root = self.media_fixture_root.get_or_insert_with(|| {
+                    let unique_suffix = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|duration| duration.as_nanos())
+                        .unwrap_or_default();
+                    std::env::temp_dir().join(format!(
+                        "sorotte-gui-semantic-media-{}-{unique_suffix}",
+                        std::process::id()
+                    ))
+                });
+                let fixture_path = root.join(relative_path);
+                if let Some(parent) = fixture_path.parent() {
+                    std::fs::create_dir_all(parent).map_err(|error| {
+                        format!("semantic media fixture directory could not be created: {error}")
+                    })?;
+                }
+                std::fs::write(&fixture_path, b"semantic media fixture").map_err(|error| {
+                    format!("semantic media fixture could not be written: {error}")
+                })?;
+                Ok(fixture_path.to_string_lossy().into_owned())
+            })
+            .collect()
     }
 
     fn complete_pending_via_runtime(&mut self) -> Result<(), String> {
@@ -364,5 +415,13 @@ impl GuiSemanticDriver {
             }
         }
         Ok(())
+    }
+}
+
+impl Drop for GuiSemanticDriver {
+    fn drop(&mut self) {
+        if let Some(root) = self.media_fixture_root.take() {
+            let _ = std::fs::remove_dir_all(root);
+        }
     }
 }

@@ -54,38 +54,32 @@ impl SorotteGuiShellAppState {
     }
 
     pub(super) fn playlist_source_state_for_entry(&self, entry: &str) -> GuiPlaylistSourceState {
-        let (provider_id, provider_selection_is_explicit) =
-            self.playlist_default_provider_for_new_entry(entry);
-        self.refreshed_playlist_source_state_for_entry(
-            entry,
-            GuiPlaylistSourceState::for_provider(provider_id)
-                .with_explicit_selection(provider_selection_is_explicit),
-        )
+        let source_state = self
+            .playlist_default_provider_for_new_entry(entry)
+            .map(GuiPlaylistSourceState::for_playlist_default)
+            .unwrap_or_else(|| GuiPlaylistSourceState::inferred_for_entry(entry));
+        self.refreshed_playlist_source_state_for_entry(entry, source_state)
     }
 
     fn playlist_default_provider_for_new_entry(
         &self,
         entry: &str,
-    ) -> (GuiMediaSourceProviderId, bool) {
-        let inferred_provider = GuiPlaylistSourceState::inferred_provider_for_entry(entry);
-        let Some(default_provider) = self
+    ) -> Option<GuiMediaSourceProviderId> {
+        let default_provider = self
             .main_window
             .playlist_default_source
             .current_source_id
             .provider_id()
-            .cloned()
-        else {
-            return (inferred_provider, false);
-        };
+            .cloned()?;
         let default_available = self
             .playlist_source_options_for_entry(entry, &default_provider)
             .into_iter()
             .find(|option| option.provider_id == default_provider)
             .is_some_and(|option| option.enabled);
         if default_available {
-            (default_provider, true)
+            Some(default_provider)
         } else {
-            (inferred_provider, false)
+            None
         }
     }
 
@@ -126,8 +120,9 @@ impl SorotteGuiShellAppState {
         else {
             return false;
         };
-        let source_state = self.refreshed_playlist_source_state_for_entry(&label, source_state);
+        let mut source_state = self.refreshed_playlist_source_state_for_entry(&label, source_state);
         if let Some(row) = self.main_window.playlist.get_mut(index) {
+            source_state.entry_id = row.entry_id;
             row.source_state = source_state;
             true
         } else {
@@ -179,20 +174,17 @@ impl SorotteGuiShellAppState {
                     .unwrap_or_else(|| "The requested playlist source is disabled.".to_owned()),
             );
         }
-        let source_state = GuiPlaylistSourceState {
-            current_provider_id: option.provider_id.clone(),
-            current_label: option.label.clone(),
-            provider_selection_is_explicit: true,
+        let mut source_state = GuiPlaylistSourceState::for_provider(option.provider_id.clone());
+        source_state.current_label = option.label.clone();
+        source_state.status = GuiPlaylistSourceStatus::Resolving;
+        source_state.detail = Some(format!("Resolving with {}.", option.label));
+        source_state.options.clear();
+        source_state.resolution_steps = vec![GuiPlaylistResolutionStep {
+            provider_id: option.provider_id,
+            label: option.label,
             status: GuiPlaylistSourceStatus::Resolving,
-            detail: Some(format!("Resolving with {}.", option.label)),
-            options: Vec::new(),
-            resolution_steps: vec![GuiPlaylistResolutionStep {
-                provider_id: option.provider_id,
-                label: option.label,
-                status: GuiPlaylistSourceStatus::Resolving,
-                detail: Some("Explicitly requested for this client.".to_owned()),
-            }],
-        };
+            detail: Some("Explicitly requested for this client.".to_owned()),
+        }];
         if !self.set_playlist_source_state(index, source_state) {
             return self.record_action_error("No playlist row exists at the requested index.");
         }
@@ -229,12 +221,34 @@ impl SorotteGuiShellAppState {
         true
     }
 
-    pub(super) fn reconciled_playlist_source_state(
+    pub(super) fn reconciled_playlist_row(
         previous_rows: &[MainWindowPlaylistRow],
         used_previous_rows: &mut [bool],
         index: usize,
         label: &str,
-    ) -> Option<GuiPlaylistSourceState> {
+        preferred_entry_id: Option<super::shell_state::GuiPlaylistEntryId>,
+    ) -> Option<MainWindowPlaylistRow> {
+        if let Some(preferred_entry_id) = preferred_entry_id
+            && let Some((candidate_index, row)) =
+                previous_rows
+                    .iter()
+                    .enumerate()
+                    .find(|(candidate_index, row)| {
+                        !used_previous_rows
+                            .get(*candidate_index)
+                            .copied()
+                            .unwrap_or(false)
+                            && row.entry_id == preferred_entry_id
+                            && row.label == label
+                    })
+        {
+            if let Some(used) = used_previous_rows.get_mut(candidate_index) {
+                *used = true;
+            }
+            let mut row = row.clone();
+            row.source_state.entry_id = row.entry_id;
+            return Some(row);
+        }
         if let Some(row) = previous_rows.get(index)
             && !used_previous_rows.get(index).copied().unwrap_or(false)
             && row.label == label
@@ -242,7 +256,9 @@ impl SorotteGuiShellAppState {
             if let Some(used) = used_previous_rows.get_mut(index) {
                 *used = true;
             }
-            return Some(row.source_state.clone());
+            let mut row = row.clone();
+            row.source_state.entry_id = row.entry_id;
+            return Some(row);
         }
 
         previous_rows
@@ -259,7 +275,9 @@ impl SorotteGuiShellAppState {
                 if let Some(used) = used_previous_rows.get_mut(candidate_index) {
                     *used = true;
                 }
-                row.source_state.clone()
+                let mut row = row.clone();
+                row.source_state.entry_id = row.entry_id;
+                row
             })
     }
 
@@ -521,15 +539,47 @@ impl SorotteGuiShellAppState {
     ) {
         let current_entries = self.current_shared_playlist_entries();
         if current_entries != next_entries {
-            self.playlist_source_undo_snapshot = Some(
-                self.main_window
-                    .playlist
-                    .iter()
-                    .map(|row| row.source_state.clone())
-                    .collect(),
-            );
-            self.playlist_undo_snapshot = Some(current_entries);
+            self.remember_shared_playlist_undo_snapshot();
         }
+    }
+
+    pub(super) fn remember_shared_playlist_undo_snapshot_if_rows_changed(
+        &mut self,
+        next_rows: &[MainWindowPlaylistRow],
+    ) {
+        let labels_changed = self
+            .main_window
+            .playlist
+            .iter()
+            .map(|row| row.label.as_str())
+            .ne(next_rows.iter().map(|row| row.label.as_str()));
+        let entry_ids_changed = self
+            .main_window
+            .playlist
+            .iter()
+            .map(|row| row.entry_id)
+            .ne(next_rows.iter().map(|row| row.entry_id));
+        if labels_changed || entry_ids_changed {
+            self.remember_shared_playlist_undo_snapshot();
+        }
+    }
+
+    pub(super) fn remember_shared_playlist_undo_snapshot(&mut self) {
+        self.playlist_source_undo_snapshot = Some(
+            self.main_window
+                .playlist
+                .iter()
+                .map(|row| row.source_state.clone())
+                .collect(),
+        );
+        self.playlist_entry_id_undo_snapshot = Some(
+            self.main_window
+                .playlist
+                .iter()
+                .map(|row| row.entry_id)
+                .collect(),
+        );
+        self.playlist_undo_snapshot = Some(self.current_shared_playlist_entries());
     }
 
     pub(super) fn shared_playlist_target_index_from_changed_entries(
@@ -579,7 +629,13 @@ impl SorotteGuiShellAppState {
         selection_is_local: bool,
     ) {
         let current_entries = self.current_shared_playlist_entries();
-        let active_playlist_index = self
+        let active_entry_id = self
+            .main_window
+            .active_playlist_index
+            .filter(|index| *index < current_entries.len())
+            .and_then(|index| self.main_window.playlist.get(index))
+            .map(|row| row.entry_id);
+        let fallback_active_playlist_index = self
             .main_window
             .active_playlist_index
             .filter(|index| *index < current_entries.len())
@@ -597,22 +653,38 @@ impl SorotteGuiShellAppState {
             .iter()
             .enumerate()
             .map(|(index, label)| {
-                let source_state = Self::reconciled_playlist_source_state(
+                let previous_row = Self::reconciled_playlist_row(
                     &previous_rows,
                     &mut used_previous_rows,
                     index,
                     label,
-                )
-                .map(|state| self.refreshed_playlist_source_state_for_entry(label, state))
-                .unwrap_or_else(|| self.playlist_source_state_for_entry(label));
+                    None,
+                );
+                let source_state = previous_row
+                    .as_ref()
+                    .map(|row| {
+                        self.refreshed_playlist_source_state_for_entry(
+                            label,
+                            row.source_state.clone(),
+                        )
+                    })
+                    .unwrap_or_else(|| self.playlist_source_state_for_entry(label));
                 MainWindowPlaylistRow {
+                    entry_id: source_state.entry_id,
                     label: label.clone(),
                     is_selected: false,
                     source_state,
                 }
             })
             .collect();
-        self.main_window.active_playlist_index = active_playlist_index;
+        self.main_window.active_playlist_index = active_entry_id
+            .and_then(|entry_id| {
+                self.main_window
+                    .playlist
+                    .iter()
+                    .position(|row| row.entry_id == entry_id)
+            })
+            .or(fallback_active_playlist_index);
         self.set_main_window_playlist_selection(
             selected_index.filter(|index| *index < self.main_window.playlist.len()),
             selection_is_local,
@@ -737,6 +809,22 @@ impl SorotteGuiShellAppState {
             .iter()
             .map(|row| row.source_state.clone())
             .collect::<Vec<_>>();
+        let current_entry_ids = self
+            .main_window
+            .playlist
+            .iter()
+            .map(|row| row.entry_id)
+            .collect::<Vec<_>>();
+        let active_entry_id = self
+            .main_window
+            .active_playlist_index
+            .and_then(|index| self.main_window.playlist.get(index))
+            .map(|row| row.entry_id);
+        let selected_entry_id = self
+            .selection
+            .selected_main_window_playlist
+            .and_then(|index| self.main_window.playlist.get(index))
+            .map(|row| row.entry_id);
         let Some(previous_entries) = self.playlist_undo_snapshot.clone() else {
             return self.record_action_error("No shared playlist change is available to undo.");
         };
@@ -744,7 +832,18 @@ impl SorotteGuiShellAppState {
             .playlist_source_undo_snapshot
             .clone()
             .filter(|sources| sources.len() == previous_entries.len());
-        if previous_entries == current_entries {
+        let previous_entry_ids = self
+            .playlist_entry_id_undo_snapshot
+            .clone()
+            .filter(|entry_ids| entry_ids.len() == previous_entries.len());
+        let entries_unchanged = previous_entries == current_entries;
+        let entry_ids_unchanged = previous_entry_ids
+            .as_ref()
+            .is_none_or(|entry_ids| entry_ids == &current_entry_ids);
+        let sources_unchanged = previous_sources
+            .as_ref()
+            .is_none_or(|sources| sources == &current_sources);
+        if entries_unchanged && entry_ids_unchanged && sources_unchanged {
             return self.record_action_error("No shared playlist change is available to undo.");
         }
         let current_index = self.selection.selected_main_window_playlist;
@@ -762,13 +861,46 @@ impl SorotteGuiShellAppState {
         };
         self.playlist_undo_snapshot = Some(current_entries);
         self.playlist_source_undo_snapshot = Some(current_sources);
+        self.playlist_entry_id_undo_snapshot = Some(current_entry_ids);
         self.apply_shared_playlist_entries(previous_entries, target_index, true);
+        let fallback_active_playlist_index = self.main_window.active_playlist_index;
+        let fallback_selected_playlist_index = self.selection.selected_main_window_playlist;
+        if let Some(previous_entry_ids) = previous_entry_ids {
+            for (row, entry_id) in self.main_window.playlist.iter_mut().zip(previous_entry_ids) {
+                row.entry_id = entry_id;
+                row.source_state.entry_id = entry_id;
+            }
+        }
         if let Some(previous_sources) = previous_sources {
             for (row, source_state) in self.main_window.playlist.iter_mut().zip(previous_sources) {
                 row.source_state = source_state;
             }
             self.refresh_playlist_source_states();
         }
+        self.main_window.active_playlist_index = active_entry_id
+            .and_then(|entry_id| {
+                self.main_window
+                    .playlist
+                    .iter()
+                    .position(|row| row.entry_id == entry_id)
+            })
+            .or_else(|| {
+                fallback_active_playlist_index
+                    .filter(|index| *index < self.main_window.playlist.len())
+            });
+        let selected_playlist_index = selected_entry_id
+            .and_then(|entry_id| {
+                self.main_window
+                    .playlist
+                    .iter()
+                    .position(|row| row.entry_id == entry_id)
+            })
+            .or_else(|| {
+                fallback_selected_playlist_index
+                    .filter(|index| *index < self.main_window.playlist.len())
+            });
+        self.set_main_window_playlist_selection(selected_playlist_index, true);
+        self.apply_selection_to_surfaces();
         self.push_system_chat_message("Shared playlist undo requested.".to_owned());
         self.push_transient_notification(
             GuiTransientNotificationLevel::Info,
@@ -794,15 +926,33 @@ impl SorotteGuiShellAppState {
             return self
                 .record_action_error("No remaining shared playlist entries can be shuffled.");
         }
-        let mut shuffled_entries = current_entries.clone();
+        let active_entry_id = self
+            .main_window
+            .active_playlist_index
+            .and_then(|index| self.main_window.playlist.get(index))
+            .map(|row| row.entry_id);
+        let mut shuffled_rows = self.main_window.playlist.clone();
         let seed = self.next_shared_playlist_shuffle_seed(&current_entries, current_index, true);
-        shuffle_playlist_entries_in_place(&mut shuffled_entries[shuffle_start..], seed);
-        if shuffled_entries == current_entries {
+        shuffle_playlist_entries_in_place(&mut shuffled_rows[shuffle_start..], seed);
+        if shuffled_rows.iter().map(|row| row.entry_id).eq(self
+            .main_window
+            .playlist
+            .iter()
+            .map(|row| row.entry_id))
+        {
             return self
                 .record_action_error("No remaining shared playlist entries can be shuffled.");
         }
-        self.remember_shared_playlist_undo_snapshot_if_changed(&shuffled_entries);
-        self.apply_shared_playlist_entries(shuffled_entries, Some(current_index), true);
+        self.remember_shared_playlist_undo_snapshot_if_rows_changed(&shuffled_rows);
+        self.main_window.playlist = shuffled_rows;
+        self.main_window.active_playlist_index = active_entry_id.and_then(|entry_id| {
+            self.main_window
+                .playlist
+                .iter()
+                .position(|row| row.entry_id == entry_id)
+        });
+        self.set_main_window_playlist_selection(Some(current_index), true);
+        self.apply_selection_to_surfaces();
         self.push_system_chat_message("Remaining shared playlist entries shuffled.".to_owned());
         self.push_transient_notification(
             GuiTransientNotificationLevel::Info,
@@ -821,11 +971,24 @@ impl SorotteGuiShellAppState {
             return self.record_action_error("The shared playlist is currently empty.");
         }
         let current_index = self.selection.selected_main_window_playlist.unwrap_or(0);
-        let mut shuffled_entries = current_entries.clone();
+        let active_entry_id = self
+            .main_window
+            .active_playlist_index
+            .and_then(|index| self.main_window.playlist.get(index))
+            .map(|row| row.entry_id);
+        let mut shuffled_rows = self.main_window.playlist.clone();
         let seed = self.next_shared_playlist_shuffle_seed(&current_entries, current_index, false);
-        shuffle_playlist_entries_in_place(&mut shuffled_entries, seed);
-        self.remember_shared_playlist_undo_snapshot_if_changed(&shuffled_entries);
-        self.apply_shared_playlist_entries(shuffled_entries, Some(0), true);
+        shuffle_playlist_entries_in_place(&mut shuffled_rows, seed);
+        self.remember_shared_playlist_undo_snapshot_if_rows_changed(&shuffled_rows);
+        self.main_window.playlist = shuffled_rows;
+        self.main_window.active_playlist_index = active_entry_id.and_then(|entry_id| {
+            self.main_window
+                .playlist
+                .iter()
+                .position(|row| row.entry_id == entry_id)
+        });
+        self.set_main_window_playlist_selection(Some(0), true);
+        self.apply_selection_to_surfaces();
         self.push_system_chat_message("Shared playlist shuffled.".to_owned());
         self.push_transient_notification(
             GuiTransientNotificationLevel::Info,

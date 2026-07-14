@@ -1,6 +1,6 @@
 use super::*;
-use crate::app::runtime_owner::GuiPendingStreamLoadContext;
 use crate::app::runtime_owner::player::SelectedPlaylistMediaSyncOutcome;
+use crate::app::runtime_owner::{GuiPendingStreamLoadContext, GuiPlaylistResolutionCoordinator};
 use crate::app::{GuiPlaylistSourceState, GuiStreamHelperHealth, GuiStreamHelperRuntimeSnapshot};
 use sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot_legacy_compatible;
 
@@ -46,8 +46,15 @@ fn expected_playlist_source_states_for_entries(
 ) -> Vec<GuiPlaylistSourceState> {
     entries
         .iter()
-        .map(|entry| {
-            let mut source_state = state.playlist_source_state_for_entry(entry);
+        .enumerate()
+        .map(|(index, entry)| {
+            let mut source_state = state
+                .main_window
+                .playlist
+                .get(index)
+                .filter(|row| row.label == *entry)
+                .map(|row| row.source_state.clone())
+                .unwrap_or_else(|| state.playlist_source_state_for_entry(entry));
             if let Some(detail) = detail {
                 source_state.detail = Some(detail.to_owned());
             }

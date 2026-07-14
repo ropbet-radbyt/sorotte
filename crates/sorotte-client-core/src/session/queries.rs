@@ -332,6 +332,16 @@ impl ClientSession {
             .and_then(|room_name| self.model.playlist.rooms.get(room_name))
     }
 
+    pub fn current_room_playlist_remote_revision(&self) -> u64 {
+        self.model
+            .room
+            .name
+            .as_ref()
+            .and_then(|room_name| self.model.playlist.remote_revisions.get(room_name))
+            .copied()
+            .unwrap_or(0)
+    }
+
     pub(super) fn playlist_target_for_room_index(
         &self,
         room_name: &str,
@@ -368,11 +378,18 @@ impl ClientSession {
         for action in actions {
             match action {
                 ClientRuntimeAction::SetPlaylist { files } => {
+                    playlist.revision = playlist.revision.wrapping_add(1);
                     playlist.files = files.clone();
                     if playlist.files.is_empty() {
                         playlist.index = None;
                     }
                     playlist.set_by = Some(local_username.clone());
+                    self.model
+                        .playlist
+                        .pending_local_change_echoes
+                        .entry(room_name.clone())
+                        .or_default()
+                        .push_back(files.clone());
                     playlist_changed = true;
                 }
                 ClientRuntimeAction::SetPlaylistIndex { index } => {

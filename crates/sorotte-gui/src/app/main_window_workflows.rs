@@ -42,25 +42,34 @@ impl SorotteGuiShellAppState {
             return false;
         }
 
-        let current_entries = self.current_shared_playlist_entries();
+        let active_entry_id = self
+            .main_window
+            .active_playlist_index
+            .and_then(|index| self.main_window.playlist.get(index))
+            .map(|row| row.entry_id);
         let current_index = self.selection.selected_main_window_playlist;
-        let next_entries = {
-            let mut entries = current_entries.clone();
-            let moved_entry = entries.remove(from_index);
-            entries.insert(to_index, moved_entry);
-            entries
-        };
-        let next_selection = Some(
-            Self::shared_playlist_target_index_from_changed_entries(
-                &current_entries,
-                current_index,
-                &next_entries,
-            )
-            .min(next_entries.len().saturating_sub(1)),
-        );
-        self.remember_shared_playlist_undo_snapshot_if_changed(&next_entries);
-        let moved_row = self.main_window.playlist.remove(from_index);
-        self.main_window.playlist.insert(to_index, moved_row);
+        let mut next_rows = self.main_window.playlist.clone();
+        let moved_row = next_rows.remove(from_index);
+        next_rows.insert(to_index, moved_row);
+        let next_selection = current_index.map(|selected_index| {
+            if selected_index == from_index {
+                to_index
+            } else if from_index < selected_index && selected_index <= to_index {
+                selected_index - 1
+            } else if to_index <= selected_index && selected_index < from_index {
+                selected_index + 1
+            } else {
+                selected_index
+            }
+        });
+        self.remember_shared_playlist_undo_snapshot_if_rows_changed(&next_rows);
+        self.main_window.playlist = next_rows;
+        self.main_window.active_playlist_index = active_entry_id.and_then(|entry_id| {
+            self.main_window
+                .playlist
+                .iter()
+                .position(|row| row.entry_id == entry_id)
+        });
         self.set_main_window_playlist_selection(next_selection, true);
         self.apply_selection_to_surfaces();
         self.clear_action_error_and_refresh();
@@ -83,23 +92,31 @@ impl SorotteGuiShellAppState {
             return self.record_action_error("The selected playlist row cannot move further.");
         }
 
-        let current_entries = self.current_shared_playlist_entries();
+        let active_entry_id = self
+            .main_window
+            .active_playlist_index
+            .and_then(|active_index| self.main_window.playlist.get(active_index))
+            .map(|row| row.entry_id);
         let current_index = self.selection.selected_main_window_playlist;
-        let next_entries = {
-            let mut entries = current_entries.clone();
-            entries.swap(index, target_index);
-            entries
-        };
-        let next_selection = Some(
-            Self::shared_playlist_target_index_from_changed_entries(
-                &current_entries,
-                current_index,
-                &next_entries,
-            )
-            .min(next_entries.len().saturating_sub(1)),
-        );
-        self.remember_shared_playlist_undo_snapshot_if_changed(&next_entries);
-        self.main_window.playlist.swap(index, target_index);
+        let mut next_rows = self.main_window.playlist.clone();
+        next_rows.swap(index, target_index);
+        let next_selection = current_index.map(|selected_index| {
+            if selected_index == index {
+                target_index
+            } else if selected_index == target_index {
+                index
+            } else {
+                selected_index
+            }
+        });
+        self.remember_shared_playlist_undo_snapshot_if_rows_changed(&next_rows);
+        self.main_window.playlist = next_rows;
+        self.main_window.active_playlist_index = active_entry_id.and_then(|entry_id| {
+            self.main_window
+                .playlist
+                .iter()
+                .position(|row| row.entry_id == entry_id)
+        });
         self.set_main_window_playlist_selection(next_selection, true);
         self.apply_selection_to_surfaces();
         self.clear_action_error_and_refresh();
@@ -119,7 +136,24 @@ impl SorotteGuiShellAppState {
             return self.record_action_error("No playlist row exists at the requested index.");
         }
 
+        let active_entry_id = self
+            .main_window
+            .active_playlist_index
+            .and_then(|active_index| self.main_window.playlist.get(active_index))
+            .map(|row| row.entry_id);
+        let removed_entry_id = self.main_window.playlist[index].entry_id;
         self.main_window.playlist.remove(index);
+        self.main_window.active_playlist_index = if active_entry_id == Some(removed_entry_id) {
+            (!self.main_window.playlist.is_empty())
+                .then_some(index.min(self.main_window.playlist.len().saturating_sub(1)))
+        } else {
+            active_entry_id.and_then(|entry_id| {
+                self.main_window
+                    .playlist
+                    .iter()
+                    .position(|row| row.entry_id == entry_id)
+            })
+        };
         self.set_main_window_playlist_selection(
             if self.main_window.playlist.is_empty() {
                 None

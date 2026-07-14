@@ -305,6 +305,13 @@ impl SorotteGuiShellAppState {
                 "Main-window runtime snapshots must include a non-empty room name.",
             );
         };
+        if !snapshot.playlist_entry_ids.is_empty()
+            && snapshot.playlist_entry_ids.len() != snapshot.playlist.len()
+        {
+            return self.record_action_error(
+                "Main-window runtime snapshots must align playlist row identities with entries.",
+            );
+        }
 
         let mut normalized_rooms = Vec::with_capacity(snapshot.rooms.len());
         for room in snapshot.rooms {
@@ -393,31 +400,56 @@ impl SorotteGuiShellAppState {
                 .any(|user| user.room_name == room.room_name);
         }
 
-        let previous_playlist = self.main_window.playlist.clone();
+        let playlist_scope_unchanged = self.main_window.room_name == room_name
+            && self.main_window.shared_playlist_enabled == snapshot.shared_playlist_enabled;
+        if !playlist_scope_unchanged {
+            self.playlist_undo_snapshot = None;
+            self.playlist_source_undo_snapshot = None;
+            self.playlist_entry_id_undo_snapshot = None;
+        }
+        let previous_playlist = if playlist_scope_unchanged {
+            self.main_window.playlist.clone()
+        } else {
+            Vec::new()
+        };
         let mut used_previous_rows = vec![false; previous_playlist.len()];
         let mut normalized_playlist = Vec::with_capacity(snapshot.playlist.len());
+        let snapshot_playlist_entry_ids = if playlist_scope_unchanged {
+            snapshot.playlist_entry_ids.clone()
+        } else {
+            Vec::new()
+        };
         for (index, entry) in snapshot.playlist.into_iter().enumerate() {
             let Some(label) = normalized_editable_text(&entry) else {
                 return self.record_action_error(
                     "Main-window runtime snapshots cannot contain empty playlist entries.",
                 );
             };
-            let source_state = snapshot
-                .playlist_source_states
-                .get(index)
-                .cloned()
+            let previous_row = Self::reconciled_playlist_row(
+                &previous_playlist,
+                &mut used_previous_rows,
+                index,
+                &label,
+                snapshot_playlist_entry_ids.get(index).copied(),
+            );
+            let mut source_state = playlist_scope_unchanged
+                .then(|| snapshot.playlist_source_states.get(index).cloned())
+                .flatten()
                 .map(|state| self.refreshed_playlist_source_state_for_entry(&label, state))
                 .or_else(|| {
-                    Self::reconciled_playlist_source_state(
-                        &previous_playlist,
-                        &mut used_previous_rows,
-                        index,
-                        &label,
-                    )
-                    .map(|state| self.refreshed_playlist_source_state_for_entry(&label, state))
+                    previous_row.as_ref().map(|row| {
+                        self.refreshed_playlist_source_state_for_entry(
+                            &label,
+                            row.source_state.clone(),
+                        )
+                    })
                 })
                 .unwrap_or_else(|| self.playlist_source_state_for_entry(&label));
+            if let Some(entry_id) = snapshot_playlist_entry_ids.get(index).copied() {
+                source_state.entry_id = entry_id;
+            }
             normalized_playlist.push(MainWindowPlaylistRow {
+                entry_id: source_state.entry_id,
                 label,
                 is_selected: false,
                 source_state,
@@ -453,11 +485,11 @@ impl SorotteGuiShellAppState {
             .and_then(|index| self.main_window.users.get(index))
             .map(|user| user.username.clone());
         let previous_main_window_user_edit_session = self.main_window_user_edit_session.clone();
-        let previously_selected_playlist = self
+        let previously_selected_playlist_id = self
             .selection
             .selected_main_window_playlist
             .and_then(|index| self.main_window.playlist.get(index))
-            .map(|row| row.label.clone());
+            .map(|row| row.entry_id);
         let can_preserve_local_playlist_selection = self.main_window.room_name == room_name
             && self.main_window.shared_playlist_enabled == snapshot.shared_playlist_enabled;
         let pending_local_ready_target = self.pending_local_ready_target.filter(|target| {
@@ -529,22 +561,19 @@ impl SorotteGuiShellAppState {
             .or_else(|| (!self.main_window.users.is_empty()).then_some(0));
         let preserve_local_playlist_selection = can_preserve_local_playlist_selection
             && self.main_window_playlist_selection_is_local
-            && previously_selected_playlist
-                .as_deref()
-                .is_some_and(|label| {
-                    self.main_window
-                        .playlist
-                        .iter()
-                        .any(|row| row.label == label)
-                });
+            && previously_selected_playlist_id.is_some_and(|entry_id| {
+                self.main_window
+                    .playlist
+                    .iter()
+                    .any(|row| row.entry_id == entry_id)
+            });
         self.set_main_window_playlist_selection(
-            previously_selected_playlist
-                .as_deref()
-                .and_then(|label| {
+            previously_selected_playlist_id
+                .and_then(|entry_id| {
                     self.main_window
                         .playlist
                         .iter()
-                        .position(|row| row.label == label)
+                        .position(|row| row.entry_id == entry_id)
                 })
                 .or_else(|| (!self.main_window.playlist.is_empty()).then_some(0)),
             preserve_local_playlist_selection,

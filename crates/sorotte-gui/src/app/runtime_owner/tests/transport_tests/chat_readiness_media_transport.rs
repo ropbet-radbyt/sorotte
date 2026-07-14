@@ -619,9 +619,12 @@ fn gui_persisted_config_runtime_owner_marks_local_open_media_not_ready_over_tcp_
         |state| state.main_window.playback.can_set_ready,
         "open-media transport capability after the server hello",
     );
+    let media_root = test_temp_root("tcp-open-media-readiness");
+    let media_path = media_root.join("movie.mkv");
+    std::fs::write(&media_path, b"test").expect("media fixture should be written");
 
     handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
-        paths: vec!["C:/Media/movie.mkv".to_owned()],
+        paths: vec![media_path.to_string_lossy().into_owned()],
         load_into_shared_playlist: false,
         playlist_insert_slot: None,
     });
@@ -668,4 +671,5 @@ fn gui_persisted_config_runtime_owner_marks_local_open_media_not_ready_over_tcp_
     server_thread
         .join()
         .expect("test session transport server thread should complete");
+    let _ = std::fs::remove_dir_all(media_root);
 }

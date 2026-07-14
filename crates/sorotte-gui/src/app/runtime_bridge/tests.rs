@@ -23,6 +23,13 @@ fn gui_runtime_request_debug_redacts_controller_password() {
 
 #[test]
 fn gui_preview_runtime_bridge_maps_selected_media_files_to_preview_actions() {
+    let root = test_temp_root("preview-selected-media-files");
+    let episode1_path = root.join("Episode 1.mkv");
+    let episode2_path = root.join("Episode 2.mkv");
+    let movie_path = root.join("movie.mkv");
+    for path in [&episode1_path, &episode2_path, &movie_path] {
+        std::fs::write(path, b"test").expect("preview media fixture should be written");
+    }
     let shared_playlist_state =
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
             shared_playlist_enabled: Some(true),
@@ -36,8 +43,8 @@ fn gui_preview_runtime_bridge_maps_selected_media_files_to_preview_actions() {
         runtime.actions_for_selected_media_files(
             &shared_playlist_state,
             vec![
-                "C:/Media/Episode 1.mkv".to_owned(),
-                "C:/Media/Episode 2.mkv".to_owned()
+                episode1_path.to_string_lossy().into_owned(),
+                episode2_path.to_string_lossy().into_owned(),
             ],
         ),
         vec![
@@ -51,7 +58,7 @@ fn gui_preview_runtime_bridge_maps_selected_media_files_to_preview_actions() {
     assert_eq!(
         runtime.actions_for_selected_media_files(
             &fallback_state,
-            vec!["C:/Media/movie.mkv".to_owned()],
+            vec![movie_path.to_string_lossy().into_owned()],
         ),
         vec![
             GuiShellAction::SwitchView(GuiShellView::Room),
@@ -65,6 +72,8 @@ fn gui_preview_runtime_bridge_maps_selected_media_files_to_preview_actions() {
         ),
         Vec::new()
     );
+
+    let _ = std::fs::remove_dir_all(root);
     assert_eq!(
         runtime.dispatch_runtime_request(
             &fallback_state,
@@ -93,7 +102,7 @@ fn gui_preview_runtime_bridge_imports_playlist_files_for_shared_playlist_ingest(
         vec![
             GuiShellAction::SwitchView(GuiShellView::Room),
             GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
-                "episode1.mkv".to_owned(),
+                root.join("episode1.mkv").to_string_lossy().into_owned(),
                 "https://example.com/live".to_owned(),
             ]),
         ]
@@ -104,6 +113,9 @@ fn gui_preview_runtime_bridge_imports_playlist_files_for_shared_playlist_ingest(
 
 #[test]
 fn gui_preview_runtime_bridge_merges_shared_playlist_inserts_into_existing_rows() {
+    let root = test_temp_root("preview-shared-playlist-insert");
+    let media_path = root.join("episode2.mkv");
+    std::fs::write(&media_path, b"test").expect("preview insert fixture should be written");
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         shared_playlist_enabled: Some(true),
         ..StoredClientSettingsMvp::default()
@@ -118,7 +130,7 @@ fn gui_preview_runtime_bridge_merges_shared_playlist_inserts_into_existing_rows(
     assert_eq!(
         GuiPreviewRuntimeBridge::preview_open_media_file_actions(
             Some(&state),
-            vec!["C:/Media/episode2.mkv".to_owned()],
+            vec![media_path.to_string_lossy().into_owned()],
             true,
             Some(1),
         ),
@@ -131,6 +143,8 @@ fn gui_preview_runtime_bridge_merges_shared_playlist_inserts_into_existing_rows(
             ]),
         ]
     );
+
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]

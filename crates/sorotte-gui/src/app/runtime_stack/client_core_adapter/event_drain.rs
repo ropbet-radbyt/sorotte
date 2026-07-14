@@ -165,7 +165,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                 .unwrap_or(state.main_window.shared_playlist_enabled),
         );
         if let Some(snapshot) = main_window_runtime_snapshot
-            && snapshot != MainWindowRuntimeSnapshot::from_shell_state(&state.main_window)
+            && !snapshot.matches_shell_state_with_omitted_playlist_metadata(&state.main_window)
         {
             actions.push(GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot));
         }

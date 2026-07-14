@@ -1,6 +1,108 @@
 use super::*;
 
 #[test]
+fn gui_persisted_config_runtime_owner_keeps_text_playlist_entries_literal() {
+    let root = test_temp_root("shared-playlist-text-format");
+    let playlist_path = root.join("room-playlist.txt");
+    std::fs::write(
+        &playlist_path,
+        "\n# literal text entry\nmedia/episode1.mkv\nhttps://example.com/live\n",
+    )
+    .expect("text playlist fixture should be written");
+
+    let dispatch = GuiPersistedConfigRuntimeOwner::shared_playlist_open_dispatch_for_paths(vec![
+        playlist_path.to_string_lossy().into_owned(),
+    ])
+    .expect("text playlist should be imported");
+
+    assert!(dispatch.imported_from_file);
+    assert_eq!(
+        dispatch.playlist_entries(),
+        vec![
+            "# literal text entry".to_owned(),
+            "media/episode1.mkv".to_owned(),
+            "https://example.com/live".to_owned(),
+        ]
+    );
+    assert!(
+        dispatch
+            .items
+            .iter()
+            .all(|item| item.local_origin.is_none())
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_parses_m3u_comments_relative_paths_and_urls() {
+    let root = test_temp_root("shared-playlist-m3u-format");
+    let playlist_root = root.join("lists");
+    std::fs::create_dir_all(&playlist_root).expect("playlist fixture directory should be created");
+    let playlist_path = playlist_root.join("room-playlist.m3u");
+    std::fs::write(
+        &playlist_path,
+        "\u{feff}#EXTM3U\n#EXTINF:120,Episode 1\nmedia/episode1.mkv\n  # ignored comment\nhttps://example.com/live?id=1\n",
+    )
+    .expect("M3U playlist fixture should be written");
+
+    let dispatch = GuiPersistedConfigRuntimeOwner::shared_playlist_open_dispatch_for_paths(vec![
+        playlist_path.to_string_lossy().into_owned(),
+    ])
+    .expect("M3U playlist should be imported");
+
+    assert!(dispatch.imported_from_file);
+    assert_eq!(
+        dispatch.playlist_entries(),
+        vec![
+            playlist_root
+                .join("media")
+                .join("episode1.mkv")
+                .to_string_lossy()
+                .into_owned(),
+            "https://example.com/live?id=1".to_owned(),
+        ]
+    );
+    assert!(
+        dispatch
+            .items
+            .iter()
+            .all(|item| item.local_origin.is_none())
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_treats_local_hls_m3u8_as_one_media_target() {
+    let root = test_temp_root("shared-playlist-hls-format");
+    let manifest_path = root.join("live.m3u8");
+    std::fs::write(
+        &manifest_path,
+        "#EXTM3U\n#EXT-X-TARGETDURATION:10\n#EXTINF:10,\nsegment-1.ts\n#EXT-X-ENDLIST\n",
+    )
+    .expect("HLS manifest fixture should be written");
+    let manifest_path = manifest_path.to_string_lossy().into_owned();
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+    let dispatch = owner
+        .shared_playlist_open_dispatch_for_selected_paths_impl(&state, vec![manifest_path.clone()])
+        .expect("HLS manifest should be dispatched as media");
+
+    assert!(!dispatch.imported_from_file);
+    assert_eq!(dispatch.playlist_entries(), vec!["live.m3u8".to_owned()]);
+    assert_eq!(dispatch.items.len(), 1);
+    assert_eq!(dispatch.items[0].published_entry, "live.m3u8");
+    assert_eq!(
+        dispatch.items[0].local_origin.as_deref(),
+        Some(manifest_path.as_str())
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_imports_playlist_files_through_client_core_session() {
     let root = test_temp_root("shared-playlist-import");
     let playlist_path = root.join("room-playlist.txt");

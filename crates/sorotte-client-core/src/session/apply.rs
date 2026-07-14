@@ -96,6 +96,10 @@ impl ClientSession {
         if let Some(current_room) = self.model.room.name.clone()
             && let Some(pending_playlist) = self.model.playlist.pending.take()
         {
+            self.model.playlist.remote_revisions.insert(
+                current_room.clone(),
+                std::mem::take(&mut self.model.playlist.pending_remote_revision),
+            );
             self.model
                 .playlist
                 .rooms
@@ -397,7 +401,54 @@ impl ClientSession {
                             &playlist_change_files,
                         );
 
+                        let acknowledges_local_change =
+                            playlist_change_user.as_deref().is_none_or(|set_by| {
+                                self.model.connection.username.as_deref() == Some(set_by)
+                            }) && self
+                                .model
+                                .playlist
+                                .pending_local_change_echoes
+                                .get_mut(&room_name)
+                                .is_some_and(|pending| {
+                                    let Some(matched_index) = pending
+                                        .iter()
+                                        .position(|files| files == &playlist_change_files)
+                                    else {
+                                        return false;
+                                    };
+                                    drop(pending.drain(..=matched_index));
+                                    true
+                                });
+                        if self
+                            .model
+                            .playlist
+                            .pending_local_change_echoes
+                            .get(&room_name)
+                            .is_some_and(VecDeque::is_empty)
+                        {
+                            self.model
+                                .playlist
+                                .pending_local_change_echoes
+                                .remove(&room_name);
+                        }
+
+                        if !acknowledges_local_change {
+                            self.model
+                                .playlist
+                                .pending_local_change_echoes
+                                .remove(&room_name);
+                            let remote_revision = self
+                                .model
+                                .playlist
+                                .remote_revisions
+                                .entry(room_name.clone())
+                                .or_default();
+                            *remote_revision = remote_revision.wrapping_add(1);
+                        }
                         let playlist = self.model.playlist.rooms.entry(room_name).or_default();
+                        if !acknowledges_local_change {
+                            playlist.revision = playlist.revision.wrapping_add(1);
+                        }
                         playlist.files = playlist_change_files;
                         playlist.set_by = playlist_change_user;
                     } else {
@@ -406,6 +457,9 @@ impl ClientSession {
                             .playlist
                             .pending
                             .get_or_insert_with(Default::default);
+                        pending_playlist.revision = pending_playlist.revision.wrapping_add(1);
+                        self.model.playlist.pending_remote_revision =
+                            self.model.playlist.pending_remote_revision.wrapping_add(1);
                         pending_playlist.files = playlist_change_files;
                         pending_playlist.set_by = playlist_change_user;
                     }

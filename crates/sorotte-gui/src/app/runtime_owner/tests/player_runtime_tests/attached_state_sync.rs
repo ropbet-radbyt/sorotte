@@ -6,6 +6,75 @@ use sorotte_plex::{
     PlexMatchedItem, PlexMediaType, PlexPlaylistUri, PlexStreamTarget, SecretPlexPlaybackUrl,
 };
 
+fn disabled_shared_playlist_state_with_two_rows() -> SorotteGuiShellAppState {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(false),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.apply_shared_playlist_entries(
+        vec!["old-a.mkv".to_owned(), "old-b.mkv".to_owned()],
+        Some(1),
+        false,
+    );
+    state.main_window.active_playlist_index = Some(1);
+    state
+}
+
+fn owner_with_attached_local_file() -> GuiPersistedConfigRuntimeOwner {
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    owner.player_local_file = Some(sorotte_player_api::LocalFileUpdate::new("attached.mkv"));
+    owner
+}
+
+fn assert_disabled_playlist_replacement_snapshot(
+    mut state: SorotteGuiShellAppState,
+    snapshot: MainWindowRuntimeSnapshot,
+) {
+    assert_eq!(snapshot.playlist, vec!["attached.mkv".to_owned()]);
+    assert!(snapshot.playlist_entry_ids.is_empty());
+    assert!(snapshot.playlist_source_states.is_empty());
+    assert_eq!(snapshot.active_playlist_index, None);
+    assert!(
+        state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot)),
+        "different-length player projection should apply: {:?}",
+        state.validation.last_action_error
+    );
+    assert_eq!(
+        state.current_shared_playlist_entries(),
+        vec!["attached.mkv".to_owned()]
+    );
+}
+
+#[test]
+fn sessionless_snapshot_clears_metadata_for_different_length_disabled_playlist() {
+    let state = disabled_shared_playlist_state_with_two_rows();
+    let owner = owner_with_attached_local_file();
+
+    let snapshot = owner.sessionless_main_window_snapshot(&state);
+
+    assert_disabled_playlist_replacement_snapshot(state, snapshot);
+}
+
+#[test]
+fn player_sync_clears_metadata_for_different_length_disabled_playlist() {
+    let state = disabled_shared_playlist_state_with_two_rows();
+    let mut owner = owner_with_attached_local_file();
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+
+    owner.sync_player_runtime_state(&handle, &state);
+    let snapshot = handle
+        .drain_actions()
+        .into_iter()
+        .find_map(|action| match action {
+            GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot) => Some(snapshot),
+            _ => None,
+        })
+        .expect("player sync should replace the disabled shared playlist");
+
+    assert_disabled_playlist_replacement_snapshot(state, snapshot);
+}
+
 #[test]
 fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
     #[derive(Debug, Default)]
@@ -47,6 +116,7 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         config_path: None,
         legacy_projection: None,
         session: None,
+        session_generation: 0,
         session_projects_to_shell: false,
         session_transport: None,
         session_transport_driver: None,
@@ -75,7 +145,7 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         last_published_local_file: None,
         last_published_media_match_signature: None,
         local_shared_playlist_media_match_signature_path: None,
-        local_shared_playlist_media_paths_by_target: std::collections::HashMap::new(),
+        playlist_resolution: GuiPlaylistResolutionCoordinator::default(),
         attached_media_search_index: None,
         attached_media_search_next_retry_at: None,
         pending_attached_media_resolution: None,
@@ -336,6 +406,12 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
                     false,
                 )],
                 playlist: vec!["episode1.mkv [93.500s, 734003200 bytes]".to_owned()],
+                playlist_entry_ids: state
+                    .main_window
+                    .playlist
+                    .iter()
+                    .map(|row| row.entry_id)
+                    .collect(),
                 playlist_source_states: expected_playlist_source_states_for_entries(
                     &state,
                     &["episode1.mkv [93.500s, 734003200 bytes]"],

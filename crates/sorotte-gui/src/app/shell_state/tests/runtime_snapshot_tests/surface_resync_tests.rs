@@ -372,6 +372,62 @@ fn gui_shell_app_state_preserves_runtime_main_window_surface_across_configuratio
 }
 
 #[test]
+fn gui_shell_app_state_preserves_same_label_playlist_identity_source_and_undo_metadata_across_resync()
+ {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    let entry_id = state.main_window.playlist[0].entry_id;
+    {
+        let source_state = &mut state.main_window.playlist[0].source_state;
+        source_state.policy = GuiPlaylistSourcePolicy::ForceLocal;
+        source_state.selection_origin = GuiPlaylistSourceSelectionOrigin::UserOverride;
+        source_state.current_provider_id = GuiMediaSourceProviderId::local();
+        source_state.status = GuiPlaylistSourceStatus::Active;
+        source_state.detail = Some("runtime source metadata".to_owned());
+    }
+    let expected_source = state.main_window.playlist[0].source_state.clone();
+    let undo_source = GuiPlaylistSourceState::inferred_for_entry("Undo Episode.mkv");
+    let undo_entry_id = undo_source.entry_id;
+    state.playlist_undo_snapshot = Some(vec!["Undo Episode.mkv".to_owned()]);
+    state.playlist_source_undo_snapshot = Some(vec![undo_source.clone()]);
+    state.playlist_entry_id_undo_snapshot = Some(vec![undo_entry_id]);
+
+    assert!(state.apply(GuiShellAction::EditConfigurationBool {
+        section: "Chat",
+        label: "Chat Input",
+        value: false,
+    }));
+    assert_eq!(state.main_window.playlist[0].entry_id, entry_id);
+    assert_eq!(
+        state.main_window.playlist[0].source_state.entry_id,
+        entry_id
+    );
+    assert_eq!(state.main_window.playlist[0].source_state, expected_source);
+
+    let mut resynced_settings = state.configuration.to_stored_settings();
+    resynced_settings.chat_input_enabled = Some(true);
+    state.resync_from_settings(resynced_settings);
+
+    assert_eq!(state.main_window.playlist[0].entry_id, entry_id);
+    assert_eq!(
+        state.main_window.playlist[0].source_state.entry_id,
+        entry_id
+    );
+    assert_eq!(state.main_window.playlist[0].source_state, expected_source);
+    assert_eq!(
+        state.playlist_undo_snapshot,
+        Some(vec!["Undo Episode.mkv".to_owned()])
+    );
+    assert_eq!(state.playlist_source_undo_snapshot, Some(vec![undo_source]));
+    assert_eq!(
+        state.playlist_entry_id_undo_snapshot,
+        Some(vec![undo_entry_id])
+    );
+}
+
+#[test]
 fn gui_shell_app_state_merges_runtime_main_window_users_with_configuration_room_edits() {
     let mut state =
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());

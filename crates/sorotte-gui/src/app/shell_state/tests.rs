@@ -8,20 +8,22 @@ use super::{
     GuiFeedbackRuntimeSnapshot, GuiFocusedConfigurationControlRuntimeSnapshot,
     GuiInteractionRuntimeSnapshot, GuiMainWindowUserEditSessionRuntimeSnapshot,
     GuiMediaSourceProviderId, GuiPendingOperationKind, GuiPlaylistDefaultSourceId,
-    GuiPlaylistSourceStatus, GuiPlaylistTextEditSessionRuntimeSnapshot,
-    GuiPlaylistTextEditSessionState, GuiPlexPlaylistSearchResult, GuiPlexRuntimeSnapshot,
-    GuiPluginSelection, GuiPublicServerEditSessionRuntimeSnapshot,
-    GuiSavedConfigurationRuntimeSnapshot, GuiSavedSessionConnectTarget, GuiSelectionState,
-    GuiShellAction, GuiShellModal, GuiShellView, GuiStreamTargetKind,
-    GuiTextEditSessionRuntimeSnapshot, GuiTextEditSessionState, GuiTransientNotification,
-    GuiTransientNotificationLevel, GuiUrlEditSessionRuntimeSnapshot, GuiUrlEditSessionState,
-    GuiValidationIssue, GuiWidgetKind, MainWindowChatRow, MainWindowPlaylistRow,
-    MainWindowRuntimeChatSnapshot, MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot,
-    MainWindowShellState, MediaSearchDirectoryRow, MediaSearchWorkflowShellState,
-    MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot, MenuDialogShellState,
-    PublicServerBrowserRow, PublicServerBrowserShellState, SorotteGuiRuntimeSnapshot,
-    SorotteGuiShellAppState, browser_stream_target_kind, load_playlist_entries_from_path,
-    playlist_entries_from_multiline_text, save_playlist_entries_to_path,
+    GuiPlaylistEntryId, GuiPlaylistResolutionStep, GuiPlaylistSourcePolicy,
+    GuiPlaylistSourceSelectionOrigin, GuiPlaylistSourceState, GuiPlaylistSourceStatus,
+    GuiPlaylistTextEditSessionRuntimeSnapshot, GuiPlaylistTextEditSessionState,
+    GuiPlexPlaylistSearchResult, GuiPlexRuntimeSnapshot, GuiPluginSelection,
+    GuiPublicServerEditSessionRuntimeSnapshot, GuiSavedConfigurationRuntimeSnapshot,
+    GuiSavedSessionConnectTarget, GuiSelectionState, GuiShellAction, GuiShellModal, GuiShellView,
+    GuiStreamTargetKind, GuiTextEditSessionRuntimeSnapshot, GuiTextEditSessionState,
+    GuiTransientNotification, GuiTransientNotificationLevel, GuiUrlEditSessionRuntimeSnapshot,
+    GuiUrlEditSessionState, GuiValidationIssue, GuiWidgetKind, MainWindowChatRow,
+    MainWindowPlaylistRow, MainWindowRuntimeChatSnapshot, MainWindowRuntimeSnapshot,
+    MainWindowRuntimeUserSnapshot, MainWindowShellState, MediaSearchDirectoryRow,
+    MediaSearchWorkflowShellState, MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot,
+    MenuDialogShellState, PublicServerBrowserRow, PublicServerBrowserShellState,
+    SorotteGuiRuntimeSnapshot, SorotteGuiShellAppState, browser_stream_target_kind,
+    load_playlist_entries_from_path, playlist_entries_from_multiline_text,
+    save_playlist_entries_to_path,
 };
 
 use crate::app::widget_tree::GuiWidgetTextPreviewRenderer;
@@ -79,6 +81,58 @@ fn projected_media_and_plex_debug_redacts_tokenized_urls() {
     ] {
         assert!(debug.contains(sorotte_secret::REDACTED_SECRET));
         assert!(!debug.contains(marker), "leaky Debug output: {debug}");
+    }
+}
+
+#[test]
+fn playlist_source_debug_redacts_target_bearing_details() {
+    let path_marker = "playlist-local-path-debug-canary";
+    let url_marker = "playlist-tokenized-url-debug-canary";
+    let local_path = format!("C:/Private/{path_marker}/movie.mkv");
+    let tokenized_url = format!("https://media.example/movie?X-Plex-Token={url_marker}");
+    let mut source_state = GuiPlaylistSourceState::for_provider(GuiMediaSourceProviderId::local());
+    source_state.status = GuiPlaylistSourceStatus::Active;
+    source_state.detail = Some(format!(
+        "Loaded local target: {local_path}; remote fallback: {tokenized_url}."
+    ));
+    source_state.options[0].detail = Some(format!("Resolved option target: {tokenized_url}."));
+    let resolution_step = GuiPlaylistResolutionStep {
+        provider_id: GuiMediaSourceProviderId::local(),
+        label: "Local".to_owned(),
+        status: GuiPlaylistSourceStatus::Active,
+        detail: Some(format!("Loaded target: {tokenized_url}.")),
+    };
+    source_state.resolution_steps = vec![resolution_step.clone()];
+
+    let row = MainWindowPlaylistRow {
+        entry_id: GuiPlaylistEntryId::next(),
+        label: tokenized_url,
+        is_selected: true,
+        source_state: source_state.clone(),
+    };
+    let mut shell = MainWindowShellState::from_stored_settings(&StoredClientSettingsMvp::default());
+    shell.playlist = vec![row.clone()];
+    let runtime = MainWindowRuntimeSnapshot::from_shell_state(&shell);
+
+    let step_debug = format!("{resolution_step:?}");
+    assert!(step_debug.contains("local"));
+    assert!(step_debug.contains("Active"));
+
+    let source_debug = format!("{source_state:?}");
+    assert!(source_debug.contains("selection_origin"));
+    assert!(source_debug.contains("policy"));
+    assert!(source_debug.contains("GuiPlaylistSourceOption"));
+
+    for debug in [
+        step_debug,
+        source_debug,
+        format!("{row:?}"),
+        format!("{shell:?}"),
+        format!("{runtime:?}"),
+    ] {
+        assert!(debug.contains(sorotte_secret::REDACTED_SECRET));
+        assert!(!debug.contains(path_marker), "leaky Debug output: {debug}");
+        assert!(!debug.contains(url_marker), "leaky Debug output: {debug}");
     }
 }
 use crate::app::{

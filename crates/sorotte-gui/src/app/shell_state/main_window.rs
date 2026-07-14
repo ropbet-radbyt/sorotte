@@ -119,7 +119,7 @@ impl Default for GuiPlaylistDefaultSourceState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(in crate::app) struct GuiPlaylistResolutionStep {
     pub(in crate::app) provider_id: GuiMediaSourceProviderId,
     pub(in crate::app) label: String,
@@ -127,20 +127,127 @@ pub(in crate::app) struct GuiPlaylistResolutionStep {
     pub(in crate::app) detail: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl std::fmt::Debug for GuiPlaylistResolutionStep {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuiPlaylistResolutionStep")
+            .field("provider_id", &self.provider_id)
+            .field("label", &self.label)
+            .field("status", &self.status)
+            .field(
+                "detail",
+                &self
+                    .detail
+                    .as_ref()
+                    .map(|_| sorotte_secret::REDACTED_SECRET),
+            )
+            .finish()
+    }
+}
+
+#[derive(Clone)]
 pub(in crate::app) struct GuiPlaylistSourceState {
+    pub(in crate::app) entry_id: GuiPlaylistEntryId,
     pub(in crate::app) current_provider_id: GuiMediaSourceProviderId,
     pub(in crate::app) current_label: String,
-    pub(in crate::app) provider_selection_is_explicit: bool,
+    pub(in crate::app) policy: GuiPlaylistSourcePolicy,
+    pub(in crate::app) selection_origin: GuiPlaylistSourceSelectionOrigin,
     pub(in crate::app) status: GuiPlaylistSourceStatus,
     pub(in crate::app) detail: Option<String>,
     pub(in crate::app) options: Vec<GuiPlaylistSourceOption>,
     pub(in crate::app) resolution_steps: Vec<GuiPlaylistResolutionStep>,
 }
 
+impl PartialEq for GuiPlaylistSourceState {
+    fn eq(&self, other: &Self) -> bool {
+        self.current_provider_id == other.current_provider_id
+            && self.current_label == other.current_label
+            && self.policy == other.policy
+            && self.selection_origin == other.selection_origin
+            && self.status == other.status
+            && self.detail == other.detail
+            && self.options == other.options
+            && self.resolution_steps == other.resolution_steps
+    }
+}
+
+impl Eq for GuiPlaylistSourceState {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::app) enum GuiPlaylistSourcePolicy {
+    Automatic,
+    ForceLocal,
+    PreferMediaMatching,
+    ForceMediaMatching,
+    ForcePlex,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::app) enum GuiPlaylistSourceSelectionOrigin {
+    Inferred,
+    PlaylistDefault,
+    UserOverride,
+}
+
+struct GuiPlaylistSourceOptionDebug<'a>(&'a GuiPlaylistSourceOption);
+
+impl std::fmt::Debug for GuiPlaylistSourceOptionDebug<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuiPlaylistSourceOption")
+            .field("provider_id", &self.0.provider_id)
+            .field("label", &self.0.label)
+            .field("status", &self.0.status)
+            .field(
+                "detail",
+                &self
+                    .0
+                    .detail
+                    .as_ref()
+                    .map(|_| sorotte_secret::REDACTED_SECRET),
+            )
+            .field("enabled", &self.0.enabled)
+            .field("selected", &self.0.selected)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for GuiPlaylistSourceState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let options = self
+            .options
+            .iter()
+            .map(GuiPlaylistSourceOptionDebug)
+            .collect::<Vec<_>>();
+
+        formatter
+            .debug_struct("GuiPlaylistSourceState")
+            .field("entry_id", &self.entry_id)
+            .field("current_provider_id", &self.current_provider_id)
+            .field("current_label", &self.current_label)
+            .field("policy", &self.policy)
+            .field("selection_origin", &self.selection_origin)
+            .field("status", &self.status)
+            .field(
+                "detail",
+                &self
+                    .detail
+                    .as_ref()
+                    .map(|_| sorotte_secret::REDACTED_SECRET),
+            )
+            .field("options", &options)
+            .field("resolution_steps", &self.resolution_steps)
+            .finish()
+    }
+}
+
 impl GuiPlaylistSourceState {
     pub(in crate::app) fn inferred_for_entry(entry: &str) -> Self {
-        Self::for_provider(Self::inferred_provider_for_entry(entry)).with_explicit_selection(false)
+        Self::new(
+            Self::inferred_provider_for_entry(entry),
+            GuiPlaylistSourcePolicy::Automatic,
+            GuiPlaylistSourceSelectionOrigin::Inferred,
+        )
     }
 
     pub(in crate::app) fn inferred_provider_for_entry(entry: &str) -> GuiMediaSourceProviderId {
@@ -152,21 +259,56 @@ impl GuiPlaylistSourceState {
     }
 
     pub(in crate::app) fn for_provider(provider_id: GuiMediaSourceProviderId) -> Self {
+        let policy = Self::forced_policy_for_provider(&provider_id);
+        Self::new(
+            provider_id,
+            policy,
+            GuiPlaylistSourceSelectionOrigin::UserOverride,
+        )
+    }
+
+    pub(in crate::app) fn for_playlist_default(provider_id: GuiMediaSourceProviderId) -> Self {
+        let policy = if provider_id == GuiMediaSourceProviderId::media_matching() {
+            GuiPlaylistSourcePolicy::PreferMediaMatching
+        } else {
+            Self::forced_policy_for_provider(&provider_id)
+        };
+        Self::new(
+            provider_id,
+            policy,
+            GuiPlaylistSourceSelectionOrigin::PlaylistDefault,
+        )
+    }
+
+    fn forced_policy_for_provider(
+        provider_id: &GuiMediaSourceProviderId,
+    ) -> GuiPlaylistSourcePolicy {
+        if provider_id == &GuiMediaSourceProviderId::plex_stream() {
+            GuiPlaylistSourcePolicy::ForcePlex
+        } else if provider_id == &GuiMediaSourceProviderId::media_matching() {
+            GuiPlaylistSourcePolicy::ForceMediaMatching
+        } else {
+            GuiPlaylistSourcePolicy::ForceLocal
+        }
+    }
+
+    fn new(
+        provider_id: GuiMediaSourceProviderId,
+        policy: GuiPlaylistSourcePolicy,
+        selection_origin: GuiPlaylistSourceSelectionOrigin,
+    ) -> Self {
         let current_label = playlist_source_provider_label(&provider_id).to_owned();
         Self {
+            entry_id: GuiPlaylistEntryId::next(),
             current_provider_id: provider_id.clone(),
             current_label,
-            provider_selection_is_explicit: true,
+            policy,
+            selection_origin,
             status: GuiPlaylistSourceStatus::Available,
             detail: Some("Waiting for playlist activation.".to_owned()),
             options: default_playlist_source_options(&provider_id),
             resolution_steps: Vec::new(),
         }
-    }
-
-    pub(in crate::app) fn with_explicit_selection(mut self, explicit: bool) -> Self {
-        self.provider_selection_is_explicit = explicit;
-        self
     }
 }
 
@@ -285,17 +427,40 @@ impl std::fmt::Debug for MainWindowUserRow {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(in crate::app) struct GuiPlaylistEntryId(u64);
+
+impl GuiPlaylistEntryId {
+    pub(in crate::app) fn next() -> Self {
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self(NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
+#[derive(Clone)]
 pub(in crate::app) struct MainWindowPlaylistRow {
+    pub(in crate::app) entry_id: GuiPlaylistEntryId,
     pub(in crate::app) label: String,
     pub(in crate::app) is_selected: bool,
     pub(in crate::app) source_state: GuiPlaylistSourceState,
 }
 
+impl PartialEq for MainWindowPlaylistRow {
+    fn eq(&self, other: &Self) -> bool {
+        self.entry_id == other.entry_id
+            && self.label == other.label
+            && self.is_selected == other.is_selected
+            && self.source_state == other.source_state
+    }
+}
+
+impl Eq for MainWindowPlaylistRow {}
+
 impl std::fmt::Debug for MainWindowPlaylistRow {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("MainWindowPlaylistRow")
+            .field("entry_id", &self.entry_id)
             .field("label", &sorotte_secret::REDACTED_SECRET)
             .field("is_selected", &self.is_selected)
             .field("source_state", &self.source_state)
@@ -306,8 +471,10 @@ impl std::fmt::Debug for MainWindowPlaylistRow {
 impl MainWindowPlaylistRow {
     pub(in crate::app) fn inferred(label: impl Into<String>, is_selected: bool) -> Self {
         let label = label.into();
+        let source_state = GuiPlaylistSourceState::inferred_for_entry(&label);
         Self {
-            source_state: GuiPlaylistSourceState::inferred_for_entry(&label),
+            entry_id: source_state.entry_id,
+            source_state,
             label,
             is_selected,
         }
@@ -474,6 +641,7 @@ pub(in crate::app) struct MainWindowRuntimeSnapshot {
     pub(in crate::app) rooms: Vec<MainWindowRuntimeRoomSnapshot>,
     pub(in crate::app) users: Vec<MainWindowRuntimeUserSnapshot>,
     pub(in crate::app) playlist: Vec<String>,
+    pub(in crate::app) playlist_entry_ids: Vec<GuiPlaylistEntryId>,
     pub(in crate::app) playlist_source_states: Vec<GuiPlaylistSourceState>,
     pub(in crate::app) active_playlist_index: Option<usize>,
     pub(in crate::app) chat: Vec<MainWindowRuntimeChatSnapshot>,
@@ -507,6 +675,7 @@ impl std::fmt::Debug for MainWindowRuntimeSnapshot {
             .field("rooms", &self.rooms)
             .field("users", &self.users)
             .field("playlist_count", &self.playlist.len())
+            .field("playlist_entry_id_count", &self.playlist_entry_ids.len())
             .field("playlist_source_states", &self.playlist_source_states)
             .field("active_playlist_index", &self.active_playlist_index)
             .field("chat", &self.chat)
@@ -547,6 +716,7 @@ impl Default for MainWindowRuntimeSnapshot {
             rooms: Vec::new(),
             users: Vec::new(),
             playlist: Vec::new(),
+            playlist_entry_ids: Vec::new(),
             playlist_source_states: Vec::new(),
             active_playlist_index: None,
             chat: Vec::new(),
@@ -571,6 +741,20 @@ impl Default for MainWindowRuntimeSnapshot {
 }
 
 impl MainWindowRuntimeSnapshot {
+    pub(in crate::app) fn matches_shell_state_with_omitted_playlist_metadata(
+        &self,
+        state: &MainWindowShellState,
+    ) -> bool {
+        let mut current = Self::from_shell_state(state);
+        if self.playlist_entry_ids.is_empty() {
+            current.playlist_entry_ids.clear();
+        }
+        if self.playlist_source_states.is_empty() {
+            current.playlist_source_states.clear();
+        }
+        self == &current
+    }
+
     pub(in crate::app) fn from_shell_state(state: &MainWindowShellState) -> Self {
         Self {
             room_name: state.room_name.clone(),
@@ -608,10 +792,15 @@ impl MainWindowRuntimeSnapshot {
                 })
                 .collect(),
             playlist: state.playlist.iter().map(|row| row.label.clone()).collect(),
+            playlist_entry_ids: state.playlist.iter().map(|row| row.entry_id).collect(),
             playlist_source_states: state
                 .playlist
                 .iter()
-                .map(|row| row.source_state.clone())
+                .map(|row| {
+                    let mut source_state = row.source_state.clone();
+                    source_state.entry_id = row.entry_id;
+                    source_state
+                })
                 .collect(),
             active_playlist_index: state.active_playlist_index,
             chat: state

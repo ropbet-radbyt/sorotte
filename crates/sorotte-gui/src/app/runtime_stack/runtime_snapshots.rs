@@ -163,6 +163,8 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             .iter()
             .map(|row| row.label.clone())
             .collect();
+        snapshot.playlist_entry_ids.clear();
+        snapshot.playlist_source_states.clear();
         snapshot.active_playlist_index = None;
         snapshot.can_set_ready = baseline_main_window.playback.can_set_ready;
         snapshot.can_set_others_ready = baseline_main_window.playback.can_set_others_ready;
@@ -191,12 +193,16 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         {
             snapshot.shared_playlist_enabled = true;
             snapshot.playlist = playlist.files.clone();
+            snapshot.playlist_entry_ids.clear();
+            snapshot.playlist_source_states.clear();
             snapshot.active_playlist_index = playlist
                 .index
                 .and_then(|index| usize::try_from(index).ok())
                 .filter(|index| *index < snapshot.playlist.len());
         } else if !shared_playlist_server_supported {
             snapshot.playlist.clear();
+            snapshot.playlist_entry_ids.clear();
+            snapshot.playlist_source_states.clear();
             snapshot.active_playlist_index = None;
         }
         snapshot.can_manage_playlist =
@@ -223,7 +229,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         snapshot.can_set_ready = session.is_active() && session.server_readiness_supported();
         snapshot.can_set_others_ready = session.server_set_others_readiness_supported()
             && session.local_can_control().unwrap_or(false);
-        (snapshot != MainWindowRuntimeSnapshot::from_shell_state(&state.main_window))
+        (!snapshot.matches_shell_state_with_omitted_playlist_metadata(&state.main_window))
             .then_some(snapshot)
     }
 

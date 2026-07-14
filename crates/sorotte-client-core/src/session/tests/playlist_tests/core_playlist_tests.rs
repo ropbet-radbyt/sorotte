@@ -1,6 +1,26 @@
 use super::*;
 
 #[test]
+fn playlist_received_before_hello_promotes_its_remote_revision() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(r#"{"Set":{"playlistChange":{"files":["episode.mkv"],"user":"bob"}}}"#)
+        .expect("pre-Hello playlist should be retained");
+    assert_eq!(session.current_room_playlist_remote_revision(), 0);
+
+    session
+        .apply_hello_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should promote the pending playlist");
+    assert_eq!(
+        session.current_room_playlist_remote_revision(),
+        1,
+        "the promoted playlist must retain its remote generation"
+    );
+}
+
+#[test]
 fn recently_advanced_tracks_local_playlist_index_updates() {
     let mut session = ClientSession::default();
     session

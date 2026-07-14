@@ -137,11 +137,16 @@ fn gui_persisted_config_runtime_owner_shared_playlist_open_publishes_local_file_
         without_default_ready_publish_lines(session_transport.drain_outbound_protocol_lines())
             .is_empty()
     );
+    let media_root = test_temp_root("transport-shared-playlist-local-publish");
+    let episode1_path = media_root.join("episode1.mkv");
+    let episode2_path = media_root.join("episode2.mkv");
+    std::fs::write(&episode1_path, b"one").expect("first media fixture should be written");
+    std::fs::write(&episode2_path, b"two").expect("second media fixture should be written");
 
     handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
         paths: vec![
-            "C:/Media/episode1.mkv".to_owned(),
-            "C:/Media/episode2.mkv".to_owned(),
+            episode1_path.to_string_lossy().into_owned(),
+            episode2_path.to_string_lossy().into_owned(),
         ],
         load_into_shared_playlist: true,
         playlist_insert_slot: None,
@@ -183,6 +188,7 @@ fn gui_persisted_config_runtime_owner_shared_playlist_open_publishes_local_file_
             .any(|line| line.contains(r#""playlistIndex":{"index":0"#)),
         "shared-playlist open should publish the selected playlist index over the detached transport",
     );
+    let _ = std::fs::remove_dir_all(media_root);
     assert!(
         outbound_protocol_lines.iter().any(|line| {
             let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
@@ -362,9 +368,12 @@ fn gui_persisted_config_runtime_owner_publishes_opened_local_path_before_player_
     );
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     let _ = session_transport.drain_outbound_protocol_lines();
+    let media_root = test_temp_root("transport-open-path-before-metadata");
+    let media_path = media_root.join("episode1.mkv");
+    std::fs::write(&media_path, b"test").expect("media fixture should be written");
 
     handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
-        paths: vec!["C:/Media/episode1.mkv".to_owned()],
+        paths: vec![media_path.to_string_lossy().into_owned()],
         load_into_shared_playlist: false,
         playlist_insert_slot: None,
     });
@@ -387,6 +396,7 @@ fn gui_persisted_config_runtime_owner_publishes_opened_local_path_before_player_
         }),
         "opened local paths should publish a room file update immediately; outbound_protocol_lines={outbound_protocol_lines:?}"
     );
+    let _ = std::fs::remove_dir_all(media_root);
 }
 
 #[test]

@@ -76,9 +76,9 @@ use super::runtime_stack::{
 use super::shell_state::{
     GuiCommandAvailabilityState, GuiConfigurationRuntimeSnapshot,
     GuiMediaMatchRemediationRuntimeSnapshot, GuiMediaMatchRuntimeSnapshot, GuiMediaMatchState,
-    GuiMediaSourceProviderId, GuiPlexPlaylistSearchResult, GuiPlexRuntimeSnapshot,
-    GuiPlexServerReachability, GuiPlexServerRow, GuiPluginSelection, GuiShellAction,
-    GuiStreamHelperRemediationRuntimeSnapshot, GuiStreamHelperRuntimeSnapshot,
+    GuiMediaSourceProviderId, GuiPlaylistEntryId, GuiPlexPlaylistSearchResult,
+    GuiPlexRuntimeSnapshot, GuiPlexServerReachability, GuiPlexServerRow, GuiPluginSelection,
+    GuiShellAction, GuiStreamHelperRemediationRuntimeSnapshot, GuiStreamHelperRuntimeSnapshot,
     GuiTransientNotificationLevel, SorotteGuiShellAppState,
 };
 use super::startup::{
@@ -136,6 +136,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) config_path: Option<PathBuf>,
     pub(super) legacy_projection: Option<SorotteGuiShellAppState>,
     pub(super) session: Option<Box<dyn GuiSessionRuntimeAdapter + Send>>,
+    pub(super) session_generation: u64,
     pub(super) session_projects_to_shell: bool,
     pub(super) session_transport: Option<GuiQueuedSessionTransportHandle>,
     pub(super) session_transport_driver: Option<Box<dyn GuiSessionTransportDriver + Send>>,
@@ -162,7 +163,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) last_published_local_file: Option<LocalFileUpdate>,
     pub(super) last_published_media_match_signature: Option<serde_json::Value>,
     pub(super) local_shared_playlist_media_match_signature_path: Option<String>,
-    pub(super) local_shared_playlist_media_paths_by_target: HashMap<String, PathBuf>,
+    pub(super) playlist_resolution: GuiPlaylistResolutionCoordinator,
     pub(super) attached_media_search_index: Option<GuiAttachedMediaSearchIndex>,
     pub(super) attached_media_search_next_retry_at: Option<Instant>,
     pub(super) pending_attached_media_resolution: Option<GuiPendingAttachedMediaResolution>,
@@ -236,6 +237,42 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
 }
 
 pub(super) const ATTACHED_PLAYER_PAUSE_COMMAND_SUPPRESSION: Duration = Duration::from_secs(5);
+
+#[derive(Default)]
+pub(super) struct GuiPlaylistResolutionCoordinator {
+    pub(super) room_name: Option<String>,
+    pub(super) session_generation: u64,
+    pub(super) session_active: bool,
+    pub(super) playlist_revision: Option<u64>,
+    pub(super) remote_playlist_revision: u64,
+    pub(super) generation: u64,
+    pub(super) row_ids: Vec<GuiPlaylistEntryId>,
+    pub(super) local_origins_by_row: HashMap<GuiPlaylistEntryId, PathBuf>,
+    pub(super) row_scope_reset_pending: bool,
+}
+
+impl std::fmt::Debug for GuiPlaylistResolutionCoordinator {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuiPlaylistResolutionCoordinator")
+            .field("room_name", &self.room_name)
+            .field("session_generation", &self.session_generation)
+            .field("session_active", &self.session_active)
+            .field("playlist_revision", &self.playlist_revision)
+            .field("remote_playlist_revision", &self.remote_playlist_revision)
+            .field("generation", &self.generation)
+            .field("row_count", &self.row_ids.len())
+            .field("local_origin_count", &self.local_origins_by_row.len())
+            .field("row_scope_reset_pending", &self.row_scope_reset_pending)
+            .finish()
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(super) struct GuiPlaylistLocalOriginBindingOutcome {
+    pub(super) bound_row_ids: Vec<GuiPlaylistEntryId>,
+    pub(super) unavailable_row_ids: Vec<GuiPlaylistEntryId>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct GuiPendingAttachedPlayerPauseCommand {
@@ -396,6 +433,8 @@ impl std::fmt::Debug for GuiPlexStreamResolveWorkerResult {
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct GuiPendingPlaylistSourceResolution {
     pub(super) index: usize,
+    pub(super) entry_id: GuiPlaylistEntryId,
+    pub(super) generation: u64,
     pub(super) target: String,
     pub(super) provider_id: GuiMediaSourceProviderId,
 }
@@ -405,6 +444,8 @@ impl std::fmt::Debug for GuiPendingPlaylistSourceResolution {
         formatter
             .debug_struct("GuiPendingPlaylistSourceResolution")
             .field("index", &self.index)
+            .field("entry_id", &self.entry_id)
+            .field("generation", &self.generation)
             .field("target", &sorotte_secret::REDACTED_SECRET)
             .field("provider_id", &self.provider_id)
             .finish()
@@ -538,6 +579,8 @@ pub(super) enum GuiUserMediaTargetResolutionSource {
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct GuiAutomaticMediaResolutionTrigger {
     pub(super) target: String,
+    pub(super) playlist_entry_id: Option<GuiPlaylistEntryId>,
+    pub(super) playlist_generation: u64,
     pub(super) source_provider: String,
     pub(super) roots: Vec<String>,
     pub(super) media_match_remote_targets: String,
@@ -551,6 +594,8 @@ impl std::fmt::Debug for GuiAutomaticMediaResolutionTrigger {
         formatter
             .debug_struct("GuiAutomaticMediaResolutionTrigger")
             .field("target", &sorotte_secret::REDACTED_SECRET)
+            .field("playlist_entry_id", &self.playlist_entry_id)
+            .field("playlist_generation", &self.playlist_generation)
             .field("source_provider", &self.source_provider)
             .field("root_count", &self.roots.len())
             .field(
@@ -637,6 +682,8 @@ mod media_target_debug_tests {
         let secret = "https://media.example/item?token=runtime-owner-canary";
         let trigger = GuiAutomaticMediaResolutionTrigger {
             target: secret.to_owned(),
+            playlist_entry_id: Some(GuiPlaylistEntryId::next()),
+            playlist_generation: 11,
             source_provider: "plex".to_owned(),
             roots: vec![secret.to_owned()],
             media_match_remote_targets: secret.to_owned(),
@@ -650,6 +697,8 @@ mod media_target_debug_tests {
         };
         let pending_playlist = GuiPendingPlaylistSourceResolution {
             index: 2,
+            entry_id: GuiPlaylistEntryId::next(),
+            generation: 3,
             target: secret.to_owned(),
             provider_id: GuiMediaSourceProviderId::plex_stream(),
         };

@@ -68,6 +68,9 @@ impl ClientSession {
         self.model.room.playstates.clear();
         self.model.room.playstate_updated_at_seconds.clear();
         self.model.playlist.pending = None;
+        self.model.playlist.pending_remote_revision = 0;
+        self.model.playlist.pending_local_change_echoes.clear();
+        self.model.playlist.remote_revisions.clear();
         self.model.playlist.undo_snapshots.clear();
         self.model.playlist.shuffle_nonce = 0;
         self.reset_playlist_index_transition_tracking();

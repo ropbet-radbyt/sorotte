@@ -230,7 +230,7 @@ pub(in crate::app) fn playlist_next_shuffle_state(state: &mut u64) -> u64 {
     *state
 }
 
-pub(in crate::app) fn shuffle_playlist_entries_in_place(entries: &mut [String], seed: u64) {
+pub(in crate::app) fn shuffle_playlist_entries_in_place<T>(entries: &mut [T], seed: u64) {
     if entries.len() <= 1 {
         return;
     }
