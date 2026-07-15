@@ -989,26 +989,32 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             return Ok(GuiLocalPlayerUnpauseDecision::NotApplicable);
         }
 
+        let local_can_control = self.runtime.session().local_can_control().unwrap_or(false);
         if self.runtime.session().server_readiness_v2_supported() {
-            // In V2, Play is only a semantic Ready request. The attached
-            // player must remain paused until the server's CommitStart; legacy
-            // instaplay predicates are never physical-unpause authority.
-            // A native player edge normally needs a second stable observation,
-            // but the gate correction below necessarily prevents that sample.
-            // Promote only a same-scope candidate already vetted by the core
-            // classifier; GUI-button preflight and media transitions have no
-            // such candidate and remain harmless no-ops here.
-            self.runtime
-                .confirm_pending_native_player_play(
-                    sorotte_protocol::PlayerInteractionSurface::NativePlayerControl,
-                )
-                .map_err(|error| {
-                    format!("Client-core native-player readiness confirmation failed: {error}")
-                })?;
-            return Ok(GuiLocalPlayerUnpauseDecision::Block);
+            // Client-core owns the exact generation-scoped V2 gate predicate.
+            // Outside a Preparing readiness-owned pause, an authorized
+            // controller must be able to make an ordinary Play decision.
+            let gate_holds_play = self.runtime.readiness_gate_holds_current_playback();
+            if gate_holds_play {
+                // GUI's simple pause mirror can correct the player before its
+                // later coordinator pump. Preserve an already-classified rich
+                // telemetry edge here as well; core consumes it exactly once,
+                // so the shared managed-loop promotion cannot duplicate it.
+                self.runtime
+                    .confirm_pending_native_player_play(
+                        sorotte_protocol::PlayerInteractionSurface::NativePlayerControl,
+                    )
+                    .map_err(|error| {
+                        format!("Client-core native-player readiness confirmation failed: {error}")
+                    })?;
+            }
+            return Ok(if gate_holds_play || !local_can_control {
+                GuiLocalPlayerUnpauseDecision::Block
+            } else {
+                GuiLocalPlayerUnpauseDecision::Allow
+            });
         }
 
-        let local_can_control = self.runtime.session().local_can_control().unwrap_or(false);
         let is_playing_music = self.runtime.session().is_playing_music();
         if self
             .runtime

@@ -728,6 +728,24 @@ fn readiness_v2_canonical_snapshot_and_result_roundtrip() {
 }
 
 #[test]
+fn mixed_readiness_policy_exposes_only_implemented_room_policies() {
+    assert_eq!(
+        serde_json::from_str::<MixedReadinessPolicy>(r#""requireAllMembers""#)
+            .expect("the strict policy should decode"),
+        MixedReadinessPolicy::RequireAllMembers
+    );
+    assert_eq!(
+        serde_json::from_str::<MixedReadinessPolicy>(r#""excludeLegacy""#)
+            .expect("the explicit compatibility policy should decode"),
+        MixedReadinessPolicy::ExcludeLegacy
+    );
+    assert!(
+        serde_json::from_str::<MixedReadinessPolicy>(r#""askController""#).is_err(),
+        "an unsupported controller-decision mode must not be advertised on the wire"
+    );
+}
+
+#[test]
 fn readiness_v2_technical_report_roundtrips_in_state() {
     let technical =
         TechnicalReadinessReport::new(22, 6, 8, TechnicalPlayabilityPhase::TemporarilyBlocked)

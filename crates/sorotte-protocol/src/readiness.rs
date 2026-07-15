@@ -318,9 +318,6 @@ pub enum MixedReadinessPolicy {
     /// Explicit compatibility opt-in which excludes legacy peers from the
     /// automatic-start cohort.
     ExcludeLegacy,
-    /// Require a controller decision. Until one is supplied this has the same
-    /// fail-closed behavior as [`Self::RequireAllMembers`].
-    AskController,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

@@ -218,18 +218,38 @@ impl ClientSession {
     }
 
     pub fn runtime_actions_for_local_pause_toggle(&mut self) -> Vec<ClientRuntimeAction> {
+        self.runtime_actions_for_local_pause_toggle_with_gate_hold(None)
+    }
+
+    pub(crate) fn runtime_actions_for_local_pause_toggle_with_gate_hold(
+        &mut self,
+        current_gate_holds_play: Option<bool>,
+    ) -> Vec<ClientRuntimeAction> {
         let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
         let target_paused = !self.effective_local_paused_state(now_seconds);
-        self.runtime_actions_for_local_pause_change(target_paused, now_seconds)
+        self.runtime_actions_for_local_pause_change(
+            target_paused,
+            now_seconds,
+            current_gate_holds_play,
+        )
     }
 
     pub fn runtime_actions_for_local_pause_set(
         &mut self,
         paused: bool,
     ) -> Vec<ClientRuntimeAction> {
+        self.runtime_actions_for_local_pause_set_with_gate_hold(paused, None)
+    }
+
+    pub(crate) fn runtime_actions_for_local_pause_set_with_gate_hold(
+        &mut self,
+        paused: bool,
+        current_gate_holds_play: Option<bool>,
+    ) -> Vec<ClientRuntimeAction> {
         self.runtime_actions_for_local_pause_change(
             paused,
             unix_wall_clock_time_seconds_legacy_compatible(),
+            current_gate_holds_play,
         )
     }
 

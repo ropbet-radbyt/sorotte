@@ -259,17 +259,10 @@ impl ParticipantReadinessPresentation {
             }
             (
                 Some(StartParticipationRole::ExcludedLegacy),
-                Some(MixedReadinessPolicy::AskController),
-            ) => "legacy participant; automatic start awaits a controller compatibility decision",
-            (
-                Some(StartParticipationRole::ExcludedLegacy),
                 Some(MixedReadinessPolicy::ExcludeLegacy),
             ) => "excluded legacy by compatibility policy; technical start guarantees unavailable",
             (None, Some(MixedReadinessPolicy::RequireAllMembers)) => {
                 "legacy participant; automatic start unavailable until every member supports readiness V2"
-            }
-            (None, Some(MixedReadinessPolicy::AskController)) => {
-                "legacy participant; automatic start awaits a controller compatibility decision"
             }
             (None, Some(MixedReadinessPolicy::ExcludeLegacy)) => {
                 "excluded legacy by compatibility policy; technical start guarantees unavailable"
@@ -302,18 +295,13 @@ impl ParticipantReadinessPresentation {
             Some(RoomStartGatePhase::Degraded {
                 reason: StartGateDegradedReason::IncompatibleLegacyParticipant,
                 ..
-            }) => match self.mixed_readiness_policy {
-                Some(MixedReadinessPolicy::AskController) => {
-                    "automatic start unavailable: controller must choose how to handle a legacy participant"
-                        .to_owned()
-                }
-                _ => {
-                    "automatic start unavailable: a room member does not support readiness V2"
-                        .to_owned()
-                }
-            },
+            }) => "automatic start unavailable: a room member does not support readiness V2"
+                .to_owned(),
             Some(RoomStartGatePhase::Degraded { reason, .. }) => {
-                format!("automatic start degraded: {}", degraded_reason_label(*reason))
+                format!(
+                    "automatic start degraded: {}",
+                    degraded_reason_label(*reason)
+                )
             }
         }
     }

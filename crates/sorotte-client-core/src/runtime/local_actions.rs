@@ -212,7 +212,10 @@ where
             .and_then(|username| self.session.user_ready(username));
         let original_last_paused_on_leave_at_seconds =
             self.session.model.playback.last_paused_on_leave_at_seconds;
-        let actions = self.session.runtime_actions_for_local_pause_toggle();
+        let current_gate_holds_play = self.readiness_gate_holds_current_playback();
+        let actions = self
+            .session
+            .runtime_actions_for_local_pause_toggle_with_gate_hold(Some(current_gate_holds_play));
         let planned_paused = self.session.model.playback.local_paused;
         let planned_ready = self
             .session
@@ -270,7 +273,13 @@ where
             .and_then(|username| self.session.user_ready(username));
         let original_last_paused_on_leave_at_seconds =
             self.session.model.playback.last_paused_on_leave_at_seconds;
-        let actions = self.session.runtime_actions_for_local_pause_set(paused);
+        let current_gate_holds_play = self.readiness_gate_holds_current_playback();
+        let actions = self
+            .session
+            .runtime_actions_for_local_pause_set_with_gate_hold(
+                paused,
+                Some(current_gate_holds_play),
+            );
         let planned_paused = self.session.model.playback.local_paused;
         let planned_ready = self
             .session

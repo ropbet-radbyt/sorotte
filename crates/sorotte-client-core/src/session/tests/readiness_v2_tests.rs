@@ -1,12 +1,14 @@
 use super::*;
-use crate::{LogicalMediaId, MediaTransportKind};
 use sorotte_protocol::{
-    DirectReadinessSurface, ParticipantReadinessUpdate, ReadinessMutationSource,
-    ReadinessRequestResultPayload, ReadinessRequestResultStatus, ReadinessSetExtension,
-    RoomPauseOwner, RoomReadinessSnapshot, RoomStartGatePhase, StartParticipationRole,
-    TechnicalBlockCause, TechnicalPlayabilityPhase, TechnicalPlayabilitySummary,
-    UserReadinessIntent, UserReadinessMutationSource,
+    DirectReadinessSurface, ParticipantReadinessUpdate, PlaybackBarrierPhase,
+    PlaybackBarrierPolicy, PlaybackBarrierSetExtension, PlaybackBarrierStatusPayload,
+    PrepareMediaPayload, ReadinessMutationSource, ReadinessRequestResultPayload,
+    ReadinessRequestResultStatus, ReadinessSetExtension, RoomPauseOwner, RoomReadinessSnapshot,
+    RoomStartGatePhase, SetPayload, StartParticipationRole, TechnicalBlockCause,
+    TechnicalPlayabilityPhase, TechnicalPlayabilitySummary, UserReadinessIntent,
+    UserReadinessMutationSource,
 };
+use std::collections::{BTreeMap, BTreeSet};
 
 fn participant(
     revision: u64,
@@ -78,6 +80,54 @@ fn active_v2_session() -> ClientSession {
     session
 }
 
+fn install_barrier_phase(
+    session: &mut ClientSession,
+    logical_media_id: &str,
+    phase: PlaybackBarrierPhase,
+) {
+    session
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":0.0,"paused":true,"doSeek":false}}}"#,
+        )
+        .expect("canonical paused room state should apply");
+    let status = |phase| PlaybackBarrierStatusPayload {
+        media_generation: 7,
+        state_revision: None,
+        phase,
+        policy: PlaybackBarrierPolicy::AllEligible,
+        quorum: None,
+        deadline: 100.0,
+        participants: BTreeMap::new(),
+        excluded_legacy_clients: BTreeSet::new(),
+    };
+    session
+        .apply_protocol_message(ProtocolMessage::set(
+            SetPayload::new().with_playback_barrier_v1(
+                PlaybackBarrierSetExtension::new()
+                    .with_prepare(
+                        PrepareMediaPayload::new(
+                            7,
+                            logical_media_id,
+                            0.0,
+                            PlaybackBarrierPolicy::AllEligible,
+                        )
+                        .with_request_nonce(1),
+                    )
+                    .with_status(status(PlaybackBarrierPhase::Preparing)),
+            ),
+        ))
+        .expect("Preparing barrier should apply");
+    if phase != PlaybackBarrierPhase::Preparing {
+        session
+            .apply_protocol_message(ProtocolMessage::set(
+                SetPayload::new().with_playback_barrier_v1(
+                    PlaybackBarrierSetExtension::new().with_status(status(phase)),
+                ),
+            ))
+            .expect("terminal barrier status should apply");
+    }
+}
+
 #[derive(Default)]
 struct RejectingReadinessControl;
 
@@ -95,86 +145,150 @@ impl ClientEffectSink for RejectingReadinessControl {
 #[test]
 fn v2_play_stages_ready_without_dispatching_a_physical_resume() {
     let mut session = active_v2_session();
+    install_barrier_phase(
+        &mut session,
+        "readiness-failure-media",
+        PlaybackBarrierPhase::Preparing,
+    );
     session.model.playback.local_paused = Some(true);
-    let player = RecordingPlayer {
-        fail_set_paused: true,
-        ..RecordingPlayer::default()
-    };
-    let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
-    runtime.prepare_playback_media(
-        LogicalMediaId::new("readiness-failure-media").expect("logical ID should be valid"),
-        MediaTransportKind::LocalFile,
-        1.0,
-    );
-    runtime.flush_queued_protocol_messages();
-
     assert!(
-        runtime
-            .run_set_paused(false)
-            .expect("V2 Play should stage semantic intent without touching the player")
+        session.readiness_gate_holds_room_pause(),
+        "the matching Preparing/readiness-owned barrier should own the room pause"
     );
+
+    let actions = session.runtime_actions_for_local_pause_set(false);
+
     assert_eq!(
-        runtime
-            .session()
+        session
             .pending_readiness_intent()
             .map(|intent| intent.desired()),
         Some(UserReadinessIntent::Ready),
         "the user's Play intent should remain pending until server acknowledgement"
     );
-    assert_eq!(runtime.session().user_ready("alice"), Some(false));
+    assert_eq!(session.user_ready("alice"), Some(false));
     assert_eq!(
-        runtime.session().displayed_user_readiness_intent("alice"),
+        session.displayed_user_readiness_intent("alice"),
         Some(UserReadinessIntent::Ready),
         "optimistic presentation must not overwrite the canonical readiness projection"
     );
     assert!(
-        !runtime
-            .player()
-            .player_effects
-            .contains(&ClientEffect::SetPlayerPaused(false)),
+        actions
+            .iter()
+            .all(|action| !matches!(action, ClientRuntimeAction::SetPaused(false))),
         "V2 Play must wait for CommitStart before resuming the player"
     );
+    assert!(actions.iter().any(|action| matches!(
+        action,
+        ClientRuntimeAction::SetReadinessIntent { request, .. }
+            if request.desired == UserReadinessIntent::Ready
+    )));
 
-    let messages = runtime.control().outbound_messages();
-    assert!(!messages.iter().any(|message| {
-        let ProtocolMessage::State(state) = message else {
-            return false;
-        };
-        state
-            .state
-            .playstate
-            .as_ref()
-            .and_then(|state| state.paused)
-            == Some(false)
-    }));
-
-    let intent = messages.iter().find_map(|message| {
-        let ProtocolMessage::Set(set) = message else {
-            return None;
-        };
-        set.set
-            .readiness_v2()
-            .expect("readiness extension should decode")
-            .and_then(|extension| extension.intent)
-    });
+    session.reset_sync_state_for_reconnect();
     assert_eq!(
-        intent.map(|intent| intent.desired),
-        Some(UserReadinessIntent::Ready)
-    );
-
-    runtime
-        .session_mut_for_test()
-        .reset_sync_state_for_reconnect();
-    assert_eq!(
-        runtime.session().user_ready("alice"),
+        session.user_ready("alice"),
         Some(false),
         "reconnect must not copy the pending Ready overlay into canonical user state"
     );
     assert_eq!(
-        runtime.session().displayed_user_readiness_intent("alice"),
+        session.displayed_user_readiness_intent("alice"),
         Some(UserReadinessIntent::Ready),
         "the pending intent remains presentation state while awaiting reconciliation"
     );
+}
+
+#[test]
+fn v2_controller_play_is_held_only_by_a_preparing_readiness_owned_pause() {
+    for phase in [
+        PlaybackBarrierPhase::AwaitingDecision,
+        PlaybackBarrierPhase::Degraded,
+    ] {
+        let mut session = active_v2_session();
+        install_barrier_phase(&mut session, "manual-start", phase);
+        session.model.playback.local_paused = Some(true);
+
+        let actions = session.runtime_actions_for_local_pause_set(false);
+
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, ClientRuntimeAction::SetPaused(false))),
+            "{phase:?} must permit the controller's physical Play under the default readiness config"
+        );
+        assert!(actions.iter().any(|action| matches!(
+            action,
+            ClientRuntimeAction::SetReadinessIntent { request, .. }
+                if request.desired == UserReadinessIntent::Ready
+        )));
+        assert_eq!(session.local_paused(), Some(false));
+    }
+}
+
+#[test]
+fn v2_post_start_pause_then_play_physically_resumes_and_sends_ready() {
+    let mut session = active_v2_session();
+    session
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":8.0,"paused":false,"doSeek":false,"setBy":"alice"}}}"#,
+        )
+        .expect("post-start room playback should apply");
+    session.model.playback.local_paused = Some(false);
+
+    let pause = session.runtime_actions_for_local_pause_set(true);
+    assert!(
+        pause
+            .iter()
+            .any(|action| matches!(action, ClientRuntimeAction::SetPaused(true)))
+    );
+    session.model.readiness.pending_intent = None;
+    session.model.playback.local_paused = Some(true);
+
+    let play = session.runtime_actions_for_local_pause_set(false);
+    assert!(
+        play.iter()
+            .any(|action| matches!(action, ClientRuntimeAction::SetPaused(false)))
+    );
+    assert!(play.iter().any(|action| matches!(
+        action,
+        ClientRuntimeAction::SetReadinessIntent { request, .. }
+            if request.desired == UserReadinessIntent::Ready
+    )));
+}
+
+#[test]
+fn v2_noncontroller_play_follows_the_canonical_room_pause() {
+    let mut session = ClientSession::default();
+    session
+        .apply_hello_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.7.5","features":{"readiness":true,"managedRooms":true,"sorotteReadinessV2":true,"sorottePlaybackBarrierV1":true}}}"#,
+        )
+        .expect("controlled V2 Hello should apply");
+    session
+        .apply_message_json(
+            r#"{"Set":{"user":{"alice":{"room":{"name":"+room:ABCDEF123456"},"controller":false}}}}"#,
+        )
+        .expect("noncontroller projection should apply");
+    let mut controlled_snapshot = snapshot(1, 41, UserReadinessIntent::NotReady, None);
+    controlled_snapshot.pause_owner = RoomPauseOwner::User {
+        actor: "bob".to_owned(),
+    };
+    session.apply_readiness_v2_extension(
+        ReadinessSetExtension::new().with_snapshot(controlled_snapshot),
+    );
+    session
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":8.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+        )
+        .expect("canonical controller pause should apply");
+    session.model.playback.local_paused = Some(true);
+
+    let actions = session.runtime_actions_for_local_pause_set(false);
+
+    assert!(
+        actions
+            .iter()
+            .all(|action| !matches!(action, ClientRuntimeAction::SetPaused(false)))
+    );
+    assert_eq!(session.local_paused(), Some(true));
 }
 
 #[test]

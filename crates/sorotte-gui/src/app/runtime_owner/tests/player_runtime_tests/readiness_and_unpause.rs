@@ -116,6 +116,7 @@ fn configure_v2_waiting_gate(owner: &mut GuiPersistedConfigRuntimeOwner, logical
         10.0,
         sorotte_protocol::PlaybackBarrierPolicy::AllEligible,
     )
+    .with_request_nonce(1)
     .with_deadline(120.0);
     let barrier_line =
         sorotte_protocol::encode_message_line(&sorotte_protocol::ProtocolMessage::set(

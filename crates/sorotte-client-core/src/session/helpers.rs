@@ -76,6 +76,7 @@ impl ClientSession {
         &mut self,
         paused: bool,
         now_seconds: f64,
+        current_gate_holds_play: Option<bool>,
     ) -> Vec<ClientRuntimeAction> {
         let effective_paused = self.effective_local_paused_state(now_seconds);
         if self.model.connection.username.is_none() || !self.server_readiness_supported() {
@@ -115,12 +116,14 @@ impl ClientSession {
             })
         };
 
-        if readiness_v2 && !paused {
-            // V2 Play is a Ready request, not permission to bypass the
-            // server-owned start gate. Keep (or restore) the local transport
-            // paused until the authoritative CommitStart arrives. If a native
-            // player edge already escaped, the corrective SetPaused(true) is
-            // causally classified as ReadinessGateHold by runtime authority.
+        let readiness_gate_holds_play = readiness_v2
+            && !paused
+            && current_gate_holds_play.unwrap_or_else(|| self.readiness_gate_holds_room_pause());
+        if readiness_gate_holds_play {
+            // A Preparing V2 gate whose readiness owner still owns this
+            // generation's room pause holds physical Play until CommitStart.
+            // Terminal barriers, user-owned pauses, and ordinary post-start
+            // playback deliberately fall through to controller authority.
             self.model.playback.local_paused = Some(true);
             let mut actions = (!effective_paused)
                 .then_some(ClientRuntimeAction::SetPaused(true))
@@ -159,6 +162,21 @@ impl ClientSession {
             self.model.playback.local_paused = Some(true);
             let mut actions = (effective_paused != paused)
                 .then_some(ClientRuntimeAction::SetPaused(true))
+                .into_iter()
+                .collect::<Vec<_>>();
+            if let Some(action) = readiness_action.take() {
+                actions.push(action);
+            }
+            return actions;
+        }
+
+        if readiness_v2 {
+            // Outside the exact Preparing gate hold, an authorized V2
+            // controller's Play is an ordinary transport transition. Legacy
+            // instaplay readiness predicates do not govern V2 authority.
+            self.model.playback.local_paused = Some(false);
+            let mut actions = effective_paused
+                .then_some(ClientRuntimeAction::SetPaused(false))
                 .into_iter()
                 .collect::<Vec<_>>();
             if let Some(action) = readiness_action.take() {

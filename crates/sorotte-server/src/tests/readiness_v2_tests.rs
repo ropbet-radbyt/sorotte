@@ -12,16 +12,17 @@ use sorotte_client_core::{
 };
 use sorotte_player_api::DisconnectedPlayer;
 use sorotte_protocol::{
-    DirectReadinessSurface, MediaReadyPayload, MixedReadinessPolicy,
+    DirectReadinessSurface, MediaReadyPayload, MixedReadinessPolicy, PlaybackBarrierDegradedReason,
     PlaybackBarrierParticipantPhase, PlaybackBarrierPhase, PlaybackBarrierPolicy,
     PlaybackBarrierSetExtension, PlaybackBarrierStateExtension, PlayerInteractionSurface,
     PlayerReadinessAction, ReadinessIntentRequest, ReadinessMutationSource,
     ReadinessRequestResultPayload, ReadinessRequestResultStatus, ReadinessSetExtension,
     ReadinessStateExtension, RecoveryStage, RoomPauseOwner, RoomReadinessSnapshot,
     RoomStartGatePhase, SOROTTE_PLAYBACK_BARRIER_V1, SOROTTE_READINESS_RECONNECT_TOKEN,
-    SOROTTE_READINESS_V2, StartGateDegradedReason, StartParticipationRole, StatePayload,
-    TechnicalBlockCause, TechnicalPlayability, TechnicalPlayabilityPhase, TechnicalReadinessReport,
-    UserReadinessIntent, UserReadinessMutationSource, encode_message_line,
+    SOROTTE_READINESS_V2, StartGateDegradedReason, StartParticipationRole, StartedAckPayload,
+    StatePayload, TechnicalBlockCause, TechnicalPlayability, TechnicalPlayabilityPhase,
+    TechnicalReadinessReport, UserReadinessIntent, UserReadinessMutationSource,
+    encode_message_line,
 };
 use std::collections::BTreeMap;
 
@@ -217,12 +218,7 @@ fn send_technical(
                 runtime
                     .room_playback_barriers
                     .get(&session.room)
-                    .filter(|barrier| {
-                        matches!(
-                            barrier.phase,
-                            PlaybackBarrierPhase::Committed | PlaybackBarrierPhase::Complete
-                        )
-                    })
+                    .filter(|barrier| barrier.commit.is_some())
                     .and_then(|barrier| barrier.state_revision)
             };
     }
@@ -272,6 +268,26 @@ fn send_playstate(
         .expect("playstate should be accepted as a protocol command")
 }
 
+fn send_started(
+    runtime: &mut ServerRuntime,
+    client_id: &str,
+    media_generation: u64,
+    state_revision: u64,
+    observed_position: f64,
+) -> Vec<DirectedOutboundLine> {
+    let message = ProtocolMessage::state(StatePayload::new().with_playback_barrier_v1(
+        PlaybackBarrierStateExtension::new().with_started(StartedAckPayload::new(
+            media_generation,
+            state_revision,
+            observed_position,
+        )),
+    ));
+    let line = encode_message_line(&message).expect("Started acknowledgement should encode");
+    runtime
+        .handle_line_fanout(client_id, &line)
+        .expect("Started acknowledgement should be accepted as a protocol command")
+}
+
 fn start_barrier(runtime: &mut ServerRuntime, client_id: &str) -> Vec<DirectedOutboundLine> {
     runtime
         .handle_line_fanout(
@@ -279,6 +295,43 @@ fn start_barrier(runtime: &mut ServerRuntime, client_id: &str) -> Vec<DirectedOu
             r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":1,"loadIntent":"newPlayback","logicalMediaId":"readiness:test-media","targetPosition":12.0,"policy":"allEligible","timeoutMs":5000}}}}"#,
         )
         .expect("playback barrier should start")
+}
+
+fn awaiting_controller_decision_runtime(
+    room_name: &str,
+    canonical_paused: bool,
+) -> (ServerRuntime, u64) {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_time_now_override_seconds(Some(100.0));
+    runtime
+        .handle_line("alice-client", &readiness_hello("alice", room_name))
+        .expect("readiness hello should succeed");
+    runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":1,"loadIntent":"newPlayback","logicalMediaId":"readiness:ask-controller","targetPosition":0.0,"policy":"allEligible","timeoutMs":1000,"timeoutAction":"askController"}}}}"#,
+        )
+        .expect("AskController barrier should start");
+    runtime
+        .collect_dispatch_at(101.0)
+        .expect("AskController barrier should time out");
+    assert_eq!(
+        runtime.room_playback_barriers[room_name].phase,
+        PlaybackBarrierPhase::AwaitingDecision
+    );
+    if !canonical_paused {
+        runtime.room_playback_state_mut(room_name).paused = false;
+        runtime
+            .room_readiness
+            .get_mut(room_name)
+            .unwrap()
+            .pause_owner = RoomPauseOwner::None;
+    }
+    acknowledge_forced_state(&mut runtime, "alice-client");
+    let epoch = runtime.room_readiness[room_name].participants["alice"]
+        .record
+        .membership_epoch;
+    (runtime, epoch)
 }
 
 #[test]
@@ -1362,6 +1415,269 @@ fn v2_play_transport_requires_matching_indirect_play_in_either_message_order() {
     assert_eq!(
         intent_first.room_readiness["intent-first-play-room"].pause_owner,
         RoomPauseOwner::None
+    );
+}
+
+#[test]
+fn ask_controller_play_and_pause_retire_awaiting_decision_in_either_message_order() {
+    for (desired_paused, telemetry_first, label) in [
+        (false, false, "intent-first-play"),
+        (false, true, "telemetry-first-play"),
+        (true, false, "intent-first-pause"),
+        (true, true, "telemetry-first-pause"),
+    ] {
+        let (mut runtime, epoch) = awaiting_controller_decision_runtime(label, !desired_paused);
+        let (desired, action) = if desired_paused {
+            (UserReadinessIntent::NotReady, PlayerReadinessAction::Pause)
+        } else {
+            (UserReadinessIntent::Ready, PlayerReadinessAction::Play)
+        };
+        let source = UserReadinessMutationSource::IndirectPlayer {
+            action,
+            surface: PlayerInteractionSurface::NativePlayerControl,
+        };
+
+        if telemetry_first {
+            send_playstate(&mut runtime, "alice-client", 8.0, desired_paused);
+            assert!(
+                runtime
+                    .pending_user_transport_by_client
+                    .contains_key("alice-client"),
+                "{label} must stage the unclassified telemetry edge"
+            );
+            acknowledge_forced_state(&mut runtime, "alice-client");
+            send_intent_with_source(
+                &mut runtime,
+                "alice-client",
+                &format!("{label}-intent"),
+                1,
+                epoch,
+                desired,
+                source,
+            );
+        } else {
+            send_intent_with_source(
+                &mut runtime,
+                "alice-client",
+                &format!("{label}-intent"),
+                1,
+                epoch,
+                desired,
+                source,
+            );
+            assert!(
+                runtime
+                    .pending_user_transport_by_client
+                    .contains_key("alice-client"),
+                "{label} must await the matching telemetry edge"
+            );
+            send_playstate(&mut runtime, "alice-client", 8.0, desired_paused);
+        }
+
+        assert_eq!(
+            runtime.room_playback_barriers[label].phase,
+            PlaybackBarrierPhase::Degraded,
+            "{label} must retire AwaitingDecision"
+        );
+        assert!(runtime.room_playback_barriers[label].commit.is_none());
+        assert_eq!(
+            runtime.room_playback_state(label).paused,
+            desired_paused,
+            "{label} must apply the chosen canonical transport"
+        );
+        assert_eq!(
+            runtime.room_readiness[label].pause_owner,
+            if desired_paused {
+                RoomPauseOwner::User {
+                    actor: "alice".to_owned(),
+                }
+            } else {
+                RoomPauseOwner::None
+            }
+        );
+        assert_eq!(
+            runtime.room_readiness[label].start_gate_phase,
+            RoomStartGatePhase::Degraded {
+                media_generation: 1,
+                reason: StartGateDegradedReason::TimedOut,
+            },
+            "manual resolution must not erase the terminal timeout history"
+        );
+        assert!(runtime.pending_user_transport_by_client.is_empty());
+    }
+
+    for (desired_paused, label) in [
+        (false, "already-playing-play"),
+        (true, "already-paused-pause"),
+    ] {
+        let (mut runtime, epoch) = awaiting_controller_decision_runtime(label, desired_paused);
+        send_intent_with_source(
+            &mut runtime,
+            "alice-client",
+            &format!("{label}-intent"),
+            1,
+            epoch,
+            if desired_paused {
+                UserReadinessIntent::NotReady
+            } else {
+                UserReadinessIntent::Ready
+            },
+            UserReadinessMutationSource::IndirectPlayer {
+                action: if desired_paused {
+                    PlayerReadinessAction::Pause
+                } else {
+                    PlayerReadinessAction::Play
+                },
+                surface: PlayerInteractionSurface::NativePlayerControl,
+            },
+        );
+        assert_eq!(
+            runtime.room_playback_barriers[label].phase,
+            PlaybackBarrierPhase::Degraded,
+            "an authorized already-at-target decision must still retire AwaitingDecision"
+        );
+        assert_eq!(runtime.room_playback_state(label).paused, desired_paused);
+    }
+
+    let controlled_room = controlled_room_name_for_test("room", "AB-123-456");
+    let mut runtime = ServerRuntime::with_room_password_salt(DEFAULT_CONTROLLED_ROOM_HASH_SALT);
+    runtime.set_time_now_override_seconds(Some(100.0));
+    for (client_id, username) in [("alice-client", "alice"), ("bob-client", "bob")] {
+        runtime
+            .handle_line(client_id, &readiness_hello(username, &controlled_room))
+            .expect("readiness hello should succeed");
+    }
+    runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"Set":{"controllerAuth":{"password":"AB-123-456"}}}"#,
+        )
+        .expect("Alice should authenticate as controller");
+    runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"prepare":{"mediaGeneration":0,"requestNonce":1,"loadIntent":"newPlayback","logicalMediaId":"readiness:controlled-ask","targetPosition":0.0,"policy":"allEligible","timeoutMs":1000,"timeoutAction":"askController"}}}}"#,
+        )
+        .expect("controlled AskController barrier should start");
+    runtime
+        .collect_dispatch_at(101.0)
+        .expect("controlled AskController barrier should time out");
+    let bob_epoch = runtime.room_readiness[&controlled_room].participants["bob"]
+        .record
+        .membership_epoch;
+    send_intent_with_source(
+        &mut runtime,
+        "bob-client",
+        "unauthorized-pause-decision",
+        1,
+        bob_epoch,
+        UserReadinessIntent::NotReady,
+        UserReadinessMutationSource::IndirectPlayer {
+            action: PlayerReadinessAction::Pause,
+            surface: PlayerInteractionSurface::NativePlayerControl,
+        },
+    );
+    assert_eq!(
+        runtime.room_playback_barriers[&controlled_room].phase,
+        PlaybackBarrierPhase::AwaitingDecision,
+        "a non-controller readiness mutation cannot supply the transport decision"
+    );
+}
+
+#[test]
+fn accepted_user_pause_retires_committed_barrier_before_every_started_ack() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_time_now_override_seconds(Some(100.0));
+    let mut epochs = BTreeMap::new();
+    for (client_id, username) in [("alice-client", "alice"), ("bob-client", "bob")] {
+        runtime
+            .handle_line(client_id, &readiness_hello(username, "room"))
+            .expect("readiness hello should succeed");
+        let epoch = runtime.room_readiness["room"].participants[username]
+            .record
+            .membership_epoch;
+        epochs.insert(username, epoch);
+        send_intent(
+            &mut runtime,
+            client_id,
+            &format!("{username}-ready"),
+            1,
+            epoch,
+            UserReadinessIntent::Ready,
+        );
+    }
+    start_barrier(&mut runtime, "alice-client");
+    for client_id in ["alice-client", "bob-client"] {
+        send_technical(
+            &mut runtime,
+            client_id,
+            unscoped_technical_report(1, TechnicalPlayabilityPhase::Playable),
+        );
+        send_barrier_ready(&mut runtime, client_id, 1, true);
+    }
+    assert_eq!(
+        runtime.room_playback_barriers["room"].phase,
+        PlaybackBarrierPhase::Committed
+    );
+    let state_revision = runtime.room_playback_barriers["room"]
+        .state_revision
+        .expect("commit should have an authoritative revision");
+    send_started(&mut runtime, "alice-client", 1, state_revision, 12.1);
+    assert_eq!(
+        runtime.room_playback_barriers["room"].participants["alice-client"]
+            .status
+            .phase,
+        PlaybackBarrierParticipantPhase::Started
+    );
+    assert_eq!(
+        runtime.room_playback_barriers["room"].participants["bob-client"]
+            .status
+            .phase,
+        PlaybackBarrierParticipantPhase::Ready
+    );
+
+    acknowledge_forced_state(&mut runtime, "alice-client");
+    send_intent_with_source(
+        &mut runtime,
+        "alice-client",
+        "alice-pause-after-commit",
+        2,
+        epochs["alice"],
+        UserReadinessIntent::NotReady,
+        UserReadinessMutationSource::IndirectPlayer {
+            action: PlayerReadinessAction::Pause,
+            surface: PlayerInteractionSurface::NativePlayerControl,
+        },
+    );
+    send_playstate(&mut runtime, "alice-client", 12.2, true);
+
+    let barrier = &runtime.room_playback_barriers["room"];
+    assert_eq!(barrier.phase, PlaybackBarrierPhase::Degraded);
+    assert_eq!(
+        barrier.commit.as_ref().map(|commit| commit.state_revision),
+        Some(state_revision),
+        "the retired commit remains available as lifecycle history"
+    );
+    assert!(barrier.started_deadline.is_none());
+    assert_eq!(
+        barrier.participants["alice-client"].status.phase,
+        PlaybackBarrierParticipantPhase::Started,
+        "Alice's Started acknowledgement remains historical evidence"
+    );
+    assert_eq!(
+        barrier.participants["bob-client"].status.phase,
+        PlaybackBarrierParticipantPhase::Degraded
+    );
+    assert_eq!(
+        barrier.participants["bob-client"].status.degraded_reason,
+        Some(PlaybackBarrierDegradedReason::UserInterrupted)
+    );
+    assert!(runtime.room_playback_state("room").paused);
+    assert_eq!(
+        runtime.room_readiness["room"].pause_owner,
+        RoomPauseOwner::User {
+            actor: "alice".to_owned(),
+        }
     );
 }
 
@@ -2817,10 +3133,53 @@ fn terminal_prepare_timeout_actions_publish_a_timed_out_readiness_gate() {
         assert_eq!(
             readiness_snapshot_for(&timed_out.outbound_lines, "alice-client")
                 .map(|snapshot| snapshot.start_gate_phase),
-            Some(expected_gate_phase),
+            Some(expected_gate_phase.clone()),
             "{wire_action} must replace the stale waiting snapshot with the terminal gate state"
         );
         assert!(runtime.room_playback_state("room").paused);
+
+        let participant = &runtime.room_readiness["room"].participants["alice"].record;
+        let epoch = participant.membership_epoch;
+        let next_sequence = participant.last_technical_report_sequence.saturating_add(1);
+        let wrongly_revisioned = TechnicalReadinessReport::new(
+            1,
+            epoch,
+            next_sequence,
+            TechnicalPlayabilityPhase::Playable,
+        )
+        .with_authoritative_playback_revision(99);
+        assert!(
+            send_technical_exact(&mut runtime, "alice-client", wrongly_revisioned).is_empty(),
+            "{wire_action} has no commit, so a revision-bound report must be rejected"
+        );
+        assert_eq!(
+            runtime.room_readiness["room"].participants["alice"]
+                .record
+                .last_technical_report_sequence,
+            next_sequence.saturating_sub(1)
+        );
+
+        send_technical(
+            &mut runtime,
+            "alice-client",
+            unscoped_technical_report(1, TechnicalPlayabilityPhase::Playable),
+        );
+        assert_eq!(
+            runtime.room_readiness["room"].start_gate_phase, expected_gate_phase,
+            "{wire_action} must retain TimedOut after a technical refresh"
+        );
+        send_intent(
+            &mut runtime,
+            "alice-client",
+            &format!("{wire_action}-late-ready"),
+            1,
+            epoch,
+            UserReadinessIntent::Ready,
+        );
+        assert_eq!(
+            runtime.room_readiness["room"].start_gate_phase, expected_gate_phase,
+            "{wire_action} must retain TimedOut after a readiness refresh"
+        );
     }
 }
 
@@ -3050,6 +3409,135 @@ fn post_commit_technical_block_requires_authoritative_server_revision() {
             ..
         }
     ));
+}
+
+#[test]
+fn post_commit_degraded_barrier_retains_authoritative_revision_for_technical_reports() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_time_now_override_seconds(Some(100.0));
+    runtime
+        .handle_line("alice-client", &readiness_hello("alice", "room"))
+        .expect("readiness hello should succeed");
+    let epoch = runtime.room_readiness["room"].participants["alice"]
+        .record
+        .membership_epoch;
+    send_intent(
+        &mut runtime,
+        "alice-client",
+        "alice-ready",
+        1,
+        epoch,
+        UserReadinessIntent::Ready,
+    );
+    start_barrier(&mut runtime, "alice-client");
+    send_technical(
+        &mut runtime,
+        "alice-client",
+        unscoped_technical_report(1, TechnicalPlayabilityPhase::Playable),
+    );
+    send_barrier_ready(&mut runtime, "alice-client", 1, true);
+    let (state_revision, started_deadline) = {
+        let barrier = &runtime.room_playback_barriers["room"];
+        (
+            barrier
+                .state_revision
+                .expect("commit should allocate a state revision"),
+            barrier
+                .started_deadline
+                .expect("commit should arm the Started deadline"),
+        )
+    };
+
+    runtime
+        .collect_dispatch_at(started_deadline)
+        .expect("Started timeout should be collected");
+    assert_eq!(
+        runtime.room_playback_barriers["room"].phase,
+        PlaybackBarrierPhase::Degraded
+    );
+    assert!(runtime.room_playback_barriers["room"].commit.is_some());
+
+    let next_sequence = runtime.room_readiness["room"].participants["alice"]
+        .record
+        .last_technical_report_sequence
+        .saturating_add(1);
+    assert!(
+        send_technical_exact(
+            &mut runtime,
+            "alice-client",
+            TechnicalReadinessReport::new(
+                1,
+                epoch,
+                next_sequence,
+                TechnicalPlayabilityPhase::TemporarilyBlocked,
+            )
+            .with_reason(TechnicalBlockCause::Rebuffering),
+        )
+        .is_empty(),
+        "retained post-commit authority must reject an unrevisioned report"
+    );
+
+    assert!(
+        !send_technical(
+            &mut runtime,
+            "alice-client",
+            unscoped_technical_report(1, TechnicalPlayabilityPhase::TemporarilyBlocked)
+                .with_reason(TechnicalBlockCause::Rebuffering),
+        )
+        .is_empty()
+    );
+    assert!(matches!(
+        runtime.room_readiness["room"].participants["alice"]
+            .record
+            .technical_state,
+        TechnicalPlayability::TemporarilyBlocked {
+            cause: TechnicalBlockCause::Rebuffering,
+            ..
+        }
+    ));
+    assert_eq!(
+        runtime.room_readiness["room"].start_gate_phase,
+        RoomStartGatePhase::Inactive,
+        "a refreshed post-commit degraded barrier no longer owns the active start gate"
+    );
+
+    assert!(
+        !send_technical(
+            &mut runtime,
+            "alice-client",
+            unscoped_technical_report(1, TechnicalPlayabilityPhase::TerminallyBlocked)
+                .with_reason(TechnicalBlockCause::PlayerFailure),
+        )
+        .is_empty()
+    );
+    assert!(matches!(
+        runtime.room_readiness["room"].participants["alice"]
+            .record
+            .technical_state,
+        TechnicalPlayability::TerminallyBlocked {
+            cause: TechnicalBlockCause::PlayerFailure,
+            ..
+        }
+    ));
+
+    assert!(
+        !send_technical(
+            &mut runtime,
+            "alice-client",
+            unscoped_technical_report(1, TechnicalPlayabilityPhase::Playable),
+        )
+        .is_empty()
+    );
+    assert!(matches!(
+        runtime.room_readiness["room"].participants["alice"]
+            .record
+            .technical_state,
+        TechnicalPlayability::Playable { .. }
+    ));
+    assert_eq!(
+        runtime.room_playback_barriers["room"].state_revision,
+        Some(state_revision)
+    );
 }
 
 #[test]

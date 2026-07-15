@@ -9,6 +9,43 @@ impl ClientSession {
         self.model.readiness.canonical_snapshot.as_ref()
     }
 
+    /// Returns whether the server's readiness gate is the active pause
+    /// authority for `media_generation`. A retained prepare/status projection
+    /// is not enough by itself: terminal barriers and user-owned pauses must
+    /// permit an authorized controller's ordinary Play decision.
+    pub fn readiness_gate_holds_room_pause_for_generation(&self, media_generation: u64) -> bool {
+        let Some(prepare) = self.playback_barrier_prepare() else {
+            return false;
+        };
+        let Some(status) = self.playback_barrier_status() else {
+            return false;
+        };
+        let Some(snapshot) = self.readiness_snapshot() else {
+            return false;
+        };
+
+        media_generation != 0
+            && prepare.media_generation == media_generation
+            && status.media_generation == media_generation
+            && status.phase == sorotte_protocol::PlaybackBarrierPhase::Preparing
+            && snapshot.media_generation == Some(media_generation)
+            && matches!(
+                snapshot.pause_owner,
+                sorotte_protocol::RoomPauseOwner::ReadinessStartGate {
+                    media_generation: owner_generation
+                } if owner_generation == media_generation
+            )
+            && self.current_room_playstate().and_then(|state| state.paused) == Some(true)
+    }
+
+    /// Compatibility query for session-only callers which do not own the
+    /// local player generation. Runtime paths use the generation-fenced form.
+    pub fn readiness_gate_holds_room_pause(&self) -> bool {
+        self.playback_barrier_status().is_some_and(|status| {
+            self.readiness_gate_holds_room_pause_for_generation(status.media_generation)
+        })
+    }
+
     pub fn pending_readiness_intent(&self) -> Option<&PendingReadinessIntent> {
         self.model.readiness.pending_intent.as_ref()
     }

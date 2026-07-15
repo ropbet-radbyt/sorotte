@@ -750,13 +750,14 @@ impl ServerRuntime {
             control.condition_active_since = None;
             control.condition_clear_since = None;
         }
-        let mut outbound = self.set_readiness_pause_owner(
+        let mut outbound = self.retire_committed_playback_barrier_for_user_pause(room_name);
+        outbound.extend(self.set_readiness_pause_owner(
             room_name,
             RoomPauseOwner::User {
                 actor: actor.to_owned(),
             },
             false,
-        );
+        ));
         self.refresh_readiness_gate_phase(room_name);
         outbound.extend(self.readiness_snapshot_fanout(room_name));
         outbound
@@ -833,14 +834,12 @@ impl ServerRuntime {
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
         let now_seconds = self.current_time_seconds();
         let room_state_before = self.room_playback_state_at(room_name, now_seconds);
-        let mut outbound = if desired_paused {
-            let mut ownership =
-                self.retire_awaiting_playback_barrier_decision(client_id, room_name);
-            ownership.extend(self.claim_user_pause_ownership(room_name, actor));
-            ownership
+        let mut outbound = self.retire_awaiting_playback_barrier_decision(client_id, room_name);
+        if desired_paused {
+            outbound.extend(self.claim_user_pause_ownership(room_name, actor));
         } else {
-            self.set_readiness_pause_owner(room_name, RoomPauseOwner::None, true)
-        };
+            outbound.extend(self.set_readiness_pause_owner(room_name, RoomPauseOwner::None, true));
+        }
         if room_state_before.paused == desired_paused {
             return Ok(outbound);
         }
@@ -1213,10 +1212,10 @@ impl ServerRuntime {
                     desired_paused,
                 )?);
             } else if self.room_playback_state(&session.room).paused == desired_paused {
+                transport_outbound.extend(
+                    self.retire_awaiting_playback_barrier_decision(client_id, &session.room),
+                );
                 if desired_paused {
-                    transport_outbound.extend(
-                        self.retire_awaiting_playback_barrier_decision(client_id, &session.room),
-                    );
                     transport_outbound
                         .extend(self.claim_user_pause_ownership(&session.room, &session.username));
                 }
@@ -1498,14 +1497,7 @@ impl ServerRuntime {
         }
         self.room_playback_barriers
             .get(room_name)
-            .and_then(|barrier| {
-                matches!(
-                    barrier.phase,
-                    PlaybackBarrierPhase::Committed | PlaybackBarrierPhase::Complete
-                )
-                .then_some(barrier.state_revision)
-                .flatten()
-            })
+            .and_then(|barrier| barrier.commit.as_ref().and(barrier.state_revision))
     }
 
     fn maybe_commit_readiness_gate(
@@ -1524,27 +1516,32 @@ impl ServerRuntime {
     }
 
     fn refresh_readiness_gate_phase(&mut self, room_name: &str) {
-        let Some((media_generation, readiness_revision, pause_owner, participants)) =
-            self.room_readiness.get(room_name).and_then(|room| {
-                room.media_generation.map(|media_generation| {
-                    (
-                        media_generation,
-                        room.revision,
-                        room.pause_owner.clone(),
-                        room.participants
-                            .values()
-                            .map(|participant| participant.record.clone())
-                            .collect::<Vec<_>>(),
-                    )
-                })
+        let Some((
+            media_generation,
+            readiness_revision,
+            pause_owner,
+            participants,
+            current_start_gate_phase,
+        )) = self.room_readiness.get(room_name).and_then(|room| {
+            room.media_generation.map(|media_generation| {
+                (
+                    media_generation,
+                    room.revision,
+                    room.pause_owner.clone(),
+                    room.participants
+                        .values()
+                        .map(|participant| participant.record.clone())
+                        .collect::<Vec<_>>(),
+                    room.start_gate_phase.clone(),
+                )
             })
+        })
         else {
             return;
         };
-        let barrier_phase = self
-            .room_playback_barriers
-            .get(room_name)
-            .map(|barrier| barrier.phase);
+        let barrier = self.room_playback_barriers.get(room_name);
+        let barrier_phase = barrier.map(|barrier| barrier.phase);
+        let barrier_has_committed = barrier.is_some_and(|barrier| barrier.commit.is_some());
         let required: Vec<_> = participants
             .iter()
             .filter(|participant| {
@@ -1613,6 +1610,23 @@ impl ServerRuntime {
                     })
                 })
                 .unwrap_or(RoomStartGatePhase::Inactive),
+            Some(PlaybackBarrierPhase::AwaitingDecision | PlaybackBarrierPhase::Degraded)
+                if !barrier_has_committed =>
+            {
+                match current_start_gate_phase {
+                    RoomStartGatePhase::Degraded {
+                        media_generation: degraded_generation,
+                        reason,
+                    } if degraded_generation == media_generation => RoomStartGatePhase::Degraded {
+                        media_generation,
+                        reason,
+                    },
+                    _ => RoomStartGatePhase::Degraded {
+                        media_generation,
+                        reason: StartGateDegradedReason::Cancelled,
+                    },
+                }
+            }
             Some(
                 PlaybackBarrierPhase::AwaitingDecision
                 | PlaybackBarrierPhase::Complete

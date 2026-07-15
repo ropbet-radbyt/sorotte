@@ -1628,6 +1628,10 @@ where
         self.runtime.confirm_pending_native_player_play(surface)
     }
 
+    pub fn readiness_gate_holds_current_playback(&self) -> bool {
+        self.runtime.readiness_gate_holds_current_playback()
+    }
+
     pub fn record_external_player_pause_command_result(
         &mut self,
         paused: bool,

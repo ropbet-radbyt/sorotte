@@ -244,8 +244,6 @@ impl GuiPersistedConfigRuntimeOwner {
         }
         for update in transport_updates {
             let update = transport_update_on_room_timeline(update, user_offset_seconds);
-            let observed_native_unpause =
-                update.logical_pause == Some(false) && update.paused_for_cache != Some(true);
             if let Some(paused_for_cache) = update.paused_for_cache {
                 self.player_paused_for_cache = Some(paused_for_cache);
             }
@@ -262,16 +260,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     update,
                     system_time_seconds(),
                 ) {
-                    Ok(actions) => {
-                        if observed_native_unpause
-                            && let Err(error) = session.handle_local_player_unpause_attempt()
-                        {
-                            eprintln!(
-                                "warning: failed to preserve an attached-player Play intent before gate correction: {error}"
-                            );
-                        }
-                        Some(actions)
-                    }
+                    Ok(actions) => Some(actions),
                     Err(error) => {
                         eprintln!(
                             "warning: failed to feed attached-player transport telemetry to client-core coordinator: {error}"

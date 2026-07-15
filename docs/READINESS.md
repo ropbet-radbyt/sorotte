@@ -17,7 +17,7 @@ Pause ownership prevents automatic systems from resuming an unrelated user pause
 
 ## Mixed-version rooms
 
-V2 participants without the playback-barrier capability and legacy peers are explicitly exposed as excluded legacy clients when a V2-governed start cohort is active. The default `RequireAllMembers` mixed-room policy blocks automatic start and reports `IncompatibleLegacyParticipant`, preserving the all-members contract. `ExcludeLegacy` remains an explicit compatibility opt-in, and `AskController` fails closed until a policy choice is made. Legacy Ready values remain visible, but the UI does not claim generation-scoped technical guarantees for those peers. Rooms using only the legacy protocol retain the previous compatibility behavior.
+V2 participants without the playback-barrier capability and legacy peers are explicitly exposed as excluded legacy clients when a V2-governed start cohort is active. The default `RequireAllMembers` mixed-room policy blocks automatic start and reports `IncompatibleLegacyParticipant`, preserving the all-members contract. `ExcludeLegacy` remains an explicit compatibility opt-in. Legacy Ready values remain visible, but the UI does not claim generation-scoped technical guarantees for those peers. Rooms using only the legacy protocol retain the previous compatibility behavior.
 
 ## Controls and status
 

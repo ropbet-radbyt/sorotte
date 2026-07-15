@@ -1581,6 +1581,19 @@ impl RuntimePlaybackCoordination {
         self.last_local_pause_intent_stage_accepted = Some(true);
     }
 
+    fn has_active_local_pause_intent(&self, paused: bool, session: &ClientSession) -> bool {
+        self.pending_local_pause_intent
+            .as_ref()
+            .is_some_and(|intent| {
+                intent.paused == paused
+                    && intent.connection_generation == self.connection_generation
+                    && intent.authorization == LocalIntentAuthorization::Authorized
+                    && session.room() == Some(intent.room.as_str())
+                    && self.coordinator.current_media_generation()
+                        == Some(intent.local_media_generation)
+            })
+    }
+
     pub(crate) fn rollback_local_pause_intent(&mut self, paused: bool) {
         if self
             .pending_local_pause_intent
@@ -1660,6 +1673,13 @@ impl RuntimePlaybackCoordination {
         external_now_seconds: f64,
     ) -> Vec<PlaybackCoordinatorAction> {
         self.update_desired_from_session_with_replay(session, external_now_seconds, true)
+    }
+
+    fn readiness_gate_holds_current_playback(&self, session: &ClientSession) -> bool {
+        session.playback_barrier_prepare().is_some_and(|prepare| {
+            self.current_logical_media_matches(&prepare.logical_media_id)
+                && session.readiness_gate_holds_room_pause_for_generation(prepare.media_generation)
+        })
     }
 
     fn update_desired_from_session_with_replay(
@@ -1744,10 +1764,15 @@ impl RuntimePlaybackCoordination {
             RoomPlaystateAuthority::ServerBarrier {
                 media_generation, ..
             } => {
-                session.playback_barrier_status().is_some_and(|status| {
-                    status.media_generation == media_generation
-                        && status.phase == PlaybackBarrierPhase::AwaitingDecision
-                }) && session.local_can_control().unwrap_or(false)
+                let controller_can_decide_awaiting_v1 =
+                    session.playback_barrier_status().is_some_and(|status| {
+                        status.media_generation == media_generation
+                            && status.phase == PlaybackBarrierPhase::AwaitingDecision
+                    });
+                session.local_can_control().unwrap_or(false)
+                    && (controller_can_decide_awaiting_v1
+                        || (session.server_readiness_v2_supported()
+                            && !self.readiness_gate_holds_current_playback(session)))
             }
             RoomPlaystateAuthority::ServerBufferingPolicy { .. } => false,
         };
@@ -1814,9 +1839,10 @@ impl RuntimePlaybackCoordination {
                 local_intent_requires_player_replay = replay_player;
             }
         } else {
-            // Preparing/Committed start synchronization and room buffering
-            // remain server-owned. AwaitingDecision is deliberately excluded:
-            // a controller's ordinary play/pause command resolves it.
+            // The exact Preparing gate and room buffering remain server-owned.
+            // Every other readiness V2 barrier phase permits an authorized
+            // controller's ordinary play/pause command while its server echo
+            // is in flight.
             self.pending_local_pause_intent = None;
         }
         let local_echo =
@@ -2741,12 +2767,13 @@ where
         now_seconds: f64,
         adapter_epoch: u64,
     ) -> Vec<PlaybackCoordinatorAction> {
-        let actions = self.playback_coordination.observe_transport_at_epoch(
+        let mut actions = self.playback_coordination.observe_transport_at_epoch(
             update,
             now_seconds,
             adapter_epoch,
         );
         let _ = self.handle_latest_player_readiness_observation();
+        let _ = self.promote_pending_native_play_before_pause_correction(&mut actions);
         let _ = self.report_playback_barrier_observations(&actions);
         self.apply_external_coordinator_control_actions(&actions);
         actions
@@ -2824,6 +2851,14 @@ where
 
     pub fn playback_coordination_snapshot(&self) -> PlaybackCoordinationSnapshot {
         self.playback_coordination.snapshot()
+    }
+
+    /// Whether the exact currently tracked media is held paused by a
+    /// Preparing readiness gate. Front ends consume this shared policy
+    /// instead of maintaining their own V2 play rules.
+    pub fn readiness_gate_holds_current_playback(&self) -> bool {
+        self.playback_coordination
+            .readiness_gate_holds_current_playback(&self.session)
     }
 
     pub fn keep_waiting_for_external_seek_preparation(
@@ -3018,10 +3053,11 @@ where
         update: PlayerTransportTelemetryUpdate,
         now_seconds: f64,
     ) -> Vec<PlaybackCoordinatorAction> {
-        let actions = self
+        let mut actions = self
             .playback_coordination
             .observe_transport(update, now_seconds);
         let _ = self.handle_latest_player_readiness_observation();
+        let _ = self.promote_pending_native_play_before_pause_correction(&mut actions);
         let _ = self.report_playback_barrier_observations(&actions);
         self.apply_external_coordinator_control_actions(&actions);
         actions
@@ -3031,9 +3067,10 @@ where
         &mut self,
         now_seconds: f64,
     ) -> Vec<PlaybackCoordinatorAction> {
-        let actions = self
+        let mut actions = self
             .playback_coordination
             .update_desired_from_session(&self.session, now_seconds);
+        let _ = self.promote_pending_native_play_before_pause_correction(&mut actions);
         let _ = self.report_playback_barrier_observations(&actions);
         self.apply_external_coordinator_control_actions(&actions);
         actions
@@ -3127,10 +3164,16 @@ where
             }
         }
         while let Some(update) = self.player.take_transport_telemetry_update() {
-            let actions = self
+            let mut actions = self
                 .playback_coordination
                 .observe_transport(update, now_seconds);
             if let Err(error) = self.handle_latest_player_readiness_observation()
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
+            if let Err(error) =
+                self.promote_pending_native_play_before_pause_correction(&mut actions)
                 && first_error.is_none()
             {
                 first_error = Some(error);
@@ -3146,9 +3189,14 @@ where
                 first_error = Some(error);
             }
         }
-        let actions = self
+        let mut actions = self
             .playback_coordination
             .update_desired_from_session(&self.session, now_seconds);
+        if let Err(error) = self.promote_pending_native_play_before_pause_correction(&mut actions)
+            && first_error.is_none()
+        {
+            first_error = Some(error);
+        }
         if let Err(error) = self.report_playback_barrier_observations(&actions)
             && first_error.is_none()
         {
@@ -3211,17 +3259,93 @@ where
         Ok(true)
     }
 
+    /// Preserves a single causally unowned native Playing edge when its stable
+    /// confirmation would otherwise be erased by a pause correction. During
+    /// Preparing the semantic Play becomes Ready while the gate correction is
+    /// retained. In every manually controllable V2 phase, the controller's
+    /// transport overlay supersedes the not-yet-dispatched stale correction.
+    fn promote_pending_native_play_before_pause_correction(
+        &mut self,
+        actions: &mut Vec<PlaybackCoordinatorAction>,
+    ) -> Result<bool, PlayerError> {
+        let pause_correction_cause = self
+            .playback_coordination
+            .cause_for_coordinator_command(CoordinatorPlayerCommand::SetPaused(true));
+        let has_eligible_pause_correction = actions.iter().any(|action| {
+            matches!(
+                action,
+                PlaybackCoordinatorAction::Execute {
+                    command: CoordinatorPlayerCommand::SetPaused(true),
+                    ..
+                }
+            ) && matches!(
+                pause_correction_cause,
+                PlayerCommandCause::ReadinessGateHold
+                    | PlayerCommandCause::RemoteRoomSynchronization
+            )
+        });
+        if !has_eligible_pause_correction {
+            return Ok(false);
+        }
+
+        let gate_holds = self.readiness_gate_holds_current_playback();
+        let controller_can_own_transport = self.session.server_readiness_v2_supported()
+            && self.session.local_can_control().unwrap_or(false)
+            && !gate_holds;
+        if !gate_holds && !controller_can_own_transport {
+            return Ok(false);
+        }
+
+        let promoted =
+            self.confirm_pending_native_player_play(PlayerInteractionSurface::NativePlayerControl)?;
+        if !controller_can_own_transport
+            || !self
+                .playback_coordination
+                .has_active_local_pause_intent(false, &self.session)
+        {
+            return Ok(promoted);
+        }
+
+        let mut superseded_command_ids = Vec::new();
+        actions.retain(|action| {
+            let PlaybackCoordinatorAction::Execute {
+                command_id,
+                command: CoordinatorPlayerCommand::SetPaused(true),
+            } = action
+            else {
+                return true;
+            };
+            superseded_command_ids.push(*command_id);
+            false
+        });
+        for command_id in superseded_command_ids {
+            let superseded = self
+                .playback_coordination
+                .coordinator
+                .supersede_unaccepted_command(command_id);
+            debug_assert!(
+                superseded,
+                "a correction removed before dispatch must still be unaccepted"
+            );
+        }
+        Ok(promoted)
+    }
+
     fn dispatch_native_player_readiness_action(
         &mut self,
         action: NativePlayerAction,
         surface: PlayerInteractionSurface,
     ) -> Result<(), PlayerError> {
         let paused = action == NativePlayerAction::Pause;
-        if !self.session.server_readiness_v2_supported() {
+        let readiness_v2_supported = self.session.server_readiness_v2_supported();
+        let controller_can_own_v2_transport = readiness_v2_supported
+            && self.session.local_can_control().unwrap_or(false)
+            && !self.readiness_gate_holds_current_playback();
+        if !readiness_v2_supported || controller_can_own_v2_transport {
             // Legacy rooms still need a short transport overlay while the
-            // canonical self-echo is in flight. Crucially, it is created only
-            // after the classifier has proven a native gesture; readiness V2
-            // never lets that overlay authorize local Play.
+            // canonical self-echo is in flight. Readiness V2 uses the same
+            // overlay only after the classifier proves an authorized native
+            // gesture outside the exact Preparing gate.
             self.playback_coordination
                 .stage_local_pause_intent(paused, &self.session);
         }
@@ -6424,18 +6548,34 @@ mod tests {
         apply_barrier_extension(
             &mut awaiting_session,
             PlaybackBarrierSetExtension::new()
-                .with_prepare(PrepareMediaPayload::new(
-                    21,
-                    logical_id,
-                    4.0,
-                    PlaybackBarrierPolicy::Controller,
-                ))
+                .with_prepare(
+                    PrepareMediaPayload::new(
+                        21,
+                        logical_id,
+                        4.0,
+                        PlaybackBarrierPolicy::Controller,
+                    )
+                    .with_request_nonce(21),
+                )
                 .with_status(barrier_status(
                     21,
                     None,
                     PlaybackBarrierPhase::AwaitingDecision,
                 )),
         );
+        assert_eq!(
+            awaiting_session
+                .playback_barrier_status()
+                .map(|status| status.phase),
+            Some(PlaybackBarrierPhase::AwaitingDecision)
+        );
+        assert!(matches!(
+            awaiting_session.current_room_playstate_authority(),
+            Some(RoomPlaystateAuthority::ServerBarrier {
+                media_generation: 21,
+                ..
+            })
+        ));
         let mut awaiting = RuntimePlaybackCoordination::default();
         awaiting.prepare_media(
             LogicalMediaId::new(logical_id).unwrap(),
@@ -7994,6 +8134,26 @@ mod tests {
     #[test]
     fn v2_local_play_correction_is_gate_owned_while_ready_remains_pending() {
         let mut session = readiness_v2_session_with_intent(1, 41, 0, UserReadinessIntent::NotReady);
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":1.0,"paused":true,"doSeek":false}}}"#,
+                0.0,
+            )
+            .expect("canonical gate pause should apply");
+        apply_barrier_extension(
+            &mut session,
+            PlaybackBarrierSetExtension::new()
+                .with_prepare(
+                    PrepareMediaPayload::new(
+                        1,
+                        "v2-escaped-local-play",
+                        1.0,
+                        PlaybackBarrierPolicy::AllEligible,
+                    )
+                    .with_request_nonce(1),
+                )
+                .with_status(barrier_status(1, None, PlaybackBarrierPhase::Preparing)),
+        );
         session.model.playback.local_paused = Some(false);
         let mut runtime = ClientRuntime::new(
             session,
@@ -8158,6 +8318,310 @@ mod tests {
             })
             .count();
         assert_eq!(intent_count, 1);
+    }
+
+    #[test]
+    fn managed_player_single_native_play_edge_emits_one_ready_before_gate_hold_pause() {
+        let logical_id = "managed-single-native-play";
+        let mut session = readiness_v2_session_with_intent(1, 41, 0, UserReadinessIntent::NotReady);
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":1.0,"paused":true,"doSeek":false}}}"#,
+                0.0,
+            )
+            .expect("canonical gate pause should apply");
+        apply_barrier_extension(
+            &mut session,
+            PlaybackBarrierSetExtension::new()
+                .with_prepare(
+                    PrepareMediaPayload::new(
+                        1,
+                        logical_id,
+                        1.0,
+                        PlaybackBarrierPolicy::AllEligible,
+                    )
+                    .with_request_nonce(1),
+                )
+                .with_status(barrier_status(1, None, PlaybackBarrierPhase::Preparing)),
+        );
+        session.model.playback.local_paused = Some(true);
+        let mut runtime = ClientRuntime::new(
+            session,
+            CoordinatedTestPlayer {
+                advertises_telemetry: true,
+                ..CoordinatedTestPlayer::default()
+            },
+            QueuedRuntimeControl::default(),
+        );
+        runtime.prepare_playback_media(
+            LogicalMediaId::new(logical_id).expect("logical ID should be valid"),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        runtime.flush_queued_protocol_messages();
+
+        runtime
+            .player_mut_for_test()
+            .transport_updates
+            .push_back(paused_transport(
+                1,
+                0.0,
+                PlayerTransportPhase::ReadyPaused,
+                1.0,
+            ));
+        runtime
+            .drain_player_transport_coordination(0.0)
+            .expect("paused baseline should reconcile");
+        runtime.flush_queued_protocol_messages();
+        runtime.player_mut_for_test().commands.clear();
+
+        runtime
+            .player_mut_for_test()
+            .transport_updates
+            .push_back(transport(1, 0.1, PlayerTransportPhase::Playing, 1.0));
+        runtime
+            .drain_player_transport_coordination(0.1)
+            .expect("one native Playing edge should be preserved before correction");
+
+        let intents = runtime
+            .control()
+            .outbound_messages()
+            .iter()
+            .filter_map(|message| {
+                let ProtocolMessage::Set(set) = message else {
+                    return None;
+                };
+                set.set
+                    .readiness_v2()
+                    .expect("readiness extension should decode")
+                    .and_then(|extension| extension.intent)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(intents.len(), 1);
+        assert_eq!(intents[0].desired, UserReadinessIntent::Ready);
+        assert_eq!(
+            intents[0].source,
+            UserReadinessMutationSource::IndirectPlayer {
+                action: sorotte_protocol::PlayerReadinessAction::Play,
+                surface: PlayerInteractionSurface::NativePlayerControl,
+            }
+        );
+        assert!(
+            runtime.control().outbound_messages().iter().all(|message| {
+                let ProtocolMessage::State(state) = message else {
+                    return true;
+                };
+                state
+                    .state
+                    .playstate
+                    .as_ref()
+                    .and_then(|playstate| playstate.paused)
+                    != Some(false)
+            }),
+            "the held native edge must not publish physical Play before CommitStart"
+        );
+        assert!(
+            runtime
+                .player()
+                .commands
+                .iter()
+                .any(|command| matches!(command, PlayerCommand::SetPaused(true)))
+        );
+        assert!(matches!(
+            runtime
+                .playback_coordination
+                .last_player_transition_classification,
+            Some(PlayerTransitionClassification::NativePlayerGesture {
+                action: NativePlayerAction::Play
+            })
+        ));
+
+        runtime
+            .drain_player_transport_coordination(0.2)
+            .expect("an empty follow-up pump should be harmless");
+        let intent_count = runtime
+            .control()
+            .outbound_messages()
+            .iter()
+            .filter(|message| {
+                let ProtocolMessage::Set(set) = message else {
+                    return false;
+                };
+                set.set
+                    .readiness_v2()
+                    .expect("readiness extension should decode")
+                    .is_some_and(|extension| extension.intent.is_some())
+            })
+            .count();
+        assert_eq!(intent_count, 1, "the same edge must not emit twice");
+    }
+
+    fn assert_managed_native_play_survives_manual_v2_phase(
+        logical_id: &str,
+        barrier_phase: Option<PlaybackBarrierPhase>,
+    ) {
+        let mut session = readiness_v2_session_with_intent(1, 41, 0, UserReadinessIntent::NotReady);
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":1.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+                0.0,
+            )
+            .expect("canonical user pause should apply");
+        if let Some(barrier_phase) = barrier_phase {
+            apply_barrier_extension(
+                &mut session,
+                PlaybackBarrierSetExtension::new()
+                    .with_prepare(
+                        PrepareMediaPayload::new(
+                            1,
+                            logical_id,
+                            1.0,
+                            PlaybackBarrierPolicy::AllEligible,
+                        )
+                        .with_request_nonce(1),
+                    )
+                    .with_status(barrier_status(1, None, barrier_phase)),
+            );
+            assert_eq!(
+                session.playback_barrier_status().map(|status| status.phase),
+                Some(barrier_phase),
+            );
+        }
+        assert_eq!(session.local_can_control(), Some(true));
+        session.model.playback.local_paused = Some(true);
+        let mut runtime = ClientRuntime::new(
+            session,
+            CoordinatedTestPlayer {
+                advertises_telemetry: true,
+                ..CoordinatedTestPlayer::default()
+            },
+            QueuedRuntimeControl::default(),
+        );
+        runtime.prepare_playback_media(
+            LogicalMediaId::new(logical_id).expect("logical ID should be valid"),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        runtime.flush_queued_protocol_messages();
+        runtime
+            .player_mut_for_test()
+            .transport_updates
+            .push_back(paused_transport(
+                1,
+                0.0,
+                PlayerTransportPhase::ReadyPaused,
+                1.0,
+            ));
+        runtime
+            .drain_player_transport_coordination(0.0)
+            .expect("paused baseline should reconcile");
+        runtime.flush_queued_protocol_messages();
+        runtime.player_mut_for_test().commands.clear();
+
+        runtime
+            .player_mut_for_test()
+            .transport_updates
+            .push_back(transport(1, 0.1, PlayerTransportPhase::Playing, 1.0));
+        runtime
+            .drain_player_transport_coordination(0.1)
+            .expect("the native Play should become controller-owned");
+
+        assert!(
+            runtime
+                .player()
+                .commands
+                .iter()
+                .all(|command| !matches!(command, PlayerCommand::SetPaused(true))),
+            "manual V2 phases must not erase the sole native Playing edge"
+        );
+        let intent_count = runtime
+            .control()
+            .outbound_messages()
+            .iter()
+            .filter(|message| {
+                let ProtocolMessage::Set(set) = message else {
+                    return false;
+                };
+                set.set
+                    .readiness_v2()
+                    .expect("readiness extension should decode")
+                    .is_some_and(|extension| extension.intent.is_some())
+            })
+            .count();
+        assert_eq!(
+            intent_count, 1,
+            "one native Playing edge must be promoted before canonical correction"
+        );
+
+        let intents = runtime
+            .control()
+            .outbound_messages()
+            .iter()
+            .filter_map(|message| {
+                let ProtocolMessage::Set(set) = message else {
+                    return None;
+                };
+                set.set
+                    .readiness_v2()
+                    .expect("readiness extension should decode")
+                    .and_then(|extension| extension.intent)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(intents.len(), 1);
+        assert_eq!(intents[0].desired, UserReadinessIntent::Ready);
+        assert_eq!(
+            intents[0].source,
+            UserReadinessMutationSource::IndirectPlayer {
+                action: sorotte_protocol::PlayerReadinessAction::Play,
+                surface: PlayerInteractionSurface::NativePlayerControl,
+            }
+        );
+        assert!(
+            runtime
+                .player()
+                .commands
+                .iter()
+                .all(|command| !matches!(command, PlayerCommand::SetPaused(true)))
+        );
+        assert_eq!(
+            runtime
+                .playback_coordination_snapshot()
+                .pending_local_pause_intent,
+            Some(false),
+            "the native controller must own transport until its canonical echo"
+        );
+
+        runtime
+            .drain_player_transport_coordination(0.3)
+            .expect("a follow-up pump should preserve the local transport overlay");
+        assert!(
+            runtime
+                .player()
+                .commands
+                .iter()
+                .all(|command| !matches!(command, PlayerCommand::SetPaused(true)))
+        );
+    }
+
+    #[test]
+    fn managed_native_play_survives_ordinary_post_start_pause() {
+        assert_managed_native_play_survives_manual_v2_phase("managed-post-start-play", None);
+    }
+
+    #[test]
+    fn managed_native_play_resolves_awaiting_decision_without_repause() {
+        assert_managed_native_play_survives_manual_v2_phase(
+            "managed-awaiting-decision-play",
+            Some(PlaybackBarrierPhase::AwaitingDecision),
+        );
+    }
+
+    #[test]
+    fn managed_native_play_recovers_terminal_timeout_without_repause() {
+        assert_managed_native_play_survives_manual_v2_phase(
+            "managed-terminal-timeout-play",
+            Some(PlaybackBarrierPhase::Degraded),
+        );
     }
 
     #[test]

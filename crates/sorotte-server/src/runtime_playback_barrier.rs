@@ -2231,6 +2231,33 @@ impl ServerRuntime {
         self.playback_barrier_status_fanout(room_name)
     }
 
+    /// Stops a retained commit from continuing to own playback after an
+    /// accepted user pause. The commit and Started acknowledgements remain as
+    /// history, while participants that had not started record why the
+    /// lifecycle ended before completion.
+    pub(crate) fn retire_committed_playback_barrier_for_user_pause(
+        &mut self,
+        room_name: &str,
+    ) -> Vec<DirectedProtocolMessage> {
+        let Some(barrier) = self.room_playback_barriers.get_mut(room_name) else {
+            return Vec::new();
+        };
+        if barrier.phase != PlaybackBarrierPhase::Committed {
+            return Vec::new();
+        }
+        barrier.phase = PlaybackBarrierPhase::Degraded;
+        barrier.started_deadline = None;
+        for participant in barrier.participants.values_mut() {
+            if participant.status.phase == PlaybackBarrierParticipantPhase::Started {
+                continue;
+            }
+            participant.status.phase = PlaybackBarrierParticipantPhase::Degraded;
+            participant.status.degraded_reason =
+                Some(PlaybackBarrierDegradedReason::UserInterrupted);
+        }
+        self.playback_barrier_status_fanout(room_name)
+    }
+
     pub(crate) fn collect_due_playback_barrier_updates_at(
         &mut self,
         now_seconds: f64,

@@ -21,12 +21,16 @@ where
     ) -> Result<(), PlayerError> {
         self.sync_player_playback_telemetry_into_session_and_buffer();
         let session_snapshot = self.session.snapshot_local_action_state();
-        let actions = self.session.runtime_actions_for_readiness_unpause_attempt(
-            now_seconds,
-            readiness_supported,
-            local_can_control,
-            is_playing_music,
-        );
+        let current_gate_holds_play = self.readiness_gate_holds_current_playback();
+        let actions = self
+            .session
+            .runtime_actions_for_readiness_unpause_attempt_with_gate_hold(
+                now_seconds,
+                readiness_supported,
+                local_can_control,
+                is_playing_music,
+                Some(current_gate_holds_play),
+            );
         self.dispatch_runtime_actions_with_session_rollback_and_pause_cause(
             session_snapshot,
             &actions,

@@ -1394,6 +1394,28 @@ impl PlaybackCoordinator {
         true
     }
 
+    /// Retires a command that was produced by reconciliation but superseded
+    /// before the owning runtime dispatched it. Accepted commands must remain
+    /// tracked until their transport completion arrives.
+    pub(crate) fn supersede_unaccepted_command(
+        &mut self,
+        command_id: CoordinatorCommandId,
+    ) -> bool {
+        let Some(command) = self
+            .pending_commands
+            .iter()
+            .find(|command| command.id == command_id)
+        else {
+            return false;
+        };
+        if command.accepted {
+            return false;
+        }
+        self.pending_commands
+            .retain(|command| command.id != command_id);
+        true
+    }
+
     pub(crate) fn pending_command_pause_target(
         &self,
         command_id: CoordinatorCommandId,

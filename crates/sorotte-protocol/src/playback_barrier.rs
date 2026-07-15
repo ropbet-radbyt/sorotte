@@ -617,6 +617,7 @@ pub enum PlaybackBarrierDegradedReason {
     PrepareTimeout,
     NotReadyAtCommit,
     StartedTimeout,
+    UserInterrupted,
     Disconnected,
     Superseded,
 }
