@@ -540,17 +540,9 @@ fn gui_persisted_config_runtime_owner_refreshes_public_servers_without_session()
 
 #[test]
 fn gui_persisted_config_runtime_owner_searches_missing_media_without_session() {
-    let unique_suffix = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system time should be after unix epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!(
-        "sorotte-gui-detached-missing-media-search-{}-{unique_suffix}",
-        std::process::id()
-    ));
+    let root = test_temp_root("detached-missing-media-search");
     let nested = root.join("nested");
     let found_path = nested.join("missing-target.mkv");
-    let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&nested)
         .expect("detached missing-media search test should create a directory tree");
     std::fs::write(&found_path, b"detached-missing-media-target")
