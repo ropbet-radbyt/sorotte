@@ -177,6 +177,7 @@ pub(crate) struct ClientHello {
     pub(crate) room: String,
     pub(crate) capabilities: ServerCapabilities,
     pub(crate) max_chat_message_length: usize,
+    pub(crate) readiness_reconnect_token: Option<SecretValue>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -529,6 +530,12 @@ pub(crate) fn normalize_client_protocol_message(
     let command = match message {
         ProtocolMessage::Hello(message) => {
             let hello = message.hello;
+            let readiness_reconnect_token = hello
+                .extra
+                .get(SOROTTE_READINESS_RECONNECT_TOKEN)
+                .and_then(Value::as_str)
+                .filter(|token| !token.is_empty())
+                .map(SecretValue::from);
             let server_version = hello.effective_version().to_owned();
             if !hello.features.as_ref().is_some_and(Value::is_object) {
                 fallbacks.push(ClientCompatibilityFallback::UsedLegacyFeatureDefaults {
@@ -602,6 +609,7 @@ pub(crate) fn normalize_client_protocol_message(
                     "maxChatMessageLength",
                 )
                 .unwrap_or(LEGACY_FALLBACK_MAX_CHAT_MESSAGE_LENGTH),
+                readiness_reconnect_token,
             })
         }
         ProtocolMessage::Set(message) => {

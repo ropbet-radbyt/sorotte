@@ -210,6 +210,7 @@ impl ClientSession {
 
         let username = hello.username;
         let room_name = hello.room;
+        let readiness_reconnect_token = hello.readiness_reconnect_token;
         if self
             .model
             .readiness
@@ -238,6 +239,7 @@ impl ClientSession {
 
         self.model.connection.username = Some(username.clone());
         self.update_local_room(room_name.clone());
+        self.model.readiness.reconnect_token = readiness_reconnect_token;
 
         self.model.controller.reidentify_intent = self
             .model

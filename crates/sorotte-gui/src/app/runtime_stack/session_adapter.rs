@@ -219,6 +219,24 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
     ) {
     }
 
+    fn begin_attached_coordinator_command_dispatch(
+        &mut self,
+        _command_id: CoordinatorCommandId,
+        _now_seconds: f64,
+    ) -> Option<PlayerCommandId> {
+        None
+    }
+
+    fn finish_attached_coordinator_command_dispatch(
+        &mut self,
+        command_id: CoordinatorCommandId,
+        _player_command_id: Option<PlayerCommandId>,
+        accepted: bool,
+        now_seconds: f64,
+    ) {
+        self.report_attached_coordinator_command_dispatch(command_id, accepted, now_seconds);
+    }
+
     fn playback_coordination_snapshot(&self) -> Option<PlaybackCoordinationSnapshot> {
         None
     }
@@ -401,6 +419,24 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
     }
 
     fn record_intentional_player_pause_action(&mut self, _paused: bool) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn begin_external_player_pause_command(
+        &mut self,
+        _paused: bool,
+        _cause: PlayerCommandCause,
+        _now_seconds: f64,
+    ) -> Result<Option<PlayerCommandId>, String> {
+        Ok(None)
+    }
+
+    fn finish_external_player_pause_command(
+        &mut self,
+        _command_id: Option<PlayerCommandId>,
+        _succeeded: bool,
+        _now_seconds: f64,
+    ) -> Result<(), String> {
         Ok(())
     }
 

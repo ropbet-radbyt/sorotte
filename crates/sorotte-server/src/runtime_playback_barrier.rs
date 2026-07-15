@@ -531,15 +531,7 @@ impl ServerRuntime {
         }
         let mut outbound = Vec::new();
         if let Some(ready) = extension.ready {
-            let bridge_technical_readiness = self
-                .sessions
-                .get(client_id)
-                .is_some_and(|session| !session.capabilities.readiness_v2);
-            outbound.extend(self.record_playback_barrier_ready(
-                client_id,
-                ready,
-                bridge_technical_readiness,
-            )?);
+            outbound.extend(self.record_playback_barrier_ready(client_id, ready)?);
         }
         if let Some(started) = extension.started {
             outbound.extend(self.record_playback_barrier_started(client_id, started));
@@ -1941,7 +1933,6 @@ impl ServerRuntime {
         &mut self,
         client_id: &str,
         ready: MediaReadyPayload,
-        bridge_technical_readiness: bool,
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
         let Some(session) = self.sessions.get(client_id).cloned() else {
             return Err(ServerRuntimeError::MissingSession(client_id.to_owned()));
@@ -1949,16 +1940,10 @@ impl ServerRuntime {
         if !session.capabilities.playback_barrier_v1 {
             return Ok(Vec::new());
         }
-        // Readiness V2 technical reports are the canonical, richer source for
-        // V2 participants. In particular, mapping a temporarily or terminally
-        // blocked report back through legacy MediaReady would erase its cause
-        // and recovery state. The bridge is reserved for callers that have no
-        // canonical V2 report for this observation.
-        let mut outbound = if bridge_technical_readiness {
-            self.apply_media_ready_to_v2(client_id, &ready)?
-        } else {
-            Vec::new()
-        };
+        // Barrier target/revision evidence and generic technical playability
+        // are deliberately independent. Neither is allowed to manufacture the
+        // other; readiness-governed commits require both canonical records.
+        let mut outbound = Vec::new();
         let Some(barrier) = self.room_playback_barriers.get_mut(&session.room) else {
             return Ok(outbound);
         };

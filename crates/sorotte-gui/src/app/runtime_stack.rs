@@ -35,10 +35,11 @@ use sorotte_client_core::{
 };
 use sorotte_media_match::{MediaMatchTier, MediaMatchWireSignature};
 use sorotte_player_api::{
-    PlayerError, PlayerPlaybackTelemetryUpdate, PlayerTransportTelemetryUpdate,
+    PlayerCommandId, PlayerError, PlayerPlaybackTelemetryUpdate, PlayerTransportTelemetryUpdate,
 };
 use sorotte_protocol::{
-    HelloPayload, ListPayload, ProtocolMessage, decode_message_line_items, encode_message_line,
+    HelloPayload, ListPayload, ProtocolMessage, SOROTTE_READINESS_RECONNECT_TOKEN,
+    decode_message_line_items, encode_message_line,
 };
 
 use self::player::GuiNoopClientRuntimePlayer;

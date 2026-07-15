@@ -144,6 +144,7 @@ pub(crate) struct ServerHelloCommand {
     pub(crate) version: String,
     pub(crate) capabilities: ServerClientCapabilities,
     pub(crate) password_token: Option<SecretValue>,
+    pub(crate) readiness_reconnect_token: Option<SecretValue>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -416,12 +417,19 @@ pub(crate) fn normalize_server_protocol_message(
                 .get("password")
                 .and_then(Value::as_str)
                 .map(SecretValue::from);
+            let readiness_reconnect_token = hello
+                .extra
+                .get(SOROTTE_READINESS_RECONNECT_TOKEN)
+                .and_then(Value::as_str)
+                .filter(|token| !token.is_empty())
+                .map(SecretValue::from);
             ServerInboundCommand::Hello(ServerHelloCommand {
                 username: hello.username,
                 room: hello.room.name,
                 version,
                 capabilities,
                 password_token,
+                readiness_reconnect_token,
             })
         }
         ProtocolMessage::Set(message) => {

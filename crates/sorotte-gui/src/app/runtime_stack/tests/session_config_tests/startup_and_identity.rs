@@ -474,6 +474,116 @@ fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_uses_server_assi
 }
 
 #[test]
+fn gui_reconnect_hello_presents_server_token_only_for_the_same_room() {
+    const TOKEN: &str = "same-room-reconnect-token";
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+    let _ = adapter
+        .flush_outbound_protocol_lines()
+        .expect("startup protocol lines should encode");
+    adapter
+        .apply_message_json(&format!(
+            r#"{{"Hello":{{"username":"alice","room":{{"name":"room1"}},"version":"1.7.5","features":{{"chat":true,"sorotteReadinessV2":true}},"sorotteReadinessReconnectToken":"{TOKEN}"}}}}"#,
+        ))
+        .expect("server hello with a reconnect token should apply");
+
+    adapter.prepare_transport_reconnect();
+    let reconnect_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("reconnect protocol lines should encode");
+    let hello = reconnect_lines
+        .iter()
+        .find_map(
+            |line| match decode_message_line(line).expect("reconnect hello should decode") {
+                ProtocolMessage::Hello(hello) => Some(hello.hello),
+                _ => None,
+            },
+        )
+        .expect("same-room reconnect should include a Hello");
+    assert_eq!(
+        hello
+            .extra
+            .get(SOROTTE_READINESS_RECONNECT_TOKEN)
+            .and_then(Value::as_str),
+        Some(TOKEN)
+    );
+
+    let mut switched = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("room-switch adapter should bootstrap");
+    let _ = switched
+        .flush_outbound_protocol_lines()
+        .expect("room-switch startup hello should encode");
+    switched
+        .apply_message_json(&format!(
+            r#"{{"Hello":{{"username":"alice","room":{{"name":"room1"}},"version":"1.7.5","features":{{"chat":true,"sorotteReadinessV2":true}},"sorotteReadinessReconnectToken":"{TOKEN}"}}}}"#,
+        ))
+        .expect("room-switch server hello should apply");
+    GuiSessionRuntimeAdapter::set_room(&mut switched, "room2".to_owned())
+        .expect("room change should queue");
+    let _ = switched
+        .flush_outbound_protocol_lines()
+        .expect("room change should encode");
+    switched.prepare_transport_reconnect();
+    let switched_lines = switched
+        .flush_outbound_protocol_lines()
+        .expect("room-switch reconnect protocol lines should encode");
+    let switched_hello = switched_lines
+        .iter()
+        .find_map(|line| {
+            match decode_message_line(line).expect("room-switch hello should decode") {
+                ProtocolMessage::Hello(hello) => Some(hello.hello),
+                _ => None,
+            }
+        })
+        .expect("room-switch reconnect should include a Hello");
+    assert_eq!(switched_hello.room.name, "room2");
+    assert!(
+        !switched_hello
+            .extra
+            .contains_key(SOROTTE_READINESS_RECONNECT_TOKEN),
+        "a reconnect identity must never cross room scope"
+    );
+}
+
+#[test]
+fn gui_reconnect_reset_carries_same_room_token_into_replacement_runtime_hello() {
+    const TOKEN: &str = "reset-path-reconnect-token";
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+    let _ = adapter
+        .flush_outbound_protocol_lines()
+        .expect("startup protocol lines should encode");
+    adapter
+        .apply_message_json(&format!(
+            r#"{{"Hello":{{"username":"alice","room":{{"name":"room1"}},"version":"1.7.5","features":{{"chat":true,"sorotteReadinessV2":true}},"sorotteReadinessReconnectToken":"{TOKEN}"}}}}"#,
+        ))
+        .expect("server hello with a reconnect token should apply");
+
+    adapter
+        .reset_session_for_reconnect()
+        .expect("replacement runtime should prepare");
+    let reconnect_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("replacement runtime hello should encode");
+    let hello = reconnect_lines
+        .iter()
+        .find_map(|line| {
+            match decode_message_line(line).expect("replacement hello should decode") {
+                ProtocolMessage::Hello(hello) => Some(hello.hello),
+                _ => None,
+            }
+        })
+        .expect("replacement runtime should emit a Hello");
+    assert_eq!(
+        hello
+            .extra
+            .get(SOROTTE_READINESS_RECONNECT_TOKEN)
+            .and_then(Value::as_str),
+        Some(TOKEN)
+    );
+}
+
+#[test]
 fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_preserves_current_room_over_local_file_name()
  {
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")

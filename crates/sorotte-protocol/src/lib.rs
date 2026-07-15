@@ -40,14 +40,15 @@ pub use playback_barrier::{
     StartedAckPayload, TransportBufferingReportPayload,
 };
 pub use readiness::{
-    DirectReadinessSurface, ParticipantReadiness, ParticipantReadinessUpdate,
+    DirectReadinessSurface, MixedReadinessPolicy, ParticipantReadiness, ParticipantReadinessUpdate,
     PlayerInteractionSurface, PlayerReadinessAction, ReadinessIntentRequest,
     ReadinessMutationMetadata, ReadinessMutationSource, ReadinessRequestResultPayload,
     ReadinessRequestResultStatus, ReadinessSetExtension, ReadinessStateExtension, RecoveryStage,
-    RoomPauseOwner, RoomReadinessSnapshot, RoomStartGatePhase, SOROTTE_READINESS_V2,
-    StartGateDegradedReason, StartParticipationRole, TechnicalBlockCause, TechnicalPlayability,
-    TechnicalPlayabilityPhase, TechnicalPlayabilitySummary, TechnicalReadinessBlock,
-    TechnicalReadinessReport, UserReadinessIntent, UserReadinessMutationSource,
+    RoomPauseOwner, RoomReadinessSnapshot, RoomStartGatePhase, SOROTTE_READINESS_RECONNECT_TOKEN,
+    SOROTTE_READINESS_V2, StartGateDegradedReason, StartParticipationRole, TechnicalBlockCause,
+    TechnicalPlayability, TechnicalPlayabilityPhase, TechnicalPlayabilitySummary,
+    TechnicalReadinessBlock, TechnicalReadinessReport, UserReadinessIntent,
+    UserReadinessMutationSource,
 };
 pub use room::RoomRef;
 pub use set::{

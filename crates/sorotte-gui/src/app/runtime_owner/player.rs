@@ -17,7 +17,7 @@ use sorotte_client_core::{
     CoordinatorPlayerCommand, MediaLoadIntent, MediaTransportKind, PlaybackBarrierTimeoutAction,
     PlayerCommandCause, logical_media_id_for_local_file_update,
 };
-use sorotte_player_api::{LocalFileUpdate, PlayerAdapter, PlayerMediaLoadOutcome};
+use sorotte_player_api::{LocalFileUpdate, PlayerAdapter, PlayerCommandId, PlayerMediaLoadOutcome};
 use sorotte_player_mpv::LegacySyncplayOsdKind;
 
 use super::super::media_search_cache::{

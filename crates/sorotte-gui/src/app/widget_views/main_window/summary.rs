@@ -334,10 +334,6 @@ impl SorotteGuiShellAppState {
                     .main_window
                     .readiness
                     .get(&user.username)
-                    .filter(|readiness| {
-                        readiness.protocol
-                            == sorotte_client_app::app_boundary::readiness::ReadinessPresentationProtocol::V2
-                    })
                 {
                     readiness
                 } else {
@@ -425,6 +421,14 @@ impl SorotteGuiShellAppState {
                             "Start cohort",
                             GuiWidgetKind::Status,
                             Some(readiness.participation_detail_label().to_owned()),
+                            true,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            format!("main-window:user:{user_index}:readiness-gate"),
+                            "Automatic start",
+                            GuiWidgetKind::Status,
+                            Some(readiness.start_gate_detail_label()),
                             true,
                             false,
                         ),

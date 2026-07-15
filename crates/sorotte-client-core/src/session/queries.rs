@@ -1,6 +1,16 @@
 use super::*;
 
 impl ClientSession {
+    /// Returns the opaque server-issued token only for a replacement transport
+    /// joining the same room. Callers must expose it solely at the Hello I/O
+    /// boundary; ordinary model formatting keeps the stored value redacted.
+    pub fn readiness_reconnect_token_for_room(&self, room: &str) -> Option<&str> {
+        (self.model.room.name.as_deref() == Some(room))
+            .then_some(self.model.readiness.reconnect_token.as_ref())
+            .flatten()
+            .map(SecretValue::expose_secret)
+    }
+
     pub fn drain_compatibility_fallbacks(&mut self) -> Vec<ClientCompatibilityFallback> {
         std::mem::take(&mut self.pending_compatibility_fallbacks)
     }

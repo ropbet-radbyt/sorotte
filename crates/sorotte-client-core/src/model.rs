@@ -651,7 +651,7 @@ pub struct PendingReadinessIntent {
     pub(crate) desired: UserReadinessIntent,
     pub(crate) source: UserReadinessMutationSource,
     pub(crate) target_username: Option<String>,
-    pub(crate) expected_revision: Option<u64>,
+    pub(crate) expected_user_intent_revision: Option<u64>,
     pub(crate) scope_from_rejection_result: bool,
     pub(crate) needs_send: bool,
 }
@@ -673,7 +673,10 @@ impl std::fmt::Debug for PendingReadinessIntent {
                     .as_ref()
                     .map(|_| sorotte_secret::REDACTED_SECRET),
             )
-            .field("expected_revision", &self.expected_revision)
+            .field(
+                "expected_user_intent_revision",
+                &self.expected_user_intent_revision,
+            )
             .field(
                 "scope_from_rejection_result",
                 &self.scope_from_rejection_result,
@@ -716,6 +719,7 @@ pub struct ReadinessState {
     pub(crate) awaiting_readiness_reconciliation_snapshot: bool,
     pub(crate) pending_intent: Option<PendingReadinessIntent>,
     pub(crate) next_request_nonce: u64,
+    pub(crate) reconnect_token: Option<SecretValue>,
 }
 
 impl Default for ReadinessState {
@@ -732,6 +736,7 @@ impl Default for ReadinessState {
             awaiting_readiness_reconciliation_snapshot: false,
             pending_intent: None,
             next_request_nonce: 0,
+            reconnect_token: None,
         }
     }
 }

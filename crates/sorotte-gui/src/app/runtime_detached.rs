@@ -259,19 +259,20 @@ impl GuiPersistedConfigRuntimeOwner {
                             self.player_position_seconds,
                         )?;
                         self.rollback_attached_player_pause_intent(target_paused);
-                        if let Some(player) = self.player.as_mut() {
-                            let result = player.set_paused(true);
+                        if self.player.is_some() {
+                            let command_id = self.begin_attached_player_pause_command(
+                                true,
+                                PlayerCommandCause::ReadinessGateHold,
+                            )?;
+                            let result = self
+                                .player
+                                .as_mut()
+                                .expect("readiness-gate correction player was checked")
+                                .set_paused(true);
                             let command_succeeded = result.is_ok();
-                            let command_result_error = self.session.as_mut().and_then(|session| {
-                                session
-                                    .record_external_system_player_pause_command_result(
-                                        true,
-                                        PlayerCommandCause::ReadinessGateHold,
-                                        command_succeeded,
-                                        system_time_seconds(),
-                                    )
-                                    .err()
-                            });
+                            let command_result_error = self
+                                .finish_attached_player_pause_command(command_id, command_succeeded)
+                                .err();
                             if let Err(error) = result {
                                 if let Some(command_result_error) = command_result_error {
                                     eprintln!(
@@ -304,19 +305,20 @@ impl GuiPersistedConfigRuntimeOwner {
                         .filter(|corrected_paused| Some(*corrected_paused) != self.player_paused);
                     if let Some(corrected_paused) = corrected_paused {
                         self.rollback_attached_player_pause_intent(target_paused);
-                        if let Some(player) = self.player.as_mut() {
-                            let result = player.set_paused(corrected_paused);
+                        if self.player.is_some() {
+                            let command_id = self.begin_attached_player_pause_command(
+                                corrected_paused,
+                                PlayerCommandCause::RemoteRoomSynchronization,
+                            )?;
+                            let result = self
+                                .player
+                                .as_mut()
+                                .expect("room-state correction player was checked")
+                                .set_paused(corrected_paused);
                             let command_succeeded = result.is_ok();
-                            let command_result_error = self.session.as_mut().and_then(|session| {
-                                session
-                                    .record_external_system_player_pause_command_result(
-                                        corrected_paused,
-                                        PlayerCommandCause::RemoteRoomSynchronization,
-                                        command_succeeded,
-                                        system_time_seconds(),
-                                    )
-                                    .err()
-                            });
+                            let command_result_error = self
+                                .finish_attached_player_pause_command(command_id, command_succeeded)
+                                .err();
                             if let Err(error) = result {
                                 if let Some(command_result_error) = command_result_error {
                                     eprintln!(

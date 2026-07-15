@@ -585,6 +585,8 @@ impl GuiSemanticStep {
                     room_readiness_revision: Some(room_readiness_revision),
                     user_intent_revision: Some(user_intent_revision),
                     participation_role: Some(StartParticipationRole::Required),
+                    mixed_readiness_policy: None,
+                    start_gate_phase: None,
                     pending,
                     accepted_operation_id,
                 })

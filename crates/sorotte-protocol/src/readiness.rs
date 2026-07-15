@@ -7,6 +7,12 @@ use serde_json::Value;
 /// readiness-intent protocol.
 pub const SOROTTE_READINESS_V2: &str = "sorotteReadinessV2";
 
+/// Opaque, server-issued continuity proof carried in the top level of the
+/// client and server Hello payloads. The token is deliberately separate from
+/// the feature flag: advertising readiness support is not proof that a new
+/// transport owns a detached membership.
+pub const SOROTTE_READINESS_RECONNECT_TOKEN: &str = "sorotteReadinessReconnectToken";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum UserReadinessIntent {
@@ -300,6 +306,23 @@ pub enum StartParticipationRole {
     ExcludedLegacy,
 }
 
+/// Policy for rooms containing peers that cannot participate in the
+/// generation-scoped readiness and playback-barrier cohort.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum MixedReadinessPolicy {
+    /// Preserve the all-members contract. Automatic start remains unavailable
+    /// until every live room member can join the authoritative cohort.
+    #[default]
+    RequireAllMembers,
+    /// Explicit compatibility opt-in which excludes legacy peers from the
+    /// automatic-start cohort.
+    ExcludeLegacy,
+    /// Require a controller decision. Until one is supplied this has the same
+    /// fail-closed behavior as [`Self::RequireAllMembers`].
+    AskController,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(
     tag = "owner",
@@ -379,7 +402,7 @@ pub struct ReadinessIntentRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_username: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expected_revision: Option<u64>,
+    pub expected_user_intent_revision: Option<u64>,
 }
 
 impl std::fmt::Debug for ReadinessIntentRequest {
@@ -392,7 +415,10 @@ impl std::fmt::Debug for ReadinessIntentRequest {
             .field("desired", &self.desired)
             .field("source", &self.source)
             .field("target_username", &self.target_username)
-            .field("expected_revision", &self.expected_revision)
+            .field(
+                "expected_user_intent_revision",
+                &self.expected_user_intent_revision,
+            )
             .finish()
     }
 }
@@ -412,7 +438,7 @@ impl ReadinessIntentRequest {
             desired,
             source,
             target_username: None,
-            expected_revision: None,
+            expected_user_intent_revision: None,
         }
     }
 
@@ -421,8 +447,11 @@ impl ReadinessIntentRequest {
         self
     }
 
-    pub fn with_expected_revision(mut self, expected_revision: u64) -> Self {
-        self.expected_revision = Some(expected_revision);
+    pub fn with_expected_user_intent_revision(
+        mut self,
+        expected_user_intent_revision: u64,
+    ) -> Self {
+        self.expected_user_intent_revision = Some(expected_user_intent_revision);
         self
     }
 }
@@ -431,8 +460,16 @@ impl ReadinessIntentRequest {
 #[serde(rename_all = "camelCase")]
 pub struct TechnicalReadinessReport {
     pub media_generation: u64,
+    /// The server-issued membership epoch from the canonical local participant
+    /// projection. This fences reports produced by a replaced transport.
+    #[serde(default)]
+    pub membership_epoch: u64,
+    /// Strictly increasing within a membership epoch. Servers reject duplicate
+    /// and out-of-order observations.
+    #[serde(default)]
+    pub report_sequence: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub playback_state_revision: Option<u64>,
+    pub authoritative_playback_revision: Option<u64>,
     pub phase: TechnicalPlayabilityPhase,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<TechnicalBlockCause>,
@@ -443,10 +480,17 @@ pub struct TechnicalReadinessReport {
 }
 
 impl TechnicalReadinessReport {
-    pub fn new(media_generation: u64, phase: TechnicalPlayabilityPhase) -> Self {
+    pub fn new(
+        media_generation: u64,
+        membership_epoch: u64,
+        report_sequence: u64,
+        phase: TechnicalPlayabilityPhase,
+    ) -> Self {
         Self {
             media_generation,
-            playback_state_revision: None,
+            membership_epoch,
+            report_sequence,
+            authoritative_playback_revision: None,
             phase,
             reason: None,
             recovery: None,
@@ -454,8 +498,11 @@ impl TechnicalReadinessReport {
         }
     }
 
-    pub fn with_playback_state_revision(mut self, playback_state_revision: u64) -> Self {
-        self.playback_state_revision = Some(playback_state_revision);
+    pub fn with_authoritative_playback_revision(
+        mut self,
+        authoritative_playback_revision: u64,
+    ) -> Self {
+        self.authoritative_playback_revision = Some(authoritative_playback_revision);
         self
     }
 
@@ -481,6 +528,11 @@ impl TechnicalReadinessReport {
 #[serde(rename_all = "camelCase")]
 pub struct ParticipantReadiness {
     pub membership_epoch: u64,
+    /// Highest technical observation accepted for this membership. This is an
+    /// ordering fence, not transient playability, so it survives an
+    /// authenticated reconnect.
+    #[serde(default)]
+    pub last_technical_report_sequence: u64,
     pub user_intent: UserReadinessIntent,
     pub user_intent_revision: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -499,6 +551,8 @@ pub struct ParticipantReadiness {
 pub struct ParticipantReadinessUpdate {
     pub room_readiness_revision: u64,
     pub membership_epoch: u64,
+    #[serde(default)]
+    pub last_technical_report_sequence: u64,
     pub username: String,
     pub user_intent: UserReadinessIntent,
     pub user_intent_revision: u64,
@@ -522,6 +576,10 @@ impl std::fmt::Debug for ParticipantReadinessUpdate {
             .debug_struct("ParticipantReadinessUpdate")
             .field("room_readiness_revision", &self.room_readiness_revision)
             .field("membership_epoch", &self.membership_epoch)
+            .field(
+                "last_technical_report_sequence",
+                &self.last_technical_report_sequence,
+            )
             .field("username", &self.username)
             .field("user_intent", &self.user_intent)
             .field("user_intent_revision", &self.user_intent_revision)
@@ -549,6 +607,8 @@ pub struct RoomReadinessSnapshot {
     pub start_gate_phase: RoomStartGatePhase,
     #[serde(default)]
     pub pause_owner: RoomPauseOwner,
+    #[serde(default)]
+    pub mixed_readiness_policy: MixedReadinessPolicy,
     pub participants: BTreeMap<String, ParticipantReadinessUpdate>,
 }
 
@@ -575,6 +635,8 @@ pub struct ReadinessRequestResultPayload {
     pub room_readiness_revision: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub membership_epoch: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_intent_revision: Option<u64>,
 }
 
 impl std::fmt::Debug for ReadinessRequestResultPayload {
@@ -586,6 +648,7 @@ impl std::fmt::Debug for ReadinessRequestResultPayload {
             .field("status", &self.status)
             .field("room_readiness_revision", &self.room_readiness_revision)
             .field("membership_epoch", &self.membership_epoch)
+            .field("user_intent_revision", &self.user_intent_revision)
             .finish()
     }
 }
@@ -602,6 +665,7 @@ impl ReadinessRequestResultPayload {
             status,
             room_readiness_revision: None,
             membership_epoch: None,
+            user_intent_revision: None,
         }
     }
 
@@ -612,6 +676,11 @@ impl ReadinessRequestResultPayload {
 
     pub fn with_membership_epoch(mut self, membership_epoch: u64) -> Self {
         self.membership_epoch = Some(membership_epoch);
+        self
+    }
+
+    pub fn with_user_intent_revision(mut self, user_intent_revision: u64) -> Self {
+        self.user_intent_revision = Some(user_intent_revision);
         self
     }
 }

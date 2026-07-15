@@ -35,6 +35,19 @@ fn client_runtime_now_seconds() -> f64 {
         .as_secs_f64()
 }
 
+fn insert_readiness_reconnect_token(
+    hello: &mut HelloPayload,
+    session: &sorotte_client_core::ClientSession,
+    room: &str,
+) {
+    if let Some(reconnect_token) = session.readiness_reconnect_token_for_room(room) {
+        hello.extra.insert(
+            sorotte_protocol::SOROTTE_READINESS_RECONNECT_TOKEN.to_owned(),
+            Value::String(reconnect_token.to_owned()),
+        );
+    }
+}
+
 fn normalized_tls_server_host(host: &str) -> &str {
     host.strip_prefix('[')
         .and_then(|host| host.strip_suffix(']'))
@@ -272,6 +285,7 @@ where
             )),
         );
     }
+    insert_readiness_reconnect_token(&mut hello_payload, runtime.session(), &config.room);
     hello_payload.features = Some(client_hello_features_legacy_compatible(config));
     let hello_message = ProtocolMessage::hello(hello_payload);
     ensure_connected_application_command_succeeded(
@@ -559,9 +573,37 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sorotte_client_core::ClientSession;
     use tokio::io::AsyncBufReadExt;
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
+
+    #[test]
+    fn reconnect_token_is_added_only_to_same_room_hello() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"readiness":true,"sorotteReadinessV2":true},"sorotteReadinessReconnectToken":"cli-reconnect-token"}}"#,
+            )
+            .expect("server Hello should store the reconnect token");
+
+        let mut same_room = HelloPayload::new("alice", "room1", "1.2.255");
+        insert_readiness_reconnect_token(&mut same_room, &session, "room1");
+        assert_eq!(
+            same_room
+                .extra
+                .get(sorotte_protocol::SOROTTE_READINESS_RECONNECT_TOKEN),
+            Some(&Value::String("cli-reconnect-token".to_owned()))
+        );
+
+        let mut other_room = HelloPayload::new("alice", "room2", "1.2.255");
+        insert_readiness_reconnect_token(&mut other_room, &session, "room2");
+        assert!(
+            !other_room
+                .extra
+                .contains_key(sorotte_protocol::SOROTTE_READINESS_RECONNECT_TOKEN)
+        );
+    }
 
     #[tokio::test]
     async fn starttls_negotiation_sends_request_and_accepts_plain_fallback() {

@@ -83,6 +83,10 @@ pub struct PlayerTransitionClassifierConfig {
     pub stable_confirmation_seconds: f64,
     /// How long a terminal command remains able to own a late observation.
     pub command_observation_grace_seconds: f64,
+    /// Maximum time a command that never reports terminal completion may own
+    /// transport observations. This deadline is measured from issue time so a
+    /// silent adapter cannot retain causal ownership indefinitely.
+    pub pending_command_timeout_seconds: f64,
     /// Maximum time an unowned, unstable edge remains pending before it is
     /// conservatively recorded as unknown-origin.
     pub unknown_origin_timeout_seconds: f64,
@@ -93,6 +97,7 @@ impl Default for PlayerTransitionClassifierConfig {
         Self {
             stable_confirmation_seconds: 0.1,
             command_observation_grace_seconds: 1.0,
+            pending_command_timeout_seconds: 5.0,
             unknown_origin_timeout_seconds: 1.0,
         }
     }
@@ -339,6 +344,10 @@ struct RegisteredCommand {
 impl RegisteredCommand {
     fn matchable_at(self, observed_at_seconds: f64) -> bool {
         !self.observation_matched
+            && !matches!(
+                self.registration.completion,
+                PlayerCommandCompletion::Superseded { .. }
+            )
             && observed_at_seconds >= self.registration.issued_at_seconds
             && self
                 .ownership_deadline_seconds
@@ -360,13 +369,6 @@ struct PendingStableEdge {
     first_observed_at_seconds: f64,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct TechnicalRecoveryEdge {
-    logical_paused: bool,
-    reason: PlayerTransitionTechnicalReason,
-    deadline_seconds: f64,
-}
-
 enum CommandMatch {
     None,
     One(PlayerCommandKey),
@@ -385,7 +387,6 @@ pub struct PlayerTransitionClassifier {
     last_observed_at_seconds: Option<f64>,
     last_observed_logical_paused: Option<bool>,
     pending_edge: Option<PendingStableEdge>,
-    technical_recovery_edge: Option<TechnicalRecoveryEdge>,
 }
 
 impl Default for PlayerTransitionClassifier {
@@ -405,6 +406,10 @@ impl PlayerTransitionClassifier {
             config.command_observation_grace_seconds,
             defaults.command_observation_grace_seconds,
         );
+        let pending_command_timeout_seconds = normalized_nonnegative_seconds(
+            config.pending_command_timeout_seconds,
+            defaults.pending_command_timeout_seconds,
+        );
         let unknown_origin_timeout_seconds = normalized_nonnegative_seconds(
             config.unknown_origin_timeout_seconds,
             defaults.unknown_origin_timeout_seconds,
@@ -414,6 +419,7 @@ impl PlayerTransitionClassifier {
             config: PlayerTransitionClassifierConfig {
                 stable_confirmation_seconds,
                 command_observation_grace_seconds,
+                pending_command_timeout_seconds,
                 unknown_origin_timeout_seconds,
             },
             active_media_generation: None,
@@ -423,7 +429,6 @@ impl PlayerTransitionClassifier {
             last_observed_at_seconds: None,
             last_observed_logical_paused: None,
             pending_edge: None,
-            technical_recovery_edge: None,
         }
     }
 
@@ -440,7 +445,6 @@ impl PlayerTransitionClassifier {
         self.last_observed_at_seconds = None;
         self.last_observed_logical_paused = None;
         self.pending_edge = None;
-        self.technical_recovery_edge = None;
         true
     }
 
@@ -452,6 +456,13 @@ impl PlayerTransitionClassifier {
             || !registration.issued_at_seconds.is_finite()
             || registration.command_id.get() == 0
             || !valid_completion(registration.completion, registration.issued_at_seconds)
+            || registration
+                .completion
+                .terminal_at_seconds()
+                .is_some_and(|at| {
+                    at > registration.issued_at_seconds
+                        + self.config.pending_command_timeout_seconds
+                })
         {
             return false;
         }
@@ -462,10 +473,11 @@ impl PlayerTransitionClassifier {
         if self.commands.contains_key(&key) {
             return false;
         }
-        let ownership_deadline_seconds = registration
-            .completion
-            .terminal_at_seconds()
-            .map(|at| at + self.config.command_observation_grace_seconds);
+        let ownership_deadline_seconds =
+            Some(registration.completion.terminal_at_seconds().map_or(
+                registration.issued_at_seconds + self.config.pending_command_timeout_seconds,
+                |at| at + self.config.command_observation_grace_seconds,
+            ));
         self.commands.insert(
             key,
             RegisteredCommand {
@@ -478,8 +490,9 @@ impl PlayerTransitionClassifier {
     }
 
     /// Updates command completion while retaining its observation-ownership
-    /// tombstone. A later terminal update may extend, but never shorten, the
-    /// grace window.
+    /// tombstone. The first terminal result replaces the absolute pending
+    /// deadline with its observation grace; later terminal results may extend,
+    /// but never shorten, that grace window.
     pub fn update_command_completion(
         &mut self,
         adapter_epoch: u64,
@@ -498,6 +511,22 @@ impl PlayerTransitionClassifier {
         };
         if !at_seconds.is_finite()
             || at_seconds < command.registration.issued_at_seconds
+            || (command
+                .registration
+                .completion
+                .terminal_at_seconds()
+                .is_none()
+                && at_seconds
+                    > command.registration.issued_at_seconds
+                        + self.config.pending_command_timeout_seconds)
+            || (command
+                .registration
+                .completion
+                .terminal_at_seconds()
+                .is_some()
+                && command
+                    .ownership_deadline_seconds
+                    .is_some_and(|deadline| at_seconds > deadline))
             || command
                 .registration
                 .completion
@@ -506,14 +535,52 @@ impl PlayerTransitionClassifier {
         {
             return false;
         }
+        let previous_terminal_at = command.registration.completion.terminal_at_seconds();
         command.registration.completion = completion;
         let deadline = at_seconds + self.config.command_observation_grace_seconds;
-        command.ownership_deadline_seconds = Some(
+        command.ownership_deadline_seconds = Some(if previous_terminal_at.is_some() {
             command
                 .ownership_deadline_seconds
-                .map_or(deadline, |current| current.max(deadline)),
-        );
+                .map_or(deadline, |current| current.max(deadline))
+        } else {
+            deadline
+        });
         true
+    }
+
+    /// Explicitly retires unmatched commands owned by one causal source.
+    /// Superseded commands remain as short-lived tombstones so a late opposite
+    /// edge is unknown-origin, but they cannot compete with the replacement
+    /// command for an exact match.
+    pub fn supersede_unmatched_commands(
+        &mut self,
+        cause: PlayerCommandCause,
+        at_seconds: f64,
+    ) -> usize {
+        if !at_seconds.is_finite() {
+            return 0;
+        }
+        let keys = self
+            .commands
+            .iter()
+            .filter_map(|(key, command)| {
+                (!command.observation_matched
+                    && command.registration.cause == cause
+                    && at_seconds >= command.registration.issued_at_seconds)
+                    .then_some(*key)
+            })
+            .collect::<Vec<_>>();
+        let mut superseded = 0;
+        for key in keys {
+            if self.update_command_completion(
+                key.adapter_epoch,
+                key.command_id,
+                PlayerCommandCompletion::Superseded { at_seconds },
+            ) {
+                superseded += 1;
+            }
+        }
+        superseded
     }
 
     pub fn command_registration(
@@ -565,13 +632,6 @@ impl PlayerTransitionClassifier {
 
         self.last_observed_at_seconds = Some(observation.observed_at_seconds);
         self.last_observed_logical_paused = Some(observation.logical_paused);
-        if self
-            .technical_recovery_edge
-            .is_some_and(|edge| observation.observed_at_seconds > edge.deadline_seconds)
-        {
-            self.technical_recovery_edge = None;
-        }
-
         match self.matching_command(&observation) {
             CommandMatch::One(key) => {
                 let command = self
@@ -580,12 +640,6 @@ impl PlayerTransitionClassifier {
                     .expect("selected command must remain registered");
                 command.observation_matched = true;
                 let registration = command.registration;
-                if self
-                    .technical_recovery_edge
-                    .is_some_and(|edge| edge.logical_paused == observation.logical_paused)
-                {
-                    self.technical_recovery_edge = None;
-                }
                 self.accept_transition(observation.logical_paused);
                 return PlayerTransitionClassification::OwnedCommand {
                     command_id: registration.command_id,
@@ -594,12 +648,6 @@ impl PlayerTransitionClassifier {
                 };
             }
             CommandMatch::Ambiguous => {
-                if self
-                    .technical_recovery_edge
-                    .is_some_and(|edge| edge.logical_paused == observation.logical_paused)
-                {
-                    self.technical_recovery_edge = None;
-                }
                 self.accept_transition(observation.logical_paused);
                 return PlayerTransitionClassification::UnknownOrigin {
                     action: NativePlayerAction::from_paused(observation.logical_paused),
@@ -609,45 +657,19 @@ impl PlayerTransitionClassifier {
             CommandMatch::None => {}
         }
 
-        if let Some(reason) = observation.context.technical_reason() {
-            let recovery_deadline =
-                observation.observed_at_seconds + self.config.unknown_origin_timeout_seconds;
+        if let Some(reason) = observation.context.technical_reason()
+            && (reason != PlayerTransitionTechnicalReason::PlaybackBarrier
+                || observation.logical_paused)
+        {
             if self.accepted_logical_paused == Some(observation.logical_paused)
                 && self.pending_edge.is_none()
             {
-                if let Some(edge) = self.technical_recovery_edge.as_mut() {
-                    edge.reason = reason;
-                    edge.deadline_seconds = recovery_deadline;
-                }
                 return PlayerTransitionClassification::Duplicate;
-            }
-            if self
-                .technical_recovery_edge
-                .is_some_and(|edge| edge.logical_paused == observation.logical_paused)
-            {
-                self.technical_recovery_edge = None;
-            } else {
-                self.technical_recovery_edge = Some(TechnicalRecoveryEdge {
-                    logical_paused: !observation.logical_paused,
-                    reason,
-                    deadline_seconds: recovery_deadline,
-                });
             }
             self.accept_transition(observation.logical_paused);
             return PlayerTransitionClassification::Technical {
                 action: NativePlayerAction::from_paused(observation.logical_paused),
                 reason,
-            };
-        }
-
-        if let Some(recovery) = self.technical_recovery_edge
-            && recovery.logical_paused == observation.logical_paused
-        {
-            self.technical_recovery_edge = None;
-            self.accept_transition(observation.logical_paused);
-            return PlayerTransitionClassification::Technical {
-                action: NativePlayerAction::from_paused(observation.logical_paused),
-                reason: recovery.reason,
             };
         }
 
@@ -701,18 +723,30 @@ impl PlayerTransitionClassifier {
         }
     }
 
+    /// Confirms that an explicit native-player Play owns the classifier's
+    /// currently pending same-scope unpause edge. Initial, pause, technical,
+    /// command-owned, unknown, consumed, and scope-reset observations never
+    /// leave an edge eligible for this promotion.
+    pub fn confirm_pending_native_play(&mut self) -> Option<PlayerTransitionClassification> {
+        let logical_paused = false;
+        let pending = self.pending_edge?;
+        if pending.logical_paused != logical_paused
+            || self.last_observed_logical_paused != Some(logical_paused)
+        {
+            return None;
+        }
+        self.accept_transition(logical_paused);
+        Some(PlayerTransitionClassification::NativePlayerGesture {
+            action: NativePlayerAction::Play,
+        })
+    }
+
     /// Expires a candidate even when the adapter produces no confirming
     /// observation. This records an unknown origin and consumes the edge, so
     /// later duplicate telemetry cannot resurrect it as a user gesture.
     pub fn tick(&mut self, now_seconds: f64) -> Option<PlayerTransitionClassification> {
         if !now_seconds.is_finite() {
             return None;
-        }
-        if self
-            .technical_recovery_edge
-            .is_some_and(|edge| now_seconds > edge.deadline_seconds)
-        {
-            self.technical_recovery_edge = None;
         }
         let pending = self.pending_edge?;
         if now_seconds - pending.first_observed_at_seconds
@@ -806,6 +840,7 @@ mod tests {
         let mut classifier = PlayerTransitionClassifier::new(PlayerTransitionClassifierConfig {
             stable_confirmation_seconds: 0.1,
             command_observation_grace_seconds: 1.0,
+            pending_command_timeout_seconds: 0.5,
             unknown_origin_timeout_seconds: 0.5,
         });
         assert!(classifier.begin_scope(GENERATION, ADAPTER_EPOCH));
@@ -909,6 +944,130 @@ mod tests {
     }
 
     #[test]
+    fn barrier_play_confirmation_promotes_only_the_pending_unpause_edge_once() {
+        let mut classifier = classifier();
+        seed(&mut classifier, true);
+        assert_eq!(
+            classifier.classify(observation(
+                1.1,
+                false,
+                context(false).with_playback_barrier(true),
+            )),
+            PlayerTransitionClassification::AwaitingStability {
+                action: NativePlayerAction::Play,
+                first_observed_at_seconds: 1.1,
+            }
+        );
+        assert_eq!(
+            classifier.confirm_pending_native_play(),
+            Some(PlayerTransitionClassification::NativePlayerGesture {
+                action: NativePlayerAction::Play,
+            })
+        );
+        assert_eq!(
+            classifier.confirm_pending_native_play(),
+            None,
+            "a consumed edge can be confirmed at most once"
+        );
+    }
+
+    #[test]
+    fn initial_observation_cannot_be_explicitly_promoted() {
+        let mut classifier = classifier();
+        assert_eq!(
+            classifier.classify(observation(1.0, false, context(false))),
+            PlayerTransitionClassification::UnknownOrigin {
+                action: NativePlayerAction::Play,
+                reason: PlayerTransitionUnknownReason::InitialObservation,
+            }
+        );
+        assert_eq!(classifier.confirm_pending_native_play(), None);
+    }
+
+    #[test]
+    fn pending_pause_cannot_be_promoted_as_explicit_native_play() {
+        let mut classifier = classifier();
+        seed(&mut classifier, false);
+        assert!(matches!(
+            classifier.classify(observation(1.1, true, context(true))),
+            PlayerTransitionClassification::AwaitingStability {
+                action: NativePlayerAction::Pause,
+                ..
+            }
+        ));
+        assert_eq!(classifier.confirm_pending_native_play(), None);
+    }
+
+    #[test]
+    fn technical_play_edges_cannot_be_explicitly_promoted() {
+        let cases = [
+            PlayerTransitionContext::new(Some(PlayerTransportPhase::Loading)),
+            context(false).with_seeking(true),
+            context(false).with_recovery(true),
+        ];
+        for technical_context in cases {
+            let mut classifier = classifier();
+            seed(&mut classifier, true);
+            assert!(matches!(
+                classifier.classify(observation(1.1, false, technical_context)),
+                PlayerTransitionClassification::Technical {
+                    action: NativePlayerAction::Play,
+                    ..
+                }
+            ));
+            assert_eq!(classifier.confirm_pending_native_play(), None);
+        }
+    }
+
+    #[test]
+    fn owned_unknown_and_scope_reset_edges_cannot_be_explicitly_promoted() {
+        let mut owned = classifier();
+        seed(&mut owned, true);
+        let owned_command = PlayerCommandId::new(16);
+        assert!(owned.register_command(PlayerCommandRegistration::new(
+            owned_command,
+            GENERATION,
+            ADAPTER_EPOCH,
+            PlayerCommandCause::AutomaticReadinessStart,
+            false,
+            1.05,
+        )));
+        assert!(matches!(
+            owned.classify(observation(1.1, false, context(false))),
+            PlayerTransitionClassification::OwnedCommand { .. }
+        ));
+        assert_eq!(owned.confirm_pending_native_play(), None);
+
+        let mut unknown = classifier();
+        seed(&mut unknown, true);
+        assert!(unknown.register_command(PlayerCommandRegistration::new(
+            PlayerCommandId::new(17),
+            GENERATION,
+            ADAPTER_EPOCH,
+            PlayerCommandCause::ReadinessGateHold,
+            true,
+            1.05,
+        )));
+        assert!(matches!(
+            unknown.classify(observation(1.1, false, context(false))),
+            PlayerTransitionClassification::UnknownOrigin { .. }
+        ));
+        assert_eq!(unknown.confirm_pending_native_play(), None);
+
+        let mut reset = classifier();
+        seed(&mut reset, true);
+        assert!(matches!(
+            reset.classify(observation(1.1, false, context(false))),
+            PlayerTransitionClassification::AwaitingStability { .. }
+        ));
+        assert!(reset.begin_scope(GENERATION + 1, ADAPTER_EPOCH + 1));
+        assert_eq!(reset.confirm_pending_native_play(), None);
+
+        let mut unscoped = PlayerTransitionClassifier::default();
+        assert_eq!(unscoped.confirm_pending_native_play(), None);
+    }
+
+    #[test]
     fn timed_out_command_owns_a_late_observation_during_grace() {
         let mut classifier = classifier();
         seed(&mut classifier, false);
@@ -924,14 +1083,14 @@ mod tests {
         assert!(classifier.update_command_completion(
             ADAPTER_EPOCH,
             command_id,
-            PlayerCommandCompletion::TimedOut { at_seconds: 2.0 },
+            PlayerCommandCompletion::TimedOut { at_seconds: 1.5 },
         ));
         assert_eq!(
-            classifier.classify(observation(2.9, true, context(true))),
+            classifier.classify(observation(2.4, true, context(true))),
             PlayerTransitionClassification::OwnedCommand {
                 command_id,
                 cause: PlayerCommandCause::RoomBufferingPolicy,
-                completion: PlayerCommandCompletion::TimedOut { at_seconds: 2.0 },
+                completion: PlayerCommandCompletion::TimedOut { at_seconds: 1.5 },
             }
         );
     }
@@ -952,25 +1111,60 @@ mod tests {
         assert!(classifier.update_command_completion(
             ADAPTER_EPOCH,
             command_id,
-            PlayerCommandCompletion::TimedOut { at_seconds: 2.0 },
+            PlayerCommandCompletion::TimedOut { at_seconds: 1.5 },
         ));
         assert!(classifier.update_command_completion(
             ADAPTER_EPOCH,
             command_id,
-            PlayerCommandCompletion::Completed { at_seconds: 2.8 },
+            PlayerCommandCompletion::Completed { at_seconds: 2.4 },
         ));
         assert_eq!(
-            classifier.classify(observation(3.7, false, context(false))),
+            classifier.classify(observation(3.3, false, context(false))),
             PlayerTransitionClassification::OwnedCommand {
                 command_id,
                 cause: PlayerCommandCause::AutomaticReadinessStart,
-                completion: PlayerCommandCompletion::Completed { at_seconds: 2.8 },
+                completion: PlayerCommandCompletion::Completed { at_seconds: 2.4 },
             }
         );
     }
 
     #[test]
-    fn technical_contexts_consume_edges_without_native_gestures() {
+    fn terminal_completion_after_existing_tombstone_deadline_is_rejected() {
+        let mut classifier = classifier();
+        seed(&mut classifier, true);
+        let command_id = PlayerCommandId::new(15);
+        assert!(classifier.register_command(PlayerCommandRegistration::new(
+            command_id,
+            GENERATION,
+            ADAPTER_EPOCH,
+            PlayerCommandCause::AutomaticReadinessStart,
+            false,
+            1.1,
+        )));
+        assert!(classifier.update_command_completion(
+            ADAPTER_EPOCH,
+            command_id,
+            PlayerCommandCompletion::TimedOut { at_seconds: 1.5 },
+        ));
+        assert!(
+            !classifier.update_command_completion(
+                ADAPTER_EPOCH,
+                command_id,
+                PlayerCommandCompletion::Completed { at_seconds: 2.51 },
+            ),
+            "a later terminal callback must not revive ownership after the 2.50 tombstone deadline"
+        );
+        assert_eq!(
+            classifier.classify(observation(2.52, false, context(false))),
+            PlayerTransitionClassification::AwaitingStability {
+                action: NativePlayerAction::Play,
+                first_observed_at_seconds: 2.52,
+            }
+        );
+    }
+
+    #[test]
+    fn technical_contexts_consume_their_edge_but_do_not_own_a_later_stable_edge() {
         let cases = [
             (
                 PlayerTransitionContext::new(Some(PlayerTransportPhase::Loading)),
@@ -1038,27 +1232,173 @@ mod tests {
             );
             assert_eq!(
                 classifier.classify(observation(1.5, false, context(false))),
-                PlayerTransitionClassification::Technical {
-                    action: NativePlayerAction::Play,
-                    reason,
-                },
-                "{reason:?} must also own its paired recovery edge"
-            );
-            assert_eq!(
-                classifier.classify(observation(2.0, true, context(true))),
                 PlayerTransitionClassification::AwaitingStability {
-                    action: NativePlayerAction::Pause,
-                    first_observed_at_seconds: 2.0,
+                    action: NativePlayerAction::Play,
+                    first_observed_at_seconds: 1.5,
                 },
-                "consuming the {reason:?} recovery must release a later deliberate edge"
+                "a cleared {reason:?} context must not swallow a later user Play"
             );
             assert_eq!(
-                classifier.classify(observation(2.11, true, context(true))),
+                classifier.classify(observation(1.61, false, context(false))),
                 PlayerTransitionClassification::NativePlayerGesture {
-                    action: NativePlayerAction::Pause,
-                }
+                    action: NativePlayerAction::Play,
+                },
+                "a stable Play after {reason:?} must remain a native gesture"
             );
         }
+    }
+
+    #[test]
+    fn user_play_during_the_old_technical_recovery_window_is_not_swallowed() {
+        let mut classifier = classifier();
+        seed(&mut classifier, false);
+        assert_eq!(
+            classifier.classify(observation(
+                1.1,
+                true,
+                PlayerTransitionContext::new(Some(PlayerTransportPhase::Rebuffering)),
+            )),
+            PlayerTransitionClassification::Technical {
+                action: NativePlayerAction::Pause,
+                reason: PlayerTransitionTechnicalReason::Rebuffering,
+            }
+        );
+        assert_eq!(
+            classifier.classify(observation(1.2, false, context(false))),
+            PlayerTransitionClassification::AwaitingStability {
+                action: NativePlayerAction::Play,
+                first_observed_at_seconds: 1.2,
+            }
+        );
+        assert_eq!(
+            classifier.classify(observation(1.31, false, context(false))),
+            PlayerTransitionClassification::NativePlayerGesture {
+                action: NativePlayerAction::Play,
+            }
+        );
+    }
+
+    #[test]
+    fn user_pause_immediately_after_an_automatic_resume_is_not_swallowed() {
+        let mut classifier = classifier();
+        seed(&mut classifier, true);
+        let command_id = PlayerCommandId::new(11);
+        assert!(classifier.register_command(PlayerCommandRegistration::new(
+            command_id,
+            GENERATION,
+            ADAPTER_EPOCH,
+            PlayerCommandCause::AutomaticReadinessStart,
+            false,
+            1.1,
+        )));
+        assert_eq!(
+            classifier.classify(observation(1.2, false, context(false))),
+            PlayerTransitionClassification::OwnedCommand {
+                command_id,
+                cause: PlayerCommandCause::AutomaticReadinessStart,
+                completion: PlayerCommandCompletion::Pending,
+            }
+        );
+        assert_eq!(
+            classifier.classify(observation(1.21, true, context(true))),
+            PlayerTransitionClassification::AwaitingStability {
+                action: NativePlayerAction::Pause,
+                first_observed_at_seconds: 1.21,
+            }
+        );
+        assert_eq!(
+            classifier.classify(observation(1.32, true, context(true))),
+            PlayerTransitionClassification::NativePlayerGesture {
+                action: NativePlayerAction::Pause,
+            }
+        );
+    }
+
+    #[test]
+    fn command_without_adapter_completion_loses_ownership_at_issue_time_deadline() {
+        let mut classifier = classifier();
+        seed(&mut classifier, true);
+        assert!(classifier.register_command(PlayerCommandRegistration::new(
+            PlayerCommandId::new(12),
+            GENERATION,
+            ADAPTER_EPOCH,
+            PlayerCommandCause::RemoteRoomSynchronization,
+            false,
+            1.1,
+        )));
+
+        assert_eq!(
+            classifier.classify(observation(1.61, false, context(false))),
+            PlayerTransitionClassification::AwaitingStability {
+                action: NativePlayerAction::Play,
+                first_observed_at_seconds: 1.61,
+            }
+        );
+        assert_eq!(
+            classifier.classify(observation(1.72, false, context(false))),
+            PlayerTransitionClassification::NativePlayerGesture {
+                action: NativePlayerAction::Play,
+            }
+        );
+    }
+
+    #[test]
+    fn completion_after_pending_deadline_cannot_resurrect_system_ownership() {
+        let mut classifier = classifier();
+        seed(&mut classifier, true);
+        let command_id = PlayerCommandId::new(14);
+        assert!(classifier.register_command(PlayerCommandRegistration::new(
+            command_id,
+            GENERATION,
+            ADAPTER_EPOCH,
+            PlayerCommandCause::RemoteRoomSynchronization,
+            false,
+            1.1,
+        )));
+        assert!(
+            !classifier.update_command_completion(
+                ADAPTER_EPOCH,
+                command_id,
+                PlayerCommandCompletion::Completed { at_seconds: 1.61 },
+            ),
+            "a late callback must not revive ownership after the 1.60 deadline"
+        );
+        assert_eq!(
+            classifier.classify(observation(1.62, false, context(false))),
+            PlayerTransitionClassification::AwaitingStability {
+                action: NativePlayerAction::Play,
+                first_observed_at_seconds: 1.62,
+            }
+        );
+    }
+
+    #[test]
+    fn delayed_system_command_observation_after_pending_timeout_is_not_system_owned() {
+        let mut classifier = classifier();
+        seed(&mut classifier, false);
+        let command_id = PlayerCommandId::new(13);
+        assert!(classifier.register_command(PlayerCommandRegistration::new(
+            command_id,
+            GENERATION,
+            ADAPTER_EPOCH,
+            PlayerCommandCause::ReadinessGateHold,
+            true,
+            1.1,
+        )));
+
+        assert_eq!(
+            classifier.classify(observation(1.61, true, context(true))),
+            PlayerTransitionClassification::AwaitingStability {
+                action: NativePlayerAction::Pause,
+                first_observed_at_seconds: 1.61,
+            }
+        );
+        assert_eq!(
+            classifier.classify(observation(1.72, true, context(true))),
+            PlayerTransitionClassification::NativePlayerGesture {
+                action: NativePlayerAction::Pause,
+            }
+        );
     }
 
     #[test]

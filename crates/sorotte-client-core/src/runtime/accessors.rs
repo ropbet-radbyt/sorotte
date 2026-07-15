@@ -657,7 +657,18 @@ where
     fn execute_client_effect(&mut self, effect: ClientEffect) -> Result<(), PlayerError> {
         match effect {
             ClientEffect::SetPlayerPaused(paused) => {
-                let cause = if self.session.model.local_pause_change_in_flight() {
+                let v2_play_gate_hold = paused
+                    && self.session.model.local_pause_change_in_flight()
+                    && self.session.server_readiness_v2_supported()
+                    && self
+                        .session
+                        .pending_readiness_intent()
+                        .is_some_and(|pending| {
+                            pending.desired() == sorotte_protocol::UserReadinessIntent::Ready
+                        });
+                let cause = if v2_play_gate_hold {
+                    PlayerCommandCause::ReadinessGateHold
+                } else if self.session.model.local_pause_change_in_flight() {
                     PlayerCommandCause::LocalUserPlaybackControl
                 } else {
                     self.system_pause_command_cause(paused)

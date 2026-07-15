@@ -643,6 +643,37 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             .report_external_coordinator_command_dispatch(command_id, result, now_seconds);
     }
 
+    fn begin_attached_coordinator_command_dispatch(
+        &mut self,
+        command_id: CoordinatorCommandId,
+        now_seconds: f64,
+    ) -> Option<PlayerCommandId> {
+        self.runtime
+            .begin_external_coordinator_command_dispatch(command_id, now_seconds)
+    }
+
+    fn finish_attached_coordinator_command_dispatch(
+        &mut self,
+        command_id: CoordinatorCommandId,
+        player_command_id: Option<PlayerCommandId>,
+        accepted: bool,
+        now_seconds: f64,
+    ) {
+        let result = if accepted {
+            Ok(())
+        } else {
+            Err(PlayerError::OperationFailed(
+                "attached player rejected coordinator command".to_owned(),
+            ))
+        };
+        self.runtime.finish_external_coordinator_command_dispatch(
+            command_id,
+            player_command_id,
+            result,
+            now_seconds,
+        );
+    }
+
     fn playback_coordination_snapshot(&self) -> Option<PlaybackCoordinationSnapshot> {
         Some(self.runtime.playback_coordination_snapshot())
     }
@@ -958,6 +989,25 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             return Ok(GuiLocalPlayerUnpauseDecision::NotApplicable);
         }
 
+        if self.runtime.session().server_readiness_v2_supported() {
+            // In V2, Play is only a semantic Ready request. The attached
+            // player must remain paused until the server's CommitStart; legacy
+            // instaplay predicates are never physical-unpause authority.
+            // A native player edge normally needs a second stable observation,
+            // but the gate correction below necessarily prevents that sample.
+            // Promote only a same-scope candidate already vetted by the core
+            // classifier; GUI-button preflight and media transitions have no
+            // such candidate and remain harmless no-ops here.
+            self.runtime
+                .confirm_pending_native_player_play(
+                    sorotte_protocol::PlayerInteractionSurface::NativePlayerControl,
+                )
+                .map_err(|error| {
+                    format!("Client-core native-player readiness confirmation failed: {error}")
+                })?;
+            return Ok(GuiLocalPlayerUnpauseDecision::Block);
+        }
+
         let local_can_control = self.runtime.session().local_can_control().unwrap_or(false);
         let is_playing_music = self.runtime.session().is_playing_music();
         if self
@@ -1019,6 +1069,28 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             .map_err(|error| {
                 format!("Client-core player readiness-intent dispatch failed: {error}")
             })
+    }
+
+    fn begin_external_player_pause_command(
+        &mut self,
+        paused: bool,
+        cause: PlayerCommandCause,
+        now_seconds: f64,
+    ) -> Result<Option<PlayerCommandId>, String> {
+        Ok(self
+            .runtime
+            .begin_external_player_pause_command(paused, cause, now_seconds))
+    }
+
+    fn finish_external_player_pause_command(
+        &mut self,
+        command_id: Option<PlayerCommandId>,
+        succeeded: bool,
+        now_seconds: f64,
+    ) -> Result<(), String> {
+        self.runtime
+            .finish_external_player_pause_command(command_id, succeeded, now_seconds)
+            .map_err(|error| format!("Client-core player command completion failed: {error}"))
     }
 
     fn record_external_player_pause_command_result(

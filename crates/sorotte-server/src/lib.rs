@@ -23,10 +23,11 @@ use sorotte_core::{DomainError, SyncDomain};
 use sorotte_protocol::{
     ChatPayload, CommitStartPayload, ControllerAuthPayload, DEFAULT_MAX_PROTOCOL_LINE_BYTES,
     DirectReadinessSurface, FilePayload, HelloPayload, IgnoringOnTheFlyPayload, ListPayload,
-    ListUserEntry, MediaLoadIntent, MediaReadyPayload, NewControlledRoomPayload,
-    ParticipantReadiness, ParticipantReadinessUpdate, PingPayload, PlaybackBarrierDegradedReason,
-    PlaybackBarrierParticipantPhase, PlaybackBarrierParticipantStatus, PlaybackBarrierPhase,
-    PlaybackBarrierPolicy, PlaybackBarrierRecoveryDisposition, PlaybackBarrierRecoveryPayload,
+    ListUserEntry, MediaLoadIntent, MediaReadyPayload, MixedReadinessPolicy,
+    NewControlledRoomPayload, ParticipantReadiness, ParticipantReadinessUpdate, PingPayload,
+    PlaybackBarrierDegradedReason, PlaybackBarrierParticipantPhase,
+    PlaybackBarrierParticipantStatus, PlaybackBarrierPhase, PlaybackBarrierPolicy,
+    PlaybackBarrierRecoveryDisposition, PlaybackBarrierRecoveryPayload,
     PlaybackBarrierRequestResultPayload, PlaybackBarrierSetExtension,
     PlaybackBarrierStateExtension, PlaybackBarrierStatusPayload, PlaybackBarrierTimeoutAction,
     PlayerReadinessAction, PlaylistIndexPayload, PlaystatePayload, PrepareMediaPayload,
@@ -35,9 +36,10 @@ use sorotte_protocol::{
     ReadinessSetExtension, ReadinessStateExtension, ReadyPayload, RecoveryStage,
     RoomBufferingPhase, RoomBufferingPolicy, RoomBufferingPolicyPayload,
     RoomBufferingStatusPayload, RoomPauseOwner, RoomReadinessSnapshot, RoomRef, RoomStartGatePhase,
-    SOROTTE_PLAYBACK_BARRIER_V1, SOROTTE_PLEX_PLAYLIST_URIS_FEATURE, SOROTTE_READINESS_V2,
-    SetPayload, StartGateDegradedReason, StartParticipationRole, StartedAckPayload, StatePayload,
-    TechnicalBlockCause, TechnicalPlayability, TechnicalPlayabilityPhase, TechnicalReadinessBlock,
+    SOROTTE_PLAYBACK_BARRIER_V1, SOROTTE_PLEX_PLAYLIST_URIS_FEATURE,
+    SOROTTE_READINESS_RECONNECT_TOKEN, SOROTTE_READINESS_V2, SetPayload, StartGateDegradedReason,
+    StartParticipationRole, StartedAckPayload, StatePayload, TechnicalBlockCause,
+    TechnicalPlayability, TechnicalPlayabilityPhase, TechnicalReadinessBlock,
     TechnicalReadinessReport, TransportBufferingReportPayload, UserReadinessIntent,
     UserReadinessMutationSource, UserSetPayload, canonical_playlist_files_from_change, decode_line,
     decode_message_line_items, encode_message_line, playlist_change_with_plex_sidecar,
@@ -346,7 +348,9 @@ pub struct ServerRuntime {
     room_playback_barriers: BTreeMap<String, RoomPlaybackBarrier>,
     room_buffering_controls: BTreeMap<String, RoomBufferingControl>,
     room_readiness: BTreeMap<String, RoomReadinessCoordinator>,
-    readiness_reconnect_cache: BTreeMap<(String, String), DetachedReadinessMembership>,
+    readiness_reconnect_cache: BTreeMap<[u8; 32], DetachedReadinessMembership>,
+    readiness_reconnect_identity_by_client: BTreeMap<String, SecretValue>,
+    mixed_readiness_policy: MixedReadinessPolicy,
     pending_user_transport_by_client: BTreeMap<String, PendingUserTransportTransition>,
     next_readiness_membership_epoch: u64,
     /// Superseded transport identities awaiting network teardown after a
@@ -710,6 +714,8 @@ struct ServerReadinessParticipant {
     initialization_open: bool,
     highest_request_nonce: u64,
     accepted_operations: BTreeMap<ReadinessOperationId, AcceptedReadinessOperation>,
+    pending_automatic_pause_owner: Option<RoomPauseOwner>,
+    last_technical_observed_at: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -735,7 +741,15 @@ impl Default for RoomReadinessCoordinator {
 
 #[derive(Debug, Clone, PartialEq)]
 struct DetachedReadinessMembership {
-    participant: ServerReadinessParticipant,
+    room_name: String,
+    username: String,
+    membership_epoch: u64,
+    user_intent: UserReadinessIntent,
+    user_intent_revision: u64,
+    last_user_mutation: Option<ReadinessMutationMetadata>,
+    last_technical_report_sequence: u64,
+    initialization_open: bool,
+    accepted_operations: BTreeMap<ReadinessOperationId, AcceptedReadinessOperation>,
     room_readiness_revision: u64,
     detached_at_seconds: f64,
 }

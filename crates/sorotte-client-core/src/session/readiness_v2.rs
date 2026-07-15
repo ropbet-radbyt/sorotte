@@ -147,6 +147,12 @@ impl ClientSession {
                 manually_initiated: false,
             }];
         }
+        if desired == UserReadinessIntent::NotReady {
+            // Not Ready is the canonical V2 join state. Initialization is a
+            // one-shot promotion to Ready, so transmitting the no-op value
+            // would create a request the server is required to reject.
+            return Vec::new();
+        }
         self.runtime_actions_for_readiness_intent(
             desired,
             UserReadinessMutationSource::Initialization,
@@ -197,22 +203,15 @@ impl ClientSession {
             .wrapping_add(1)
             .max(1);
         let request_nonce = self.model.readiness.next_request_nonce;
-        let expected_revision = self
-            .model
-            .readiness
-            .canonical_snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.room_readiness_revision);
+        let expected_user_intent_revision = self
+            .canonical_participant_readiness(
+                target_username
+                    .as_deref()
+                    .unwrap_or(local_username.as_str()),
+            )
+            .map(|participant| participant.user_intent_revision);
         let operation_id = new_readiness_operation_id(request_nonce);
 
-        let optimistic_username = target_username
-            .as_deref()
-            .unwrap_or(local_username.as_str())
-            .to_owned();
-        self.set_user_ready_state(
-            &optimistic_username,
-            Some(desired == UserReadinessIntent::Ready),
-        );
         self.model.readiness.pending_intent = Some(PendingReadinessIntent {
             room,
             operation_id,
@@ -221,7 +220,7 @@ impl ClientSession {
             desired,
             source,
             target_username,
-            expected_revision,
+            expected_user_intent_revision,
             scope_from_rejection_result: false,
             needs_send: true,
         });
@@ -244,12 +243,16 @@ impl ClientSession {
         if membership_epoch == 0 {
             return None;
         }
-        let room_readiness_revision = self
+        let pending_target = self
             .model
             .readiness
-            .canonical_snapshot
+            .pending_intent
             .as_ref()
-            .map(|snapshot| snapshot.room_readiness_revision);
+            .and_then(|pending| pending.target_username.clone())
+            .unwrap_or_else(|| local_username.clone());
+        let canonical_user_intent_revision = self
+            .canonical_participant_readiness(&pending_target)
+            .map(|participant| participant.user_intent_revision);
         let pending = self.model.readiness.pending_intent.as_mut()?;
         if pending.room != room || !pending.needs_send {
             return None;
@@ -262,7 +265,10 @@ impl ClientSession {
         // reconnect baseline may legitimately move either revision or epoch in
         // either direction after a server restart.
         let canonical_scope_is_current = !pending.scope_from_rejection_result
-            || match (room_readiness_revision, pending.expected_revision) {
+            || match (
+                canonical_user_intent_revision,
+                pending.expected_user_intent_revision,
+            ) {
                 (Some(canonical), Some(pending_revision)) if canonical > pending_revision => true,
                 (Some(canonical), Some(pending_revision)) if canonical == pending_revision => {
                     membership_epoch == pending.membership_epoch
@@ -281,7 +287,7 @@ impl ClientSession {
             pending.request_nonce = self.model.readiness.next_request_nonce;
         }
         if canonical_scope_is_current {
-            pending.expected_revision = room_readiness_revision;
+            pending.expected_user_intent_revision = canonical_user_intent_revision;
             pending.scope_from_rejection_result = false;
         }
         let mut request = ReadinessIntentRequest::new(
@@ -294,8 +300,8 @@ impl ClientSession {
         if let Some(target_username) = pending.target_username.clone() {
             request = request.with_target_username(target_username);
         }
-        if let Some(expected_revision) = pending.expected_revision {
-            request = request.with_expected_revision(expected_revision);
+        if let Some(expected_user_intent_revision) = pending.expected_user_intent_revision {
+            request = request.with_expected_user_intent_revision(expected_user_intent_revision);
         }
         let request_membership_epoch = pending.membership_epoch;
         pending.needs_send = false;
@@ -309,7 +315,10 @@ impl ClientSession {
         &self,
         report: TechnicalReadinessReport,
     ) -> Option<ClientRuntimeAction> {
-        (self.server_readiness_v2_supported() && report.media_generation != 0)
+        (self.server_readiness_v2_supported()
+            && report.media_generation != 0
+            && report.membership_epoch != 0
+            && report.report_sequence != 0)
             .then_some(ClientRuntimeAction::ReportTechnicalReadiness(report))
     }
 
@@ -347,6 +356,7 @@ impl ClientSession {
                     media_generation: participant.technical_state.media_generation,
                     start_gate_phase: sorotte_protocol::RoomStartGatePhase::Inactive,
                     pause_owner: sorotte_protocol::RoomPauseOwner::None,
+                    mixed_readiness_policy: Default::default(),
                     participants: BTreeMap::new(),
                 });
             if participant.room_readiness_revision >= snapshot.room_readiness_revision {
@@ -407,21 +417,31 @@ impl ClientSession {
                         .next_request_nonce
                         .wrapping_add(1)
                         .max(1);
+                    let target_username = self
+                        .model
+                        .readiness
+                        .pending_intent
+                        .as_ref()
+                        .and_then(|pending| pending.target_username.as_deref())
+                        .or(self.model.connection.username.as_deref());
+                    let retry_user_intent_revision = result.user_intent_revision.or_else(|| {
+                        target_username.and_then(|target_username| {
+                            self.model
+                                .readiness
+                                .canonical_snapshot
+                                .as_ref()
+                                .and_then(|snapshot| snapshot.participants.get(target_username))
+                                .map(|participant| participant.user_intent_revision)
+                        })
+                    });
                     if let Some(pending) = self.model.readiness.pending_intent.as_mut() {
                         pending.request_nonce = self.model.readiness.next_request_nonce;
                         if let Some(membership_epoch) = result.membership_epoch {
                             pending.membership_epoch = membership_epoch;
                         }
-                        pending.expected_revision = result.room_readiness_revision.or_else(|| {
-                            self.model
-                                .readiness
-                                .canonical_snapshot
-                                .as_ref()
-                                .map(|snapshot| snapshot.room_readiness_revision)
-                        });
-                        pending.scope_from_rejection_result =
-                            result.room_readiness_revision.is_some()
-                                || result.membership_epoch.is_some();
+                        pending.expected_user_intent_revision = retry_user_intent_revision;
+                        pending.scope_from_rejection_result = result.user_intent_revision.is_some()
+                            || result.membership_epoch.is_some();
                         pending.needs_send = true;
                     }
                 }

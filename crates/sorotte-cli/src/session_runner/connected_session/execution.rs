@@ -493,6 +493,7 @@ mod tests {
             username: "alice".to_owned(),
             user_intent: intent,
             user_intent_revision: 1,
+            last_technical_report_sequence: 0,
             user_intent_source: source,
             last_user_mutation: None,
             terminal_technical_block: None,
@@ -516,6 +517,7 @@ mod tests {
             pause_owner: RoomPauseOwner::ReadinessStartGate {
                 media_generation: 7,
             },
+            mixed_readiness_policy: Default::default(),
             participants: BTreeMap::from([("alice".to_owned(), participant)]),
         };
         session

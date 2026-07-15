@@ -25,19 +25,13 @@ impl GuiPersistedConfigRuntimeOwner {
         for action in attached_player_actions {
             match action {
                 GuiAttachedPlayerRuntimeAction::Paused { paused, cause } => {
+                    let command_id = self.begin_attached_player_pause_command(paused, cause)?;
                     if let Some(player) = self.player.as_mut() {
                         let result = player.set_paused(paused);
                         let command_succeeded = result.is_ok();
-                        let command_result_error = self.session.as_mut().and_then(|session| {
-                            session
-                                .record_external_system_player_pause_command_result(
-                                    paused,
-                                    cause,
-                                    command_succeeded,
-                                    system_time_seconds(),
-                                )
-                                .err()
-                        });
+                        let command_result_error = self
+                            .finish_attached_player_pause_command(command_id, command_succeeded)
+                            .err();
                         if let Err(error) = result {
                             if let Some(command_result_error) = command_result_error {
                                 eprintln!(
@@ -54,6 +48,8 @@ impl GuiPersistedConfigRuntimeOwner {
                             ));
                         }
                         self.note_local_attached_player_pause_command(paused);
+                    } else {
+                        self.finish_attached_player_pause_command(command_id, false)?;
                     }
                     self.player_paused = Some(paused);
                 }
@@ -170,12 +166,16 @@ impl GuiPersistedConfigRuntimeOwner {
         let reset_target_position_seconds =
             self.player_target_position_seconds_for_global_position_impl(0.0);
 
-        let Some(player) = self.player.as_mut() else {
+        let Some(position_result) = self
+            .player
+            .as_mut()
+            .map(|player| player.set_position(reset_target_position_seconds))
+        else {
             return;
         };
 
         let mut state_changed = false;
-        match player.set_position(reset_target_position_seconds) {
+        match position_result {
             Ok(()) => {
                 self.player_position_seconds = Some(0.0);
                 state_changed = true;
@@ -193,18 +193,26 @@ impl GuiPersistedConfigRuntimeOwner {
             }
         }
         if pause_before_sync {
-            let result = player.set_paused(true);
+            let command_id = match self
+                .begin_attached_player_pause_command(true, PlayerCommandCause::PlaylistTransition)
+            {
+                Ok(command_id) => command_id,
+                Err(error) => {
+                    eprintln!(
+                        "warning: failed to register attached-player playlist reset pause: {error}"
+                    );
+                    return;
+                }
+            };
+            let result = self
+                .player
+                .as_mut()
+                .expect("playlist reset player was available for the preceding seek")
+                .set_paused(true);
             let command_succeeded = result.is_ok();
-            let command_result_error = self.session.as_mut().and_then(|session| {
-                session
-                    .record_external_system_player_pause_command_result(
-                        true,
-                        PlayerCommandCause::PlaylistTransition,
-                        command_succeeded,
-                        system_time_seconds(),
-                    )
-                    .err()
-            });
+            let command_result_error = self
+                .finish_attached_player_pause_command(command_id, command_succeeded)
+                .err();
             match result {
                 Ok(()) => {
                     self.note_local_attached_player_pause_command(true);

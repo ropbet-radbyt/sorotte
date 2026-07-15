@@ -399,6 +399,7 @@ impl ServerRuntime {
             }
         }
 
+        let readiness_reconnect_token = hello.readiness_reconnect_token;
         let capabilities = hello.capabilities;
         let mut replacement_outbound = Vec::new();
         if let Some(previous_session) = self.sessions.get(client_id).cloned() {
@@ -511,6 +512,16 @@ impl ServerRuntime {
             self.persistent_rooms_enabled,
             capabilities.persistent_rooms,
         );
+        let readiness_attach_outbound = if self.readiness_enabled && capabilities.readiness_v2 {
+            self.attach_readiness_membership(
+                client_id,
+                readiness_reconnect_token.as_ref(),
+                true,
+                false,
+            )?
+        } else {
+            Vec::new()
+        };
         let mut response = HelloPayload::new(username.clone(), room_name.clone(), version)
             .with_realversion(SERVER_REAL_VERSION)
             .with_features(server_feature_list(
@@ -524,13 +535,18 @@ impl ServerRuntime {
         response
             .extra
             .insert("motd".to_owned(), Value::String(motd));
+        if let Some(reconnect_identity) = self.readiness_reconnect_identity_by_client.get(client_id)
+        {
+            response.extra.insert(
+                SOROTTE_READINESS_RECONNECT_TOKEN.to_owned(),
+                Value::String(reconnect_identity.expose_secret().to_owned()),
+            );
+        }
         outbound.push(DirectedProtocolMessage::new(
             client_id,
             ProtocolMessage::hello(response),
         ));
-        if self.readiness_enabled && capabilities.readiness_v2 {
-            outbound.extend(self.attach_readiness_membership(client_id, true)?);
-        }
+        outbound.extend(readiness_attach_outbound);
         outbound.extend(self.refresh_mixed_readiness_cohort(&room_name)?);
 
         if self.persistent_rooms_enabled {
@@ -700,7 +716,7 @@ impl ServerRuntime {
                     // attached membership.
                     let mut new_room_readiness_outbound =
                         if self.readiness_enabled && session.capabilities.readiness_v2 {
-                            self.attach_readiness_membership(client_id, false)?
+                            self.attach_readiness_membership(client_id, None, false, false)?
                         } else {
                             Vec::new()
                         };
@@ -1060,8 +1076,16 @@ impl ServerRuntime {
                         );
                     }
                     if !previously_supported_readiness && now_supported_readiness {
-                        outbound_messages
-                            .extend(self.attach_readiness_membership(client_id, true)?);
+                        let reconnect_identity = self
+                            .readiness_reconnect_identity_by_client
+                            .get(client_id)
+                            .cloned();
+                        outbound_messages.extend(self.attach_readiness_membership(
+                            client_id,
+                            reconnect_identity.as_ref(),
+                            true,
+                            true,
+                        )?);
                     } else if previously_supported_readiness && !now_supported_readiness {
                         outbound_messages
                             .extend(self.detach_readiness_membership(client_id, true)?);

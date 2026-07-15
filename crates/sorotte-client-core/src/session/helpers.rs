@@ -90,7 +90,8 @@ impl ClientSession {
         // that intent independently from whether room authority or the current
         // technical state permits the physical command to take effect.
         let desired_ready = !paused;
-        let mut readiness_action = if self.server_readiness_v2_supported() {
+        let readiness_v2 = self.server_readiness_v2_supported();
+        let mut readiness_action = if readiness_v2 {
             self.runtime_actions_for_indirect_player_intent(
                 paused,
                 PlayerInteractionSurface::SorottePlaybackControl,
@@ -113,6 +114,23 @@ impl ClientSession {
                 }
             })
         };
+
+        if readiness_v2 && !paused {
+            // V2 Play is a Ready request, not permission to bypass the
+            // server-owned start gate. Keep (or restore) the local transport
+            // paused until the authoritative CommitStart arrives. If a native
+            // player edge already escaped, the corrective SetPaused(true) is
+            // causally classified as ReadinessGateHold by runtime authority.
+            self.model.playback.local_paused = Some(true);
+            let mut actions = (!effective_paused)
+                .then_some(ClientRuntimeAction::SetPaused(true))
+                .into_iter()
+                .collect::<Vec<_>>();
+            if let Some(action) = readiness_action.take() {
+                actions.push(action);
+            }
+            return actions;
+        }
 
         if self.model.playback.local_paused_for_cache == Some(true) && !paused {
             return readiness_action.into_iter().collect();
@@ -278,6 +296,7 @@ impl ClientSession {
 
     pub(super) fn update_local_room(&mut self, room_name: String) {
         if self.model.room.name.as_deref() != Some(room_name.as_str()) {
+            self.model.readiness.reconnect_token = None;
             self.reset_playback_barrier();
             self.reset_playlist_index_transition_tracking();
             self.model.playlist.pending_local_change_echoes.clear();

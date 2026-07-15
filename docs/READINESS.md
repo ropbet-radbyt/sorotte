@@ -9,7 +9,7 @@ Loading, seeking, buffering, recovery, EOF, media refreshes, playlist transition
 
 ## Automatic starts
 
-For peers that negotiate `sorotteReadinessV2` and `sorottePlaybackBarrierV1`, the server owns the start decision. The default policy waits for every required participant to be Ready and technically playable for the same media generation. The server binds the commit to the evaluated readiness revision and broadcasts one canonical start; clients do not independently unpause from a local readiness snapshot.
+For peers that negotiate `sorotteReadinessV2` and `sorottePlaybackBarrierV1`, the server owns the start decision. The default policy waits for every required participant to be Ready and technically playable for the same media generation. Generic playability and barrier-target readiness are independent evidence: a participant must also confirm that the exact prepare revision, target seek, and logical pause were applied. The server binds the commit to the evaluated readiness revision and broadcasts one canonical start; clients do not independently unpause from a local readiness snapshot.
 
 Playlist skips and automatic advancement preserve user intent, create a new technical generation, and enter the same gate. Replaying the current item creates a fresh replay episode rather than locally rewinding past the gate.
 
@@ -17,7 +17,7 @@ Pause ownership prevents automatic systems from resuming an unrelated user pause
 
 ## Mixed-version rooms
 
-V2 participants without the playback-barrier capability and legacy peers are explicitly exposed as excluded legacy clients when a V2-governed start cohort is active. Their legacy Ready value remains visible, but the UI does not claim generation-scoped technical guarantees for them. Rooms using only the legacy protocol retain the previous compatibility behavior.
+V2 participants without the playback-barrier capability and legacy peers are explicitly exposed as excluded legacy clients when a V2-governed start cohort is active. The default `RequireAllMembers` mixed-room policy blocks automatic start and reports `IncompatibleLegacyParticipant`, preserving the all-members contract. `ExcludeLegacy` remains an explicit compatibility opt-in, and `AskController` fails closed until a policy choice is made. Legacy Ready values remain visible, but the UI does not claim generation-scoped technical guarantees for those peers. Rooms using only the legacy protocol retain the previous compatibility behavior.
 
 ## Controls and status
 
@@ -31,4 +31,6 @@ The CLI accepts:
 - `play` and `pause` for intentional playback gestures;
 - `p` as the existing pause toggle.
 
-On reconnect to the same room membership, Sorotte preserves the latest acknowledged intent and reconciles it by operation identity and server revision. Joining a different room starts a fresh membership that defaults to Not Ready.
+The server accepts technical reports only for the current membership epoch and in strictly increasing report-sequence order. Once playback has a server state revision, reports must carry that authoritative revision; a client-local coordinator revision is never accepted as a substitute. Ready/Not Ready compare-and-set uses the participant's user-intent revision, so unrelated technical or pause-owner changes do not create intent conflicts.
+
+On reconnect, a client presents the opaque continuity token issued in the server Hello. A valid token restores acknowledged user intent, its revision, operation idempotency, and the technical ordering baseline. Transient technical playability and barrier readiness always reset to Preparing/Pending and require fresh player evidence. A missing or invalid token—even with the same display name—creates a fresh membership that defaults to Not Ready. Joining a different room also starts a fresh membership.

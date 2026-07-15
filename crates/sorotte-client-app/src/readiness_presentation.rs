@@ -1,5 +1,6 @@
 use sorotte_protocol::{
-    ParticipantReadinessUpdate, ReadinessIntentRequest, RecoveryStage, StartParticipationRole,
+    MixedReadinessPolicy, ParticipantReadinessUpdate, ReadinessIntentRequest, RecoveryStage,
+    RoomReadinessSnapshot, RoomStartGatePhase, StartGateDegradedReason, StartParticipationRole,
     TechnicalBlockCause, TechnicalPlayabilityPhase, UserReadinessIntent,
 };
 
@@ -65,6 +66,8 @@ pub struct ParticipantReadinessPresentation {
     pub room_readiness_revision: Option<u64>,
     pub user_intent_revision: Option<u64>,
     pub participation_role: Option<StartParticipationRole>,
+    pub mixed_readiness_policy: Option<MixedReadinessPolicy>,
+    pub start_gate_phase: Option<RoomStartGatePhase>,
     pub pending: Option<PendingReadinessIntentPresentation>,
     pub accepted_operation_id: Option<String>,
 }
@@ -85,6 +88,8 @@ impl std::fmt::Debug for ParticipantReadinessPresentation {
             .field("room_readiness_revision", &self.room_readiness_revision)
             .field("user_intent_revision", &self.user_intent_revision)
             .field("participation_role", &self.participation_role)
+            .field("mixed_readiness_policy", &self.mixed_readiness_policy)
+            .field("start_gate_phase", &self.start_gate_phase)
             .field("pending", &self.pending)
             .field(
                 "accepted_operation_id",
@@ -113,6 +118,8 @@ impl ParticipantReadinessPresentation {
             room_readiness_revision: None,
             user_intent_revision: None,
             participation_role: None,
+            mixed_readiness_policy: None,
+            start_gate_phase: None,
             pending: None,
             accepted_operation_id: None,
         }
@@ -135,9 +142,17 @@ impl ParticipantReadinessPresentation {
             room_readiness_revision: Some(canonical.room_readiness_revision),
             user_intent_revision: Some(canonical.user_intent_revision),
             participation_role: Some(canonical.participation_role),
+            mixed_readiness_policy: None,
+            start_gate_phase: None,
             pending,
             accepted_operation_id: canonical.accepted_operation_id.clone(),
         }
+    }
+
+    pub fn with_room_snapshot(mut self, snapshot: &RoomReadinessSnapshot) -> Self {
+        self.mixed_readiness_policy = Some(snapshot.mixed_readiness_policy);
+        self.start_gate_phase = Some(snapshot.start_gate_phase.clone());
+        self
     }
 
     pub fn pending_is_acknowledged(&self) -> bool {
@@ -235,13 +250,71 @@ impl ParticipantReadinessPresentation {
     /// readiness guarantee even though their legacy Ready value remains
     /// visible.
     pub fn participation_detail_label(&self) -> &'static str {
-        match self.participation_role {
-            Some(StartParticipationRole::Required) => "required",
-            Some(StartParticipationRole::Spectator) => "spectator; excluded from automatic start",
-            Some(StartParticipationRole::ExcludedLegacy) => {
+        match (self.participation_role, self.mixed_readiness_policy) {
+            (
+                Some(StartParticipationRole::ExcludedLegacy),
+                Some(MixedReadinessPolicy::RequireAllMembers),
+            ) => {
+                "legacy participant; automatic start unavailable until every member supports readiness V2"
+            }
+            (
+                Some(StartParticipationRole::ExcludedLegacy),
+                Some(MixedReadinessPolicy::AskController),
+            ) => "legacy participant; automatic start awaits a controller compatibility decision",
+            (
+                Some(StartParticipationRole::ExcludedLegacy),
+                Some(MixedReadinessPolicy::ExcludeLegacy),
+            ) => "excluded legacy by compatibility policy; technical start guarantees unavailable",
+            (None, Some(MixedReadinessPolicy::RequireAllMembers)) => {
+                "legacy participant; automatic start unavailable until every member supports readiness V2"
+            }
+            (None, Some(MixedReadinessPolicy::AskController)) => {
+                "legacy participant; automatic start awaits a controller compatibility decision"
+            }
+            (None, Some(MixedReadinessPolicy::ExcludeLegacy)) => {
+                "excluded legacy by compatibility policy; technical start guarantees unavailable"
+            }
+            (Some(StartParticipationRole::Required), _) => "required",
+            (Some(StartParticipationRole::Spectator), _) => {
+                "spectator; excluded from automatic start"
+            }
+            (Some(StartParticipationRole::ExcludedLegacy), _) => {
                 "excluded legacy; technical start guarantees unavailable"
             }
-            None => "legacy participant; technical start guarantees unavailable",
+            (None, _) => "legacy participant; technical start guarantees unavailable",
+        }
+    }
+
+    pub fn start_gate_detail_label(&self) -> String {
+        match self.start_gate_phase.as_ref() {
+            None => "unavailable (legacy readiness)".to_owned(),
+            Some(RoomStartGatePhase::Inactive) => "inactive".to_owned(),
+            Some(RoomStartGatePhase::WaitingForIntent { .. }) => {
+                "waiting for required participants to become Ready".to_owned()
+            }
+            Some(RoomStartGatePhase::WaitingForTechnicalReadiness { .. }) => {
+                "waiting for required participants to become technically playable".to_owned()
+            }
+            Some(RoomStartGatePhase::ReadyToCommit { .. }) => {
+                "all readiness conditions met; awaiting server commit".to_owned()
+            }
+            Some(RoomStartGatePhase::Committed { .. }) => "committed by server".to_owned(),
+            Some(RoomStartGatePhase::Degraded {
+                reason: StartGateDegradedReason::IncompatibleLegacyParticipant,
+                ..
+            }) => match self.mixed_readiness_policy {
+                Some(MixedReadinessPolicy::AskController) => {
+                    "automatic start unavailable: controller must choose how to handle a legacy participant"
+                        .to_owned()
+                }
+                _ => {
+                    "automatic start unavailable: a room member does not support readiness V2"
+                        .to_owned()
+                }
+            },
+            Some(RoomStartGatePhase::Degraded { reason, .. }) => {
+                format!("automatic start degraded: {}", degraded_reason_label(*reason))
+            }
         }
     }
 
@@ -284,6 +357,20 @@ impl ParticipantReadinessPresentation {
             }),
             TechnicalPlayabilityPhase::TerminallyBlocked => Some("technical failure"),
         }
+    }
+}
+
+fn degraded_reason_label(reason: StartGateDegradedReason) -> &'static str {
+    match reason {
+        StartGateDegradedReason::Superseded => "superseded",
+        StartGateDegradedReason::ReadinessChanged => "readiness changed",
+        StartGateDegradedReason::TechnicalFailure => "technical failure",
+        StartGateDegradedReason::UserPaused => "user paused",
+        StartGateDegradedReason::PauseOwnershipLost => "pause ownership lost",
+        StartGateDegradedReason::Cancelled => "cancelled",
+        StartGateDegradedReason::TimedOut => "timed out",
+        StartGateDegradedReason::NoRequiredParticipants => "no required participants",
+        StartGateDegradedReason::IncompatibleLegacyParticipant => "incompatible legacy participant",
     }
 }
 
@@ -366,6 +453,7 @@ mod tests {
         ParticipantReadinessUpdate {
             room_readiness_revision: 9,
             membership_epoch: 4,
+            last_technical_report_sequence: 0,
             username: "alice".to_owned(),
             user_intent: intent,
             user_intent_revision: 7,
@@ -477,6 +565,40 @@ mod tests {
         );
         assert_eq!(failed.status_label(), "Not Ready — technical failure");
         assert_eq!(failed.retained_intent_label(), Some("Ready"));
+    }
+
+    #[test]
+    fn strict_mixed_room_presentation_explains_automatic_start_degradation() {
+        let mut legacy = canonical(
+            UserReadinessIntent::NotReady,
+            TechnicalPlayabilityPhase::Unknown,
+            false,
+            false,
+            None,
+        );
+        legacy.participation_role = StartParticipationRole::ExcludedLegacy;
+        let snapshot = RoomReadinessSnapshot {
+            room_readiness_revision: 9,
+            media_generation: Some(3),
+            start_gate_phase: RoomStartGatePhase::Degraded {
+                media_generation: 3,
+                reason: StartGateDegradedReason::IncompatibleLegacyParticipant,
+            },
+            pause_owner: Default::default(),
+            mixed_readiness_policy: MixedReadinessPolicy::RequireAllMembers,
+            participants: Default::default(),
+        };
+        let presentation =
+            ParticipantReadinessPresentation::from_v2(&legacy, None).with_room_snapshot(&snapshot);
+
+        assert_eq!(
+            presentation.participation_detail_label(),
+            "legacy participant; automatic start unavailable until every member supports readiness V2"
+        );
+        assert_eq!(
+            presentation.start_gate_detail_label(),
+            "automatic start unavailable: a room member does not support readiness V2"
+        );
     }
 
     #[test]

@@ -17,6 +17,7 @@ fn participant(
     ParticipantReadinessUpdate {
         room_readiness_revision: revision,
         membership_epoch,
+        last_technical_report_sequence: 0,
         username: "alice".to_owned(),
         user_intent: intent,
         user_intent_revision: revision,
@@ -51,6 +52,7 @@ fn snapshot(
         pause_owner: RoomPauseOwner::ReadinessStartGate {
             media_generation: 7,
         },
+        mixed_readiness_policy: Default::default(),
         participants: [(
             "alice".to_owned(),
             participant(revision, membership_epoch, intent, accepted_operation_id),
@@ -91,7 +93,7 @@ impl ClientEffectSink for RejectingReadinessControl {
 }
 
 #[test]
-fn failed_player_resume_preserves_ready_intent_and_reports_technical_block() {
+fn v2_play_stages_ready_without_dispatching_a_physical_resume() {
     let mut session = active_v2_session();
     session.model.playback.local_paused = Some(true);
     let player = RecordingPlayer {
@@ -106,38 +108,45 @@ fn failed_player_resume_preserves_ready_intent_and_reports_technical_block() {
     );
     runtime.flush_queued_protocol_messages();
 
-    let error = runtime
-        .run_set_paused(false)
-        .expect_err("physical resume failure should be surfaced");
-    assert_eq!(error, PlayerError::Unsupported("set_paused_failed"));
+    assert!(
+        runtime
+            .run_set_paused(false)
+            .expect("V2 Play should stage semantic intent without touching the player")
+    );
     assert_eq!(
         runtime
             .session()
             .pending_readiness_intent()
             .map(|intent| intent.desired()),
         Some(UserReadinessIntent::Ready),
-        "physical command failure must not roll back the user's Play intent"
+        "the user's Play intent should remain pending until server acknowledgement"
+    );
+    assert_eq!(runtime.session().user_ready("alice"), Some(false));
+    assert_eq!(
+        runtime.session().displayed_user_readiness_intent("alice"),
+        Some(UserReadinessIntent::Ready),
+        "optimistic presentation must not overwrite the canonical readiness projection"
+    );
+    assert!(
+        !runtime
+            .player()
+            .player_effects
+            .contains(&ClientEffect::SetPlayerPaused(false)),
+        "V2 Play must wait for CommitStart before resuming the player"
     );
 
     let messages = runtime.control().outbound_messages();
-    let technical = messages.iter().find_map(|message| {
+    assert!(!messages.iter().any(|message| {
         let ProtocolMessage::State(state) = message else {
-            return None;
+            return false;
         };
         state
             .state
-            .readiness_v2()
-            .expect("readiness extension should decode")
-            .and_then(|extension| extension.technical)
-    });
-    let technical = technical.unwrap_or_else(|| {
-        panic!("resume failure should publish a technical report; messages={messages:?}")
-    });
-    assert_eq!(
-        technical.phase,
-        TechnicalPlayabilityPhase::TemporarilyBlocked
-    );
-    assert_eq!(technical.reason, Some(TechnicalBlockCause::PlayerFailure));
+            .playstate
+            .as_ref()
+            .and_then(|state| state.paused)
+            == Some(false)
+    }));
 
     let intent = messages.iter().find_map(|message| {
         let ProtocolMessage::Set(set) = message else {
@@ -151,6 +160,20 @@ fn failed_player_resume_preserves_ready_intent_and_reports_technical_block() {
     assert_eq!(
         intent.map(|intent| intent.desired),
         Some(UserReadinessIntent::Ready)
+    );
+
+    runtime
+        .session_mut_for_test()
+        .reset_sync_state_for_reconnect();
+    assert_eq!(
+        runtime.session().user_ready("alice"),
+        Some(false),
+        "reconnect must not copy the pending Ready overlay into canonical user state"
+    );
+    assert_eq!(
+        runtime.session().displayed_user_readiness_intent("alice"),
+        Some(UserReadinessIntent::Ready),
+        "the pending intent remains presentation state while awaiting reconciliation"
     );
 }
 
@@ -167,7 +190,7 @@ fn direct_intent_uses_membership_revision_and_operation_identity() {
         panic!("V2 readiness should create one semantic intent action");
     };
     assert_eq!(request.membership_epoch, 41);
-    assert_eq!(request.expected_revision, Some(1));
+    assert_eq!(request.expected_user_intent_revision, Some(1));
     assert_eq!(request.desired, UserReadinessIntent::Ready);
     assert_eq!(
         request.source,
@@ -185,6 +208,37 @@ fn direct_intent_uses_membership_revision_and_operation_identity() {
 }
 
 #[test]
+fn intent_cas_uses_target_user_revision_not_room_technical_revision() {
+    let mut session = active_v2_session();
+    let mut technical_update = snapshot(2, 41, UserReadinessIntent::NotReady, None);
+    let alice = technical_update
+        .participants
+        .get_mut("alice")
+        .expect("fixture should include Alice");
+    alice.user_intent_revision = 1;
+    alice.technical_state.phase = TechnicalPlayabilityPhase::TemporarilyBlocked;
+    alice.technical_state.reason = Some(TechnicalBlockCause::Rebuffering);
+    session
+        .apply_readiness_v2_extension(ReadinessSetExtension::new().with_snapshot(technical_update));
+
+    let actions = session.runtime_actions_for_direct_readiness_intent(
+        UserReadinessIntent::Ready,
+        DirectReadinessSurface::GuiButton,
+        None,
+    );
+    let [ClientRuntimeAction::SetReadinessIntent { request, .. }] = actions.as_slice() else {
+        panic!("V2 readiness should create one semantic intent action");
+    };
+    assert_eq!(request.expected_user_intent_revision, Some(1));
+    assert_ne!(
+        request.expected_user_intent_revision,
+        session
+            .readiness_snapshot()
+            .map(|snapshot| snapshot.room_readiness_revision)
+    );
+}
+
+#[test]
 fn room_entry_initialization_has_distinct_v2_provenance() {
     let mut session = active_v2_session();
     let actions = session.runtime_actions_for_initial_readiness_intent(UserReadinessIntent::Ready);
@@ -195,7 +249,13 @@ fn room_entry_initialization_has_distinct_v2_provenance() {
     assert_eq!(request.desired, UserReadinessIntent::Ready);
     assert_eq!(request.source, UserReadinessMutationSource::Initialization);
     assert_eq!(request.membership_epoch, 41);
-    assert_eq!(request.expected_revision, Some(1));
+    assert_eq!(request.expected_user_intent_revision, Some(1));
+    assert!(
+        session
+            .runtime_actions_for_initial_readiness_intent(UserReadinessIntent::NotReady)
+            .is_empty(),
+        "canonical Not Ready initialization is a V2 no-op"
+    );
 }
 
 #[test]
@@ -429,7 +489,7 @@ fn reconnect_preserves_operation_but_reserializes_for_current_membership() {
     };
     assert_eq!(resend.operation_id, operation_id);
     assert_eq!(resend.membership_epoch, 41);
-    assert_eq!(resend.expected_revision, Some(2));
+    assert_eq!(resend.expected_user_intent_revision, Some(2));
 }
 
 #[test]
@@ -452,7 +512,8 @@ fn revision_conflict_retry_preserves_newer_server_scope_until_snapshot_catches_u
                 ReadinessRequestResultStatus::RejectedRevisionConflict,
             )
             .with_room_readiness_revision(2)
-            .with_membership_epoch(73),
+            .with_membership_epoch(73)
+            .with_user_intent_revision(2),
         ),
     );
 
@@ -468,7 +529,7 @@ fn revision_conflict_retry_preserves_newer_server_scope_until_snapshot_catches_u
     };
     assert_eq!(retry.operation_id, first.operation_id);
     assert!(retry.request_nonce > first.request_nonce);
-    assert_eq!(retry.expected_revision, Some(2));
+    assert_eq!(retry.expected_user_intent_revision, Some(2));
     assert_eq!(retry.membership_epoch, 73);
     assert_eq!(scope, crate::ReadinessIntentScope::new("room1", 73));
 }
@@ -509,7 +570,7 @@ fn stale_membership_retry_preserves_new_epoch_at_same_revision() {
     };
     assert_eq!(retry.operation_id, first.operation_id);
     assert!(retry.request_nonce > first.request_nonce);
-    assert_eq!(retry.expected_revision, Some(1));
+    assert_eq!(retry.expected_user_intent_revision, Some(1));
     assert_eq!(retry.membership_epoch, 73);
     assert_eq!(scope, crate::ReadinessIntentScope::new("room1", 73));
 }

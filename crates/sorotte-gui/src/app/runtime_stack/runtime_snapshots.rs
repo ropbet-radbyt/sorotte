@@ -25,23 +25,32 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         if !session.server_readiness_v2_supported() {
             return BTreeMap::new();
         }
+        let Some(room_snapshot) = session.readiness_snapshot() else {
+            return BTreeMap::new();
+        };
         users
             .iter()
-            .filter_map(|user| {
-                let canonical = session.canonical_participant_readiness(&user.username)?;
-                let pending = session
-                    .pending_readiness_intent()
-                    .filter(|pending| {
-                        pending
-                            .target_username()
-                            .or(local_username)
-                            .is_some_and(|target| target == user.username)
-                    })
-                    .map(PendingReadinessIntentPresentation::from);
-                Some((
-                    user.username.clone(),
-                    ParticipantReadinessPresentation::from_v2(canonical, pending),
-                ))
+            .map(|user| {
+                let presentation =
+                    if let Some(canonical) = room_snapshot.participants.get(&user.username) {
+                        let pending = session
+                            .pending_readiness_intent()
+                            .filter(|pending| {
+                                pending
+                                    .target_username()
+                                    .or(local_username)
+                                    .is_some_and(|target| target == user.username)
+                            })
+                            .map(PendingReadinessIntentPresentation::from);
+                        ParticipantReadinessPresentation::from_v2(canonical, pending)
+                    } else {
+                        ParticipantReadinessPresentation::from_legacy(
+                            user.username.clone(),
+                            user.is_ready,
+                        )
+                    }
+                    .with_room_snapshot(room_snapshot);
+                (user.username.clone(), presentation)
             })
             .collect()
     }

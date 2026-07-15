@@ -4,7 +4,9 @@ impl ServerRuntime {
     pub(crate) fn attach_readiness_membership(
         &mut self,
         client_id: &str,
-        allow_reconnect: bool,
+        presented_reconnect_token: Option<&SecretValue>,
+        issue_reconnect_token: bool,
+        seed_legacy_intent: bool,
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
         self.pending_user_transport_by_client.remove(client_id);
         let Some(session) = self.sessions.get(client_id).cloned() else {
@@ -21,16 +23,33 @@ impl ServerRuntime {
         };
 
         self.prune_readiness_reconnect_cache();
-        let cache_key = (session.room.clone(), session.username.clone());
-        let restored = allow_reconnect
-            .then(|| self.readiness_reconnect_cache.remove(&cache_key))
-            .flatten();
-        let restored_on_new_transport = restored
-            .as_ref()
-            .is_some_and(|membership| membership.participant.client_id != client_id);
+        let restored = if issue_reconnect_token {
+            presented_reconnect_token
+                .filter(|token| token.expose_secret().len() <= READINESS_MAX_OPERATION_ID_BYTES)
+                .map(|token| readiness_reconnect_token_digest(token.expose_secret()))
+                .and_then(|digest| {
+                    self.readiness_reconnect_cache
+                        .get(&digest)
+                        .filter(|membership| {
+                            membership.room_name == session.room
+                                && membership.username == session.username
+                        })?;
+                    self.readiness_reconnect_cache.remove(&digest)
+                })
+        } else {
+            None
+        };
         let restored_membership = restored.is_some();
-        if !allow_reconnect {
-            self.readiness_reconnect_cache.remove(&cache_key);
+        if issue_reconnect_token {
+            let reconnect_identity = if restored_membership {
+                presented_reconnect_token
+                    .cloned()
+                    .expect("restored membership must have presented a reconnect token")
+            } else {
+                generate_readiness_reconnect_token()
+            };
+            self.readiness_reconnect_identity_by_client
+                .insert(client_id.to_owned(), reconnect_identity);
         }
 
         let current_generation = self
@@ -46,20 +65,47 @@ impl ServerRuntime {
             .as_ref()
             .map(|membership| membership.room_readiness_revision)
             .unwrap_or_default();
-        let initialized_user_intent =
-            if self.stored_user_ready(&session.username, &session.room) == Some(true) {
-                UserReadinessIntent::Ready
-            } else {
-                UserReadinessIntent::NotReady
-            };
+        let initialized_user_intent = if seed_legacy_intent
+            && self.stored_user_ready(&session.username, &session.room) == Some(true)
+        {
+            UserReadinessIntent::Ready
+        } else {
+            UserReadinessIntent::NotReady
+        };
         let mut participant = if let Some(restored) = restored {
-            restored.participant
+            ServerReadinessParticipant {
+                client_id: client_id.to_owned(),
+                record: ParticipantReadiness {
+                    membership_epoch: restored.membership_epoch,
+                    last_technical_report_sequence: restored.last_technical_report_sequence,
+                    user_intent: restored.user_intent,
+                    user_intent_revision: restored.user_intent_revision,
+                    last_user_mutation: restored.last_user_mutation,
+                    technical_state: current_generation
+                        .map_or(TechnicalPlayability::Unknown, |media_generation| {
+                            TechnicalPlayability::Preparing { media_generation }
+                        }),
+                    terminal_technical_block: None,
+                    participation_role,
+                    room_ready: false,
+                    start_eligible: false,
+                },
+                initialization_open: restored.initialization_open,
+                highest_request_nonce: 0,
+                accepted_operations: restored.accepted_operations,
+                pending_automatic_pause_owner: None,
+                // Client monotonic clocks may restart with a replacement
+                // process. Sequence ordering survives reconnect; timestamp
+                // monotonicity is scoped to one live transport.
+                last_technical_observed_at: None,
+            }
         } else {
             let membership_epoch = self.allocate_readiness_membership_epoch();
             ServerReadinessParticipant {
                 client_id: client_id.to_owned(),
                 record: ParticipantReadiness {
                     membership_epoch,
+                    last_technical_report_sequence: 0,
                     // A live legacy-to-V2 capability upgrade is still the same
                     // authenticated room membership. Seed its acknowledged
                     // room-facing intent instead of silently forcing Ready
@@ -80,17 +126,13 @@ impl ServerRuntime {
                 initialization_open: true,
                 highest_request_nonce: 0,
                 accepted_operations: BTreeMap::new(),
+                pending_automatic_pause_owner: None,
+                last_technical_observed_at: None,
             }
         };
         participant.client_id = client_id.to_owned();
         if restored_membership {
             participant.initialization_open = false;
-        }
-        if restored_on_new_transport {
-            // Request nonces fence a live transport, while operation IDs remain
-            // reconnect-idempotent. A fresh client session therefore starts a
-            // new nonce space without discarding acknowledged operations.
-            participant.highest_request_nonce = 0;
         }
         // A readiness-capable client that cannot participate in the
         // generation-scoped playback barrier is explicitly excluded. It must
@@ -139,23 +181,6 @@ impl ServerRuntime {
             );
         }
         self.refresh_readiness_gate_phase(&session.room);
-        if let Some(media_generation) = active_media_generation
-            && self.readiness_participant_is_start_eligible(&session.room, &session.username)
-                == Some(true)
-            && let Some(barrier_participant) = self
-                .room_playback_barriers
-                .get_mut(&session.room)
-                .and_then(|barrier| barrier.participants.get_mut(client_id))
-        {
-            // Reconnect preserves generation-scoped playability. Mirror that
-            // canonical V2 state back into the V1 barrier entry created during
-            // cohort reconciliation so the join-triggered gate evaluation is
-            // not forced to wait for duplicate telemetry.
-            barrier_participant.status.phase = PlaybackBarrierParticipantPhase::Ready;
-            barrier_participant.status.readiness =
-                Some(MediaReadyPayload::new(media_generation, true, true));
-            barrier_participant.status.degraded_reason = None;
-        }
         let room_ready = self
             .readiness_record(&session.room, &session.username)
             .is_some_and(|record| record.room_ready);
@@ -213,18 +238,31 @@ impl ServerRuntime {
             return Ok(Vec::new());
         };
 
-        let cache_key = (session.room.clone(), session.username.clone());
-        if retain_for_reconnect {
+        let reconnect_identity = if retain_for_reconnect {
+            self.readiness_reconnect_identity_by_client
+                .get(client_id)
+                .cloned()
+        } else {
+            None
+        };
+        if let Some(reconnect_identity) = reconnect_identity {
+            let record = participant.record;
             self.readiness_reconnect_cache.insert(
-                cache_key,
+                readiness_reconnect_token_digest(reconnect_identity.expose_secret()),
                 DetachedReadinessMembership {
-                    participant,
+                    room_name: session.room.clone(),
+                    username: session.username.clone(),
+                    membership_epoch: record.membership_epoch,
+                    user_intent: record.user_intent,
+                    user_intent_revision: record.user_intent_revision,
+                    last_user_mutation: record.last_user_mutation,
+                    last_technical_report_sequence: record.last_technical_report_sequence,
+                    initialization_open: participant.initialization_open,
+                    accepted_operations: participant.accepted_operations,
                     room_readiness_revision: room_revision,
                     detached_at_seconds: self.current_time_seconds(),
                 },
             );
-        } else {
-            self.readiness_reconnect_cache.remove(&cache_key);
         }
         self.refresh_readiness_gate_phase(&session.room);
         let mut outbound = self.readiness_snapshot_fanout(&session.room);
@@ -268,12 +306,7 @@ impl ServerRuntime {
         if !self.technical_readiness_report_is_current(client_id, &report) {
             return Ok(Vec::new());
         }
-        let media_generation = report.media_generation;
-        let playable = report.phase == TechnicalPlayabilityPhase::Playable;
-        let mut outbound = self.apply_technical_readiness_report(client_id, report)?;
-        let ready = MediaReadyPayload::new(media_generation, playable, playable);
-        outbound.extend(self.record_playback_barrier_ready(client_id, ready, false)?);
-        Ok(outbound)
+        self.apply_technical_readiness_report(client_id, report)
     }
 
     pub(crate) fn apply_legacy_readiness_to_v2(
@@ -358,22 +391,6 @@ impl ServerRuntime {
         Ok(Some(outbound))
     }
 
-    pub(crate) fn apply_media_ready_to_v2(
-        &mut self,
-        client_id: &str,
-        ready: &MediaReadyPayload,
-    ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
-        let phase = if ready.is_ready() {
-            TechnicalPlayabilityPhase::Playable
-        } else {
-            TechnicalPlayabilityPhase::Preparing
-        };
-        self.apply_technical_readiness_report(
-            client_id,
-            TechnicalReadinessReport::new(ready.media_generation, phase),
-        )
-    }
-
     pub(crate) fn begin_readiness_generation(
         &mut self,
         room_name: &str,
@@ -401,6 +418,7 @@ impl ServerRuntime {
             participant.record.technical_state =
                 TechnicalPlayability::Preparing { media_generation };
             participant.record.terminal_technical_block = None;
+            participant.pending_automatic_pause_owner = None;
             recompute_participant_readiness(&mut participant.record, Some(media_generation));
         }
         self.refresh_readiness_gate_phase(room_name);
@@ -509,6 +527,9 @@ impl ServerRuntime {
         let Some(room) = self.room_readiness.get(room_name) else {
             return true;
         };
+        if self.readiness_mixed_room_blocks_start(room_name) {
+            return false;
+        }
         let Some(barrier) = self.room_playback_barriers.get(room_name) else {
             return false;
         };
@@ -532,6 +553,19 @@ impl ServerRuntime {
                                 && session.capabilities.playback_barrier_v1
                         })
             })
+    }
+
+    fn readiness_mixed_room_blocks_start(&self, room_name: &str) -> bool {
+        if self.mixed_readiness_policy == MixedReadinessPolicy::ExcludeLegacy
+            || !self.room_readiness.contains_key(room_name)
+        {
+            return false;
+        }
+        self.sessions.iter().any(|(client_id, session)| {
+            session.room == room_name
+                && !self.playback_barrier_fenced_clients.contains(client_id)
+                && !(session.capabilities.readiness_v2 && session.capabilities.playback_barrier_v1)
+        })
     }
 
     /// Re-evaluates the explicit mixed-room cohort after feature negotiation or
@@ -846,7 +880,15 @@ impl ServerRuntime {
         room_name: &str,
         username: &str,
     ) -> Option<RoomPauseOwner> {
-        let technical_state = &self.readiness_record(room_name, username)?.technical_state;
+        let participant = self
+            .room_readiness
+            .get(room_name)?
+            .participants
+            .get(username)?;
+        if let Some(owner) = &participant.pending_automatic_pause_owner {
+            return Some(owner.clone());
+        }
+        let technical_state = &participant.record.technical_state;
         match technical_state {
             TechnicalPlayability::TemporarilyBlocked {
                 cause: TechnicalBlockCause::Recovery,
@@ -1029,7 +1071,7 @@ impl ServerRuntime {
             ));
         }
 
-        let (highest_nonce, room_revision, target_exists) = self
+        let (highest_nonce, target_user_intent_revision) = self
             .room_readiness
             .get(&session.room)
             .map(|room| {
@@ -1038,8 +1080,9 @@ impl ServerRuntime {
                         .get(&session.username)
                         .map(|participant| participant.highest_request_nonce)
                         .unwrap_or_default(),
-                    room.revision,
-                    room.participants.contains_key(&target_username),
+                    room.participants
+                        .get(&target_username)
+                        .map(|participant| participant.record.user_intent_revision),
                 )
             })
             .unwrap_or_default();
@@ -1058,17 +1101,17 @@ impl ServerRuntime {
         {
             actor.highest_request_nonce = request.request_nonce;
         }
-        if !target_exists {
+        let Some(target_user_intent_revision) = target_user_intent_revision else {
             self.clear_pending_user_transport(client_id);
             return Ok(reject(
                 self,
                 ReadinessRequestResultStatus::RejectedInvalid,
                 current_epoch,
             ));
-        }
+        };
         if request
-            .expected_revision
-            .is_some_and(|expected| expected != room_revision)
+            .expected_user_intent_revision
+            .is_some_and(|expected| expected != target_user_intent_revision)
         {
             self.clear_pending_user_transport(client_id);
             return Ok(reject(
@@ -1267,6 +1310,8 @@ impl ServerRuntime {
             .and_then(|room| room.media_generation)
             .expect("validated technical report should have a current generation");
         let canonical_transport_paused = self.room_playback_state(&session.room).paused;
+        let report_sequence = report.report_sequence;
+        let observed_at = report.observed_at;
         let reported_pause_owner = match report.reason {
             Some(TechnicalBlockCause::EndOfFile) => Some(RoomPauseOwner::EndOfPlaylist),
             Some(TechnicalBlockCause::Recovery) => Some(RoomPauseOwner::Recovery),
@@ -1305,7 +1350,23 @@ impl ServerRuntime {
             let before_room_ready = participant.record.room_ready;
             let before_state = participant.record.technical_state.clone();
             let before_block = participant.record.terminal_technical_block.clone();
+            let before_sequence = participant.record.last_technical_report_sequence;
             participant.record.technical_state = technical_state;
+            participant.record.last_technical_report_sequence = report_sequence;
+            if let Some(observed_at) = observed_at {
+                participant.last_technical_observed_at = Some(observed_at);
+            }
+            match reported_pause_owner.clone() {
+                Some(owner) => participant.pending_automatic_pause_owner = Some(owner),
+                None if matches!(
+                    participant.record.technical_state,
+                    TechnicalPlayability::Unknown | TechnicalPlayability::Playable { .. }
+                ) =>
+                {
+                    participant.pending_automatic_pause_owner = None;
+                }
+                None => {}
+            }
             match &participant.record.technical_state {
                 TechnicalPlayability::TerminallyBlocked { cause, .. } => {
                     participant.record.terminal_technical_block =
@@ -1320,7 +1381,8 @@ impl ServerRuntime {
             }
             recompute_participant_readiness(&mut participant.record, Some(current_generation));
             let changed = before_state != participant.record.technical_state
-                || before_block != participant.record.terminal_technical_block;
+                || before_block != participant.record.terminal_technical_block
+                || before_sequence != participant.record.last_technical_report_sequence;
             if changed {
                 room.revision = room.revision.saturating_add(1);
             }
@@ -1368,6 +1430,11 @@ impl ServerRuntime {
             ));
         }
         outbound.extend(self.readiness_snapshot_fanout(&session.room));
+        // Target-specific barrier evidence may arrive before the participant's
+        // generic V2 eligibility. Re-evaluate the gate when that final
+        // technical transition lands, while still requiring the independent
+        // MediaReady participant phase in playback_barrier_policy_satisfied().
+        outbound.extend(self.maybe_commit_readiness_gate(&session.room)?);
         Ok(outbound)
     }
 
@@ -1381,22 +1448,63 @@ impl ServerRuntime {
         };
         if !self.readiness_enabled
             || !session.capabilities.readiness_v2
-            || self
-                .room_readiness
-                .get(&session.room)
-                .and_then(|room| room.media_generation)
-                != Some(report.media_generation)
+            || report.membership_epoch == 0
+            || report.report_sequence == 0
         {
             return false;
         }
-        !self
-            .room_playback_barriers
+        let Some(participant) = self
+            .room_readiness
             .get(&session.room)
-            .and_then(|barrier| barrier.state_revision)
-            .is_some_and(|active_revision| {
-                report
-                    .playback_state_revision
-                    .is_some_and(|revision| revision != active_revision)
+            .filter(|room| room.media_generation == Some(report.media_generation))
+            .and_then(|room| room.participants.get(&session.username))
+        else {
+            return false;
+        };
+        if participant.client_id != client_id
+            || participant.record.membership_epoch != report.membership_epoch
+            || report.report_sequence <= participant.record.last_technical_report_sequence
+            || report.observed_at.is_some_and(|observed_at| {
+                !observed_at.is_finite()
+                    || participant
+                        .last_technical_observed_at
+                        .is_some_and(|last_observed_at| observed_at < last_observed_at)
+            })
+        {
+            return false;
+        }
+        report.authoritative_playback_revision
+            == self.authoritative_playback_revision(&session.room, report.reason)
+    }
+
+    fn authoritative_playback_revision(
+        &self,
+        room_name: &str,
+        reason: Option<TechnicalBlockCause>,
+    ) -> Option<u64> {
+        if reason == Some(TechnicalBlockCause::RoomBufferingPolicy)
+            && let Some(state_revision) = self
+                .room_buffering_controls
+                .get(room_name)
+                .filter(|control| {
+                    self.room_readiness
+                        .get(room_name)
+                        .and_then(|room| room.media_generation)
+                        == Some(control.config.media_generation)
+                })
+                .and_then(|control| control.config.state_revision)
+        {
+            return Some(state_revision);
+        }
+        self.room_playback_barriers
+            .get(room_name)
+            .and_then(|barrier| {
+                matches!(
+                    barrier.phase,
+                    PlaybackBarrierPhase::Committed | PlaybackBarrierPhase::Complete
+                )
+                .then_some(barrier.state_revision)
+                .flatten()
             })
     }
 
@@ -1445,7 +1553,12 @@ impl ServerRuntime {
             .collect();
         let phase = match barrier_phase {
             Some(PlaybackBarrierPhase::Preparing) => {
-                if required.is_empty() {
+                if self.readiness_mixed_room_blocks_start(room_name) {
+                    RoomStartGatePhase::Degraded {
+                        media_generation,
+                        reason: StartGateDegradedReason::IncompatibleLegacyParticipant,
+                    }
+                } else if required.is_empty() {
                     RoomStartGatePhase::Degraded {
                         media_generation,
                         reason: StartGateDegradedReason::NoRequiredParticipants,
@@ -1536,6 +1649,7 @@ impl ServerRuntime {
         Some(ParticipantReadinessUpdate {
             room_readiness_revision: room.revision,
             membership_epoch: record.membership_epoch,
+            last_technical_report_sequence: record.last_technical_report_sequence,
             username: username.to_owned(),
             user_intent: record.user_intent,
             user_intent_revision: record.user_intent_revision,
@@ -1565,6 +1679,7 @@ impl ServerRuntime {
             media_generation: room.media_generation,
             start_gate_phase: room.start_gate_phase.clone(),
             pause_owner: room.pause_owner.clone(),
+            mixed_readiness_policy: self.mixed_readiness_policy,
             participants,
         })
     }
@@ -1648,6 +1763,18 @@ impl ServerRuntime {
         }
         if let Some(epoch) = membership_epoch {
             result = result.with_membership_epoch(epoch);
+        }
+        if let Some(session) = self.sessions.get(client_id) {
+            let target_username = request
+                .target_username
+                .as_deref()
+                .unwrap_or(session.username.as_str());
+            if let Some(user_intent_revision) = self
+                .readiness_record(&session.room, target_username)
+                .map(|record| record.user_intent_revision)
+            {
+                result = result.with_user_intent_revision(user_intent_revision);
+            }
         }
         vec![DirectedProtocolMessage::new(
             client_id,
@@ -1741,4 +1868,21 @@ fn trim_readiness_operations(
         };
         operations.remove(&oldest_key);
     }
+}
+
+fn generate_readiness_reconnect_token() -> SecretValue {
+    let mut bytes = [0_u8; 32];
+    getrandom::getrandom(&mut bytes)
+        .expect("operating system random source should issue reconnect identities");
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(HEX[usize::from(byte >> 4)] as char);
+        encoded.push(HEX[usize::from(byte & 0x0f)] as char);
+    }
+    SecretValue::from(encoded)
+}
+
+fn readiness_reconnect_token_digest(token: &str) -> [u8; 32] {
+    Sha256::digest(token.as_bytes()).into()
 }

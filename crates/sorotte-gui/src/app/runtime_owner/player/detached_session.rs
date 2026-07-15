@@ -73,6 +73,47 @@ impl GuiPersistedConfigRuntimeOwner {
         Ok(())
     }
 
+    pub(in crate::app) fn begin_attached_player_pause_command(
+        &mut self,
+        target_paused: bool,
+        cause: PlayerCommandCause,
+    ) -> Result<Option<PlayerCommandId>, String> {
+        if cause == PlayerCommandCause::LocalUserPlaybackControl {
+            self.stage_attached_player_pause_intent(target_paused)?;
+        } else {
+            // System authority explicitly supersedes the GUI's transport-only
+            // optimistic user overlay. Canonical readiness intent is held by
+            // client-core and is not changed here.
+            self.pending_local_attached_pause_override = None;
+        }
+        self.session
+            .as_mut()
+            .map(|session| {
+                session.begin_external_player_pause_command(
+                    target_paused,
+                    cause,
+                    system_time_seconds(),
+                )
+            })
+            .transpose()
+            .map(Option::flatten)
+    }
+
+    pub(in crate::app) fn finish_attached_player_pause_command(
+        &mut self,
+        command_id: Option<PlayerCommandId>,
+        succeeded: bool,
+    ) -> Result<(), String> {
+        if let Some(session) = self.session.as_mut() {
+            session.finish_external_player_pause_command(
+                command_id,
+                succeeded,
+                system_time_seconds(),
+            )?;
+        }
+        Ok(())
+    }
+
     pub(in crate::app) fn rollback_attached_player_pause_intent(&mut self, target_paused: bool) {
         self.pending_local_attached_pause_override = None;
         let actions = self.session.as_mut().and_then(|session| {
@@ -190,22 +231,19 @@ impl GuiPersistedConfigRuntimeOwner {
                                 .to_owned(),
                         );
                     }
-                    self.stage_attached_player_pause_intent(false)?;
+                    let command_id = self.begin_attached_player_pause_command(
+                        false,
+                        PlayerCommandCause::LocalUserPlaybackControl,
+                    )?;
                     let set_paused_result = self
                         .player
                         .as_mut()
                         .expect("attached player was checked before staging")
                         .set_paused(false);
                     let command_succeeded = set_paused_result.is_ok();
-                    let command_result_error = self.session.as_mut().and_then(|session| {
-                        session
-                            .record_external_player_pause_command_result(
-                                false,
-                                command_succeeded,
-                                system_time_seconds(),
-                            )
-                            .err()
-                    });
+                    let command_result_error = self
+                        .finish_attached_player_pause_command(command_id, command_succeeded)
+                        .err();
                     if let Err(error) = set_paused_result {
                         if let Some(command_result_error) = command_result_error {
                             eprintln!(
@@ -262,22 +300,19 @@ impl GuiPersistedConfigRuntimeOwner {
         if self.player.is_none() {
             return Err("Playback pause toggle requires a playback runtime connection.".to_owned());
         }
-        self.stage_attached_player_pause_intent(target_paused)?;
+        let command_id = self.begin_attached_player_pause_command(
+            target_paused,
+            PlayerCommandCause::LocalUserPlaybackControl,
+        )?;
         let set_paused_result = self
             .player
             .as_mut()
             .expect("attached player was checked before staging")
             .set_paused(target_paused);
         let command_succeeded = set_paused_result.is_ok();
-        let command_result_error = self.session.as_mut().and_then(|session| {
-            session
-                .record_external_player_pause_command_result(
-                    target_paused,
-                    command_succeeded,
-                    system_time_seconds(),
-                )
-                .err()
-        });
+        let command_result_error = self
+            .finish_attached_player_pause_command(command_id, command_succeeded)
+            .err();
         if let Err(error) = set_paused_result {
             if let Some(command_result_error) = command_result_error {
                 eprintln!(

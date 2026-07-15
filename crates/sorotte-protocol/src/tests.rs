@@ -7,8 +7,8 @@ use serde_json::json;
 use super::{
     ChatMessagePayload, ChatPayload, ControllerAuthPayload, DirectReadinessSurface, ErrorPayload,
     FilePayload, HelloPayload, IgnoringOnTheFlyPayload, ListPayload, ListUserEntry,
-    MediaLoadIntent, MediaReadyPayload, NewControlledRoomPayload, ParticipantReadiness,
-    ParticipantReadinessUpdate, PingPayload, PlaybackBarrierPolicy,
+    MediaLoadIntent, MediaReadyPayload, MixedReadinessPolicy, NewControlledRoomPayload,
+    ParticipantReadiness, ParticipantReadinessUpdate, PingPayload, PlaybackBarrierPolicy,
     PlaybackBarrierRecoveryDisposition, PlaybackBarrierRecoveryPayload,
     PlaybackBarrierRequestResultPayload, PlaybackBarrierRequestResultStatus,
     PlaybackBarrierSetExtension, PlaybackBarrierStateExtension, PlaybackBarrierTimeoutAction,
@@ -513,7 +513,7 @@ fn readiness_v2_intent_is_additive_tagged_and_roundtrips() {
             surface: DirectReadinessSurface::GuiButton,
         },
     )
-    .with_expected_revision(12);
+    .with_expected_user_intent_revision(12);
     let message = ProtocolMessage::set(
         SetPayload::new()
             .with_ready(ReadyPayload::new(true).with_manually_initiated(true))
@@ -553,6 +553,12 @@ fn readiness_v2_intent_is_additive_tagged_and_roundtrips() {
             .pointer("/Set/sorotteReadinessV2/intent/membershipEpoch")
             .and_then(|value| value.as_u64()),
         Some(41)
+    );
+    assert_eq!(
+        value
+            .pointer("/Set/sorotteReadinessV2/intent/expectedUserIntentRevision")
+            .and_then(|value| value.as_u64()),
+        Some(12)
     );
 
     let decoded = decode_message_line(&encoded).expect("readiness intent should decode");
@@ -614,6 +620,7 @@ fn readiness_v2_canonical_snapshot_and_result_roundtrip() {
     let participant = ParticipantReadinessUpdate {
         room_readiness_revision: 18,
         membership_epoch: 6,
+        last_technical_report_sequence: 7,
         username: "alice".to_owned(),
         user_intent: UserReadinessIntent::Ready,
         user_intent_revision: 4,
@@ -636,6 +643,7 @@ fn readiness_v2_canonical_snapshot_and_result_roundtrip() {
         pause_owner: RoomPauseOwner::ReadinessStartGate {
             media_generation: 9,
         },
+        mixed_readiness_policy: MixedReadinessPolicy::RequireAllMembers,
         participants: BTreeMap::from([("alice".to_owned(), participant.clone())]),
     };
     let result = ReadinessRequestResultPayload::new(
@@ -644,7 +652,8 @@ fn readiness_v2_canonical_snapshot_and_result_roundtrip() {
         ReadinessRequestResultStatus::Accepted,
     )
     .with_room_readiness_revision(18)
-    .with_membership_epoch(6);
+    .with_membership_epoch(6)
+    .with_user_intent_revision(4);
     let extension = ReadinessSetExtension::new()
         .with_participant(participant)
         .with_snapshot(snapshot)
@@ -673,6 +682,12 @@ fn readiness_v2_canonical_snapshot_and_result_roundtrip() {
     );
     assert_eq!(
         value
+            .pointer("/Set/sorotteReadinessV2/snapshot/mixedReadinessPolicy")
+            .and_then(|value| value.as_str()),
+        Some("requireAllMembers")
+    );
+    assert_eq!(
+        value
             .pointer(
                 "/Set/sorotteReadinessV2/snapshot/participants/alice/technicalState/mediaGeneration"
             )
@@ -690,6 +705,12 @@ fn readiness_v2_canonical_snapshot_and_result_roundtrip() {
             .pointer("/Set/sorotteReadinessV2/requestResult/status")
             .and_then(|value| value.as_str()),
         Some("accepted")
+    );
+    assert_eq!(
+        value
+            .pointer("/Set/sorotteReadinessV2/requestResult/userIntentRevision")
+            .and_then(|value| value.as_u64()),
+        Some(4)
     );
 
     let ProtocolMessage::Set(decoded) =
@@ -709,8 +730,8 @@ fn readiness_v2_canonical_snapshot_and_result_roundtrip() {
 #[test]
 fn readiness_v2_technical_report_roundtrips_in_state() {
     let technical =
-        TechnicalReadinessReport::new(22, TechnicalPlayabilityPhase::TemporarilyBlocked)
-            .with_playback_state_revision(31)
+        TechnicalReadinessReport::new(22, 6, 8, TechnicalPlayabilityPhase::TemporarilyBlocked)
+            .with_authoritative_playback_revision(31)
             .with_reason(TechnicalBlockCause::Rebuffering)
             .with_recovery(RecoveryStage::Retrying)
             .with_observed_at(123.25);
@@ -727,6 +748,24 @@ fn readiness_v2_technical_report_roundtrips_in_state() {
             .pointer("/State/sorotteReadinessV2/technical/mediaGeneration")
             .and_then(|value| value.as_u64()),
         Some(22)
+    );
+    assert_eq!(
+        value
+            .pointer("/State/sorotteReadinessV2/technical/membershipEpoch")
+            .and_then(|value| value.as_u64()),
+        Some(6)
+    );
+    assert_eq!(
+        value
+            .pointer("/State/sorotteReadinessV2/technical/reportSequence")
+            .and_then(|value| value.as_u64()),
+        Some(8)
+    );
+    assert_eq!(
+        value
+            .pointer("/State/sorotteReadinessV2/technical/authoritativePlaybackRevision")
+            .and_then(|value| value.as_u64()),
+        Some(31)
     );
     assert_eq!(
         value
@@ -814,6 +853,7 @@ fn readiness_v2_tagged_state_types_have_stable_camel_case_shapes() {
 fn participant_readiness_record_preserves_intent_and_technical_block_separately() {
     let record = ParticipantReadiness {
         membership_epoch: 3,
+        last_technical_report_sequence: 9,
         user_intent: UserReadinessIntent::Ready,
         user_intent_revision: 8,
         last_user_mutation: Some(ReadinessMutationMetadata::new(
@@ -881,6 +921,25 @@ fn malformed_readiness_v2_extensions_do_not_break_envelope_decoding() {
 }
 
 #[test]
+fn legacy_v2_technical_report_without_ordering_fields_decodes_to_rejectable_zero_scope() {
+    let message = decode_message_line(
+        r#"{"State":{"sorotteReadinessV2":{"technical":{"mediaGeneration":2,"phase":"playable"}}}}"#,
+    )
+    .expect("older additive V2 payload should preserve the protocol envelope");
+    let ProtocolMessage::State(state) = message else {
+        panic!("expected State message");
+    };
+    let report = state
+        .state
+        .readiness_v2()
+        .expect("missing additive ordering fields should remain decodable")
+        .and_then(|extension| extension.technical)
+        .expect("technical report should be present");
+    assert_eq!(report.membership_epoch, 0);
+    assert_eq!(report.report_sequence, 0);
+}
+
+#[test]
 fn readiness_v2_debug_redacts_all_operation_id_carriers() {
     const MARKER: &str = "private-readiness-operation-token";
     let intent = ReadinessIntentRequest::new(
@@ -904,6 +963,7 @@ fn readiness_v2_debug_redacts_all_operation_id_carriers() {
     let participant = ParticipantReadinessUpdate {
         room_readiness_revision: 3,
         membership_epoch: 2,
+        last_technical_report_sequence: 0,
         username: "alice".to_owned(),
         user_intent: UserReadinessIntent::NotReady,
         user_intent_revision: 1,

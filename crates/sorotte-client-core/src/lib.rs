@@ -14,10 +14,11 @@ use sorotte_protocol::{
     ParticipantReadinessUpdate, PingPayload, PlayerInteractionSurface, PlaylistIndexPayload,
     PlaystatePayload, ProtocolError, ProtocolMessage, ReadinessIntentRequest,
     ReadinessRequestResultStatus, ReadinessSetExtension, ReadinessStateExtension, ReadyPayload,
-    RoomReadinessSnapshot, RoomRef, SOROTTE_PLEX_PLAYLIST_URIS_FEATURE, SOROTTE_READINESS_V2,
-    SetPayload, StatePayload, TechnicalReadinessReport, UserReadinessIntent,
-    UserReadinessMutationSource, canonical_playlist_files_from_change, decode_message_line,
-    decode_message_line_items, encode_message_line, playlist_change_with_plex_sidecar,
+    RoomReadinessSnapshot, RoomRef, SOROTTE_PLEX_PLAYLIST_URIS_FEATURE,
+    SOROTTE_READINESS_RECONNECT_TOKEN, SOROTTE_READINESS_V2, SetPayload, StatePayload,
+    TechnicalReadinessReport, UserReadinessIntent, UserReadinessMutationSource,
+    canonical_playlist_files_from_change, decode_message_line, decode_message_line_items,
+    encode_message_line, playlist_change_with_plex_sidecar,
 };
 use sorotte_secret::SecretValue;
 

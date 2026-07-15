@@ -172,6 +172,7 @@ impl ClientSession {
             .as_deref()
             .or(self.model.room.name.as_deref());
         if tracked_room != Some(room.as_str()) {
+            self.model.readiness.reconnect_token = None;
             if self.server_readiness_v2_supported() {
                 self.stop_autoplay_countdown();
             }

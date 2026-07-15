@@ -320,6 +320,8 @@ impl ServerRuntime {
         self.client_playback_states.remove(client_id);
         self.client_room_join_sequence.remove(client_id);
         self.pending_user_transport_by_client.remove(client_id);
+        self.readiness_reconnect_identity_by_client
+            .remove(client_id);
         self.playback_barrier_request_nonces.remove(client_id);
         self.playback_barrier_new_identity_rate_by_client
             .remove(client_id);

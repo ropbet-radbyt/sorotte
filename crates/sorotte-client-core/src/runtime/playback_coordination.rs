@@ -38,7 +38,7 @@ pub struct PlaybackBarrierStartConfig {
 impl Default for PlaybackBarrierStartConfig {
     fn default() -> Self {
         Self {
-            policy: None,
+            policy: Some(PlaybackBarrierPolicy::AllEligible),
             quorum_percent: 75,
             timeout_seconds: 15.0,
             timeout_action: PlaybackBarrierTimeoutAction::Continue,
@@ -241,7 +241,10 @@ struct PlayerCommandBinding {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TechnicalReadinessFingerprint {
+    connection_generation: u64,
+    membership_epoch: u64,
     media_generation: u64,
+    authoritative_playback_revision: Option<u64>,
     phase: TechnicalPlayabilityPhase,
     reason: Option<TechnicalBlockCause>,
     recovery: Option<RecoveryStage>,
@@ -259,6 +262,7 @@ pub(crate) struct RuntimePlaybackCoordination {
     player_transition_classifier: PlayerTransitionClassifier,
     last_player_transition_classification: Option<PlayerTransitionClassification>,
     last_technical_readiness_fingerprint: Option<TechnicalReadinessFingerprint>,
+    next_technical_readiness_report_sequence: u64,
     latest_observation: Option<PlayerTransportObservation>,
     adapter_clock_offset_seconds: Option<f64>,
     last_external_now_seconds: Option<f64>,
@@ -644,6 +648,7 @@ impl RuntimePlaybackCoordination {
 
     pub(crate) fn begin_protocol_connection_generation(&mut self, session: &ClientSession) {
         self.connection_generation = self.connection_generation.saturating_add(1).max(1);
+        self.last_technical_readiness_fingerprint = None;
         self.bind_local_control_authority_context(
             session,
             LocalControlAuthorityFreshness::Awaiting,
@@ -817,15 +822,9 @@ impl RuntimePlaybackCoordination {
             .unwrap_or_else(|| self.next_room_barrier_request_nonce());
         let mut extension = PlaybackBarrierSetExtension::new();
         let mut start_requested = false;
-        // Readiness V2 has a server-owned start gate even when the legacy
-        // start-synchronization preference is "immediate".  An explicitly
-        // configured controller/quorum policy still wins; otherwise the V2
-        // default is all required participants.
-        let effective_start_policy = self.barrier_start_config.policy.or_else(|| {
-            session
-                .server_readiness_v2_supported()
-                .then_some(PlaybackBarrierPolicy::AllEligible)
-        });
+        // The default is AllEligible. Applications can preserve an explicit
+        // Immediate compatibility selection by setting this value to `None`.
+        let effective_start_policy = self.barrier_start_config.policy;
         if intent.include_start_barrier
             && let Some(policy) = effective_start_policy
         {
@@ -1593,6 +1592,17 @@ impl RuntimePlaybackCoordination {
         }
     }
 
+    /// Retires the transport-only user pause overlay when newer system
+    /// authority issues a player command. Readiness intent remains canonical
+    /// in the session model; this only prevents the superseded transport
+    /// command from impersonating current player authority.
+    fn supersede_local_pause_transport(&mut self, at_seconds: f64) {
+        self.pending_local_pause_intent = None;
+        self.last_local_pause_intent_stage_accepted = None;
+        self.player_transition_classifier
+            .supersede_unmatched_commands(PlayerCommandCause::LocalUserPlaybackControl, at_seconds);
+    }
+
     pub(crate) fn observe_local_control_authority(
         &mut self,
         session: &ClientSession,
@@ -2124,7 +2134,7 @@ impl RuntimePlaybackCoordination {
         desired_paused: bool,
         issued_at_seconds: f64,
     ) {
-        self.register_synthetic_pause_command_completion(
+        let _ = self.register_synthetic_pause_command_completion(
             cause,
             desired_paused,
             issued_at_seconds,
@@ -2140,7 +2150,7 @@ impl RuntimePlaybackCoordination {
         desired_paused: bool,
         issued_at_seconds: f64,
     ) {
-        self.register_synthetic_pause_command_completion(
+        let _ = self.register_synthetic_pause_command_completion(
             cause,
             desired_paused,
             issued_at_seconds,
@@ -2156,14 +2166,12 @@ impl RuntimePlaybackCoordination {
         desired_paused: bool,
         issued_at_seconds: f64,
         completion: PlayerCommandCompletion,
-    ) {
+    ) -> Option<PlayerCommandId> {
         self.next_synthetic_player_command_id =
             self.next_synthetic_player_command_id.wrapping_add(1).max(1);
         let command_id =
             PlayerCommandId::new((1_u64 << 63) | self.next_synthetic_player_command_id);
-        let Some(media_generation) = self.coordinator.current_media_generation() else {
-            return;
-        };
+        let media_generation = self.coordinator.current_media_generation()?;
         let adapter_epoch = self.classifier_adapter_epoch();
         let mut registration = PlayerCommandRegistration::new(
             command_id,
@@ -2175,9 +2183,48 @@ impl RuntimePlaybackCoordination {
         );
         registration.completion = completion;
         self.player_transition_classifier
-            .register_command(registration);
+            .register_command(registration)
+            .then_some(command_id)
     }
 
+    pub(crate) fn begin_external_pause_command(
+        &mut self,
+        cause: PlayerCommandCause,
+        desired_paused: bool,
+        external_now_seconds: f64,
+    ) -> Option<PlayerCommandId> {
+        let issued_at_seconds = self.standalone_command_issued_at_seconds(external_now_seconds);
+        if cause != PlayerCommandCause::LocalUserPlaybackControl {
+            self.supersede_local_pause_transport(issued_at_seconds);
+        }
+        self.register_synthetic_pause_command_completion(
+            cause,
+            desired_paused,
+            issued_at_seconds,
+            PlayerCommandCompletion::Pending,
+        )
+    }
+
+    pub(crate) fn finish_external_pause_command(
+        &mut self,
+        command_id: PlayerCommandId,
+        succeeded: bool,
+        external_now_seconds: f64,
+    ) -> bool {
+        let at_seconds = self.standalone_command_issued_at_seconds(external_now_seconds);
+        let completion = if succeeded {
+            PlayerCommandCompletion::Completed { at_seconds }
+        } else {
+            PlayerCommandCompletion::Failed { at_seconds }
+        };
+        self.player_transition_classifier.update_command_completion(
+            self.classifier_adapter_epoch(),
+            command_id,
+            completion,
+        )
+    }
+
+    #[cfg(test)]
     pub(crate) fn register_external_pause_command_result(
         &mut self,
         cause: PlayerCommandCause,
@@ -2185,22 +2232,11 @@ impl RuntimePlaybackCoordination {
         succeeded: bool,
         external_now_seconds: f64,
     ) {
-        let issued_at_seconds = self.standalone_command_issued_at_seconds(external_now_seconds);
-        let completion = if succeeded {
-            PlayerCommandCompletion::Completed {
-                at_seconds: issued_at_seconds,
-            }
-        } else {
-            PlayerCommandCompletion::Failed {
-                at_seconds: issued_at_seconds,
-            }
-        };
-        self.register_synthetic_pause_command_completion(
-            cause,
-            desired_paused,
-            issued_at_seconds,
-            completion,
-        );
+        let command_id =
+            self.begin_external_pause_command(cause, desired_paused, external_now_seconds);
+        if let Some(command_id) = command_id {
+            let _ = self.finish_external_pause_command(command_id, succeeded, external_now_seconds);
+        }
     }
 
     pub(crate) fn standalone_command_issued_at_seconds(&self, external_now_seconds: f64) -> f64 {
@@ -2282,10 +2318,12 @@ impl RuntimePlaybackCoordination {
                 authority,
                 Some(RoomPlaystateAuthority::ServerBufferingPolicy { .. })
             ))
-            .with_playback_barrier(matches!(
-                authority,
-                Some(RoomPlaystateAuthority::ServerBarrier { .. })
-            ))
+            .with_playback_barrier(session.playback_barrier_status().is_some_and(|status| {
+                matches!(
+                    status.phase,
+                    PlaybackBarrierPhase::Preparing | PlaybackBarrierPhase::AwaitingDecision
+                )
+            }))
             .with_synchronization(
                 self.reconnect_reconciliation.is_some()
                     || (!self.player_command_bindings.is_empty()
@@ -2313,10 +2351,30 @@ impl RuntimePlaybackCoordination {
         Some(classification)
     }
 
-    fn next_technical_readiness_report(&mut self) -> Option<TechnicalReadinessReport> {
+    fn next_technical_readiness_report(
+        &mut self,
+        session: &ClientSession,
+    ) -> Option<TechnicalReadinessReport> {
         let observation = self.latest_observation.as_ref()?;
         let phase = observation.phase?;
-        let media_generation = observation.media_generation;
+        let local_media_generation = observation.media_generation;
+        let local_username = session.username()?;
+        let canonical = session.canonical_participant_readiness(local_username)?;
+        let media_generation = session.readiness_snapshot()?.media_generation?;
+        if let Some(prepare) = session
+            .playback_barrier_prepare()
+            .filter(|prepare| prepare.media_generation == media_generation)
+            && !self.current_logical_media_matches(&prepare.logical_media_id)
+        {
+            return None;
+        }
+        if self.coordinator.current_media_generation() != Some(local_media_generation) {
+            return None;
+        }
+        let membership_epoch = canonical.membership_epoch;
+        if membership_epoch == 0 {
+            return None;
+        }
         let recovery = self.coordinator.recovery_episode();
         let (technical_phase, reason, recovery_stage) =
             if recovery.as_ref().is_some_and(|episode| episode.degraded) {
@@ -2389,8 +2447,13 @@ impl RuntimePlaybackCoordination {
                     ),
                 }
             };
+        let authoritative_playback_revision =
+            authoritative_technical_playback_revision(session, media_generation, reason);
         let fingerprint = TechnicalReadinessFingerprint {
+            connection_generation: self.connection_generation,
+            membership_epoch,
             media_generation,
+            authoritative_playback_revision,
             phase: technical_phase,
             reason,
             recovery: recovery_stage,
@@ -2398,10 +2461,22 @@ impl RuntimePlaybackCoordination {
         if self.last_technical_readiness_fingerprint == Some(fingerprint) {
             return None;
         }
-        let mut report = TechnicalReadinessReport::new(media_generation, technical_phase)
-            .with_observed_at(observation.observed_at_seconds);
-        if let Some(state_revision) = self.last_applied_revision {
-            report = report.with_playback_state_revision(state_revision);
+        self.next_technical_readiness_report_sequence = self
+            .next_technical_readiness_report_sequence
+            .max(canonical.last_technical_report_sequence)
+            .saturating_add(1);
+        if self.next_technical_readiness_report_sequence == 0 {
+            return None;
+        }
+        let mut report = TechnicalReadinessReport::new(
+            media_generation,
+            membership_epoch,
+            self.next_technical_readiness_report_sequence,
+            technical_phase,
+        )
+        .with_observed_at(observation.observed_at_seconds);
+        if let Some(state_revision) = authoritative_playback_revision {
+            report = report.with_authoritative_playback_revision(state_revision);
         }
         if let Some(reason) = reason {
             report = report.with_reason(reason);
@@ -2414,11 +2489,27 @@ impl RuntimePlaybackCoordination {
 
     fn next_player_command_failure_readiness_report(
         &mut self,
+        session: &ClientSession,
         external_now_seconds: f64,
     ) -> Option<TechnicalReadinessReport> {
-        let media_generation = self.coordinator.current_media_generation()?;
-        let fingerprint = TechnicalReadinessFingerprint {
+        self.coordinator.current_media_generation()?;
+        let local_username = session.username()?;
+        let canonical = session.canonical_participant_readiness(local_username)?;
+        let media_generation = session.readiness_snapshot()?.media_generation?;
+        let membership_epoch = canonical.membership_epoch;
+        if membership_epoch == 0 {
+            return None;
+        }
+        let authoritative_playback_revision = authoritative_technical_playback_revision(
+            session,
             media_generation,
+            Some(TechnicalBlockCause::PlayerFailure),
+        );
+        let fingerprint = TechnicalReadinessFingerprint {
+            connection_generation: self.connection_generation,
+            membership_epoch,
+            media_generation,
+            authoritative_playback_revision,
             phase: TechnicalPlayabilityPhase::TemporarilyBlocked,
             reason: Some(TechnicalBlockCause::PlayerFailure),
             recovery: Some(RecoveryStage::NotStarted),
@@ -2427,8 +2518,17 @@ impl RuntimePlaybackCoordination {
             return None;
         }
         let observed_at = self.standalone_command_issued_at_seconds(external_now_seconds);
+        self.next_technical_readiness_report_sequence = self
+            .next_technical_readiness_report_sequence
+            .max(canonical.last_technical_report_sequence)
+            .saturating_add(1);
+        if self.next_technical_readiness_report_sequence == 0 {
+            return None;
+        }
         let mut report = TechnicalReadinessReport::new(
             media_generation,
+            membership_epoch,
+            self.next_technical_readiness_report_sequence,
             TechnicalPlayabilityPhase::TemporarilyBlocked,
         )
         .with_reason(TechnicalBlockCause::PlayerFailure)
@@ -2436,15 +2536,18 @@ impl RuntimePlaybackCoordination {
         if observed_at.is_finite() {
             report = report.with_observed_at(observed_at);
         }
-        if let Some(state_revision) = self.last_applied_revision {
-            report = report.with_playback_state_revision(state_revision);
+        if let Some(state_revision) = authoritative_playback_revision {
+            report = report.with_authoritative_playback_revision(state_revision);
         }
         Some(report)
     }
 
     fn mark_technical_readiness_report_delivered(&mut self, report: &TechnicalReadinessReport) {
         self.last_technical_readiness_fingerprint = Some(TechnicalReadinessFingerprint {
+            connection_generation: self.connection_generation,
+            membership_epoch: report.membership_epoch,
             media_generation: report.media_generation,
+            authoritative_playback_revision: report.authoritative_playback_revision,
             phase: report.phase,
             reason: report.reason,
             recovery: report.recovery,
@@ -2840,6 +2943,42 @@ where
         actions
     }
 
+    /// Registers an attached-player pause/play command before dispatch. This
+    /// ordering lets even synchronously published telemetry retain the exact
+    /// causal owner. System commands also supersede any transport-only user
+    /// overlay without changing the user's canonical readiness intent.
+    pub fn begin_external_player_pause_command(
+        &mut self,
+        paused: bool,
+        cause: PlayerCommandCause,
+        now_seconds: f64,
+    ) -> Option<PlayerCommandId> {
+        self.playback_coordination
+            .begin_external_pause_command(cause, paused, now_seconds)
+    }
+
+    /// Records the terminal dispatch result for a command registered through
+    /// [`Self::begin_external_player_pause_command`].
+    pub fn finish_external_player_pause_command(
+        &mut self,
+        command_id: Option<PlayerCommandId>,
+        succeeded: bool,
+        now_seconds: f64,
+    ) -> Result<(), PlayerError> {
+        if let Some(command_id) = command_id {
+            let _ = self.playback_coordination.finish_external_pause_command(
+                command_id,
+                succeeded,
+                now_seconds,
+            );
+        }
+        if succeeded {
+            Ok(())
+        } else {
+            self.report_player_command_failure_readiness(now_seconds)
+        }
+    }
+
     /// Tags the result of a pause/play command issued by an attached player
     /// surface outside the core adapter. The resulting telemetry edge remains
     /// causally owned by the original Sorotte gesture and therefore cannot be
@@ -2850,18 +2989,12 @@ where
         succeeded: bool,
         now_seconds: f64,
     ) -> Result<(), PlayerError> {
-        self.playback_coordination
-            .register_external_pause_command_result(
-                PlayerCommandCause::LocalUserPlaybackControl,
-                paused,
-                succeeded,
-                now_seconds,
-            );
-        if succeeded {
-            Ok(())
-        } else {
-            self.report_player_command_failure_readiness(now_seconds)
-        }
+        let command_id = self.begin_external_player_pause_command(
+            paused,
+            PlayerCommandCause::LocalUserPlaybackControl,
+            now_seconds,
+        );
+        self.finish_external_player_pause_command(command_id, succeeded, now_seconds)
     }
 
     /// Tags a pause/play command issued through an attached-player system
@@ -2876,13 +3009,8 @@ where
         now_seconds: f64,
     ) -> Result<(), PlayerError> {
         debug_assert_ne!(cause, PlayerCommandCause::LocalUserPlaybackControl);
-        self.playback_coordination
-            .register_external_pause_command_result(cause, paused, succeeded, now_seconds);
-        if succeeded {
-            Ok(())
-        } else {
-            self.report_player_command_failure_readiness(now_seconds)
-        }
+        let command_id = self.begin_external_player_pause_command(paused, cause, now_seconds);
+        self.finish_external_player_pause_command(command_id, succeeded, now_seconds)
     }
 
     pub fn observe_external_player_transport(
@@ -2917,13 +3045,44 @@ where
         result: Result<(), PlayerError>,
         now_seconds: f64,
     ) {
+        self.finish_external_coordinator_command_dispatch(command_id, None, result, now_seconds);
+    }
+
+    pub fn begin_external_coordinator_command_dispatch(
+        &mut self,
+        command_id: CoordinatorCommandId,
+        now_seconds: f64,
+    ) -> Option<PlayerCommandId> {
         let issued_at_seconds = self.playback_coordination.coordinator_now(now_seconds);
-        let pause_registration = self
+        let (cause, desired_paused, _) = self
             .playback_coordination
-            .external_pause_command_registration(command_id, issued_at_seconds);
+            .external_pause_command_registration(command_id, issued_at_seconds)?;
+        self.playback_coordination
+            .begin_external_pause_command(cause, desired_paused, now_seconds)
+    }
+
+    pub fn finish_external_coordinator_command_dispatch(
+        &mut self,
+        command_id: CoordinatorCommandId,
+        player_command_id: Option<PlayerCommandId>,
+        result: Result<(), PlayerError>,
+        now_seconds: f64,
+    ) {
+        let issued_at_seconds = self.playback_coordination.coordinator_now(now_seconds);
+        let pause_registration = player_command_id.is_none().then(|| {
+            self.playback_coordination
+                .external_pause_command_registration(command_id, issued_at_seconds)
+        });
+        if let Some(player_command_id) = player_command_id {
+            let _ = self.playback_coordination.finish_external_pause_command(
+                player_command_id,
+                result.is_ok(),
+                now_seconds,
+            );
+        }
         match result {
             Ok(()) => {
-                if let Some((cause, desired_paused, issued_at_seconds)) = pause_registration {
+                if let Some(Some((cause, desired_paused, issued_at_seconds))) = pause_registration {
                     self.playback_coordination
                         .register_completed_synthetic_pause_command(
                             cause,
@@ -2935,13 +3094,15 @@ where
                     .command_dispatch_succeeded(command_id)
             }
             Err(_) => {
-                if let Some((cause, desired_paused, issued_at_seconds)) = pause_registration {
+                if let Some(Some((cause, desired_paused, issued_at_seconds))) = pause_registration {
                     self.playback_coordination
                         .register_failed_synthetic_pause_command(
                             cause,
                             desired_paused,
                             issued_at_seconds,
                         );
+                }
+                if player_command_id.is_some() || pause_registration.flatten().is_some() {
                     let _ = self.report_player_command_failure_readiness(now_seconds);
                 }
                 self.playback_coordination
@@ -3009,15 +3170,15 @@ where
             .classify_latest_player_transition(&self.session);
         if let Some(PlayerTransitionClassification::NativePlayerGesture { action }) = classification
         {
-            let paused = action == NativePlayerAction::Pause;
-            let actions = self.session.runtime_actions_for_indirect_player_intent(
-                paused,
-                sorotte_protocol::PlayerInteractionSurface::NativePlayerControl,
-            );
-            self.dispatch_runtime_actions_with_causal_tracking(&actions)?;
+            self.dispatch_native_player_readiness_action(
+                action,
+                PlayerInteractionSurface::NativePlayerControl,
+            )?;
         }
 
-        if let Some(report) = self.playback_coordination.next_technical_readiness_report()
+        if let Some(report) = self
+            .playback_coordination
+            .next_technical_readiness_report(&self.session)
             && let Some(action) = self
                 .session
                 .runtime_action_for_technical_readiness(report.clone())
@@ -3027,6 +3188,47 @@ where
                 .mark_technical_readiness_report_delivered(&report);
         }
         Ok(())
+    }
+
+    /// Confirms an explicit native-player action only when the classifier has
+    /// already staged the matching same-scope transport edge. Successful
+    /// confirmation consumes that edge and dispatches its indirect readiness
+    /// intent exactly once.
+    pub fn confirm_pending_native_player_play(
+        &mut self,
+        surface: PlayerInteractionSurface,
+    ) -> Result<bool, PlayerError> {
+        let Some(classification) = self
+            .playback_coordination
+            .player_transition_classifier
+            .confirm_pending_native_play()
+        else {
+            return Ok(false);
+        };
+        self.playback_coordination
+            .last_player_transition_classification = Some(classification);
+        self.dispatch_native_player_readiness_action(NativePlayerAction::Play, surface)?;
+        Ok(true)
+    }
+
+    fn dispatch_native_player_readiness_action(
+        &mut self,
+        action: NativePlayerAction,
+        surface: PlayerInteractionSurface,
+    ) -> Result<(), PlayerError> {
+        let paused = action == NativePlayerAction::Pause;
+        if !self.session.server_readiness_v2_supported() {
+            // Legacy rooms still need a short transport overlay while the
+            // canonical self-echo is in flight. Crucially, it is created only
+            // after the classifier has proven a native gesture; readiness V2
+            // never lets that overlay authorize local Play.
+            self.playback_coordination
+                .stage_local_pause_intent(paused, &self.session);
+        }
+        let actions = self
+            .session
+            .runtime_actions_for_indirect_player_intent(paused, surface);
+        self.dispatch_runtime_actions_with_causal_tracking(&actions)
     }
 
     pub(crate) fn interrupt_playback_recovery(
@@ -3383,7 +3585,7 @@ where
     ) -> Result<(), PlayerError> {
         let Some(report) = self
             .playback_coordination
-            .next_player_command_failure_readiness_report(external_now_seconds)
+            .next_player_command_failure_readiness_report(&self.session, external_now_seconds)
         else {
             return Ok(());
         };
@@ -3418,6 +3620,25 @@ where
     }
 }
 
+fn authoritative_technical_playback_revision(
+    session: &ClientSession,
+    media_generation: u64,
+    reason: Option<TechnicalBlockCause>,
+) -> Option<u64> {
+    if reason == Some(TechnicalBlockCause::RoomBufferingPolicy)
+        && let Some(state_revision) = session
+            .playback_barrier_buffering_policy()
+            .filter(|policy| policy.media_generation == media_generation)
+            .and_then(|policy| policy.state_revision)
+    {
+        return Some(state_revision);
+    }
+    session
+        .playback_barrier_commit()
+        .filter(|commit| commit.media_generation == media_generation)
+        .map(|commit| commit.state_revision)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3442,6 +3663,43 @@ mod tests {
             )
             .expect("barrier-aware hello should apply");
         session
+    }
+
+    fn readiness_v2_session_with_intent(
+        media_generation: u64,
+        membership_epoch: u64,
+        last_technical_report_sequence: u64,
+        user_intent: UserReadinessIntent,
+    ) -> ClientSession {
+        let (user_intent, room_ready, start_gate_phase) = match user_intent {
+            UserReadinessIntent::Ready => ("ready", true, "waitingForTechnicalReadiness"),
+            UserReadinessIntent::NotReady => ("notReady", false, "waitingForIntent"),
+        };
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"readiness":true,"sorotteReadinessV2":true,"sorottePlaybackBarrierV1":true}}}"#,
+            )
+            .expect("readiness V2 Hello should apply");
+        session
+            .apply_message_json(&format!(
+                r#"{{"Set":{{"sorotteReadinessV2":{{"snapshot":{{"roomReadinessRevision":1,"mediaGeneration":{media_generation},"startGatePhase":{{"phase":"{start_gate_phase}","mediaGeneration":{media_generation}}},"pauseOwner":{{"owner":"readinessStartGate","mediaGeneration":{media_generation}}},"participants":{{"alice":{{"roomReadinessRevision":1,"membershipEpoch":{membership_epoch},"lastTechnicalReportSequence":{last_technical_report_sequence},"username":"alice","userIntent":"{user_intent}","userIntentRevision":1,"userIntentSource":{{"type":"initialization"}},"technicalState":{{"phase":"preparing","mediaGeneration":{media_generation}}},"participationRole":"required","roomReady":{room_ready},"startEligible":false}}}}}}}}}}}}"#
+            ))
+            .expect("readiness V2 snapshot should apply");
+        session
+    }
+
+    fn readiness_v2_session(
+        media_generation: u64,
+        membership_epoch: u64,
+        last_technical_report_sequence: u64,
+    ) -> ClientSession {
+        readiness_v2_session_with_intent(
+            media_generation,
+            membership_epoch,
+            last_technical_report_sequence,
+            UserReadinessIntent::Ready,
+        )
     }
 
     fn controlled_session_with_authority(controller: bool) -> ClientSession {
@@ -6887,7 +7145,7 @@ mod tests {
         assert!(coordination.snapshot().seek_preparation.is_none());
 
         coordination.observe_transport(
-            paused_transport(1, 1.0, PlayerTransportPhase::ReadyPaused, 0.0),
+            paused_transport(1, 1.0, PlayerTransportPhase::ReadyPaused, 10.0),
             1.0,
         );
         assert!(session.playback_barrier_prepare().is_some());
@@ -6897,6 +7155,20 @@ mod tests {
         let ready = coordination
             .barrier_ready_signature(&session)
             .expect("barrier transport should produce a readiness signature");
+        assert!(ready.loaded);
+        assert!(
+            !ready.buffer_ready,
+            "a loaded, paused observation at the wrong target must not satisfy the barrier"
+        );
+        assert!(coordination.snapshot().seek_preparation.is_none());
+
+        coordination.observe_transport(
+            paused_transport(1, 1.1, PlayerTransportPhase::ReadyPaused, 0.0),
+            1.1,
+        );
+        let ready = coordination
+            .barrier_ready_signature(&session)
+            .expect("the corrected barrier transport should remain reportable");
         assert!(ready.buffer_ready);
         assert!(coordination.snapshot().seek_preparation.is_none());
     }
@@ -7596,6 +7868,367 @@ mod tests {
     }
 
     #[test]
+    fn system_pause_dispatch_supersedes_user_transport_overlay_and_owns_the_edge() {
+        let mut runtime = RuntimePlaybackCoordination::default();
+        runtime.prepare_media(
+            LogicalMediaId::new("system-supersedes-user-transport").unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        let mut session = ClientSession::default();
+        session.model.room.name = Some("room".to_owned());
+        runtime.observe_transport(transport(1, 0.0, PlayerTransportPhase::Playing, 1.0), 0.0);
+        let _ = runtime.classify_latest_player_transition(&session);
+        runtime.stage_local_pause_intent(false, &session);
+        assert_eq!(runtime.snapshot().pending_local_pause_intent, Some(false));
+
+        let command_id = runtime
+            .begin_external_pause_command(PlayerCommandCause::ReadinessGateHold, true, 0.05)
+            .expect("the system pause should be registered in the active media scope");
+        assert_eq!(runtime.snapshot().pending_local_pause_intent, None);
+        assert!(runtime.finish_external_pause_command(command_id, true, 0.06));
+        runtime.observe_transport(
+            paused_transport(1, 0.1, PlayerTransportPhase::ReadyPaused, 1.0),
+            0.1,
+        );
+        assert!(matches!(
+            runtime.classify_latest_player_transition(&session),
+            Some(PlayerTransitionClassification::OwnedCommand {
+                command_id: observed_command_id,
+                cause: PlayerCommandCause::ReadinessGateHold,
+                completion: PlayerCommandCompletion::Completed { .. },
+            }) if observed_command_id == command_id
+        ));
+    }
+
+    #[test]
+    fn v2_system_owned_pause_and_play_observations_emit_no_readiness_intent() {
+        let cases = [
+            (
+                PlayerCommandCause::RemoteRoomSynchronization,
+                false,
+                true,
+                UserReadinessIntent::Ready,
+            ),
+            (
+                PlayerCommandCause::AutomaticReadinessStart,
+                true,
+                false,
+                UserReadinessIntent::NotReady,
+            ),
+            (
+                PlayerCommandCause::ReadinessGateHold,
+                false,
+                true,
+                UserReadinessIntent::Ready,
+            ),
+        ];
+
+        for (cause, initially_paused, commanded_paused, canonical_intent) in cases {
+            let mut session = readiness_v2_session_with_intent(1, 41, 0, canonical_intent);
+            session.model.playback.local_paused = Some(initially_paused);
+            let mut runtime = ClientRuntime::new(
+                session,
+                CoordinatedTestPlayer::default(),
+                QueuedRuntimeControl::default(),
+            );
+            runtime.prepare_playback_media(
+                LogicalMediaId::new(format!("system-owned-{cause:?}"))
+                    .expect("test logical ID should be valid"),
+                MediaTransportKind::NetworkVod,
+                0.0,
+            );
+            runtime.flush_queued_protocol_messages();
+
+            let baseline = if initially_paused {
+                paused_transport(1, 0.0, PlayerTransportPhase::ReadyPaused, 1.0)
+            } else {
+                transport(1, 0.0, PlayerTransportPhase::Playing, 1.0)
+            };
+            runtime.observe_external_player_transport(baseline, 0.0);
+            runtime.flush_queued_protocol_messages();
+
+            runtime
+                .record_external_system_player_pause_command_result(
+                    commanded_paused,
+                    cause,
+                    true,
+                    0.05,
+                )
+                .expect("the attached system command should be registered");
+            let observed = if commanded_paused {
+                paused_transport(1, 0.1, PlayerTransportPhase::ReadyPaused, 1.0)
+            } else {
+                transport(1, 0.1, PlayerTransportPhase::Playing, 1.0)
+            };
+            runtime.observe_external_player_transport(observed, 0.1);
+
+            assert!(matches!(
+                runtime
+                    .playback_coordination
+                    .last_player_transition_classification,
+                Some(PlayerTransitionClassification::OwnedCommand {
+                    cause: observed_cause,
+                    ..
+                }) if observed_cause == cause
+            ));
+            assert!(
+                runtime.session().pending_readiness_intent().is_none(),
+                "{cause:?} telemetry must not stage semantic user readiness"
+            );
+            assert!(
+                runtime.control().outbound_messages().iter().all(|message| {
+                    let ProtocolMessage::Set(set) = message else {
+                        return true;
+                    };
+                    set.set
+                        .readiness_v2()
+                        .expect("readiness extension should decode")
+                        .is_none_or(|extension| extension.intent.is_none())
+                }),
+                "{cause:?} telemetry must not emit a readiness intent"
+            );
+        }
+    }
+
+    #[test]
+    fn v2_local_play_correction_is_gate_owned_while_ready_remains_pending() {
+        let mut session = readiness_v2_session_with_intent(1, 41, 0, UserReadinessIntent::NotReady);
+        session.model.playback.local_paused = Some(false);
+        let mut runtime = ClientRuntime::new(
+            session,
+            CoordinatedTestPlayer::default(),
+            QueuedRuntimeControl::default(),
+        );
+        runtime.prepare_playback_media(
+            LogicalMediaId::new("v2-escaped-local-play").expect("logical ID should be valid"),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        runtime.flush_queued_protocol_messages();
+        runtime.observe_external_player_transport(
+            transport(1, 0.0, PlayerTransportPhase::Playing, 1.0),
+            0.0,
+        );
+        runtime.flush_queued_protocol_messages();
+
+        assert!(
+            runtime
+                .run_set_paused(false)
+                .expect("V2 Play should stage Ready and restore the gate hold")
+        );
+        assert!(
+            runtime
+                .player()
+                .commands
+                .iter()
+                .any(|command| matches!(command, PlayerCommand::SetPaused(true)))
+        );
+        assert_eq!(
+            runtime
+                .session()
+                .pending_readiness_intent()
+                .map(|pending| pending.desired()),
+            Some(UserReadinessIntent::Ready)
+        );
+
+        runtime.observe_external_player_transport(
+            paused_transport(1, 0.1, PlayerTransportPhase::ReadyPaused, 1.0),
+            0.1,
+        );
+        assert!(matches!(
+            runtime
+                .playback_coordination
+                .last_player_transition_classification,
+            Some(PlayerTransitionClassification::OwnedCommand {
+                cause: PlayerCommandCause::ReadinessGateHold,
+                ..
+            })
+        ));
+        assert_eq!(
+            runtime
+                .session()
+                .pending_readiness_intent()
+                .map(|pending| pending.desired()),
+            Some(UserReadinessIntent::Ready),
+            "the corrective physical pause must not reverse the user's semantic Play intent"
+        );
+    }
+
+    #[test]
+    fn v2_pending_native_play_can_be_confirmed_once_and_emits_ready() {
+        let mut session = readiness_v2_session_with_intent(1, 41, 0, UserReadinessIntent::NotReady);
+        apply_barrier_extension(
+            &mut session,
+            PlaybackBarrierSetExtension::new()
+                .with_prepare(PrepareMediaPayload::new(
+                    1,
+                    "explicit-native-play",
+                    1.0,
+                    PlaybackBarrierPolicy::Controller,
+                ))
+                .with_status(barrier_status(1, None, PlaybackBarrierPhase::Preparing)),
+        );
+        session.model.playback.local_paused = Some(true);
+        let mut runtime = ClientRuntime::new(
+            session,
+            CoordinatedTestPlayer::default(),
+            QueuedRuntimeControl::default(),
+        );
+        runtime.prepare_playback_media(
+            LogicalMediaId::new("explicit-native-play").expect("logical ID should be valid"),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        runtime.flush_queued_protocol_messages();
+        runtime.observe_external_player_transport(
+            paused_transport(1, 0.0, PlayerTransportPhase::ReadyPaused, 1.0),
+            0.0,
+        );
+        runtime.flush_queued_protocol_messages();
+        runtime.observe_external_player_transport(
+            transport(1, 0.1, PlayerTransportPhase::Playing, 1.0),
+            0.1,
+        );
+        assert!(matches!(
+            runtime
+                .playback_coordination
+                .last_player_transition_classification,
+            Some(PlayerTransitionClassification::AwaitingStability {
+                action: NativePlayerAction::Play,
+                ..
+            })
+        ));
+        assert!(runtime.session().pending_readiness_intent().is_none());
+        runtime.flush_queued_protocol_messages();
+
+        assert!(
+            runtime
+                .confirm_pending_native_player_play(PlayerInteractionSurface::NativePlayerControl,)
+                .expect("the explicit native Play should dispatch")
+        );
+        assert_eq!(
+            runtime
+                .session()
+                .pending_readiness_intent()
+                .map(|pending| pending.desired()),
+            Some(UserReadinessIntent::Ready)
+        );
+        let intents = runtime
+            .control()
+            .outbound_messages()
+            .iter()
+            .filter_map(|message| {
+                let ProtocolMessage::Set(set) = message else {
+                    return None;
+                };
+                set.set
+                    .readiness_v2()
+                    .expect("readiness extension should decode")
+                    .and_then(|extension| extension.intent)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(intents.len(), 1);
+        assert_eq!(intents[0].desired, UserReadinessIntent::Ready);
+        assert_eq!(
+            intents[0].source,
+            UserReadinessMutationSource::IndirectPlayer {
+                action: sorotte_protocol::PlayerReadinessAction::Play,
+                surface: PlayerInteractionSurface::NativePlayerControl,
+            }
+        );
+
+        assert!(
+            !runtime
+                .confirm_pending_native_player_play(PlayerInteractionSurface::NativePlayerControl,)
+                .expect("a consumed edge should be a harmless no-op")
+        );
+        let intent_count = runtime
+            .control()
+            .outbound_messages()
+            .iter()
+            .filter(|message| {
+                let ProtocolMessage::Set(set) = message else {
+                    return false;
+                };
+                set.set
+                    .readiness_v2()
+                    .expect("readiness extension should decode")
+                    .is_some_and(|extension| extension.intent.is_some())
+            })
+            .count();
+        assert_eq!(intent_count, 1);
+    }
+
+    #[test]
+    fn new_scope_initial_observation_cannot_be_confirmed_as_native_play() {
+        let mut session = readiness_v2_session_with_intent(1, 41, 0, UserReadinessIntent::NotReady);
+        session.model.playback.local_paused = Some(true);
+        let mut runtime = ClientRuntime::new(
+            session,
+            CoordinatedTestPlayer::default(),
+            QueuedRuntimeControl::default(),
+        );
+        runtime.prepare_playback_media(
+            LogicalMediaId::new("old-native-play-scope").expect("logical ID should be valid"),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        runtime.flush_queued_protocol_messages();
+        runtime.observe_external_player_transport(
+            paused_transport(1, 0.0, PlayerTransportPhase::ReadyPaused, 1.0),
+            0.0,
+        );
+        runtime.observe_external_player_transport(
+            transport(1, 0.1, PlayerTransportPhase::Playing, 1.0),
+            0.1,
+        );
+        assert!(matches!(
+            runtime
+                .playback_coordination
+                .last_player_transition_classification,
+            Some(PlayerTransitionClassification::AwaitingStability { .. })
+        ));
+
+        runtime.prepare_playback_media(
+            LogicalMediaId::new("new-native-play-scope").expect("logical ID should be valid"),
+            MediaTransportKind::NetworkVod,
+            0.2,
+        );
+        runtime.flush_queued_protocol_messages();
+        runtime.observe_external_player_transport(
+            transport(2, 0.2, PlayerTransportPhase::Playing, 1.0),
+            0.2,
+        );
+        assert!(matches!(
+            runtime
+                .playback_coordination
+                .last_player_transition_classification,
+            Some(PlayerTransitionClassification::UnknownOrigin {
+                reason: crate::PlayerTransitionUnknownReason::InitialObservation,
+                ..
+            })
+        ));
+        runtime.flush_queued_protocol_messages();
+
+        assert!(
+            !runtime
+                .confirm_pending_native_player_play(PlayerInteractionSurface::NativePlayerControl,)
+                .expect("an initial observation should be a harmless no-op")
+        );
+        assert!(runtime.session().pending_readiness_intent().is_none());
+        assert!(runtime.control().outbound_messages().iter().all(|message| {
+            let ProtocolMessage::Set(set) = message else {
+                return true;
+            };
+            set.set
+                .readiness_v2()
+                .expect("readiness extension should decode")
+                .is_none_or(|extension| extension.intent.is_none())
+        }));
+    }
+
+    #[test]
     fn periodic_desired_reconciliation_does_not_advance_recovery_stability() {
         let mut runtime = RuntimePlaybackCoordination::default();
         runtime.prepare_media(
@@ -7808,12 +8441,7 @@ mod tests {
 
     #[test]
     fn asynchronous_pause_failure_reports_a_technical_block() {
-        let mut session = ClientSession::default();
-        session
-            .apply_message_json(
-                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"readiness":true,"sorotteReadinessV2":true,"sorottePlaybackBarrierV1":true}}}"#,
-            )
-            .expect("readiness V2 Hello should apply");
+        let session = readiness_v2_session(1, 41, 0);
         let mut runtime = ClientRuntime::new(
             session,
             CoordinatedTestPlayer::default(),
@@ -7904,8 +8532,65 @@ mod tests {
     }
 
     #[test]
+    fn committed_barrier_does_not_swallow_a_native_pause_after_automatic_start() {
+        let logical_id = "native-pause-after-commit";
+        let mut session = barrier_session();
+        apply_barrier_extension(
+            &mut session,
+            PlaybackBarrierSetExtension::new()
+                .with_prepare(
+                    PrepareMediaPayload::new(
+                        9,
+                        logical_id,
+                        0.0,
+                        PlaybackBarrierPolicy::AllEligible,
+                    )
+                    .with_request_nonce(1),
+                )
+                .with_status(barrier_status(9, None, PlaybackBarrierPhase::Preparing)),
+        );
+        apply_barrier_extension(
+            &mut session,
+            PlaybackBarrierSetExtension::new()
+                .with_commit(CommitStartPayload::new(9, 3, 0.0, 0.0, 10.0))
+                .with_status(barrier_status(9, Some(3), PlaybackBarrierPhase::Committed)),
+        );
+
+        let mut runtime = RuntimePlaybackCoordination::default();
+        runtime.prepare_media(
+            LogicalMediaId::new(logical_id).unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        runtime.observe_transport(transport(1, 0.0, PlayerTransportPhase::Playing, 0.1), 0.0);
+        let _ = runtime.classify_latest_player_transition(&session);
+        runtime.observe_transport(
+            paused_transport(1, 0.1, PlayerTransportPhase::ReadyPaused, 0.1),
+            0.1,
+        );
+        assert!(matches!(
+            runtime.classify_latest_player_transition(&session),
+            Some(PlayerTransitionClassification::AwaitingStability {
+                action: NativePlayerAction::Pause,
+                ..
+            })
+        ));
+        runtime.observe_transport(
+            paused_transport(1, 0.25, PlayerTransportPhase::ReadyPaused, 0.1),
+            0.25,
+        );
+        assert_eq!(
+            runtime.classify_latest_player_transition(&session),
+            Some(PlayerTransitionClassification::NativePlayerGesture {
+                action: NativePlayerAction::Pause,
+            })
+        );
+    }
+
+    #[test]
     fn technical_readiness_reports_semantic_state_changes_and_deduplicates_exact_repeats() {
         let mut runtime = RuntimePlaybackCoordination::default();
+        let session = readiness_v2_session(1, 41, 0);
         runtime.prepare_media(
             LogicalMediaId::new("technical-readiness").unwrap(),
             MediaTransportKind::NetworkVod,
@@ -7913,7 +8598,7 @@ mod tests {
         );
         runtime.observe_transport(transport(1, 0.0, PlayerTransportPhase::Loading, 0.0), 0.0);
         let preparing = runtime
-            .next_technical_readiness_report()
+            .next_technical_readiness_report(&session)
             .expect("loading should report preparing");
         assert_eq!(preparing.phase, TechnicalPlayabilityPhase::Preparing);
         assert_eq!(preparing.reason, Some(TechnicalBlockCause::Loading));
@@ -7924,16 +8609,16 @@ mod tests {
             0.1,
         );
         let prebuffering = runtime
-            .next_technical_readiness_report()
+            .next_technical_readiness_report(&session)
             .expect("a same-phase cause change must be reported");
         assert_eq!(prebuffering.phase, TechnicalPlayabilityPhase::Preparing);
         assert_eq!(prebuffering.reason, Some(TechnicalBlockCause::Prebuffering));
         runtime.mark_technical_readiness_report_delivered(&prebuffering);
-        assert_eq!(runtime.next_technical_readiness_report(), None);
+        assert_eq!(runtime.next_technical_readiness_report(&session), None);
 
         runtime.observe_transport(transport(1, 0.2, PlayerTransportPhase::Playing, 0.1), 0.2);
         let playable = runtime
-            .next_technical_readiness_report()
+            .next_technical_readiness_report(&session)
             .expect("stable playback should report playable");
         assert_eq!(playable.phase, TechnicalPlayabilityPhase::Playable);
         assert_eq!(playable.reason, None);
@@ -7941,11 +8626,119 @@ mod tests {
 
         runtime.observe_transport(transport(1, 0.3, PlayerTransportPhase::Failed, 0.1), 0.3);
         let terminal = runtime
-            .next_technical_readiness_report()
+            .next_technical_readiness_report(&session)
             .expect("player failure should report a terminal block");
         assert_eq!(terminal.phase, TechnicalPlayabilityPhase::TerminallyBlocked);
         assert_eq!(terminal.reason, Some(TechnicalBlockCause::PlayerFailure));
         runtime.mark_technical_readiness_report_delivered(&terminal);
+    }
+
+    #[test]
+    fn post_commit_rebuffer_uses_server_revision_despite_divergent_local_revision() {
+        let logical_id = "technical-authoritative-revision";
+        let mut session = readiness_v2_session(22, 41, 0);
+        apply_barrier_extension(
+            &mut session,
+            PlaybackBarrierSetExtension::new()
+                .with_prepare(
+                    PrepareMediaPayload::new(
+                        22,
+                        logical_id,
+                        0.0,
+                        PlaybackBarrierPolicy::AllEligible,
+                    )
+                    .with_request_nonce(5),
+                )
+                .with_status(barrier_status(22, None, PlaybackBarrierPhase::Preparing)),
+        );
+        apply_barrier_extension(
+            &mut session,
+            PlaybackBarrierSetExtension::new()
+                .with_commit(CommitStartPayload::new(22, 17, 0.0, 0.0, 10.0))
+                .with_status(barrier_status(
+                    22,
+                    Some(17),
+                    PlaybackBarrierPhase::Committed,
+                )),
+        );
+        apply_barrier_extension(
+            &mut session,
+            PlaybackBarrierSetExtension::new().with_status(barrier_status(
+                22,
+                Some(17),
+                PlaybackBarrierPhase::Complete,
+            )),
+        );
+
+        let mut runtime = RuntimePlaybackCoordination::default();
+        runtime.prepare_media(
+            LogicalMediaId::new(logical_id).unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        runtime.last_applied_revision = Some(4);
+        let mut rebuffering = transport(1, 0.5, PlayerTransportPhase::Rebuffering, 3.0);
+        rebuffering.paused_for_cache = Some(false);
+        runtime.observe_transport(rebuffering, 0.5);
+
+        let report = runtime
+            .next_technical_readiness_report(&session)
+            .expect("post-commit rebuffering should produce a fenced report");
+        assert_eq!(report.media_generation, 22);
+        assert_eq!(report.phase, TechnicalPlayabilityPhase::TemporarilyBlocked);
+        assert!(matches!(
+            report.reason,
+            Some(TechnicalBlockCause::Rebuffering | TechnicalBlockCause::Recovery)
+        ));
+        assert_eq!(report.authoritative_playback_revision, Some(17));
+        assert_ne!(
+            report.authoritative_playback_revision,
+            runtime.last_applied_revision
+        );
+
+        runtime.mark_technical_readiness_report_delivered(&report);
+        apply_barrier_extension(
+            &mut session,
+            PlaybackBarrierSetExtension::new()
+                .with_commit(CommitStartPayload::new(22, 18, 0.0, 0.0, 10.0))
+                .with_status(barrier_status(22, Some(18), PlaybackBarrierPhase::Complete)),
+        );
+        let revised = runtime
+            .next_technical_readiness_report(&session)
+            .expect("a new authoritative revision must resend unchanged technical state");
+        assert_eq!(revised.authoritative_playback_revision, Some(18));
+        assert!(revised.report_sequence > report.report_sequence);
+    }
+
+    #[test]
+    fn unchanged_technical_state_resends_for_connection_membership_and_revision_changes() {
+        let mut runtime = RuntimePlaybackCoordination::default();
+        runtime.prepare_media(
+            LogicalMediaId::new("technical-resend-scope").unwrap(),
+            MediaTransportKind::LocalFile,
+            0.0,
+        );
+        runtime.observe_transport(transport(1, 0.0, PlayerTransportPhase::Playing, 1.0), 0.0);
+        let session = readiness_v2_session(1, 41, 0);
+        let first = runtime
+            .next_technical_readiness_report(&session)
+            .expect("first membership observation should report");
+        runtime.mark_technical_readiness_report_delivered(&first);
+
+        runtime.begin_protocol_connection_generation(&session);
+        let reconnect = runtime
+            .next_technical_readiness_report(&session)
+            .expect("a new protocol connection must resend unchanged state");
+        assert_eq!(reconnect.membership_epoch, 41);
+        assert!(reconnect.report_sequence > first.report_sequence);
+        runtime.mark_technical_readiness_report_delivered(&reconnect);
+
+        let replacement = readiness_v2_session(1, 73, 9);
+        let new_membership = runtime
+            .next_technical_readiness_report(&replacement)
+            .expect("a fresh membership baseline must resend unchanged state");
+        assert_eq!(new_membership.membership_epoch, 73);
+        assert_eq!(new_membership.report_sequence, 10);
     }
 
     #[test]
@@ -7969,12 +8762,7 @@ mod tests {
             }
         }
 
-        let mut session = ClientSession::default();
-        session
-            .apply_message_json(
-                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"readiness":true,"sorotteReadinessV2":true}}}"#,
-            )
-            .expect("V2 Hello should apply");
+        let session = readiness_v2_session(1, 41, 0);
         let mut runtime = ClientRuntime::new(
             session,
             DisconnectedPlayer,
@@ -8011,6 +8799,7 @@ mod tests {
     #[test]
     fn technical_readiness_treats_eof_as_transition_not_terminal_failure() {
         let mut runtime = RuntimePlaybackCoordination::default();
+        let session = readiness_v2_session(1, 41, 0);
         runtime.prepare_media(
             LogicalMediaId::new("technical-readiness-eof").unwrap(),
             MediaTransportKind::LocalFile,
@@ -8019,7 +8808,7 @@ mod tests {
         runtime.observe_transport(transport(1, 0.0, PlayerTransportPhase::Ended, 90.0), 0.0);
 
         let report = runtime
-            .next_technical_readiness_report()
+            .next_technical_readiness_report(&session)
             .expect("EOF should publish the technical transition");
         assert_eq!(report.phase, TechnicalPlayabilityPhase::Preparing);
         assert_eq!(report.reason, Some(TechnicalBlockCause::EndOfFile));
@@ -8029,6 +8818,7 @@ mod tests {
     #[test]
     fn legacy_external_eof_is_classified_as_technical_before_native_gesture_detection() {
         let mut runtime = RuntimePlaybackCoordination::default();
+        let readiness_session = readiness_v2_session(1, 41, 0);
         runtime.prepare_media(
             LogicalMediaId::new("legacy-external-eof").unwrap(),
             MediaTransportKind::LocalFile,
@@ -8048,7 +8838,7 @@ mod tests {
             })
         );
         let report = runtime
-            .next_technical_readiness_report()
+            .next_technical_readiness_report(&readiness_session)
             .expect("legacy EOF should publish a technical readiness transition");
         assert_eq!(report.phase, TechnicalPlayabilityPhase::Preparing);
         assert_eq!(report.reason, Some(TechnicalBlockCause::EndOfFile));
@@ -8057,11 +8847,12 @@ mod tests {
     #[test]
     fn failed_transport_during_active_recovery_is_temporarily_blocked() {
         let mut runtime = coordination_with_owned_catchup_rate();
+        let session = readiness_v2_session(1, 41, 0);
         assert!(runtime.snapshot().recovery_episode.is_some());
         runtime.observe_transport(transport(1, 13.1, PlayerTransportPhase::Failed, 11.0), 13.1);
 
         let report = runtime
-            .next_technical_readiness_report()
+            .next_technical_readiness_report(&session)
             .expect("active recovery failure should publish its recovery state");
         if runtime
             .snapshot()

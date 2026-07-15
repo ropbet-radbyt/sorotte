@@ -104,25 +104,21 @@ impl ClientSession {
             self.model.room.name.clone(),
         ) {
             self.set_user_room(&username, Some(room_name));
+            // Pending V2 intent is presentation/outbox state, never a
+            // canonical room-user projection. Preserve only the last server
+            // snapshot while reconnecting; a fresh Hello/snapshot will then
+            // confirm or replace it for the new transport.
             let preserved_v2_ready = self
                 .model
                 .readiness
-                .pending_intent
+                .canonical_snapshot
                 .as_ref()
-                .filter(|pending| {
+                .filter(|_| {
                     self.model.readiness.canonical_room.as_deref()
                         == self.model.room.name.as_deref()
-                        && pending.room == self.model.room.name.as_deref().unwrap_or_default()
                 })
-                .map(|pending| pending.desired == UserReadinessIntent::Ready)
-                .or_else(|| {
-                    self.model
-                        .readiness
-                        .canonical_snapshot
-                        .as_ref()
-                        .and_then(|snapshot| snapshot.participants.get(&username))
-                        .map(|participant| participant.room_ready)
-                });
+                .and_then(|snapshot| snapshot.participants.get(&username))
+                .map(|participant| participant.room_ready);
             self.set_user_ready_state(&username, Some(preserved_v2_ready.unwrap_or(false)));
         }
     }
