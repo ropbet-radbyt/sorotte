@@ -1313,6 +1313,7 @@ impl ServerRuntime {
                 room_state.updated_at_seconds = now_seconds;
                 room_state.set_by = Some(session.username.clone());
             }
+            self.advance_transport_authority_revision(&session.room);
             self.seed_room_client_playback_states(&session.room, watcher_position, now_seconds);
             self.persist_room_if_needed(&session.room)?;
             if pause_changed && !sample_paused {

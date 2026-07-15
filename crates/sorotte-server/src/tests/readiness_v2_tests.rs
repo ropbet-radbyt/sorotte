@@ -1,5 +1,5 @@
 use super::*;
-use crate::READINESS_USER_TRANSPORT_GRACE_SECONDS;
+use crate::{PendingUserTransportEvidence, READINESS_USER_TRANSPORT_GRACE_SECONDS};
 use sorotte_client_app::app_boundary::{
     application::{ClientApplication, ClientApplicationSettings, ClientCommand},
     state::{
@@ -1416,6 +1416,220 @@ fn v2_play_transport_requires_matching_indirect_play_in_either_message_order() {
         intent_first.room_readiness["intent-first-play-room"].pause_owner,
         RoomPauseOwner::None
     );
+}
+
+#[test]
+fn newer_room_pause_authority_fences_stale_pending_play_but_allows_a_fresh_play() {
+    let mut runtime = ServerRuntime::default();
+    // Keep every event on the same wall-clock timestamp. Ordering must come
+    // from canonical authority revisions rather than timestamp precision.
+    runtime.set_time_now_override_seconds(Some(100.0));
+    for (client_id, username) in [("alice-client", "alice"), ("bob-client", "bob")] {
+        runtime
+            .handle_line(client_id, &readiness_hello(username, "room"))
+            .expect("readiness hello should succeed");
+        acknowledge_forced_state(&mut runtime, client_id);
+    }
+    let alice_epoch = runtime.room_readiness["room"].participants["alice"]
+        .record
+        .membership_epoch;
+    let bob_epoch = runtime.room_readiness["room"].participants["bob"]
+        .record
+        .membership_epoch;
+    let indirect_play = UserReadinessMutationSource::IndirectPlayer {
+        action: PlayerReadinessAction::Play,
+        surface: PlayerInteractionSurface::NativePlayerControl,
+    };
+
+    send_intent_with_source(
+        &mut runtime,
+        "alice-client",
+        "alice-play-before-bob-pause",
+        1,
+        alice_epoch,
+        UserReadinessIntent::Ready,
+        indirect_play.clone(),
+    );
+    let stale_authority_revision =
+        runtime.pending_user_transport_by_client["alice-client"].transport_authority_revision;
+    assert_eq!(
+        runtime.pending_user_transport_by_client["alice-client"].evidence,
+        PendingUserTransportEvidence::AcceptedIndirectAction
+    );
+
+    send_intent_with_source(
+        &mut runtime,
+        "bob-client",
+        "bob-authoritative-pause",
+        1,
+        bob_epoch,
+        UserReadinessIntent::NotReady,
+        UserReadinessMutationSource::IndirectPlayer {
+            action: PlayerReadinessAction::Pause,
+            surface: PlayerInteractionSurface::NativePlayerControl,
+        },
+    );
+    assert!(runtime.room_playback_state("room").paused);
+    assert_eq!(
+        runtime.room_readiness["room"].pause_owner,
+        RoomPauseOwner::User {
+            actor: "bob".to_owned(),
+        }
+    );
+    assert!(runtime.room_readiness["room"].transport_authority_revision > stale_authority_revision);
+    assert!(
+        !runtime
+            .pending_user_transport_by_client
+            .contains_key("alice-client"),
+        "Bob's newer pause authority must retire Alice's older pending Play"
+    );
+
+    acknowledge_forced_state(&mut runtime, "alice-client");
+    let correction = send_playstate(&mut runtime, "alice-client", 10.0, false);
+    assert!(
+        decode_directed_lines(&correction)
+            .into_iter()
+            .any(|(client_id, message)| {
+                client_id == "alice-client"
+                    && matches!(
+                        message,
+                        ProtocolMessage::State(state)
+                            if state.state.playstate.as_ref().is_some_and(|playstate| {
+                                playstate.paused == Some(true)
+                            })
+                    )
+            }),
+        "Alice's stale physical Playing evidence must be corrected to Bob's pause"
+    );
+    assert!(runtime.room_playback_state("room").paused);
+    assert_eq!(
+        runtime.room_readiness["room"].pause_owner,
+        RoomPauseOwner::User {
+            actor: "bob".to_owned(),
+        }
+    );
+    assert_eq!(
+        runtime.pending_user_transport_by_client["alice-client"].evidence,
+        PendingUserTransportEvidence::UnclassifiedObservation,
+        "the stale edge can only become fresh evidence under Bob's authority boundary"
+    );
+
+    send_intent_with_source(
+        &mut runtime,
+        "alice-client",
+        "alice-fresh-play-after-bob-pause",
+        2,
+        alice_epoch,
+        UserReadinessIntent::Ready,
+        indirect_play,
+    );
+    assert!(!runtime.room_playback_state("room").paused);
+    assert_eq!(
+        runtime.room_playback_state("room").set_by.as_deref(),
+        Some("alice")
+    );
+    assert_eq!(
+        runtime.room_readiness["room"].pause_owner,
+        RoomPauseOwner::None
+    );
+    assert!(runtime.pending_user_transport_by_client.is_empty());
+}
+
+#[test]
+fn periodic_room_state_refresh_preserves_transport_pairing_in_both_message_orders() {
+    for (telemetry_first, label, expected_evidence) in [
+        (
+            false,
+            "intent-first",
+            PendingUserTransportEvidence::AcceptedIndirectAction,
+        ),
+        (
+            true,
+            "telemetry-first",
+            PendingUserTransportEvidence::UnclassifiedObservation,
+        ),
+    ] {
+        let mut runtime = ServerRuntime::default();
+        runtime.set_time_now_override_seconds(Some(100.0));
+        runtime
+            .handle_line("alice-client", &readiness_hello("alice", label))
+            .expect("readiness hello should succeed");
+        acknowledge_forced_state(&mut runtime, "alice-client");
+        runtime
+            .handle_line(
+                "alice-client",
+                r#"{"Set":{"file":{"name":"movie.mkv","duration":120.0}}}"#,
+            )
+            .expect("the periodic refresh needs a current media participant");
+        runtime.record_client_playback_state_sample("alice-client", Some(10.0), 100.0);
+        let epoch = runtime.room_readiness[label].participants["alice"]
+            .record
+            .membership_epoch;
+        let indirect_play = UserReadinessMutationSource::IndirectPlayer {
+            action: PlayerReadinessAction::Play,
+            surface: PlayerInteractionSurface::NativePlayerControl,
+        };
+
+        if telemetry_first {
+            send_playstate(&mut runtime, "alice-client", 10.0, false);
+            acknowledge_forced_state(&mut runtime, "alice-client");
+        } else {
+            send_intent_with_source(
+                &mut runtime,
+                "alice-client",
+                &format!("{label}-play"),
+                1,
+                epoch,
+                UserReadinessIntent::Ready,
+                indirect_play.clone(),
+            );
+        }
+        let pending_before_refresh =
+            runtime.pending_user_transport_by_client["alice-client"].clone();
+        assert_eq!(pending_before_refresh.evidence, expected_evidence);
+
+        let refresh_at = 100.0 + SERVER_STATE_INTERVAL_SECONDS + 0.1;
+        assert!(
+            refresh_at < 100.0 + READINESS_USER_TRANSPORT_GRACE_SECONDS,
+            "the regression must refresh inside the transport pairing grace window"
+        );
+        runtime.set_time_now_override_seconds(Some(refresh_at));
+        runtime
+            .collect_periodic_tick_for_client_at("alice-client", refresh_at, refresh_at)
+            .expect("periodic room state refresh should succeed");
+        assert_eq!(
+            runtime.room_playback_state(label).updated_at_seconds,
+            refresh_at,
+            "the test must exercise a real periodic canonical-state refresh"
+        );
+        assert_eq!(
+            runtime.pending_user_transport_by_client["alice-client"], pending_before_refresh,
+            "routine position/setBy maintenance is not newer transport authority"
+        );
+
+        if telemetry_first {
+            send_intent_with_source(
+                &mut runtime,
+                "alice-client",
+                &format!("{label}-play"),
+                1,
+                epoch,
+                UserReadinessIntent::Ready,
+                indirect_play,
+            );
+        } else {
+            send_playstate(&mut runtime, "alice-client", 10.1, false);
+        }
+        assert!(
+            !runtime.room_playback_state(label).paused,
+            "{label} pairing should still apply the user Play after periodic refresh"
+        );
+        assert_eq!(
+            runtime.room_readiness[label].pause_owner,
+            RoomPauseOwner::None
+        );
+        assert!(runtime.pending_user_transport_by_client.is_empty());
+    }
 }
 
 #[test]

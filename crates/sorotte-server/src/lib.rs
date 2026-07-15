@@ -721,6 +721,10 @@ struct ServerReadinessParticipant {
 #[derive(Debug, Clone, PartialEq)]
 struct RoomReadinessCoordinator {
     revision: u64,
+    /// Monotonic fence for canonical room transport authority. Unlike the
+    /// readiness revision, this changes only when a playstate or pause-owner
+    /// transition establishes newer transport authority.
+    transport_authority_revision: u64,
     media_generation: Option<u64>,
     start_gate_phase: RoomStartGatePhase,
     pause_owner: RoomPauseOwner,
@@ -731,6 +735,7 @@ impl Default for RoomReadinessCoordinator {
     fn default() -> Self {
         Self {
             revision: 0,
+            transport_authority_revision: 0,
             media_generation: None,
             start_gate_phase: RoomStartGatePhase::Inactive,
             pause_owner: RoomPauseOwner::None,
@@ -760,6 +765,7 @@ struct PendingUserTransportTransition {
     actor: String,
     desired_paused: bool,
     evidence: PendingUserTransportEvidence,
+    transport_authority_revision: u64,
     expires_at_seconds: f64,
 }
 

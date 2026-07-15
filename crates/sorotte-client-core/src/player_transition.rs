@@ -741,6 +741,31 @@ impl PlayerTransitionClassifier {
         })
     }
 
+    /// Returns the first observation timestamp for a same-scope native Play
+    /// candidate. Callers use this to bind explicit promotion to the room
+    /// authority which existed when the edge first appeared.
+    pub(crate) fn pending_native_play_first_observed_at_seconds(&self) -> Option<f64> {
+        self.pending_edge
+            .filter(|pending| !pending.logical_paused)
+            .map(|pending| pending.first_observed_at_seconds)
+    }
+
+    /// Consumes a native Play candidate invalidated by newer room authority.
+    /// Accepting the current physical state prevents another telemetry sample
+    /// for the same uninterrupted Playing edge from being treated as a fresh
+    /// gesture. A later authoritative pause observation re-establishes the
+    /// paused baseline, after which a genuinely fresh Play remains eligible.
+    pub(crate) fn invalidate_pending_native_play(&mut self) -> bool {
+        let Some(pending) = self.pending_edge else {
+            return false;
+        };
+        if pending.logical_paused {
+            return false;
+        }
+        self.accept_transition(false);
+        true
+    }
+
     /// Expires a candidate even when the adapter produces no confirming
     /// observation. This records an unknown origin and consumes the edge, so
     /// later duplicate telemetry cannot resurrect it as a user gesture.

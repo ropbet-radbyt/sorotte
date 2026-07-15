@@ -1443,6 +1443,7 @@ impl ServerRuntime {
             room_state.updated_at_seconds = now_seconds;
             room_state.set_by = Some(set_by.to_owned());
         }
+        self.advance_transport_authority_revision(room_name);
         self.seed_room_client_playback_states(room_name, room_before.position, now_seconds);
         self.persist_room_if_needed(room_name)?;
         let mut outbound: Vec<_> = self
@@ -1904,6 +1905,7 @@ impl ServerRuntime {
             room_state.updated_at_seconds = now_seconds;
             room_state.set_by = Some(session.username.clone());
         }
+        self.advance_transport_authority_revision(&room_name);
         self.seed_room_client_playback_states(&room_name, target_position, now_seconds);
         self.persist_room_if_needed(&room_name)?;
 
@@ -2129,6 +2131,7 @@ impl ServerRuntime {
             room_state.updated_at_seconds = now_seconds;
             room_state.set_by = Some(initiator_username.clone());
         }
+        self.advance_transport_authority_revision(room_name);
         self.seed_room_client_playback_states(room_name, anchor_position, now_seconds);
         self.persist_room_if_needed(room_name)?;
 

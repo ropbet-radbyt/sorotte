@@ -707,19 +707,35 @@ impl ServerRuntime {
         owner: RoomPauseOwner,
         publish: bool,
     ) -> Vec<DirectedProtocolMessage> {
-        let Some(room) = self.room_readiness.get_mut(room_name) else {
-            return Vec::new();
-        };
-        if room.pause_owner == owner {
-            return Vec::new();
+        {
+            let Some(room) = self.room_readiness.get_mut(room_name) else {
+                return Vec::new();
+            };
+            if room.pause_owner == owner {
+                return Vec::new();
+            }
+            room.revision = room.revision.saturating_add(1);
+            room.pause_owner = owner;
         }
-        room.revision = room.revision.saturating_add(1);
-        room.pause_owner = owner;
+        self.advance_transport_authority_revision(room_name);
         if publish {
             self.readiness_snapshot_fanout(room_name)
         } else {
             Vec::new()
         }
+    }
+
+    /// Establishes a new canonical transport-authority boundary and retires
+    /// staged player evidence observed under any earlier boundary. The
+    /// separate counter avoids treating unrelated readiness/technical churn
+    /// as a transport conflict.
+    pub(crate) fn advance_transport_authority_revision(&mut self, room_name: &str) {
+        let Some(room) = self.room_readiness.get_mut(room_name) else {
+            return;
+        };
+        room.transport_authority_revision = room.transport_authority_revision.saturating_add(1);
+        self.pending_user_transport_by_client
+            .retain(|_, pending| pending.room_name != room_name);
     }
 
     pub(crate) fn readiness_pause_owned_by_buffering_policy(
@@ -771,6 +787,14 @@ impl ServerRuntime {
         desired_paused: bool,
         evidence: PendingUserTransportEvidence,
     ) {
+        let Some(transport_authority_revision) = self
+            .room_readiness
+            .get(room_name)
+            .map(|room| room.transport_authority_revision)
+        else {
+            self.pending_user_transport_by_client.remove(client_id);
+            return;
+        };
         let expires_at_seconds =
             self.current_time_seconds() + READINESS_USER_TRANSPORT_GRACE_SECONDS;
         self.pending_user_transport_by_client.insert(
@@ -780,6 +804,7 @@ impl ServerRuntime {
                 actor: actor.to_owned(),
                 desired_paused,
                 evidence,
+                transport_authority_revision,
                 expires_at_seconds,
             },
         );
@@ -794,6 +819,10 @@ impl ServerRuntime {
         evidence: PendingUserTransportEvidence,
     ) -> bool {
         let now_seconds = self.current_time_seconds();
+        let current_transport_authority_revision = self
+            .room_readiness
+            .get(room_name)
+            .map(|room| room.transport_authority_revision);
         self.pending_user_transport_by_client
             .remove(client_id)
             .is_some_and(|pending| {
@@ -801,6 +830,8 @@ impl ServerRuntime {
                     && pending.actor == actor
                     && pending.desired_paused == desired_paused
                     && pending.evidence == evidence
+                    && Some(pending.transport_authority_revision)
+                        == current_transport_authority_revision
                     && now_seconds <= pending.expires_at_seconds
             })
     }
@@ -856,6 +887,7 @@ impl ServerRuntime {
             room_state.updated_at_seconds = now_seconds;
             room_state.set_by = Some(actor.to_owned());
         }
+        self.advance_transport_authority_revision(room_name);
         self.seed_room_client_playback_states(room_name, watcher_position, now_seconds);
         self.persist_room_if_needed(room_name)?;
         let room_state = self.room_playback_state_at(room_name, now_seconds);

@@ -13,8 +13,8 @@ use sorotte_protocol::{
     PlaybackBarrierParticipantPhase, PlaybackBarrierPhase, PlaybackBarrierPolicy,
     PlaybackBarrierRecoveryDisposition, PlaybackBarrierRecoveryPayload,
     PlaybackBarrierRequestResultStatus, PlaybackBarrierSetExtension, PrepareMediaPayload,
-    RecoveryStage, RoomBufferingPolicy, RoomBufferingPolicyPayload, TechnicalBlockCause,
-    TechnicalPlayabilityPhase, TechnicalReadinessReport,
+    RecoveryStage, RoomBufferingPolicy, RoomBufferingPolicyPayload, RoomPauseOwner,
+    TechnicalBlockCause, TechnicalPlayabilityPhase, TechnicalReadinessReport,
 };
 
 use crate::player_transition::{
@@ -234,6 +234,20 @@ struct PendingLocalPauseIntent {
     replay_player_after_reauthorization: bool,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct NativePlayAuthorityState {
+    room: Option<String>,
+    playstate: Option<RoomPlaystateView>,
+    playstate_updated_at_seconds: Option<f64>,
+    pause_owner: Option<RoomPauseOwner>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PendingNativePlayAuthorityFence {
+    first_observed_at_seconds: f64,
+    authority: NativePlayAuthorityState,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PlayerCommandBinding {
     coordinator_command_id: CoordinatorCommandId,
@@ -261,6 +275,7 @@ pub(crate) struct RuntimePlaybackCoordination {
     next_synthetic_player_command_id: u64,
     player_transition_classifier: PlayerTransitionClassifier,
     last_player_transition_classification: Option<PlayerTransitionClassification>,
+    pending_native_play_authority_fence: Option<PendingNativePlayAuthorityFence>,
     last_technical_readiness_fingerprint: Option<TechnicalReadinessFingerprint>,
     next_technical_readiness_report_sequence: u64,
     latest_observation: Option<PlayerTransportObservation>,
@@ -384,6 +399,7 @@ impl RuntimePlaybackCoordination {
         self.player_transition_classifier
             .begin_scope(plan.media_generation, classifier_adapter_epoch);
         self.last_player_transition_classification = None;
+        self.pending_native_play_authority_fence = None;
         self.last_technical_readiness_fingerprint = None;
         self.last_reported_barrier_ready = None;
         self.last_reported_barrier_started = None;
@@ -443,6 +459,7 @@ impl RuntimePlaybackCoordination {
                 .begin_scope(media_generation, classifier_adapter_epoch);
         }
         self.last_player_transition_classification = None;
+        self.pending_native_play_authority_fence = None;
         self.last_technical_readiness_fingerprint = None;
         self.latest_observation = None;
         self.adapter_clock_offset_seconds = None;
@@ -918,6 +935,7 @@ impl RuntimePlaybackCoordination {
         self.coordinator.clear_seek_preparation_terminal();
         self.pending_local_pause_intent = None;
         self.last_local_pause_intent_stage_accepted = None;
+        self.pending_native_play_authority_fence = None;
         self.local_control_authority = Some(ConnectionLocalControlAuthority {
             room: String::new(),
             username: None,
@@ -2361,6 +2379,7 @@ impl RuntimePlaybackCoordination {
         &mut self,
         session: &ClientSession,
     ) -> Option<PlayerTransitionClassification> {
+        self.invalidate_pending_native_play_if_authority_changed(session);
         let observation = self.latest_observation.as_ref()?;
         let logical_paused = observation.logical_pause?;
         let player_observation = PlayerLogicalPauseObservation::new(
@@ -2374,7 +2393,83 @@ impl RuntimePlaybackCoordination {
             .player_transition_classifier
             .classify(player_observation);
         self.last_player_transition_classification = Some(classification);
+        self.sync_pending_native_play_authority_fence(session);
         Some(classification)
+    }
+
+    fn current_native_play_authority_state(session: &ClientSession) -> NativePlayAuthorityState {
+        let room = session.room().map(str::to_owned);
+        let playstate_updated_at_seconds = room.as_ref().and_then(|room| {
+            session
+                .model
+                .room
+                .playstate_updated_at_seconds
+                .get(room)
+                .copied()
+        });
+        NativePlayAuthorityState {
+            room,
+            playstate: session.current_room_playstate().cloned(),
+            playstate_updated_at_seconds,
+            pause_owner: session
+                .readiness_snapshot()
+                .map(|snapshot| snapshot.pause_owner.clone()),
+        }
+    }
+
+    fn sync_pending_native_play_authority_fence(&mut self, session: &ClientSession) {
+        let Some(first_observed_at_seconds) = self
+            .player_transition_classifier
+            .pending_native_play_first_observed_at_seconds()
+        else {
+            self.pending_native_play_authority_fence = None;
+            return;
+        };
+        if self
+            .pending_native_play_authority_fence
+            .as_ref()
+            .is_some_and(|fence| fence.first_observed_at_seconds == first_observed_at_seconds)
+        {
+            return;
+        }
+        self.pending_native_play_authority_fence = Some(PendingNativePlayAuthorityFence {
+            first_observed_at_seconds,
+            authority: Self::current_native_play_authority_state(session),
+        });
+    }
+
+    fn pending_native_play_authority_is_current(&self, session: &ClientSession) -> bool {
+        let Some(first_observed_at_seconds) = self
+            .player_transition_classifier
+            .pending_native_play_first_observed_at_seconds()
+        else {
+            return false;
+        };
+        self.pending_native_play_authority_fence
+            .as_ref()
+            .is_some_and(|fence| {
+                fence.first_observed_at_seconds == first_observed_at_seconds
+                    && fence.authority == Self::current_native_play_authority_state(session)
+            })
+    }
+
+    fn invalidate_pending_native_play_if_authority_changed(&mut self, session: &ClientSession) {
+        if self
+            .player_transition_classifier
+            .pending_native_play_first_observed_at_seconds()
+            .is_some()
+            && !self.pending_native_play_authority_is_current(session)
+        {
+            self.invalidate_stale_pending_native_play();
+        }
+    }
+
+    fn invalidate_stale_pending_native_play(&mut self) {
+        let _ = self
+            .player_transition_classifier
+            .invalidate_pending_native_play();
+        self.pending_native_play_authority_fence = None;
+        self.last_player_transition_classification = None;
     }
 
     fn next_technical_readiness_report(
@@ -3246,6 +3341,16 @@ where
         &mut self,
         surface: PlayerInteractionSurface,
     ) -> Result<bool, PlayerError> {
+        self.playback_coordination
+            .invalidate_pending_native_play_if_authority_changed(&self.session);
+        if self
+            .playback_coordination
+            .player_transition_classifier
+            .pending_native_play_first_observed_at_seconds()
+            .is_none()
+        {
+            return Ok(false);
+        }
         let Some(classification) = self
             .playback_coordination
             .player_transition_classifier
@@ -3253,6 +3358,8 @@ where
         else {
             return Ok(false);
         };
+        self.playback_coordination
+            .pending_native_play_authority_fence = None;
         self.playback_coordination
             .last_player_transition_classification = Some(classification);
         self.dispatch_native_player_readiness_action(NativePlayerAction::Play, surface)?;
@@ -8621,6 +8728,151 @@ mod tests {
         assert_managed_native_play_survives_manual_v2_phase(
             "managed-terminal-timeout-play",
             Some(PlaybackBarrierPhase::Degraded),
+        );
+    }
+
+    #[test]
+    fn pre_authority_native_play_cannot_suppress_later_remote_pause() {
+        let logical_id = "native-play-before-room-authority";
+        let mut session = readiness_v2_session_with_intent(1, 41, 0, UserReadinessIntent::NotReady);
+        assert_eq!(session.local_can_control(), Some(true));
+        assert!(session.current_room_playstate().is_none());
+        session.model.playback.local_paused = Some(true);
+        let mut runtime = ClientRuntime::new(
+            session,
+            CoordinatedTestPlayer::default(),
+            QueuedRuntimeControl::default(),
+        );
+        runtime.prepare_playback_media(
+            LogicalMediaId::new(logical_id).expect("logical ID should be valid"),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        runtime.flush_queued_protocol_messages();
+
+        assert!(
+            runtime
+                .observe_external_player_transport(
+                    paused_transport(1, 0.0, PlayerTransportPhase::ReadyPaused, 1.0),
+                    0.0,
+                )
+                .is_empty(),
+            "the paused player baseline needs no correction before room authority arrives"
+        );
+        runtime.flush_queued_protocol_messages();
+        assert!(
+            runtime
+                .observe_external_player_transport(
+                    transport(1, 0.1, PlayerTransportPhase::Playing, 1.0),
+                    0.1,
+                )
+                .is_empty(),
+            "one pre-authority Playing edge must remain unconfirmed"
+        );
+        assert!(matches!(
+            runtime
+                .playback_coordination
+                .last_player_transition_classification,
+            Some(PlayerTransitionClassification::AwaitingStability {
+                action: NativePlayerAction::Play,
+                first_observed_at_seconds: 0.1,
+            })
+        ));
+        assert!(runtime.session().pending_readiness_intent().is_none());
+        runtime.flush_queued_protocol_messages();
+
+        runtime
+            .session_mut()
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":1.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+                0.2,
+            )
+            .expect("Bob's authoritative room pause should apply");
+        let correction = runtime.reconcile_external_player_playback(0.2);
+        let pause_command_id = correction
+            .iter()
+            .find_map(|action| match action {
+                PlaybackCoordinatorAction::Execute {
+                    command_id,
+                    command: CoordinatorPlayerCommand::SetPaused(true),
+                } => Some(*command_id),
+                _ => None,
+            })
+            .expect("newer remote pause authority must retain its player correction");
+        runtime.observe_external_player_transport(
+            transport(1, 0.22, PlayerTransportPhase::Playing, 1.0),
+            0.22,
+        );
+        assert!(matches!(
+            runtime
+                .playback_coordination
+                .last_player_transition_classification,
+            Some(PlayerTransitionClassification::Duplicate)
+        ));
+        assert!(runtime.control().outbound_messages().iter().all(|message| {
+            let ProtocolMessage::Set(set) = message else {
+                return true;
+            };
+            set.set
+                .readiness_v2()
+                .expect("readiness extension should decode")
+                .is_none_or(|extension| extension.intent.is_none())
+        }));
+        let room_playstate = runtime
+            .session()
+            .current_room_playstate()
+            .expect("Bob's playstate should remain canonical");
+        assert_eq!(room_playstate.paused, Some(true));
+        assert_eq!(room_playstate.set_by.as_deref(), Some("bob"));
+
+        let player_command_id = runtime
+            .begin_external_coordinator_command_dispatch(pause_command_id, 0.23)
+            .expect("the retained pause correction should register causal ownership");
+        runtime.finish_external_coordinator_command_dispatch(
+            pause_command_id,
+            Some(player_command_id),
+            Ok(()),
+            0.23,
+        );
+        runtime.observe_external_player_transport(
+            paused_transport(1, 0.25, PlayerTransportPhase::ReadyPaused, 1.0),
+            0.25,
+        );
+        runtime.flush_queued_protocol_messages();
+
+        let fresh_play_actions = runtime.observe_external_player_transport(
+            transport(1, 0.3, PlayerTransportPhase::Playing, 1.0),
+            0.3,
+        );
+        assert!(fresh_play_actions.iter().all(|action| !matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPaused(true),
+                ..
+            }
+        )));
+        let intents = runtime
+            .control()
+            .outbound_messages()
+            .iter()
+            .filter_map(|message| {
+                let ProtocolMessage::Set(set) = message else {
+                    return None;
+                };
+                set.set
+                    .readiness_v2()
+                    .expect("readiness extension should decode")
+                    .and_then(|extension| extension.intent)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(intents.len(), 1);
+        assert_eq!(intents[0].desired, UserReadinessIntent::Ready);
+        assert_eq!(
+            intents[0].source,
+            UserReadinessMutationSource::IndirectPlayer {
+                action: sorotte_protocol::PlayerReadinessAction::Play,
+                surface: PlayerInteractionSurface::NativePlayerControl,
+            }
         );
     }
 
