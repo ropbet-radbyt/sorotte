@@ -6,6 +6,7 @@ use sorotte_client_app::app_boundary::commands::{
 };
 use sorotte_player_api::PlayerPlaybackTelemetryUpdate;
 use sorotte_player_mpv::MpvAdapter;
+use sorotte_protocol::DirectReadinessSurface;
 
 use crate::client_config::ClientLoopConfig;
 use crate::language_support::current_legacy_runtime_language_tag_legacy_compatible;
@@ -114,6 +115,8 @@ pub(super) fn run_planned_local_runtime_action_legacy_compatible(
         Some(PlannedLocalRuntimeAction::SeekByOffset(offset_seconds)) => {
             Some(ClientCommand::SeekByOffset(offset_seconds))
         }
+        Some(PlannedLocalRuntimeAction::Play) => Some(ClientCommand::SetPaused(false)),
+        Some(PlannedLocalRuntimeAction::Pause) => Some(ClientCommand::SetPaused(true)),
         Some(PlannedLocalRuntimeAction::TogglePause) => {
             let paused = application.player().paused();
             let position_seconds = application.player().position_seconds();
@@ -124,16 +127,18 @@ pub(super) fn run_planned_local_runtime_action_legacy_compatible(
             ));
             Some(ClientCommand::TogglePause)
         }
-        Some(PlannedLocalRuntimeAction::ToggleReady) => Some(ClientCommand::SetReady {
+        Some(PlannedLocalRuntimeAction::ToggleReady) => Some(ClientCommand::SetReadyFrom {
             username: None,
             ready: None,
             manually_initiated: true,
+            surface: DirectReadinessSurface::CliCommand,
         }),
         Some(PlannedLocalRuntimeAction::SetUserReady { username, ready }) => {
-            Some(ClientCommand::SetReady {
+            Some(ClientCommand::SetReadyFrom {
                 username: Some(username),
                 ready: Some(ready),
                 manually_initiated: true,
+                surface: DirectReadinessSurface::CliCommand,
             })
         }
         Some(PlannedLocalRuntimeAction::RequestControllerAuth { room, password }) => {

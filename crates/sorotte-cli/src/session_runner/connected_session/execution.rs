@@ -1,8 +1,49 @@
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadyAtStartDisposition {
+    AwaitCanonicalV2Membership,
+    ConsumeWithoutMutation,
+    Apply(bool),
+}
+
+fn ready_at_start_disposition(
+    session: &sorotte_client_core::ClientSession,
+    pending: PendingReadyAtStart,
+) -> ReadyAtStartDisposition {
+    if !session.server_readiness_v2_supported() {
+        return ReadyAtStartDisposition::Apply(pending.desired);
+    }
+    if pending.had_current_v2_membership || session.pending_readiness_intent().is_some() {
+        return ReadyAtStartDisposition::ConsumeWithoutMutation;
+    }
+
+    let Some(username) = session.username() else {
+        return ReadyAtStartDisposition::AwaitCanonicalV2Membership;
+    };
+    let Some(participant) = session.canonical_participant_readiness(username) else {
+        return ReadyAtStartDisposition::AwaitCanonicalV2Membership;
+    };
+
+    if pending.desired
+        && participant.user_intent == sorotte_protocol::UserReadinessIntent::NotReady
+        && participant.user_intent_source
+            == sorotte_protocol::ReadinessMutationSource::Initialization
+    {
+        ReadyAtStartDisposition::Apply(true)
+    } else {
+        // V2 defaults to NotReady at membership creation. Sending the implicit
+        // false startup value would manufacture a user mutation and revision.
+        // A canonical non-initialization record is acknowledged user intent and
+        // therefore also wins over this startup preference on reconnect.
+        ReadyAtStartDisposition::ConsumeWithoutMutation
+    }
+}
+
 struct ConnectedSessionBranchOutputState<'a> {
     reconnect_correction_diagnostics: &'a mut ReconnectCorrectionDiagnosticsState,
     seek_preparation_notifications: &'a mut SeekPreparationNotificationState,
+    readiness_notifications: &'a mut ReadinessNotificationState,
     file_difference_notifications: &'a mut FileDifferenceNotificationState,
 }
 
@@ -21,12 +62,14 @@ where
     let ConnectedSessionBranchOutputState {
         reconnect_correction_diagnostics,
         seek_preparation_notifications,
+        readiness_notifications,
         file_difference_notifications,
     } = output_state;
     // Seek-preparation is an ordinary user-visible lifecycle, not verbose
     // telemetry. Project changed states on every branch so the recovery
     // controls remain discoverable with the default diagnostics settings.
     flush_seek_preparation_notifications(runtime, seek_preparation_notifications);
+    flush_readiness_status_notifications(runtime, readiness_notifications);
     for action in connected_session_drain_actions_legacy_compatible(plan) {
         match action {
             ConnectedSessionDrainAction::FlushPlayerPlaybackDiagnostics => {
@@ -75,7 +118,7 @@ where
 
 fn run_connected_session_inbound_post_apply_legacy_compatible<P>(
     runtime: &mut ClientApplication<P>,
-    pending_ready_at_start_on_server_hello: &mut Option<bool>,
+    pending_ready_at_start_on_server_hello: &mut Option<PendingReadyAtStart>,
     pending_chat_message_on_connect: &mut Option<String>,
     now_seconds: f64,
     plan: ConnectedSessionInboundPostApplyPlan,
@@ -86,8 +129,17 @@ where
     for action in connected_session_inbound_post_apply_actions_legacy_compatible(plan) {
         match action {
             ConnectedSessionInboundPostApplyAction::ConsumePendingReadyAtStart => {
-                if let Some(ready_at_start) = pending_ready_at_start_on_server_hello.take() {
-                    let _ = runtime.run_set_ready_for_user("", ready_at_start, false)?;
+                if let Some(pending) = *pending_ready_at_start_on_server_hello {
+                    match ready_at_start_disposition(runtime.session(), pending) {
+                        ReadyAtStartDisposition::AwaitCanonicalV2Membership => {}
+                        ReadyAtStartDisposition::ConsumeWithoutMutation => {
+                            *pending_ready_at_start_on_server_hello = None;
+                        }
+                        ReadyAtStartDisposition::Apply(ready_at_start) => {
+                            *pending_ready_at_start_on_server_hello = None;
+                            let _ = runtime.run_initial_readiness_intent(ready_at_start)?;
+                        }
+                    }
                 }
             }
             ConnectedSessionInboundPostApplyAction::ConsumePendingChatMessageOnConnect => {
@@ -265,6 +317,7 @@ where
         diagnostics_config,
         reconnect_correction_diagnostics_state,
         seek_preparation_notification_state,
+        readiness_notification_state,
         file_difference_state,
         notification_sink,
         file_difference_sink,
@@ -301,6 +354,7 @@ where
         ConnectedSessionBranchOutputState {
             reconnect_correction_diagnostics: reconnect_correction_diagnostics_state,
             seek_preparation_notifications: seek_preparation_notification_state,
+            readiness_notifications: readiness_notification_state,
             file_difference_notifications: file_difference_state,
         },
         plan.drain,
@@ -322,6 +376,7 @@ where
     pub(super) diagnostics_config: &'a ClientLoopDiagnosticsConfig,
     pub(super) reconnect_correction_diagnostics_state: &'a mut ReconnectCorrectionDiagnosticsState,
     pub(super) seek_preparation_notification_state: &'a mut SeekPreparationNotificationState,
+    pub(super) readiness_notification_state: &'a mut ReadinessNotificationState,
     pub(super) file_difference_state: &'a mut FileDifferenceNotificationState,
     pub(super) notification_sink: &'a mut F,
     pub(super) file_difference_sink: &'a mut G,
@@ -332,7 +387,7 @@ where
     F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
     G: FnMut(&str) -> anyhow::Result<()>,
 {
-    pub(super) pending_ready_at_start_on_server_hello: &'a mut Option<bool>,
+    pub(super) pending_ready_at_start_on_server_hello: &'a mut Option<PendingReadyAtStart>,
     pub(super) pending_chat_message_on_connect: &'a mut Option<String>,
     pub(super) outbound_state_sync_enabled: &'a mut bool,
     pub(super) branch: ConnectedSessionBranchExecutionContext<'a, F, G>,
@@ -408,14 +463,268 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
     use sorotte_client_core::{
         ClientSession, LogicalMediaId, MediaTransportKind, PlaybackBarrierStartConfig,
     };
     use sorotte_player_api::DisconnectedPlayer;
     use sorotte_protocol::{
-        PlaybackBarrierPolicy, PlaybackBarrierRequestResultPayload, PlaybackBarrierSetExtension,
-        SetPayload,
+        DirectReadinessSurface, ParticipantReadinessUpdate, PlaybackBarrierPolicy,
+        PlaybackBarrierRequestResultPayload, PlaybackBarrierSetExtension, ReadinessMutationSource,
+        ReadinessSetExtension, RoomPauseOwner, RoomReadinessSnapshot, RoomStartGatePhase,
+        SetPayload, StartParticipationRole, TechnicalPlayabilityPhase, TechnicalPlayabilitySummary,
+        UserReadinessIntent,
     };
+
+    fn v2_session_with_canonical_intent(
+        intent: UserReadinessIntent,
+        source: ReadinessMutationSource,
+    ) -> ClientSession {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room"},"version":"1.7.5","features":{"readiness":true,"sorotteReadinessV2":true}}}"#,
+            )
+            .expect("V2 Hello should apply");
+        let participant = ParticipantReadinessUpdate {
+            room_readiness_revision: 1,
+            membership_epoch: 41,
+            username: "alice".to_owned(),
+            user_intent: intent,
+            user_intent_revision: 1,
+            last_technical_report_sequence: 0,
+            user_intent_source: source,
+            last_user_mutation: None,
+            terminal_technical_block: None,
+            technical_state: TechnicalPlayabilitySummary {
+                phase: TechnicalPlayabilityPhase::Playable,
+                media_generation: Some(7),
+                reason: None,
+                recovery: None,
+            },
+            participation_role: StartParticipationRole::Required,
+            room_ready: intent == UserReadinessIntent::Ready,
+            start_eligible: intent == UserReadinessIntent::Ready,
+            accepted_operation_id: None,
+        };
+        let snapshot = RoomReadinessSnapshot {
+            room_readiness_revision: 1,
+            media_generation: Some(7),
+            start_gate_phase: RoomStartGatePhase::WaitingForIntent {
+                media_generation: 7,
+            },
+            pause_owner: RoomPauseOwner::ReadinessStartGate {
+                media_generation: 7,
+            },
+            mixed_readiness_policy: Default::default(),
+            participants: BTreeMap::from([("alice".to_owned(), participant)]),
+        };
+        session
+            .apply_protocol_message(ProtocolMessage::set(
+                SetPayload::new()
+                    .with_readiness_v2(ReadinessSetExtension::new().with_snapshot(snapshot)),
+            ))
+            .expect("canonical V2 snapshot should apply");
+        session
+    }
+
+    #[test]
+    fn v2_ready_at_start_waits_for_fresh_canonical_membership() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room"},"version":"1.7.5","features":{"readiness":true,"sorotteReadinessV2":true}}}"#,
+            )
+            .expect("V2 Hello should apply");
+        let ready = PendingReadyAtStart {
+            desired: true,
+            had_current_v2_membership: false,
+        };
+        assert_eq!(
+            ready_at_start_disposition(&session, ready),
+            ReadyAtStartDisposition::AwaitCanonicalV2Membership
+        );
+
+        session = v2_session_with_canonical_intent(
+            UserReadinessIntent::NotReady,
+            ReadinessMutationSource::Initialization,
+        );
+        assert_eq!(
+            ready_at_start_disposition(&session, ready),
+            ReadyAtStartDisposition::Apply(true)
+        );
+        assert_eq!(
+            ready_at_start_disposition(
+                &session,
+                PendingReadyAtStart {
+                    desired: false,
+                    had_current_v2_membership: false,
+                },
+            ),
+            ReadyAtStartDisposition::ConsumeWithoutMutation,
+            "implicit V2 NotReady must not manufacture a user mutation"
+        );
+    }
+
+    #[test]
+    fn v2_ready_at_start_preserves_acknowledged_intent_on_reconnect() {
+        for intent in [UserReadinessIntent::Ready, UserReadinessIntent::NotReady] {
+            let session = v2_session_with_canonical_intent(
+                intent,
+                ReadinessMutationSource::DirectUser {
+                    surface: DirectReadinessSurface::CliCommand,
+                },
+            );
+            assert_eq!(
+                ready_at_start_disposition(
+                    &session,
+                    PendingReadyAtStart {
+                        desired: intent != UserReadinessIntent::Ready,
+                        had_current_v2_membership: true,
+                    },
+                ),
+                ReadyAtStartDisposition::ConsumeWithoutMutation,
+                "startup preference must not replace acknowledged {intent:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn v2_ready_at_start_never_supersedes_a_semantic_pending_operation() {
+        let mut session = v2_session_with_canonical_intent(
+            UserReadinessIntent::NotReady,
+            ReadinessMutationSource::Initialization,
+        );
+        let actions = session.runtime_actions_for_direct_readiness_intent(
+            UserReadinessIntent::Ready,
+            DirectReadinessSurface::CliCommand,
+            None,
+        );
+        assert_eq!(actions.len(), 1);
+        assert!(session.pending_readiness_intent().is_some());
+        assert_eq!(
+            ready_at_start_disposition(
+                &session,
+                PendingReadyAtStart {
+                    desired: false,
+                    had_current_v2_membership: false,
+                },
+            ),
+            ReadyAtStartDisposition::ConsumeWithoutMutation
+        );
+    }
+
+    #[test]
+    fn legacy_ready_at_start_keeps_existing_post_hello_behavior() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room"},"version":"1.7.5","features":{"readiness":true}}}"#,
+            )
+            .expect("legacy readiness Hello should apply");
+        for desired in [false, true] {
+            assert_eq!(
+                ready_at_start_disposition(
+                    &session,
+                    PendingReadyAtStart {
+                        desired,
+                        had_current_v2_membership: true,
+                    },
+                ),
+                ReadyAtStartDisposition::Apply(desired)
+            );
+        }
+    }
+
+    #[test]
+    fn v2_ready_at_start_is_emitted_only_after_the_canonical_snapshot_arrives() {
+        let canonical = v2_session_with_canonical_intent(
+            UserReadinessIntent::NotReady,
+            ReadinessMutationSource::Initialization,
+        )
+        .readiness_snapshot()
+        .expect("fixture should contain a readiness snapshot")
+        .clone();
+        let mut application = ClientApplication::new(ClientSession::default(), DisconnectedPlayer);
+        application
+            .apply_protocol_line(
+                r#"{"Hello":{"username":"alice","room":{"name":"room"},"version":"1.7.5","features":{"readiness":true,"sorotteReadinessV2":true}}}"#,
+                1.0,
+                false,
+                false,
+                false,
+            )
+            .expect("V2 Hello should apply");
+        let mut pending_ready = Some(PendingReadyAtStart {
+            desired: true,
+            had_current_v2_membership: false,
+        });
+        let mut pending_chat = None;
+        let plan = ConnectedSessionInboundPostApplyPlan {
+            consume_pending_ready_at_start: true,
+            consume_pending_chat_message_on_connect: false,
+            run_reconnect_transition: false,
+            run_controller_reidentify: false,
+            run_controller_auth_notifications: false,
+            run_chat_notifications: false,
+            run_user_change_notifications: false,
+            run_reconnect_state_restore: false,
+            run_reconnect_playlist_restore: false,
+        };
+
+        run_connected_session_inbound_post_apply_legacy_compatible(
+            &mut application,
+            &mut pending_ready,
+            &mut pending_chat,
+            1.0,
+            plan,
+        )
+        .expect("post-Hello startup readiness should defer");
+        assert!(pending_ready.is_some());
+        assert_eq!(application.pending_protocol_message_count(), 0);
+
+        let snapshot_line = encode_message_line(&ProtocolMessage::set(
+            SetPayload::new()
+                .with_readiness_v2(ReadinessSetExtension::new().with_snapshot(canonical)),
+        ))
+        .expect("snapshot should encode");
+        application
+            .apply_protocol_line(&snapshot_line, 2.0, false, false, false)
+            .expect("snapshot should apply");
+        run_connected_session_inbound_post_apply_legacy_compatible(
+            &mut application,
+            &mut pending_ready,
+            &mut pending_chat,
+            2.0,
+            plan,
+        )
+        .expect("post-snapshot startup readiness should emit");
+        assert!(pending_ready.is_none());
+
+        let pending_line = application
+            .pending_protocol_line()
+            .expect("queued readiness should encode")
+            .expect("fresh V2 membership should queue Ready");
+        let ProtocolMessage::Set(set) =
+            decode_message_line(pending_line.line()).expect("queued readiness should decode")
+        else {
+            panic!("V2 readiness should use Set");
+        };
+        let intent = set
+            .set
+            .readiness_v2()
+            .expect("readiness extension should decode")
+            .and_then(|extension| extension.intent)
+            .expect("queued readiness intent should be present");
+        assert_eq!(intent.desired, UserReadinessIntent::Ready);
+        assert_eq!(intent.membership_epoch, 41);
+        assert_eq!(
+            intent.source,
+            sorotte_protocol::UserReadinessMutationSource::Initialization,
+            "fresh ready-at-start must retain room-entry initialization provenance"
+        );
+    }
 
     #[test]
     fn cli_post_apply_uses_the_inbound_clock_and_does_not_retry_early() {

@@ -196,10 +196,11 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn set_local_ready(&mut self, ready: bool) -> Result<(), String> {
-        match self.dispatch_application_command(ClientCommand::SetReady {
+        match self.dispatch_application_command(ClientCommand::SetReadyFrom {
             username: None,
             ready: Some(ready),
             manually_initiated: true,
+            surface: sorotte_protocol::DirectReadinessSurface::GuiButton,
         }) {
             Ok(true) => Ok(()),
             Ok(false) => {
@@ -238,10 +239,11 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn set_user_ready(&mut self, username: String, ready: bool) -> Result<(), String> {
-        match self.dispatch_application_command(ClientCommand::SetReady {
+        match self.dispatch_application_command(ClientCommand::SetReadyFrom {
             username: Some(username),
             ready: Some(ready),
             manually_initiated: true,
+            surface: sorotte_protocol::DirectReadinessSurface::GuiButton,
         }) {
             Ok(true) => Ok(()),
             Ok(false) => {
@@ -402,7 +404,10 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             .into_iter()
             .filter_map(|action| match action {
                 ClientRuntimeAction::SetPaused(paused) => {
-                    Some(GuiAttachedPlayerRuntimeAction::Paused(paused))
+                    Some(GuiAttachedPlayerRuntimeAction::Paused {
+                        paused,
+                        cause: PlayerCommandCause::PlaylistTransition,
+                    })
                 }
                 ClientRuntimeAction::SetPosition(position_seconds) => {
                     Some(GuiAttachedPlayerRuntimeAction::Position(position_seconds))
@@ -615,6 +620,12 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         ))
     }
 
+    fn observe_external_player_end_of_file(&mut self, now_seconds: f64) -> Result<(), String> {
+        self.runtime
+            .observe_external_player_end_of_file(now_seconds)
+            .map_err(|error| format!("Client-core attached-player EOF observation failed: {error}"))
+    }
+
     fn report_attached_coordinator_command_dispatch(
         &mut self,
         command_id: CoordinatorCommandId,
@@ -630,6 +641,37 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         };
         self.runtime
             .report_external_coordinator_command_dispatch(command_id, result, now_seconds);
+    }
+
+    fn begin_attached_coordinator_command_dispatch(
+        &mut self,
+        command_id: CoordinatorCommandId,
+        now_seconds: f64,
+    ) -> Option<PlayerCommandId> {
+        self.runtime
+            .begin_external_coordinator_command_dispatch(command_id, now_seconds)
+    }
+
+    fn finish_attached_coordinator_command_dispatch(
+        &mut self,
+        command_id: CoordinatorCommandId,
+        player_command_id: Option<PlayerCommandId>,
+        accepted: bool,
+        now_seconds: f64,
+    ) {
+        let result = if accepted {
+            Ok(())
+        } else {
+            Err(PlayerError::OperationFailed(
+                "attached player rejected coordinator command".to_owned(),
+            ))
+        };
+        self.runtime.finish_external_coordinator_command_dispatch(
+            command_id,
+            player_command_id,
+            result,
+            now_seconds,
+        );
     }
 
     fn playback_coordination_snapshot(&self) -> Option<PlaybackCoordinationSnapshot> {
@@ -948,6 +990,31 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
 
         let local_can_control = self.runtime.session().local_can_control().unwrap_or(false);
+        if self.runtime.session().server_readiness_v2_supported() {
+            // Client-core owns the exact generation-scoped V2 gate predicate.
+            // Outside a Preparing readiness-owned pause, an authorized
+            // controller must be able to make an ordinary Play decision.
+            let gate_holds_play = self.runtime.readiness_gate_holds_current_playback();
+            if gate_holds_play {
+                // GUI's simple pause mirror can correct the player before its
+                // later coordinator pump. Preserve an already-classified rich
+                // telemetry edge here as well; core consumes it exactly once,
+                // so the shared managed-loop promotion cannot duplicate it.
+                self.runtime
+                    .confirm_pending_native_player_play(
+                        sorotte_protocol::PlayerInteractionSurface::NativePlayerControl,
+                    )
+                    .map_err(|error| {
+                        format!("Client-core native-player readiness confirmation failed: {error}")
+                    })?;
+            }
+            return Ok(if gate_holds_play || !local_can_control {
+                GuiLocalPlayerUnpauseDecision::Block
+            } else {
+                GuiLocalPlayerUnpauseDecision::Allow
+            });
+        }
+
         let is_playing_music = self.runtime.session().is_playing_music();
         if self
             .runtime
@@ -995,6 +1062,70 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             )
             .map_err(|error| {
                 format!("Client-core session runtime readiness/unpause dispatch failed: {error}")
+            })
+    }
+
+    fn record_intentional_player_pause_action(&mut self, paused: bool) -> Result<(), String> {
+        self.runtime
+            .run_direct_player_readiness_intent(
+                paused,
+                sorotte_protocol::PlayerInteractionSurface::SorottePlaybackControl,
+            )
+            .map(|_| ())
+            .map_err(|error| {
+                format!("Client-core player readiness-intent dispatch failed: {error}")
+            })
+    }
+
+    fn begin_external_player_pause_command(
+        &mut self,
+        paused: bool,
+        cause: PlayerCommandCause,
+        now_seconds: f64,
+    ) -> Result<Option<PlayerCommandId>, String> {
+        Ok(self
+            .runtime
+            .begin_external_player_pause_command(paused, cause, now_seconds))
+    }
+
+    fn finish_external_player_pause_command(
+        &mut self,
+        command_id: Option<PlayerCommandId>,
+        succeeded: bool,
+        now_seconds: f64,
+    ) -> Result<(), String> {
+        self.runtime
+            .finish_external_player_pause_command(command_id, succeeded, now_seconds)
+            .map_err(|error| format!("Client-core player command completion failed: {error}"))
+    }
+
+    fn record_external_player_pause_command_result(
+        &mut self,
+        paused: bool,
+        succeeded: bool,
+        now_seconds: f64,
+    ) -> Result<(), String> {
+        self.runtime
+            .record_external_player_pause_command_result(paused, succeeded, now_seconds)
+            .map_err(|error| format!("Client-core player command-result dispatch failed: {error}"))
+    }
+
+    fn record_external_system_player_pause_command_result(
+        &mut self,
+        paused: bool,
+        cause: PlayerCommandCause,
+        succeeded: bool,
+        now_seconds: f64,
+    ) -> Result<(), String> {
+        self.runtime
+            .record_external_system_player_pause_command_result(
+                paused,
+                cause,
+                succeeded,
+                now_seconds,
+            )
+            .map_err(|error| {
+                format!("Client-core system player command-result dispatch failed: {error}")
             })
     }
 

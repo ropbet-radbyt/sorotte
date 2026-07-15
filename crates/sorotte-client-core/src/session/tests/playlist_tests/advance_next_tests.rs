@@ -1,4 +1,6 @@
 use super::*;
+use crate::{LogicalMediaId, MediaTransportKind};
+use sorotte_protocol::{MediaLoadIntent, PlaybackBarrierPolicy};
 
 #[test]
 fn client_runtime_advance_playlist_index_dispatches_protocol_message() {
@@ -271,6 +273,113 @@ fn client_runtime_advance_playlist_index_rewinds_single_file_when_loop_single_en
     assert_eq!(runtime.player().position, Some(0.0));
     assert_eq!(runtime.player().paused, Some(false));
     assert!(runtime.control().outbound_messages().is_empty());
+}
+
+#[test]
+fn client_runtime_replay_uses_fresh_server_episode_with_readiness_v2() {
+    let mut session = ClientSession::default();
+    session
+        .apply_hello_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sorotteReadinessV2":true,"sorottePlaybackBarrierV1":true}}}"#,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json(
+            r#"{"Set":{"playlistChange":{"files":["episode1.mkv"],"user":"alice"}}}"#,
+        )
+        .expect("playlist change should apply");
+    session
+        .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+        .expect("playlist index should apply");
+    session
+        .apply_message_json(
+            r#"{"Set":{"user":{"alice":{"file":{"name":"episode1.mkv","duration":240.0}}}}}"#,
+        )
+        .expect("local file update should apply");
+    session.behavior_config_mut().loop_single_files = true;
+
+    let player = RecordingPlayer::default();
+    let control = QueuedRuntimeControl::default();
+    let mut runtime = ClientRuntime::new(session, player, control);
+    let initial_plan = runtime.prepare_playback_media(
+        LogicalMediaId::new("episode1-logical-id").expect("logical ID should be valid"),
+        MediaTransportKind::LocalFile,
+        10.0,
+    );
+    runtime.flush_queued_protocol_messages();
+    assert!(
+        runtime
+            .run_advance_playlist_index()
+            .expect("V2 replay should not fail"),
+        "V2 replay should request the canonical playlist episode"
+    );
+
+    assert_eq!(runtime.player().position, None);
+    assert_eq!(runtime.player().paused, None);
+    let replay_generation = runtime
+        .playback_coordination_snapshot()
+        .media_generation
+        .expect("replay should retain an active media generation");
+    assert!(
+        replay_generation > initial_plan.media_generation,
+        "replay must create a fresh local playback episode"
+    );
+    assert_eq!(
+        runtime
+            .session_mut_for_test()
+            .take_pending_playlist_index_reset_intent(),
+        Some(true),
+        "V2 replay should queue a fresh pause-and-rewind media episode"
+    );
+    let messages = runtime.control().outbound_messages();
+    assert_eq!(messages.len(), 3);
+    let set_message = messages
+        .iter()
+        .find_map(|message| match message {
+            ProtocolMessage::Set(set) if set.set.playlist_index.is_some() => Some(set),
+            _ => None,
+        })
+        .expect("expected canonical playlist replay request");
+    assert_eq!(
+        set_message
+            .set
+            .playlist_index
+            .as_ref()
+            .map(|playlist_index| playlist_index.index),
+        Some(0)
+    );
+    let state_message = messages
+        .iter()
+        .find_map(|message| match message {
+            ProtocolMessage::State(state) if state.state.playstate.is_some() => Some(state),
+            _ => None,
+        })
+        .expect("expected gate-preserving paused state");
+    assert_eq!(
+        state_message
+            .state
+            .playstate
+            .as_ref()
+            .and_then(|playstate| playstate.paused),
+        Some(true)
+    );
+    let barrier_message = messages
+        .iter()
+        .find_map(|message| match message {
+            ProtocolMessage::Set(set) if set.set.playback_barrier_v1().ok().flatten().is_some() => {
+                Some(set)
+            }
+            _ => None,
+        })
+        .expect("expected fresh replay barrier request");
+    let prepare = barrier_message
+        .set
+        .playback_barrier_v1()
+        .expect("barrier extension should decode")
+        .and_then(|extension| extension.prepare)
+        .expect("V2 replay should request a server start gate");
+    assert_eq!(prepare.load_intent, MediaLoadIntent::Replay);
+    assert_eq!(prepare.policy, PlaybackBarrierPolicy::AllEligible);
 }
 
 #[test]

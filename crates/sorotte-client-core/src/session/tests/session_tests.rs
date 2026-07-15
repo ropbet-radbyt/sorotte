@@ -1,6 +1,8 @@
 use super::*;
 use crate::RoomPlaystateAuthority;
 
+const READINESS_RECONNECT_TOKEN: &str = "opaque-reconnect-token-must-not-leak";
+
 #[test]
 fn reconcile_state_builds_client_ignore_and_waits_for_ack_before_applying_new_global_state() {
     let mut session = ClientSession::default();
@@ -81,6 +83,36 @@ fn reconcile_state_builds_client_ignore_and_waits_for_ack_before_applying_new_gl
     assert_eq!(updated.paused, Some(true));
     assert_eq!(updated.do_seek, Some(true));
     assert_eq!(updated.set_by.as_deref(), Some("bob"));
+}
+
+#[test]
+fn readiness_reconnect_token_is_room_scoped_rotated_and_redacted() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(&format!(
+            r#"{{"Hello":{{"username":"alice","room":{{"name":"room1"}},"version":"1.7.5","features":{{"readiness":true,"sorotteReadinessV2":true}},"sorotteReadinessReconnectToken":"{READINESS_RECONNECT_TOKEN}"}}}}"#
+        ))
+        .expect("V2 Hello with reconnect token should apply");
+
+    assert_eq!(
+        session.readiness_reconnect_token_for_room("room1"),
+        Some(READINESS_RECONNECT_TOKEN)
+    );
+    assert_eq!(session.readiness_reconnect_token_for_room("room2"), None);
+    assert!(!format!("{:?}", session.model.readiness).contains(READINESS_RECONNECT_TOKEN));
+
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"readiness":true,"sorotteReadinessV2":true},"sorotteReadinessReconnectToken":"rotated-token"}}"#,
+        )
+        .expect("same-room Hello should rotate the reconnect token");
+    assert_eq!(
+        session.readiness_reconnect_token_for_room("room1"),
+        Some("rotated-token")
+    );
+
+    let _ = session.runtime_actions_for_local_room_switch("room2".to_owned());
+    assert_eq!(session.readiness_reconnect_token_for_room("room1"), None);
 }
 
 #[test]

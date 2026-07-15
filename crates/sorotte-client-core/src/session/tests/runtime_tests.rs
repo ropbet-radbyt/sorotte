@@ -39,7 +39,7 @@ fn client_session_update_replaces_owned_configuration_slices() {
 }
 
 #[test]
-fn client_runtime_local_media_open_dispatches_not_ready_protocol_message() {
+fn client_runtime_local_media_open_preserves_readiness_without_protocol_mutation() {
     let mut session = ClientSession::default();
     session
             .apply_hello_json(
@@ -50,25 +50,19 @@ fn client_runtime_local_media_open_dispatches_not_ready_protocol_message() {
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
 
+    runtime
+        .session_mut_for_test()
+        .apply_message_json(r#"{"Set":{"ready":{"isReady":true,"username":"alice"}}}"#)
+        .expect("ready state should apply");
     assert!(
-        runtime
+        !runtime
             .run_local_media_opened_not_ready()
-            .expect("local media open should dispatch readiness")
+            .expect("local media open should remain a harmless compatibility no-op")
     );
-    assert_eq!(runtime.session().user_ready("alice"), Some(false));
+    assert_eq!(runtime.session().user_ready("alice"), Some(true));
 
     let (_, _player, control) = runtime.into_parts();
-    assert_eq!(control.outbound_messages().len(), 1);
-    let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
-        panic!("expected queued local-media-open action to emit Set message");
-    };
-    let ready = set_message
-        .set
-        .ready
-        .as_ref()
-        .expect("Set message should include ready payload");
-    assert_eq!(ready.is_ready, Some(false));
-    assert_eq!(ready.manually_initiated, Some(false));
+    assert!(control.outbound_messages().is_empty());
 }
 
 #[test]
@@ -581,7 +575,7 @@ fn client_runtime_flush_queued_protocol_lines_to_transport_uses_sender_callback(
     let mut session = ClientSession::default();
     session
         .apply_message_json(
-            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"readiness":true}}}"#,
         )
         .expect("hello should apply");
     let player = RecordingPlayer::default();
@@ -589,8 +583,8 @@ fn client_runtime_flush_queued_protocol_lines_to_transport_uses_sender_callback(
     let mut runtime = ClientRuntime::new(session, player, control);
 
     runtime
-        .run_readiness_unpause_attempt(10.0, true, true, false)
-        .expect("readiness attempt should dispatch");
+        .run_set_ready_for_user("", true, true)
+        .expect("explicit readiness command should dispatch");
 
     let mut sent_lines = Vec::new();
     runtime

@@ -83,7 +83,7 @@ fn reconnect_reset_restores_local_controller_flag_after_hello() {
 }
 
 #[test]
-fn non_controller_pause_request_toggles_ready_without_driving_room_pause() {
+fn non_controller_pause_request_sets_not_ready_without_driving_room_pause() {
     let mut session = ClientSession::default();
     session
             .apply_message_json(
@@ -92,7 +92,7 @@ fn non_controller_pause_request_toggles_ready_without_driving_room_pause() {
             .expect("hello should apply");
     session
             .apply_message_json(
-                r#"{"Set":{"user":{"alice":{"room":{"name":"+room:ABCDEF123456"},"controller":false}}}}"#,
+            r#"{"Set":{"user":{"alice":{"room":{"name":"+room:ABCDEF123456"},"controller":false,"isReady":true}}}}"#,
             )
             .expect("controller flag should apply");
     session
@@ -106,10 +106,10 @@ fn non_controller_pause_request_toggles_ready_without_driving_room_pause() {
     assert_eq!(
         actions,
         vec![ClientRuntimeAction::SetReady {
-            ready: true,
+            ready: false,
             manually_initiated: true
         }]
     );
     assert_eq!(session.local_paused(), Some(false));
-    assert_eq!(session.user_ready("alice"), Some(true));
+    assert_eq!(session.user_ready("alice"), Some(false));
 }

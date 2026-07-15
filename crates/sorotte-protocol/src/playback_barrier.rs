@@ -525,6 +525,8 @@ impl MediaReadyPayload {
 pub struct CommitStartPayload {
     pub media_generation: u64,
     pub state_revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readiness_revision: Option<u64>,
     pub anchor_position: f64,
     pub anchor_server_time: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -543,6 +545,7 @@ impl CommitStartPayload {
         Self {
             media_generation,
             state_revision,
+            readiness_revision: None,
             anchor_position,
             anchor_server_time,
             start_at: None,
@@ -552,6 +555,11 @@ impl CommitStartPayload {
 
     pub fn with_start_at(mut self, start_at: f64) -> Self {
         self.start_at = Some(start_at);
+        self
+    }
+
+    pub fn with_readiness_revision(mut self, readiness_revision: u64) -> Self {
+        self.readiness_revision = Some(readiness_revision);
         self
     }
 }
@@ -609,6 +617,7 @@ pub enum PlaybackBarrierDegradedReason {
     PrepareTimeout,
     NotReadyAtCommit,
     StartedTimeout,
+    UserInterrupted,
     Disconnected,
     Superseded,
 }
@@ -647,7 +656,13 @@ pub struct PlaybackBarrierStatusPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quorum: Option<u32>,
     pub deadline: f64,
+    /// The generation-scoped technical cohort. In a mixed room governed by
+    /// readiness V2, this contains only clients that negotiated both readiness
+    /// V2 and playback-barrier V1.
     pub participants: BTreeMap<String, PlaybackBarrierParticipantStatus>,
+    /// Current room members excluded from the technical start cohort. Servers
+    /// may use this explicit compatibility policy for legacy clients in mixed
+    /// V1/V2 rooms; UIs must not imply technical start guarantees for them.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub excluded_legacy_clients: BTreeSet<String>,
 }

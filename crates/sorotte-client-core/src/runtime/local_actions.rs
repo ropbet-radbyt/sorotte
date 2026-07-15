@@ -11,11 +11,7 @@ where
         preserve_uninitiated_media: bool,
     ) -> Result<(), PlayerError> {
         for action in actions {
-            ClientSession::dispatch_runtime_actions(
-                std::slice::from_ref(action),
-                &mut self.player,
-                &mut self.control,
-            )?;
+            self.dispatch_runtime_actions_with_causal_tracking(std::slice::from_ref(action))?;
             if matches!(action, ClientRuntimeAction::SetRoom { .. }) {
                 if preserve_uninitiated_media {
                     self.playback_coordination
@@ -55,12 +51,29 @@ where
     }
 
     pub fn run_toggle_ready(&mut self, manually_initiated: bool) -> Result<bool, PlayerError> {
+        self.run_toggle_ready_from(
+            manually_initiated,
+            sorotte_protocol::DirectReadinessSurface::RemoteControlSurface,
+        )
+    }
+
+    pub fn run_toggle_ready_from(
+        &mut self,
+        manually_initiated: bool,
+        surface: sorotte_protocol::DirectReadinessSurface,
+    ) -> Result<bool, PlayerError> {
         let actions = self
             .session
-            .runtime_actions_for_local_ready_toggle(manually_initiated);
-        let sent = !actions.is_empty();
-        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
-            .map(|_| sent)
+            .runtime_actions_for_local_ready_toggle_from(manually_initiated, surface);
+        let sent = !actions.is_empty() || self.session.pending_readiness_intent().is_some();
+        match ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+        {
+            Ok(()) => Ok(sent),
+            Err(error) => {
+                self.session.mark_pending_readiness_delivery_failed();
+                Err(error)
+            }
+        }
     }
 
     pub fn run_set_ready_for_user(
@@ -69,14 +82,56 @@ where
         ready: bool,
         manually_initiated: bool,
     ) -> Result<bool, PlayerError> {
-        let actions = self.session.runtime_actions_for_local_user_ready_set(
+        self.run_set_ready_for_user_from(
+            username,
+            ready,
+            manually_initiated,
+            sorotte_protocol::DirectReadinessSurface::RemoteControlSurface,
+        )
+    }
+
+    pub fn run_set_ready_for_user_from(
+        &mut self,
+        username: impl Into<String>,
+        ready: bool,
+        manually_initiated: bool,
+        surface: sorotte_protocol::DirectReadinessSurface,
+    ) -> Result<bool, PlayerError> {
+        let actions = self.session.runtime_actions_for_local_user_ready_set_from(
             username.into(),
             ready,
             manually_initiated,
+            surface,
         );
-        let sent = !actions.is_empty();
-        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
-            .map(|_| sent)
+        let sent = !actions.is_empty() || self.session.pending_readiness_intent().is_some();
+        match ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+        {
+            Ok(()) => Ok(sent),
+            Err(error) => {
+                self.session.mark_pending_readiness_delivery_failed();
+                Err(error)
+            }
+        }
+    }
+
+    pub fn run_initial_readiness_intent(&mut self, ready: bool) -> Result<bool, PlayerError> {
+        let desired = if ready {
+            sorotte_protocol::UserReadinessIntent::Ready
+        } else {
+            sorotte_protocol::UserReadinessIntent::NotReady
+        };
+        let actions = self
+            .session
+            .runtime_actions_for_initial_readiness_intent(desired);
+        let sent = !actions.is_empty() || self.session.pending_readiness_intent().is_some();
+        match ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+        {
+            Ok(()) => Ok(sent),
+            Err(error) => {
+                self.session.mark_pending_readiness_delivery_failed();
+                Err(error)
+            }
+        }
     }
 
     pub fn run_local_media_opened_not_ready(&mut self) -> Result<bool, PlayerError> {
@@ -99,6 +154,28 @@ where
         let sent = !actions.is_empty();
         ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
             .map(|_| sent)
+    }
+
+    /// Records an intentional Sorotte/player Play or Pause independently from
+    /// whether the physical player command can be carried out. This is used by
+    /// attached-player surfaces that perform their own player I/O.
+    pub fn run_direct_player_readiness_intent(
+        &mut self,
+        paused: bool,
+        surface: sorotte_protocol::PlayerInteractionSurface,
+    ) -> Result<bool, PlayerError> {
+        let actions = self
+            .session
+            .runtime_actions_for_indirect_player_intent(paused, surface);
+        let sent = !actions.is_empty() || self.session.pending_readiness_intent().is_some();
+        match ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+        {
+            Ok(()) => Ok(sent),
+            Err(error) => {
+                self.session.mark_pending_readiness_delivery_failed();
+                Err(error)
+            }
+        }
     }
 
     pub fn run_set_room(&mut self, room: impl Into<String>) -> Result<bool, PlayerError> {
@@ -135,7 +212,10 @@ where
             .and_then(|username| self.session.user_ready(username));
         let original_last_paused_on_leave_at_seconds =
             self.session.model.playback.last_paused_on_leave_at_seconds;
-        let actions = self.session.runtime_actions_for_local_pause_toggle();
+        let current_gate_holds_play = self.readiness_gate_holds_current_playback();
+        let actions = self
+            .session
+            .runtime_actions_for_local_pause_toggle_with_gate_hold(Some(current_gate_holds_play));
         let planned_paused = self.session.model.playback.local_paused;
         let planned_ready = self
             .session
@@ -159,7 +239,7 @@ where
                 self.interrupt_playback_recovery(unix_wall_clock_time_seconds_legacy_compatible());
         }
         let effects = Self::local_pause_effects(&actions)?;
-        self.run_model_event(ClientEvent::LocalPauseChangeRequested {
+        let result = self.run_model_event(ClientEvent::LocalPauseChangeRequested {
             original_paused,
             original_ready,
             original_last_paused_on_leave_at_seconds,
@@ -167,7 +247,11 @@ where
             planned_ready,
             planned_last_paused_on_leave_at_seconds,
             effects,
-        })?;
+        });
+        if let Err(error) = result {
+            self.session.mark_pending_readiness_delivery_failed();
+            return Err(error);
+        }
         Ok(true)
     }
 
@@ -189,7 +273,13 @@ where
             .and_then(|username| self.session.user_ready(username));
         let original_last_paused_on_leave_at_seconds =
             self.session.model.playback.last_paused_on_leave_at_seconds;
-        let actions = self.session.runtime_actions_for_local_pause_set(paused);
+        let current_gate_holds_play = self.readiness_gate_holds_current_playback();
+        let actions = self
+            .session
+            .runtime_actions_for_local_pause_set_with_gate_hold(
+                paused,
+                Some(current_gate_holds_play),
+            );
         let planned_paused = self.session.model.playback.local_paused;
         let planned_ready = self
             .session
@@ -207,7 +297,7 @@ where
             return Ok(false);
         }
         let effects = Self::local_pause_effects(&actions)?;
-        self.run_model_event(ClientEvent::LocalPauseChangeRequested {
+        let result = self.run_model_event(ClientEvent::LocalPauseChangeRequested {
             original_paused,
             original_ready,
             original_last_paused_on_leave_at_seconds,
@@ -215,7 +305,11 @@ where
             planned_ready,
             planned_last_paused_on_leave_at_seconds,
             effects,
-        })?;
+        });
+        if let Err(error) = result {
+            self.session.mark_pending_readiness_delivery_failed();
+            return Err(error);
+        }
         Ok(true)
     }
 
@@ -235,6 +329,12 @@ where
                     ready: *ready,
                     manually_initiated: *manually_initiated,
                 }),
+                ClientRuntimeAction::SetReadinessIntent { request, scope } => {
+                    Ok(ClientEffect::SendReadinessIntent {
+                        request: request.clone(),
+                        scope: scope.clone(),
+                    })
+                }
                 other => Err(PlayerError::OperationFailed(format!(
                     "invalid local pause effect sequence: {other:?}"
                 ))),
@@ -253,22 +353,65 @@ where
         let actions = self
             .session
             .runtime_actions_for_local_playlist_index_set(index);
+        let replay_media = self.v2_replay_media_for_playlist_actions(&actions);
         let sent = !actions.is_empty();
         ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)?;
         self.session
             .apply_local_playlist_runtime_actions_legacy_compatible(&actions);
         self.finalize_local_playlist_index_switch_if_needed(&actions)?;
+        self.begin_v2_replay_episode(replay_media);
         Ok(sent)
     }
 
     pub fn run_advance_playlist_index(&mut self) -> Result<bool, PlayerError> {
         let actions = self.session.runtime_actions_for_local_playlist_next();
+        let replay_media = self.v2_replay_media_for_playlist_actions(&actions);
         let sent = !actions.is_empty();
-        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)?;
+        self.dispatch_runtime_actions_with_pause_cause(
+            &actions,
+            PlayerCommandCause::PlaylistTransition,
+        )?;
         self.session
             .apply_local_playlist_runtime_actions_legacy_compatible(&actions);
         self.finalize_local_playlist_index_switch_if_needed(&actions)?;
+        self.begin_v2_replay_episode(replay_media);
         Ok(sent)
+    }
+
+    fn v2_replay_media_for_playlist_actions(
+        &self,
+        actions: &[ClientRuntimeAction],
+    ) -> Option<(LogicalMediaId, MediaTransportKind)> {
+        if !self.session.server_readiness_v2_supported() {
+            return None;
+        }
+        let current_index = self.session.current_room_playlist()?.index?;
+        actions
+            .iter()
+            .any(|action| {
+                matches!(
+                    action,
+                    ClientRuntimeAction::SetPlaylistIndex { index }
+                        if *index == current_index
+                )
+            })
+            .then(|| self.playback_coordination.current_media_for_replay())
+            .flatten()
+    }
+
+    fn begin_v2_replay_episode(
+        &mut self,
+        replay_media: Option<(LogicalMediaId, MediaTransportKind)>,
+    ) {
+        let Some((logical_id, kind)) = replay_media else {
+            return;
+        };
+        self.prepare_playback_media_with_intent(
+            logical_id,
+            kind,
+            MediaLoadIntent::Replay,
+            unix_wall_clock_time_seconds_legacy_compatible(),
+        );
     }
 
     pub fn run_queue_playlist_item(
@@ -384,7 +527,11 @@ where
         let _ = self.interrupt_playback_recovery(now_seconds);
         let session_snapshot = self.session.snapshot_local_action_state();
         let actions = self.session.handle_disconnect(now_seconds);
-        self.dispatch_runtime_actions_with_session_rollback(session_snapshot, &actions)
+        self.dispatch_runtime_actions_with_session_rollback_and_pause_cause(
+            session_snapshot,
+            &actions,
+            PlayerCommandCause::TransportRefresh,
+        )
     }
 
     pub fn publish_local_file_legacy_compatible(

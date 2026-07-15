@@ -148,7 +148,6 @@ impl GuiPersistedConfigRuntimeOwner {
         {
             self.pending_attached_player_pause_command = None;
         }
-        let mut direct_pause_intent = None;
         for update in playback_updates {
             if let Some(paused_for_cache) = update.paused_for_cache {
                 self.player_paused_for_cache = Some(paused_for_cache);
@@ -167,6 +166,9 @@ impl GuiPersistedConfigRuntimeOwner {
                     "warning: failed to mirror attached-player cache buffering state into the session runtime: {error}"
                 );
             }
+            if let Some(position_seconds) = update.position_seconds {
+                self.player_position_seconds = Some(position_seconds - user_offset_seconds);
+            }
             if let Some(paused) = update.paused
                 && self.player_paused_for_cache != Some(true)
             {
@@ -182,25 +184,25 @@ impl GuiPersistedConfigRuntimeOwner {
                     _ => true,
                 };
                 if accept_paused {
-                    if !application_pause_command_active && previous_paused != Some(paused) {
-                        match self.stage_attached_player_pause_intent(paused) {
-                            Ok(()) => direct_pause_intent = Some(paused),
-                            Err(error) => eprintln!(
-                                "warning: failed to stage direct attached-player pause intent: {error}"
-                            ),
-                        }
+                    if !application_pause_command_active
+                        && previous_paused != Some(paused)
+                        && paused
+                        && self.attached_player_position_is_end_of_file()
+                        && let Some(session) = self.session.as_mut()
+                        && let Err(error) =
+                            session.observe_external_player_end_of_file(system_time_seconds())
+                    {
+                        eprintln!(
+                            "warning: failed to classify attached-player EOF as a technical transition: {error}"
+                        );
                     }
                     self.player_paused = Some(paused);
                 }
-            }
-            if let Some(position_seconds) = update.position_seconds {
-                self.player_position_seconds = Some(position_seconds - user_offset_seconds);
             }
         }
         for outcome in media_load_outcomes {
             self.handle_player_media_load_outcome(outcome);
         }
-        let mut media_prepared_after_direct_pause = false;
         for mut update in local_file_updates {
             if let Some(override_update) = self.logical_media_override_for_loaded_target(&update) {
                 update = override_update;
@@ -221,18 +223,17 @@ impl GuiPersistedConfigRuntimeOwner {
                 } else {
                     MediaTransportKind::LocalFile
                 };
-                if let Some(session) = self.session.as_mut() {
-                    match session.prepare_attached_playback_media(
+                if let Some(session) = self.session.as_mut()
+                    && let Err(error) = session.prepare_attached_playback_media(
                         logical_id,
                         kind,
                         MediaLoadIntent::TransportRefresh,
                         system_time_seconds(),
-                    ) {
-                        Ok(_) => media_prepared_after_direct_pause = true,
-                        Err(error) => eprintln!(
-                            "warning: failed to prepare attached-player logical media generation: {error}"
-                        ),
-                    }
+                    )
+                {
+                    eprintln!(
+                        "warning: failed to prepare attached-player logical media generation: {error}"
+                    );
                 }
             }
             self.player_local_file = Some(update);
@@ -240,14 +241,6 @@ impl GuiPersistedConfigRuntimeOwner {
             if file_changed || self.player_position_seconds.is_none() {
                 self.player_position_seconds = Some(0.0);
             }
-        }
-        if media_prepared_after_direct_pause
-            && let Some(paused) = direct_pause_intent
-            && let Err(error) = self.stage_attached_player_pause_intent(paused)
-        {
-            eprintln!(
-                "warning: failed to restage direct attached-player pause intent after media preparation: {error}"
-            );
         }
         for update in transport_updates {
             let update = transport_update_on_room_timeline(update, user_offset_seconds);

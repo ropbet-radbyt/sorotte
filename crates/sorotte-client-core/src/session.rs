@@ -40,6 +40,7 @@ mod playback;
 mod playback_barrier;
 mod playlist;
 mod queries;
+mod readiness_v2;
 mod reconnect;
 
 #[cfg(test)]

@@ -343,19 +343,50 @@ impl SorotteGuiShellAppState {
     }
 
     pub(super) fn actual_local_main_window_user_ready(&self) -> bool {
-        self.local_main_window_user_index()
+        let Some(local_user) = self
+            .local_main_window_user_index()
             .and_then(|index| self.main_window.users.get(index))
-            .map(|user| user.is_ready)
-            .unwrap_or(false)
+        else {
+            return false;
+        };
+        self.main_window
+            .readiness
+            .get(&local_user.username)
+            .filter(|readiness| {
+                readiness.protocol
+                    == sorotte_client_app::app_boundary::readiness::ReadinessPresentationProtocol::V2
+            })
+            .map(|readiness| readiness.canonical_user_intent)
+            .map(|intent| intent == sorotte_protocol::UserReadinessIntent::Ready)
+            .unwrap_or(local_user.is_ready)
     }
 
     pub(super) fn displayed_local_main_window_user_ready(&self) -> bool {
         self.pending_local_ready_target
+            .or_else(|| {
+                self.local_main_window_user_index()
+                    .and_then(|index| self.main_window.users.get(index))
+                    .and_then(|user| self.main_window.readiness.get(&user.username))
+                    .filter(|readiness| {
+                        readiness.protocol
+                            == sorotte_client_app::app_boundary::readiness::ReadinessPresentationProtocol::V2
+                    })
+                    .map(|readiness| readiness.displayed_ready())
+            })
             .unwrap_or_else(|| self.actual_local_main_window_user_ready())
     }
 
     pub(super) fn local_ready_transition_pending(&self) -> bool {
         self.pending_local_ready_target.is_some()
+            || self
+                .local_main_window_user_index()
+                .and_then(|index| self.main_window.users.get(index))
+                .and_then(|user| self.main_window.readiness.get(&user.username))
+                .is_some_and(|readiness| {
+                    readiness.protocol
+                        == sorotte_client_app::app_boundary::readiness::ReadinessPresentationProtocol::V2
+                        && readiness.has_unacknowledged_pending_intent()
+                })
     }
 
     pub(super) fn current_joined_main_window_room_name(&self) -> Option<&str> {
@@ -657,7 +688,17 @@ impl SorotteGuiShellAppState {
             });
         }
 
-        user.is_ready = ready;
+        let readiness_is_v2 = self
+            .main_window
+            .readiness
+            .get(&user.username)
+            .is_some_and(|readiness| {
+                readiness.protocol
+                    == sorotte_client_app::app_boundary::readiness::ReadinessPresentationProtocol::V2
+        });
+        if !readiness_is_v2 {
+            user.is_ready = ready;
+        }
         self.pending_local_ready_target = Some(ready);
         self.push_system_chat_message(if ready {
             "You are now marked ready.".to_owned()

@@ -8,6 +8,7 @@ use super::shell_state::{
 use super::support::{
     NO_ROOM_JOINED_LABEL, joined_room_name_text, nonempty_room_name_text, normalized_editable_text,
 };
+use sorotte_client_app::app_boundary::readiness::ReadinessPresentationProtocol;
 
 impl SorotteGuiShellAppState {
     pub(super) fn close_modal_window(&mut self) -> bool {
@@ -400,6 +401,15 @@ impl SorotteGuiShellAppState {
                 .any(|user| user.room_name == room.room_name);
         }
 
+        let mut normalized_readiness = snapshot.readiness;
+        normalized_readiness.retain(|username, presentation| {
+            presentation.protocol == ReadinessPresentationProtocol::V2
+                && presentation.username.eq_ignore_ascii_case(username)
+                && normalized_users
+                    .iter()
+                    .any(|user| user.username.eq_ignore_ascii_case(username))
+        });
+
         let playlist_scope_unchanged = self.main_window.room_name == room_name
             && self.main_window.shared_playlist_enabled == snapshot.shared_playlist_enabled;
         if !playlist_scope_unchanged {
@@ -492,13 +502,28 @@ impl SorotteGuiShellAppState {
             .map(|row| row.entry_id);
         let can_preserve_local_playlist_selection = self.main_window.room_name == room_name
             && self.main_window.shared_playlist_enabled == snapshot.shared_playlist_enabled;
-        let pending_local_ready_target = self.pending_local_ready_target.filter(|target| {
-            snapshot.can_set_ready
-                && normalized_users
-                    .iter()
-                    .find(|user| user.is_self)
-                    .is_some_and(|user| user.is_ready != *target)
-        });
+        let local_readiness = normalized_users
+            .iter()
+            .find(|user| user.is_self)
+            .and_then(|user| normalized_readiness.get(&user.username));
+        let pending_local_ready_target = match local_readiness {
+            Some(readiness) if readiness.protocol == ReadinessPresentationProtocol::V2 => {
+                if readiness.pending_is_acknowledged() {
+                    None
+                } else if readiness.has_unacknowledged_pending_intent() {
+                    Some(readiness.displayed_ready())
+                } else {
+                    None
+                }
+            }
+            _ => self.pending_local_ready_target.filter(|target| {
+                snapshot.can_set_ready
+                    && normalized_users
+                        .iter()
+                        .find(|user| user.is_self)
+                        .is_some_and(|user| user.is_ready != *target)
+            }),
+        };
 
         self.main_window = MainWindowShellState {
             room_name,
@@ -508,6 +533,7 @@ impl SorotteGuiShellAppState {
             hide_empty_rooms: snapshot.hide_empty_rooms,
             rooms: normalized_rooms,
             users: normalized_users,
+            readiness: normalized_readiness,
             playlist: normalized_playlist,
             playlist_default_source: self.refreshed_playlist_source_default_state(
                 self.main_window.playlist_default_source.clone(),

@@ -86,9 +86,27 @@ impl GuiPersistedConfigRuntimeOwner {
             return;
         }
 
-        if let Some(player) = self.player.as_mut() {
-            let player_name = player.name();
-            if let Err(error) = player.set_paused(true) {
+        if self.player.is_some() {
+            let command_id = match self
+                .begin_attached_player_pause_command(true, PlayerCommandCause::TransportRefresh)
+            {
+                Ok(command_id) => command_id,
+                Err(error) => {
+                    eprintln!("warning: failed to register pause-on-leave causal command: {error}");
+                    return;
+                }
+            };
+            let player = self
+                .player
+                .as_mut()
+                .expect("pause-on-leave player was checked");
+            let player_name = player.name().to_owned();
+            let result = player.set_paused(true);
+            let command_succeeded = result.is_ok();
+            let command_result_error = self
+                .finish_attached_player_pause_command(command_id, command_succeeded)
+                .err();
+            if let Err(error) = result {
                 Self::push_actions_and_project(
                     handle,
                     projected_state,
@@ -99,7 +117,15 @@ impl GuiPersistedConfigRuntimeOwner {
                         ),
                     }],
                 );
+                if let Some(command_result_error) = command_result_error {
+                    eprintln!(
+                        "warning: failed to register pause-on-leave command failure: {command_result_error}"
+                    );
+                }
                 return;
+            }
+            if let Some(error) = command_result_error {
+                eprintln!("warning: failed to register pause-on-leave command: {error}");
             }
             self.note_local_attached_player_pause_command(true);
         }

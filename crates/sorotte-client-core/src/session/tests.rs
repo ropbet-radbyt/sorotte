@@ -25,7 +25,8 @@ use sorotte_player_api::{
 use sorotte_protocol::{
     ChatPayload, ControllerAuthPayload, FilePayload, IgnoringOnTheFlyPayload, ListPayload,
     PingPayload, PlaybackBarrierSetExtension, PlaystatePayload, ProtocolError, ProtocolMessage,
-    StatePayload, decode_line, decode_message_line,
+    ReadinessIntentRequest, StatePayload, TechnicalReadinessReport, decode_line,
+    decode_message_line,
 };
 
 fn protocol_file_payload(value: Value) -> FilePayload {
@@ -198,6 +199,8 @@ struct RecordingRuntimeControl {
     room_updates: Vec<String>,
     ready_updates: Vec<(bool, bool)>,
     ready_for_user_updates: Vec<(bool, bool, String)>,
+    readiness_intents: Vec<ReadinessIntentRequest>,
+    technical_readiness_reports: Vec<TechnicalReadinessReport>,
     file_updates: Vec<FilePayload>,
     playlist_updates: Vec<Vec<String>>,
     playlist_index_updates: Vec<i64>,
@@ -239,6 +242,12 @@ impl ClientEffectSink for RecordingRuntimeControl {
             } => self
                 .ready_for_user_updates
                 .push((ready, manually_initiated, username)),
+            ClientEffect::SendReadinessIntent { request, .. } => {
+                self.readiness_intents.push(*request);
+            }
+            ClientEffect::ReportTechnicalReadiness(report) => {
+                self.technical_readiness_reports.push(report);
+            }
             ClientEffect::SetFile(file) => self.file_updates.push(file),
             ClientEffect::SetPlaylist(files) => self.playlist_updates.push(files),
             ClientEffect::SetPlaylistIndex(index) => self.playlist_index_updates.push(index),
@@ -283,6 +292,7 @@ mod playback_sync_tests;
 mod playlist_tests;
 mod protocol_tests;
 mod readiness_autoplay_tests;
+mod readiness_v2_tests;
 mod reconnect_tests;
 mod runtime_tests;
 mod session_tests;

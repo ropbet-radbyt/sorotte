@@ -234,3 +234,212 @@ fn run_planned_local_runtime_action_legacy_compatible_suppresses_out_of_range_pl
         "in-range select should still emit a playlist index update"
     );
 }
+
+#[test]
+fn explicit_play_and_pause_actions_set_state_while_p_remains_a_toggle() {
+    let mut session = ClientSession::default();
+    session
+        .apply_hello_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"readiness":false}}}"#,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":0.0,"paused":false,"setBy":"alice"}}}"#,
+        )
+        .expect("playing room state should apply");
+    session.apply_player_playback_telemetry_update(
+        &PlayerPlaybackTelemetryUpdate::default().with_paused(false),
+    );
+    let player = sorotte_player_mpv::SimulatedPlayer::new().into_inner();
+    let control = QueuedRuntimeControl::default();
+    let runtime = ClientRuntime::new(session, player, control);
+    let mut application = ClientApplication::from_runtime(runtime);
+    let mut user_offset_seconds = 0.0;
+
+    run_planned_local_runtime_action_legacy_compatible(
+        &mut application,
+        &mut user_offset_seconds,
+        1.0,
+        PlannedLocalRuntimeAction::Pause,
+    )
+    .expect("pause should dispatch");
+    assert!(application.player().paused(), "pause must pause playback");
+
+    run_planned_local_runtime_action_legacy_compatible(
+        &mut application,
+        &mut user_offset_seconds,
+        2.0,
+        PlannedLocalRuntimeAction::Pause,
+    )
+    .expect("repeated pause should remain valid");
+    assert!(
+        application.player().paused(),
+        "a repeated pause must not resume playback"
+    );
+
+    run_planned_local_runtime_action_legacy_compatible(
+        &mut application,
+        &mut user_offset_seconds,
+        3.0,
+        PlannedLocalRuntimeAction::Play,
+    )
+    .expect("play should dispatch");
+    assert!(!application.player().paused(), "play must resume playback");
+
+    run_planned_local_runtime_action_legacy_compatible(
+        &mut application,
+        &mut user_offset_seconds,
+        4.0,
+        PlannedLocalRuntimeAction::Play,
+    )
+    .expect("repeated play should remain valid");
+    assert!(
+        !application.player().paused(),
+        "a repeated play must not pause playback"
+    );
+
+    run_planned_local_runtime_action_legacy_compatible(
+        &mut application,
+        &mut user_offset_seconds,
+        5.0,
+        PlannedLocalRuntimeAction::TogglePause,
+    )
+    .expect("p compatibility toggle should dispatch");
+    assert!(
+        application.player().paused(),
+        "the p compatibility action must still toggle playback"
+    );
+}
+
+fn cli_v2_readiness_application() -> ClientApplication<MpvAdapter> {
+    let player = sorotte_player_mpv::SimulatedPlayer::new().into_inner();
+    let mut runtime = ClientRuntime::new(
+        ClientSession::default(),
+        player,
+        QueuedRuntimeControl::default(),
+    );
+    runtime.begin_protocol_connection_generation();
+    let mut application = ClientApplication::from_runtime(runtime);
+    application
+        .session_mut()
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"readiness":true,"sorotteReadinessV2":true,"sorottePlaybackBarrierV1":true}}}"#,
+        )
+        .expect("V2 Hello should apply");
+    application
+        .session_mut()
+        .apply_message_json(
+            r#"{"Set":{"sorotteReadinessV2":{"snapshot":{"roomReadinessRevision":1,"mediaGeneration":7,"startGatePhase":{"phase":"waitingForIntent","mediaGeneration":7},"pauseOwner":{"owner":"readinessStartGate","mediaGeneration":7},"participants":{"alice":{"roomReadinessRevision":1,"membershipEpoch":41,"username":"alice","userIntent":"notReady","userIntentRevision":1,"userIntentSource":{"type":"initialization"},"technicalState":{"phase":"playable","mediaGeneration":7},"participationRole":"required","roomReady":false,"startEligible":false}}}}}}"#,
+        )
+        .expect("V2 readiness snapshot should apply");
+    assert!(application.session().server_readiness_v2_supported());
+    assert_eq!(
+        application
+            .session()
+            .canonical_participant_readiness("alice")
+            .map(|participant| participant.membership_epoch),
+        Some(41),
+    );
+    application
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &PlayerPlaybackTelemetryUpdate::default().with_paused(false),
+        );
+    application
+}
+
+fn pending_readiness_intent(
+    application: &mut ClientApplication<MpvAdapter>,
+) -> sorotte_protocol::ReadinessIntentRequest {
+    let pending = application
+        .pending_protocol_line()
+        .expect("CLI readiness line should serialize")
+        .expect("CLI action should queue a readiness intent");
+    let message = decode_message_line(pending.line()).expect("CLI readiness line should decode");
+    let lease = pending.lease();
+    application.acknowledge_protocol_line(lease);
+    let ProtocolMessage::Set(payload) = message else {
+        panic!("CLI readiness intent should use a Set envelope");
+    };
+    payload
+        .set
+        .readiness_v2()
+        .expect("CLI readiness extension should decode")
+        .and_then(|extension| extension.intent)
+        .expect("CLI action should queue a readiness intent")
+}
+
+#[test]
+fn cli_readiness_commands_preserve_direct_and_indirect_v2_sources() {
+    use sorotte_protocol::{
+        DirectReadinessSurface, PlayerInteractionSurface, PlayerReadinessAction,
+        UserReadinessIntent, UserReadinessMutationSource,
+    };
+
+    let mut application = cli_v2_readiness_application();
+    let mut user_offset_seconds = 0.0;
+
+    for (action, desired) in [
+        (
+            PlannedLocalRuntimeAction::SetUserReady {
+                username: String::new(),
+                ready: true,
+            },
+            UserReadinessIntent::Ready,
+        ),
+        (
+            PlannedLocalRuntimeAction::SetUserReady {
+                username: String::new(),
+                ready: false,
+            },
+            UserReadinessIntent::NotReady,
+        ),
+    ] {
+        run_planned_local_runtime_action_legacy_compatible(
+            &mut application,
+            &mut user_offset_seconds,
+            1.0,
+            action,
+        )
+        .expect("direct CLI readiness command should dispatch");
+        let intent = pending_readiness_intent(&mut application);
+        assert_eq!(intent.desired, desired);
+        assert_eq!(
+            intent.source,
+            UserReadinessMutationSource::DirectUser {
+                surface: DirectReadinessSurface::CliCommand,
+            }
+        );
+    }
+
+    for (action, desired, player_action) in [
+        (
+            PlannedLocalRuntimeAction::Pause,
+            UserReadinessIntent::NotReady,
+            PlayerReadinessAction::Pause,
+        ),
+        (
+            PlannedLocalRuntimeAction::Play,
+            UserReadinessIntent::Ready,
+            PlayerReadinessAction::Play,
+        ),
+    ] {
+        run_planned_local_runtime_action_legacy_compatible(
+            &mut application,
+            &mut user_offset_seconds,
+            2.0,
+            action,
+        )
+        .expect("CLI playback command should dispatch");
+        let intent = pending_readiness_intent(&mut application);
+        assert_eq!(intent.desired, desired);
+        assert_eq!(
+            intent.source,
+            UserReadinessMutationSource::IndirectPlayer {
+                action: player_action,
+                surface: PlayerInteractionSurface::SorottePlaybackControl,
+            }
+        );
+    }
+}

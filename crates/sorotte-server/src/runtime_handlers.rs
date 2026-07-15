@@ -399,9 +399,11 @@ impl ServerRuntime {
             }
         }
 
+        let readiness_reconnect_token = hello.readiness_reconnect_token;
         let capabilities = hello.capabilities;
         let mut replacement_outbound = Vec::new();
         if let Some(previous_session) = self.sessions.get(client_id).cloned() {
+            replacement_outbound.extend(self.detach_readiness_membership(client_id, true)?);
             let connection_rate_history = self
                 .playback_barrier_new_identity_rate_by_client
                 .remove(client_id);
@@ -420,6 +422,8 @@ impl ServerRuntime {
                 self.playback_barrier_new_identity_rate_by_client
                     .insert(client_id.to_owned(), connection_rate_history);
             }
+            replacement_outbound
+                .extend(self.refresh_mixed_readiness_cohort(&previous_session.room)?);
             self.cleanup_room_if_empty(&previous_session.room)?;
         }
         let username = self.find_free_username(&requested_username, Some(client_id));
@@ -469,12 +473,14 @@ impl ServerRuntime {
                 joined_message.clone(),
             ));
         }
-        let ready_message = ready_update_message(&username, None, false, None);
-        for room_client in self.clients_in_room(&room_name) {
-            outbound.push(DirectedProtocolMessage::new(
-                room_client,
-                ready_message.clone(),
-            ));
+        if !(self.readiness_enabled && capabilities.readiness_v2) {
+            let ready_message = ready_update_message(&username, None, false, None);
+            for room_client in self.clients_in_room(&room_name) {
+                outbound.push(DirectedProtocolMessage::new(
+                    room_client,
+                    ready_message.clone(),
+                ));
+            }
         }
         let room_playlist = self.room_playlist_state(&room_name);
         let playlist_snapshot_message = self.playlist_change_message_for_client(
@@ -506,6 +512,16 @@ impl ServerRuntime {
             self.persistent_rooms_enabled,
             capabilities.persistent_rooms,
         );
+        let readiness_attach_outbound = if self.readiness_enabled && capabilities.readiness_v2 {
+            self.attach_readiness_membership(
+                client_id,
+                readiness_reconnect_token.as_ref(),
+                true,
+                false,
+            )?
+        } else {
+            Vec::new()
+        };
         let mut response = HelloPayload::new(username.clone(), room_name.clone(), version)
             .with_realversion(SERVER_REAL_VERSION)
             .with_features(server_feature_list(
@@ -519,10 +535,19 @@ impl ServerRuntime {
         response
             .extra
             .insert("motd".to_owned(), Value::String(motd));
+        if let Some(reconnect_identity) = self.readiness_reconnect_identity_by_client.get(client_id)
+        {
+            response.extra.insert(
+                SOROTTE_READINESS_RECONNECT_TOKEN.to_owned(),
+                Value::String(reconnect_identity.expose_secret().to_owned()),
+            );
+        }
         outbound.push(DirectedProtocolMessage::new(
             client_id,
             ProtocolMessage::hello(response),
         ));
+        outbound.extend(readiness_attach_outbound);
+        outbound.extend(self.refresh_mixed_readiness_cohort(&room_name)?);
 
         if self.persistent_rooms_enabled {
             self.enqueue_list_snapshots_for_clients(
@@ -571,6 +596,7 @@ impl ServerRuntime {
             let mut playlist_index = None;
             let mut features = None;
             let mut playback_barrier = None;
+            let mut readiness = None;
             let command_name = match command {
                 ServerSetCommand::Room(value) => {
                     room = Some(value);
@@ -609,6 +635,10 @@ impl ServerRuntime {
                     playback_barrier = Some(*extension);
                     SOROTTE_PLAYBACK_BARRIER_V1
                 }
+                ServerSetCommand::Readiness(extension) => {
+                    readiness = Some(*extension);
+                    SOROTTE_READINESS_V2
+                }
             };
             match command_name {
                 "room" => {
@@ -622,6 +652,7 @@ impl ServerRuntime {
                     }
 
                     let previous_room = session.room.clone();
+                    outbound_messages.extend(self.detach_readiness_membership(client_id, false)?);
                     outbound_messages.extend(self.mark_playback_barrier_participant_disconnected(
                         client_id,
                         &previous_room,
@@ -632,7 +663,12 @@ impl ServerRuntime {
                             &previous_room,
                         )?,
                     );
-                    let previous_ready = self.stored_user_ready(&session.username, &previous_room);
+                    let previous_ready =
+                        if self.readiness_enabled && session.capabilities.readiness_v2 {
+                            Some(false)
+                        } else {
+                            self.stored_user_ready(&session.username, &previous_room)
+                        };
                     if self.isolate_rooms {
                         let left_message = user_event_message(
                             &session.username,
@@ -672,6 +708,20 @@ impl ServerRuntime {
                     );
                     session.room = new_room_name;
                     self.sessions.insert(client_id.to_owned(), session.clone());
+                    outbound_messages.extend(self.refresh_mixed_readiness_cohort(&previous_room)?);
+                    // The moving client must observe its canonical room echo
+                    // before any unscoped readiness V2 snapshot for the new
+                    // membership. Otherwise an old-room revision can poison
+                    // comparison or the later room echo can clear the freshly
+                    // attached membership.
+                    let mut new_room_readiness_outbound =
+                        if self.readiness_enabled && session.capabilities.readiness_v2 {
+                            self.attach_readiness_membership(client_id, None, false, false)?
+                        } else {
+                            Vec::new()
+                        };
+                    new_room_readiness_outbound
+                        .extend(self.refresh_mixed_readiness_cohort(&session.room)?);
                     self.client_next_periodic_state_at.insert(
                         client_id.to_owned(),
                         now_seconds + SERVER_STATE_INTERVAL_SECONDS,
@@ -720,21 +770,24 @@ impl ServerRuntime {
                             room_update_message.clone(),
                         ));
                     }
-                    let ready_message = ready_update_message(
-                        &session.username,
-                        if self.readiness_enabled {
-                            previous_ready
-                        } else {
-                            None
-                        },
-                        false,
-                        None,
-                    );
-                    for peer_client in self.clients_in_room(&session.room) {
-                        outbound_messages.push(DirectedProtocolMessage::new(
-                            peer_client,
-                            ready_message.clone(),
-                        ));
+                    outbound_messages.extend(new_room_readiness_outbound);
+                    if !(self.readiness_enabled && session.capabilities.readiness_v2) {
+                        let ready_message = ready_update_message(
+                            &session.username,
+                            if self.readiness_enabled {
+                                previous_ready
+                            } else {
+                                None
+                            },
+                            false,
+                            None,
+                        );
+                        for peer_client in self.clients_in_room(&session.room) {
+                            outbound_messages.push(DirectedProtocolMessage::new(
+                                peer_client,
+                                ready_message.clone(),
+                            ));
+                        }
                     }
 
                     let room_playlist = self.room_playlist_state(&session.room);
@@ -841,7 +894,7 @@ impl ServerRuntime {
                     }
                 }
                 "ready" => {
-                    let Some((is_ready, manually_initiated, username, set_by)) = ready.take()
+                    let Some((is_ready, manually_initiated, username, _set_by)) = ready.take()
                     else {
                         continue;
                     };
@@ -851,6 +904,23 @@ impl ServerRuntime {
                         None
                     };
                     let requested_username = username.as_deref().unwrap_or(&session.username);
+                    if let Some(v2_outbound) = self.apply_legacy_readiness_to_v2(
+                        client_id,
+                        requested_username,
+                        is_ready,
+                        manually_initiated,
+                    )? {
+                        outbound_messages.extend(v2_outbound);
+                        continue;
+                    }
+                    // Preserve the byte shape expected by legacy-only rooms:
+                    // Python Syncplay does not synthesize `setBy` for ordinary
+                    // self-Ready fanout. Controller overrides retain their
+                    // authenticated actor in every room; V2/mixed self updates
+                    // also derive the actor from the session, never client input.
+                    let authenticated_self_actor_projection = (self.readiness_enabled
+                        && self.room_readiness.contains_key(&session.room))
+                    .then_some(session.username.as_str());
                     if requested_username != session.username {
                         if self.user_can_control_playlist(&session.username, &session.room)
                             && self
@@ -891,7 +961,9 @@ impl ServerRuntime {
                             &session.username,
                             outbound_ready,
                             manually_initiated,
-                            set_by.as_deref(),
+                            manually_initiated
+                                .then_some(authenticated_self_actor_projection)
+                                .flatten(),
                         );
                         for peer_client in self.clients_in_room(&session.room) {
                             outbound_messages.push(DirectedProtocolMessage::new(
@@ -942,8 +1014,25 @@ impl ServerRuntime {
                     };
                     self.ensure_room_state(&session.room);
                     if self.user_can_control_playlist(&session.username, &session.room) {
+                        let previous_index = self.room_playlist_state(&session.room).index;
                         self.room_playlist_state_mut(&session.room).index = index;
                         self.persist_room_if_needed(&session.room)?;
+                        if previous_index != index
+                            && self.room_readiness.get(&session.room).is_some_and(|room| {
+                                matches!(
+                                    room.pause_owner,
+                                    RoomPauseOwner::None
+                                        | RoomPauseOwner::ReadinessStartGate { .. }
+                                        | RoomPauseOwner::EndOfPlaylist
+                                )
+                            })
+                        {
+                            outbound_messages.extend(self.set_readiness_pause_owner(
+                                &session.room,
+                                RoomPauseOwner::EndOfPlaylist,
+                                true,
+                            ));
+                        }
                         let playlist_index = PlaylistIndexPayload::from_optional(index)
                             .with_user(session.username.clone());
                         let playlist_message = ProtocolMessage::set(
@@ -969,6 +1058,10 @@ impl ServerRuntime {
                     };
                     let previously_supported = session.capabilities.playback_barrier_v1;
                     let now_supported = capabilities.playback_barrier_v1;
+                    let previously_supported_readiness =
+                        self.readiness_enabled && session.capabilities.readiness_v2;
+                    let now_supported_readiness =
+                        self.readiness_enabled && capabilities.readiness_v2;
                     session.capabilities = capabilities;
                     self.sessions.insert(client_id.to_owned(), session.clone());
                     if !previously_supported && now_supported {
@@ -982,6 +1075,27 @@ impl ServerRuntime {
                             )?,
                         );
                     }
+                    if !previously_supported_readiness && now_supported_readiness {
+                        let reconnect_identity = self
+                            .readiness_reconnect_identity_by_client
+                            .get(client_id)
+                            .cloned();
+                        outbound_messages.extend(self.attach_readiness_membership(
+                            client_id,
+                            reconnect_identity.as_ref(),
+                            true,
+                            true,
+                        )?);
+                    } else if previously_supported_readiness && !now_supported_readiness {
+                        outbound_messages
+                            .extend(self.detach_readiness_membership(client_id, true)?);
+                    }
+                    if previously_supported != now_supported
+                        || previously_supported_readiness != now_supported_readiness
+                    {
+                        outbound_messages
+                            .extend(self.refresh_mixed_readiness_cohort(&session.room)?);
+                    }
                 }
                 SOROTTE_PLAYBACK_BARRIER_V1 => {
                     let Some(extension) = playback_barrier.take() else {
@@ -989,6 +1103,12 @@ impl ServerRuntime {
                     };
                     outbound_messages
                         .extend(self.handle_playback_barrier_set(client_id, extension)?);
+                }
+                SOROTTE_READINESS_V2 => {
+                    let Some(extension) = readiness.take() else {
+                        continue;
+                    };
+                    outbound_messages.extend(self.handle_readiness_set(client_id, extension)?);
                 }
                 _ => {}
             }
@@ -1025,11 +1145,18 @@ impl ServerRuntime {
             .playback_barrier
             .as_ref()
             .is_some_and(|extension| extension.ready.is_some() || extension.started.is_some());
-        let mut barrier_outbound = if let Some(extension) = state.playback_barrier.take() {
-            self.handle_playback_barrier_state(client_id, extension)?
+        let had_readiness_report = state
+            .readiness
+            .as_ref()
+            .is_some_and(|extension| extension.technical.is_some());
+        let mut barrier_outbound = if let Some(extension) = state.readiness.take() {
+            self.handle_readiness_state(client_id, extension)?
         } else {
             Vec::new()
         };
+        if let Some(extension) = state.playback_barrier.take() {
+            barrier_outbound.extend(self.handle_playback_barrier_state(client_id, extension)?);
+        }
         let buffering_changed_room_playback = barrier_outbound.iter().any(|directed| {
             matches!(
                 &directed.message,
@@ -1043,6 +1170,7 @@ impl ServerRuntime {
         // commands. Ignore any stale optimistic playstate bundled alongside
         // them, especially the paused sample sent with the final MediaReady.
         if had_barrier_ack
+            || had_readiness_report
             || buffering_changed_room_playback
             || self
                 .room_playback_barriers
@@ -1065,10 +1193,39 @@ impl ServerRuntime {
         let pause_changed = playstate
             .paused
             .is_some_and(|paused| paused != room_state_before.paused);
-        if can_control_room && pause_changed {
-            barrier_outbound
-                .extend(self.retire_awaiting_playback_barrier_decision(client_id, &session.room));
-        }
+        let readiness_v2_transport = self.readiness_enabled
+            && session.capabilities.readiness_v2
+            && self.room_readiness.contains_key(&session.room);
+        let v2_transport_change = can_control_room && pause_changed && readiness_v2_transport;
+        let observed_paused = playstate.paused.unwrap_or(room_state_before.paused);
+        let accepted_v2_user_transport = v2_transport_change
+            && self.consume_pending_user_transport(
+                client_id,
+                &session.room,
+                &session.username,
+                observed_paused,
+                PendingUserTransportEvidence::AcceptedIndirectAction,
+            );
+        let automatic_v2_transport_owner = v2_transport_change
+            .then(|| {
+                self.automatic_transport_owner_for_observation(
+                    &session.room,
+                    &session.username,
+                    observed_paused,
+                )
+            })
+            .flatten();
+        let pause_is_already_automatic = playstate.paused == Some(true)
+            && self.room_readiness.get(&session.room).is_some_and(|room| {
+                !matches!(
+                    room.pause_owner,
+                    RoomPauseOwner::None | RoomPauseOwner::User { .. }
+                )
+            });
+        let legacy_transport_change = can_control_room
+            && pause_changed
+            && !readiness_v2_transport
+            && !pause_is_already_automatic;
         let sample_paused = playstate.paused.unwrap_or(room_state_before.paused);
         let playback_sample_position = playstate.position.map(|mut position| {
             if !sample_paused {
@@ -1077,6 +1234,67 @@ impl ServerRuntime {
             position
         });
         self.record_client_playback_state_sample(client_id, playback_sample_position, now_seconds);
+
+        if v2_transport_change
+            && !accepted_v2_user_transport
+            && automatic_v2_transport_owner.is_none()
+        {
+            self.stage_unclassified_user_transport_observation(
+                client_id,
+                &session.room,
+                &session.username,
+                observed_paused,
+            );
+            barrier_outbound.push(DirectedProtocolMessage::new(
+                client_id,
+                self.forced_state_sync_message_for_client(
+                    client_id,
+                    room_state_before.position,
+                    room_state_before.paused,
+                    false,
+                    room_state_before.set_by.as_deref(),
+                ),
+            ));
+            return Ok(barrier_outbound);
+        }
+        if accepted_v2_user_transport || legacy_transport_change {
+            barrier_outbound
+                .extend(self.retire_awaiting_playback_barrier_decision(client_id, &session.room));
+        }
+        if (accepted_v2_user_transport || legacy_transport_change) && observed_paused {
+            barrier_outbound
+                .extend(self.claim_user_pause_ownership(&session.room, &session.username));
+        } else if observed_paused
+            && let Some(owner) = automatic_v2_transport_owner
+            && self.room_readiness.get(&session.room).is_some_and(|room| {
+                matches!(room.pause_owner, RoomPauseOwner::None) || room.pause_owner == owner
+            })
+        {
+            barrier_outbound.extend(self.set_readiness_pause_owner(&session.room, owner, true));
+        }
+
+        if can_control_room
+            && playstate.paused == Some(false)
+            && room_state_before.paused
+            && self.readiness_enabled
+            && self.room_readiness.contains_key(&session.room)
+            && self
+                .room_playback_barriers
+                .get(&session.room)
+                .is_some_and(|barrier| barrier.phase == PlaybackBarrierPhase::Preparing)
+        {
+            barrier_outbound.push(DirectedProtocolMessage::new(
+                client_id,
+                self.forced_state_sync_message_for_client(
+                    client_id,
+                    room_state_before.position,
+                    true,
+                    false,
+                    room_state_before.set_by.as_deref(),
+                ),
+            ));
+            return Ok(barrier_outbound);
+        }
 
         if !do_seek.unwrap_or(false) && !pause_changed {
             return Ok(barrier_outbound);
@@ -1095,8 +1313,16 @@ impl ServerRuntime {
                 room_state.updated_at_seconds = now_seconds;
                 room_state.set_by = Some(session.username.clone());
             }
+            self.advance_transport_authority_revision(&session.room);
             self.seed_room_client_playback_states(&session.room, watcher_position, now_seconds);
             self.persist_room_if_needed(&session.room)?;
+            if pause_changed && !sample_paused {
+                barrier_outbound.extend(self.set_readiness_pause_owner(
+                    &session.room,
+                    RoomPauseOwner::None,
+                    true,
+                ));
+            }
             let room_state = self.room_playback_state_at(&session.room, now_seconds);
             let mut outbound_messages = barrier_outbound;
             for peer_client in self.clients_in_room(&session.room) {

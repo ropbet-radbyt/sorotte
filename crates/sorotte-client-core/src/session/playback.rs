@@ -387,6 +387,23 @@ impl ClientSession {
         local_can_control: bool,
         is_playing_music: bool,
     ) -> Vec<ClientRuntimeAction> {
+        self.runtime_actions_for_readiness_unpause_attempt_with_gate_hold(
+            now_seconds,
+            readiness_supported,
+            local_can_control,
+            is_playing_music,
+            None,
+        )
+    }
+
+    pub(crate) fn runtime_actions_for_readiness_unpause_attempt_with_gate_hold(
+        &mut self,
+        now_seconds: f64,
+        readiness_supported: bool,
+        local_can_control: bool,
+        is_playing_music: bool,
+        current_gate_holds_play: Option<bool>,
+    ) -> Vec<ClientRuntimeAction> {
         if !readiness_supported {
             return Vec::new();
         }
@@ -394,18 +411,32 @@ impl ClientSession {
             return Vec::new();
         }
 
+        if self.server_readiness_v2_supported() {
+            let gate_holds_play =
+                current_gate_holds_play.unwrap_or_else(|| self.readiness_gate_holds_room_pause());
+            if !local_can_control || gate_holds_play {
+                self.model.playback.local_paused = Some(true);
+                // This observation-only seam has no proof of a user gesture.
+                // Shared causal classification emits any indirect Ready before
+                // the gate-hold correction is issued.
+                return vec![ClientRuntimeAction::SetPaused(true)];
+            }
+
+            // An authorized controller resolves AwaitingDecision or a
+            // terminal/precommit barrier with ordinary playback control. V2
+            // does not inherit the legacy instaplay preference matrix.
+            self.model.playback.local_paused = Some(false);
+            return Vec::new();
+        }
+
         let instaplay = self.instaplay_conditions_met(local_can_control, is_playing_music);
         if !instaplay {
             self.model.playback.local_paused = Some(true);
-            let mut actions = vec![ClientRuntimeAction::SetPaused(true)];
-            if !self.local_user_ready() {
-                self.apply_local_ready_state_optimistically(true);
-                actions.push(ClientRuntimeAction::SetReady {
-                    ready: true,
-                    manually_initiated: true,
-                });
-            }
-            return actions;
+            // This periodic compatibility check observes state but has no
+            // proof of a user gesture. The causal player classifier owns
+            // native Play detection; a gate correction is system-owned and
+            // must not manufacture readiness intent.
+            return vec![ClientRuntimeAction::SetPaused(true)];
         }
 
         if let Some(last_paused_on_leave_at_seconds) =
@@ -423,15 +454,7 @@ impl ClientSession {
         }
 
         self.model.playback.local_paused = Some(false);
-        if self.local_user_ready() {
-            return Vec::new();
-        }
-
-        self.apply_local_ready_state_optimistically(true);
-        vec![ClientRuntimeAction::SetReady {
-            ready: true,
-            manually_initiated: false,
-        }]
+        Vec::new()
     }
 
     pub fn autoplay_conditions_met(
@@ -441,6 +464,9 @@ impl ClientSession {
         is_playing_music: bool,
         recently_advanced: bool,
     ) -> bool {
+        if self.server_readiness_v2_supported() {
+            return false;
+        }
         if self.model.playback.local_paused_for_cache == Some(true) {
             return false;
         }

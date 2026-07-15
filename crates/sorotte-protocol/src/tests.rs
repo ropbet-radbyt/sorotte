@@ -5,20 +5,27 @@ use std::path::PathBuf;
 use serde_json::json;
 
 use super::{
-    ChatMessagePayload, ChatPayload, ControllerAuthPayload, ErrorPayload, FilePayload,
-    HelloPayload, IgnoringOnTheFlyPayload, ListPayload, ListUserEntry, MediaLoadIntent,
-    MediaReadyPayload, NewControlledRoomPayload, PingPayload, PlaybackBarrierPolicy,
+    ChatMessagePayload, ChatPayload, ControllerAuthPayload, DirectReadinessSurface, ErrorPayload,
+    FilePayload, HelloPayload, IgnoringOnTheFlyPayload, ListPayload, ListUserEntry,
+    MediaLoadIntent, MediaReadyPayload, MixedReadinessPolicy, NewControlledRoomPayload,
+    ParticipantReadiness, ParticipantReadinessUpdate, PingPayload, PlaybackBarrierPolicy,
     PlaybackBarrierRecoveryDisposition, PlaybackBarrierRecoveryPayload,
     PlaybackBarrierRequestResultPayload, PlaybackBarrierRequestResultStatus,
     PlaybackBarrierSetExtension, PlaybackBarrierStateExtension, PlaybackBarrierTimeoutAction,
-    PlaylistChangePayload, PlaylistIndexPayload, PlaystatePayload, PrepareMediaPayload,
-    ProtocolError, ProtocolMessage, ReadyPayload, RoomBufferingPhase, RoomBufferingPolicy,
-    RoomBufferingPolicyPayload, RoomBufferingStatusPayload, RoomRef, SOROTTE_PLAYBACK_BARRIER_V1,
-    SOROTTE_PLEX_PLAYLIST_URIS_KEY, SetPayload, StartedAckPayload, StatePayload, TlsPayload,
-    TransportBufferingReportPayload, UserSetPayload, canonical_playlist_files_from_change,
-    decode_line, decode_message_line, decode_message_line_items, decode_message_lines, encode_line,
-    encode_message_line, extract_hello, extract_hello_from_message,
-    playlist_change_with_plex_sidecar,
+    PlayerInteractionSurface, PlayerReadinessAction, PlaylistChangePayload, PlaylistIndexPayload,
+    PlaystatePayload, PrepareMediaPayload, ProtocolError, ProtocolMessage, ReadinessIntentRequest,
+    ReadinessMutationMetadata, ReadinessMutationSource, ReadinessRequestResultPayload,
+    ReadinessRequestResultStatus, ReadinessSetExtension, ReadinessStateExtension, ReadyPayload,
+    RecoveryStage, RoomBufferingPhase, RoomBufferingPolicy, RoomBufferingPolicyPayload,
+    RoomBufferingStatusPayload, RoomPauseOwner, RoomReadinessSnapshot, RoomRef, RoomStartGatePhase,
+    SOROTTE_PLAYBACK_BARRIER_V1, SOROTTE_PLEX_PLAYLIST_URIS_KEY, SOROTTE_READINESS_V2, SetPayload,
+    StartParticipationRole, StartedAckPayload, StatePayload, TechnicalBlockCause,
+    TechnicalPlayability, TechnicalPlayabilityPhase, TechnicalPlayabilitySummary,
+    TechnicalReadinessBlock, TechnicalReadinessReport, TlsPayload, TransportBufferingReportPayload,
+    UserReadinessIntent, UserReadinessMutationSource, UserSetPayload,
+    canonical_playlist_files_from_change, decode_line, decode_message_line,
+    decode_message_line_items, decode_message_lines, encode_line, encode_message_line,
+    extract_hello, extract_hello_from_message, playlist_change_with_plex_sidecar,
 };
 
 fn fixture_dir() -> PathBuf {
@@ -493,6 +500,518 @@ fn playback_barrier_debug_redacts_logical_media_identity() {
     );
     assert!(!policy_debug.contains(REQUEST_MARKER));
     assert!(policy_debug.contains("<redacted>"));
+}
+
+#[test]
+fn readiness_v2_intent_is_additive_tagged_and_roundtrips() {
+    let intent = ReadinessIntentRequest::new(
+        "ready-operation-1",
+        7,
+        41,
+        UserReadinessIntent::Ready,
+        UserReadinessMutationSource::DirectUser {
+            surface: DirectReadinessSurface::GuiButton,
+        },
+    )
+    .with_expected_user_intent_revision(12);
+    let message = ProtocolMessage::set(
+        SetPayload::new()
+            .with_ready(ReadyPayload::new(true).with_manually_initiated(true))
+            .with_readiness_v2(ReadinessSetExtension::new().with_intent(intent.clone())),
+    );
+
+    let encoded = encode_message_line(&message).expect("readiness intent should encode");
+    let value = decode_line(&encoded).expect("readiness intent should remain valid JSON");
+    assert!(value.get(SOROTTE_READINESS_V2).is_none());
+    assert_eq!(
+        value
+            .pointer("/Set/ready/isReady")
+            .and_then(|value| value.as_bool()),
+        Some(true),
+        "the additive extension must coexist with legacy readiness"
+    );
+    assert_eq!(
+        value
+            .pointer("/Set/sorotteReadinessV2/intent/operationId")
+            .and_then(|value| value.as_str()),
+        Some("ready-operation-1")
+    );
+    assert_eq!(
+        value
+            .pointer("/Set/sorotteReadinessV2/intent/source/type")
+            .and_then(|value| value.as_str()),
+        Some("directUser")
+    );
+    assert_eq!(
+        value
+            .pointer("/Set/sorotteReadinessV2/intent/source/surface")
+            .and_then(|value| value.as_str()),
+        Some("guiButton")
+    );
+    assert_eq!(
+        value
+            .pointer("/Set/sorotteReadinessV2/intent/membershipEpoch")
+            .and_then(|value| value.as_u64()),
+        Some(41)
+    );
+    assert_eq!(
+        value
+            .pointer("/Set/sorotteReadinessV2/intent/expectedUserIntentRevision")
+            .and_then(|value| value.as_u64()),
+        Some(12)
+    );
+
+    let decoded = decode_message_line(&encoded).expect("readiness intent should decode");
+    let ProtocolMessage::Set(decoded) = decoded else {
+        panic!("readiness intent should remain a Set message");
+    };
+    assert_eq!(
+        decoded
+            .set
+            .readiness_v2()
+            .expect("readiness extension should be valid")
+            .and_then(|extension| extension.intent),
+        Some(intent)
+    );
+}
+
+#[test]
+fn readiness_v2_initialization_source_is_additive_tagged_and_roundtrips() {
+    let intent = ReadinessIntentRequest::new(
+        "ready-at-start-operation",
+        8,
+        41,
+        UserReadinessIntent::Ready,
+        UserReadinessMutationSource::Initialization,
+    );
+    let message = ProtocolMessage::set(
+        SetPayload::new().with_readiness_v2(ReadinessSetExtension::new().with_intent(intent)),
+    );
+
+    let encoded = encode_message_line(&message).expect("initialization intent should encode");
+    let value = decode_line(&encoded).expect("initialization intent should remain valid JSON");
+    assert_eq!(
+        value
+            .pointer("/Set/sorotteReadinessV2/intent/source/type")
+            .and_then(|value| value.as_str()),
+        Some("initialization")
+    );
+    assert_eq!(
+        decode_message_line(&encoded).expect("initialization intent should decode"),
+        message
+    );
+}
+
+#[test]
+fn readiness_v2_canonical_snapshot_and_result_roundtrip() {
+    let mutation = ReadinessMutationMetadata::new(
+        ReadinessMutationSource::IndirectPlayer {
+            action: PlayerReadinessAction::Play,
+            surface: PlayerInteractionSurface::NativePlayerControl,
+        },
+        18,
+    )
+    .with_actor("alice")
+    .with_operation_id("ready-operation-2")
+    .with_server_observed_at(44.5);
+    let playability = TechnicalPlayability::Playable {
+        media_generation: 9,
+    };
+    let participant = ParticipantReadinessUpdate {
+        room_readiness_revision: 18,
+        membership_epoch: 6,
+        last_technical_report_sequence: 7,
+        username: "alice".to_owned(),
+        user_intent: UserReadinessIntent::Ready,
+        user_intent_revision: 4,
+        user_intent_source: mutation.source.clone(),
+        last_user_mutation: Some(mutation),
+        terminal_technical_block: None,
+        technical_state: playability.summary(),
+        participation_role: StartParticipationRole::Required,
+        room_ready: true,
+        start_eligible: true,
+        accepted_operation_id: Some("ready-operation-2".to_owned()),
+    };
+    let snapshot = RoomReadinessSnapshot {
+        room_readiness_revision: 18,
+        media_generation: Some(9),
+        start_gate_phase: RoomStartGatePhase::ReadyToCommit {
+            media_generation: 9,
+            readiness_revision: 18,
+        },
+        pause_owner: RoomPauseOwner::ReadinessStartGate {
+            media_generation: 9,
+        },
+        mixed_readiness_policy: MixedReadinessPolicy::RequireAllMembers,
+        participants: BTreeMap::from([("alice".to_owned(), participant.clone())]),
+    };
+    let result = ReadinessRequestResultPayload::new(
+        "ready-operation-2",
+        8,
+        ReadinessRequestResultStatus::Accepted,
+    )
+    .with_room_readiness_revision(18)
+    .with_membership_epoch(6)
+    .with_user_intent_revision(4);
+    let extension = ReadinessSetExtension::new()
+        .with_participant(participant)
+        .with_snapshot(snapshot)
+        .with_request_result(result);
+    let message = ProtocolMessage::set(SetPayload::new().with_readiness_v2(extension.clone()));
+
+    let encoded = encode_message_line(&message).expect("canonical readiness state should encode");
+    let value = decode_line(&encoded).expect("canonical readiness state should be JSON");
+    assert_eq!(
+        value
+            .pointer("/Set/sorotteReadinessV2/snapshot/startGatePhase/phase")
+            .and_then(|value| value.as_str()),
+        Some("readyToCommit")
+    );
+    assert_eq!(
+        value
+            .pointer("/Set/sorotteReadinessV2/snapshot/startGatePhase/readinessRevision")
+            .and_then(|value| value.as_u64()),
+        Some(18)
+    );
+    assert_eq!(
+        value
+            .pointer("/Set/sorotteReadinessV2/snapshot/pauseOwner/owner")
+            .and_then(|value| value.as_str()),
+        Some("readinessStartGate")
+    );
+    assert_eq!(
+        value
+            .pointer("/Set/sorotteReadinessV2/snapshot/mixedReadinessPolicy")
+            .and_then(|value| value.as_str()),
+        Some("requireAllMembers")
+    );
+    assert_eq!(
+        value
+            .pointer(
+                "/Set/sorotteReadinessV2/snapshot/participants/alice/technicalState/mediaGeneration"
+            )
+            .and_then(|value| value.as_u64()),
+        Some(9)
+    );
+    assert_eq!(
+        value
+            .pointer("/Set/sorotteReadinessV2/snapshot/participants/alice/lastUserMutation/serverObservedAt")
+            .and_then(|value| value.as_f64()),
+        Some(44.5)
+    );
+    assert_eq!(
+        value
+            .pointer("/Set/sorotteReadinessV2/requestResult/status")
+            .and_then(|value| value.as_str()),
+        Some("accepted")
+    );
+    assert_eq!(
+        value
+            .pointer("/Set/sorotteReadinessV2/requestResult/userIntentRevision")
+            .and_then(|value| value.as_u64()),
+        Some(4)
+    );
+
+    let ProtocolMessage::Set(decoded) =
+        decode_message_line(&encoded).expect("canonical readiness state should decode")
+    else {
+        panic!("canonical readiness state should remain a Set message");
+    };
+    assert_eq!(
+        decoded
+            .set
+            .readiness_v2()
+            .expect("canonical readiness extension should be valid"),
+        Some(extension)
+    );
+}
+
+#[test]
+fn mixed_readiness_policy_exposes_only_implemented_room_policies() {
+    assert_eq!(
+        serde_json::from_str::<MixedReadinessPolicy>(r#""requireAllMembers""#)
+            .expect("the strict policy should decode"),
+        MixedReadinessPolicy::RequireAllMembers
+    );
+    assert_eq!(
+        serde_json::from_str::<MixedReadinessPolicy>(r#""excludeLegacy""#)
+            .expect("the explicit compatibility policy should decode"),
+        MixedReadinessPolicy::ExcludeLegacy
+    );
+    assert!(
+        serde_json::from_str::<MixedReadinessPolicy>(r#""askController""#).is_err(),
+        "an unsupported controller-decision mode must not be advertised on the wire"
+    );
+}
+
+#[test]
+fn readiness_v2_technical_report_roundtrips_in_state() {
+    let technical =
+        TechnicalReadinessReport::new(22, 6, 8, TechnicalPlayabilityPhase::TemporarilyBlocked)
+            .with_authoritative_playback_revision(31)
+            .with_reason(TechnicalBlockCause::Rebuffering)
+            .with_recovery(RecoveryStage::Retrying)
+            .with_observed_at(123.25);
+    let message = ProtocolMessage::state(
+        StatePayload::new()
+            .with_readiness_v2(ReadinessStateExtension::new().with_technical(technical.clone())),
+    );
+
+    let encoded = encode_message_line(&message).expect("technical readiness should encode");
+    let value = decode_line(&encoded).expect("technical readiness should be JSON");
+    assert!(value.get(SOROTTE_READINESS_V2).is_none());
+    assert_eq!(
+        value
+            .pointer("/State/sorotteReadinessV2/technical/mediaGeneration")
+            .and_then(|value| value.as_u64()),
+        Some(22)
+    );
+    assert_eq!(
+        value
+            .pointer("/State/sorotteReadinessV2/technical/membershipEpoch")
+            .and_then(|value| value.as_u64()),
+        Some(6)
+    );
+    assert_eq!(
+        value
+            .pointer("/State/sorotteReadinessV2/technical/reportSequence")
+            .and_then(|value| value.as_u64()),
+        Some(8)
+    );
+    assert_eq!(
+        value
+            .pointer("/State/sorotteReadinessV2/technical/authoritativePlaybackRevision")
+            .and_then(|value| value.as_u64()),
+        Some(31)
+    );
+    assert_eq!(
+        value
+            .pointer("/State/sorotteReadinessV2/technical/phase")
+            .and_then(|value| value.as_str()),
+        Some("temporarilyBlocked")
+    );
+    assert_eq!(
+        value
+            .pointer("/State/sorotteReadinessV2/technical/recovery")
+            .and_then(|value| value.as_str()),
+        Some("retrying")
+    );
+
+    let ProtocolMessage::State(decoded) =
+        decode_message_line(&encoded).expect("technical readiness should decode")
+    else {
+        panic!("technical readiness should remain a State message");
+    };
+    assert_eq!(
+        decoded
+            .state
+            .readiness_v2()
+            .expect("technical readiness extension should be valid")
+            .and_then(|extension| extension.technical),
+        Some(technical)
+    );
+}
+
+#[test]
+fn readiness_v2_tagged_state_types_have_stable_camel_case_shapes() {
+    let blocked = TechnicalPlayability::TemporarilyBlocked {
+        media_generation: 5,
+        cause: TechnicalBlockCause::CachePause,
+        recovery: RecoveryStage::ReloadingMedia,
+    };
+    assert_eq!(
+        serde_json::to_value(&blocked).expect("playability should serialize"),
+        json!({
+            "phase": "temporarilyBlocked",
+            "mediaGeneration": 5,
+            "cause": "cachePause",
+            "recovery": "reloadingMedia",
+        })
+    );
+    assert_eq!(
+        blocked.summary(),
+        TechnicalPlayabilitySummary {
+            phase: TechnicalPlayabilityPhase::TemporarilyBlocked,
+            media_generation: Some(5),
+            reason: Some(TechnicalBlockCause::CachePause),
+            recovery: Some(RecoveryStage::ReloadingMedia),
+        }
+    );
+
+    assert_eq!(
+        serde_json::to_value(RoomPauseOwner::RoomBufferingPolicy {
+            media_generation: 5,
+            state_revision: Some(3),
+        })
+        .expect("pause owner should serialize"),
+        json!({
+            "owner": "roomBufferingPolicy",
+            "mediaGeneration": 5,
+            "stateRevision": 3,
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(ReadinessMutationSource::ControllerOverride {
+            actor: "alice".to_owned(),
+        })
+        .expect("controller source should serialize"),
+        json!({"type": "controllerOverride", "actor": "alice"})
+    );
+    assert_eq!(
+        serde_json::to_value(ReadinessMutationSource::SystemTechnical {
+            reason: TechnicalBlockCause::PlayerFailure,
+        })
+        .expect("system source should serialize"),
+        json!({"type": "systemTechnical", "reason": "playerFailure"})
+    );
+}
+
+#[test]
+fn participant_readiness_record_preserves_intent_and_technical_block_separately() {
+    let record = ParticipantReadiness {
+        membership_epoch: 3,
+        last_technical_report_sequence: 9,
+        user_intent: UserReadinessIntent::Ready,
+        user_intent_revision: 8,
+        last_user_mutation: Some(ReadinessMutationMetadata::new(
+            ReadinessMutationSource::DirectUser {
+                surface: DirectReadinessSurface::KeyboardShortcut,
+            },
+            12,
+        )),
+        technical_state: TechnicalPlayability::TerminallyBlocked {
+            media_generation: 7,
+            cause: TechnicalBlockCause::RecoveryExhausted,
+        },
+        terminal_technical_block: Some(TechnicalReadinessBlock::new(
+            7,
+            TechnicalBlockCause::RecoveryExhausted,
+        )),
+        participation_role: StartParticipationRole::Required,
+        room_ready: false,
+        start_eligible: false,
+    };
+    let value = serde_json::to_value(&record).expect("participant record should serialize");
+    assert_eq!(
+        value
+            .pointer("/userIntent")
+            .and_then(|value| value.as_str()),
+        Some("ready")
+    );
+    assert_eq!(
+        value
+            .pointer("/technicalState/phase")
+            .and_then(|value| value.as_str()),
+        Some("terminallyBlocked")
+    );
+    assert_eq!(
+        serde_json::from_value::<ParticipantReadiness>(value)
+            .expect("participant record should deserialize"),
+        record
+    );
+}
+
+#[test]
+fn malformed_readiness_v2_extensions_do_not_break_envelope_decoding() {
+    let set = decode_message_line(
+        r#"{"Set":{"ready":{"isReady":true},"sorotteReadinessV2":{"intent":{"operationId":"op","requestNonce":1,"membershipEpoch":"invalid","desired":"ready","source":{"type":"directUser","surface":"guiButton"}}}}}"#,
+    )
+    .expect("permissive Set envelope should preserve a malformed readiness extension");
+    let ProtocolMessage::Set(set) = set else {
+        panic!("expected Set message");
+    };
+    assert_eq!(
+        set.set.ready.as_ref().and_then(|ready| ready.is_ready),
+        Some(true)
+    );
+    assert!(set.set.readiness_v2().is_err());
+
+    let state = decode_message_line(
+        r#"{"State":{"ping":{"clientRtt":0.1},"sorotteReadinessV2":{"technical":{"mediaGeneration":2,"phase":"notARealPhase"}}}}"#,
+    )
+    .expect("permissive State envelope should preserve a malformed readiness extension");
+    let ProtocolMessage::State(state) = state else {
+        panic!("expected State message");
+    };
+    assert!(state.state.ping.is_some());
+    assert!(state.state.readiness_v2().is_err());
+}
+
+#[test]
+fn legacy_v2_technical_report_without_ordering_fields_decodes_to_rejectable_zero_scope() {
+    let message = decode_message_line(
+        r#"{"State":{"sorotteReadinessV2":{"technical":{"mediaGeneration":2,"phase":"playable"}}}}"#,
+    )
+    .expect("older additive V2 payload should preserve the protocol envelope");
+    let ProtocolMessage::State(state) = message else {
+        panic!("expected State message");
+    };
+    let report = state
+        .state
+        .readiness_v2()
+        .expect("missing additive ordering fields should remain decodable")
+        .and_then(|extension| extension.technical)
+        .expect("technical report should be present");
+    assert_eq!(report.membership_epoch, 0);
+    assert_eq!(report.report_sequence, 0);
+}
+
+#[test]
+fn readiness_v2_debug_redacts_all_operation_id_carriers() {
+    const MARKER: &str = "private-readiness-operation-token";
+    let intent = ReadinessIntentRequest::new(
+        MARKER,
+        1,
+        2,
+        UserReadinessIntent::NotReady,
+        UserReadinessMutationSource::IndirectPlayer {
+            action: PlayerReadinessAction::Pause,
+            surface: PlayerInteractionSurface::MediaKey,
+        },
+    );
+    let metadata = ReadinessMutationMetadata::new(
+        ReadinessMutationSource::IndirectPlayer {
+            action: PlayerReadinessAction::Pause,
+            surface: PlayerInteractionSurface::MediaKey,
+        },
+        3,
+    )
+    .with_operation_id(MARKER);
+    let participant = ParticipantReadinessUpdate {
+        room_readiness_revision: 3,
+        membership_epoch: 2,
+        last_technical_report_sequence: 0,
+        username: "alice".to_owned(),
+        user_intent: UserReadinessIntent::NotReady,
+        user_intent_revision: 1,
+        user_intent_source: metadata.source.clone(),
+        last_user_mutation: Some(metadata),
+        terminal_technical_block: None,
+        technical_state: TechnicalPlayability::Unknown.summary(),
+        participation_role: StartParticipationRole::Required,
+        room_ready: false,
+        start_eligible: false,
+        accepted_operation_id: Some(MARKER.to_owned()),
+    };
+    let result =
+        ReadinessRequestResultPayload::new(MARKER, 1, ReadinessRequestResultStatus::Accepted);
+    let extension = ReadinessSetExtension::new()
+        .with_intent(intent.clone())
+        .with_participant(participant.clone())
+        .with_request_result(result.clone());
+    let message = ProtocolMessage::set(SetPayload::new().with_readiness_v2(extension.clone()));
+
+    for debug in [
+        format!("{intent:?}"),
+        format!("{participant:?}"),
+        format!("{result:?}"),
+        format!("{extension:?}"),
+        format!("{message:?}"),
+    ] {
+        assert!(!debug.contains(MARKER), "leaky Debug output: {debug}");
+        assert!(debug.contains("<redacted>"));
+    }
 }
 
 #[test]

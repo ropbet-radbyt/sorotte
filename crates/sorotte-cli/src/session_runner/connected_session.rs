@@ -21,12 +21,31 @@ type ConnectedSessionWriteHalf = tokio::io::WriteHalf<Box<dyn ConnectedSessionAs
 const CLI_PLEX_CLIENT_IDENTIFIER: &str = "sorotte-cli";
 const CLI_PLEX_CACHE_FILE_NAME: &str = "plex-watch-cache.json";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingReadyAtStart {
+    desired: bool,
+    had_current_v2_membership: bool,
+}
+
 fn client_runtime_now_seconds() -> f64 {
     static CLIENT_RUNTIME_CLOCK_EPOCH: OnceLock<std::time::Instant> = OnceLock::new();
     CLIENT_RUNTIME_CLOCK_EPOCH
         .get_or_init(std::time::Instant::now)
         .elapsed()
         .as_secs_f64()
+}
+
+fn insert_readiness_reconnect_token(
+    hello: &mut HelloPayload,
+    session: &sorotte_client_core::ClientSession,
+    room: &str,
+) {
+    if let Some(reconnect_token) = session.readiness_reconnect_token_for_room(room) {
+        hello.extra.insert(
+            sorotte_protocol::SOROTTE_READINESS_RECONNECT_TOKEN.to_owned(),
+            Value::String(reconnect_token.to_owned()),
+        );
+    }
 }
 
 fn normalized_tls_server_host(host: &str) -> &str {
@@ -246,6 +265,9 @@ where
         diagnostics_config,
         plex_config,
     } = launch;
+    let had_current_v2_membership = runtime.session().room() == Some(config.room.as_str())
+        && (runtime.session().readiness_snapshot().is_some()
+            || runtime.session().pending_readiness_intent().is_some());
     let mut local_input_rx = local_input_rx;
     let mut hello_payload = HelloPayload::new(
         config.username.clone(),
@@ -263,6 +285,7 @@ where
             )),
         );
     }
+    insert_readiness_reconnect_token(&mut hello_payload, runtime.session(), &config.room);
     hello_payload.features = Some(client_hello_features_legacy_compatible(config));
     let hello_message = ProtocolMessage::hello(hello_payload);
     ensure_connected_application_command_succeeded(
@@ -311,9 +334,12 @@ where
     let mut file_difference_state = FileDifferenceNotificationState::default();
     let mut reconnect_correction_diagnostics_state = ReconnectCorrectionDiagnosticsState::default();
     let mut seek_preparation_notification_state = SeekPreparationNotificationState::default();
+    let mut readiness_notification_state = ReadinessNotificationState::default();
     let mut local_user_offset_seconds = 0.0f64;
-    let mut pending_ready_at_start_on_server_hello =
-        Some(config.ready_at_start_override.unwrap_or(false));
+    let mut pending_ready_at_start_on_server_hello = Some(PendingReadyAtStart {
+        desired: config.ready_at_start_override.unwrap_or(false),
+        had_current_v2_membership,
+    });
     let mut outbound_state_sync_enabled = false;
     let branch_diagnostics_plan = ConnectedSessionDiagnosticsPlan {
         log_player_telemetry: diagnostics_config.log_player_telemetry,
@@ -349,9 +375,10 @@ where
                         let (decoded_inbound_messages, predecoded_inbound_error) =
                             decode_inbound_message_prefix_legacy_compatible(&line);
                         let inbound_is_server_hello = pending_ready_at_start_on_server_hello.is_some()
-                            && decoded_inbound_messages
+                            && (decoded_inbound_messages
                                 .iter()
-                                .any(|message| matches!(message, ProtocolMessage::Hello(_)));
+                                .any(|message| matches!(message, ProtocolMessage::Hello(_)))
+                                || runtime.session().server_readiness_v2_supported());
                         let now_seconds = client_runtime_now_seconds();
                         let event_execution_plan =
                             connected_session_inbound_message_event_execution_plan_legacy_compatible(
@@ -383,6 +410,7 @@ where
                                     diagnostics_config: &diagnostics_config,
                                     reconnect_correction_diagnostics_state: &mut reconnect_correction_diagnostics_state,
                                     seek_preparation_notification_state: &mut seek_preparation_notification_state,
+                                    readiness_notification_state: &mut readiness_notification_state,
                                     file_difference_state: &mut file_difference_state,
                                     notification_sink,
                                     file_difference_sink,
@@ -433,6 +461,7 @@ where
                             diagnostics_config: &diagnostics_config,
                             reconnect_correction_diagnostics_state: &mut reconnect_correction_diagnostics_state,
                             seek_preparation_notification_state: &mut seek_preparation_notification_state,
+                            readiness_notification_state: &mut readiness_notification_state,
                             file_difference_state: &mut file_difference_state,
                             notification_sink,
                             file_difference_sink,
@@ -526,6 +555,7 @@ where
                                 diagnostics_config: &diagnostics_config,
                                 reconnect_correction_diagnostics_state: &mut reconnect_correction_diagnostics_state,
                                 seek_preparation_notification_state: &mut seek_preparation_notification_state,
+                                readiness_notification_state: &mut readiness_notification_state,
                                 file_difference_state: &mut file_difference_state,
                                 notification_sink,
                                 file_difference_sink,
@@ -543,9 +573,37 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sorotte_client_core::ClientSession;
     use tokio::io::AsyncBufReadExt;
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
+
+    #[test]
+    fn reconnect_token_is_added_only_to_same_room_hello() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"readiness":true,"sorotteReadinessV2":true},"sorotteReadinessReconnectToken":"cli-reconnect-token"}}"#,
+            )
+            .expect("server Hello should store the reconnect token");
+
+        let mut same_room = HelloPayload::new("alice", "room1", "1.2.255");
+        insert_readiness_reconnect_token(&mut same_room, &session, "room1");
+        assert_eq!(
+            same_room
+                .extra
+                .get(sorotte_protocol::SOROTTE_READINESS_RECONNECT_TOKEN),
+            Some(&Value::String("cli-reconnect-token".to_owned()))
+        );
+
+        let mut other_room = HelloPayload::new("alice", "room2", "1.2.255");
+        insert_readiness_reconnect_token(&mut other_room, &session, "room2");
+        assert!(
+            !other_room
+                .extra
+                .contains_key(sorotte_protocol::SOROTTE_READINESS_RECONNECT_TOKEN)
+        );
+    }
 
     #[tokio::test]
     async fn starttls_negotiation_sends_request_and_accepts_plain_fallback() {

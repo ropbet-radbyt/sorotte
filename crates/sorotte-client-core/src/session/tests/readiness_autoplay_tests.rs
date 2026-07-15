@@ -490,7 +490,7 @@ fn same_fileduration_with_readiness_autoplay_config_uses_session_overrides() {
 }
 
 #[test]
-fn local_media_open_marks_local_user_not_ready_when_readiness_is_supported() {
+fn local_media_open_preserves_user_readiness_intent() {
     let mut session = ClientSession::default();
     session
             .apply_message_json(
@@ -498,20 +498,20 @@ fn local_media_open_marks_local_user_not_ready_when_readiness_is_supported() {
             )
             .expect("hello should apply");
 
-    let actions = session.runtime_actions_for_local_media_opened_not_ready();
+    session
+        .apply_message_json(r#"{"Set":{"ready":{"isReady":true,"username":"alice"}}}"#)
+        .expect("local ready state should apply");
 
-    assert_eq!(
-        actions,
-        vec![ClientRuntimeAction::SetReady {
-            ready: false,
-            manually_initiated: false,
-        }]
+    assert!(
+        session
+            .runtime_actions_for_local_media_opened_not_ready()
+            .is_empty()
     );
-    assert_eq!(session.user_ready("alice"), Some(false));
+    assert_eq!(session.user_ready("alice"), Some(true));
 }
 
 #[test]
-fn runtime_actions_for_readiness_unpause_attempt_blocks_and_sets_ready_when_instaplay_fails() {
+fn readiness_unpause_observation_blocks_without_inventing_user_intent() {
     let mut session = ClientSession::default();
     session
         .apply_message_json(
@@ -521,21 +521,13 @@ fn runtime_actions_for_readiness_unpause_attempt_blocks_and_sets_ready_when_inst
     session.readiness_autoplay_config_mut().unpause_action = UnpauseActionMode::IfAlreadyReady;
 
     let actions = session.runtime_actions_for_readiness_unpause_attempt(10.0, true, true, false);
-    assert_eq!(
-        actions,
-        vec![
-            ClientRuntimeAction::SetPaused(true),
-            ClientRuntimeAction::SetReady {
-                ready: true,
-                manually_initiated: true
-            }
-        ]
-    );
+    assert_eq!(actions, vec![ClientRuntimeAction::SetPaused(true)]);
     assert_eq!(session.model.playback.local_paused, Some(true));
+    assert_eq!(session.user_ready("alice"), Some(false));
 }
 
 #[test]
-fn runtime_actions_for_readiness_unpause_attempt_sets_ready_when_if_others_ready_passes() {
+fn readiness_unpause_observation_does_not_mutate_intent_when_policy_allows_play() {
     let mut session = ClientSession::default();
     session
         .apply_message_json(
@@ -550,14 +542,9 @@ fn runtime_actions_for_readiness_unpause_attempt_sets_ready_when_if_others_ready
     session.readiness_autoplay_config_mut().unpause_action = UnpauseActionMode::IfOthersReady;
 
     let actions = session.runtime_actions_for_readiness_unpause_attempt(20.0, true, true, false);
-    assert_eq!(
-        actions,
-        vec![ClientRuntimeAction::SetReady {
-            ready: true,
-            manually_initiated: false
-        }]
-    );
+    assert!(actions.is_empty());
     assert_eq!(session.model.playback.local_paused, Some(false));
+    assert_eq!(session.user_ready("alice"), Some(false));
 }
 
 #[test]
@@ -651,21 +638,12 @@ fn runtime_actions_for_readiness_unpause_attempt_if_min_users_ready_requires_thr
     session.readiness_autoplay_config_mut().auto_play_threshold = Some(3);
 
     let blocked = session.runtime_actions_for_readiness_unpause_attempt(30.0, true, true, false);
-    assert_eq!(
-        blocked,
-        vec![
-            ClientRuntimeAction::SetPaused(true),
-            ClientRuntimeAction::SetReady {
-                ready: true,
-                manually_initiated: true
-            }
-        ]
-    );
+    assert_eq!(blocked, vec![ClientRuntimeAction::SetPaused(true)]);
 
     session.readiness_autoplay_config_mut().auto_play_threshold = Some(2);
     let allowed = session.runtime_actions_for_readiness_unpause_attempt(31.0, true, true, false);
     assert!(allowed.is_empty());
-    assert_eq!(session.user_ready("alice"), Some(true));
+    assert_eq!(session.user_ready("alice"), Some(false));
     assert_eq!(session.local_paused(), Some(false));
 }
 
@@ -690,7 +668,7 @@ fn local_pause_marks_local_user_not_ready_when_readiness_is_supported() {
             ClientRuntimeAction::SetPaused(true),
             ClientRuntimeAction::SetReady {
                 ready: false,
-                manually_initiated: false
+                manually_initiated: true
             }
         ]
     );
@@ -1022,7 +1000,7 @@ fn client_runtime_set_room_preserves_autoplay_state_on_room_change() {
 }
 
 #[test]
-fn client_runtime_readiness_unpause_attempt_dispatches_ready_protocol_message() {
+fn client_runtime_readiness_unpause_observation_emits_no_protocol_intent() {
     let mut session = ClientSession::default();
     session
         .apply_message_json(
@@ -1040,17 +1018,7 @@ fn client_runtime_readiness_unpause_attempt_dispatches_ready_protocol_message() 
     let (_, player, control) = runtime.into_parts();
 
     assert_eq!(player.paused, None);
-    assert_eq!(control.outbound_messages().len(), 1);
-    let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
-        panic!("expected queued ready protocol message");
-    };
-    let ready = set_message
-        .set
-        .ready
-        .as_ref()
-        .expect("Set message should contain ready payload");
-    assert_eq!(ready.is_ready, Some(true));
-    assert_eq!(ready.manually_initiated, Some(false));
+    assert!(control.outbound_messages().is_empty());
 }
 
 #[test]

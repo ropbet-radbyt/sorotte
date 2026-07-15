@@ -1,5 +1,8 @@
 use super::*;
 
+use sorotte_client_app::app_boundary::readiness::ParticipantReadinessPresentation;
+use sorotte_protocol::{MixedReadinessPolicy, RoomStartGatePhase, StartGateDegradedReason};
+
 #[test]
 fn gui_shell_app_state_projects_main_window_widget_trees() {
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
@@ -179,6 +182,39 @@ fn gui_shell_app_state_projects_main_window_widget_trees() {
     assert_eq!(chat_input.kind, GuiWidgetKind::TextInput);
     assert_eq!(chat_input.value.as_deref(), Some("hello widget "));
     assert_eq!(chat_input.enabled, state.commands.can_send_chat_message);
+}
+
+#[test]
+fn strict_mixed_room_explains_automatic_start_unavailability_in_widget_tree() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("Alice".to_owned()),
+        room: Some("Lounge".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    let mut readiness = ParticipantReadinessPresentation::from_legacy("Alice", false);
+    readiness.mixed_readiness_policy = Some(MixedReadinessPolicy::RequireAllMembers);
+    readiness.start_gate_phase = Some(RoomStartGatePhase::Degraded {
+        media_generation: 7,
+        reason: StartGateDegradedReason::IncompatibleLegacyParticipant,
+    });
+    state
+        .main_window
+        .readiness
+        .insert("Alice".to_owned(), readiness);
+
+    let tree = state.main_window_widget_tree();
+    assert_eq!(
+        tree.find("main-window:user:0:readiness-participation")
+            .and_then(|node| node.value.as_deref()),
+        Some(
+            "legacy participant; automatic start unavailable until every member supports readiness V2"
+        )
+    );
+    assert_eq!(
+        tree.find("main-window:user:0:readiness-gate")
+            .and_then(|node| node.value.as_deref()),
+        Some("automatic start unavailable: a room member does not support readiness V2")
+    );
 }
 
 #[test]

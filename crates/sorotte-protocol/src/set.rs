@@ -145,6 +145,15 @@ impl SetPayload {
         playback_barrier::decode_extension(&self.extra)
     }
 
+    pub fn with_readiness_v2(mut self, extension: ReadinessSetExtension) -> Self {
+        readiness::insert_extension(&mut self.extra, &extension);
+        self
+    }
+
+    pub fn readiness_v2(&self) -> serde_json::Result<Option<ReadinessSetExtension>> {
+        readiness::decode_extension(&self.extra)
+    }
+
     pub fn with_command_order(mut self, command_order: Vec<String>) -> Self {
         self.command_order = command_order;
         self

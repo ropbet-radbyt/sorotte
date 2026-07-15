@@ -324,9 +324,9 @@ impl RoomBufferingPolicy {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StartSynchronizationPolicy {
-    #[default]
     Immediate,
     WaitForController,
+    #[default]
     WaitForAllEligible,
     Quorum,
 }
@@ -451,7 +451,7 @@ pub struct StartSynchronizationConfig {
 impl Default for StartSynchronizationConfig {
     fn default() -> Self {
         Self {
-            policy: StartSynchronizationPolicy::Immediate,
+            policy: StartSynchronizationPolicy::WaitForAllEligible,
             quorum: Percent(75.0),
             timeout: Seconds(15.0),
             timeout_action: StartTimeoutAction::Continue,
@@ -1903,7 +1903,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn streaming_defaults_are_bounded_and_legacy_start_compatible() {
+    fn streaming_defaults_use_all_eligible_readiness_start_coordination() {
         let config = ClientConfig::try_from_stored(&StoredClientSettingsV1::default())
             .expect("empty settings should resolve")
             .playback
@@ -1914,7 +1914,7 @@ mod tests {
         assert_eq!(config.recovery.max_catchup_rate.get(), 1.05);
         assert_eq!(
             config.start_synchronization.policy,
-            StartSynchronizationPolicy::Immediate
+            StartSynchronizationPolicy::WaitForAllEligible
         );
         assert_eq!(
             config.room_buffering.policy,
@@ -1924,6 +1924,24 @@ mod tests {
             config
                 .network_media_mpv_arguments()
                 .contains(&"--cache-pause-wait=5".to_owned())
+        );
+    }
+
+    #[test]
+    fn explicit_immediate_start_policy_remains_available_for_legacy_compatibility() {
+        let settings = StoredClientSettingsV1 {
+            streaming_start_policy: Some("immediate".to_owned()),
+            ..StoredClientSettingsV1::default()
+        };
+
+        let config = ClientConfig::try_from_stored(&settings)
+            .expect("explicit immediate start policy should resolve")
+            .playback
+            .streaming;
+
+        assert_eq!(
+            config.start_synchronization.policy,
+            StartSynchronizationPolicy::Immediate
         );
     }
 

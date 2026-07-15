@@ -621,6 +621,7 @@ mod controller_playlist_tests;
 mod network_tests;
 mod persistence_tests;
 mod playback_barrier_tests;
+mod readiness_v2_tests;
 mod runtime_config_tests;
 mod session_tests;
 mod state_tests;

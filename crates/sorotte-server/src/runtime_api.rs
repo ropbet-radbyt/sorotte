@@ -21,6 +21,12 @@ impl ServerRuntime {
             room_playback_states: BTreeMap::new(),
             room_playback_barriers: BTreeMap::new(),
             room_buffering_controls: BTreeMap::new(),
+            room_readiness: BTreeMap::new(),
+            readiness_reconnect_cache: BTreeMap::new(),
+            readiness_reconnect_identity_by_client: BTreeMap::new(),
+            mixed_readiness_policy: MixedReadinessPolicy::default(),
+            pending_user_transport_by_client: BTreeMap::new(),
+            next_readiness_membership_epoch: 1,
             playback_barrier_fenced_clients: BTreeSet::new(),
             playback_barrier_request_tombstones: BTreeMap::new(),
             playback_barrier_request_tombstone_policy:
@@ -97,6 +103,10 @@ impl ServerRuntime {
 
     pub fn set_server_password_token(&mut self, token: Option<SecretValue>) {
         self.server_password_token = token.filter(|token| !token.is_empty());
+    }
+
+    pub fn set_mixed_readiness_policy(&mut self, policy: MixedReadinessPolicy) {
+        self.mixed_readiness_policy = policy;
     }
 
     pub fn with_stats_db_path(db_path: impl Into<PathBuf>) -> Result<Self, ServerRuntimeError> {
@@ -183,6 +193,9 @@ impl ServerRuntime {
 
     pub fn set_readiness_enabled(&mut self, enabled: bool) {
         self.readiness_enabled = enabled;
+        if !enabled {
+            self.pending_user_transport_by_client.clear();
+        }
     }
 
     pub fn set_max_chat_message_length(&mut self, max_chars: usize) {

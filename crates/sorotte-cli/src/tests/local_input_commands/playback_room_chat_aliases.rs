@@ -4,11 +4,11 @@ use super::*;
 fn parse_local_input_command_parses_pause_aliases() {
     assert_eq!(
         parse_local_input_command("pause"),
-        Some(LocalInputCommand::TogglePause)
+        Some(LocalInputCommand::Pause)
     );
     assert_eq!(
         parse_local_input_command("play"),
-        Some(LocalInputCommand::TogglePause)
+        Some(LocalInputCommand::Play)
     );
     assert_eq!(
         parse_local_input_command("p"),

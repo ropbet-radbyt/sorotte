@@ -375,7 +375,7 @@ impl ServerRuntime {
     /// never mutates room playback and deliberately includes a retained
     /// terminal commit only as history; clients scope its authority through
     /// the accompanying status phase.
-    fn playback_barrier_snapshot_for_client(
+    pub(crate) fn playback_barrier_snapshot_for_client(
         &self,
         room_name: &str,
         client_id: &str,
@@ -1414,6 +1414,23 @@ impl ServerRuntime {
         set_by: &str,
         now_seconds: f64,
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
+        let buffering_identity = self.room_buffering_controls.get(room_name).map(|control| {
+            (
+                control.config.media_generation,
+                control.config.state_revision,
+            )
+        });
+        if transition == RoomBufferingTransition::Resume
+            && buffering_identity.is_some_and(|(media_generation, state_revision)| {
+                !self.readiness_pause_owned_by_buffering_policy(
+                    room_name,
+                    media_generation,
+                    state_revision,
+                )
+            })
+        {
+            return Ok(Vec::new());
+        }
         let paused = transition == RoomBufferingTransition::Pause;
         let room_before = self.room_playback_state_at(room_name, now_seconds);
         if room_before.paused == paused {
@@ -1426,9 +1443,10 @@ impl ServerRuntime {
             room_state.updated_at_seconds = now_seconds;
             room_state.set_by = Some(set_by.to_owned());
         }
+        self.advance_transport_authority_revision(room_name);
         self.seed_room_client_playback_states(room_name, room_before.position, now_seconds);
         self.persist_room_if_needed(room_name)?;
-        Ok(self
+        let mut outbound: Vec<_> = self
             .clients_in_room(room_name)
             .into_iter()
             .map(|peer_client| {
@@ -1441,7 +1459,19 @@ impl ServerRuntime {
                 );
                 DirectedProtocolMessage::new(peer_client, message)
             })
-            .collect())
+            .collect();
+        if let Some((media_generation, state_revision)) = buffering_identity {
+            let owner = if paused {
+                RoomPauseOwner::RoomBufferingPolicy {
+                    media_generation,
+                    state_revision,
+                }
+            } else {
+                RoomPauseOwner::None
+            };
+            outbound.extend(self.set_readiness_pause_owner(room_name, owner, true));
+        }
+        Ok(outbound)
     }
 
     fn room_buffering_status(&self, room_name: &str) -> Option<RoomBufferingStatusPayload> {
@@ -1563,7 +1593,10 @@ impl ServerRuntime {
             .get(client_id)
             .cloned()
             .ok_or_else(|| ServerRuntimeError::MissingSession(client_id.to_owned()))?;
+        let readiness_governed =
+            self.readiness_enabled && self.room_readiness.contains_key(&session.room);
         if !session.capabilities.playback_barrier_v1
+            || (readiness_governed && !session.capabilities.readiness_v2)
             || !self.user_can_control_playlist(&session.username, &session.room)
             || prepare.media_generation != 0
             || prepare.request_nonce == 0
@@ -1773,6 +1806,8 @@ impl ServerRuntime {
         prepare.timeout_ms = Some((timeout_seconds * 1_000.0) as u64);
         prepare.deadline = Some(deadline);
 
+        let readiness_governed =
+            self.readiness_enabled && self.room_readiness.contains_key(&session.room);
         let mut participants = BTreeMap::new();
         let mut excluded_legacy_clients = BTreeSet::new();
         for (peer_client_id, peer_session) in &self.sessions {
@@ -1783,7 +1818,9 @@ impl ServerRuntime {
             {
                 continue;
             }
-            if peer_session.capabilities.playback_barrier_v1 {
+            if peer_session.capabilities.playback_barrier_v1
+                && (!readiness_governed || peer_session.capabilities.readiness_v2)
+            {
                 participants.insert(
                     peer_client_id.clone(),
                     RoomPlaybackBarrierParticipant {
@@ -1856,6 +1893,7 @@ impl ServerRuntime {
                 excluded_legacy_clients,
                 phase: PlaybackBarrierPhase::Preparing,
                 state_revision: None,
+                readiness_revision: None,
                 deadline,
                 started_deadline: None,
             },
@@ -1867,8 +1905,11 @@ impl ServerRuntime {
             room_state.updated_at_seconds = now_seconds;
             room_state.set_by = Some(session.username.clone());
         }
+        self.advance_transport_authority_revision(&room_name);
         self.seed_room_client_playback_states(&room_name, target_position, now_seconds);
         self.persist_room_if_needed(&room_name)?;
+
+        outbound.extend(self.begin_readiness_generation(&room_name, generation)?);
 
         for peer_client in self.clients_in_room(&room_name) {
             let state_message = self.forced_state_sync_message_for_client(
@@ -1890,7 +1931,7 @@ impl ServerRuntime {
         Ok(outbound)
     }
 
-    fn record_playback_barrier_ready(
+    pub(crate) fn record_playback_barrier_ready(
         &mut self,
         client_id: &str,
         ready: MediaReadyPayload,
@@ -1901,16 +1942,20 @@ impl ServerRuntime {
         if !session.capabilities.playback_barrier_v1 {
             return Ok(Vec::new());
         }
+        // Barrier target/revision evidence and generic technical playability
+        // are deliberately independent. Neither is allowed to manufacture the
+        // other; readiness-governed commits require both canonical records.
+        let mut outbound = Vec::new();
         let Some(barrier) = self.room_playback_barriers.get_mut(&session.room) else {
-            return Ok(Vec::new());
+            return Ok(outbound);
         };
         if barrier.phase != PlaybackBarrierPhase::Preparing
             || ready.media_generation != barrier.prepare.media_generation
         {
-            return Ok(Vec::new());
+            return Ok(outbound);
         }
         let Some(participant) = barrier.participants.get_mut(client_id) else {
-            return Ok(Vec::new());
+            return Ok(outbound);
         };
         participant.status.phase = if ready.is_ready() {
             PlaybackBarrierParticipantPhase::Ready
@@ -1921,9 +1966,15 @@ impl ServerRuntime {
         participant.status.degraded_reason = None;
 
         if self.playback_barrier_policy_satisfied(&session.room) {
-            return self.commit_playback_barrier(&session.room, false, self.current_time_seconds());
+            outbound.extend(self.commit_playback_barrier(
+                &session.room,
+                false,
+                self.current_time_seconds(),
+            )?);
+            return Ok(outbound);
         }
-        Ok(self.playback_barrier_status_fanout(&session.room))
+        outbound.extend(self.playback_barrier_status_fanout(&session.room));
+        Ok(outbound)
     }
 
     fn record_playback_barrier_started(
@@ -1962,51 +2013,84 @@ impl ServerRuntime {
         self.playback_barrier_status_fanout(&session.room)
     }
 
-    fn playback_barrier_policy_satisfied(&self, room_name: &str) -> bool {
+    pub(crate) fn playback_barrier_policy_satisfied(&self, room_name: &str) -> bool {
         let Some(barrier) = self.room_playback_barriers.get(room_name) else {
             return false;
         };
+        if !self.readiness_required_cohort_start_eligible(room_name) {
+            return false;
+        }
+        let readiness_governed =
+            self.readiness_enabled && self.room_readiness.contains_key(room_name);
+        let participant_is_ready =
+            |client_id: &str, participant: &RoomPlaybackBarrierParticipant| {
+                if participant.status.phase != PlaybackBarrierParticipantPhase::Ready {
+                    return false;
+                }
+                if !readiness_governed {
+                    return true;
+                }
+                self.sessions.get(client_id).is_some_and(|session| {
+                    session.room == room_name
+                        && session.capabilities.playback_barrier_v1
+                        && session.capabilities.readiness_v2
+                        && self
+                            .readiness_participant_is_start_eligible(room_name, &session.username)
+                            == Some(true)
+                })
+            };
         match barrier.prepare.policy {
             PlaybackBarrierPolicy::AllEligible => {
-                barrier.participants.values().all(|participant| {
-                    matches!(
-                        participant.status.phase,
-                        PlaybackBarrierParticipantPhase::Ready
-                            | PlaybackBarrierParticipantPhase::Degraded
-                    )
+                barrier.participants.iter().all(|(client_id, participant)| {
+                    participant.status.phase == PlaybackBarrierParticipantPhase::Degraded
+                        || participant_is_ready(client_id, participant)
                 })
             }
             PlaybackBarrierPolicy::Controller => barrier
                 .participants
                 .get(&barrier.initiator_client_id)
                 .is_some_and(|participant| {
-                    participant.status.phase == PlaybackBarrierParticipantPhase::Ready
+                    participant_is_ready(&barrier.initiator_client_id, participant)
                 }),
             PlaybackBarrierPolicy::Quorum => {
                 let ready_count = barrier
                     .participants
-                    .values()
-                    .filter(|participant| {
-                        participant.status.phase == PlaybackBarrierParticipantPhase::Ready
-                    })
+                    .iter()
+                    .filter(|(client_id, participant)| participant_is_ready(client_id, participant))
                     .count() as u32;
                 ready_count >= barrier.prepare.quorum.unwrap_or(u32::MAX)
             }
         }
     }
 
-    fn commit_playback_barrier(
+    pub(crate) fn commit_playback_barrier(
         &mut self,
         room_name: &str,
         timed_out: bool,
         now_seconds: f64,
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
-        let Some(barrier) = self.room_playback_barriers.get_mut(room_name) else {
+        let Some((phase, media_generation)) = self
+            .room_playback_barriers
+            .get(room_name)
+            .map(|barrier| (barrier.phase, barrier.prepare.media_generation))
+        else {
             return Ok(Vec::new());
         };
-        if barrier.phase != PlaybackBarrierPhase::Preparing {
+        if phase != PlaybackBarrierPhase::Preparing {
             return Ok(Vec::new());
         }
+        if self.readiness_enabled
+            && self.room_readiness.contains_key(room_name)
+            && (!self.playback_barrier_policy_satisfied(room_name)
+                || !self.readiness_gate_owns_pause(room_name, media_generation))
+        {
+            return Ok(Vec::new());
+        }
+        let readiness_revision = self.readiness_revision_for_commit(room_name);
+        let barrier = self
+            .room_playback_barriers
+            .get_mut(room_name)
+            .expect("validated playback barrier should remain active");
         for participant in barrier.participants.values_mut() {
             if participant.status.phase == PlaybackBarrierParticipantPhase::Ready {
                 continue;
@@ -2037,6 +2121,7 @@ impl ServerRuntime {
         let initiator_username = barrier.initiator_username.clone();
         barrier.phase = PlaybackBarrierPhase::Committed;
         barrier.state_revision = Some(revision);
+        barrier.readiness_revision = readiness_revision;
         barrier.started_deadline = Some(started_deadline);
 
         {
@@ -2046,16 +2131,20 @@ impl ServerRuntime {
             room_state.updated_at_seconds = now_seconds;
             room_state.set_by = Some(initiator_username.clone());
         }
+        self.advance_transport_authority_revision(room_name);
         self.seed_room_client_playback_states(room_name, anchor_position, now_seconds);
         self.persist_room_if_needed(room_name)?;
 
-        let commit = CommitStartPayload::new(
+        let mut commit = CommitStartPayload::new(
             media_generation,
             revision,
             anchor_position,
             now_seconds,
             started_deadline,
         );
+        if let Some(readiness_revision) = readiness_revision {
+            commit = commit.with_readiness_revision(readiness_revision);
+        }
         if let Some(barrier) = self.room_playback_barriers.get_mut(room_name) {
             barrier.commit = Some(commit.clone());
         }
@@ -2077,6 +2166,14 @@ impl ServerRuntime {
                 Some(&initiator_username),
             );
             outbound.push(DirectedProtocolMessage::new(peer_client, state_message));
+        }
+        if let Some(readiness_revision) = readiness_revision {
+            outbound.extend(self.mark_readiness_gate_committed(
+                room_name,
+                media_generation,
+                readiness_revision,
+                revision,
+            ));
         }
         Ok(outbound)
     }
@@ -2137,6 +2234,33 @@ impl ServerRuntime {
         self.playback_barrier_status_fanout(room_name)
     }
 
+    /// Stops a retained commit from continuing to own playback after an
+    /// accepted user pause. The commit and Started acknowledgements remain as
+    /// history, while participants that had not started record why the
+    /// lifecycle ended before completion.
+    pub(crate) fn retire_committed_playback_barrier_for_user_pause(
+        &mut self,
+        room_name: &str,
+    ) -> Vec<DirectedProtocolMessage> {
+        let Some(barrier) = self.room_playback_barriers.get_mut(room_name) else {
+            return Vec::new();
+        };
+        if barrier.phase != PlaybackBarrierPhase::Committed {
+            return Vec::new();
+        }
+        barrier.phase = PlaybackBarrierPhase::Degraded;
+        barrier.started_deadline = None;
+        for participant in barrier.participants.values_mut() {
+            if participant.status.phase == PlaybackBarrierParticipantPhase::Started {
+                continue;
+            }
+            participant.status.phase = PlaybackBarrierParticipantPhase::Degraded;
+            participant.status.degraded_reason =
+                Some(PlaybackBarrierDegradedReason::UserInterrupted);
+        }
+        self.playback_barrier_status_fanout(room_name)
+    }
+
     pub(crate) fn collect_due_playback_barrier_updates_at(
         &mut self,
         now_seconds: f64,
@@ -2158,13 +2282,54 @@ impl ServerRuntime {
                 .unwrap_or_default();
             match timeout_action {
                 PlaybackBarrierTimeoutAction::Continue => {
-                    outbound.extend(self.commit_playback_barrier(&room_name, true, now_seconds)?)
+                    let readiness_commit_blocked = self.readiness_enabled
+                        && self.room_readiness.contains_key(&room_name)
+                        && self
+                            .room_playback_barriers
+                            .get(&room_name)
+                            .is_some_and(|barrier| {
+                                !self.playback_barrier_policy_satisfied(&room_name)
+                                    || !self.readiness_gate_owns_pause(
+                                        &room_name,
+                                        barrier.prepare.media_generation,
+                                    )
+                            });
+                    if readiness_commit_blocked {
+                        outbound
+                            .extend(self.finish_prepare_timeout_without_commit(&room_name, false));
+                        outbound.extend(self.mark_readiness_gate_degraded(
+                            &room_name,
+                            StartGateDegradedReason::TimedOut,
+                        ));
+                    } else {
+                        outbound.extend(self.commit_playback_barrier(
+                            &room_name,
+                            true,
+                            now_seconds,
+                        )?);
+                    }
                 }
                 PlaybackBarrierTimeoutAction::RemainPaused => {
-                    outbound.extend(self.finish_prepare_timeout_without_commit(&room_name, false))
+                    outbound.extend(self.finish_prepare_timeout_without_commit(&room_name, false));
+                    if self.readiness_enabled && self.room_readiness.contains_key(&room_name) {
+                        outbound.extend(self.mark_readiness_gate_degraded(
+                            &room_name,
+                            StartGateDegradedReason::TimedOut,
+                        ));
+                    }
                 }
                 PlaybackBarrierTimeoutAction::AskController => {
-                    outbound.extend(self.finish_prepare_timeout_without_commit(&room_name, true))
+                    outbound.extend(self.finish_prepare_timeout_without_commit(&room_name, true));
+                    if self.readiness_enabled && self.room_readiness.contains_key(&room_name) {
+                        // The barrier's AwaitingDecision phase carries the
+                        // pending human-decision detail. The automatic gate
+                        // itself has terminated, so expose the timeout rather
+                        // than leaving its last waiting phase stale.
+                        outbound.extend(self.mark_readiness_gate_degraded(
+                            &room_name,
+                            StartGateDegradedReason::TimedOut,
+                        ));
+                    }
                 }
             }
         }
@@ -2312,7 +2477,10 @@ impl ServerRuntime {
         })
     }
 
-    fn playback_barrier_status_fanout(&self, room_name: &str) -> Vec<DirectedProtocolMessage> {
+    pub(crate) fn playback_barrier_status_fanout(
+        &self,
+        room_name: &str,
+    ) -> Vec<DirectedProtocolMessage> {
         let Some(status) = self.playback_barrier_status(room_name) else {
             return Vec::new();
         };

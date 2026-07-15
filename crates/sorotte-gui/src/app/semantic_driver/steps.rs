@@ -4,10 +4,19 @@ use super::super::{
     GuiSeekPreparationRuntimeSnapshot, GuiSeekPreparationState, MainWindowRuntimeChatSnapshot,
     MainWindowRuntimeRoomSnapshot, MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot,
 };
+use sorotte_client_app::app_boundary::readiness::{
+    ParticipantReadinessPresentation, PendingReadinessIntentPresentation,
+    ReadinessPresentationProtocol,
+};
+use sorotte_protocol::{
+    RecoveryStage, StartParticipationRole, TechnicalBlockCause, TechnicalPlayabilityPhase,
+    UserReadinessIntent,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::app) enum GuiSemanticStep {
     ApplyMainWindowRuntimeSnapshot(MainWindowRuntimeSnapshot),
+    ApplyMainWindowReadinessPresentation(ParticipantReadinessPresentation),
     ApplyMainWindowPlaylistSelection(Option<usize>),
     ApplyPlayerSetupRuntimeSnapshot(GuiPlayerSetupRuntimeSnapshot),
     ApplySeekPreparationRuntimeSnapshot(GuiSeekPreparationRuntimeSnapshot),
@@ -118,6 +127,77 @@ impl GuiSemanticStep {
             "false" => Ok(false),
             _ => Err(format!("expected boolean 'true' or 'false', got {token:?}")),
         }
+    }
+
+    fn parse_u64(token: &str, label: &str) -> Result<u64, String> {
+        token
+            .parse::<u64>()
+            .map_err(|_| format!("expected {label} to be a non-negative integer, got {token:?}"))
+    }
+
+    fn parse_readiness_intent(token: &str) -> Result<UserReadinessIntent, String> {
+        match token {
+            "ready" => Ok(UserReadinessIntent::Ready),
+            "not-ready" => Ok(UserReadinessIntent::NotReady),
+            _ => Err(format!(
+                "expected readiness intent 'ready' or 'not-ready', got {token:?}"
+            )),
+        }
+    }
+
+    fn parse_optional_readiness_intent(token: &str) -> Result<Option<UserReadinessIntent>, String> {
+        if token == "none" {
+            Ok(None)
+        } else {
+            Self::parse_readiness_intent(token).map(Some)
+        }
+    }
+
+    fn parse_technical_phase(token: &str) -> Result<TechnicalPlayabilityPhase, String> {
+        match token {
+            "unknown" => Ok(TechnicalPlayabilityPhase::Unknown),
+            "preparing" => Ok(TechnicalPlayabilityPhase::Preparing),
+            "playable" => Ok(TechnicalPlayabilityPhase::Playable),
+            "temporarily-blocked" => Ok(TechnicalPlayabilityPhase::TemporarilyBlocked),
+            "terminally-blocked" => Ok(TechnicalPlayabilityPhase::TerminallyBlocked),
+            _ => Err(format!("unsupported technical readiness phase {token:?}")),
+        }
+    }
+
+    fn parse_optional_technical_reason(token: &str) -> Result<Option<TechnicalBlockCause>, String> {
+        let reason = match token {
+            "none" => return Ok(None),
+            "loading" => TechnicalBlockCause::Loading,
+            "seeking" => TechnicalBlockCause::Seeking,
+            "prebuffering" => TechnicalBlockCause::Prebuffering,
+            "rebuffering" => TechnicalBlockCause::Rebuffering,
+            "cache-pause" => TechnicalBlockCause::CachePause,
+            "transport-refresh" => TechnicalBlockCause::TransportRefresh,
+            "recovery" => TechnicalBlockCause::Recovery,
+            "player-failure" => TechnicalBlockCause::PlayerFailure,
+            "adapter-failure" => TechnicalBlockCause::AdapterFailure,
+            "recovery-exhausted" => TechnicalBlockCause::RecoveryExhausted,
+            _ => return Err(format!("unsupported technical readiness reason {token:?}")),
+        };
+        Ok(Some(reason))
+    }
+
+    fn parse_optional_recovery_stage(token: &str) -> Result<Option<RecoveryStage>, String> {
+        let stage = match token {
+            "none" => return Ok(None),
+            "not-started" => RecoveryStage::NotStarted,
+            "waiting" => RecoveryStage::Waiting,
+            "retrying" => RecoveryStage::Retrying,
+            "reloading-media" => RecoveryStage::ReloadingMedia,
+            "restarting-player" => RecoveryStage::RestartingPlayer,
+            "replacing-adapter" => RecoveryStage::ReplacingAdapter,
+            _ => return Err(format!("unsupported readiness recovery stage {token:?}")),
+        };
+        Ok(Some(stage))
+    }
+
+    fn parse_optional_text(token: &str) -> Option<String> {
+        (token != "none").then(|| token.to_owned())
     }
 
     fn parse_f64(token: &str, field: &str) -> Result<f64, String> {
@@ -407,6 +487,110 @@ impl GuiSemanticStep {
             "apply-main-window-runtime" => Self::ApplyMainWindowRuntimeSnapshot(
                 Self::parse_main_window_runtime_snapshot(fields)?,
             ),
+            "apply-main-window-readiness-v2" => {
+                let username = fields
+                    .next()
+                    .ok_or_else(|| "apply-main-window-readiness-v2 requires a username".to_owned())?
+                    .to_owned();
+                let canonical_user_intent =
+                    Self::parse_readiness_intent(fields.next().ok_or_else(|| {
+                        "apply-main-window-readiness-v2 requires canonical intent".to_owned()
+                    })?)?;
+                let technical_phase =
+                    Self::parse_technical_phase(fields.next().ok_or_else(|| {
+                        "apply-main-window-readiness-v2 requires technical phase".to_owned()
+                    })?)?;
+                let technical_reason =
+                    Self::parse_optional_technical_reason(fields.next().ok_or_else(|| {
+                        "apply-main-window-readiness-v2 requires technical reason or 'none'"
+                            .to_owned()
+                    })?)?;
+                let recovery_stage =
+                    Self::parse_optional_recovery_stage(fields.next().ok_or_else(|| {
+                        "apply-main-window-readiness-v2 requires recovery stage or 'none'"
+                            .to_owned()
+                    })?)?;
+                let room_ready = Self::parse_bool(fields.next().ok_or_else(|| {
+                    "apply-main-window-readiness-v2 requires room_ready".to_owned()
+                })?)?;
+                let start_eligible = Self::parse_bool(fields.next().ok_or_else(|| {
+                    "apply-main-window-readiness-v2 requires start_eligible".to_owned()
+                })?)?;
+                let membership_epoch = Self::parse_u64(
+                    fields.next().ok_or_else(|| {
+                        "apply-main-window-readiness-v2 requires membership epoch".to_owned()
+                    })?,
+                    "membership epoch",
+                )?;
+                let room_readiness_revision = Self::parse_u64(
+                    fields.next().ok_or_else(|| {
+                        "apply-main-window-readiness-v2 requires room revision".to_owned()
+                    })?,
+                    "room revision",
+                )?;
+                let user_intent_revision = Self::parse_u64(
+                    fields.next().ok_or_else(|| {
+                        "apply-main-window-readiness-v2 requires intent revision".to_owned()
+                    })?,
+                    "intent revision",
+                )?;
+                let pending_desired =
+                    Self::parse_optional_readiness_intent(fields.next().ok_or_else(|| {
+                        "apply-main-window-readiness-v2 requires pending intent or 'none'"
+                            .to_owned()
+                    })?)?;
+                let pending_operation_id =
+                    Self::parse_optional_text(fields.next().ok_or_else(|| {
+                        "apply-main-window-readiness-v2 requires pending operation or 'none'"
+                            .to_owned()
+                    })?);
+                let accepted_operation_id =
+                    Self::parse_optional_text(fields.next().ok_or_else(|| {
+                        "apply-main-window-readiness-v2 requires accepted operation or 'none'"
+                            .to_owned()
+                    })?);
+                if fields.next().is_some() {
+                    return Err(
+                        "apply-main-window-readiness-v2 accepts exactly thirteen arguments"
+                            .to_owned(),
+                    );
+                }
+                let pending = match (pending_desired, pending_operation_id) {
+                    (Some(desired), Some(operation_id)) => {
+                        Some(PendingReadinessIntentPresentation {
+                            operation_id,
+                            request_nonce: user_intent_revision.saturating_add(1),
+                            membership_epoch,
+                            desired,
+                        })
+                    }
+                    (None, None) => None,
+                    _ => {
+                        return Err(
+                            "pending readiness intent and operation must both be set or both be 'none'"
+                                .to_owned(),
+                        );
+                    }
+                };
+                Self::ApplyMainWindowReadinessPresentation(ParticipantReadinessPresentation {
+                    protocol: ReadinessPresentationProtocol::V2,
+                    username,
+                    canonical_user_intent,
+                    technical_phase: Some(technical_phase),
+                    technical_reason,
+                    recovery_stage,
+                    room_ready,
+                    start_eligible: Some(start_eligible),
+                    membership_epoch: Some(membership_epoch),
+                    room_readiness_revision: Some(room_readiness_revision),
+                    user_intent_revision: Some(user_intent_revision),
+                    participation_role: Some(StartParticipationRole::Required),
+                    mixed_readiness_policy: None,
+                    start_gate_phase: None,
+                    pending,
+                    accepted_operation_id,
+                })
+            }
             "apply-player-setup-runtime" => {
                 let kind =
                     Self::parse_player_setup_issue_kind(fields.next().ok_or_else(|| {

@@ -17,7 +17,10 @@ pub(in crate::app) enum GuiLocalPlayerUnpauseDecision {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::app) enum GuiAttachedPlayerRuntimeAction {
-    Paused(bool),
+    Paused {
+        paused: bool,
+        cause: PlayerCommandCause,
+    },
     Position(f64),
     PlaybackRate(f64),
     Coordinator {
@@ -204,12 +207,34 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         Ok(Vec::new())
     }
 
+    fn observe_external_player_end_of_file(&mut self, _now_seconds: f64) -> Result<(), String> {
+        Ok(())
+    }
+
     fn report_attached_coordinator_command_dispatch(
         &mut self,
         _command_id: CoordinatorCommandId,
         _accepted: bool,
         _now_seconds: f64,
     ) {
+    }
+
+    fn begin_attached_coordinator_command_dispatch(
+        &mut self,
+        _command_id: CoordinatorCommandId,
+        _now_seconds: f64,
+    ) -> Option<PlayerCommandId> {
+        None
+    }
+
+    fn finish_attached_coordinator_command_dispatch(
+        &mut self,
+        command_id: CoordinatorCommandId,
+        _player_command_id: Option<PlayerCommandId>,
+        accepted: bool,
+        now_seconds: f64,
+    ) {
+        self.report_attached_coordinator_command_dispatch(command_id, accepted, now_seconds);
     }
 
     fn playback_coordination_snapshot(&self) -> Option<PlaybackCoordinationSnapshot> {
@@ -390,6 +415,47 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
     }
 
     fn finalize_local_player_unpause_attempt(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn record_intentional_player_pause_action(&mut self, _paused: bool) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn begin_external_player_pause_command(
+        &mut self,
+        _paused: bool,
+        _cause: PlayerCommandCause,
+        _now_seconds: f64,
+    ) -> Result<Option<PlayerCommandId>, String> {
+        Ok(None)
+    }
+
+    fn finish_external_player_pause_command(
+        &mut self,
+        _command_id: Option<PlayerCommandId>,
+        _succeeded: bool,
+        _now_seconds: f64,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn record_external_player_pause_command_result(
+        &mut self,
+        _paused: bool,
+        _succeeded: bool,
+        _now_seconds: f64,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn record_external_system_player_pause_command_result(
+        &mut self,
+        _paused: bool,
+        _cause: PlayerCommandCause,
+        _succeeded: bool,
+        _now_seconds: f64,
+    ) -> Result<(), String> {
         Ok(())
     }
 

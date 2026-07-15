@@ -1,5 +1,222 @@
 use super::*;
 
+const V2_GATE_MEDIA_GENERATION: u64 = 7;
+
+fn v2_readiness_snapshot_line(
+    participants: &[(&str, u64, sorotte_protocol::UserReadinessIntent)],
+    gate_active: bool,
+) -> String {
+    let participants = participants
+        .iter()
+        .map(|(username, membership_epoch, user_intent)| {
+            (
+                (*username).to_owned(),
+                sorotte_protocol::ParticipantReadinessUpdate {
+                    room_readiness_revision: 1,
+                    membership_epoch: *membership_epoch,
+                    last_technical_report_sequence: 0,
+                    username: (*username).to_owned(),
+                    user_intent: *user_intent,
+                    user_intent_revision: 0,
+                    user_intent_source: sorotte_protocol::ReadinessMutationSource::Initialization,
+                    last_user_mutation: None,
+                    terminal_technical_block: None,
+                    technical_state: sorotte_protocol::TechnicalPlayabilitySummary {
+                        phase: sorotte_protocol::TechnicalPlayabilityPhase::Preparing,
+                        media_generation: Some(V2_GATE_MEDIA_GENERATION),
+                        reason: None,
+                        recovery: None,
+                    },
+                    participation_role: sorotte_protocol::StartParticipationRole::Required,
+                    room_ready: *user_intent == sorotte_protocol::UserReadinessIntent::Ready,
+                    start_eligible: false,
+                    accepted_operation_id: None,
+                },
+            )
+        })
+        .collect();
+    let snapshot = sorotte_protocol::RoomReadinessSnapshot {
+        room_readiness_revision: 1,
+        media_generation: Some(V2_GATE_MEDIA_GENERATION),
+        start_gate_phase: if gate_active {
+            sorotte_protocol::RoomStartGatePhase::WaitingForIntent {
+                media_generation: V2_GATE_MEDIA_GENERATION,
+            }
+        } else {
+            sorotte_protocol::RoomStartGatePhase::Inactive
+        },
+        pause_owner: if gate_active {
+            sorotte_protocol::RoomPauseOwner::ReadinessStartGate {
+                media_generation: V2_GATE_MEDIA_GENERATION,
+            }
+        } else {
+            sorotte_protocol::RoomPauseOwner::None
+        },
+        mixed_readiness_policy: sorotte_protocol::MixedReadinessPolicy::RequireAllMembers,
+        participants,
+    };
+    sorotte_protocol::encode_message_line(&sorotte_protocol::ProtocolMessage::set(
+        sorotte_protocol::SetPayload::new().with_readiness_v2(
+            sorotte_protocol::ReadinessSetExtension::new().with_snapshot(snapshot),
+        ),
+    ))
+    .expect("V2 readiness snapshot fixture should encode")
+}
+
+fn configure_v2_waiting_gate(owner: &mut GuiPersistedConfigRuntimeOwner, logical_media_id: &str) {
+    let session = owner.session.as_mut().expect("GUI session should exist");
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"readiness":true,"sorotteReadinessV2":true,"sorottePlaybackBarrierV1":true}}}"#,
+        )
+        .expect("V2 barrier-aware Hello should apply");
+    session
+        .apply_message_json(&v2_readiness_snapshot_line(
+            &[
+                ("alice", 41, sorotte_protocol::UserReadinessIntent::NotReady),
+                ("bob", 42, sorotte_protocol::UserReadinessIntent::NotReady),
+            ],
+            true,
+        ))
+        .expect("V2 readiness snapshot should apply");
+    session
+        .prepare_attached_playback_media(
+            sorotte_client_core::LogicalMediaId::new(logical_media_id)
+                .expect("logical media id should be valid"),
+            sorotte_client_core::MediaTransportKind::LocalFile,
+            sorotte_client_core::MediaLoadIntent::TransportRefresh,
+            crate::app::support::system_time_seconds(),
+        )
+        .expect("V2 gate media should prepare");
+
+    let status = sorotte_protocol::PlaybackBarrierStatusPayload {
+        media_generation: V2_GATE_MEDIA_GENERATION,
+        state_revision: None,
+        phase: sorotte_protocol::PlaybackBarrierPhase::Preparing,
+        policy: sorotte_protocol::PlaybackBarrierPolicy::AllEligible,
+        quorum: None,
+        deadline: 120.0,
+        participants: [
+            (
+                "alice".to_owned(),
+                sorotte_protocol::PlaybackBarrierParticipantStatus::pending(),
+            ),
+            (
+                "bob".to_owned(),
+                sorotte_protocol::PlaybackBarrierParticipantStatus::pending(),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+        excluded_legacy_clients: Default::default(),
+    };
+    let prepare = sorotte_protocol::PrepareMediaPayload::new(
+        V2_GATE_MEDIA_GENERATION,
+        logical_media_id,
+        10.0,
+        sorotte_protocol::PlaybackBarrierPolicy::AllEligible,
+    )
+    .with_request_nonce(1)
+    .with_deadline(120.0);
+    let barrier_line =
+        sorotte_protocol::encode_message_line(&sorotte_protocol::ProtocolMessage::set(
+            sorotte_protocol::SetPayload::new().with_playback_barrier_v1(
+                sorotte_protocol::PlaybackBarrierSetExtension::new()
+                    .with_prepare(prepare)
+                    .with_status(status),
+            ),
+        ))
+        .expect("V2 barrier fixture should encode");
+    session
+        .apply_message_json(&barrier_line)
+        .expect("V2 preparing barrier should apply");
+    session
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+        )
+        .expect("paused V2 room state should apply");
+    let _ = session
+        .flush_outbound_protocol_lines()
+        .expect("fixture setup outbox should drain");
+}
+
+#[derive(Debug, Default)]
+struct V2GatePlayerState {
+    playback_updates: Vec<sorotte_player_api::PlayerPlaybackTelemetryUpdate>,
+    transport_updates: Vec<sorotte_player_api::PlayerTransportTelemetryUpdate>,
+    set_paused_values: Vec<bool>,
+}
+
+struct V2GatePlayer {
+    state: std::sync::Arc<std::sync::Mutex<V2GatePlayerState>>,
+}
+
+impl PlayerAdapter for V2GatePlayer {
+    fn name(&self) -> &'static str {
+        "v2-gate"
+    }
+
+    fn take_playback_telemetry_update(
+        &mut self,
+    ) -> Option<sorotte_player_api::PlayerPlaybackTelemetryUpdate> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .playback_updates
+            .pop()
+    }
+
+    fn take_transport_telemetry_update(
+        &mut self,
+    ) -> Option<sorotte_player_api::PlayerTransportTelemetryUpdate> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .transport_updates
+            .pop()
+    }
+
+    fn set_paused(&mut self, paused: bool) -> Result<(), sorotte_player_api::PlayerError> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_paused_values
+            .push(paused);
+        Ok(())
+    }
+
+    fn set_position(
+        &mut self,
+        _position_seconds: f64,
+    ) -> Result<(), sorotte_player_api::PlayerError> {
+        Ok(())
+    }
+}
+
+fn v2_gate_transport(
+    paused: bool,
+    observed_at_seconds: f64,
+) -> sorotte_player_api::PlayerTransportTelemetryUpdate {
+    let mut update = sorotte_player_api::PlayerTransportTelemetryUpdate::new(
+        sorotte_player_api::PlayerMediaGeneration::new(1),
+        sorotte_player_api::PlayerObservationTimestamp::from_adapter_start(
+            std::time::Duration::from_secs_f64(observed_at_seconds),
+        ),
+    )
+    .with_phase(if paused {
+        sorotte_player_api::PlayerTransportPhase::ReadyPaused
+    } else {
+        sorotte_player_api::PlayerTransportPhase::Playing
+    })
+    .with_position_seconds(10.0)
+    .with_logical_pause(paused);
+    update.paused_for_cache = Some(false);
+    update.seeking = Some(false);
+    update.seekable = Some(true);
+    update.core_idle = Some(paused);
+    update
+}
+
 #[test]
 fn gui_persisted_config_runtime_owner_marks_local_user_ready_when_attached_player_unpauses() {
     #[derive(Debug, Default)]
@@ -993,6 +1210,177 @@ fn gui_persisted_config_runtime_owner_blocks_gui_unpause_when_readiness_gate_fai
 }
 
 #[test]
+fn v2_native_player_play_emits_ready_once_and_remains_physically_gate_held() {
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(V2GatePlayerState::default()));
+    let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(V2GatePlayer {
+        state: player_state.clone(),
+    })));
+    owner.player_paused = Some(true);
+    owner.player_position_seconds = Some(10.0);
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    configure_v2_waiting_gate(&mut owner, "v2-native-play-media");
+    player_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .transport_updates
+        .push(v2_gate_transport(true, 0.0));
+    owner.refresh_player_state_impl();
+    owner
+        .sync_detached_session_preferences_and_player_state(&state)
+        .expect("paused V2 baseline should synchronize");
+    let _ = owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .flush_outbound_protocol_lines()
+        .expect("baseline outbox should drain");
+    player_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .set_paused_values
+        .clear();
+
+    {
+        let mut recorded = player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        recorded.playback_updates.push(
+            sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(false)
+                .with_position_seconds(10.0),
+        );
+        recorded
+            .transport_updates
+            .push(v2_gate_transport(false, 1.0));
+    }
+    owner.refresh_player_state_impl();
+    owner
+        .sync_detached_session_preferences_and_player_state(&state)
+        .expect("gate-held native Play should synchronize");
+
+    let outbound = owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .flush_outbound_protocol_lines()
+        .expect("native Play outbox should encode");
+    assert_eq!(
+        outbound
+            .iter()
+            .filter(|line| line.contains("\"intent\"") && line.contains("\"nativePlayerControl\""))
+            .count(),
+        1,
+        "one native mpv Play edge should produce exactly one V2 Ready intent"
+    );
+    assert!(
+        outbound
+            .iter()
+            .all(|line| { !(line.contains("\"playstate\"") && line.contains("\"paused\":false")) }),
+        "a gate-held native Play must not emit an unpaused room State"
+    );
+    assert_eq!(owner.player_paused, Some(true));
+    assert!(
+        player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_paused_values
+            .contains(&true),
+        "the V2 gate must physically restore pause while Bob remains Not Ready"
+    );
+}
+
+#[test]
+fn v2_gui_play_emits_one_sorotte_intent_without_a_duplicate_native_intent() {
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(V2GatePlayerState::default()));
+    let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(V2GatePlayer {
+        state: player_state.clone(),
+    })));
+    owner.player_paused = Some(true);
+    owner.player_position_seconds = Some(10.0);
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    configure_v2_waiting_gate(&mut owner, "v2-gui-play-media");
+    player_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .transport_updates
+        .push(v2_gate_transport(true, 0.0));
+    owner.refresh_player_state_impl();
+    let _ = owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .flush_outbound_protocol_lines()
+        .expect("baseline outbox should drain");
+    player_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .set_paused_values
+        .clear();
+
+    let (paused, sync_error) = owner
+        .apply_playback_pause_change_with_detached_session_impl(&state, true, false)
+        .expect("GUI Play should be handled by the V2 readiness gate");
+    assert!(
+        paused,
+        "GUI Play must remain physically paused before CommitStart"
+    );
+    assert_eq!(sync_error, None);
+
+    let outbound = owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .flush_outbound_protocol_lines()
+        .expect("GUI Play outbox should encode");
+    assert_eq!(
+        outbound
+            .iter()
+            .filter(
+                |line| line.contains("\"intent\"") && line.contains("\"sorottePlaybackControl\"")
+            )
+            .count(),
+        1,
+        "one GUI Play should produce exactly one Sorotte-control Ready intent"
+    );
+    assert!(
+        outbound
+            .iter()
+            .all(|line| !line.contains("\"nativePlayerControl\"")),
+        "GUI-button preflight must not manufacture a native-player intent"
+    );
+    assert!(
+        outbound
+            .iter()
+            .all(|line| { !(line.contains("\"playstate\"") && line.contains("\"paused\":false")) }),
+        "GUI Play must not emit an unpaused room State before CommitStart"
+    );
+    assert!(
+        player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_paused_values
+            .is_empty(),
+        "V2 GUI preflight must block before any physical resume command"
+    );
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_emits_immediate_state_update_when_gui_unpause_is_allowed() {
     #[derive(Debug, Default)]
     struct RecordingPlayerState {
@@ -1150,11 +1538,13 @@ fn gui_persisted_config_runtime_owner_emits_immediate_state_update_when_gui_unpa
     );
 
     let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
-    assert!(
+    assert_eq!(
         outbound_protocol_lines
             .iter()
-            .any(|line| line.contains("\"ready\"") && line.contains("\"isReady\":true")),
-        "allowed GUI unpause should still mark the local user ready"
+            .filter(|line| line.contains("\"ready\"") && line.contains("\"isReady\":true"))
+            .count(),
+        1,
+        "one Sorotte Play gesture should emit exactly one readiness mutation even when its player telemetry arrives in the same pump"
     );
     assert!(
         outbound_protocol_lines.iter().any(|line| {
@@ -1225,7 +1615,7 @@ fn gui_persisted_config_runtime_owner_emits_immediate_state_update_when_gui_unpa
 }
 
 #[test]
-fn gui_direct_mpv_unpause_stages_before_same_pump_media_and_transport_updates() {
+fn gui_ambiguous_unpause_during_media_change_does_not_claim_user_authority() {
     #[derive(Debug, Default)]
     struct DirectTogglePlayerState {
         playback_updates: Vec<sorotte_player_api::PlayerPlaybackTelemetryUpdate>,
@@ -1332,9 +1722,18 @@ fn gui_direct_mpv_unpause_stages_before_same_pump_media_and_transport_updates() 
         .as_mut()
         .expect("session should exist")
         .apply_message_json(
-            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"readiness":true,"sorotteReadinessV2":true,"sorottePlaybackBarrierV1":true}}}"#,
         )
-        .expect("hello should apply");
+        .expect("V2 Hello should apply");
+    owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .apply_message_json(&v2_readiness_snapshot_line(
+            &[("alice", 41, sorotte_protocol::UserReadinessIntent::NotReady)],
+            false,
+        ))
+        .expect("V2 membership snapshot should apply");
     owner
         .session
         .as_mut()
@@ -1362,6 +1761,12 @@ fn gui_direct_mpv_unpause_stages_before_same_pump_media_and_transport_updates() 
         .push(transport(1, true, 10.0, 0.0));
     owner.refresh_player_state_impl();
     owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    let _ = owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .flush_outbound_protocol_lines()
+        .expect("V2 media baseline outbox should drain");
 
     {
         let mut recorded = player_state
@@ -1389,8 +1794,8 @@ fn gui_direct_mpv_unpause_stages_before_same_pump_media_and_transport_updates() 
             .as_ref()
             .and_then(|session| session.playback_coordination_snapshot())
             .and_then(|snapshot| snapshot.pending_local_pause_intent),
-        Some(false),
-        "the direct mpv toggle must be restaged after same-pump media preparation"
+        None,
+        "a pause edge that also changes media scope is only a new baseline, not proven user input"
     );
     owner.sync_session_playstate_to_attached_player_impl(&state, false);
     assert!(
@@ -1399,7 +1804,19 @@ fn gui_direct_mpv_unpause_stages_before_same_pump_media_and_transport_updates() 
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .set_paused_values
             .is_empty(),
-        "stale canonical pause must not be reissued after direct mpv play"
+        "media-transition suppression may defer correction, but must not manufacture user authority"
+    );
+    let media_change_outbound = owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .flush_outbound_protocol_lines()
+        .expect("media-transition outbox should encode");
+    assert!(
+        media_change_outbound
+            .iter()
+            .all(|line| !line.contains("\"intent\"")),
+        "a V2 media-generation replacement must not be promoted into readiness intent"
     );
 
     owner
@@ -1528,7 +1945,7 @@ fn gui_direct_mpv_unpause_stages_before_same_pump_media_and_transport_updates() 
 }
 
 #[test]
-fn gui_autoplay_runtime_unpause_stages_before_attached_transport_echo() {
+fn gui_automatic_start_unpause_never_stages_local_user_transport_intent() {
     #[derive(Debug, Default)]
     struct AutoplayPlayerState {
         transport_updates: Vec<sorotte_player_api::PlayerTransportTelemetryUpdate>,
@@ -1648,7 +2065,10 @@ fn gui_autoplay_runtime_unpause_stages_before_attached_transport_echo() {
         .set_playback_paused(false)
         .expect("autoplay should optimistically unpause the local runtime");
     assert!(owner.apply_attached_player_runtime_actions_impl(
-        vec![GuiAttachedPlayerRuntimeAction::Paused(false)],
+        vec![GuiAttachedPlayerRuntimeAction::Paused {
+            paused: false,
+            cause: sorotte_client_core::PlayerCommandCause::AutomaticReadinessStart,
+        }],
         "autoplay runtime",
     ));
     assert_eq!(
@@ -1657,8 +2077,8 @@ fn gui_autoplay_runtime_unpause_stages_before_attached_transport_echo() {
             .as_ref()
             .and_then(|session| session.playback_coordination_snapshot())
             .and_then(|snapshot| snapshot.pending_local_pause_intent),
-        Some(false),
-        "the local runtime action must stage its own pause intent"
+        None,
+        "an automatic-start action must supersede, not stage, a local-user transport intent"
     );
 
     owner.refresh_player_state_impl();
@@ -1668,13 +2088,13 @@ fn gui_autoplay_runtime_unpause_stages_before_attached_transport_echo() {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .set_paused_values,
-        vec![false],
-        "coordinator reconciliation must not undo autoplay before its server echo"
+        vec![false, true],
+        "a system command without canonical server authority must not retain a user transport overlay"
     );
 }
 
 #[test]
-fn gui_persisted_config_runtime_owner_does_not_commit_runtime_unpause_when_player_resume_fails() {
+fn gui_persisted_config_runtime_owner_preserves_play_intent_when_player_resume_fails() {
     #[derive(Debug, Default)]
     struct RecordingPlayerState {
         resume_attempts: usize,
@@ -1772,10 +2192,10 @@ fn gui_persisted_config_runtime_owner_does_not_commit_runtime_unpause_when_playe
 
     let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
     assert!(
-        !outbound_protocol_lines
+        outbound_protocol_lines
             .iter()
             .any(|line| line.contains("\"ready\"") && line.contains("\"isReady\":true")),
-        "a failed player resume must not optimistically mark the local user ready"
+        "a failed player resume must preserve the user's semantic Ready intent"
     );
     assert!(
         !outbound_protocol_lines.iter().any(|line| {
@@ -1784,5 +2204,103 @@ fn gui_persisted_config_runtime_owner_does_not_commit_runtime_unpause_when_playe
                 && line.contains("\"position\":10.0")
         }),
         "a failed player resume must not emit a paused=false heartbeat"
+    );
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_preserves_pause_intent_when_player_pause_fails() {
+    #[derive(Debug, Default)]
+    struct RecordingPlayerState {
+        pause_attempts: usize,
+    }
+
+    struct RecordingPlayerAdapter {
+        state: std::sync::Arc<std::sync::Mutex<RecordingPlayerState>>,
+    }
+
+    impl PlayerAdapter for RecordingPlayerAdapter {
+        fn name(&self) -> &'static str {
+            "recording"
+        }
+
+        fn set_paused(&mut self, paused: bool) -> Result<(), sorotte_player_api::PlayerError> {
+            if paused {
+                self.state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .pause_attempts += 1;
+                return Err(sorotte_player_api::PlayerError::OperationFailed(
+                    "pause failed".to_owned(),
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
+    let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
+        state: player_state.clone(),
+    })));
+    owner.player_paused = Some(false);
+    owner.player_position_seconds = Some(10.0);
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    let _ = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let _ = session_transport.drain_outbound_protocol_lines();
+
+    session_transport.push_inbound_protocol_line(
+        r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"readiness":true}}}"#
+            .to_owned(),
+    );
+    session_transport.push_inbound_protocol_line(
+        r#"{"Set":{"ready":{"isReady":true,"username":"alice"}}}"#.to_owned(),
+    );
+    session_transport.push_inbound_protocol_line(
+        r#"{"State":{"playstate":{"position":10.0,"paused":false,"setBy":"alice"}}}"#.to_owned(),
+    );
+    let _ = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let _ = handle.drain_actions();
+    let _ = session_transport.drain_outbound_protocol_lines();
+
+    handle.push_request(GuiRuntimeRequest::TogglePlaybackPause);
+    let toggle_actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert!(
+        !toggle_actions.contains(&GuiShellAction::AnnouncePlaybackPaused),
+        "failed GUI pause should not announce a physical pause"
+    );
+    assert_eq!(owner.player_paused, Some(false));
+    assert_eq!(
+        player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .pause_attempts,
+        1,
+        "the attached player should receive exactly one pause attempt"
+    );
+
+    let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    assert!(
+        outbound_protocol_lines
+            .iter()
+            .any(|line| line.contains("\"ready\"") && line.contains("\"isReady\":false")),
+        "a failed player pause must preserve the user's semantic Not Ready intent"
+    );
+    assert!(
+        !outbound_protocol_lines.iter().any(|line| {
+            line.contains("\"State\"")
+                && line.contains("\"paused\":true")
+                && line.contains("\"position\":10.0")
+        }),
+        "a failed player pause must not emit a paused=true heartbeat"
     );
 }

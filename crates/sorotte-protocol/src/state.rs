@@ -60,6 +60,15 @@ impl StatePayload {
     pub fn playback_barrier_v1(&self) -> serde_json::Result<Option<PlaybackBarrierStateExtension>> {
         playback_barrier::decode_extension(&self.extra)
     }
+
+    pub fn with_readiness_v2(mut self, extension: ReadinessStateExtension) -> Self {
+        readiness::insert_extension(&mut self.extra, &extension);
+        self
+    }
+
+    pub fn readiness_v2(&self) -> serde_json::Result<Option<ReadinessStateExtension>> {
+        readiness::decode_extension(&self.extra)
+    }
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize, Default)]

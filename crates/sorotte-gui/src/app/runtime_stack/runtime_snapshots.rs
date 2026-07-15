@@ -9,9 +9,52 @@ use super::super::support::{
     legacy_chat_enabled, nonempty_room_name_text, normalized_editable_text,
 };
 use super::GuiClientCoreChatSessionRuntimeAdapter;
+use sorotte_client_app::app_boundary::readiness::{
+    ParticipantReadinessPresentation, PendingReadinessIntentPresentation,
+};
 use sorotte_client_app::app_boundary::state::ClientConfig;
+use std::collections::BTreeMap;
 
 impl GuiClientCoreChatSessionRuntimeAdapter {
+    fn session_readiness_presentations(
+        &self,
+        users: &[MainWindowRuntimeUserSnapshot],
+    ) -> BTreeMap<String, ParticipantReadinessPresentation> {
+        let session = self.runtime.session();
+        let local_username = session.username();
+        if !session.server_readiness_v2_supported() {
+            return BTreeMap::new();
+        }
+        let Some(room_snapshot) = session.readiness_snapshot() else {
+            return BTreeMap::new();
+        };
+        users
+            .iter()
+            .map(|user| {
+                let presentation =
+                    if let Some(canonical) = room_snapshot.participants.get(&user.username) {
+                        let pending = session
+                            .pending_readiness_intent()
+                            .filter(|pending| {
+                                pending
+                                    .target_username()
+                                    .or(local_username)
+                                    .is_some_and(|target| target == user.username)
+                            })
+                            .map(PendingReadinessIntentPresentation::from);
+                        ParticipantReadinessPresentation::from_v2(canonical, pending)
+                    } else {
+                        ParticipantReadinessPresentation::from_legacy(
+                            user.username.clone(),
+                            user.is_ready,
+                        )
+                    }
+                    .with_room_snapshot(room_snapshot);
+                (user.username.clone(), presentation)
+            })
+            .collect()
+    }
+
     fn room_control_status_for_runtime_snapshot(&self, controlled_room_active: bool) -> String {
         let session = self.runtime.session();
         if !session.is_active() {
@@ -229,6 +272,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         snapshot.can_set_ready = session.is_active() && session.server_readiness_supported();
         snapshot.can_set_others_ready = session.server_set_others_readiness_supported()
             && session.local_can_control().unwrap_or(false);
+        snapshot.readiness = self.session_readiness_presentations(&snapshot.users);
         (!snapshot.matches_shell_state_with_omitted_playlist_metadata(&state.main_window))
             .then_some(snapshot)
     }

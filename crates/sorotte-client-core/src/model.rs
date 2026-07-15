@@ -40,6 +40,7 @@ pub struct ServerCapabilities {
     pub media_match: bool,
     pub plex_playlist_uris: bool,
     pub playback_barrier_v1: bool,
+    pub readiness_v2: bool,
     pub persistent_rooms: bool,
     pub max_username_length: usize,
     pub max_room_name_length: usize,
@@ -111,6 +112,7 @@ pub enum LocalPauseChangeHealth {
 #[derive(Debug)]
 struct PendingLocalPauseChange {
     original: LocalPauseStateSnapshot,
+    planned: LocalPauseStateSnapshot,
     original_health: LocalPauseChangeHealth,
     effects: Vec<ClientEffect>,
     next_effect_index: usize,
@@ -238,6 +240,7 @@ impl ClientModel {
         );
         self.playback.pending_local_pause_change = Some(PendingLocalPauseChange {
             original,
+            planned,
             original_health: self.playback.local_pause_change_health,
             effects,
             next_effect_index: 0,
@@ -255,7 +258,12 @@ impl ClientModel {
                     ClientEffect::SetPlayerPaused(_),
                     ClientEffect::SetReady { .. }
                 ]
+                | [
+                    ClientEffect::SetPlayerPaused(_),
+                    ClientEffect::SendReadinessIntent { .. }
+                ]
                 | [ClientEffect::SetReady { .. }]
+                | [ClientEffect::SendReadinessIntent { .. }]
         )
     }
 
@@ -300,18 +308,37 @@ impl ClientModel {
         if !self.local_pause_change_expects(&effect) {
             return Vec::new();
         }
-        let pending = self
+        let mut pending = self
             .playback
             .pending_local_pause_change
             .take()
             .expect("matching local pause effect requires a pending transaction");
-        self.restore_local_ready_state(pending.original.ready);
+        let has_readiness_effect = pending.effects.iter().any(|effect| {
+            matches!(
+                effect,
+                ClientEffect::SetReady { .. } | ClientEffect::SendReadinessIntent { .. }
+            )
+        });
+        if has_readiness_effect {
+            // User intent is authoritative even when physical player control
+            // or its network delivery fails. The semantic outbox can retry it
+            // independently; never roll it back to the pre-gesture value.
+            self.restore_local_ready_state(pending.planned.ready);
+        } else {
+            self.restore_local_ready_state(pending.original.ready);
+        }
         match pending.stage {
             LocalPauseChangeStage::PlayerPause => {
                 self.playback.local_paused = pending.original.paused;
                 self.playback.last_paused_on_leave_at_seconds =
                     pending.original.last_paused_on_leave_at_seconds;
                 self.playback.local_pause_change_health = pending.original_health;
+                pending.next_effect_index += 1;
+                if let Some(next_effect) = pending.effects.get(pending.next_effect_index).cloned() {
+                    pending.stage = LocalPauseChangeStage::ControlEffects;
+                    self.playback.pending_local_pause_change = Some(pending);
+                    return vec![next_effect];
+                }
             }
             LocalPauseChangeStage::ControlEffects if pending.player_pause_succeeded => {
                 self.playback.local_pause_change_health =
@@ -615,12 +642,84 @@ impl PendingLocalPlaylistIndexEchoTracker {
     }
 }
 
+#[derive(Clone, PartialEq)]
+pub struct PendingReadinessIntent {
+    pub(crate) room: String,
+    pub(crate) operation_id: String,
+    pub(crate) request_nonce: u64,
+    pub(crate) membership_epoch: u64,
+    pub(crate) desired: UserReadinessIntent,
+    pub(crate) source: UserReadinessMutationSource,
+    pub(crate) target_username: Option<String>,
+    pub(crate) expected_user_intent_revision: Option<u64>,
+    pub(crate) scope_from_rejection_result: bool,
+    pub(crate) needs_send: bool,
+}
+
+impl std::fmt::Debug for PendingReadinessIntent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PendingReadinessIntent")
+            .field("room", &sorotte_secret::REDACTED_SECRET)
+            .field("operation_id", &"<redacted>")
+            .field("request_nonce", &self.request_nonce)
+            .field("membership_epoch", &self.membership_epoch)
+            .field("desired", &self.desired)
+            .field("source", &self.source)
+            .field(
+                "target_username",
+                &self
+                    .target_username
+                    .as_ref()
+                    .map(|_| sorotte_secret::REDACTED_SECRET),
+            )
+            .field(
+                "expected_user_intent_revision",
+                &self.expected_user_intent_revision,
+            )
+            .field(
+                "scope_from_rejection_result",
+                &self.scope_from_rejection_result,
+            )
+            .field("needs_send", &self.needs_send)
+            .finish()
+    }
+}
+
+impl PendingReadinessIntent {
+    pub fn operation_id(&self) -> &str {
+        &self.operation_id
+    }
+
+    pub fn desired(&self) -> UserReadinessIntent {
+        self.desired
+    }
+
+    pub fn membership_epoch(&self) -> u64 {
+        self.membership_epoch
+    }
+
+    pub fn request_nonce(&self) -> u64 {
+        self.request_nonce
+    }
+
+    pub fn target_username(&self) -> Option<&str> {
+        self.target_username.as_deref()
+    }
+}
+
 #[derive(Debug)]
 pub struct ReadinessState {
     pub(crate) config: ReadinessAutoplayConfig,
     pub(crate) autoplay_enabled: bool,
     pub(crate) autoplay_timer_running: bool,
     pub(crate) autoplay_time_left_seconds: f64,
+    pub(crate) canonical_snapshot: Option<RoomReadinessSnapshot>,
+    pub(crate) canonical_room: Option<String>,
+    pub(crate) awaiting_readiness_reconciliation_snapshot: bool,
+    pub(crate) pending_intent: Option<PendingReadinessIntent>,
+    pub(crate) next_request_nonce: u64,
+    pub(crate) reconnect_token: Option<SecretValue>,
 }
 
 impl Default for ReadinessState {
@@ -632,6 +731,12 @@ impl Default for ReadinessState {
             autoplay_enabled: false,
             autoplay_timer_running: false,
             autoplay_time_left_seconds,
+            canonical_snapshot: None,
+            canonical_room: None,
+            awaiting_readiness_reconciliation_snapshot: false,
+            pending_intent: None,
+            next_request_nonce: 0,
+            reconnect_token: None,
         }
     }
 }
@@ -751,7 +856,7 @@ mod tests {
     }
 
     #[test]
-    fn local_pause_reducer_keeps_player_truth_and_restores_readiness_after_control_failure() {
+    fn local_pause_reducer_keeps_player_truth_and_intent_after_control_failure() {
         let mut model = ClientModel::default();
         model.connection.username = Some("alice".to_owned());
         model.playback.local_paused = Some(false);
@@ -772,7 +877,7 @@ mod tests {
             ClientEffect::SetPlayerPaused(true),
             ClientEffect::SetReady {
                 ready: false,
-                manually_initiated: false,
+                manually_initiated: true,
             },
         ];
 
@@ -824,8 +929,8 @@ mod tests {
         assert_eq!(model.playback.local_paused, Some(true));
         assert_eq!(
             model.room.users.get("alice").and_then(|user| user.ready),
-            Some(true),
-            "the failed control effect must roll back only optimistic readiness"
+            Some(false),
+            "a failed delivery must retain the accepted local user intent"
         );
         assert_eq!(model.playback.last_paused_on_leave_at_seconds, None);
         assert_eq!(

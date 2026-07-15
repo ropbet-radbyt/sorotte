@@ -8,6 +8,7 @@ use sorotte_client_app::app_boundary::{
         stored_client_settings_runtime_snapshot_legacy_compatible,
     },
 };
+use sorotte_client_core::PlayerCommandCause;
 use sorotte_media_match::MEDIA_MATCH_FILE_PAYLOAD_KEY;
 use sorotte_player_api::{LocalFileUpdate, PlayerAdapter};
 
@@ -202,6 +203,7 @@ impl GuiPersistedConfigRuntimeOwner {
             playlist_control_available,
             can_auto_advance_to_next_playlist_item,
         );
+        let player_observation_is_end_of_file = self.attached_player_observation_is_end_of_file();
         let (previous_session_paused, supports_playback_pause_changes) = {
             let Some(session) = self.session.as_mut() else {
                 return Ok(());
@@ -223,6 +225,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
             if supports_playback_pause_changes
                 && !player_paused_for_cache
+                && !player_observation_is_end_of_file
                 && let Some(target_paused) = player_paused
                 && previous_session_paused != Some(target_paused)
             {
@@ -256,12 +259,35 @@ impl GuiPersistedConfigRuntimeOwner {
                             self.player_position_seconds,
                         )?;
                         self.rollback_attached_player_pause_intent(target_paused);
-                        if let Some(player) = self.player.as_mut() {
-                            player.set_paused(true).map_err(|error| {
-                                format!(
+                        if self.player.is_some() {
+                            let command_id = self.begin_attached_player_pause_command(
+                                true,
+                                PlayerCommandCause::ReadinessGateHold,
+                            )?;
+                            let result = self
+                                .player
+                                .as_mut()
+                                .expect("readiness-gate correction player was checked")
+                                .set_paused(true);
+                            let command_succeeded = result.is_ok();
+                            let command_result_error = self
+                                .finish_attached_player_pause_command(command_id, command_succeeded)
+                                .err();
+                            if let Err(error) = result {
+                                if let Some(command_result_error) = command_result_error {
+                                    eprintln!(
+                                        "warning: failed to register readiness-gate correction failure: {command_result_error}"
+                                    );
+                                }
+                                return Err(format!(
                                     "Attached player readiness/pause correction failed while restoring the paused state: {error}"
-                                )
-                            })?;
+                                ));
+                            }
+                            if let Some(error) = command_result_error {
+                                eprintln!(
+                                    "warning: failed to register readiness-gate correction: {error}"
+                                );
+                            }
                             self.note_local_attached_player_pause_command(true);
                         }
                         self.player_paused = Some(true);
@@ -279,14 +305,35 @@ impl GuiPersistedConfigRuntimeOwner {
                         .filter(|corrected_paused| Some(*corrected_paused) != self.player_paused);
                     if let Some(corrected_paused) = corrected_paused {
                         self.rollback_attached_player_pause_intent(target_paused);
-                        if let Some(player) = self.player.as_mut() {
-                            player
-                                .set_paused(corrected_paused)
-                                .map_err(|error| {
-                                    format!(
-                                        "Attached player readiness/pause correction failed while restoring the paused state: {error}"
-                                    )
-                                })?;
+                        if self.player.is_some() {
+                            let command_id = self.begin_attached_player_pause_command(
+                                corrected_paused,
+                                PlayerCommandCause::RemoteRoomSynchronization,
+                            )?;
+                            let result = self
+                                .player
+                                .as_mut()
+                                .expect("room-state correction player was checked")
+                                .set_paused(corrected_paused);
+                            let command_succeeded = result.is_ok();
+                            let command_result_error = self
+                                .finish_attached_player_pause_command(command_id, command_succeeded)
+                                .err();
+                            if let Err(error) = result {
+                                if let Some(command_result_error) = command_result_error {
+                                    eprintln!(
+                                        "warning: failed to register room-state correction failure: {command_result_error}"
+                                    );
+                                }
+                                return Err(format!(
+                                    "Attached player readiness/pause correction failed while restoring the paused state: {error}"
+                                ));
+                            }
+                            if let Some(error) = command_result_error {
+                                eprintln!(
+                                    "warning: failed to register room-state correction: {error}"
+                                );
+                            }
                             self.note_local_attached_player_pause_command(corrected_paused);
                         }
                         self.player_paused = Some(corrected_paused);

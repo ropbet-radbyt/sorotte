@@ -543,7 +543,7 @@ fn client_runtime_set_paused_dispatches_only_when_state_changes() {
 }
 
 #[test]
-fn client_runtime_set_paused_restores_session_state_when_player_pause_fails() {
+fn client_runtime_set_paused_retains_intent_when_player_pause_fails() {
     let mut session = ClientSession::default();
     session
         .apply_message_json(
@@ -574,13 +574,10 @@ fn client_runtime_set_paused_restores_session_state_when_player_pause_fails() {
     );
     assert_eq!(
         runtime.session().user_ready("alice"),
-        Some(true),
-        "failed pause requests should roll back optimistic readiness changes too"
+        Some(false),
+        "failed physical pause must not roll back deliberate Not Ready intent"
     );
-    assert!(
-        runtime.control().outbound_messages().is_empty(),
-        "player failures should prevent any ready protocol messages from being queued"
-    );
+    assert_eq!(runtime.control().outbound_messages().len(), 1);
 }
 
 #[derive(Debug, Default)]
@@ -631,8 +628,8 @@ fn client_runtime_pause_keeps_player_truth_when_following_ready_effect_fails() {
     assert_eq!(runtime.session().local_paused(), Some(true));
     assert_eq!(
         runtime.session().user_ready("alice"),
-        Some(true),
-        "only the undelivered optimistic readiness change should roll back"
+        Some(false),
+        "an undelivered readiness operation must retain its semantic intent"
     );
     assert_eq!(
         runtime.session().local_pause_change_health(),
@@ -643,7 +640,7 @@ fn client_runtime_pause_keeps_player_truth_when_following_ready_effect_fails() {
         runtime.control().attempted_effects,
         vec![ClientEffect::SetReady {
             ready: false,
-            manually_initiated: false,
+            manually_initiated: true,
         }]
     );
 
@@ -687,12 +684,9 @@ fn client_runtime_noncontroller_host_unpause_does_not_clear_existing_ready_state
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
 
-    assert!(
-        runtime
-            .run_set_paused(false)
-            .expect("host-driven unpause should dispatch to the player"),
-        "host-driven unpause should still resume the local player"
-    );
+    runtime
+        .run_system_owned_pause(false)
+        .expect("host-driven unpause should dispatch to the player");
 
     assert_eq!(runtime.player().paused, Some(false));
     assert_eq!(runtime.session().local_paused(), Some(false));
@@ -747,12 +741,9 @@ fn client_runtime_noncontroller_host_unpause_does_not_set_not_ready_user_ready()
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
 
-    assert!(
-        runtime
-            .run_set_paused(false)
-            .expect("host-driven unpause should dispatch to the player"),
-        "host-driven unpause should still resume the local player"
-    );
+    runtime
+        .run_system_owned_pause(false)
+        .expect("host-driven unpause should dispatch to the player");
 
     assert_eq!(runtime.player().paused, Some(false));
     assert_eq!(runtime.session().local_paused(), Some(false));

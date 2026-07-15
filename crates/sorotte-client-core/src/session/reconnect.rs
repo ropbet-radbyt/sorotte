@@ -7,6 +7,7 @@ impl ClientSession {
 
     pub(super) fn reset_sync_state_for_reconnect_with_attempt(&mut self, attempt: u32) {
         self.reset_playback_barrier();
+        self.mark_readiness_v2_reconnect_pending();
         let (ready_snapshot, file_snapshot, controller_snapshot) = self
             .model
             .connection
@@ -103,7 +104,22 @@ impl ClientSession {
             self.model.room.name.clone(),
         ) {
             self.set_user_room(&username, Some(room_name));
-            self.set_user_ready_state(&username, Some(false));
+            // Pending V2 intent is presentation/outbox state, never a
+            // canonical room-user projection. Preserve only the last server
+            // snapshot while reconnecting; a fresh Hello/snapshot will then
+            // confirm or replace it for the new transport.
+            let preserved_v2_ready = self
+                .model
+                .readiness
+                .canonical_snapshot
+                .as_ref()
+                .filter(|_| {
+                    self.model.readiness.canonical_room.as_deref()
+                        == self.model.room.name.as_deref()
+                })
+                .and_then(|snapshot| snapshot.participants.get(&username))
+                .map(|participant| participant.room_ready);
+            self.set_user_ready_state(&username, Some(preserved_v2_ready.unwrap_or(false)));
         }
     }
 

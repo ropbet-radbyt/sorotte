@@ -33,6 +33,8 @@ pub enum LocalInputCommand {
     SetUserOffset(LocalOffsetCommand),
     SeekAbsolute(f64),
     SeekRelative(f64),
+    Play,
+    Pause,
     TogglePause,
     ToggleReady,
     SetUserReady {
@@ -72,6 +74,8 @@ pub enum PlannedLocalRuntimeAction {
     SetUserOffset(LocalOffsetCommand),
     SeekToPosition(f64),
     SeekByOffset(f64),
+    Play,
+    Pause,
     TogglePause,
     ToggleReady,
     SetUserReady {
@@ -128,6 +132,8 @@ pub enum PlannedLocalInputCommand {
     SetUserOffset(LocalOffsetCommand),
     SeekAbsolute(f64),
     SeekRelative(f64),
+    Play,
+    Pause,
     TogglePause,
     ToggleReady,
     SetUserReady {

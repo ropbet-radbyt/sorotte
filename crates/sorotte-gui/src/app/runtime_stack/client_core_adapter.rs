@@ -109,7 +109,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         runtime_settings.config.connection.room = RoomName::new(room.clone()).ok();
         runtime_settings.config.connection.controlled_room_password =
             controlled_room_password_override;
-        let hello_json = Self::hello_json(&username, &room, &runtime_settings);
+        let hello_json = Self::hello_json(&username, &room, &runtime_settings, None);
         let mut runtime = ClientApplication::with_default_session(GuiNoopClientRuntimePlayer);
         Self::dispatch_command_to_application(
             &mut runtime,
@@ -190,7 +190,17 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             if !self.pending_startup_protocol_lines.is_empty() {
                 let username = self.current_username_for_next_hello();
                 let room = self.current_room_for_next_hello();
-                let hello = Self::hello_json(&username, &room, &self.runtime_settings);
+                let reconnect_token = self
+                    .runtime
+                    .session()
+                    .readiness_reconnect_token_for_room(&room)
+                    .map(str::to_owned);
+                let hello = Self::hello_json(
+                    &username,
+                    &room,
+                    &self.runtime_settings,
+                    reconnect_token.as_deref(),
+                );
                 self.replace_pending_startup_hello_if_unstaged(hello);
             }
         }
@@ -222,6 +232,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         features.insert("setOthersReadiness".to_owned(), Value::Bool(true));
         features.insert("mediaMatch".to_owned(), Value::Bool(true));
         features.insert("sorottePlexPlaylistUris".to_owned(), Value::Bool(true));
+        ClientSession::advertise_readiness_v2(&mut features);
         ClientSession::advertise_playback_barrier_v1(&mut features);
         Value::Object(features)
     }
@@ -230,6 +241,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         username: &str,
         room: &str,
         runtime_settings: &StoredClientSettingsRuntimeSnapshot,
+        readiness_reconnect_token: Option<&str>,
     ) -> String {
         let mut hello = HelloPayload::new(username, room, SYNCPLAY_WIRE_VERSION_LEGACY)
             .with_realversion(SYNCPLAY_COMPAT_VERSION_LEGACY)
@@ -247,6 +259,12 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             hello.extra.insert(
                 "password".to_owned(),
                 Value::String(legacy_server_password_token(server_password)),
+            );
+        }
+        if let Some(reconnect_token) = readiness_reconnect_token.filter(|token| !token.is_empty()) {
+            hello.extra.insert(
+                SOROTTE_READINESS_RECONNECT_TOKEN.to_owned(),
+                Value::String(reconnect_token.to_owned()),
             );
         }
 
@@ -305,6 +323,11 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             .map(|room| room.as_str().to_owned())
             .unwrap_or_default();
         let room = self.current_room_for_next_hello();
+        let reconnect_token = self
+            .runtime
+            .session()
+            .readiness_reconnect_token_for_room(&room)
+            .map(str::to_owned);
         let mut runtime = ClientApplication::with_default_session(GuiNoopClientRuntimePlayer);
         Self::dispatch_command_to_application(
             &mut runtime,
@@ -321,7 +344,12 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         )?;
         self.pending_startup_protocol_lines.clear();
         self.pending_startup_protocol_lines
-            .push_back(Self::hello_json(&username, &room, &self.runtime_settings));
+            .push_back(Self::hello_json(
+                &username,
+                &room,
+                &self.runtime_settings,
+                reconnect_token.as_deref(),
+            ));
         self.next_state_sync_heartbeat_at = None;
         self.next_autoplay_tick_at = None;
         self.pending_attached_player_local_runtime_actions.clear();
@@ -346,9 +374,19 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             .clone()
             .unwrap_or_default();
         let room = self.current_room_for_next_hello();
+        let reconnect_token = self
+            .runtime
+            .session()
+            .readiness_reconnect_token_for_room(&room)
+            .map(str::to_owned);
         self.pending_startup_protocol_lines.clear();
         self.pending_startup_protocol_lines
-            .push_back(Self::hello_json(&username, &room, &self.runtime_settings));
+            .push_back(Self::hello_json(
+                &username,
+                &room,
+                &self.runtime_settings,
+                reconnect_token.as_deref(),
+            ));
         self.next_state_sync_heartbeat_at = None;
         self.next_autoplay_tick_at = None;
         self.pending_attached_player_local_runtime_actions.clear();
@@ -621,8 +659,12 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         }
         if paused_before_tick != Some(false) && self.runtime.session().local_paused() == Some(false)
         {
-            self.pending_attached_player_local_runtime_actions
-                .push(GuiAttachedPlayerRuntimeAction::Paused(false));
+            self.pending_attached_player_local_runtime_actions.push(
+                GuiAttachedPlayerRuntimeAction::Paused {
+                    paused: false,
+                    cause: PlayerCommandCause::AutomaticReadinessStart,
+                },
+            );
         }
 
         self.next_autoplay_tick_at = if self.runtime.session().autoplay_timer_is_running() {

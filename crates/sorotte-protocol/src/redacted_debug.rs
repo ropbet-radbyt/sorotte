@@ -132,6 +132,7 @@ fn json_key_is_sensitive(key: &str) -> bool {
         "credential",
         "logicalmediaid",
         "requestid",
+        "operationid",
     ]
     .into_iter()
     .any(|marker| normalized.contains(marker))

@@ -329,7 +329,7 @@ fn client_runtime_flush_helpers_expose_protocol_and_reconnect_intents() {
     let mut session = ClientSession::default();
     session
         .apply_message_json(
-            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"readiness":true}}}"#,
         )
         .expect("hello should apply");
     let player = RecordingPlayer::default();
@@ -337,8 +337,8 @@ fn client_runtime_flush_helpers_expose_protocol_and_reconnect_intents() {
     let mut runtime = ClientRuntime::new(session, player, control);
 
     runtime
-        .run_readiness_unpause_attempt(10.0, true, true, false)
-        .expect("readiness attempt should dispatch");
+        .run_set_ready_for_user("", true, true)
+        .expect("explicit readiness command should dispatch");
     let outbound_lines = runtime
         .flush_queued_protocol_lines()
         .expect("queued outbound lines should encode");

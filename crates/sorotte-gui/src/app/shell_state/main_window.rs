@@ -1,4 +1,6 @@
 use super::super::DEFAULT_MAIN_WINDOW_AUTOPLAY_THRESHOLD;
+use sorotte_client_app::app_boundary::readiness::ParticipantReadinessPresentation;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(in crate::app) struct GuiMediaSourceProviderId(String);
@@ -519,6 +521,7 @@ pub(in crate::app) struct MainWindowShellState {
     pub(in crate::app) hide_empty_rooms: bool,
     pub(in crate::app) rooms: Vec<MainWindowRoomRow>,
     pub(in crate::app) users: Vec<MainWindowUserRow>,
+    pub(in crate::app) readiness: BTreeMap<String, ParticipantReadinessPresentation>,
     pub(in crate::app) playlist: Vec<MainWindowPlaylistRow>,
     pub(in crate::app) playlist_default_source: GuiPlaylistDefaultSourceState,
     pub(in crate::app) active_playlist_index: Option<usize>,
@@ -544,6 +547,7 @@ impl std::fmt::Debug for MainWindowShellState {
             .field("hide_empty_rooms", &self.hide_empty_rooms)
             .field("room_count", &self.rooms.len())
             .field("users", &self.users)
+            .field("readiness", &self.readiness)
             .field("playlist", &self.playlist)
             .field("active_playlist_index", &self.active_playlist_index)
             .field("chat", &self.chat)
@@ -640,6 +644,7 @@ pub(in crate::app) struct MainWindowRuntimeSnapshot {
     pub(in crate::app) hide_empty_rooms: bool,
     pub(in crate::app) rooms: Vec<MainWindowRuntimeRoomSnapshot>,
     pub(in crate::app) users: Vec<MainWindowRuntimeUserSnapshot>,
+    pub(in crate::app) readiness: BTreeMap<String, ParticipantReadinessPresentation>,
     pub(in crate::app) playlist: Vec<String>,
     pub(in crate::app) playlist_entry_ids: Vec<GuiPlaylistEntryId>,
     pub(in crate::app) playlist_source_states: Vec<GuiPlaylistSourceState>,
@@ -674,6 +679,7 @@ impl std::fmt::Debug for MainWindowRuntimeSnapshot {
             .field("hide_empty_rooms", &self.hide_empty_rooms)
             .field("rooms", &self.rooms)
             .field("users", &self.users)
+            .field("readiness", &self.readiness)
             .field("playlist_count", &self.playlist.len())
             .field("playlist_entry_id_count", &self.playlist_entry_ids.len())
             .field("playlist_source_states", &self.playlist_source_states)
@@ -715,6 +721,7 @@ impl Default for MainWindowRuntimeSnapshot {
             hide_empty_rooms: false,
             rooms: Vec::new(),
             users: Vec::new(),
+            readiness: BTreeMap::new(),
             playlist: Vec::new(),
             playlist_entry_ids: Vec::new(),
             playlist_source_states: Vec::new(),
@@ -791,6 +798,7 @@ impl MainWindowRuntimeSnapshot {
                     fileduration_differs: user.fileduration_differs,
                 })
                 .collect(),
+            readiness: state.readiness.clone(),
             playlist: state.playlist.iter().map(|row| row.label.clone()).collect(),
             playlist_entry_ids: state.playlist.iter().map(|row| row.entry_id).collect(),
             playlist_source_states: state

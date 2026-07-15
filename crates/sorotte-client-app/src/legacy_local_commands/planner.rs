@@ -101,6 +101,12 @@ pub fn plan_local_input_dispatch_legacy_compatible(
         PlannedLocalInputCommand::SeekRelative(offset_seconds) => {
             PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::SeekByOffset(offset_seconds))
         }
+        PlannedLocalInputCommand::Play => {
+            PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::Play)
+        }
+        PlannedLocalInputCommand::Pause => {
+            PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::Pause)
+        }
         PlannedLocalInputCommand::TogglePause => {
             PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::TogglePause)
         }
@@ -184,6 +190,8 @@ pub fn plan_local_input_command_legacy_compatible(
         LocalInputCommand::SeekRelative(offset_seconds) => {
             PlannedLocalInputCommand::SeekRelative(offset_seconds)
         }
+        LocalInputCommand::Play => PlannedLocalInputCommand::Play,
+        LocalInputCommand::Pause => PlannedLocalInputCommand::Pause,
         LocalInputCommand::TogglePause => PlannedLocalInputCommand::TogglePause,
         LocalInputCommand::ToggleReady => PlannedLocalInputCommand::ToggleReady,
         LocalInputCommand::SetUserReady { username, ready } => {

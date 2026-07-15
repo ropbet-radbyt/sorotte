@@ -75,6 +75,20 @@ fn parse_local_input_command_parses_toggle_aliases() {
 #[test]
 fn parse_local_input_command_parses_setready_aliases() {
     assert_eq!(
+        parse_local_input_command("ready"),
+        Some(LocalInputCommand::SetUserReady {
+            username: String::new(),
+            ready: true
+        })
+    );
+    assert_eq!(
+        parse_local_input_command("ready bob"),
+        Some(LocalInputCommand::SetUserReady {
+            username: "bob".to_owned(),
+            ready: true
+        })
+    );
+    assert_eq!(
         parse_local_input_command("setready bob"),
         Some(LocalInputCommand::SetUserReady {
             username: "bob".to_owned(),
@@ -143,6 +157,20 @@ fn parse_local_input_command_parses_setready_aliases() {
 
 #[test]
 fn parse_local_input_command_parses_setnotready_aliases() {
+    assert_eq!(
+        parse_local_input_command("not-ready"),
+        Some(LocalInputCommand::SetUserReady {
+            username: String::new(),
+            ready: false
+        })
+    );
+    assert_eq!(
+        parse_local_input_command("not-ready bob"),
+        Some(LocalInputCommand::SetUserReady {
+            username: "bob".to_owned(),
+            ready: false
+        })
+    );
     assert_eq!(
         parse_local_input_command("setnotready bob"),
         Some(LocalInputCommand::SetUserReady {

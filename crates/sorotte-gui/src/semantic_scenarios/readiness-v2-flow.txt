@@ -1,0 +1,54 @@
+# Readiness V2 presentation and legacy fallback
+setting	username	alice
+setting	room	room1
+apply-main-window-runtime	room1	false	true	false	true	true	true	false	alice,true,false,false	placeholder.mkv	system>connected
+
+# A legacy participant remains usable without claiming technical guarantees.
+assert-value	main-window:user:0:readiness	Not Ready
+assert-value	main-window:user:0:readiness-technical	unavailable (legacy readiness)
+assert-value	main-window:user:0:readiness-eligibility	room_ready=no, start_eligible=unknown
+assert-value	main-window:user:0:readiness-participation	legacy participant; technical start guarantees unavailable
+
+# Direct Ready and Not Ready controls operate on displayed intent.
+activate	main-window:control:set-ready
+assert-label	main-window:control:set-ready	Ready
+activate	main-window:control:set-ready
+assert-label	main-window:control:set-ready	Not Ready
+
+# Canonical user intent and technical eligibility are separate.
+apply-main-window-readiness-v2	alice	ready	playable	none	none	true	true	4	9	7	none	none	none
+assert-value	main-window:user:0:readiness	Ready
+assert-value	main-window:user:0:readiness-intent	canonical=Ready
+assert-value	main-window:user:0:readiness-technical	phase=playable
+assert-value	main-window:user:0:readiness-eligibility	room_ready=yes, start_eligible=yes
+assert-value	main-window:user:0:readiness-participation	required
+assert-value	main-window:user:0:readiness-revision	membership_epoch=4, room_revision=9, intent_revision=7
+
+apply-main-window-readiness-v2	alice	ready	preparing	loading	none	true	false	4	10	7	none	none	none
+assert-value	main-window:user:0:readiness	Ready — loading
+assert-value	main-window:user:0:readiness-eligibility	room_ready=yes, start_eligible=no
+
+apply-main-window-readiness-v2	alice	ready	temporarily-blocked	rebuffering	retrying	true	false	4	11	7	none	none	none
+assert-value	main-window:user:0:readiness	Ready — buffering
+assert-value	main-window:user:0:readiness-technical	phase=temporarily-blocked, reason=rebuffering, recovery=retrying
+
+apply-main-window-readiness-v2	alice	ready	temporarily-blocked	recovery	reloading-media	true	false	4	12	7	none	none	none
+assert-value	main-window:user:0:readiness	Ready — recovering
+
+# A terminal block changes room readiness while retaining Ready intent.
+apply-main-window-readiness-v2	alice	ready	terminally-blocked	recovery-exhausted	none	false	false	4	13	7	none	none	none
+assert-value	main-window:user:0:readiness	Not Ready — technical failure
+assert-value	main-window:user:0:readiness-intent	canonical=Ready
+assert-value	main-window:user:0:readiness-eligibility	room_ready=no, start_eligible=no
+
+# Matching is by operation identity, not by a coincidentally equal boolean.
+apply-main-window-readiness-v2	alice	ready	playable	none	none	true	true	4	14	8	not-ready	op-new	op-old
+assert-value	main-window:user:0:readiness	Not Ready
+assert-value	main-window:user:0:readiness-intent	pending=Not Ready, canonical=Ready
+assert-value	main-window:user:0:readiness-operation	pending=present, accepted=present, correlated=no
+assert-label	main-window:control:set-ready	Not Ready
+
+apply-main-window-readiness-v2	alice	not-ready	playable	none	none	false	false	4	15	9	not-ready	op-new	op-new
+assert-value	main-window:user:0:readiness	Not Ready
+assert-value	main-window:user:0:readiness-intent	canonical=Not Ready
+assert-value	main-window:user:0:readiness-operation	pending=present, accepted=present, correlated=yes

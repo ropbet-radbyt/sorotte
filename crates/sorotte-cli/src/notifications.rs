@@ -46,6 +46,7 @@ mod controller_auth;
 mod file_difference;
 mod playback_diagnostics;
 mod player_osd;
+mod readiness;
 mod reconnect;
 mod reconnect_diagnostics;
 mod user_change;
@@ -92,6 +93,9 @@ pub(super) use self::playback_diagnostics::{
     player_playback_telemetry_update_message,
     player_playback_telemetry_update_message_localized_legacy_compatible,
     seek_preparation_diagnostic_messages,
+};
+pub(super) use self::readiness::{
+    ReadinessNotificationState, flush_readiness_status_notifications,
 };
 pub(super) use self::reconnect::flush_reconnect_notifications_legacy_compatible;
 #[cfg(test)]

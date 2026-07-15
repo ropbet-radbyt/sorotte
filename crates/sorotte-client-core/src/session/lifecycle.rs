@@ -651,6 +651,21 @@ impl ClientSession {
                         })
                         .map_err(client_effect_player_error)?;
                 }
+                ClientRuntimeAction::SetReadinessIntent { request, scope } => {
+                    control.activate_protocol_connection_generation();
+                    control
+                        .emit(ClientEffect::SendReadinessIntent {
+                            request: request.clone(),
+                            scope: scope.clone(),
+                        })
+                        .map_err(client_effect_player_error)?;
+                }
+                ClientRuntimeAction::ReportTechnicalReadiness(report) => {
+                    control.activate_protocol_connection_generation();
+                    control
+                        .emit(ClientEffect::ReportTechnicalReadiness(report.clone()))
+                        .map_err(client_effect_player_error)?;
+                }
                 ClientRuntimeAction::SetFile { file } => {
                     control
                         .emit(ClientEffect::SetFile(file.clone()))

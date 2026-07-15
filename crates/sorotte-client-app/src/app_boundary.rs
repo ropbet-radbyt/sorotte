@@ -99,6 +99,13 @@ pub mod persistence {
     };
 }
 
+pub mod readiness {
+    pub use crate::readiness_presentation::{
+        ParticipantReadinessPresentation, PendingReadinessIntentPresentation,
+        ReadinessPresentationProtocol,
+    };
+}
+
 pub mod storage {
     pub use crate::client_storage_paths::{
         SOROTTE_CLIENT_CONFIG_PATH_ENV, SOROTTE_CLIENT_CONFIG_ROOT_ENV,

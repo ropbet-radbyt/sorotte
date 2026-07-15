@@ -69,26 +69,46 @@ impl GuiPersistedConfigRuntimeOwner {
         let user_offset_seconds = self.user_offset_seconds;
         for action in actions {
             match action {
-                GuiAttachedPlayerRuntimeAction::Paused(paused) => {
+                GuiAttachedPlayerRuntimeAction::Paused { paused, cause } => {
                     if self.player_paused_for_cache == Some(true) && !paused {
                         self.pending_attached_room_unpause_observation =
                             Some(GuiPendingAttachedRoomUnpauseObservation::CachePaused);
                         continue;
                     }
+                    let command_id = match self.begin_attached_player_pause_command(paused, cause) {
+                        Ok(command_id) => command_id,
+                        Err(error) => {
+                            eprintln!(
+                                "warning: failed to register attached-player {action_description} pause command: {error}"
+                            );
+                            continue;
+                        }
+                    };
                     if self.player.is_none() {
+                        if let Err(error) =
+                            self.finish_attached_player_pause_command(command_id, false)
+                        {
+                            eprintln!(
+                                "warning: failed to finish attached-player {action_description} pause failure without a player: {error}"
+                            );
+                        }
+                        if cause == PlayerCommandCause::LocalUserPlaybackControl {
+                            self.rollback_attached_player_pause_intent(paused);
+                        }
                         return state_changed;
-                    }
-                    if let Err(error) = self.stage_attached_player_pause_intent(paused) {
-                        eprintln!(
-                            "warning: failed to stage attached-player {action_description} pause intent: {error}"
-                        );
-                        continue;
                     }
                     let result = self
                         .player
                         .as_mut()
-                        .expect("attached player was checked before local runtime staging")
+                        .expect("attached player was checked before causal command registration")
                         .set_paused(paused);
+                    let command_succeeded = result.is_ok();
+                    let command_result_error = self
+                        .finish_attached_player_pause_command(command_id, command_succeeded)
+                        .err();
+                    if cause == PlayerCommandCause::LocalUserPlaybackControl && !command_succeeded {
+                        self.rollback_attached_player_pause_intent(paused);
+                    }
                     match result {
                         Ok(()) => {
                             self.note_local_attached_player_pause_command(paused);
@@ -105,12 +125,21 @@ impl GuiPersistedConfigRuntimeOwner {
                                     "warning: failed to mirror attached-player {action_description} pause action into the session runtime: {error}"
                                 );
                             }
+                            if let Some(error) = command_result_error {
+                                eprintln!(
+                                    "warning: failed to finish attached-player {action_description} pause command: {error}"
+                                );
+                            }
                         }
                         Err(error) => {
-                            self.rollback_attached_player_pause_intent(paused);
                             eprintln!(
                                 "warning: failed to apply attached-player {action_description} pause action: {error}"
                             );
+                            if let Some(command_result_error) = command_result_error {
+                                eprintln!(
+                                    "warning: failed to finish attached-player {action_description} pause failure: {command_result_error}"
+                                );
+                            }
                         }
                     }
                 }
@@ -161,7 +190,25 @@ impl GuiPersistedConfigRuntimeOwner {
                         CoordinatorPlayerCommand::SetPosition(_)
                         | CoordinatorPlayerCommand::SetPlaybackRate(_) => None,
                     };
+                    let command_registered_at = system_time_seconds();
+                    let player_command_id = self.session.as_mut().and_then(|session| {
+                        session.begin_attached_coordinator_command_dispatch(
+                            command_id,
+                            command_registered_at,
+                        )
+                    });
+                    if pause_target.is_some() {
+                        self.pending_local_attached_pause_override = None;
+                    }
                     let Some(player) = self.player.as_mut() else {
+                        if let Some(session) = self.session.as_mut() {
+                            session.finish_attached_coordinator_command_dispatch(
+                                command_id,
+                                player_command_id,
+                                false,
+                                system_time_seconds(),
+                            );
+                        }
                         return state_changed;
                     };
                     let result = match command {
@@ -184,8 +231,9 @@ impl GuiPersistedConfigRuntimeOwner {
                         );
                     }
                     if let Some(session) = self.session.as_mut() {
-                        session.report_attached_coordinator_command_dispatch(
+                        session.finish_attached_coordinator_command_dispatch(
                             command_id,
+                            player_command_id,
                             accepted,
                             system_time_seconds(),
                         );
@@ -413,11 +461,30 @@ impl GuiPersistedConfigRuntimeOwner {
             if let Some(paused) = sync_paused_state
                 && (force || self.player_paused != Some(paused))
             {
+                let command_id = match self.begin_attached_player_pause_command(
+                    paused,
+                    PlayerCommandCause::RemoteRoomSynchronization,
+                ) {
+                    Ok(command_id) => command_id,
+                    Err(error) => {
+                        self.last_applied_attached_room_playstate = None;
+                        eprintln!(
+                            "warning: failed to register attached-player room-state pause command: {error}"
+                        );
+                        return;
+                    }
+                };
                 let Some(player) = self.player.as_mut() else {
+                    let _ = self.finish_attached_player_pause_command(command_id, false);
                     self.last_applied_attached_room_playstate = None;
                     return;
                 };
-                match player.set_paused(paused) {
+                let result = player.set_paused(paused);
+                let command_succeeded = result.is_ok();
+                let command_result_error = self
+                    .finish_attached_player_pause_command(command_id, command_succeeded)
+                    .err();
+                match result {
                     Ok(()) => {
                         self.note_local_attached_player_pause_command(paused);
                         if paused {
@@ -444,12 +511,22 @@ impl GuiPersistedConfigRuntimeOwner {
                                 "warning: failed to mirror remote room pause sync into the session runtime: {error}"
                             );
                         }
+                        if let Some(error) = command_result_error {
+                            eprintln!(
+                                "warning: failed to register attached-player room pause synchronization: {error}"
+                            );
+                        }
                     }
                     Err(error) => {
                         room_playstate_sync_failed = true;
                         eprintln!(
                             "warning: failed to sync session playback pause state to the attached player: {error}"
                         );
+                        if let Some(command_result_error) = command_result_error {
+                            eprintln!(
+                                "warning: failed to register attached-player room pause synchronization failure: {command_result_error}"
+                            );
+                        }
                     }
                 }
             }

@@ -50,5 +50,6 @@ pub(crate) fn client_hello_features_legacy_compatible(config: &ClientLoopConfig)
     features.insert("persistentRooms".to_owned(), Value::Bool(true));
     features.insert("setOthersReadiness".to_owned(), Value::Bool(true));
     ClientSession::advertise_playback_barrier_v1(&mut features);
+    ClientSession::advertise_readiness_v2(&mut features);
     Value::Object(features)
 }
