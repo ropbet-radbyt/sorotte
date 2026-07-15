@@ -77,23 +77,49 @@ impl ClientSession {
         paused: bool,
         now_seconds: f64,
     ) -> Vec<ClientRuntimeAction> {
-        if self.model.playback.local_paused_for_cache == Some(true) && !paused {
-            return Vec::new();
-        }
-
         let effective_paused = self.effective_local_paused_state(now_seconds);
-        if effective_paused == paused {
-            return Vec::new();
-        }
-
         if self.model.connection.username.is_none() || !self.server_readiness_supported() {
+            if effective_paused == paused {
+                return Vec::new();
+            }
             self.model.playback.local_paused = Some(paused);
             return vec![ClientRuntimeAction::SetPaused(paused)];
         }
 
+        // A deliberate player Play/Pause is itself a readiness control. Record
+        // that intent independently from whether room authority or the current
+        // technical state permits the physical command to take effect.
+        let desired_ready = !paused;
+        let mut readiness_action = if self.server_readiness_v2_supported() {
+            self.runtime_actions_for_indirect_player_intent(
+                paused,
+                PlayerInteractionSurface::SorottePlaybackControl,
+            )
+            .into_iter()
+            .next()
+        } else {
+            let current_ready = self
+                .model
+                .connection
+                .username
+                .as_deref()
+                .and_then(|username| self.model.room.users.get(username))
+                .and_then(|user| user.ready);
+            (current_ready != Some(desired_ready)).then(|| {
+                self.apply_local_ready_state_optimistically(desired_ready);
+                ClientRuntimeAction::SetReady {
+                    ready: desired_ready,
+                    manually_initiated: true,
+                }
+            })
+        };
+
+        if self.model.playback.local_paused_for_cache == Some(true) && !paused {
+            return readiness_action.into_iter().collect();
+        }
+
         let local_can_control = self.local_can_control().unwrap_or(false);
         let is_playing_music = self.is_playing_music();
-        let recently_advanced = self.recently_advanced(now_seconds);
         let global_paused = self
             .current_room_playstate_at(now_seconds)
             .and_then(|playstate| playstate.paused)
@@ -105,34 +131,20 @@ impl ClientSession {
             if effective_paused != global_paused {
                 actions.push(ClientRuntimeAction::SetPaused(global_paused));
             }
-            if paused != global_paused
-                && (!global_paused || recently_advanced)
-                && !self.local_user_ready()
-                && !self.recently_rewound(now_seconds, RECENT_REWIND_READINESS_SUPPRESSION_SECONDS)
-            {
-                self.apply_local_ready_state_optimistically(true);
-                actions.push(ClientRuntimeAction::SetReady {
-                    ready: true,
-                    manually_initiated: true,
-                });
+            if let Some(action) = readiness_action.take() {
+                actions.push(action);
             }
             return actions;
         }
 
-        if is_playing_music && recently_advanced {
-            self.model.playback.local_paused = Some(paused);
-            return vec![ClientRuntimeAction::SetPaused(paused)];
-        }
-
         if paused {
             self.model.playback.local_paused = Some(true);
-            let mut actions = vec![ClientRuntimeAction::SetPaused(true)];
-            if self.local_user_ready() {
-                self.apply_local_ready_state_optimistically(false);
-                actions.push(ClientRuntimeAction::SetReady {
-                    ready: false,
-                    manually_initiated: false,
-                });
+            let mut actions = (effective_paused != paused)
+                .then_some(ClientRuntimeAction::SetPaused(true))
+                .into_iter()
+                .collect::<Vec<_>>();
+            if let Some(action) = readiness_action.take() {
+                actions.push(action);
             }
             return actions;
         }
@@ -140,13 +152,12 @@ impl ClientSession {
         let instaplay = self.instaplay_conditions_met(local_can_control, is_playing_music);
         if !instaplay {
             self.model.playback.local_paused = Some(true);
-            let mut actions = vec![ClientRuntimeAction::SetPaused(true)];
-            if !self.local_user_ready() {
-                self.apply_local_ready_state_optimistically(true);
-                actions.push(ClientRuntimeAction::SetReady {
-                    ready: true,
-                    manually_initiated: true,
-                });
+            let mut actions = (!effective_paused)
+                .then_some(ClientRuntimeAction::SetPaused(true))
+                .into_iter()
+                .collect::<Vec<_>>();
+            if let Some(action) = readiness_action.take() {
+                actions.push(action);
             }
             return actions;
         }
@@ -162,17 +173,23 @@ impl ClientSession {
         {
             self.model.playback.last_paused_on_leave_at_seconds = None;
             self.model.playback.local_paused = Some(false);
-            return vec![ClientRuntimeAction::SetPaused(false)];
+            let mut actions = effective_paused
+                .then_some(ClientRuntimeAction::SetPaused(false))
+                .into_iter()
+                .collect::<Vec<_>>();
+            if let Some(action) = readiness_action.take() {
+                actions.push(action);
+            }
+            return actions;
         }
 
         self.model.playback.local_paused = Some(false);
-        let mut actions = vec![ClientRuntimeAction::SetPaused(false)];
-        if !self.local_user_ready() {
-            self.apply_local_ready_state_optimistically(true);
-            actions.push(ClientRuntimeAction::SetReady {
-                ready: true,
-                manually_initiated: false,
-            });
+        let mut actions = effective_paused
+            .then_some(ClientRuntimeAction::SetPaused(false))
+            .into_iter()
+            .collect::<Vec<_>>();
+        if let Some(action) = readiness_action.take() {
+            actions.push(action);
         }
         actions
     }

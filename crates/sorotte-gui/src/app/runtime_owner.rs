@@ -36,6 +36,7 @@ use sorotte_client_app::app_boundary::{
         stored_client_settings_runtime_snapshot_legacy_compatible,
     },
 };
+use sorotte_client_core::PlayerCommandCause;
 use sorotte_player_api::{LocalFileUpdate, PlayerAdapter};
 use sorotte_player_mpv::MpvAdapter;
 use sorotte_plex::{

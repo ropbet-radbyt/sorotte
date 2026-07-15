@@ -27,6 +27,8 @@ Use the configuration window to set:
 
 After connecting, the main window supports room/user/file browsing, chat, readiness, shared playlists, media open/import, controlled rooms, public-server browsing, media search, drag/drop ingest, and runtime-backed connect/disconnect flows.
 
+Readiness-capable Sorotte rooms keep the user's Ready/Not Ready intent separate from loading, buffering, seeking, and recovery. Player Play/Pause gestures count as deliberate readiness changes, while automatic player corrections do not. See [Readiness and automatic start](READINESS.md) for the full behavior and CLI commands.
+
 ## Configuration Storage
 
 Sorotte uses `sorotte.ini` in the install folder as a locator to find the storage root for `sorotte.ini` and appdata-style GUI files. On first startup, Sorotte creates this locator if it is missing and points it at the platform Sorotte folder:

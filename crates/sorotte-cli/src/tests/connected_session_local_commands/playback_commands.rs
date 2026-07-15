@@ -1,7 +1,7 @@
 use super::*;
 
 #[tokio::test]
-async fn connected_client_session_toggles_pause_from_local_input_channel() {
+async fn connected_client_session_sets_pause_from_local_input_channel() {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("listener should bind");
@@ -78,6 +78,11 @@ async fn connected_client_session_toggles_pause_from_local_input_channel() {
         controlled_room_password_override: None,
     };
     let mut runtime = create_client_runtime(&config);
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &PlayerPlaybackTelemetryUpdate::default().with_paused(false),
+        );
     let stream = TcpStream::connect(addr)
         .await
         .expect("client should connect to test listener");
@@ -108,7 +113,7 @@ async fn connected_client_session_toggles_pause_from_local_input_channel() {
     );
     assert!(
         runtime.player().paused(),
-        "local pause command should toggle player paused state"
+        "local pause command should set player paused state"
     );
     server_task.await.expect("server task join should succeed");
 }

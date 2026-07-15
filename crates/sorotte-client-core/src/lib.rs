@@ -11,10 +11,13 @@ use sorotte_player_api::{
 };
 use sorotte_protocol::{
     ChatPayload, ControllerAuthPayload, FilePayload, IgnoringOnTheFlyPayload, ListPayload,
-    PingPayload, PlaylistIndexPayload, PlaystatePayload, ProtocolError, ProtocolMessage,
-    ReadyPayload, RoomRef, SOROTTE_PLEX_PLAYLIST_URIS_FEATURE, SetPayload, StatePayload,
-    canonical_playlist_files_from_change, decode_message_line, decode_message_line_items,
-    encode_message_line, playlist_change_with_plex_sidecar,
+    ParticipantReadinessUpdate, PingPayload, PlayerInteractionSurface, PlaylistIndexPayload,
+    PlaystatePayload, ProtocolError, ProtocolMessage, ReadinessIntentRequest,
+    ReadinessRequestResultStatus, ReadinessSetExtension, ReadinessStateExtension, ReadyPayload,
+    RoomReadinessSnapshot, RoomRef, SOROTTE_PLEX_PLAYLIST_URIS_FEATURE, SOROTTE_READINESS_V2,
+    SetPayload, StatePayload, TechnicalReadinessReport, UserReadinessIntent,
+    UserReadinessMutationSource, canonical_playlist_files_from_change, decode_message_line,
+    decode_message_line_items, encode_message_line, playlist_change_with_plex_sidecar,
 };
 use sorotte_secret::SecretValue;
 
@@ -35,7 +38,6 @@ const DEFAULT_LAST_PAUSED_DIFF_THRESHOLD_SECONDS: f64 = 2.0;
 const DEFAULT_AUTOPLAY_DELAY_SECONDS: f64 = 3.0;
 const AUTOPLAY_COUNTDOWN_STEP_SECONDS: f64 = 1.0;
 const RECENTLY_ADVANCED_GRACE_SECONDS: f64 = 5.0;
-const RECENT_REWIND_READINESS_SUPPRESSION_SECONDS: f64 = 5.0;
 const RECENT_REWIND_SEEK_SUPPRESSION_SECONDS: f64 = 1.0;
 const RECENT_REWIND_SEEK_IGNORE_POSITION_SECONDS: f64 = 5.0;
 const LEGACY_SHOW_DURATION_NOTIFICATION: bool = true;
@@ -157,6 +159,7 @@ mod notifications;
 mod outbox;
 mod ping;
 mod playback_coordinator;
+mod player_transition;
 mod runtime;
 mod session;
 mod views;
@@ -169,7 +172,7 @@ pub use self::config::{
 };
 pub use self::control::{
     ClientEffect, ClientEffectError, ClientEffectSink, ClientRuntimeAction, PendingProtocolLine,
-    PlaybackBarrierRequestScope, QueuedRuntimeControl,
+    PlaybackBarrierRequestScope, QueuedRuntimeControl, ReadinessIntentScope,
 };
 pub use self::inbound::{
     ClientCompatibilityFallback, FileDuration, FileSize, PeerCapabilities, SharedFile,
@@ -180,8 +183,8 @@ pub(crate) use self::inbound::{
 };
 pub use self::model::{
     ClientEvent, ClientModel, ConnectionPhase, ConnectionState, ControllerState,
-    LocalPauseChangeHealth, PlaybackSyncState, PlaylistState, ReadinessState, ReconnectState,
-    RoomState, ServerCapabilities,
+    LocalPauseChangeHealth, PendingReadinessIntent, PlaybackSyncState, PlaylistState,
+    ReadinessState, ReconnectState, RoomState, ServerCapabilities,
 };
 pub use self::notifications::{
     AutoplayCountdownNotification, ChatNotification, ControlledRoomCreationNotification,
@@ -198,6 +201,12 @@ pub use self::playback_coordinator::{
     PlaybackCoordinatorMetrics, PlaybackDiagnostic, PlayerTransportObservation,
     RecoveryEpisodeSnapshot, RecoveryPolicy, SeekPreparationDegradedReason, SeekPreparationPhase,
     SeekPreparationSnapshot, SeekPreparationTerminalOutcome, SeekTargetAvailability,
+};
+pub use self::player_transition::{
+    NativePlayerAction, PlayerCommandCause, PlayerCommandCompletion, PlayerCommandRegistration,
+    PlayerLogicalPauseObservation, PlayerTransitionClassification, PlayerTransitionClassifier,
+    PlayerTransitionClassifierConfig, PlayerTransitionContext, PlayerTransitionIgnoredReason,
+    PlayerTransitionTechnicalReason, PlayerTransitionUnknownReason,
 };
 pub use self::runtime::{
     ClientPlayerIo, ClientRuntime, ClientSessionUpdate, PlaybackBarrierRoomBufferingConfig,

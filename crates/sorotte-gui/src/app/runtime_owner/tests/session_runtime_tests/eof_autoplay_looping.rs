@@ -41,6 +41,9 @@ fn gui_persisted_config_runtime_owner_auto_advances_shared_playlist_once_at_eof(
     #[derive(Debug, Default)]
     struct RecordingSessionState {
         advance_calls: usize,
+        pause_intent_stages: usize,
+        pause_dispatches: Vec<bool>,
+        eof_observations: usize,
     }
 
     struct RecordingSessionRuntimeAdapter {
@@ -62,6 +65,43 @@ fn gui_persisted_config_runtime_owner_auto_advances_shared_playlist_once_at_eof(
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .advance_calls += 1;
             Ok(())
+        }
+
+        fn observe_external_player_end_of_file(&mut self, _now_seconds: f64) -> Result<(), String> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .eof_observations += 1;
+            Ok(())
+        }
+
+        fn stage_attached_player_pause_intent(
+            &mut self,
+            _paused: bool,
+            _now_seconds: f64,
+        ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .pause_intent_stages += 1;
+            Ok(Vec::new())
+        }
+
+        fn supports_playback_pause_changes(&self) -> bool {
+            true
+        }
+
+        fn local_pause_state(&self) -> Option<bool> {
+            Some(false)
+        }
+
+        fn set_playback_paused(&mut self, paused: bool) -> Result<bool, String> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .pause_dispatches
+                .push(paused);
+            Ok(true)
         }
 
         fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
@@ -140,6 +180,20 @@ fn gui_persisted_config_runtime_owner_auto_advances_shared_playlist_once_at_eof(
         1,
         "EOF should trigger one playlist advance when the player pauses at the file end"
     );
+    {
+        let recorded = recorded
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(recorded.eof_observations, 1);
+        assert_eq!(
+            recorded.pause_intent_stages, 0,
+            "natural EOF must not be staged as a direct player gesture"
+        );
+        assert!(
+            recorded.pause_dispatches.is_empty(),
+            "natural EOF must not be sent through the user pause mutation seam"
+        );
+    }
 
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     handle.drain_actions();
@@ -341,7 +395,10 @@ fn gui_persisted_config_runtime_owner_applies_autoplay_unpause_to_attached_playe
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None).with_session_runtime(
         Box::new(RecordingSessionRuntimeAdapter {
             state: session_state.clone(),
-            local_actions: vec![GuiAttachedPlayerRuntimeAction::Paused(false)],
+            local_actions: vec![GuiAttachedPlayerRuntimeAction::Paused {
+                paused: false,
+                cause: sorotte_client_core::PlayerCommandCause::AutomaticReadinessStart,
+            }],
         }),
     );
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {

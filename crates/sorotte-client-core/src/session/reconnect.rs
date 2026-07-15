@@ -7,6 +7,7 @@ impl ClientSession {
 
     pub(super) fn reset_sync_state_for_reconnect_with_attempt(&mut self, attempt: u32) {
         self.reset_playback_barrier();
+        self.mark_readiness_v2_reconnect_pending();
         let (ready_snapshot, file_snapshot, controller_snapshot) = self
             .model
             .connection
@@ -103,7 +104,26 @@ impl ClientSession {
             self.model.room.name.clone(),
         ) {
             self.set_user_room(&username, Some(room_name));
-            self.set_user_ready_state(&username, Some(false));
+            let preserved_v2_ready = self
+                .model
+                .readiness
+                .pending_intent
+                .as_ref()
+                .filter(|pending| {
+                    self.model.readiness.canonical_room.as_deref()
+                        == self.model.room.name.as_deref()
+                        && pending.room == self.model.room.name.as_deref().unwrap_or_default()
+                })
+                .map(|pending| pending.desired == UserReadinessIntent::Ready)
+                .or_else(|| {
+                    self.model
+                        .readiness
+                        .canonical_snapshot
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.participants.get(&username))
+                        .map(|participant| participant.room_ready)
+                });
+            self.set_user_ready_state(&username, Some(preserved_v2_ready.unwrap_or(false)));
         }
     }
 

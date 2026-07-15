@@ -17,7 +17,10 @@ pub(in crate::app) enum GuiLocalPlayerUnpauseDecision {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::app) enum GuiAttachedPlayerRuntimeAction {
-    Paused(bool),
+    Paused {
+        paused: bool,
+        cause: PlayerCommandCause,
+    },
     Position(f64),
     PlaybackRate(f64),
     Coordinator {
@@ -202,6 +205,10 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         _now_seconds: f64,
     ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
         Ok(Vec::new())
+    }
+
+    fn observe_external_player_end_of_file(&mut self, _now_seconds: f64) -> Result<(), String> {
+        Ok(())
     }
 
     fn report_attached_coordinator_command_dispatch(
@@ -390,6 +397,29 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
     }
 
     fn finalize_local_player_unpause_attempt(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn record_intentional_player_pause_action(&mut self, _paused: bool) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn record_external_player_pause_command_result(
+        &mut self,
+        _paused: bool,
+        _succeeded: bool,
+        _now_seconds: f64,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn record_external_system_player_pause_command_result(
+        &mut self,
+        _paused: bool,
+        _cause: PlayerCommandCause,
+        _succeeded: bool,
+        _now_seconds: f64,
+    ) -> Result<(), String> {
         Ok(())
     }
 

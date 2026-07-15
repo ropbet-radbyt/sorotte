@@ -582,3 +582,60 @@ fn plan_local_runtime_dispatch_legacy_compatible_passthroughs_simple_actions() {
         Some(PlannedLocalRuntimeAction::TogglePause)
     );
 }
+
+#[test]
+fn explicit_play_pause_commands_remain_distinct_through_planning() {
+    let context = LocalInputCommandPlanningContext {
+        current_room: Some("room1"),
+        configured_room: "room1",
+    };
+
+    for (input, command, planned, action) in [
+        (
+            "play",
+            LocalInputCommand::Play,
+            PlannedLocalInputCommand::Play,
+            PlannedLocalRuntimeAction::Play,
+        ),
+        (
+            "pause",
+            LocalInputCommand::Pause,
+            PlannedLocalInputCommand::Pause,
+            PlannedLocalRuntimeAction::Pause,
+        ),
+        (
+            "p",
+            LocalInputCommand::TogglePause,
+            PlannedLocalInputCommand::TogglePause,
+            PlannedLocalRuntimeAction::TogglePause,
+        ),
+    ] {
+        assert_eq!(parse_local_input_command(input), Some(command.clone()));
+        assert_eq!(
+            plan_local_input_command_legacy_compatible(command, &context),
+            planned.clone()
+        );
+        assert_eq!(
+            plan_local_input_dispatch_legacy_compatible(planned, true),
+            PlannedLocalInputDispatch::Run(action)
+        );
+    }
+}
+
+#[test]
+fn direct_ready_aliases_map_to_explicit_local_readiness() {
+    assert_eq!(
+        parse_local_input_command("ready"),
+        Some(LocalInputCommand::SetUserReady {
+            username: String::new(),
+            ready: true,
+        })
+    );
+    assert_eq!(
+        parse_local_input_command("not-ready"),
+        Some(LocalInputCommand::SetUserReady {
+            username: String::new(),
+            ready: false,
+        })
+    );
+}

@@ -22,19 +22,25 @@ use sha2::Sha256;
 use sorotte_core::{DomainError, SyncDomain};
 use sorotte_protocol::{
     ChatPayload, CommitStartPayload, ControllerAuthPayload, DEFAULT_MAX_PROTOCOL_LINE_BYTES,
-    FilePayload, HelloPayload, IgnoringOnTheFlyPayload, ListPayload, ListUserEntry,
-    MediaLoadIntent, MediaReadyPayload, NewControlledRoomPayload, PingPayload,
-    PlaybackBarrierDegradedReason, PlaybackBarrierParticipantPhase,
-    PlaybackBarrierParticipantStatus, PlaybackBarrierPhase, PlaybackBarrierPolicy,
-    PlaybackBarrierRecoveryDisposition, PlaybackBarrierRecoveryPayload,
+    DirectReadinessSurface, FilePayload, HelloPayload, IgnoringOnTheFlyPayload, ListPayload,
+    ListUserEntry, MediaLoadIntent, MediaReadyPayload, NewControlledRoomPayload,
+    ParticipantReadiness, ParticipantReadinessUpdate, PingPayload, PlaybackBarrierDegradedReason,
+    PlaybackBarrierParticipantPhase, PlaybackBarrierParticipantStatus, PlaybackBarrierPhase,
+    PlaybackBarrierPolicy, PlaybackBarrierRecoveryDisposition, PlaybackBarrierRecoveryPayload,
     PlaybackBarrierRequestResultPayload, PlaybackBarrierSetExtension,
     PlaybackBarrierStateExtension, PlaybackBarrierStatusPayload, PlaybackBarrierTimeoutAction,
-    PlaylistIndexPayload, PlaystatePayload, PrepareMediaPayload, ProtocolError, ProtocolMessage,
-    ReadyPayload, RoomBufferingPhase, RoomBufferingPolicy, RoomBufferingPolicyPayload,
-    RoomBufferingStatusPayload, RoomRef, SOROTTE_PLAYBACK_BARRIER_V1,
-    SOROTTE_PLEX_PLAYLIST_URIS_FEATURE, SetPayload, StartedAckPayload, StatePayload,
-    TransportBufferingReportPayload, UserSetPayload, canonical_playlist_files_from_change,
-    decode_line, decode_message_line_items, encode_message_line, playlist_change_with_plex_sidecar,
+    PlayerReadinessAction, PlaylistIndexPayload, PlaystatePayload, PrepareMediaPayload,
+    ProtocolError, ProtocolMessage, ReadinessIntentRequest, ReadinessMutationMetadata,
+    ReadinessMutationSource, ReadinessRequestResultPayload, ReadinessRequestResultStatus,
+    ReadinessSetExtension, ReadinessStateExtension, ReadyPayload, RecoveryStage,
+    RoomBufferingPhase, RoomBufferingPolicy, RoomBufferingPolicyPayload,
+    RoomBufferingStatusPayload, RoomPauseOwner, RoomReadinessSnapshot, RoomRef, RoomStartGatePhase,
+    SOROTTE_PLAYBACK_BARRIER_V1, SOROTTE_PLEX_PLAYLIST_URIS_FEATURE, SOROTTE_READINESS_V2,
+    SetPayload, StartGateDegradedReason, StartParticipationRole, StartedAckPayload, StatePayload,
+    TechnicalBlockCause, TechnicalPlayability, TechnicalPlayabilityPhase, TechnicalReadinessBlock,
+    TechnicalReadinessReport, TransportBufferingReportPayload, UserReadinessIntent,
+    UserReadinessMutationSource, UserSetPayload, canonical_playlist_files_from_change, decode_line,
+    decode_message_line_items, encode_message_line, playlist_change_with_plex_sidecar,
 };
 use sorotte_secret::SecretValue;
 use tokio::{
@@ -93,6 +99,10 @@ const PLAYBACK_BARRIER_MAX_TIMEOUT_SECONDS: f64 = 30.0;
 const PLAYBACK_BARRIER_STARTED_TIMEOUT_SECONDS: f64 = 10.0;
 const PLAYBACK_BARRIER_MAX_LOGICAL_MEDIA_ID_CHARS: usize = 2048;
 const PLAYBACK_BARRIER_MAX_REQUEST_ID_BYTES: usize = 128;
+const READINESS_MAX_OPERATION_ID_BYTES: usize = 128;
+const READINESS_MAX_RETAINED_OPERATIONS_PER_MEMBERSHIP: usize = 256;
+const READINESS_RECONNECT_TTL_SECONDS: f64 = PROTOCOL_TIMEOUT_SECONDS * 2.0;
+const READINESS_USER_TRANSPORT_GRACE_SECONDS: f64 = 5.0;
 // Superseded transports are forcibly closed and ordinary live connections
 // time out after PROTOCOL_TIMEOUT_SECONDS. Retain displaced request identities
 // across that lifetime plus two IO deadlines and shutdown scheduling margin.
@@ -153,6 +163,7 @@ mod runtime_api;
 mod runtime_handlers;
 mod runtime_maintenance;
 mod runtime_playback_barrier;
+mod runtime_readiness;
 mod tls;
 
 pub use actor::{ServerActorError, ServerActorHandle};
@@ -334,6 +345,10 @@ pub struct ServerRuntime {
     room_playback_states: BTreeMap<String, RoomPlaybackState>,
     room_playback_barriers: BTreeMap<String, RoomPlaybackBarrier>,
     room_buffering_controls: BTreeMap<String, RoomBufferingControl>,
+    room_readiness: BTreeMap<String, RoomReadinessCoordinator>,
+    readiness_reconnect_cache: BTreeMap<(String, String), DetachedReadinessMembership>,
+    pending_user_transport_by_client: BTreeMap<String, PendingUserTransportTransition>,
+    next_readiness_membership_epoch: u64,
     /// Superseded transport identities awaiting network teardown after a
     /// newer connection recovered their playback lifecycle. Fenced clients
     /// cannot dispatch any protocol command, and a later disconnect therefore
@@ -513,6 +528,7 @@ struct RoomPlaybackBarrier {
     excluded_legacy_clients: BTreeSet<String>,
     phase: PlaybackBarrierPhase,
     state_revision: Option<u64>,
+    readiness_revision: Option<u64>,
     deadline: f64,
     started_deadline: Option<f64>,
 }
@@ -660,6 +676,83 @@ struct RoomBufferingControl {
     paused_by_policy: bool,
     pause_deadline: Option<f64>,
     fail_open_latched: bool,
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ReadinessOperationId(String);
+
+impl ReadinessOperationId {
+    fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+}
+
+impl std::fmt::Debug for ReadinessOperationId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("<redacted-readiness-operation-id>")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AcceptedReadinessOperation {
+    membership_epoch: u64,
+    desired: UserReadinessIntent,
+    source: UserReadinessMutationSource,
+    target_username: Option<String>,
+    accepted_revision: u64,
+    accepted_user_intent_revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ServerReadinessParticipant {
+    client_id: String,
+    record: ParticipantReadiness,
+    initialization_open: bool,
+    highest_request_nonce: u64,
+    accepted_operations: BTreeMap<ReadinessOperationId, AcceptedReadinessOperation>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct RoomReadinessCoordinator {
+    revision: u64,
+    media_generation: Option<u64>,
+    start_gate_phase: RoomStartGatePhase,
+    pause_owner: RoomPauseOwner,
+    participants: BTreeMap<String, ServerReadinessParticipant>,
+}
+
+impl Default for RoomReadinessCoordinator {
+    fn default() -> Self {
+        Self {
+            revision: 0,
+            media_generation: None,
+            start_gate_phase: RoomStartGatePhase::Inactive,
+            pause_owner: RoomPauseOwner::None,
+            participants: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct DetachedReadinessMembership {
+    participant: ServerReadinessParticipant,
+    room_readiness_revision: u64,
+    detached_at_seconds: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PendingUserTransportTransition {
+    room_name: String,
+    actor: String,
+    desired_paused: bool,
+    evidence: PendingUserTransportEvidence,
+    expires_at_seconds: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingUserTransportEvidence {
+    AcceptedIndirectAction,
+    UnclassifiedObservation,
 }
 #[cfg(test)]
 mod tests;

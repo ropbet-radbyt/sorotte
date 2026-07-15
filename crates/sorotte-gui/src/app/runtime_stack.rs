@@ -30,7 +30,7 @@ use sorotte_client_core::{
     ClientRuntimeAction, ClientSession, CoordinatorCommandId, CoordinatorPlayerCommand,
     LogicalMediaId, MediaLoadIntent, MediaLoadPlan, MediaTransportKind,
     PlaybackBarrierTimeoutAction, PlaybackCoordinationSnapshot, PlaybackCoordinatorAction,
-    PrivacyMode, ProtocolLineLease, RoomPlaylistView, RoomPlaystateView,
+    PlayerCommandCause, PrivacyMode, ProtocolLineLease, RoomPlaylistView, RoomPlaystateView,
     SYNCPLAY_COMPAT_VERSION_LEGACY, SYNCPLAY_WIRE_VERSION_LEGACY, legacy_server_password_token,
 };
 use sorotte_media_match::{MediaMatchTier, MediaMatchWireSignature};

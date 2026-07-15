@@ -1150,11 +1150,13 @@ fn gui_persisted_config_runtime_owner_emits_immediate_state_update_when_gui_unpa
     );
 
     let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
-    assert!(
+    assert_eq!(
         outbound_protocol_lines
             .iter()
-            .any(|line| line.contains("\"ready\"") && line.contains("\"isReady\":true")),
-        "allowed GUI unpause should still mark the local user ready"
+            .filter(|line| line.contains("\"ready\"") && line.contains("\"isReady\":true"))
+            .count(),
+        1,
+        "one Sorotte Play gesture should emit exactly one readiness mutation even when its player telemetry arrives in the same pump"
     );
     assert!(
         outbound_protocol_lines.iter().any(|line| {
@@ -1648,7 +1650,10 @@ fn gui_autoplay_runtime_unpause_stages_before_attached_transport_echo() {
         .set_playback_paused(false)
         .expect("autoplay should optimistically unpause the local runtime");
     assert!(owner.apply_attached_player_runtime_actions_impl(
-        vec![GuiAttachedPlayerRuntimeAction::Paused(false)],
+        vec![GuiAttachedPlayerRuntimeAction::Paused {
+            paused: false,
+            cause: sorotte_client_core::PlayerCommandCause::AutomaticReadinessStart,
+        }],
         "autoplay runtime",
     ));
     assert_eq!(
@@ -1674,7 +1679,7 @@ fn gui_autoplay_runtime_unpause_stages_before_attached_transport_echo() {
 }
 
 #[test]
-fn gui_persisted_config_runtime_owner_does_not_commit_runtime_unpause_when_player_resume_fails() {
+fn gui_persisted_config_runtime_owner_preserves_play_intent_when_player_resume_fails() {
     #[derive(Debug, Default)]
     struct RecordingPlayerState {
         resume_attempts: usize,
@@ -1772,10 +1777,10 @@ fn gui_persisted_config_runtime_owner_does_not_commit_runtime_unpause_when_playe
 
     let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
     assert!(
-        !outbound_protocol_lines
+        outbound_protocol_lines
             .iter()
             .any(|line| line.contains("\"ready\"") && line.contains("\"isReady\":true")),
-        "a failed player resume must not optimistically mark the local user ready"
+        "a failed player resume must preserve the user's semantic Ready intent"
     );
     assert!(
         !outbound_protocol_lines.iter().any(|line| {
@@ -1784,5 +1789,103 @@ fn gui_persisted_config_runtime_owner_does_not_commit_runtime_unpause_when_playe
                 && line.contains("\"position\":10.0")
         }),
         "a failed player resume must not emit a paused=false heartbeat"
+    );
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_preserves_pause_intent_when_player_pause_fails() {
+    #[derive(Debug, Default)]
+    struct RecordingPlayerState {
+        pause_attempts: usize,
+    }
+
+    struct RecordingPlayerAdapter {
+        state: std::sync::Arc<std::sync::Mutex<RecordingPlayerState>>,
+    }
+
+    impl PlayerAdapter for RecordingPlayerAdapter {
+        fn name(&self) -> &'static str {
+            "recording"
+        }
+
+        fn set_paused(&mut self, paused: bool) -> Result<(), sorotte_player_api::PlayerError> {
+            if paused {
+                self.state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .pause_attempts += 1;
+                return Err(sorotte_player_api::PlayerError::OperationFailed(
+                    "pause failed".to_owned(),
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
+    let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
+        state: player_state.clone(),
+    })));
+    owner.player_paused = Some(false);
+    owner.player_position_seconds = Some(10.0);
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    let _ = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let _ = session_transport.drain_outbound_protocol_lines();
+
+    session_transport.push_inbound_protocol_line(
+        r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"readiness":true}}}"#
+            .to_owned(),
+    );
+    session_transport.push_inbound_protocol_line(
+        r#"{"Set":{"ready":{"isReady":true,"username":"alice"}}}"#.to_owned(),
+    );
+    session_transport.push_inbound_protocol_line(
+        r#"{"State":{"playstate":{"position":10.0,"paused":false,"setBy":"alice"}}}"#.to_owned(),
+    );
+    let _ = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let _ = handle.drain_actions();
+    let _ = session_transport.drain_outbound_protocol_lines();
+
+    handle.push_request(GuiRuntimeRequest::TogglePlaybackPause);
+    let toggle_actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert!(
+        !toggle_actions.contains(&GuiShellAction::AnnouncePlaybackPaused),
+        "failed GUI pause should not announce a physical pause"
+    );
+    assert_eq!(owner.player_paused, Some(false));
+    assert_eq!(
+        player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .pause_attempts,
+        1,
+        "the attached player should receive exactly one pause attempt"
+    );
+
+    let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    assert!(
+        outbound_protocol_lines
+            .iter()
+            .any(|line| line.contains("\"ready\"") && line.contains("\"isReady\":false")),
+        "a failed player pause must preserve the user's semantic Not Ready intent"
+    );
+    assert!(
+        !outbound_protocol_lines.iter().any(|line| {
+            line.contains("\"State\"")
+                && line.contains("\"paused\":true")
+                && line.contains("\"position\":10.0")
+        }),
+        "a failed player pause must not emit a paused=true heartbeat"
     );
 }

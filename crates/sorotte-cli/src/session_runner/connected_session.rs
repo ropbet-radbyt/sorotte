@@ -21,6 +21,12 @@ type ConnectedSessionWriteHalf = tokio::io::WriteHalf<Box<dyn ConnectedSessionAs
 const CLI_PLEX_CLIENT_IDENTIFIER: &str = "sorotte-cli";
 const CLI_PLEX_CACHE_FILE_NAME: &str = "plex-watch-cache.json";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingReadyAtStart {
+    desired: bool,
+    had_current_v2_membership: bool,
+}
+
 fn client_runtime_now_seconds() -> f64 {
     static CLIENT_RUNTIME_CLOCK_EPOCH: OnceLock<std::time::Instant> = OnceLock::new();
     CLIENT_RUNTIME_CLOCK_EPOCH
@@ -246,6 +252,9 @@ where
         diagnostics_config,
         plex_config,
     } = launch;
+    let had_current_v2_membership = runtime.session().room() == Some(config.room.as_str())
+        && (runtime.session().readiness_snapshot().is_some()
+            || runtime.session().pending_readiness_intent().is_some());
     let mut local_input_rx = local_input_rx;
     let mut hello_payload = HelloPayload::new(
         config.username.clone(),
@@ -311,9 +320,12 @@ where
     let mut file_difference_state = FileDifferenceNotificationState::default();
     let mut reconnect_correction_diagnostics_state = ReconnectCorrectionDiagnosticsState::default();
     let mut seek_preparation_notification_state = SeekPreparationNotificationState::default();
+    let mut readiness_notification_state = ReadinessNotificationState::default();
     let mut local_user_offset_seconds = 0.0f64;
-    let mut pending_ready_at_start_on_server_hello =
-        Some(config.ready_at_start_override.unwrap_or(false));
+    let mut pending_ready_at_start_on_server_hello = Some(PendingReadyAtStart {
+        desired: config.ready_at_start_override.unwrap_or(false),
+        had_current_v2_membership,
+    });
     let mut outbound_state_sync_enabled = false;
     let branch_diagnostics_plan = ConnectedSessionDiagnosticsPlan {
         log_player_telemetry: diagnostics_config.log_player_telemetry,
@@ -349,9 +361,10 @@ where
                         let (decoded_inbound_messages, predecoded_inbound_error) =
                             decode_inbound_message_prefix_legacy_compatible(&line);
                         let inbound_is_server_hello = pending_ready_at_start_on_server_hello.is_some()
-                            && decoded_inbound_messages
+                            && (decoded_inbound_messages
                                 .iter()
-                                .any(|message| matches!(message, ProtocolMessage::Hello(_)));
+                                .any(|message| matches!(message, ProtocolMessage::Hello(_)))
+                                || runtime.session().server_readiness_v2_supported());
                         let now_seconds = client_runtime_now_seconds();
                         let event_execution_plan =
                             connected_session_inbound_message_event_execution_plan_legacy_compatible(
@@ -383,6 +396,7 @@ where
                                     diagnostics_config: &diagnostics_config,
                                     reconnect_correction_diagnostics_state: &mut reconnect_correction_diagnostics_state,
                                     seek_preparation_notification_state: &mut seek_preparation_notification_state,
+                                    readiness_notification_state: &mut readiness_notification_state,
                                     file_difference_state: &mut file_difference_state,
                                     notification_sink,
                                     file_difference_sink,
@@ -433,6 +447,7 @@ where
                             diagnostics_config: &diagnostics_config,
                             reconnect_correction_diagnostics_state: &mut reconnect_correction_diagnostics_state,
                             seek_preparation_notification_state: &mut seek_preparation_notification_state,
+                            readiness_notification_state: &mut readiness_notification_state,
                             file_difference_state: &mut file_difference_state,
                             notification_sink,
                             file_difference_sink,
@@ -526,6 +541,7 @@ where
                                 diagnostics_config: &diagnostics_config,
                                 reconnect_correction_diagnostics_state: &mut reconnect_correction_diagnostics_state,
                                 seek_preparation_notification_state: &mut seek_preparation_notification_state,
+                                readiness_notification_state: &mut readiness_notification_state,
                                 file_difference_state: &mut file_difference_state,
                                 notification_sink,
                                 file_difference_sink,

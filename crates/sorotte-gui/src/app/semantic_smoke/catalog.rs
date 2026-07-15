@@ -51,6 +51,11 @@ const GUI_SEMANTIC_SCENARIO_SEEK_PREPARATION_FLOW_SCRIPT: &str =
 static GUI_SEMANTIC_SCENARIO_SEEK_PREPARATION_FLOW_SCRIPT_NORMALIZED: OnceLock<String> =
     OnceLock::new();
 const GUI_SEMANTIC_SCENARIO_SEEK_PREPARATION_FLOW_DESCRIPTION: &str = "Projects client-owned stream seek, cache refill, and convergence phases with truthful progress labels and capability-gated recovery actions.";
+const GUI_SEMANTIC_SCENARIO_READINESS_V2_FLOW_SCRIPT: &str =
+    include_str!("../../semantic_scenarios/readiness-v2-flow.txt");
+static GUI_SEMANTIC_SCENARIO_READINESS_V2_FLOW_SCRIPT_NORMALIZED: OnceLock<String> =
+    OnceLock::new();
+const GUI_SEMANTIC_SCENARIO_READINESS_V2_FLOW_DESCRIPTION: &str = "Separates user readiness intent, technical playability, room readiness, start eligibility, membership revisions, and operation-correlated pending state while retaining the legacy fallback.";
 const GUI_SEMANTIC_SCENARIO_PERSISTENCE_RESET_FLOW_SCRIPT: &str = "# Persistence, clear-GUI-data, and config-migration flow\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\nsetting\thost\tpersisted.example\nsetting\troom\tPersistenceRoom\nsetting\tplayer-path\tC:/Windows/System32/notepad.exe\n";
 const GUI_SEMANTIC_SCENARIO_PERSISTENCE_RESET_FLOW_DESCRIPTION: &str = "Seeds legacy GUI-side state next to sorotte.ini, verifies non-INI restore on startup, runs the clear-GUI-data flow through the runtime owner, and proves GUI-owned public-server state wins predictably over conflicting sorotte.ini rows during migration.";
 const GUI_SEMANTIC_SCENARIO_DETACHED_RUNTIME_OWNERSHIP_FLOW_SCRIPT: &str = "# Detached runtime ownership flow\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\nsetting\tusername\tsemantic-user\nsetting\troom\tsemantic-room\nsetting\tpublic-server\tPrimary\t127.0.0.1:8999\nsetting\tmedia-search-directory\tC:/Media\n";
@@ -135,6 +140,10 @@ pub(crate) fn gui_semantic_scenario_script(name: &str) -> Option<&'static str> {
             GUI_SEMANTIC_SCENARIO_SEEK_PREPARATION_FLOW_SCRIPT,
             &GUI_SEMANTIC_SCENARIO_SEEK_PREPARATION_FLOW_SCRIPT_NORMALIZED,
         )),
+        "readiness-v2-flow" => Some(normalized_builtin_script(
+            GUI_SEMANTIC_SCENARIO_READINESS_V2_FLOW_SCRIPT,
+            &GUI_SEMANTIC_SCENARIO_READINESS_V2_FLOW_SCRIPT_NORMALIZED,
+        )),
         _ => None,
     }
 }
@@ -166,6 +175,7 @@ fn gui_semantic_scenario_description(name: &str) -> Option<&'static str> {
             Some(GUI_SEMANTIC_SCENARIO_LIVE_PYTHON_PEER_CONTROLLED_ROOM_FLOW_DESCRIPTION)
         }
         "seek-preparation-flow" => Some(GUI_SEMANTIC_SCENARIO_SEEK_PREPARATION_FLOW_DESCRIPTION),
+        "readiness-v2-flow" => Some(GUI_SEMANTIC_SCENARIO_READINESS_V2_FLOW_DESCRIPTION),
         _ => None,
     }
 }
@@ -281,6 +291,15 @@ pub(super) fn gui_semantic_scenario_seek_preparation_flow() -> GuiSemanticScenar
     )
 }
 
+pub(super) fn gui_semantic_scenario_readiness_v2_flow() -> GuiSemanticScenario {
+    gui_semantic_scenario_from_builtin_script(
+        "readiness-v2-flow",
+        "readiness-v2-flow",
+        gui_semantic_scenario_script("readiness-v2-flow")
+            .expect("readiness V2 semantic scenario script should exist"),
+    )
+}
+
 pub(crate) fn gui_semantic_scenario_names() -> &'static [&'static str] {
     &[
         "configuration-surface-flow",
@@ -296,6 +315,7 @@ pub(crate) fn gui_semantic_scenario_names() -> &'static [&'static str] {
         "live-python-peer-connect-flow",
         "live-python-peer-controlled-room-flow",
         "seek-preparation-flow",
+        "readiness-v2-flow",
     ]
 }
 
@@ -312,6 +332,7 @@ pub(super) fn gui_semantic_scenario_named(name: &str) -> Option<GuiSemanticScena
         "playlist-workflow-flow" => Some(gui_semantic_scenario_playlist_workflow_flow()),
         "player-setup-flow" => Some(gui_semantic_scenario_player_setup_flow()),
         "seek-preparation-flow" => Some(gui_semantic_scenario_seek_preparation_flow()),
+        "readiness-v2-flow" => Some(gui_semantic_scenario_readiness_v2_flow()),
         _ => None,
     }
 }

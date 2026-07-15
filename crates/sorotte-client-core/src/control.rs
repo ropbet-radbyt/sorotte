@@ -39,6 +39,11 @@ pub enum ClientRuntimeAction {
         manually_initiated: bool,
         username: String,
     },
+    SetReadinessIntent {
+        request: Box<ReadinessIntentRequest>,
+        scope: ReadinessIntentScope,
+    },
+    ReportTechnicalReadiness(TechnicalReadinessReport),
     SetFile {
         file: FilePayload,
     },
@@ -92,6 +97,15 @@ impl std::fmt::Debug for ClientRuntimeAction {
                 .field("ready", ready)
                 .field("manually_initiated", manually_initiated)
                 .field("username", &sorotte_secret::REDACTED_SECRET)
+                .finish(),
+            Self::SetReadinessIntent { request, scope } => formatter
+                .debug_struct("SetReadinessIntent")
+                .field("request", request)
+                .field("scope", scope)
+                .finish(),
+            Self::ReportTechnicalReadiness(report) => formatter
+                .debug_tuple("ReportTechnicalReadiness")
+                .field(report)
                 .finish(),
             Self::SetFile { file } => formatter.debug_tuple("SetFile").field(file).finish(),
             Self::SetPlaylist { files } => formatter
@@ -195,6 +209,39 @@ impl std::fmt::Debug for PlaybackBarrierRequestScope {
     }
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct ReadinessIntentScope {
+    room: String,
+    membership_epoch: u64,
+}
+
+impl ReadinessIntentScope {
+    pub fn new(room: impl Into<String>, membership_epoch: u64) -> Self {
+        Self {
+            room: room.into(),
+            membership_epoch,
+        }
+    }
+
+    fn matches(&self, request: &ReadinessIntentRequest) -> bool {
+        !self.room.trim().is_empty()
+            && self.membership_epoch != 0
+            && request.membership_epoch == self.membership_epoch
+            && request.request_nonce != 0
+            && !request.operation_id.trim().is_empty()
+    }
+}
+
+impl std::fmt::Debug for ReadinessIntentScope {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ReadinessIntentScope")
+            .field("room", &sorotte_secret::REDACTED_SECRET)
+            .field("membership_epoch", &self.membership_epoch)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingProtocolLine {
     lease: ProtocolLineLease,
@@ -231,6 +278,11 @@ pub enum ClientEffect {
         manually_initiated: bool,
         username: String,
     },
+    SendReadinessIntent {
+        request: Box<ReadinessIntentRequest>,
+        scope: ReadinessIntentScope,
+    },
+    ReportTechnicalReadiness(TechnicalReadinessReport),
     SetFile(FilePayload),
     SetPlaylist(Vec<String>),
     SetPlaylistIndex(i64),
@@ -288,6 +340,15 @@ impl std::fmt::Debug for ClientEffect {
                 .field("ready", ready)
                 .field("manually_initiated", manually_initiated)
                 .field("username", &sorotte_secret::REDACTED_SECRET)
+                .finish(),
+            Self::SendReadinessIntent { request, scope } => formatter
+                .debug_struct("SendReadinessIntent")
+                .field("request", request)
+                .field("scope", scope)
+                .finish(),
+            Self::ReportTechnicalReadiness(report) => formatter
+                .debug_tuple("ReportTechnicalReadiness")
+                .field(report)
                 .finish(),
             Self::SetFile(file) => formatter.debug_tuple("SetFile").field(file).finish(),
             Self::SetPlaylist(files) => formatter
@@ -388,6 +449,11 @@ pub trait ClientEffectSink {
     /// Explicitly cancels any undelivered playback-barrier Set request without
     /// disturbing durable chat, playlist, or other protocol commands.
     fn cancel_protocol_playback_barrier_requests(&mut self) {}
+
+    /// Invalidates serialized readiness intent for a previous room or
+    /// membership. The semantic latest intent remains in the client session
+    /// until the server acknowledges its operation identity.
+    fn cancel_protocol_readiness_intents(&mut self) {}
 }
 
 pub(crate) fn client_effect_player_error(error: ClientEffectError) -> PlayerError {
@@ -588,6 +654,10 @@ impl ClientEffectSink for QueuedRuntimeControl {
         self.outbound_messages.cancel_connection_scoped_reliable();
     }
 
+    fn cancel_protocol_readiness_intents(&mut self) {
+        self.outbound_messages.cancel_readiness_intents();
+    }
+
     fn emit(&mut self, effect: ClientEffect) -> Result<(), ClientEffectError> {
         match effect {
             ClientEffect::SetPlayerPaused(_) => {
@@ -604,6 +674,7 @@ impl ClientEffectSink for QueuedRuntimeControl {
                 .push_back(ProtocolMessage::list_request()),
             ClientEffect::SetRoom(room) => {
                 self.outbound_messages.cancel_connection_scoped_reliable();
+                self.outbound_messages.cancel_readiness_intents();
                 let set_payload = SetPayload::new().with_room(RoomRef::new(room));
                 self.outbound_messages
                     .push_back(ProtocolMessage::set(set_payload));
@@ -629,6 +700,35 @@ impl ClientEffectSink for QueuedRuntimeControl {
                 let set_payload = SetPayload::new().with_ready(ready_payload);
                 self.outbound_messages
                     .push_back(ProtocolMessage::set(set_payload));
+            }
+            ClientEffect::SendReadinessIntent { request, scope } => {
+                if !scope.matches(&request) {
+                    return Err(ClientEffectError::OperationFailed(
+                        "readiness request scope does not match its payload".to_owned(),
+                    ));
+                }
+                let set_payload = SetPayload::new()
+                    .with_readiness_v2(ReadinessSetExtension::new().with_intent(*request));
+                if !self.outbound_messages.push_readiness_intent(
+                    ProtocolMessage::set(set_payload),
+                    scope.room,
+                    scope.membership_epoch,
+                ) {
+                    return Err(ClientEffectError::OperationFailed(
+                        "readiness intent is not valid for the active connection generation"
+                            .to_owned(),
+                    ));
+                }
+            }
+            ClientEffect::ReportTechnicalReadiness(report) => {
+                let state = StatePayload::new()
+                    .with_readiness_v2(ReadinessStateExtension::new().with_technical(report));
+                if !self.queue_connection_scoped_state(state) {
+                    return Err(ClientEffectError::OperationFailed(
+                        "technical readiness is not valid for the active connection generation"
+                            .to_owned(),
+                    ));
+                }
             }
             ClientEffect::SetFile(file) => {
                 let set_payload = SetPayload::new().with_file(file);

@@ -278,9 +278,11 @@ impl ServerRuntime {
             self.mark_playback_barrier_participant_disconnected(client_id, &session.room)?;
         outbound_messages
             .extend(self.mark_room_buffering_participant_disconnected(client_id, &session.room)?);
+        outbound_messages.extend(self.detach_readiness_membership(client_id, true)?);
         let Some(session) = self.remove_session_tracking(client_id) else {
             return Ok(outbound_messages);
         };
+        outbound_messages.extend(self.refresh_mixed_readiness_cohort(&session.room)?);
         self.cleanup_room_if_empty(&session.room)?;
         let left_message = user_event_message(
             &session.username,
@@ -317,6 +319,7 @@ impl ServerRuntime {
         self.client_state_counters.remove(client_id);
         self.client_playback_states.remove(client_id);
         self.client_room_join_sequence.remove(client_id);
+        self.pending_user_transport_by_client.remove(client_id);
         self.playback_barrier_request_nonces.remove(client_id);
         self.playback_barrier_new_identity_rate_by_client
             .remove(client_id);

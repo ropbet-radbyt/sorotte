@@ -170,6 +170,12 @@ enum ProtocolDelivery {
         request_nonce: u64,
         cancelled: bool,
     },
+    ConnectionRoomScopedReadinessIntent {
+        connection_generation: u64,
+        room: String,
+        membership_epoch: u64,
+        cancelled: bool,
+    },
     ConnectionScopedState {
         generation: u64,
     },
@@ -287,6 +293,56 @@ impl ProtocolOutbox {
             },
         );
         true
+    }
+
+    pub(crate) fn push_readiness_intent(
+        &mut self,
+        message: ProtocolMessage,
+        room: String,
+        membership_epoch: u64,
+    ) -> bool {
+        if self.active_generation != Some(self.connection_generation)
+            || room.trim().is_empty()
+            || membership_epoch == 0
+        {
+            return false;
+        }
+
+        // Readiness is a superseding semantic value, not a durable FIFO. A
+        // newer unsent intent owns the room/membership scope. If the old front
+        // is already leased, retain only those exact bytes until the transport
+        // releases them and mark them for disposal.
+        self.cancel_readiness_intents();
+        self.insert_reliable(
+            message,
+            ProtocolDelivery::ConnectionRoomScopedReadinessIntent {
+                connection_generation: self.connection_generation,
+                room,
+                membership_epoch,
+                cancelled: false,
+            },
+        );
+        true
+    }
+
+    pub(crate) fn cancel_readiness_intents(&mut self) {
+        self.invalidate_readiness_intents(|delivery| {
+            matches!(
+                delivery,
+                ProtocolDelivery::ConnectionRoomScopedReadinessIntent { .. }
+            )
+        });
+    }
+
+    fn invalidate_readiness_intents(&mut self, should_cancel: impl Fn(&ProtocolDelivery) -> bool) {
+        if self.leased_front.get().is_some()
+            && self.delivery.front().is_some_and(&should_cancel)
+            && let Some(ProtocolDelivery::ConnectionRoomScopedReadinessIntent { cancelled, .. }) =
+                self.delivery.front_mut()
+        {
+            *cancelled = true;
+        }
+        self.retain_deliveries(true, |delivery| !should_cancel(delivery));
     }
 
     pub(crate) fn retain_connection_scoped_reliable_scope(
@@ -429,6 +485,9 @@ impl ProtocolOutbox {
             Some(ProtocolDelivery::ConnectionScopedReliable {
                 cancelled: true,
                 ..
+            }) | Some(ProtocolDelivery::ConnectionRoomScopedReadinessIntent {
+                cancelled: true,
+                ..
             })
         );
         self.leased_front.set(None);
@@ -455,10 +514,12 @@ impl ProtocolOutbox {
 #[cfg(test)]
 mod tests {
     use sorotte_protocol::{
-        IgnoringOnTheFlyPayload, MediaReadyPayload, PingPayload, PlaybackBarrierSetExtension,
-        PlaybackBarrierStateExtension, PlaystatePayload, ProtocolMessage, RoomBufferingPolicy,
+        DirectReadinessSurface, IgnoringOnTheFlyPayload, MediaReadyPayload, PingPayload,
+        PlaybackBarrierSetExtension, PlaybackBarrierStateExtension, PlaystatePayload,
+        ProtocolMessage, ReadinessIntentRequest, ReadinessSetExtension, RoomBufferingPolicy,
         RoomBufferingPolicyPayload, SetPayload, StartedAckPayload, StatePayload,
-        TransportBufferingReportPayload, playlist_change_with_plex_sidecar,
+        TransportBufferingReportPayload, UserReadinessIntent, UserReadinessMutationSource,
+        playlist_change_with_plex_sidecar,
     };
 
     use super::{EffectOutbox, ProtocolOutbox};
@@ -483,6 +544,107 @@ mod tests {
         assert_eq!(result, Err("delivery failed"));
         assert_eq!(attempted, vec!["first", "second"]);
         assert_eq!(outbox.drain(), vec!["second", "third"]);
+    }
+
+    fn readiness_message(operation_id: &str, request_nonce: u64) -> ProtocolMessage {
+        ProtocolMessage::set(SetPayload::new().with_readiness_v2(
+            ReadinessSetExtension::new().with_intent(ReadinessIntentRequest::new(
+                operation_id,
+                request_nonce,
+                41,
+                UserReadinessIntent::Ready,
+                UserReadinessMutationSource::DirectUser {
+                    surface: DirectReadinessSurface::GuiButton,
+                },
+            )),
+        ))
+    }
+
+    #[test]
+    fn semantic_readiness_supersedes_an_older_unleased_intent() {
+        let mut outbox = ProtocolOutbox::default();
+        outbox.activate_connection_generation();
+        assert!(outbox.push_readiness_intent(
+            readiness_message("older", 1),
+            "room1".to_owned(),
+            41,
+        ));
+        assert!(outbox.push_readiness_intent(
+            readiness_message("latest", 2),
+            "room1".to_owned(),
+            41,
+        ));
+
+        assert_eq!(outbox.pending().len(), 1);
+        let ProtocolMessage::Set(message) = &outbox.pending()[0] else {
+            panic!("readiness intent should use Set");
+        };
+        let extension = message
+            .set
+            .readiness_v2()
+            .expect("readiness extension should decode")
+            .expect("readiness extension should exist");
+        assert_eq!(
+            extension.intent.expect("intent should exist").operation_id,
+            "latest"
+        );
+    }
+
+    #[test]
+    fn leased_old_readiness_bytes_cannot_acknowledge_the_new_intent() {
+        let mut outbox = ProtocolOutbox::default();
+        outbox.activate_connection_generation();
+        assert!(outbox.push_readiness_intent(
+            readiness_message("older", 1),
+            "room1".to_owned(),
+            41,
+        ));
+        let (old_lease, _) = outbox
+            .front_for_delivery()
+            .expect("old intent should lease");
+        assert!(outbox.push_readiness_intent(
+            readiness_message("latest", 2),
+            "room1".to_owned(),
+            41,
+        ));
+        assert_eq!(outbox.pending().len(), 2);
+
+        assert!(outbox.release_front(old_lease));
+        assert_eq!(outbox.pending().len(), 1);
+        assert_eq!(outbox.acknowledge_front(old_lease), None);
+        let (_, ProtocolMessage::Set(message)) = outbox
+            .front_for_delivery()
+            .expect("latest intent should remain")
+        else {
+            panic!("latest readiness intent should be a Set");
+        };
+        assert_eq!(
+            message
+                .set
+                .readiness_v2()
+                .expect("readiness extension should decode")
+                .and_then(|extension| extension.intent)
+                .expect("intent should exist")
+                .operation_id,
+            "latest"
+        );
+    }
+
+    #[test]
+    fn reconnect_discards_serialized_readiness_but_keeps_durable_messages() {
+        let mut outbox = ProtocolOutbox::default();
+        outbox.activate_connection_generation();
+        assert!(outbox.push_readiness_intent(
+            readiness_message("pending", 1),
+            "room1".to_owned(),
+            41,
+        ));
+        outbox.push_back(ProtocolMessage::chat_text("durable"));
+
+        outbox.begin_connection_generation();
+
+        assert_eq!(outbox.pending().len(), 1);
+        assert!(matches!(outbox.pending()[0], ProtocolMessage::Chat(_)));
     }
 
     #[test]

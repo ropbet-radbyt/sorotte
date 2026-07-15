@@ -78,6 +78,7 @@ impl MainWindowShellState {
                 fileduration_differs: false,
                 is_selected: true,
             }],
+            readiness: Default::default(),
             playlist,
             playlist_default_source,
             active_playlist_index: None,

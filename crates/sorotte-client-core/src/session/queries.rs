@@ -306,18 +306,10 @@ impl ClientSession {
     }
 
     pub fn runtime_actions_for_local_media_opened_not_ready(&mut self) -> Vec<ClientRuntimeAction> {
-        if !self.server_readiness_supported() {
-            return Vec::new();
-        }
-        let Some(username) = self.model.connection.username.clone() else {
-            return Vec::new();
-        };
-
-        self.set_user_ready_state(&username, Some(false));
-        vec![ClientRuntimeAction::SetReady {
-            ready: false,
-            manually_initiated: false,
-        }]
+        // Kept as a source-compatible no-op while callers migrate to the
+        // generation-scoped playback preparation path. Loading or replacing
+        // media changes technical playability, never user readiness intent.
+        Vec::new()
     }
 
     pub fn room_playlist(&self, room_name: &str) -> Option<&RoomPlaylistView> {
@@ -657,7 +649,12 @@ impl ClientSession {
 
     pub fn server_readiness_supported(&self) -> bool {
         self.server_capabilities()
-            .is_some_and(|capabilities| capabilities.readiness)
+            .is_some_and(|capabilities| capabilities.readiness || capabilities.readiness_v2)
+    }
+
+    pub fn server_readiness_v2_supported(&self) -> bool {
+        self.server_capabilities()
+            .is_some_and(|capabilities| capabilities.readiness_v2)
     }
 
     pub fn server_set_others_readiness_supported(&self) -> bool {

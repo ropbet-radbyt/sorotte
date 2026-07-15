@@ -51,7 +51,7 @@ cargo run --release -p sorotte-cli -- --no-gui
 
 ## Supported Today
 
-- Rust GUI client with saved configuration, room browser, chat, readiness, playlists, controlled rooms, public-server browsing, update checks, media search, drag/drop ingest, and GUI-owned `mpv` startup.
+- Rust GUI client with saved configuration, room browser, chat, [intent-preserving readiness and server-coordinated starts](docs/READINESS.md), playlists, controlled rooms, public-server browsing, update checks, media search, drag/drop ingest, and GUI-owned `mpv` startup.
 - Rust CLI client with Sorotte startup/config persistence, stored settings, local commands, shared playlist actions, reconnect behavior, and managed or explicit-IPC `mpv` integration.
 - Typed stream quality/cache configuration, bounded generation-aware recovery, observation-backed `mpv` command completion, and an additive client/server playback barrier protocol.
 - Rust server with Python-compatible protocol behavior, room/state/chat/playlist fanout, controlled rooms, persistent/permanent rooms, password/salt handling, MOTD templates, TLS, IPv4/IPv6 listeners, and strict release verification.

@@ -51,6 +51,16 @@ impl ClientSession {
             if !self.loop_single_files_enabled_legacy_compatible() {
                 return Vec::new();
             }
+            // A V2 replay is a fresh, server-coordinated playback episode. Sending
+            // the current shared-playlist index deliberately runs it through the
+            // normal playlist reset/barrier path instead of locally unpausing and
+            // bypassing the room readiness gate. Legacy peers retain Syncplay's
+            // direct rewind behavior.
+            if self.server_readiness_v2_supported() {
+                return vec![ClientRuntimeAction::SetPlaylistIndex {
+                    index: current_index as i64,
+                }];
+            }
             return vec![
                 ClientRuntimeAction::SetPosition(0.0),
                 ClientRuntimeAction::SetPaused(false),

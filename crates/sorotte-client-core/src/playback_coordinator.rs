@@ -1018,6 +1018,10 @@ impl PlaybackCoordinator {
         self.media.as_ref().map(|media| &media.logical_id)
     }
 
+    pub fn current_media_transport_kind(&self) -> Option<MediaTransportKind> {
+        self.media.as_ref().map(|media| media.kind)
+    }
+
     pub fn update_desired_room_state(
         &mut self,
         desired: DesiredRoomPlayback,
@@ -1388,6 +1392,21 @@ impl PlaybackCoordinator {
         };
         command.accepted = true;
         true
+    }
+
+    pub(crate) fn pending_command_pause_target(
+        &self,
+        command_id: CoordinatorCommandId,
+    ) -> Option<bool> {
+        let command = self
+            .pending_commands
+            .iter()
+            .find(|command| command.id == command_id)?;
+        match command.kind {
+            PendingCommandKind::Pause => Some(true),
+            PendingCommandKind::Play { .. } => Some(false),
+            PendingCommandKind::Seek { .. } | PendingCommandKind::Rate { .. } => None,
+        }
     }
 
     pub(crate) fn active_seek_preparation_lost_command_tracking(

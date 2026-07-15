@@ -1,7 +1,10 @@
 use super::*;
 use serde_json::Number;
 use sorotte_media_match::{MediaMatchWireSignature, media_match_wire_signature_from_value};
-use sorotte_protocol::{PlaybackBarrierSetExtension, SOROTTE_PLAYBACK_BARRIER_V1};
+use sorotte_protocol::{
+    PlaybackBarrierSetExtension, ReadinessSetExtension, SOROTTE_PLAYBACK_BARRIER_V1,
+    SOROTTE_READINESS_V2,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientCompatibilityFallback {
@@ -11,6 +14,7 @@ pub enum ClientCompatibilityFallback {
     IgnoredInvalidMediaMatch { context: String, reason: String },
     IgnoredInvalidFeatures { context: String },
     IgnoredInvalidPlaybackBarrier { context: String, reason: String },
+    IgnoredInvalidReadinessV2 { context: String, reason: String },
     IgnoredUnexpectedListRequest,
 }
 
@@ -163,6 +167,7 @@ pub struct PeerCapabilities {
     pub plex_playlist_uris: bool,
     pub remote_readiness: bool,
     pub playback_barrier_v1: bool,
+    pub readiness_v2: bool,
     pub ui_mode: Option<String>,
 }
 
@@ -232,6 +237,7 @@ pub(crate) enum ClientSetCommand {
         capabilities: PeerCapabilities,
     },
     PlaybackBarrier(Box<PlaybackBarrierSetExtension>),
+    ReadinessV2(Box<ReadinessSetExtension>),
 }
 
 impl std::fmt::Debug for ClientSetCommand {
@@ -271,6 +277,10 @@ impl std::fmt::Debug for ClientSetCommand {
                 .finish(),
             Self::PlaybackBarrier(extension) => formatter
                 .debug_tuple("PlaybackBarrier")
+                .field(extension)
+                .finish(),
+            Self::ReadinessV2(extension) => formatter
+                .debug_tuple("ReadinessV2")
                 .field(extension)
                 .finish(),
         }
@@ -402,6 +412,10 @@ fn peer_capabilities(value: &Value) -> Option<PeerCapabilities> {
             .get(SOROTTE_PLAYBACK_BARRIER_V1)
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        readiness_v2: features
+            .get(SOROTTE_READINESS_V2)
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         ui_mode: features
             .get("uiMode")
             .and_then(Value::as_str)
@@ -496,6 +510,7 @@ fn ordered_set_commands(set: SetPayload) -> Vec<(String, SetPayload)> {
         "playlistIndex",
         "features",
         SOROTTE_PLAYBACK_BARRIER_V1,
+        SOROTTE_READINESS_V2,
     ] {
         if !order.iter().any(|candidate| candidate == command) {
             order.push(command.to_owned());
@@ -567,6 +582,8 @@ pub(crate) fn normalize_client_protocol_message(
                     SOROTTE_PLAYBACK_BARRIER_V1,
                 )
                 .unwrap_or(false),
+                readiness_v2: feature_bool(hello.features.as_ref(), SOROTTE_READINESS_V2)
+                    .unwrap_or(false),
                 persistent_rooms: feature_bool(hello.features.as_ref(), "persistentRooms")
                     .unwrap_or(false),
                 max_username_length: feature_usize(hello.features.as_ref(), "maxUsernameLength")
@@ -593,6 +610,16 @@ pub(crate) fn normalize_client_protocol_message(
                 Err(reason) => {
                     fallbacks.push(ClientCompatibilityFallback::IgnoredInvalidPlaybackBarrier {
                         context: "Set.sorottePlaybackBarrierV1".to_owned(),
+                        reason: reason.to_string(),
+                    });
+                    None
+                }
+            };
+            let mut readiness_v2 = match message.set.readiness_v2() {
+                Ok(extension) => extension,
+                Err(reason) => {
+                    fallbacks.push(ClientCompatibilityFallback::IgnoredInvalidReadinessV2 {
+                        context: "Set.sorotteReadinessV2".to_owned(),
                         reason: reason.to_string(),
                     });
                     None
@@ -703,6 +730,10 @@ pub(crate) fn normalize_client_protocol_message(
                             .take()
                             .map(Box::new)
                             .map(ClientSetCommand::PlaybackBarrier),
+                        SOROTTE_READINESS_V2 => readiness_v2
+                            .take()
+                            .map(Box::new)
+                            .map(ClientSetCommand::ReadinessV2),
                         _ => {
                             if set.extra.contains_key(&name) {
                                 fallbacks.push(ClientCompatibilityFallback::IgnoredSetCommand {

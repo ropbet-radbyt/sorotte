@@ -42,7 +42,7 @@ impl GuiPersistedConfigRuntimeOwner {
             .unwrap_or_default()
             .into_iter()
             .filter(|action| match action {
-                GuiAttachedPlayerRuntimeAction::Paused(paused) => *paused != target_paused,
+                GuiAttachedPlayerRuntimeAction::Paused { paused, .. } => *paused != target_paused,
                 GuiAttachedPlayerRuntimeAction::Coordinator {
                     command: CoordinatorPlayerCommand::SetPaused(paused),
                     ..
@@ -141,24 +141,49 @@ impl GuiPersistedConfigRuntimeOwner {
     ) -> Result<(bool, Option<String>), String> {
         self.pending_attached_player_pause_confirmation_pump = None;
         let mut sync_error = None;
+        if let Err(error) = self.ensure_detached_client_core_chat_session(state) {
+            sync_error = Some(error);
+        }
+
+        // Evaluate the legacy gate against the state that existed before this
+        // gesture. Recording Play as Ready must not make the same gesture
+        // bypass a readiness rejection. The semantic intent is still recorded
+        // before any physical player command is attempted below.
+        let unpause_decision = if !target_paused && self.player_paused_for_cache != Some(true) {
+            match self.preflight_local_player_unpause_against_detached_session_impl(
+                state,
+                previous_paused,
+            ) {
+                Ok(decision) => Some(decision),
+                Err(error) => {
+                    if sync_error.is_none() {
+                        sync_error = Some(error);
+                    }
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        if let Some(session) = self.session.as_mut()
+            && let Err(error) = session.record_intentional_player_pause_action(target_paused)
+            && sync_error.is_none()
+        {
+            // User intent is independent from physical player success. Keep
+            // executing the player command even when delivery must be retried.
+            sync_error = Some(error);
+        }
         if target_paused {
             let _ = self.interrupt_attached_playback_recovery_impl("local pause");
         }
         if !target_paused {
             if self.player_paused_for_cache == Some(true) {
                 self.refresh_player_state_impl();
-                return Ok((true, None));
+                return Ok((true, sync_error));
             }
-            match self.preflight_local_player_unpause_against_detached_session_impl(
-                state,
-                previous_paused,
-            ) {
-                Ok(GuiLocalPlayerUnpauseDecision::Block) => {
-                    self.player_paused = Some(true);
-                    self.refresh_player_state_impl();
-                    return Ok((true, None));
-                }
-                Ok(GuiLocalPlayerUnpauseDecision::Allow) => {
+            match unpause_decision.unwrap_or(GuiLocalPlayerUnpauseDecision::NotApplicable) {
+                GuiLocalPlayerUnpauseDecision::Allow => {
                     if self.player.is_none() {
                         return Err(
                             "Playback pause toggle requires a playback runtime connection."
@@ -171,11 +196,31 @@ impl GuiPersistedConfigRuntimeOwner {
                         .as_mut()
                         .expect("attached player was checked before staging")
                         .set_paused(false);
+                    let command_succeeded = set_paused_result.is_ok();
+                    let command_result_error = self.session.as_mut().and_then(|session| {
+                        session
+                            .record_external_player_pause_command_result(
+                                false,
+                                command_succeeded,
+                                system_time_seconds(),
+                            )
+                            .err()
+                    });
                     if let Err(error) = set_paused_result {
+                        if let Some(command_result_error) = command_result_error {
+                            eprintln!(
+                                "warning: failed to record attached-player resume command failure: {command_result_error}"
+                            );
+                        }
                         self.rollback_attached_player_pause_intent(false);
                         return Err(format!(
                             "Playback pause toggle through the attached player failed while resuming playback: {error}"
                         ));
+                    }
+                    if let Some(error) = command_result_error
+                        && sync_error.is_none()
+                    {
+                        sync_error = Some(error);
                     }
                     self.note_local_attached_player_pause_command(false);
                     self.player_paused = Some(false);
@@ -205,8 +250,12 @@ impl GuiPersistedConfigRuntimeOwner {
                     }
                     return Ok((false, sync_error));
                 }
-                Ok(GuiLocalPlayerUnpauseDecision::NotApplicable) => {}
-                Err(error) => sync_error = Some(error),
+                GuiLocalPlayerUnpauseDecision::Block => {
+                    self.player_paused = Some(true);
+                    self.refresh_player_state_impl();
+                    return Ok((true, sync_error));
+                }
+                GuiLocalPlayerUnpauseDecision::NotApplicable => {}
             }
         }
 
@@ -219,11 +268,31 @@ impl GuiPersistedConfigRuntimeOwner {
             .as_mut()
             .expect("attached player was checked before staging")
             .set_paused(target_paused);
+        let command_succeeded = set_paused_result.is_ok();
+        let command_result_error = self.session.as_mut().and_then(|session| {
+            session
+                .record_external_player_pause_command_result(
+                    target_paused,
+                    command_succeeded,
+                    system_time_seconds(),
+                )
+                .err()
+        });
         if let Err(error) = set_paused_result {
+            if let Some(command_result_error) = command_result_error {
+                eprintln!(
+                    "warning: failed to record attached-player pause command failure: {command_result_error}"
+                );
+            }
             self.rollback_attached_player_pause_intent(target_paused);
             return Err(format!(
                 "Playback pause toggle through the attached player failed: {error}"
             ));
+        }
+        if let Some(error) = command_result_error
+            && sync_error.is_none()
+        {
+            sync_error = Some(error);
         }
         self.note_local_attached_player_pause_command(target_paused);
         self.player_paused = Some(target_paused);

@@ -222,6 +222,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         features.insert("setOthersReadiness".to_owned(), Value::Bool(true));
         features.insert("mediaMatch".to_owned(), Value::Bool(true));
         features.insert("sorottePlexPlaylistUris".to_owned(), Value::Bool(true));
+        ClientSession::advertise_readiness_v2(&mut features);
         ClientSession::advertise_playback_barrier_v1(&mut features);
         Value::Object(features)
     }
@@ -621,8 +622,12 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         }
         if paused_before_tick != Some(false) && self.runtime.session().local_paused() == Some(false)
         {
-            self.pending_attached_player_local_runtime_actions
-                .push(GuiAttachedPlayerRuntimeAction::Paused(false));
+            self.pending_attached_player_local_runtime_actions.push(
+                GuiAttachedPlayerRuntimeAction::Paused {
+                    paused: false,
+                    cause: PlayerCommandCause::AutomaticReadinessStart,
+                },
+            );
         }
 
         self.next_autoplay_tick_at = if self.runtime.session().autoplay_timer_is_running() {

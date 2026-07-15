@@ -20,11 +20,35 @@ impl ClientSession {
     }
 
     pub fn runtime_actions_for_local_ready_toggle(
-        &self,
+        &mut self,
         manually_initiated: bool,
+    ) -> Vec<ClientRuntimeAction> {
+        self.runtime_actions_for_local_ready_toggle_from(
+            manually_initiated,
+            sorotte_protocol::DirectReadinessSurface::RemoteControlSurface,
+        )
+    }
+
+    pub fn runtime_actions_for_local_ready_toggle_from(
+        &mut self,
+        manually_initiated: bool,
+        surface: sorotte_protocol::DirectReadinessSurface,
     ) -> Vec<ClientRuntimeAction> {
         if self.model.connection.username.is_none() || !self.server_readiness_supported() {
             return Vec::new();
+        }
+        if self.server_readiness_v2_supported() {
+            let Some(username) = self.model.connection.username.clone() else {
+                return Vec::new();
+            };
+            let desired = if self.displayed_user_readiness_intent(&username)
+                == Some(UserReadinessIntent::Ready)
+            {
+                UserReadinessIntent::NotReady
+            } else {
+                UserReadinessIntent::Ready
+            };
+            return self.runtime_actions_for_direct_readiness_intent(desired, surface, None);
         }
         vec![ClientRuntimeAction::SetReady {
             ready: !self.local_user_ready(),
@@ -33,10 +57,25 @@ impl ClientSession {
     }
 
     pub fn runtime_actions_for_local_user_ready_set(
-        &self,
+        &mut self,
         username: String,
         ready: bool,
         manually_initiated: bool,
+    ) -> Vec<ClientRuntimeAction> {
+        self.runtime_actions_for_local_user_ready_set_from(
+            username,
+            ready,
+            manually_initiated,
+            sorotte_protocol::DirectReadinessSurface::RemoteControlSurface,
+        )
+    }
+
+    pub fn runtime_actions_for_local_user_ready_set_from(
+        &mut self,
+        username: String,
+        ready: bool,
+        manually_initiated: bool,
+        surface: sorotte_protocol::DirectReadinessSurface,
     ) -> Vec<ClientRuntimeAction> {
         if self.model.connection.username.is_none() {
             return Vec::new();
@@ -44,6 +83,17 @@ impl ClientSession {
         if username.is_empty() {
             if !self.server_readiness_supported() {
                 return Vec::new();
+            }
+            if self.server_readiness_v2_supported() {
+                return self.runtime_actions_for_direct_readiness_intent(
+                    if ready {
+                        UserReadinessIntent::Ready
+                    } else {
+                        UserReadinessIntent::NotReady
+                    },
+                    surface,
+                    None,
+                );
             }
             return vec![ClientRuntimeAction::SetReady {
                 ready,
@@ -55,6 +105,17 @@ impl ClientSession {
         }
         if self.local_can_control() != Some(true) {
             return Vec::new();
+        }
+        if self.server_readiness_v2_supported() {
+            return self.runtime_actions_for_direct_readiness_intent(
+                if ready {
+                    UserReadinessIntent::Ready
+                } else {
+                    UserReadinessIntent::NotReady
+                },
+                surface,
+                Some(username),
+            );
         }
         vec![ClientRuntimeAction::SetReadyForUser {
             ready,
@@ -111,6 +172,10 @@ impl ClientSession {
             .as_deref()
             .or(self.model.room.name.as_deref());
         if tracked_room != Some(room.as_str()) {
+            if self.server_readiness_v2_supported() {
+                self.stop_autoplay_countdown();
+            }
+            self.reset_readiness_v2_for_new_room();
             self.model.controller.pending_local_room_switch_target = Some(room.clone());
             self.reset_playlist_index_transition_tracking();
         }

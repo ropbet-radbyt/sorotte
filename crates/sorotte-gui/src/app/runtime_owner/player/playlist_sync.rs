@@ -24,13 +24,35 @@ impl GuiPersistedConfigRuntimeOwner {
 
         for action in attached_player_actions {
             match action {
-                GuiAttachedPlayerRuntimeAction::Paused(paused) => {
+                GuiAttachedPlayerRuntimeAction::Paused { paused, cause } => {
                     if let Some(player) = self.player.as_mut() {
-                        player.set_paused(paused).map_err(|error| {
-                            format!(
+                        let result = player.set_paused(paused);
+                        let command_succeeded = result.is_ok();
+                        let command_result_error = self.session.as_mut().and_then(|session| {
+                            session
+                                .record_external_system_player_pause_command_result(
+                                    paused,
+                                    cause,
+                                    command_succeeded,
+                                    system_time_seconds(),
+                                )
+                                .err()
+                        });
+                        if let Err(error) = result {
+                            if let Some(command_result_error) = command_result_error {
+                                eprintln!(
+                                    "warning: failed to register attached-player shared-playlist pause failure: {command_result_error}"
+                                );
+                            }
+                            return Err(format!(
                                 "Attached player shared-playlist advance pause dispatch failed: {error}"
-                            )
-                        })?;
+                            ));
+                        }
+                        if let Some(error) = command_result_error {
+                            return Err(format!(
+                                "Attached player shared-playlist advance pause registration failed: {error}"
+                            ));
+                        }
                         self.note_local_attached_player_pause_command(paused);
                     }
                     self.player_paused = Some(paused);
@@ -90,23 +112,29 @@ impl GuiPersistedConfigRuntimeOwner {
         let should_trigger = state.main_window.shared_playlist_enabled
             && playlist_control_available
             && can_auto_advance_to_next_playlist_item
-            && self.player_paused == Some(true)
-            && self
-                .current_player_file_duration_seconds()
-                .filter(|duration_seconds| {
-                    *duration_seconds > PLAYLIST_LOAD_NEXT_FILE_MINIMUM_LENGTH_SECONDS
-                })
-                .zip(
-                    self.player_position_seconds
-                        .filter(|position_seconds| position_seconds.is_finite()),
-                )
-                .is_some_and(|(duration_seconds, position_seconds)| {
-                    (position_seconds - duration_seconds).abs()
-                        < PLAYLIST_LOAD_NEXT_FILE_TIME_FROM_END_THRESHOLD_SECONDS
-                });
+            && self.attached_player_observation_is_end_of_file();
         let trigger = should_trigger && !self.playlist_auto_advance_eof_latched;
         self.playlist_auto_advance_eof_latched = should_trigger;
         trigger
+    }
+
+    pub(in crate::app) fn attached_player_observation_is_end_of_file(&self) -> bool {
+        self.player_paused == Some(true) && self.attached_player_position_is_end_of_file()
+    }
+
+    pub(in crate::app) fn attached_player_position_is_end_of_file(&self) -> bool {
+        self.current_player_file_duration_seconds()
+            .filter(|duration_seconds| {
+                *duration_seconds > PLAYLIST_LOAD_NEXT_FILE_MINIMUM_LENGTH_SECONDS
+            })
+            .zip(
+                self.player_position_seconds
+                    .filter(|position_seconds| position_seconds.is_finite()),
+            )
+            .is_some_and(|(duration_seconds, position_seconds)| {
+                (position_seconds - duration_seconds).abs()
+                    < PLAYLIST_LOAD_NEXT_FILE_TIME_FROM_END_THRESHOLD_SECONDS
+            })
     }
 
     pub(in crate::app::runtime_owner) fn apply_pending_playlist_index_reset_to_attached_player_impl(
@@ -165,13 +193,35 @@ impl GuiPersistedConfigRuntimeOwner {
             }
         }
         if pause_before_sync {
-            match player.set_paused(true) {
+            let result = player.set_paused(true);
+            let command_succeeded = result.is_ok();
+            let command_result_error = self.session.as_mut().and_then(|session| {
+                session
+                    .record_external_system_player_pause_command_result(
+                        true,
+                        PlayerCommandCause::PlaylistTransition,
+                        command_succeeded,
+                        system_time_seconds(),
+                    )
+                    .err()
+            });
+            match result {
                 Ok(()) => {
                     self.note_local_attached_player_pause_command(true);
                     self.player_paused = Some(true);
                     state_changed = true;
+                    if let Some(error) = command_result_error {
+                        eprintln!(
+                            "warning: failed to register attached-player playlist reset pause: {error}"
+                        );
+                    }
                 }
                 Err(error) if Self::attached_player_playlist_reset_error_is_transient(&error) => {
+                    if let Some(command_result_error) = command_result_error {
+                        eprintln!(
+                            "warning: failed to register transient attached-player playlist reset pause failure: {command_result_error}"
+                        );
+                    }
                     if let Some(session) = self.session.as_mut() {
                         session.note_local_playlist_index_reset_intent(true);
                     }
@@ -181,6 +231,11 @@ impl GuiPersistedConfigRuntimeOwner {
                     eprintln!(
                         "warning: failed to pause the attached player for a playlist switch reset: {error}"
                     );
+                    if let Some(command_result_error) = command_result_error {
+                        eprintln!(
+                            "warning: failed to register attached-player playlist reset pause failure: {command_result_error}"
+                        );
+                    }
                 }
             }
         }

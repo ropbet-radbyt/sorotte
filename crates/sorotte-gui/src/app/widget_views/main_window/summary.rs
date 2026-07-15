@@ -329,6 +329,24 @@ impl SorotteGuiShellAppState {
             .into_iter()
             .map(|user_index| {
                 let user = &self.main_window.users[user_index];
+                let legacy_readiness;
+                let readiness = if let Some(readiness) = self
+                    .main_window
+                    .readiness
+                    .get(&user.username)
+                    .filter(|readiness| {
+                        readiness.protocol
+                            == sorotte_client_app::app_boundary::readiness::ReadinessPresentationProtocol::V2
+                    })
+                {
+                    readiness
+                } else {
+                    legacy_readiness = sorotte_client_app::app_boundary::readiness::ParticipantReadinessPresentation::from_legacy(
+                        user.username.clone(),
+                        user.is_ready,
+                    );
+                    &legacy_readiness
+                };
                 let mut cue_parts = Vec::new();
                 if !user.has_file {
                     cue_parts.push("no-file".to_owned());
@@ -369,6 +387,62 @@ impl SorotteGuiShellAppState {
                             )),
                             true,
                             user.is_self,
+                        ),
+                        GuiWidgetNode::leaf(
+                            format!("main-window:user:{user_index}:readiness"),
+                            "Readiness",
+                            GuiWidgetKind::Status,
+                            Some(readiness.status_label()),
+                            true,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            format!("main-window:user:{user_index}:readiness-intent"),
+                            "Intent",
+                            GuiWidgetKind::Status,
+                            Some(readiness.intent_detail_label()),
+                            true,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            format!("main-window:user:{user_index}:readiness-technical"),
+                            "Technical",
+                            GuiWidgetKind::Status,
+                            Some(readiness.technical_detail_label()),
+                            true,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            format!("main-window:user:{user_index}:readiness-eligibility"),
+                            "Start eligibility",
+                            GuiWidgetKind::Status,
+                            Some(readiness.eligibility_detail_label()),
+                            true,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            format!("main-window:user:{user_index}:readiness-participation"),
+                            "Start cohort",
+                            GuiWidgetKind::Status,
+                            Some(readiness.participation_detail_label().to_owned()),
+                            true,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            format!("main-window:user:{user_index}:readiness-revision"),
+                            "Readiness revision",
+                            GuiWidgetKind::Status,
+                            Some(readiness.revision_detail_label()),
+                            true,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            format!("main-window:user:{user_index}:readiness-operation"),
+                            "Readiness operation",
+                            GuiWidgetKind::Status,
+                            Some(readiness.operation_detail_label()),
+                            true,
+                            false,
                         ),
                         GuiWidgetNode::leaf(
                             format!("main-window:user:{user_index}:size"),

@@ -393,8 +393,10 @@ fn is_known_local_command_token_legacy_compatible(token: &str) -> bool {
             | "d"
             | "qd"
             | "setready"
+            | "ready"
             | "sr"
             | "setnotready"
+            | "not-ready"
             | "sn"
             | "snr"
             | "create"
@@ -493,13 +495,15 @@ pub fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
         return Some(LocalInputCommand::ShowPlaylistInvalidIndexError);
     }
     if let Some(command) =
-        parse_user_ready_command_legacy_compatible(input, &["setready", "sr"], true)
+        parse_user_ready_command_legacy_compatible(input, &["setready", "ready", "sr"], true)
     {
         return Some(command);
     }
-    if let Some(command) =
-        parse_user_ready_command_legacy_compatible(input, &["setnotready", "sn", "snr"], false)
-    {
+    if let Some(command) = parse_user_ready_command_legacy_compatible(
+        input,
+        &["setnotready", "not-ready", "sn", "snr"],
+        false,
+    ) {
         return Some(command);
     }
     if let Some(room_name) = parse_create_command_legacy_compatible(input) {
@@ -524,7 +528,13 @@ pub fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
     if matches!(trimmed, "seek" | "s") {
         return Some(LocalInputCommand::ShowUnknownCommandHelp);
     }
-    if matches_local_command_alias_legacy_compatible(trimmed, &["p", "pause", "play"]) {
+    if matches_local_command_alias_legacy_compatible(trimmed, &["play"]) {
+        return Some(LocalInputCommand::Play);
+    }
+    if matches_local_command_alias_legacy_compatible(trimmed, &["pause"]) {
+        return Some(LocalInputCommand::Pause);
+    }
+    if matches_local_command_alias_legacy_compatible(trimmed, &["p"]) {
         return Some(LocalInputCommand::TogglePause);
     }
     if let Some(room_command) = parse_room_command_legacy_compatible(input) {

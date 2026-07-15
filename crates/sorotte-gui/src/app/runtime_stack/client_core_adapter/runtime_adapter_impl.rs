@@ -196,10 +196,11 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn set_local_ready(&mut self, ready: bool) -> Result<(), String> {
-        match self.dispatch_application_command(ClientCommand::SetReady {
+        match self.dispatch_application_command(ClientCommand::SetReadyFrom {
             username: None,
             ready: Some(ready),
             manually_initiated: true,
+            surface: sorotte_protocol::DirectReadinessSurface::GuiButton,
         }) {
             Ok(true) => Ok(()),
             Ok(false) => {
@@ -238,10 +239,11 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn set_user_ready(&mut self, username: String, ready: bool) -> Result<(), String> {
-        match self.dispatch_application_command(ClientCommand::SetReady {
+        match self.dispatch_application_command(ClientCommand::SetReadyFrom {
             username: Some(username),
             ready: Some(ready),
             manually_initiated: true,
+            surface: sorotte_protocol::DirectReadinessSurface::GuiButton,
         }) {
             Ok(true) => Ok(()),
             Ok(false) => {
@@ -402,7 +404,10 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             .into_iter()
             .filter_map(|action| match action {
                 ClientRuntimeAction::SetPaused(paused) => {
-                    Some(GuiAttachedPlayerRuntimeAction::Paused(paused))
+                    Some(GuiAttachedPlayerRuntimeAction::Paused {
+                        paused,
+                        cause: PlayerCommandCause::PlaylistTransition,
+                    })
                 }
                 ClientRuntimeAction::SetPosition(position_seconds) => {
                     Some(GuiAttachedPlayerRuntimeAction::Position(position_seconds))
@@ -613,6 +618,12 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
                 self.playback_transport_adapter_epoch,
             ),
         ))
+    }
+
+    fn observe_external_player_end_of_file(&mut self, now_seconds: f64) -> Result<(), String> {
+        self.runtime
+            .observe_external_player_end_of_file(now_seconds)
+            .map_err(|error| format!("Client-core attached-player EOF observation failed: {error}"))
     }
 
     fn report_attached_coordinator_command_dispatch(
@@ -995,6 +1006,48 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             )
             .map_err(|error| {
                 format!("Client-core session runtime readiness/unpause dispatch failed: {error}")
+            })
+    }
+
+    fn record_intentional_player_pause_action(&mut self, paused: bool) -> Result<(), String> {
+        self.runtime
+            .run_direct_player_readiness_intent(
+                paused,
+                sorotte_protocol::PlayerInteractionSurface::SorottePlaybackControl,
+            )
+            .map(|_| ())
+            .map_err(|error| {
+                format!("Client-core player readiness-intent dispatch failed: {error}")
+            })
+    }
+
+    fn record_external_player_pause_command_result(
+        &mut self,
+        paused: bool,
+        succeeded: bool,
+        now_seconds: f64,
+    ) -> Result<(), String> {
+        self.runtime
+            .record_external_player_pause_command_result(paused, succeeded, now_seconds)
+            .map_err(|error| format!("Client-core player command-result dispatch failed: {error}"))
+    }
+
+    fn record_external_system_player_pause_command_result(
+        &mut self,
+        paused: bool,
+        cause: PlayerCommandCause,
+        succeeded: bool,
+        now_seconds: f64,
+    ) -> Result<(), String> {
+        self.runtime
+            .record_external_system_player_pause_command_result(
+                paused,
+                cause,
+                succeeded,
+                now_seconds,
+            )
+            .map_err(|error| {
+                format!("Client-core system player command-result dispatch failed: {error}")
             })
     }
 

@@ -88,7 +88,19 @@ impl GuiPersistedConfigRuntimeOwner {
 
         if let Some(player) = self.player.as_mut() {
             let player_name = player.name();
-            if let Err(error) = player.set_paused(true) {
+            let result = player.set_paused(true);
+            let command_succeeded = result.is_ok();
+            let command_result_error = self.session.as_mut().and_then(|session| {
+                session
+                    .record_external_system_player_pause_command_result(
+                        true,
+                        PlayerCommandCause::TransportRefresh,
+                        command_succeeded,
+                        system_time_seconds(),
+                    )
+                    .err()
+            });
+            if let Err(error) = result {
                 Self::push_actions_and_project(
                     handle,
                     projected_state,
@@ -99,7 +111,15 @@ impl GuiPersistedConfigRuntimeOwner {
                         ),
                     }],
                 );
+                if let Some(command_result_error) = command_result_error {
+                    eprintln!(
+                        "warning: failed to register pause-on-leave command failure: {command_result_error}"
+                    );
+                }
                 return;
+            }
+            if let Some(error) = command_result_error {
+                eprintln!("warning: failed to register pause-on-leave command: {error}");
             }
             self.note_local_attached_player_pause_command(true);
         }

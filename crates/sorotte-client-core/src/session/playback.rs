@@ -397,15 +397,11 @@ impl ClientSession {
         let instaplay = self.instaplay_conditions_met(local_can_control, is_playing_music);
         if !instaplay {
             self.model.playback.local_paused = Some(true);
-            let mut actions = vec![ClientRuntimeAction::SetPaused(true)];
-            if !self.local_user_ready() {
-                self.apply_local_ready_state_optimistically(true);
-                actions.push(ClientRuntimeAction::SetReady {
-                    ready: true,
-                    manually_initiated: true,
-                });
-            }
-            return actions;
+            // This periodic compatibility check observes state but has no
+            // proof of a user gesture. The causal player classifier owns
+            // native Play detection; a gate correction is system-owned and
+            // must not manufacture readiness intent.
+            return vec![ClientRuntimeAction::SetPaused(true)];
         }
 
         if let Some(last_paused_on_leave_at_seconds) =
@@ -423,15 +419,7 @@ impl ClientSession {
         }
 
         self.model.playback.local_paused = Some(false);
-        if self.local_user_ready() {
-            return Vec::new();
-        }
-
-        self.apply_local_ready_state_optimistically(true);
-        vec![ClientRuntimeAction::SetReady {
-            ready: true,
-            manually_initiated: false,
-        }]
+        Vec::new()
     }
 
     pub fn autoplay_conditions_met(
@@ -441,6 +429,9 @@ impl ClientSession {
         is_playing_music: bool,
         recently_advanced: bool,
     ) -> bool {
+        if self.server_readiness_v2_supported() {
+            return false;
+        }
         if self.model.playback.local_paused_for_cache == Some(true) {
             return false;
         }

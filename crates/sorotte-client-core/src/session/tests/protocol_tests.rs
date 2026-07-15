@@ -58,6 +58,7 @@ fn active_connection_owns_concrete_server_capabilities() {
             media_match: true,
             plex_playlist_uris: true,
             playback_barrier_v1: false,
+            readiness_v2: false,
             persistent_rooms: true,
             max_username_length: 12,
             max_room_name_length: 40,

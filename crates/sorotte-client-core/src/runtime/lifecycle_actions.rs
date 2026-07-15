@@ -27,7 +27,11 @@ where
             local_can_control,
             is_playing_music,
         );
-        self.dispatch_runtime_actions_with_session_rollback(session_snapshot, &actions)
+        self.dispatch_runtime_actions_with_session_rollback_and_pause_cause(
+            session_snapshot,
+            &actions,
+            PlayerCommandCause::ReadinessGateHold,
+        )
     }
 
     pub fn update_autoplay_check(
@@ -61,7 +65,11 @@ where
             is_playing_music,
             recently_advanced,
         );
-        self.dispatch_runtime_actions_with_session_rollback(session_snapshot, &actions)
+        self.dispatch_runtime_actions_with_session_rollback_and_pause_cause(
+            session_snapshot,
+            &actions,
+            PlayerCommandCause::AutomaticReadinessStart,
+        )
     }
 
     pub fn run_reconnect_retry(&mut self, retries: u32) -> Result<(), PlayerError> {
@@ -144,7 +152,7 @@ where
         let actions = self
             .session
             .runtime_actions_for_reconnect_state_restore_if_needed();
-        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+        self.dispatch_runtime_actions_with_causal_tracking(&actions)
     }
 
     pub fn run_reconnect_state_restore_validation_if_needed(&mut self) -> Result<(), PlayerError> {
@@ -256,11 +264,9 @@ where
                     .saturating_add(1);
             }
 
-            if let Err(err) = ClientSession::dispatch_runtime_actions(
-                std::slice::from_ref(action),
-                &mut self.player,
-                &mut self.control,
-            ) {
+            if let Err(err) =
+                self.dispatch_runtime_actions_with_causal_tracking(std::slice::from_ref(action))
+            {
                 if is_correction_action {
                     self.session
                         .model
@@ -492,7 +498,7 @@ where
                 dont_slow_down_with_me,
                 speed_supported,
             );
-        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+        self.dispatch_runtime_actions_with_causal_tracking(&actions)
     }
 
     pub(crate) fn desync_local_position_with_legacy_ping_forward_delay(

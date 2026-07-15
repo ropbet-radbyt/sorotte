@@ -1,4 +1,8 @@
 use super::*;
+use sorotte_client_app::app_boundary::readiness::{
+    ParticipantReadinessPresentation, ReadinessPresentationProtocol,
+};
+use sorotte_protocol::TechnicalPlayabilityPhase;
 
 #[test]
 fn gui_shell_app_state_only_enables_media_open_after_runtime_support_arrives() {
@@ -216,6 +220,53 @@ fn gui_shell_app_state_keeps_local_ready_transition_pending_until_runtime_matche
     assert_eq!(state.pending_local_ready_target, None);
     assert!(state.displayed_local_main_window_user_ready());
     assert!(state.main_window.users[0].is_ready);
+}
+
+#[test]
+fn gui_shell_v2_runtime_retires_optimistic_pending_when_core_has_no_pending_operation() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some(TEST_USERNAME.to_owned()),
+        player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
+        room: Some("Room".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    let runtime_snapshot = || {
+        let mut readiness = ParticipantReadinessPresentation::from_legacy(TEST_USERNAME, false);
+        readiness.protocol = ReadinessPresentationProtocol::V2;
+        readiness.technical_phase = Some(TechnicalPlayabilityPhase::Playable);
+        readiness.start_eligible = Some(false);
+        readiness.membership_epoch = Some(4);
+        readiness.room_readiness_revision = Some(9);
+        readiness.user_intent_revision = Some(7);
+
+        MainWindowRuntimeSnapshot {
+            room_name: "Room".to_owned(),
+            users: vec![MainWindowRuntimeUserSnapshot {
+                username: TEST_USERNAME.to_owned(),
+                is_self: true,
+                is_ready: false,
+                ..Default::default()
+            }],
+            readiness: BTreeMap::from([(TEST_USERNAME.to_owned(), readiness)]),
+            can_set_ready: true,
+            ..Default::default()
+        }
+    };
+
+    assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+        runtime_snapshot(),
+    )));
+    assert!(state.apply(GuiShellAction::AnnounceLocalUserReady));
+    assert_eq!(state.pending_local_ready_target, Some(true));
+    assert!(state.displayed_local_main_window_user_ready());
+
+    assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+        runtime_snapshot(),
+    )));
+    assert_eq!(state.pending_local_ready_target, None);
+    assert!(!state.displayed_local_main_window_user_ready());
+    assert!(!state.local_ready_transition_pending());
 }
 
 #[test]

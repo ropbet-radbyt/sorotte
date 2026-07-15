@@ -484,7 +484,10 @@ fn gui_client_core_chat_session_runtime_adapter_queues_attached_player_unpause_w
     assert_eq!(
         GuiSessionRuntimeAdapter::take_attached_player_local_runtime_actions(&mut adapter)
             .expect("attached-player local actions should drain"),
-        vec![GuiAttachedPlayerRuntimeAction::Paused(false)],
+        vec![GuiAttachedPlayerRuntimeAction::Paused {
+            paused: false,
+            cause: sorotte_client_core::PlayerCommandCause::AutomaticReadinessStart,
+        }],
         "the GUI adapter must carry the autoplay unpause to the attached player"
     );
     assert!(

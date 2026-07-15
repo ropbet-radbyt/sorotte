@@ -544,7 +544,7 @@ fn cached_control_password_is_typed_and_redacted_after_normalization() {
 }
 
 #[test]
-fn client_runtime_noncontroller_pause_toggle_suppresses_ready_flip_while_recently_rewound() {
+fn client_runtime_noncontroller_play_intent_survives_recent_rewind_suppression() {
     let mut session = ClientSession::default();
     session
             .apply_message_json(
@@ -572,14 +572,11 @@ fn client_runtime_noncontroller_pause_toggle_suppresses_ready_flip_while_recentl
     );
 
     assert_eq!(runtime.player().paused, Some(false));
-    assert!(
-        runtime.control().outbound_messages().is_empty(),
-        "a recent rewind should suppress the non-controller ready toggle"
-    );
+    assert_eq!(runtime.control().outbound_messages().len(), 1);
     assert_eq!(
         runtime.session().user_ready("alice"),
-        Some(false),
-        "recent-rewind suppression should leave the local ready state unchanged"
+        Some(true),
+        "technical rewind suppression must not suppress deliberate Play intent"
     );
 }
 

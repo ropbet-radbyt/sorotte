@@ -257,6 +257,24 @@ fn cli_hello_shared_playlist_feature_preserves_default_and_explicit_values() {
 }
 
 #[test]
+fn cli_hello_advertises_readiness_v2_with_the_playback_barrier() {
+    let features = client_hello_features_legacy_compatible(&test_client_loop_config());
+
+    assert_eq!(
+        features
+            .get(sorotte_protocol::SOROTTE_READINESS_V2)
+            .and_then(serde_json::Value::as_bool),
+        Some(true),
+    );
+    assert_eq!(
+        features
+            .get(sorotte_protocol::SOROTTE_PLAYBACK_BARRIER_V1)
+            .and_then(serde_json::Value::as_bool),
+        Some(true),
+    );
+}
+
+#[test]
 fn cli_runtime_configuration_debug_redacts_all_passwords() {
     let server_password = "cli-server-password-canary";
     let room_password = "cli-room-password-canary";

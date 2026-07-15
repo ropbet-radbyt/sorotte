@@ -210,6 +210,21 @@ impl ClientSession {
 
         let username = hello.username;
         let room_name = hello.room;
+        if self
+            .model
+            .readiness
+            .canonical_room
+            .as_deref()
+            .is_some_and(|canonical_room| canonical_room != room_name)
+            || self
+                .model
+                .readiness
+                .pending_intent
+                .as_ref()
+                .is_some_and(|pending| pending.room != room_name)
+        {
+            self.reset_readiness_v2_for_new_room();
+        }
         let identity_migrated = self.migrate_provisional_local_identity(&username);
         let server_assigned_ready = identity_migrated
             .then(|| {
@@ -262,7 +277,15 @@ impl ClientSession {
             self.set_user_controller(&username, restored_controller);
         }
 
+        let readiness_v2 = hello.capabilities.readiness_v2;
         self.model.connection.phase = ConnectionPhase::Active(hello.capabilities);
+        if readiness_v2 {
+            // V2 start commits are server-owned. Retain the preference for
+            // legacy rooms, but never run a competing local countdown here.
+            self.stop_autoplay_countdown();
+        } else {
+            self.reset_readiness_v2_for_new_room();
+        }
     }
 
     pub(super) fn apply_set(&mut self, commands: Vec<ClientSetCommand>, now_seconds: Option<f64>) {
@@ -276,6 +299,7 @@ impl ClientSession {
             let mut playlist_index = None;
             let mut features = None;
             let mut playback_barrier = None;
+            let mut readiness_v2 = None;
             match command {
                 ClientSetCommand::Room(value) => room = Some(value),
                 ClientSetCommand::Users(value) => users = Some(value),
@@ -295,9 +319,16 @@ impl ClientSession {
                 ClientSetCommand::PlaybackBarrier(extension) => {
                     playback_barrier = Some(*extension);
                 }
+                ClientSetCommand::ReadinessV2(extension) => {
+                    readiness_v2 = Some(*extension);
+                }
             }
 
             if let Some(room) = room {
+                let local_room_changed = self.model.room.name.as_deref() != Some(room.as_str());
+                if local_room_changed {
+                    self.reset_readiness_v2_for_new_room();
+                }
                 if let Some(username) = self.model.connection.username.clone() {
                     let room_changed = self.user_room(&username) != Some(room.as_str());
                     self.set_user_room(&username, Some(room.clone()));
@@ -331,6 +362,14 @@ impl ClientSession {
                             .as_ref()
                             .and_then(|view| view.room.as_deref())
                             != Some(room.as_str());
+                        if was_local_user && self.model.room.name.as_deref() != Some(room.as_str())
+                        {
+                            // Readiness snapshots do not carry a room name. A
+                            // local room echo is therefore the authoritative
+                            // boundary that discards any old-membership state
+                            // before the server publishes the new membership.
+                            self.reset_readiness_v2_for_new_room();
+                        }
                         self.set_user_room(&username, Some(room.clone()));
                         if room_changed {
                             self.set_user_controller(&username, false);
@@ -388,6 +427,10 @@ impl ClientSession {
 
             if let Some(extension) = playback_barrier {
                 self.apply_playback_barrier_extension(extension);
+            }
+
+            if let Some(extension) = readiness_v2 {
+                self.apply_readiness_v2_extension(extension);
             }
 
             if let Some(controller_auth) = controller_auth {

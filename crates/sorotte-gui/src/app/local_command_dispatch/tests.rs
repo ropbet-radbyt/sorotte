@@ -569,23 +569,24 @@ fn gui_shell_dispatch_plan_routes_chat_alias_commands_to_runtime_send() {
 }
 
 #[test]
-fn gui_shell_dispatch_plan_routes_pause_commands_to_direct_runtime_toggle() {
+fn gui_shell_dispatch_plan_routes_explicit_playback_commands_without_toggling() {
     let state = runtime_ready_state();
-    let plan = GuiShellDispatchPlan::from_shell_actions(
-        &state,
-        vec![GuiShellAction::BeginLocalChatSend("/pause".to_owned())],
-    );
+    for (command, expected) in [
+        ("/pause", GuiRuntimeRequest::SetPlaybackPaused(true)),
+        ("/play", GuiRuntimeRequest::SetPlaybackPaused(false)),
+        ("/p", GuiRuntimeRequest::TogglePlaybackPause),
+    ] {
+        let plan = GuiShellDispatchPlan::from_shell_actions(
+            &state,
+            vec![GuiShellAction::BeginLocalChatSend(command.to_owned())],
+        );
 
-    assert_eq!(
-        plan.runtime_requests,
-        vec![GuiRuntimeRequest::TogglePlaybackPause]
-    );
-    assert!(
-        plan.shell_actions
-            .contains(&GuiShellAction::AnnounceSystemChatEvent(
-                "/pause".to_owned()
-            ))
-    );
+        assert_eq!(plan.runtime_requests, vec![expected]);
+        assert!(
+            plan.shell_actions
+                .contains(&GuiShellAction::AnnounceSystemChatEvent(command.to_owned()))
+        );
+    }
 }
 
 #[test]

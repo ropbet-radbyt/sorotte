@@ -167,6 +167,9 @@ impl GuiPersistedConfigRuntimeOwner {
                     "warning: failed to mirror attached-player cache buffering state into the session runtime: {error}"
                 );
             }
+            if let Some(position_seconds) = update.position_seconds {
+                self.player_position_seconds = Some(position_seconds - user_offset_seconds);
+            }
             if let Some(paused) = update.paused
                 && self.player_paused_for_cache != Some(true)
             {
@@ -183,18 +186,27 @@ impl GuiPersistedConfigRuntimeOwner {
                 };
                 if accept_paused {
                     if !application_pause_command_active && previous_paused != Some(paused) {
-                        match self.stage_attached_player_pause_intent(paused) {
-                            Ok(()) => direct_pause_intent = Some(paused),
-                            Err(error) => eprintln!(
-                                "warning: failed to stage direct attached-player pause intent: {error}"
-                            ),
+                        let end_of_file = paused && self.attached_player_position_is_end_of_file();
+                        if end_of_file {
+                            if let Some(session) = self.session.as_mut()
+                                && let Err(error) = session
+                                    .observe_external_player_end_of_file(system_time_seconds())
+                            {
+                                eprintln!(
+                                    "warning: failed to classify attached-player EOF as a technical transition: {error}"
+                                );
+                            }
+                        } else {
+                            match self.stage_attached_player_pause_intent(paused) {
+                                Ok(()) => direct_pause_intent = Some(paused),
+                                Err(error) => eprintln!(
+                                    "warning: failed to stage direct attached-player pause intent: {error}"
+                                ),
+                            }
                         }
                     }
                     self.player_paused = Some(paused);
                 }
-            }
-            if let Some(position_seconds) = update.position_seconds {
-                self.player_position_seconds = Some(position_seconds - user_offset_seconds);
             }
         }
         for outcome in media_load_outcomes {

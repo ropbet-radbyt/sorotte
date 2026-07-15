@@ -2,7 +2,8 @@ use super::super::{
     GuiDroppedFilesTarget, GuiInteractionRuntimeSnapshot, GuiPendingCompletionRequest,
     GuiPendingOperationKind, GuiPersistedConfigRuntimeOwner, GuiPreviewRuntimeBridge,
     GuiQueuedRuntimeBridgeHandle, GuiRuntimeRequest, GuiShellAction, GuiWidgetEguiRenderer,
-    GuiWidgetKind, GuiWidgetNode, SorotteGuiShellAppState, StoredClientSettingsMvp,
+    GuiWidgetKind, GuiWidgetNode, MainWindowRuntimeSnapshot, SorotteGuiShellAppState,
+    StoredClientSettingsMvp,
 };
 use super::super::{GuiNativeRuntimeBridge, local_command_dispatch::GuiShellDispatchPlan};
 use super::GuiSemanticStep;
@@ -342,6 +343,25 @@ impl GuiSemanticDriver {
                     self.apply_actions([GuiShellAction::ApplyMainWindowRuntimeSnapshot(
                         snapshot.clone(),
                     )]);
+                }
+                GuiSemanticStep::ApplyMainWindowReadinessPresentation(readiness) => {
+                    let mut snapshot =
+                        MainWindowRuntimeSnapshot::from_shell_state(&self.state.main_window);
+                    let Some(user) = snapshot
+                        .users
+                        .iter_mut()
+                        .find(|user| user.username == readiness.username)
+                    else {
+                        return Err(format!(
+                            "semantic readiness update references missing user {:?}",
+                            readiness.username
+                        ));
+                    };
+                    user.is_ready = readiness.room_ready;
+                    snapshot
+                        .readiness
+                        .insert(readiness.username.clone(), readiness.clone());
+                    self.apply_actions([GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot)]);
                 }
                 GuiSemanticStep::ApplyMainWindowPlaylistSelection(index) => {
                     let mut snapshot = GuiInteractionRuntimeSnapshot::from_shell_state(&self.state);

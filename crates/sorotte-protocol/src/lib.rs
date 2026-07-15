@@ -11,6 +11,7 @@ mod hello;
 mod list;
 mod message;
 mod playback_barrier;
+mod readiness;
 mod redacted_debug;
 mod room;
 mod set;
@@ -37,6 +38,16 @@ pub use playback_barrier::{
     PlaybackBarrierTimeoutAction, PrepareMediaPayload, RoomBufferingPhase, RoomBufferingPolicy,
     RoomBufferingPolicyPayload, RoomBufferingStatusPayload, SOROTTE_PLAYBACK_BARRIER_V1,
     StartedAckPayload, TransportBufferingReportPayload,
+};
+pub use readiness::{
+    DirectReadinessSurface, ParticipantReadiness, ParticipantReadinessUpdate,
+    PlayerInteractionSurface, PlayerReadinessAction, ReadinessIntentRequest,
+    ReadinessMutationMetadata, ReadinessMutationSource, ReadinessRequestResultPayload,
+    ReadinessRequestResultStatus, ReadinessSetExtension, ReadinessStateExtension, RecoveryStage,
+    RoomPauseOwner, RoomReadinessSnapshot, RoomStartGatePhase, SOROTTE_READINESS_V2,
+    StartGateDegradedReason, StartParticipationRole, TechnicalBlockCause, TechnicalPlayability,
+    TechnicalPlayabilityPhase, TechnicalPlayabilitySummary, TechnicalReadinessBlock,
+    TechnicalReadinessReport, UserReadinessIntent, UserReadinessMutationSource,
 };
 pub use room::RoomRef;
 pub use set::{

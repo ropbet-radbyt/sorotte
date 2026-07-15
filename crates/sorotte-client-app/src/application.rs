@@ -20,7 +20,9 @@ use sorotte_plex::{
     http::PlexHttpClient,
     timeline::{PlexSyncEngine, PlexWatchEvent},
 };
-use sorotte_protocol::{ProtocolError, ProtocolMessage, StatePayload, decode_message_line_items};
+use sorotte_protocol::{
+    DirectReadinessSurface, ProtocolError, ProtocolMessage, StatePayload, decode_message_line_items,
+};
 use sorotte_secret::SecretValue;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -122,6 +124,12 @@ pub enum ClientCommand {
         ready: Option<bool>,
         manually_initiated: bool,
     },
+    SetReadyFrom {
+        username: Option<String>,
+        ready: Option<bool>,
+        manually_initiated: bool,
+        surface: DirectReadinessSurface,
+    },
     OpenMedia {
         path: String,
     },
@@ -180,6 +188,7 @@ impl std::fmt::Debug for ClientCommand {
             Self::Disconnect { .. } => formatter.write_str("Disconnect"),
             Self::SetRoom { .. } => formatter.write_str("SetRoom"),
             Self::SetReady { .. } => formatter.write_str("SetReady"),
+            Self::SetReadyFrom { .. } => formatter.write_str("SetReadyFrom"),
             Self::PlayerPlaybackObserved(_) => formatter.write_str("PlayerPlaybackObserved"),
             Self::UpdateSettings(_) => formatter.write_str("UpdateSettings"),
             Self::SendChat(_) => formatter.write_str("SendChat"),
@@ -850,6 +859,31 @@ where
                     (_, None) => self.runtime.run_toggle_ready(manually_initiated),
                 },
             ),
+            ClientCommand::SetReadyFrom {
+                username,
+                ready,
+                manually_initiated,
+                surface,
+            } => (
+                "set-ready",
+                match (username, ready) {
+                    (Some(username), Some(ready)) => self.runtime.run_set_ready_for_user_from(
+                        username,
+                        ready,
+                        manually_initiated,
+                        surface,
+                    ),
+                    (None, Some(ready)) => self.runtime.run_set_ready_for_user_from(
+                        "",
+                        ready,
+                        manually_initiated,
+                        surface,
+                    ),
+                    (_, None) => self
+                        .runtime
+                        .run_toggle_ready_from(manually_initiated, surface),
+                },
+            ),
             ClientCommand::OpenMedia { path } => (
                 "open-media",
                 self.runtime.player_mut().open_file(&path).map(|()| true),
@@ -1211,6 +1245,10 @@ where
             .run_set_ready_for_user(username, ready, manually_initiated)
     }
 
+    pub fn run_initial_readiness_intent(&mut self, ready: bool) -> Result<bool, PlayerError> {
+        self.runtime.run_initial_readiness_intent(ready)
+    }
+
     pub fn run_request_user_list(&mut self) -> Result<bool, PlayerError> {
         self.runtime.run_request_user_list()
     }
@@ -1547,6 +1585,49 @@ where
             local_can_control,
             is_playing_music,
         )
+    }
+
+    pub fn run_direct_player_readiness_intent(
+        &mut self,
+        paused: bool,
+        surface: sorotte_protocol::PlayerInteractionSurface,
+    ) -> Result<bool, PlayerError> {
+        self.runtime
+            .run_direct_player_readiness_intent(paused, surface)
+    }
+
+    pub fn record_external_player_pause_command_result(
+        &mut self,
+        paused: bool,
+        succeeded: bool,
+        now_seconds: f64,
+    ) -> Result<(), PlayerError> {
+        self.runtime
+            .record_external_player_pause_command_result(paused, succeeded, now_seconds)
+    }
+
+    pub fn record_external_system_player_pause_command_result(
+        &mut self,
+        paused: bool,
+        cause: sorotte_client_core::PlayerCommandCause,
+        succeeded: bool,
+        now_seconds: f64,
+    ) -> Result<(), PlayerError> {
+        self.runtime
+            .record_external_system_player_pause_command_result(
+                paused,
+                cause,
+                succeeded,
+                now_seconds,
+            )
+    }
+
+    pub fn observe_external_player_end_of_file(
+        &mut self,
+        now_seconds: f64,
+    ) -> Result<(), PlayerError> {
+        self.runtime
+            .observe_external_player_end_of_file(now_seconds)
     }
 
     pub fn update_autoplay_check(

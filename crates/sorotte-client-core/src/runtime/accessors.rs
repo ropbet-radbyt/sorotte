@@ -1,5 +1,6 @@
 use super::*;
 use crate::control::client_effect_player_error;
+use crate::player_transition::PlayerCommandCause;
 use sorotte_player_api::PlayerCommand;
 use sorotte_protocol::{ControllerAuthPayload, PlaybackBarrierSetExtension};
 
@@ -41,6 +42,7 @@ impl<'a> ClientSessionUpdate<'a> {
         if previous_room.as_deref() != self.session.room() {
             if let Some(control) = self.control.as_deref_mut() {
                 control.cancel_protocol_playback_barrier_requests();
+                control.cancel_protocol_readiness_intents();
             }
             if let Some(playback_coordination) = self.playback_coordination.as_deref_mut() {
                 playback_coordination.handle_authoritative_playback_barrier_room_change();
@@ -122,6 +124,25 @@ impl<'a> ClientSessionUpdate<'a> {
         }
     }
 
+    fn flush_pending_readiness_reconciliation(&mut self) {
+        let Some(ClientRuntimeAction::SetReadinessIntent { request, scope }) =
+            self.session.pending_readiness_reconciliation_action()
+        else {
+            return;
+        };
+        let Some(control) = self.control.as_deref_mut() else {
+            self.session.mark_pending_readiness_delivery_failed();
+            return;
+        };
+        control.activate_protocol_connection_generation();
+        if control
+            .emit(ClientEffect::SendReadinessIntent { request, scope })
+            .is_err()
+        {
+            self.session.mark_pending_readiness_delivery_failed();
+        }
+    }
+
     pub fn apply_player_playback_telemetry_update(
         &mut self,
         update: &PlayerPlaybackTelemetryUpdate,
@@ -140,6 +161,7 @@ impl<'a> ClientSessionUpdate<'a> {
         message: ProtocolMessage,
     ) -> Result<(), ProtocolError> {
         let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
+        let is_hello = matches!(&message, ProtocolMessage::Hello(_));
         let extension = Self::playback_barrier_extension(&message);
         let authority_evidence =
             Self::local_control_authority_evidence(&message, self.session.username());
@@ -147,8 +169,12 @@ impl<'a> ClientSessionUpdate<'a> {
         let result = self.session.apply_protocol_message(message);
         self.cancel_playback_barrier_request_after_room_change(previous_room);
         if result.is_ok() {
+            if is_hello && let Some(control) = self.control.as_deref_mut() {
+                control.activate_protocol_connection_generation();
+            }
             self.observe_playback_barrier_extension(extension, now_seconds);
             self.observe_local_control_authority(authority_evidence);
+            self.flush_pending_readiness_reconciliation();
         }
         result
     }
@@ -158,6 +184,7 @@ impl<'a> ClientSessionUpdate<'a> {
         message: ProtocolMessage,
         now_seconds: f64,
     ) -> Result<(), ProtocolError> {
+        let is_hello = matches!(&message, ProtocolMessage::Hello(_));
         let extension = Self::playback_barrier_extension(&message);
         let authority_evidence =
             Self::local_control_authority_evidence(&message, self.session.username());
@@ -165,8 +192,12 @@ impl<'a> ClientSessionUpdate<'a> {
         let result = self.session.apply_protocol_message_at(message, now_seconds);
         self.cancel_playback_barrier_request_after_room_change(previous_room);
         if result.is_ok() {
+            if is_hello && let Some(control) = self.control.as_deref_mut() {
+                control.activate_protocol_connection_generation();
+            }
             self.observe_playback_barrier_extension(extension, now_seconds);
             self.observe_local_control_authority(authority_evidence);
+            self.flush_pending_readiness_reconciliation();
         }
         result
     }
@@ -397,7 +428,53 @@ where
     }
 
     pub fn set_paused(&mut self, paused: bool) -> Result<(), PlayerError> {
-        self.player.execute(PlayerCommand::SetPaused(paused))
+        let command = PlayerCommand::SetPaused(paused);
+        let issued_at_seconds = self
+            .playback_coordination
+            .standalone_command_issued_at_seconds(unix_wall_clock_time_seconds_legacy_compatible());
+        match self.player.execute_tracked(command.clone()) {
+            Ok(command_id) => {
+                self.playback_coordination
+                    .bind_standalone_player_pause_command(
+                        command_id,
+                        PlayerCommandCause::TransportRefresh,
+                        paused,
+                        issued_at_seconds,
+                    );
+                Ok(())
+            }
+            Err(PlayerError::Unsupported("execute_tracked")) => {
+                match self.player.execute(command) {
+                    Ok(()) => {
+                        self.playback_coordination
+                            .register_completed_synthetic_pause_command(
+                                PlayerCommandCause::TransportRefresh,
+                                paused,
+                                issued_at_seconds,
+                            );
+                        Ok(())
+                    }
+                    Err(error) => {
+                        self.playback_coordination
+                            .register_failed_synthetic_pause_command(
+                                PlayerCommandCause::TransportRefresh,
+                                paused,
+                                issued_at_seconds,
+                            );
+                        Err(error)
+                    }
+                }
+            }
+            Err(error) => {
+                self.playback_coordination
+                    .register_failed_synthetic_pause_command(
+                        PlayerCommandCause::TransportRefresh,
+                        paused,
+                        issued_at_seconds,
+                    );
+                Err(error)
+            }
+        }
     }
 
     pub fn set_position(&mut self, position_seconds: f64) -> Result<(), PlayerError> {
@@ -462,13 +539,99 @@ where
         session_snapshot: ClientSessionLocalActionSnapshot,
         actions: &[ClientRuntimeAction],
     ) -> Result<(), PlayerError> {
-        match ClientSession::dispatch_runtime_actions(actions, &mut self.player, &mut self.control)
-        {
+        match self.dispatch_runtime_actions_with_causal_tracking(actions) {
             Ok(()) => Ok(()),
             Err(err) => {
                 self.session.restore_local_action_state(session_snapshot);
                 Err(err)
             }
+        }
+    }
+
+    pub(crate) fn dispatch_runtime_actions_with_session_rollback_and_pause_cause(
+        &mut self,
+        session_snapshot: ClientSessionLocalActionSnapshot,
+        actions: &[ClientRuntimeAction],
+        pause_cause: PlayerCommandCause,
+    ) -> Result<(), PlayerError> {
+        match self.dispatch_runtime_actions_with_pause_cause(actions, pause_cause) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                self.session.restore_local_action_state(session_snapshot);
+                Err(err)
+            }
+        }
+    }
+
+    pub(crate) fn dispatch_runtime_actions_with_causal_tracking(
+        &mut self,
+        actions: &[ClientRuntimeAction],
+    ) -> Result<(), PlayerError> {
+        for action in actions {
+            if let ClientRuntimeAction::SetPaused(paused) = action {
+                let cause = self.system_pause_command_cause(*paused);
+                self.execute_causal_pause_command(
+                    *paused,
+                    cause,
+                    unix_wall_clock_time_seconds_legacy_compatible(),
+                )?;
+            } else {
+                ClientSession::dispatch_runtime_actions(
+                    std::slice::from_ref(action),
+                    &mut self.player,
+                    &mut self.control,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn dispatch_runtime_actions_with_pause_cause(
+        &mut self,
+        actions: &[ClientRuntimeAction],
+        pause_cause: PlayerCommandCause,
+    ) -> Result<(), PlayerError> {
+        for action in actions {
+            if let ClientRuntimeAction::SetPaused(paused) = action {
+                self.execute_causal_pause_command(
+                    *paused,
+                    pause_cause,
+                    unix_wall_clock_time_seconds_legacy_compatible(),
+                )?;
+            } else {
+                ClientSession::dispatch_runtime_actions(
+                    std::slice::from_ref(action),
+                    &mut self.player,
+                    &mut self.control,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn system_pause_command_cause(&self, paused: bool) -> PlayerCommandCause {
+        if self
+            .playback_coordination
+            .snapshot()
+            .recovery_episode
+            .is_some()
+        {
+            return PlayerCommandCause::Recovery;
+        }
+        match self.session.current_room_playstate_authority() {
+            Some(RoomPlaystateAuthority::ServerBarrier { .. }) if paused => {
+                PlayerCommandCause::ReadinessGateHold
+            }
+            Some(RoomPlaystateAuthority::ServerBarrier { .. }) => {
+                PlayerCommandCause::AutomaticReadinessStart
+            }
+            Some(RoomPlaystateAuthority::ServerBufferingPolicy { .. }) => {
+                PlayerCommandCause::RoomBufferingPolicy
+            }
+            Some(
+                RoomPlaystateAuthority::LegacyRemoteUser | RoomPlaystateAuthority::LegacyLocalEcho,
+            )
+            | None => PlayerCommandCause::RemoteRoomSynchronization,
         }
     }
 
@@ -494,7 +657,16 @@ where
     fn execute_client_effect(&mut self, effect: ClientEffect) -> Result<(), PlayerError> {
         match effect {
             ClientEffect::SetPlayerPaused(paused) => {
-                self.player.execute(PlayerCommand::SetPaused(paused))
+                let cause = if self.session.model.local_pause_change_in_flight() {
+                    PlayerCommandCause::LocalUserPlaybackControl
+                } else {
+                    self.system_pause_command_cause(paused)
+                };
+                self.execute_causal_pause_command(
+                    paused,
+                    cause,
+                    unix_wall_clock_time_seconds_legacy_compatible(),
+                )
             }
             ClientEffect::SetPlayerPosition(position) => {
                 self.player.execute(PlayerCommand::SetPosition(position))

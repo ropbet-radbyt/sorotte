@@ -589,6 +589,14 @@ fn extend_plan_for_runtime_action(
             plan.runtime_requests
                 .push(GuiRuntimeRequest::SeekOffset(offset_seconds));
         }
+        PlannedLocalRuntimeAction::Play => {
+            plan.runtime_requests
+                .push(GuiRuntimeRequest::SetPlaybackPaused(false));
+        }
+        PlannedLocalRuntimeAction::Pause => {
+            plan.runtime_requests
+                .push(GuiRuntimeRequest::SetPlaybackPaused(true));
+        }
         PlannedLocalRuntimeAction::TogglePause => {
             plan.runtime_requests
                 .push(GuiRuntimeRequest::TogglePlaybackPause);
