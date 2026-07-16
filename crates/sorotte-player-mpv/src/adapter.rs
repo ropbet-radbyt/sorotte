@@ -216,6 +216,8 @@ pub struct MpvAdapter {
     playback_restart_sequence: u64,
     next_command_id: u64,
     legacy_syncplay_ui_settings: LegacySyncplayUiSettings,
+    last_simulated_legacy_syncplay_osd_message: Option<(String, LegacySyncplayOsdKind)>,
+    legacy_syncplay_osd_placement_restore: Option<(String, i64)>,
     legacy_syncplayintf_script_loaded: bool,
     legacy_syncplayintf_options_applied: bool,
     legacy_syncplayintf_script_name: String,
@@ -248,6 +250,7 @@ impl MpvAdapter {
         self.mpv_version = version
             .as_deref()
             .and_then(Self::parse_mpv_major_minor_version);
+        self.legacy_syncplay_osd_placement_restore = None;
         Ok(())
     }
 
@@ -593,6 +596,56 @@ impl MpvAdapter {
         &self.legacy_syncplay_ui_settings
     }
 
+    pub fn last_simulated_legacy_syncplay_osd_message(
+        &self,
+    ) -> Option<&(String, LegacySyncplayOsdKind)> {
+        self.last_simulated_legacy_syncplay_osd_message.as_ref()
+    }
+
+    pub fn legacy_syncplayintf_options_ready(&self) -> bool {
+        self.legacy_syncplayintf_script_loaded && self.legacy_syncplayintf_options_applied
+    }
+
+    pub fn legacy_syncplayintf_script_loaded(&self) -> bool {
+        self.legacy_syncplayintf_script_loaded
+    }
+
+    pub fn legacy_syncplayintf_script_attachment(&self) -> Option<String> {
+        self.legacy_syncplayintf_script_loaded
+            .then(|| self.legacy_syncplayintf_script_name.clone())
+    }
+
+    pub fn set_legacy_syncplayintf_script_attachment(&mut self, script_name: Option<String>) {
+        if let Some(script_name) = script_name {
+            self.legacy_syncplayintf_script_name = script_name;
+            self.legacy_syncplayintf_script_loaded = true;
+            self.legacy_syncplayintf_options_applied = false;
+        } else {
+            self.legacy_syncplayintf_script_loaded = false;
+            self.legacy_syncplayintf_options_applied = false;
+        }
+    }
+
+    pub fn apply_pending_legacy_syncplayintf_options(&mut self) -> Result<(), PlayerError> {
+        if !self.legacy_syncplayintf_script_loaded {
+            return Err(PlayerError::OperationFailed(
+                "the syncplayintf bridge is not loaded".to_owned(),
+            ));
+        }
+        if self.legacy_syncplayintf_options_applied {
+            return Ok(());
+        }
+        self.send_legacy_syncplayintf_options_if_loaded()
+    }
+
+    pub fn legacy_syncplay_osd_placement_restore(&self) -> Option<(String, i64)> {
+        self.legacy_syncplay_osd_placement_restore.clone()
+    }
+
+    pub fn set_legacy_syncplay_osd_placement_restore(&mut self, restore: Option<(String, i64)>) {
+        self.legacy_syncplay_osd_placement_restore = restore;
+    }
+
     pub fn set_property_string(&mut self, name: &str, value: &str) -> Result<(), PlayerError> {
         self.send_ipc_command_if_attached(json!([MPV_COMMAND_SET_PROPERTY, name, value]))
     }
@@ -632,18 +685,51 @@ impl MpvAdapter {
         &mut self,
         settings: LegacySyncplayUiSettings,
     ) -> Result<(), PlayerError> {
-        self.legacy_syncplay_ui_settings = settings;
-        if self.legacy_syncplay_ui_settings.should_move_osd()
-            && (self.ipc_client.is_some() || self.simulation_mode)
-        {
+        let syncplayintf_options_changed = self
+            .legacy_syncplay_ui_settings
+            .syncplayintf_options_differ(&settings);
+        let placement_available = self.ipc_client.is_some() || self.simulation_mode;
+        if placement_available && settings.should_move_osd() {
+            if self.legacy_syncplay_osd_placement_restore.is_none() {
+                let restore = match self.ipc_client.as_mut() {
+                    Some(client) => {
+                        let align = client
+                            .get_property_string(MPV_PROPERTY_OSD_ALIGN_Y)
+                            .map_err(PlayerError::OperationFailed)?
+                            .ok_or_else(|| {
+                                PlayerError::OperationFailed(
+                                    "mpv returned no current OSD vertical alignment".to_owned(),
+                                )
+                            })?;
+                        let margin = client
+                            .get_property_i64(MPV_PROPERTY_OSD_MARGIN_Y)
+                            .map_err(PlayerError::OperationFailed)?
+                            .ok_or_else(|| {
+                                PlayerError::OperationFailed(
+                                    "mpv returned no current OSD vertical margin".to_owned(),
+                                )
+                            })?;
+                        (align, margin)
+                    }
+                    None => ("top".to_owned(), 0),
+                };
+                self.legacy_syncplay_osd_placement_restore = Some(restore);
+            }
             self.set_property_string(MPV_PROPERTY_OSD_ALIGN_Y, "bottom")?;
-            self.set_property_i64(
-                MPV_PROPERTY_OSD_MARGIN_Y,
-                self.legacy_syncplay_ui_settings.chat_osd_margin,
-            )?;
+            self.set_property_i64(MPV_PROPERTY_OSD_MARGIN_Y, settings.chat_osd_margin)?;
+        } else if placement_available
+            && let Some((align, margin)) =
+                self.legacy_syncplay_osd_placement_restore.as_ref().cloned()
+        {
+            self.set_property_string(MPV_PROPERTY_OSD_ALIGN_Y, &align)?;
+            self.set_property_i64(MPV_PROPERTY_OSD_MARGIN_Y, margin)?;
+            self.legacy_syncplay_osd_placement_restore = None;
         }
-        self.legacy_syncplayintf_options_applied = false;
-        self.try_send_legacy_syncplayintf_options_if_pending();
+        self.legacy_syncplay_ui_settings = settings;
+        if syncplayintf_options_changed {
+            self.legacy_syncplayintf_options_applied = false;
+            self.try_send_legacy_syncplayintf_options_if_pending();
+        }
         Ok(())
     }
 
@@ -654,6 +740,9 @@ impl MpvAdapter {
     ) -> Result<(), PlayerError> {
         if message.trim().is_empty() || !self.legacy_syncplay_ui_settings.show_osd {
             return Ok(());
+        }
+        if self.simulation_mode {
+            self.last_simulated_legacy_syncplay_osd_message = Some((message.to_owned(), kind));
         }
 
         let duration_ms = match kind {

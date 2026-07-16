@@ -4,6 +4,34 @@ use sorotte_client_app::app_boundary::readiness::ParticipantReadinessPresentatio
 use sorotte_protocol::{MixedReadinessPolicy, RoomStartGatePhase, StartGateDegradedReason};
 
 #[test]
+fn main_window_contact_info_follows_the_saved_gui_preference() {
+    let hidden = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        show_contact_info: Some(false),
+        ..StoredClientSettingsMvp::default()
+    });
+    assert!(
+        hidden
+            .main_window_widget_tree()
+            .find("main-window:contact-info")
+            .is_none()
+    );
+
+    let shown = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        show_contact_info: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    let shown_tree = shown.main_window_widget_tree();
+    let contact = shown_tree
+        .find("main-window:contact-info")
+        .expect("saved contact-info preference should project support details");
+    assert_eq!(contact.kind, GuiWidgetKind::Status);
+    assert_eq!(
+        contact.value.as_deref(),
+        Some("Report issues: github.com/ropbet-radbyt/sorotte")
+    );
+}
+
+#[test]
 fn gui_shell_app_state_projects_main_window_widget_trees() {
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         chat_input_enabled: Some(true),

@@ -124,6 +124,14 @@ impl fmt::Debug for MpvAdapter {
                 &self.legacy_syncplay_ui_settings,
             )
             .field(
+                "last_simulated_legacy_syncplay_osd_message",
+                &self.last_simulated_legacy_syncplay_osd_message,
+            )
+            .field(
+                "legacy_syncplay_osd_placement_overridden",
+                &self.legacy_syncplay_osd_placement_restore.is_some(),
+            )
+            .field(
                 "legacy_syncplayintf_script_loaded",
                 &self.legacy_syncplayintf_script_loaded,
             )
@@ -210,6 +218,8 @@ impl Default for MpvAdapter {
             playback_restart_sequence: 0,
             next_command_id: 1,
             legacy_syncplay_ui_settings: LegacySyncplayUiSettings::default(),
+            last_simulated_legacy_syncplay_osd_message: None,
+            legacy_syncplay_osd_placement_restore: None,
             legacy_syncplayintf_script_loaded: false,
             legacy_syncplayintf_options_applied: false,
             legacy_syncplayintf_script_name: LEGACY_SYNCPLAYINTF_SCRIPT_NAME.to_owned(),

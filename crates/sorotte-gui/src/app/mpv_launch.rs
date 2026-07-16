@@ -4,7 +4,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use sorotte_client_app::app_boundary::state::{
@@ -129,6 +129,8 @@ pub(crate) fn apply_legacy_syncplay_ui_settings_to_mpv_adapter(
     player: &mut MpvAdapter,
     ui_settings: &LegacySyncplayUiSettings,
 ) -> Result<(), String> {
+    let player_is_connected = player.is_connected();
+    let bridge_was_loaded = player.legacy_syncplayintf_script_loaded();
     player
         .configure_legacy_syncplay_ui_settings(ui_settings.clone())
         .map_err(|error| format!("failed to configure mpv OSD/chat settings: {error}"))?;
@@ -141,18 +143,69 @@ pub(crate) fn apply_legacy_syncplay_ui_settings_to_mpv_adapter(
             error
         );
     }
-    if (ui_settings.chat_output_enabled || ui_settings.chat_input_enabled)
-        && let Some(script_path) = find_legacy_syncplayintf_script_path()
-        && let Err(error) = player.load_legacy_syncplayintf_script(&script_path)
-    {
-        eprintln!(
-            "warning: failed to load legacy mpv syncplayintf.lua from '{}' via GUI JSON IPC: {}",
-            script_path.display(),
-            error
-        );
+    if player_is_connected && (ui_settings.uses_syncplayintf_bridge() || bridge_was_loaded) {
+        if !player.legacy_syncplayintf_script_loaded() {
+            load_legacy_syncplayintf_bridge(player)?;
+        }
+        if let Err(first_error) = apply_pending_legacy_syncplayintf_options_with_retry(player) {
+            if !bridge_was_loaded {
+                return Err(format!(
+                    "syncplayintf did not acknowledge the updated GUI options: {first_error}"
+                ));
+            }
+            // A same-path explicit IPC reattach carries the prior script identity so disabling
+            // chat can reach the already-running bridge. If that identity is stale because mpv
+            // replaced or unloaded the script, discard the assumption and establish it once.
+            player.set_legacy_syncplayintf_script_attachment(None);
+            load_legacy_syncplayintf_bridge(player).map_err(|reload_error| {
+                format!(
+                    "syncplayintf rejected the updated GUI options ({first_error}); reloading the bridge also failed: {reload_error}"
+                )
+            })?;
+            apply_pending_legacy_syncplayintf_options_with_retry(player).map_err(
+                |retry_error| {
+                    format!(
+                        "syncplayintf did not acknowledge the updated GUI options after reload: {retry_error}"
+                    )
+                },
+            )?;
+        }
+        if !player.legacy_syncplayintf_options_ready() {
+            return Err("syncplayintf did not acknowledge the updated GUI options".to_owned());
+        }
     }
 
     Ok(())
+}
+
+fn load_legacy_syncplayintf_bridge(player: &mut MpvAdapter) -> Result<(), String> {
+    let script_path = find_legacy_syncplayintf_script_path().ok_or_else(|| {
+        "legacy mpv syncplayintf.lua could not be found for enabled chat input/output".to_owned()
+    })?;
+    player
+        .load_legacy_syncplayintf_script(&script_path)
+        .map_err(|error| {
+            format!(
+                "failed to load legacy mpv syncplayintf.lua from '{}': {error}",
+                script_path.display()
+            )
+        })
+}
+
+fn apply_pending_legacy_syncplayintf_options_with_retry(
+    player: &mut MpvAdapter,
+) -> Result<(), sorotte_player_api::PlayerError> {
+    const RETRY_WINDOW: Duration = Duration::from_millis(500);
+    const RETRY_INTERVAL: Duration = Duration::from_millis(25);
+
+    let deadline = Instant::now() + RETRY_WINDOW;
+    loop {
+        match player.apply_pending_legacy_syncplayintf_options() {
+            Ok(()) => return Ok(()),
+            Err(error) if Instant::now() >= deadline => return Err(error),
+            Err(_) => std::thread::sleep(RETRY_INTERVAL),
+        }
+    }
 }
 
 pub(crate) fn configure_effective_streaming_options_for_network_media(
@@ -400,12 +453,19 @@ fn timeout_ms_from_stored_client_setting(value: Option<i64>, default_ms: u64) ->
 
 fn legacy_syncplayintf_script_candidate_paths() -> Vec<PathBuf> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    vec![
+    let mut paths = Vec::new();
+    if let Ok(executable_path) = env::current_exe()
+        && let Some(executable_dir) = executable_path.parent()
+    {
+        paths.push(executable_dir.join("resources/syncplayintf.lua"));
+    }
+    paths.extend([
         manifest_dir.join("../../resources/syncplayintf.lua"),
         manifest_dir
             .join("../../.interop-cache/syncplay-legacy/syncplay/resources/syncplayintf.lua"),
         manifest_dir.join("../../../syncplay/syncplay/resources/syncplayintf.lua"),
-    ]
+    ]);
+    paths
 }
 
 fn legacy_syncplayintf_chat_input_bridge_source() -> &'static str {
@@ -651,6 +711,7 @@ mod tests {
     use super::{
         LEGACY_SYNCPLAYINTF_CHAT_INPUT_BRIDGE_MARKER, ManagedMpvLaunchConfig,
         ManagedMpvSettingsDecision, autodetect_mpv_player_path_legacy_compatible_from_lookup,
+        legacy_syncplayintf_script_candidate_paths,
         legacy_syncplayintf_script_source_with_chat_input_bridge, managed_mpv_launch_args,
         managed_mpv_settings_decision_from_settings,
     };
@@ -759,6 +820,18 @@ mod tests {
 
         assert!(once.contains(LEGACY_SYNCPLAYINTF_CHAT_INPUT_BRIDGE_MARKER));
         assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn legacy_syncplayintf_candidates_include_the_tracked_bundled_resource() {
+        let bundled =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../resources/syncplayintf.lua");
+
+        assert!(
+            bundled.is_file(),
+            "chat-enabled player startup must not depend on an ignored cache or sibling checkout"
+        );
+        assert!(legacy_syncplayintf_script_candidate_paths().contains(&bundled));
     }
 
     #[test]

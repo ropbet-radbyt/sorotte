@@ -146,6 +146,24 @@ impl GuiPersistedConfigRuntimeOwner {
         projected_state: &mut SorotteGuiShellAppState,
         requested_servers: Vec<(String, String)>,
     ) -> bool {
+        self.handle_complete_public_server_refresh_request_with_fetcher(
+            handle,
+            projected_state,
+            requested_servers,
+            Self::refresh_public_servers_without_session,
+        )
+    }
+
+    pub(in crate::app) fn handle_complete_public_server_refresh_request_with_fetcher<F>(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        requested_servers: Vec<(String, String)>,
+        fetch_detached: F,
+    ) -> bool
+    where
+        F: FnOnce(Option<&str>) -> Result<Vec<(String, String)>, String>,
+    {
         let current_servers = projected_state
             .public_servers
             .servers
@@ -155,14 +173,11 @@ impl GuiPersistedConfigRuntimeOwner {
         let language = Some(projected_state.runtime_language_tag_legacy_compatible());
         let refresh_result = if let Some(session) = self.session.as_mut() {
             session.refresh_public_servers(current_servers, language)
-        } else if !requested_servers.is_empty() {
-            Ok(
-                GuiClientCoreChatSessionRuntimeAdapter::normalize_public_server_rows(
-                    requested_servers,
-                ),
-            )
         } else {
-            Self::refresh_public_servers_without_session(current_servers, language)
+            // The request retains the current rows for portable fallback compatibility. An
+            // owner-backed manual refresh must never substitute that cache for a remote result.
+            let _ = requested_servers;
+            fetch_detached(language)
         };
         match refresh_result {
             Ok(servers) => Self::push_actions_and_project(
@@ -173,9 +188,7 @@ impl GuiPersistedConfigRuntimeOwner {
             Err(error) => self.clear_pending_operation_with_runtime_error(
                 handle,
                 projected_state,
-                format!(
-                    "Public server refresh through the attached session runtime failed: {error}"
-                ),
+                format!("Public server refresh failed: {error}"),
             ),
         }
         true
@@ -322,6 +335,9 @@ impl GuiPersistedConfigRuntimeOwner {
             Ok(()) => {
                 self.config_path = Some(path);
                 self.promote_on_save_runtime_fields(&settings);
+                if self.apply_saved_player_settings_in_place(&settings) {
+                    self.promote_restart_player_runtime_fields(&settings);
+                }
                 self.adopt_saved_player_launch_state_when_inactive(&settings);
                 self.invalidate_plex_operation_context_if_settings_changed(
                     handle,
@@ -561,6 +577,9 @@ impl GuiPersistedConfigRuntimeOwner {
         self.invalidate_plex_operation_context(handle, projected_state);
         self.config_path = Some(paths.config_path.clone());
         self.promote_on_save_runtime_fields(&settings);
+        if self.apply_saved_player_settings_in_place(&settings) {
+            self.promote_restart_player_runtime_fields(&settings);
+        }
         self.adopt_saved_player_launch_state_when_inactive(&settings);
         self.clear_attached_media_search_runtime_cache();
         let stream_helper_snapshot = self.refresh_stream_helper_runtime_snapshot_for_target(None);

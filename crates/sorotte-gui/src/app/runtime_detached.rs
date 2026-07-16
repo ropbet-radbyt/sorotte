@@ -33,9 +33,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn detached_runtime_settings_for_state(
         state: &SorotteGuiShellAppState,
     ) -> StoredClientSettingsRuntimeSnapshot {
-        stored_client_settings_runtime_snapshot_legacy_compatible(
-            &state.configuration.to_stored_settings(),
-        )
+        stored_client_settings_runtime_snapshot_legacy_compatible(&state.saved_configuration)
     }
 
     fn session_runtime_settings_for_state(
@@ -489,8 +487,7 @@ impl GuiPersistedConfigRuntimeOwner {
     }
 
     pub(super) fn refresh_public_servers_without_session(
-        _current_servers: Vec<(String, String)>,
-        _language: Option<&str>,
+        language: Option<&str>,
     ) -> Result<Vec<(String, String)>, String> {
         if let Some(refreshed_servers) =
             GuiClientCoreChatSessionRuntimeAdapter::refreshed_public_server_rows_from_env()?
@@ -499,15 +496,15 @@ impl GuiPersistedConfigRuntimeOwner {
         }
         #[cfg(test)]
         {
-            Ok(
-                GuiClientCoreChatSessionRuntimeAdapter::normalize_public_server_rows(
-                    _current_servers,
-                ),
+            let _ = language;
+            Err(
+                "Detached public-server refresh tests must provide an explicit remote fetcher."
+                    .to_owned(),
             )
         }
         #[cfg(not(test))]
         {
-            let refreshed_servers = remote_services::fetch_public_servers(_language)?;
+            let refreshed_servers = remote_services::fetch_public_servers(language)?;
             Ok(
                 GuiClientCoreChatSessionRuntimeAdapter::normalize_public_server_rows(
                     refreshed_servers,
@@ -763,6 +760,9 @@ impl GuiPersistedConfigRuntimeOwner {
         ) {
             Ok(()) if connect_intent == GuiSavedServerConnectIntent::SaveAndConnect => {
                 self.promote_on_save_runtime_fields(&active_settings);
+                if self.apply_saved_player_settings_in_place(&active_settings) {
+                    self.promote_restart_player_runtime_fields(&active_settings);
+                }
                 self.adopt_saved_player_launch_state_when_inactive(&active_settings);
                 let pending_requirements =
                     self.pending_apply_requirements_action(projected_state, &active_settings);

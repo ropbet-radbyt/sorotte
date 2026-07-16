@@ -366,8 +366,11 @@ impl SorotteGuiShellAppState {
                 "Public servers refreshed: none available.".to_owned(),
             );
         } else {
-            self.set_selected_public_server_index(Some(0));
-            let _ = self.apply_public_server_selection(0);
+            // resync_from_settings restores a matching prior selection by address. Fall back to
+            // the first refreshed row only when that address is no longer present.
+            let selected_index = self.selected_public_server_index().unwrap_or(0);
+            self.set_selected_public_server_index(Some(selected_index));
+            let _ = self.apply_public_server_selection(selected_index);
         }
         self.clear_action_error_and_refresh();
         true

@@ -156,6 +156,9 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) player: Option<GuiOwnedPlayer>,
     pub(super) player_launch_state: GuiPlayerLaunchRuntimeState,
     pub(super) applied_player_launch_state: Option<GuiPlayerLaunchRuntimeState>,
+    pub(super) player_settings_reapply_required: bool,
+    pub(super) explicit_mpv_osd_placement_restore: Option<(String, String, i64)>,
+    pub(super) explicit_mpv_syncplayintf_script: Option<(String, String)>,
     pub(super) managed_mpv_process: Option<ManagedMpvProcessGuard>,
     pub(super) player_unavailability_reason: Option<String>,
     pub(super) player_local_file: Option<LocalFileUpdate>,
@@ -239,21 +242,18 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
 impl GuiPersistedConfigRuntimeOwner {
     /// Settings that are allowed to influence ordinary runtime work right now.
     ///
-    /// A connected session is pinned to its explicit active snapshot. Merely editing the
-    /// Settings draft must not alter playback, privacy, media lookup, or integration behavior
-    /// until Save/reconnect or an explicit immediate feature action applies a scoped patch.
+    /// A connected session is pinned to its explicit active snapshot. Detached work uses the
+    /// last saved configuration. Merely editing the Settings draft must not alter playback,
+    /// privacy, media lookup, or integration behavior until Save/reconnect or an explicit
+    /// immediate feature action applies a scoped patch.
     pub(in crate::app::runtime_owner) fn runtime_operation_settings(
         &self,
         state: &SorotteGuiShellAppState,
     ) -> StoredClientSettingsMvp {
-        if self.session_projects_to_shell {
-            return self
-                .active_session_settings
-                .as_ref()
-                .map(|runtime_settings| runtime_settings.settings.clone())
-                .unwrap_or_else(|| state.saved_configuration.clone());
-        }
-        state.configuration.to_stored_settings()
+        self.active_session_settings
+            .as_ref()
+            .map(|runtime_settings| runtime_settings.settings.clone())
+            .unwrap_or_else(|| state.saved_configuration.clone())
     }
 
     pub(in crate::app::runtime_owner) fn runtime_shared_playlist_enabled(
@@ -440,12 +440,16 @@ impl GuiPersistedConfigRuntimeOwner {
             requirements.insert(GuiSettingApplyRequirement::Reconnect);
         }
 
-        if let Some(applied_player_launch_state) = self.applied_player_launch_state.as_ref()
-            && Self::configured_player_launch_state_from_lookup_and_settings(
-                &env_trimmed,
-                Some(saved_settings),
+        if self.player_settings_reapply_required
+            || self.applied_player_launch_state.as_ref().is_some_and(
+                |applied_player_launch_state| {
+                    Self::configured_player_launch_state_from_lookup_and_settings(
+                        &env_trimmed,
+                        Some(saved_settings),
+                    )
+                    .map_or(true, |desired| desired != *applied_player_launch_state)
+                },
             )
-            .map_or(true, |desired| desired != *applied_player_launch_state)
         {
             requirements.insert(GuiSettingApplyRequirement::RestartPlayer);
         }

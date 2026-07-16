@@ -232,6 +232,13 @@ impl MpvJsonIpcClient {
             .and_then(|value| value.as_u64().or_else(|| value.as_i64()?.try_into().ok())))
     }
 
+    pub(crate) fn get_property_i64(&mut self, property_name: &str) -> Result<Option<i64>, String> {
+        let value = self.get_property(property_name)?;
+        Ok(value
+            .as_ref()
+            .and_then(|value| value.as_i64().or_else(|| value.as_u64()?.try_into().ok())))
+    }
+
     fn send_command(&mut self, command: Value) -> Result<Value, String> {
         self.send_command_classified(command, false)
             .map_err(MpvIpcCommandFailure::into_message)

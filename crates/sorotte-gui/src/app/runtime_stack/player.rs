@@ -1,9 +1,7 @@
 use std::{collections::VecDeque, path::Path};
 
 use crate::app::mpv_launch::ManagedMpvLaunchConfig;
-use sorotte_client_app::app_boundary::state::{
-    EffectiveMpvStreamingOption, StreamingPlaybackConfig,
-};
+use sorotte_client_app::app_boundary::state::EffectiveMpvStreamingOption;
 use sorotte_player_api::{
     LocalFileUpdate, PlayerAdapter, PlayerCommand, PlayerCommandId, PlayerCommandProgress,
     PlayerError, PlayerMediaLoadOutcome, PlayerPlaybackTelemetryUpdate,
@@ -276,7 +274,6 @@ pub(in super::super) enum GuiPlayerLaunchRuntimeState {
     ExplicitMpvIpc {
         ipc_path: String,
         ui_settings: Box<LegacySyncplayUiSettings>,
-        streaming: Box<StreamingPlaybackConfig>,
         effective_streaming_options: Vec<EffectiveMpvStreamingOption>,
     },
     ManagedMpv(Box<ManagedMpvLaunchConfig>),

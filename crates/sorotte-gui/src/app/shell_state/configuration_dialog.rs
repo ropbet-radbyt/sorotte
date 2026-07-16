@@ -462,8 +462,40 @@ impl SettingId {
             | Self::SyncFastforwardThreshold
             | Self::SyncSlowdownThreshold
             | Self::ChatInputEnabled
-            | Self::ChatOutputEnabled
+            | Self::OsdShowDuration
+            | Self::OsdShowSameRoom
+            | Self::OsdShowWarnings
+            | Self::OsdShowSlowdown
+            | Self::OsdShowNoncontroller
+            | Self::OsdShowDifferentRoom
+            | Self::StreamingQuality
+            | Self::StreamingBufferTargetSeconds
+            | Self::StreamingRecoveryPolicy
+            | Self::StreamingMaximumCatchupRate
+            | Self::StreamingHardSeekThresholdSeconds
+            | Self::StreamingMaximumHardSeeks
+            | Self::StreamingStabilityIntervalSeconds
+            | Self::StreamingRecoveryRetryBudget
+            | Self::StreamingRecoveryCooldownSeconds
+            | Self::StreamingRoomBufferingPolicy
+            | Self::StreamingRoomQuorumPercent
+            | Self::StreamingRoomMaximumPauseSeconds
+            | Self::StreamingStartSynchronization
+            | Self::StreamingStartQuorumPercent
+            | Self::StreamingStartTimeoutSeconds
+            | Self::StreamingStartTimeoutAction
+            | Self::StreamingQualityDowngradeSuggestions => GuiSettingApplyRequirement::Reconnect,
+            Self::PlayerExecutable | Self::PlayerArguments => {
+                GuiSettingApplyRequirement::RestartPlayer
+            }
+            Self::GeneralLanguage | Self::GeneralForceGuiPrompt => {
+                GuiSettingApplyRequirement::RestartApplication
+            }
+            Self::ConnectionPublicServerCount
+            | Self::ConnectionRoomHistory
+            | Self::ConnectionRoomHistoryCount
             | Self::ChatDirectInput
+            | Self::ChatOutputEnabled
             | Self::ChatMoveOsd
             | Self::ChatInputPosition
             | Self::ChatOutputMode
@@ -480,46 +512,15 @@ impl SettingId {
             | Self::ChatBottomMargin
             | Self::ChatOsdMargin
             | Self::OsdShow
-            | Self::OsdShowDuration
-            | Self::OsdShowSameRoom
-            | Self::OsdShowWarnings
-            | Self::OsdShowSlowdown
-            | Self::OsdShowNoncontroller
-            | Self::OsdShowDifferentRoom
             | Self::OsdShowContactInfo
             | Self::OsdNotificationTimeout
             | Self::OsdAlertTimeout
-            | Self::OsdChatTimeout => GuiSettingApplyRequirement::Reconnect,
-            Self::PlayerExecutable
-            | Self::PlayerArguments
-            | Self::StreamingQuality
+            | Self::OsdChatTimeout
             | Self::StreamingCustomFormat
-            | Self::StreamingBufferTargetSeconds
             | Self::StreamingReadAheadSeconds
             | Self::StreamingMemoryCacheMib
             | Self::StreamingDiskCache
-            | Self::StreamingRecoveryPolicy
-            | Self::StreamingMaximumCatchupRate
-            | Self::StreamingHardSeekThresholdSeconds
-            | Self::StreamingMaximumHardSeeks
-            | Self::StreamingStabilityIntervalSeconds
-            | Self::StreamingRecoveryRetryBudget
-            | Self::StreamingRecoveryCooldownSeconds
-            | Self::StreamingRoomBufferingPolicy
-            | Self::StreamingRoomQuorumPercent
-            | Self::StreamingRoomMaximumPauseSeconds
-            | Self::StreamingStartSynchronization
-            | Self::StreamingStartQuorumPercent
-            | Self::StreamingStartTimeoutSeconds
-            | Self::StreamingStartTimeoutAction
-            | Self::StreamingQualityDowngradeSuggestions
-            | Self::StreamingEffectiveMpvOptions => GuiSettingApplyRequirement::RestartPlayer,
-            Self::GeneralLanguage | Self::GeneralForceGuiPrompt => {
-                GuiSettingApplyRequirement::RestartApplication
-            }
-            Self::ConnectionPublicServerCount
-            | Self::ConnectionRoomHistory
-            | Self::ConnectionRoomHistoryCount
+            | Self::StreamingEffectiveMpvOptions
             | Self::MediaLibraryDirectories
             | Self::MediaLibraryDirectoryCount
             | Self::MediaLibraryFirstFileTimeout

@@ -1255,24 +1255,48 @@ fn gui_persisted_config_runtime_owner_bootstraps_detached_public_server_connect(
 }
 
 #[test]
-fn gui_persisted_config_runtime_owner_refreshes_public_servers_without_session() {
+fn gui_persisted_config_runtime_owner_manual_refresh_replaces_non_empty_cached_public_servers() {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         public_servers: Some(vec![
-            (" Primary ".to_owned(), " syncplay.pl:8999 ".to_owned()),
-            ("Duplicate".to_owned(), "SYNCPLAY.PL:8999".to_owned()),
-            ("Invalid".to_owned(), " :9000 ".to_owned()),
-            ("Backup".to_owned(), "backup.example:9000".to_owned()),
+            (
+                "Cached Primary".to_owned(),
+                "cached.example:8999".to_owned(),
+            ),
+            ("Cached Backup".to_owned(), "backup.example:9000".to_owned()),
         ]),
         ..StoredClientSettingsMvp::default()
     });
+    let requested_servers = state
+        .public_servers
+        .servers
+        .iter()
+        .map(|row| (row.label.clone(), row.address.clone()))
+        .collect();
+    let fetch_calls = std::cell::Cell::new(0_u8);
 
     assert!(state.apply(GuiShellAction::BeginPublicServerRefresh));
-    handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
-        GuiPendingCompletionRequest::RefreshPublicServers(vec![]),
-    ));
-    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    assert!(
+        owner.handle_complete_public_server_refresh_request_with_fetcher(
+            &handle,
+            &mut state,
+            requested_servers,
+            |_language| {
+                fetch_calls.set(fetch_calls.get() + 1);
+                Ok(vec![
+                    (
+                        "Remote Primary".to_owned(),
+                        "remote.example:8999".to_owned(),
+                    ),
+                    (
+                        "Remote Backup".to_owned(),
+                        "remote-backup.example:9000".to_owned(),
+                    ),
+                ])
+            },
+        )
+    );
     let actions = handle.drain_actions();
     assert!(
         actions.iter().any(|action| matches!(
@@ -1280,18 +1304,144 @@ fn gui_persisted_config_runtime_owner_refreshes_public_servers_without_session()
             GuiShellAction::CompletePublicServerRefresh(servers)
                 if servers
                     == &vec![
-                        ("Primary".to_owned(), "syncplay.pl:8999".to_owned()),
-                        ("Backup".to_owned(), "backup.example:9000".to_owned()),
+                        ("Remote Primary".to_owned(), "remote.example:8999".to_owned()),
+                        ("Remote Backup".to_owned(), "remote-backup.example:9000".to_owned()),
                     ]
         )),
-        "detached public-server refresh should normalize and complete without a preexisting session runtime"
+        "manual detached refresh should replace cached rows with the remote result"
     );
-    for action in actions {
-        assert!(state.apply(action));
-    }
+    assert_eq!(
+        fetch_calls.get(),
+        1,
+        "manual refresh must contact its fetcher"
+    );
     assert!(state.pending_operation.is_none());
-    assert_eq!(state.public_servers.servers.len(), 2);
+    assert_eq!(
+        state
+            .public_servers
+            .servers
+            .iter()
+            .map(|row| (row.label.as_str(), row.address.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("Remote Primary", "remote.example:8999"),
+            ("Remote Backup", "remote-backup.example:9000"),
+        ]
+    );
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_manual_refresh_populates_explicitly_empty_public_servers() {
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        public_servers: Some(Vec::new()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    assert!(state.public_servers.servers.is_empty());
+    assert!(state.apply(GuiShellAction::BeginPublicServerRefresh));
+    assert!(
+        owner.handle_complete_public_server_refresh_request_with_fetcher(
+            &handle,
+            &mut state,
+            Vec::new(),
+            |_language| {
+                Ok(vec![(
+                    "Remote Primary".to_owned(),
+                    "remote.example:8999".to_owned(),
+                )])
+            },
+        )
+    );
+
+    assert!(state.pending_operation.is_none());
+    assert_eq!(state.public_servers.servers.len(), 1);
+    assert_eq!(
+        state.public_servers.servers[0].address,
+        "remote.example:8999"
+    );
     assert_eq!(state.selected_public_server_index(), Some(0));
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_failed_manual_refresh_preserves_rows_and_clears_pending() {
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        public_servers: Some(vec![
+            (
+                "Cached Primary".to_owned(),
+                "cached.example:8999".to_owned(),
+            ),
+            ("Cached Backup".to_owned(), "backup.example:9000".to_owned()),
+        ]),
+        ..StoredClientSettingsMvp::default()
+    });
+    assert!(state.apply(GuiShellAction::SelectPublicServer(1)));
+    let original_rows = state.public_servers.servers.clone();
+
+    assert!(state.apply(GuiShellAction::BeginPublicServerRefresh));
+    assert!(
+        owner.handle_complete_public_server_refresh_request_with_fetcher(
+            &handle,
+            &mut state,
+            vec![(
+                "ignored cache".to_owned(),
+                "ignored.example:8999".to_owned()
+            )],
+            |_language| Err("remote service unavailable".to_owned()),
+        )
+    );
+    let actions = handle.drain_actions();
+
+    assert!(actions.contains(&GuiShellAction::CompletePendingOperation));
+    assert!(actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::PushTransientNotification {
+            level: GuiTransientNotificationLevel::Error,
+            message,
+        } if message.contains("remote service unavailable")
+    )));
+    assert!(state.pending_operation.is_none());
+    assert_eq!(state.public_servers.servers, original_rows);
+    assert_eq!(state.selected_public_server_index(), Some(1));
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_manual_refresh_retains_selection_by_address() {
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        public_servers: Some(vec![
+            ("Primary".to_owned(), "primary.example:8999".to_owned()),
+            ("Keep Me".to_owned(), "keep.example:9000".to_owned()),
+        ]),
+        ..StoredClientSettingsMvp::default()
+    });
+    assert!(state.apply(GuiShellAction::SelectPublicServer(1)));
+
+    assert!(state.apply(GuiShellAction::BeginPublicServerRefresh));
+    assert!(
+        owner.handle_complete_public_server_refresh_request_with_fetcher(
+            &handle,
+            &mut state,
+            Vec::new(),
+            |_language| {
+                Ok(vec![
+                    ("Still Here".to_owned(), "keep.example:9000".to_owned()),
+                    ("New Primary".to_owned(), "new.example:8999".to_owned()),
+                ])
+            },
+        )
+    );
+
+    assert!(state.pending_operation.is_none());
+    assert_eq!(state.selected_public_server_index(), Some(0));
+    assert_eq!(
+        state.selected_public_server_address(),
+        Some("keep.example:9000")
+    );
 }
 
 #[test]

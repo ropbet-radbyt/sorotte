@@ -171,13 +171,42 @@ impl GuiPersistedConfigRuntimeOwner {
                     }
                 }
                 GuiAttachedPlayerRuntimeAction::PlaybackRate(playback_rate) => {
+                    let slowdown_osd_message = self
+                        .active_session_settings
+                        .as_ref()
+                        .is_some_and(|settings| settings.config.interface.show_slowdown_osd)
+                        .then_some(playback_rate)
+                        .and_then(|rate| {
+                            if rate < 1.0 {
+                                Some("Slowing playback to synchronize with the room.")
+                            } else if (rate - 1.0).abs() < f64::EPSILON {
+                                Some("Restoring normal playback speed.")
+                            } else {
+                                None
+                            }
+                        });
                     let Some(player) = self.player.as_mut() else {
                         return state_changed;
                     };
-                    if let Err(error) = player.set_playback_rate(playback_rate) {
-                        eprintln!(
-                            "warning: failed to apply attached-player {action_description} playback-rate action: {error}"
-                        );
+                    match player.set_playback_rate(playback_rate) {
+                        Ok(()) => {
+                            if let Some(message) = slowdown_osd_message
+                                && let Some(player) = player.as_mpv_mut()
+                                && let Err(error) = player.show_syncplay_legacy_message(
+                                    message,
+                                    LegacySyncplayOsdKind::Notification,
+                                )
+                            {
+                                eprintln!(
+                                    "warning: failed to display attached-player slowdown via mpv OSD: {error}"
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            eprintln!(
+                                "warning: failed to apply attached-player {action_description} playback-rate action: {error}"
+                            );
+                        }
                     }
                 }
                 GuiAttachedPlayerRuntimeAction::Coordinator {

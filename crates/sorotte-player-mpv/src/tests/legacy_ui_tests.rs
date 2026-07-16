@@ -123,10 +123,18 @@ fn load_legacy_syncplayintf_script_ignores_early_option_message_failure_and_retr
     adapter
         .load_legacy_syncplayintf_script(std::path::Path::new("C:/syncplay/syncplayintf.lua"))
         .expect("initial syncplayintf load should ignore early option-message timing races");
+    assert!(
+        !adapter.legacy_syncplayintf_options_ready(),
+        "the bridge must remain pending until it acknowledges the options payload"
+    );
 
     adapter
         .show_syncplay_legacy_chat_message("<alice> hi")
         .expect("legacy chat should retry option handoff before using the script");
+    assert!(
+        adapter.legacy_syncplayintf_options_ready(),
+        "a successful retry should make bridge readiness observable to GUI lifecycle code"
+    );
 
     let writes = state.writes();
     assert_eq!(writes.len(), 4);
@@ -185,8 +193,10 @@ fn legacy_osd_falls_back_to_show_text_while_syncplayintf_initialization_is_still
 #[test]
 fn configure_legacy_syncplay_ui_settings_applies_osd_position_when_needed() {
     let (transport, state) = fake_transport_with_reads(&[
-        r#"{"request_id":1,"error":"success"}"#,
-        r#"{"request_id":2,"error":"success"}"#,
+        r#"{"request_id":1,"error":"success","data":"top"}"#,
+        r#"{"request_id":2,"error":"success","data":16}"#,
+        r#"{"request_id":3,"error":"success"}"#,
+        r#"{"request_id":4,"error":"success"}"#,
     ]);
     let mut adapter = MpvAdapter::with_test_transport(transport);
 
@@ -195,27 +205,216 @@ fn configure_legacy_syncplay_ui_settings_applies_osd_position_when_needed() {
         .expect("legacy settings application should succeed");
 
     let writes = state.writes();
-    assert_eq!(writes.len(), 2);
+    assert_eq!(writes.len(), 4);
     let first_payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
     let second_payload: Value = serde_json::from_str(writes[1].trim_end()).expect("valid json");
+    let third_payload: Value = serde_json::from_str(writes[2].trim_end()).expect("valid json");
+    let fourth_payload: Value = serde_json::from_str(writes[3].trim_end()).expect("valid json");
     assert_eq!(
         first_payload,
         json!({
-            "command": ["set_property", "osd-align-y", "bottom"],
+            "command": ["get_property", "osd-align-y"],
             "request_id": 1
         })
     );
     assert_eq!(
         second_payload,
         json!({
-            "command": ["set_property", "osd-margin-y", 110],
+            "command": ["get_property", "osd-margin-y"],
             "request_id": 2
+        })
+    );
+    assert_eq!(
+        third_payload,
+        json!({
+            "command": ["set_property", "osd-align-y", "bottom"],
+            "request_id": 3
+        })
+    );
+    assert_eq!(
+        fourth_payload,
+        json!({
+            "command": ["set_property", "osd-margin-y", 110],
+            "request_id": 4
         })
     );
     assert_eq!(
         adapter.legacy_syncplay_ui_settings(),
         &LegacySyncplayUiSettings::default()
     );
+}
+
+#[test]
+fn configure_legacy_syncplay_ui_settings_restores_osd_position_when_move_is_disabled() {
+    let (transport, state) = fake_transport_with_reads(&[
+        r#"{"request_id":1,"error":"success","data":"top"}"#,
+        r#"{"request_id":2,"error":"success","data":16}"#,
+        r#"{"request_id":3,"error":"success"}"#,
+        r#"{"request_id":4,"error":"success"}"#,
+        r#"{"request_id":5,"error":"success"}"#,
+        r#"{"request_id":6,"error":"success"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+
+    adapter
+        .configure_legacy_syncplay_ui_settings(LegacySyncplayUiSettings::default())
+        .expect("enabling OSD movement should succeed");
+    let restored_settings = LegacySyncplayUiSettings {
+        chat_move_osd: false,
+        ..LegacySyncplayUiSettings::default()
+    };
+    adapter
+        .configure_legacy_syncplay_ui_settings(restored_settings.clone())
+        .expect("disabling OSD movement should restore the captured placement");
+
+    let writes = state.writes();
+    assert_eq!(writes.len(), 6);
+    let fifth_payload: Value = serde_json::from_str(writes[4].trim_end()).expect("valid json");
+    let sixth_payload: Value = serde_json::from_str(writes[5].trim_end()).expect("valid json");
+    assert_eq!(
+        fifth_payload,
+        json!({
+            "command": ["set_property", "osd-align-y", "top"],
+            "request_id": 5
+        })
+    );
+    assert_eq!(
+        sixth_payload,
+        json!({
+            "command": ["set_property", "osd-margin-y", 16],
+            "request_id": 6
+        })
+    );
+    assert_eq!(adapter.legacy_syncplay_ui_settings(), &restored_settings);
+}
+
+#[test]
+fn transferred_osd_restore_state_survives_an_explicit_ipc_reattach() {
+    let (first_transport, _) = fake_transport_with_reads(&[
+        r#"{"request_id":1,"error":"success","data":"top"}"#,
+        r#"{"request_id":2,"error":"success","data":16}"#,
+        r#"{"request_id":3,"error":"success"}"#,
+        r#"{"request_id":4,"error":"success"}"#,
+    ]);
+    let mut first_adapter = MpvAdapter::with_test_transport(first_transport);
+    first_adapter
+        .configure_legacy_syncplay_ui_settings(LegacySyncplayUiSettings::default())
+        .expect("the first explicit IPC adapter should capture and move OSD placement");
+    let restore = first_adapter
+        .legacy_syncplay_osd_placement_restore()
+        .expect("the original external mpv placement should remain transferable");
+
+    let (reattached_transport, reattached_state) = fake_transport_with_reads(&[
+        r#"{"request_id":1,"error":"success"}"#,
+        r#"{"request_id":2,"error":"success"}"#,
+    ]);
+    let mut reattached_adapter = MpvAdapter::with_test_transport(reattached_transport);
+    reattached_adapter.set_legacy_syncplay_osd_placement_restore(Some(restore));
+    let restored_settings = LegacySyncplayUiSettings {
+        chat_move_osd: false,
+        ..LegacySyncplayUiSettings::default()
+    };
+    reattached_adapter
+        .configure_legacy_syncplay_ui_settings(restored_settings)
+        .expect("the reattached adapter should restore the pre-Sorotte placement");
+
+    let writes = reattached_state.writes();
+    assert_eq!(
+        writes.len(),
+        2,
+        "reattach must not recapture the moved values"
+    );
+    let first_payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
+    let second_payload: Value = serde_json::from_str(writes[1].trim_end()).expect("valid json");
+    assert_eq!(
+        first_payload["command"],
+        json!(["set_property", "osd-align-y", "top"])
+    );
+    assert_eq!(
+        second_payload["command"],
+        json!(["set_property", "osd-margin-y", 16])
+    );
+    assert!(
+        reattached_adapter
+            .legacy_syncplay_osd_placement_restore()
+            .is_none(),
+        "successful restoration should consume the transfer state"
+    );
+}
+
+#[test]
+fn transferred_bridge_attachment_applies_disabled_chat_options_after_explicit_ipc_reattach() {
+    let (first_transport, _) = fake_transport_with_reads(&[
+        r#"{"request_id":1,"error":"success"}"#,
+        r#"{"request_id":2,"error":"success"}"#,
+    ]);
+    let mut first_adapter = MpvAdapter::with_test_transport(first_transport);
+    first_adapter
+        .load_legacy_syncplayintf_script(std::path::Path::new("C:/syncplay/syncplayintf.lua"))
+        .expect("the first explicit IPC adapter should load the bridge");
+    let script_attachment = first_adapter
+        .legacy_syncplayintf_script_attachment()
+        .expect("bridge identity should remain transferable for the same external mpv");
+
+    let (reattached_transport, reattached_state) =
+        fake_transport_with_reads(&[r#"{"request_id":1,"error":"success"}"#]);
+    let mut reattached_adapter = MpvAdapter::with_test_transport(reattached_transport);
+    reattached_adapter.set_legacy_syncplayintf_script_attachment(Some(script_attachment));
+    reattached_adapter
+        .configure_legacy_syncplay_ui_settings(LegacySyncplayUiSettings {
+            chat_input_enabled: false,
+            chat_output_enabled: false,
+            ..LegacySyncplayUiSettings::default()
+        })
+        .expect("reattach should send the disabled state to the already-loaded bridge");
+
+    assert!(reattached_adapter.legacy_syncplayintf_options_ready());
+    let writes = reattached_state.writes();
+    assert_eq!(writes.len(), 1, "reattach must not load a duplicate script");
+    let payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
+    assert_eq!(payload["command"][0], "script-message-to");
+    assert_eq!(payload["command"][1], "syncplayintf");
+    assert_eq!(payload["command"][2], "set_syncplayintf_options");
+    let options = payload["command"][3]
+        .as_str()
+        .expect("bridge options should be a string payload");
+    assert!(options.contains("chatInputEnabled=False"));
+    assert!(options.contains("chatOutputEnabled=False"));
+}
+
+#[test]
+fn stale_transferred_bridge_attachment_can_be_cleared_reloaded_and_retried() {
+    let (transport, state) = fake_transport_with_reads(&[
+        r#"{"request_id":1,"error":"error running command"}"#,
+        r#"{"request_id":2,"error":"success"}"#,
+        r#"{"request_id":3,"error":"error running command"}"#,
+        r#"{"request_id":4,"error":"success"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter.set_legacy_syncplayintf_script_attachment(Some("syncplayintf".to_owned()));
+    adapter
+        .configure_legacy_syncplay_ui_settings(LegacySyncplayUiSettings {
+            chat_input_enabled: false,
+            chat_output_enabled: false,
+            ..LegacySyncplayUiSettings::default()
+        })
+        .expect("a stale transferred bridge send should remain retryable");
+    assert!(!adapter.legacy_syncplayintf_options_ready());
+
+    adapter.set_legacy_syncplayintf_script_attachment(None);
+    adapter
+        .load_legacy_syncplayintf_script(std::path::Path::new("C:/syncplay/syncplayintf.lua"))
+        .expect("stale bridge identity should be replaceable with a real script load");
+    adapter
+        .apply_pending_legacy_syncplayintf_options()
+        .expect("the post-load options retry should succeed");
+
+    assert!(adapter.legacy_syncplayintf_options_ready());
+    let writes = state.writes();
+    assert_eq!(writes.len(), 4);
+    let reload_payload: Value =
+        serde_json::from_str(writes[1].trim_end()).expect("valid reload json");
+    assert_eq!(reload_payload["command"][0], "load-script");
 }
 
 #[test]

@@ -46,6 +46,120 @@ fn persisted_owner_and_state(
     )
 }
 
+fn install_active_settings_baseline(
+    owner: &mut GuiPersistedConfigRuntimeOwner,
+    settings: &StoredClientSettingsMvp,
+) {
+    let snapshot = sorotte_client_app::app_boundary::state::
+        stored_client_settings_runtime_snapshot_legacy_compatible(settings);
+    owner.session_projects_to_shell = true;
+    owner.active_session_settings = Some(snapshot.clone());
+    owner.active_session_configured_settings = Some(snapshot);
+}
+
+fn install_attached_mpv_baseline(
+    owner: &mut GuiPersistedConfigRuntimeOwner,
+    settings: &StoredClientSettingsMvp,
+) {
+    let applied =
+        GuiPersistedConfigRuntimeOwner::configured_player_launch_state_from_lookup_and_settings(
+            &crate::app::startup_support::env_trimmed,
+            Some(settings),
+        )
+        .expect("mpv lifecycle fixture should resolve to a launch state");
+    assert!(matches!(
+        applied,
+        GuiPlayerLaunchRuntimeState::ManagedMpv(_)
+    ));
+    owner.player_launch_state = applied.clone();
+    owner.applied_player_launch_state = Some(applied);
+    owner.player = Some(GuiOwnedPlayer::Mpv(Box::new(
+        sorotte_player_mpv::SimulatedPlayer::new().into_inner(),
+    )));
+}
+
+#[test]
+fn chat_and_osd_requirements_follow_their_runtime_consumers() {
+    for id in [
+        SettingId::ChatInputFont,
+        SettingId::ChatTopMargin,
+        SettingId::ChatOutputEnabled,
+        SettingId::OsdShow,
+        SettingId::OsdNotificationTimeout,
+    ] {
+        assert_eq!(
+            id.apply_requirement(),
+            GuiSettingApplyRequirement::OnSave,
+            "{id:?} should be applied to the player during Save"
+        );
+    }
+    assert_eq!(
+        SettingId::OsdShowContactInfo.apply_requirement(),
+        GuiSettingApplyRequirement::OnSave,
+        "contact info is a saved GUI preference, not an active-session setting"
+    );
+    for id in [
+        SettingId::ChatInputEnabled,
+        SettingId::OsdShowWarnings,
+        SettingId::OsdShowSlowdown,
+    ] {
+        assert_eq!(
+            id.apply_requirement(),
+            GuiSettingApplyRequirement::Reconnect,
+            "{id:?} is also consumed by the active session"
+        );
+    }
+}
+
+#[test]
+fn streaming_requirements_follow_player_and_session_consumers() {
+    for id in [
+        SettingId::StreamingCustomFormat,
+        SettingId::StreamingReadAheadSeconds,
+        SettingId::StreamingMemoryCacheMib,
+        SettingId::StreamingDiskCache,
+        SettingId::StreamingEffectiveMpvOptions,
+    ] {
+        assert_eq!(
+            id.apply_requirement(),
+            GuiSettingApplyRequirement::OnSave,
+            "{id:?} is player-only and should be applied during Save"
+        );
+    }
+    for id in [
+        SettingId::StreamingQuality,
+        SettingId::StreamingBufferTargetSeconds,
+        SettingId::StreamingRecoveryPolicy,
+        SettingId::StreamingMaximumCatchupRate,
+        SettingId::StreamingHardSeekThresholdSeconds,
+        SettingId::StreamingMaximumHardSeeks,
+        SettingId::StreamingStabilityIntervalSeconds,
+        SettingId::StreamingRecoveryRetryBudget,
+        SettingId::StreamingRecoveryCooldownSeconds,
+        SettingId::StreamingRoomBufferingPolicy,
+        SettingId::StreamingRoomQuorumPercent,
+        SettingId::StreamingRoomMaximumPauseSeconds,
+        SettingId::StreamingStartSynchronization,
+        SettingId::StreamingStartQuorumPercent,
+        SettingId::StreamingStartTimeoutSeconds,
+        SettingId::StreamingStartTimeoutAction,
+        SettingId::StreamingQualityDowngradeSuggestions,
+    ] {
+        assert_eq!(
+            id.apply_requirement(),
+            GuiSettingApplyRequirement::Reconnect,
+            "{id:?} changes active session coordination"
+        );
+    }
+    for id in [SettingId::PlayerExecutable, SettingId::PlayerArguments] {
+        assert_eq!(
+            id.apply_requirement(),
+            GuiSettingApplyRequirement::RestartPlayer,
+            "{id:?} changes the player process target"
+        );
+    }
+}
+
 #[test]
 fn detached_ordinary_save_does_not_report_reconnect() {
     let initial = StoredClientSettingsMvp {
@@ -200,6 +314,315 @@ fn active_player_save_and_revert_toggle_restart_player_symmetrically() {
             .pending_apply_requirements
             .contains(&GuiSettingApplyRequirement::RestartPlayer)
     );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn tainted_partial_player_apply_is_rolled_back_before_restart_guidance_clears() {
+    let applied_settings = StoredClientSettingsMvp {
+        player_path: Some("C:/Players/mpv.exe".to_owned()),
+        chat_top_margin: Some(25),
+        ..StoredClientSettingsMvp::default()
+    };
+    let failed_saved_settings = StoredClientSettingsMvp {
+        player_path: Some("C:/Players/mpv.exe".to_owned()),
+        chat_top_margin: Some(45),
+        ..StoredClientSettingsMvp::default()
+    };
+    let (root, mut owner, handle, mut state) = persisted_owner_and_state(
+        "pending-apply-tainted-player-revert",
+        &failed_saved_settings,
+    );
+    install_attached_mpv_baseline(&mut owner, &applied_settings);
+    let failed_ui = crate::app::mpv_launch::legacy_syncplay_ui_settings_from_stored_settings(Some(
+        &failed_saved_settings,
+    ));
+    let Some(GuiOwnedPlayer::Mpv(player)) = owner.player.as_mut() else {
+        panic!("tainted player fixture should retain its simulated mpv adapter");
+    };
+    player
+        .configure_legacy_syncplay_ui_settings(failed_ui)
+        .expect("the fixture should model the locally mutated side of a partial failure");
+    owner.player_settings_reapply_required = true;
+    owner.player_unavailability_reason =
+        Some("mpv player settings were only partially applied".to_owned());
+
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        id: SettingId::ChatTopMargin,
+        value: "25".to_owned().into(),
+    }));
+    save_current_draft(&mut owner, &handle, &mut state);
+
+    assert!(
+        !owner.player_settings_reapply_required,
+        "the uncertainty marker may clear only after the applied baseline is re-established"
+    );
+    assert!(state.pending_apply_requirements.is_empty());
+    let Some(GuiOwnedPlayer::Mpv(player)) = owner.player.as_ref() else {
+        panic!("successful rollback should retain the attached mpv adapter");
+    };
+    assert_eq!(player.legacy_syncplay_ui_settings().chat_top_margin, 25);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn tainted_player_without_a_live_adapter_keeps_restart_guidance_and_failure_reason() {
+    let settings = StoredClientSettingsMvp {
+        player_path: Some("C:/Players/mpv.exe".to_owned()),
+        check_for_updates_automatically: Some(true),
+        ..StoredClientSettingsMvp::default()
+    };
+    let (root, mut owner, handle, mut state) =
+        persisted_owner_and_state("pending-apply-tainted-player-detached", &settings);
+    let applied =
+        GuiPersistedConfigRuntimeOwner::configured_player_launch_state_from_lookup_and_settings(
+            &crate::app::startup_support::env_trimmed,
+            Some(&settings),
+        )
+        .expect("tainted player settings should resolve to a launch state");
+    owner.player_launch_state = applied.clone();
+    owner.applied_player_launch_state = Some(applied);
+    owner.player = None;
+    owner.player_settings_reapply_required = true;
+    owner.player_unavailability_reason =
+        Some("mpv exited after a partial settings apply".to_owned());
+
+    assert!(state.apply(GuiShellAction::EditConfigurationBool {
+        id: SettingId::GeneralCheckForUpdatesAutomatically,
+        value: false,
+    }));
+    save_current_draft(&mut owner, &handle, &mut state);
+
+    assert_eq!(
+        state.pending_apply_requirements,
+        vec![GuiSettingApplyRequirement::RestartPlayer]
+    );
+    assert_eq!(
+        owner.player_unavailability_reason.as_deref(),
+        Some("mpv exited after a partial settings apply")
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn reverting_a_failed_player_target_reconciles_the_stale_target_and_error() {
+    let settings_a = StoredClientSettingsMvp {
+        player_path: Some("C:/Players/vlc-a.exe".to_owned()),
+        check_for_updates_automatically: Some(true),
+        ..StoredClientSettingsMvp::default()
+    };
+    let settings_b = StoredClientSettingsMvp {
+        player_path: Some("C:/Players/vlc-b.exe".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    };
+    let (root, mut owner, handle, mut state) =
+        persisted_owner_and_state("pending-apply-stale-player-target", &settings_a);
+    let launch_a =
+        GuiPersistedConfigRuntimeOwner::configured_player_launch_state_from_lookup_and_settings(
+            &crate::app::startup_support::env_trimmed,
+            Some(&settings_a),
+        )
+        .expect("player target A should resolve");
+    let launch_b =
+        GuiPersistedConfigRuntimeOwner::configured_player_launch_state_from_lookup_and_settings(
+            &crate::app::startup_support::env_trimmed,
+            Some(&settings_b),
+        )
+        .expect("player target B should resolve");
+    owner.applied_player_launch_state = Some(launch_a.clone());
+    owner.player_launch_state = launch_b;
+    owner.player_unavailability_reason = Some("failed to launch vlc-b.exe".to_owned());
+    state.pending_apply_requirements = vec![GuiSettingApplyRequirement::RestartPlayer];
+
+    assert!(state.apply(GuiShellAction::EditConfigurationBool {
+        id: SettingId::GeneralCheckForUpdatesAutomatically,
+        value: false,
+    }));
+    save_current_draft(&mut owner, &handle, &mut state);
+
+    assert_eq!(owner.player_launch_state, launch_a);
+    assert!(
+        !state
+            .pending_apply_requirements
+            .contains(&GuiSettingApplyRequirement::RestartPlayer)
+    );
+    assert!(
+        owner
+            .player_unavailability_reason
+            .as_deref()
+            .is_some_and(|reason| !reason.contains("vlc-b")),
+        "the reconciled error must describe target A, not the failed target B"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn reverting_a_failed_attachable_target_keeps_restart_until_the_restored_target_is_attached() {
+    let settings_a = StoredClientSettingsMvp {
+        player_path: Some("C:/Players/A/mpv.exe".to_owned()),
+        check_for_updates_automatically: Some(true),
+        ..StoredClientSettingsMvp::default()
+    };
+    let settings_b = StoredClientSettingsMvp {
+        player_path: Some("C:/Players/B/mpv.exe".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    };
+    let (root, mut owner, handle, mut state) =
+        persisted_owner_and_state("pending-apply-stale-attachable-target", &settings_a);
+    let launch_a =
+        GuiPersistedConfigRuntimeOwner::configured_player_launch_state_from_lookup_and_settings(
+            &crate::app::startup_support::env_trimmed,
+            Some(&settings_a),
+        )
+        .expect("attachable player target A should resolve");
+    let launch_b =
+        GuiPersistedConfigRuntimeOwner::configured_player_launch_state_from_lookup_and_settings(
+            &crate::app::startup_support::env_trimmed,
+            Some(&settings_b),
+        )
+        .expect("attachable player target B should resolve");
+    owner.applied_player_launch_state = Some(launch_a.clone());
+    owner.player_launch_state = launch_b;
+    owner.player = None;
+    owner.player_unavailability_reason = Some("failed to launch C:/Players/B/mpv.exe".to_owned());
+
+    assert!(state.apply(GuiShellAction::EditConfigurationBool {
+        id: SettingId::GeneralCheckForUpdatesAutomatically,
+        value: false,
+    }));
+    save_current_draft(&mut owner, &handle, &mut state);
+
+    assert_eq!(owner.player_launch_state, launch_a);
+    assert!(owner.player_settings_reapply_required);
+    assert_eq!(
+        state.pending_apply_requirements,
+        vec![GuiSettingApplyRequirement::RestartPlayer]
+    );
+    assert!(
+        owner
+            .player_unavailability_reason
+            .as_deref()
+            .is_some_and(|reason| !reason.contains("Players/B")),
+        "guidance should describe the restored target rather than the failed target B"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn osd_timeout_save_applies_to_attached_mpv_without_reconnect_or_restart() {
+    let initial = StoredClientSettingsMvp {
+        player_path: Some("C:/Players/mpv.exe".to_owned()),
+        notification_timeout_seconds: Some(3),
+        ..StoredClientSettingsMvp::default()
+    };
+    let (root, mut owner, handle, mut state) =
+        persisted_owner_and_state("pending-apply-osd-timeout", &initial);
+    install_active_settings_baseline(&mut owner, &initial);
+    install_attached_mpv_baseline(&mut owner, &initial);
+
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        id: SettingId::OsdNotificationTimeout,
+        value: "9".to_owned().into(),
+    }));
+    save_current_draft(&mut owner, &handle, &mut state);
+
+    assert_eq!(
+        state.pending_apply_requirements,
+        Vec::new(),
+        "in-place mpv failure: {:?}",
+        owner.player_unavailability_reason
+    );
+    assert_eq!(
+        owner
+            .active_session_configured_settings
+            .as_ref()
+            .and_then(|snapshot| snapshot.settings.notification_timeout_seconds),
+        Some(3),
+        "pure player UI must not rewrite the active session baseline"
+    );
+    let Some(GuiOwnedPlayer::Mpv(player)) = owner.player.as_ref() else {
+        panic!("OSD timeout fixture should retain its attached mpv adapter");
+    };
+    assert_eq!(
+        player.legacy_syncplay_ui_settings().notification_timeout_ms,
+        9_000
+    );
+    assert_eq!(
+        owner
+            .applied_player_launch_state
+            .as_ref()
+            .and_then(GuiPlayerLaunchRuntimeState::mpv_ui_settings)
+            .map(|settings| settings.notification_timeout_ms),
+        Some(9_000)
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn chat_margin_save_applies_to_attached_mpv_without_reconnect_or_restart() {
+    let initial = StoredClientSettingsMvp {
+        player_path: Some("C:/Players/mpv.exe".to_owned()),
+        chat_top_margin: Some(25),
+        ..StoredClientSettingsMvp::default()
+    };
+    let (root, mut owner, handle, mut state) =
+        persisted_owner_and_state("pending-apply-chat-margin", &initial);
+    install_active_settings_baseline(&mut owner, &initial);
+    install_attached_mpv_baseline(&mut owner, &initial);
+
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        id: SettingId::ChatTopMargin,
+        value: "45".to_owned().into(),
+    }));
+    save_current_draft(&mut owner, &handle, &mut state);
+
+    assert_eq!(
+        state.pending_apply_requirements,
+        Vec::new(),
+        "in-place mpv failure: {:?}",
+        owner.player_unavailability_reason
+    );
+    let Some(GuiOwnedPlayer::Mpv(player)) = owner.player.as_ref() else {
+        panic!("chat margin fixture should retain its attached mpv adapter");
+    };
+    assert_eq!(player.legacy_syncplay_ui_settings().chat_top_margin, 45);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn chat_input_save_applies_to_mpv_and_reports_only_reconnect_until_reconnected() {
+    let initial = StoredClientSettingsMvp {
+        player_path: Some("C:/Players/mpv.exe".to_owned()),
+        chat_input_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    };
+    let (root, mut owner, handle, mut state) =
+        persisted_owner_and_state("pending-apply-chat-input", &initial);
+    install_active_settings_baseline(&mut owner, &initial);
+    install_attached_mpv_baseline(&mut owner, &initial);
+
+    assert!(state.apply(GuiShellAction::EditConfigurationBool {
+        id: SettingId::ChatInputEnabled,
+        value: false,
+    }));
+    save_current_draft(&mut owner, &handle, &mut state);
+
+    assert_eq!(
+        state.pending_apply_requirements,
+        vec![GuiSettingApplyRequirement::Reconnect],
+        "in-place mpv failure: {:?}",
+        owner.player_unavailability_reason
+    );
+    let Some(GuiOwnedPlayer::Mpv(player)) = owner.player.as_ref() else {
+        panic!("chat input fixture should retain its attached mpv adapter");
+    };
+    assert!(!player.legacy_syncplay_ui_settings().chat_input_enabled);
+
+    install_active_settings_baseline(&mut owner, &state.saved_configuration);
+    assert!(
+        state.apply(owner.pending_apply_requirements_action(&state, &state.saved_configuration,))
+    );
+    assert!(state.pending_apply_requirements.is_empty());
     let _ = std::fs::remove_dir_all(root);
 }
 

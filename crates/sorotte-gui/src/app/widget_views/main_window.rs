@@ -26,7 +26,25 @@ impl SorotteGuiShellAppState {
             ],
         );
 
-        let mut overview_children = vec![top_region, self.main_window_room_filter_widget_node()];
+        let mut overview_children = vec![top_region];
+        if sorotte_client_app::app_boundary::state::ClientConfig::resolve(&self.saved_configuration)
+            .config
+            .interface
+            .show_contact_info
+        {
+            overview_children.push(
+                GuiWidgetNode::leaf(
+                    "main-window:contact-info",
+                    "Contact",
+                    GuiWidgetKind::Status,
+                    Some("Report issues: github.com/ropbet-radbyt/sorotte".to_owned()),
+                    true,
+                    false,
+                )
+                .with_tooltip("Project support and issue-reporting contact."),
+            );
+        }
+        overview_children.push(self.main_window_room_filter_widget_node());
         let mut overview_editor_panels = self.main_window_editor_panels();
         if !overview_editor_panels.is_empty() {
             if overview_editor_panels.len() == 1

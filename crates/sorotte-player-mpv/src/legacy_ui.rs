@@ -50,10 +50,18 @@ impl LegacySyncplayUiSettings {
         self.chat_input_position.trim().eq_ignore_ascii_case("Top")
     }
 
-    pub(crate) fn should_move_osd(&self) -> bool {
+    pub fn should_move_osd(&self) -> bool {
         self.chat_move_osd
             && (self.chat_output_enabled
                 || (self.chat_input_enabled && self.chat_input_position_top()))
+    }
+
+    pub fn syncplayintf_options_differ(&self, other: &Self) -> bool {
+        self.syncplayintf_options_payload() != other.syncplayintf_options_payload()
+    }
+
+    pub fn uses_syncplayintf_bridge(&self) -> bool {
+        self.chat_output_enabled || self.chat_input_enabled
     }
 
     pub(crate) fn syncplayintf_options_payload(&self) -> String {
