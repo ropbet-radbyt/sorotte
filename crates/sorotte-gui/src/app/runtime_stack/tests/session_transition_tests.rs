@@ -42,8 +42,7 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_session_state_befor
     assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
         MenuDialogRuntimeSnapshot {
             action_overrides: vec![MenuActionRuntimeOverride {
-                section_title: "Window",
-                action_label: "Show Playlist",
+                id: MenuActionId::SharedPlaylist,
                 enabled: true,
             }],
             tls_prompt_expected: state.menus.tls_prompt_expected,
@@ -87,17 +86,7 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_session_state_befor
         snapshot
             .action_overrides
             .contains(&MenuActionRuntimeOverride {
-                section_title: "Window",
-                action_label: "Show Chat",
-                enabled: false,
-            })
-    );
-    assert!(
-        snapshot
-            .action_overrides
-            .contains(&MenuActionRuntimeOverride {
-                section_title: "Window",
-                action_label: "Show Playlist",
+                id: MenuActionId::SharedPlaylist,
                 enabled: false,
             })
     );
@@ -753,8 +742,7 @@ fn gui_client_core_chat_session_runtime_adapter_restores_readiness_controls_afte
             GuiShellAction::ApplyMainWindowRuntimeSnapshot(expected_snapshot),
             GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
                 action_overrides: vec![MenuActionRuntimeOverride {
-                    section_title: "Advanced",
-                    action_label: "Create Controlled Room",
+                    id: MenuActionId::CreateControlledRoom,
                     enabled: true,
                 }],
                 tls_prompt_expected: state.menus.tls_prompt_expected,

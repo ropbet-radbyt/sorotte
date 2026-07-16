@@ -569,7 +569,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 );
             }
             GuiRuntimeRequest::CompletePendingOperation(
-                GuiPendingCompletionRequest::ResetConfiguration(settings),
+                GuiPendingCompletionRequest::DiscardConfigurationChanges(settings),
             ) => {
                 return self.handle_complete_configuration_reset_request(
                     handle,

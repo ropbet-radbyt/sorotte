@@ -4,7 +4,7 @@ use super::*;
 fn gui_pending_operation_kind_labels_are_stable() {
     let labels = [
         GuiPendingOperationKind::SaveConfiguration.label(),
-        GuiPendingOperationKind::ResetConfiguration.label(),
+        GuiPendingOperationKind::DiscardConfigurationChanges.label(),
         GuiPendingOperationKind::ReloadConfiguration.label(),
         GuiPendingOperationKind::ConnectPublicServer.label(),
         GuiPendingOperationKind::RefreshPublicServers.label(),
@@ -19,7 +19,7 @@ fn gui_pending_operation_kind_labels_are_stable() {
         labels,
         [
             "save-configuration",
-            "reset-configuration",
+            "discard-configuration-changes",
             "reload-configuration",
             "connect-public-server",
             "refresh-public-servers",

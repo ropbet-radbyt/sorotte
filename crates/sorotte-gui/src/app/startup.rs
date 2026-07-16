@@ -434,6 +434,10 @@ pub(super) enum StartupPublicServerOutcome {
     Failed(String),
 }
 
+pub(super) fn should_hydrate_startup_public_servers(settings: &StoredClientSettingsMvp) -> bool {
+    settings.public_servers.as_ref().is_none_or(Vec::is_empty)
+}
+
 pub(super) fn gui_startup_public_server_outcome_with_fetcher<FPublicServers>(
     settings: &StoredClientSettingsMvp,
     fetch_public_servers: FPublicServers,
@@ -441,12 +445,7 @@ pub(super) fn gui_startup_public_server_outcome_with_fetcher<FPublicServers>(
 where
     FPublicServers: Fn(&str) -> Result<Vec<(String, String)>, String>,
 {
-    if settings
-        .public_servers
-        .as_ref()
-        .is_some_and(|servers| !servers.is_empty())
-        || settings.check_for_updates_automatically != Some(true)
-    {
+    if !should_hydrate_startup_public_servers(settings) {
         return StartupPublicServerOutcome::AlreadyCached;
     }
 

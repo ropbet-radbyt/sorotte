@@ -3,8 +3,8 @@ use sorotte_client_app::app_boundary::state::parse_host_and_optional_port_from_h
 use super::shell_state::{
     GuiConfigurationTextValue, GuiDialogControlKind, GuiFocusedConfigurationControlState,
     GuiMainWindowUserEditSessionState, GuiPendingOperationKind, GuiPendingOperationState,
-    GuiPublicServerEditSessionState, GuiShellAction, GuiTextEditSessionState,
-    GuiTransientNotificationLevel, SorotteGuiShellAppState,
+    GuiPublicServerEditSessionState, GuiSavedServerConnectIntent, GuiShellAction,
+    GuiTextEditSessionState, GuiTransientNotificationLevel, SorotteGuiShellAppState,
     apply_media_match_settings_to_stored_settings,
 };
 use super::support::nonempty_room_name_text;
@@ -36,6 +36,7 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::TrustTlsCertificatePrompt
             | GuiShellAction::RejectTlsCertificatePrompt
             | GuiShellAction::TriggerSelectedMenuAction
+            | GuiShellAction::InvokeMenuAction(_)
             | GuiShellAction::AnnounceTlsCertificatePromptRequired
             | GuiShellAction::AnnounceUpdateNoticeAvailable
             | GuiShellAction::AnnounceAboutDialogRequested
@@ -63,9 +64,9 @@ impl SorotteGuiShellAppState {
             GuiShellAction::BeginConfigurationSave
             | GuiShellAction::CompleteConfigurationSave(_)
             | GuiShellAction::CancelConfigurationSave
-            | GuiShellAction::BeginConfigurationReset
-            | GuiShellAction::CompleteConfigurationReset(_)
-            | GuiShellAction::CancelConfigurationReset
+            | GuiShellAction::BeginDiscardConfigurationChanges
+            | GuiShellAction::CompleteDiscardConfigurationChanges(_)
+            | GuiShellAction::CancelDiscardConfigurationChanges
             | GuiShellAction::BeginConfigurationReload
             | GuiShellAction::CompleteConfigurationReload(_)
             | GuiShellAction::CancelConfigurationReload
@@ -81,7 +82,7 @@ impl SorotteGuiShellAppState {
             GuiShellAction::BeginPendingOperation(_)
             | GuiShellAction::CompletePendingOperation
             | GuiShellAction::CancelPendingOperation
-            | GuiShellAction::FocusConfigurationControl { .. }
+            | GuiShellAction::FocusConfigurationControl(_)
             | GuiShellAction::ActivateFocusedConfigurationControl
             | GuiShellAction::ClearConfigurationControlFocus
             | GuiShellAction::BeginAddPublicServer
@@ -99,10 +100,13 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::DismissTransientNotification(_)
             | GuiShellAction::DismissSetupAlert
             | GuiShellAction::ClearTransientNotifications
-            | GuiShellAction::BeginConfigurationTextEdit { .. }
+            | GuiShellAction::BeginConfigurationTextEdit(_)
             | GuiShellAction::UpdateConfigurationTextEdit(_)
             | GuiShellAction::CommitConfigurationTextEdit
             | GuiShellAction::CancelConfigurationTextEdit
+            | GuiShellAction::BeginServerPasswordChange
+            | GuiShellAction::RemoveServerPassword
+            | GuiShellAction::CancelServerPasswordChange
             | GuiShellAction::BeginRoomHistoryEdit
             | GuiShellAction::UpdateRoomHistoryEdit(_)
             | GuiShellAction::CommitRoomHistoryEdit
@@ -152,9 +156,6 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::CancelPlaybackPauseToggle
             | GuiShellAction::AnnouncePlaybackPaused
             | GuiShellAction::AnnouncePlaybackResumed
-            | GuiShellAction::RequestSeekPrompt
-            | GuiShellAction::RequestOffsetPrompt
-            | GuiShellAction::RequestPlaybackUndoSeek
             | GuiShellAction::RequestSeekPreparationKeepWaiting
             | GuiShellAction::RequestSeekPreparationCancel
             | GuiShellAction::RequestSeekPreparationJoinNearest
@@ -197,7 +198,8 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::EditConfigurationText { .. }
             | GuiShellAction::EditConfigurationBool { .. }
             | GuiShellAction::AnnouncePublicServerSelectionChanged(_)
-            | GuiShellAction::BeginSavedServerConnect
+            | GuiShellAction::BeginConnectOnce
+            | GuiShellAction::BeginSaveAndConnect
             | GuiShellAction::CompleteSavedServerConnect
             | GuiShellAction::CancelSavedServerConnect
             | GuiShellAction::BeginSessionDisconnect

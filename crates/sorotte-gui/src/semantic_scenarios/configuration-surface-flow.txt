@@ -6,109 +6,109 @@ setting	plex-selected-server	semantic-machine	https://plex.semantic.invalid:3240
 setting	plex-sync-enabled	true
 setting	plex-streaming-enabled	true
 assert-selected	configuration-root	true
-enter-text	config:Connection:Host	false	syncplay.example
-enter-text	config:Connection:Port	false	8999
-enter-text	config:Connection:Username	false	smoke-user
-enter-text	config:Connection:Room	false	smoke-room
-enter-text	config:Connection:Player Path	false	C:/Windows/System32/notepad.exe
-assert-enabled	config:Connection:Player Arguments	true
-enter-text	config:Connection:Player Arguments	false	--profile=fast --no-border
-enter-text	config:Connection:Room History	false	smoke-backup\nsmoke-room
+enter-text	settings.connection.host	false	syncplay.example
+enter-text	settings.connection.port	false	8999
+enter-text	settings.connection.username	false	smoke-user
+enter-text	settings.connection.room	false	smoke-room
+enter-text	settings.player.executable	false	C:/Windows/System32/notepad.exe
+assert-enabled	settings.player.arguments	true
+enter-text	settings.player.arguments	false	--profile=fast --no-border
+enter-text	settings.connection.room_history	false	smoke-backup\nsmoke-room
 activate	configuration:tab:overview
-activate	config:Readiness:Ready At Start
-activate	config:Readiness:Autoplay
-activate	config:Readiness:Require Same Filenames
-activate	config:Readiness:Shared Playlists
-activate	config:Readiness:Shared Playlists
-activate	config:Readiness:Pause On Leave
-activate	config:Readiness:Pause On Leave
-activate	config:Readiness:Loop At End Of Playlist
-activate	config:Readiness:Loop Single Files
-enter-text	config:Readiness:Unpause Action	false	Always
-enter-text	config:Readiness:Autoplay Min Users	false	3
-enter-text	config:Privacy:Filename Privacy	false	SendHashed
-enter-text	config:Privacy:Filesize Privacy	false	DoNotSend
-enter-text	config:Privacy:Trusted Domains	false	youtube.com\n*.example.com/videos
+activate	settings.playback.ready_at_start
+activate	settings.playback.autoplay
+activate	settings.playback.require_same_filenames
+activate	settings.playback.shared_playlists
+activate	settings.playback.shared_playlists
+activate	settings.playback.pause_on_leave
+activate	settings.playback.pause_on_leave
+activate	settings.playback.loop_playlist
+activate	settings.playback.loop_single_files
+enter-text	settings.playback.unpause_action	false	Always
+enter-text	settings.playback.autoplay_min_users	false	3
+enter-text	settings.privacy.filename	false	SendHashed
+enter-text	settings.privacy.filesize	false	DoNotSend
+enter-text	settings.privacy.trusted_domains	false	youtube.com\n*.example.com/videos
 # The resolved legacy default is enabled; exercise false -> true so the draft
 # records the explicit enabled value and the derived TLS prompt follows it.
-activate	config:Privacy:Trusted Domains Only
-activate	config:Privacy:Trusted Domains Only
-assert-value	config:Privacy:Trusted Domains Only	yes
-activate	config:Desync:Rewind On Desync
-activate	config:Desync:Rewind On Desync
-activate	config:Desync:Fastforward On Desync
-activate	config:Desync:Fastforward On Desync
-activate	config:Desync:Slow On Desync
-activate	config:Desync:Slow On Desync
-activate	config:Desync:Dont Slow Down With Me
-enter-text	config:Desync:Rewind Threshold	false	1.25
-enter-text	config:Desync:Fastforward Threshold	false	3.5
-enter-text	config:Desync:Slowdown Threshold	false	2.25
-enter-text	config:Streaming:Quality	false	720p
-enter-text	config:Streaming:Buffer Target Seconds	false	8
-enter-text	config:Streaming:Read Ahead Seconds	false	45
-enter-text	config:Streaming:Memory Cache MiB	false	256
-activate	config:Streaming:Disk Cache
-enter-text	config:Streaming:Recovery Policy	false	balanced
-enter-text	config:Streaming:Maximum Catchup Rate	false	1.06
-enter-text	config:Streaming:Hard Seek Threshold Seconds	false	9
-enter-text	config:Streaming:Maximum Hard Seeks	false	1
-enter-text	config:Streaming:Stability Interval Seconds	false	6
-enter-text	config:Streaming:Recovery Retry Budget	false	2
-enter-text	config:Streaming:Recovery Cooldown Seconds	false	12
-enter-text	config:Streaming:Room Buffering Policy	false	quorum
-enter-text	config:Streaming:Room Quorum Percent	false	80
-enter-text	config:Streaming:Room Maximum Pause Seconds	false	25
-enter-text	config:Streaming:Start Synchronization	false	wait-all
-enter-text	config:Streaming:Start Quorum Percent	false	80
-enter-text	config:Streaming:Start Timeout Seconds	false	20
-enter-text	config:Streaming:Start Timeout Action	false	remain-paused
-activate	config:Streaming:Quality Downgrade Suggestions
-enter-text	config:Media Search:Directories	false	C:/Media\nD:/Archive
-enter-text	config:Media Search:First File Timeout	false	3.0
-enter-text	config:Media Search:Search Timeout	false	30.0
-enter-text	config:Media Search:Double Check Interval	false	2.5
-enter-text	config:Media Search:Warning Threshold	false	7.5
-activate	config:Chat:Chat Input
-activate	config:Chat:Chat Output
-activate	config:Chat:Direct Input
-activate	config:Chat:Move OSD
-activate	config:Chat:Move OSD
-enter-text	config:Chat:Input Position	false	Bottom
-enter-text	config:Chat:Output Mode	false	Scrolling
-enter-text	config:Chat:Max Lines	false	7
-enter-text	config:Chat:Input Font	false	Consolas
-enter-text	config:Chat:Input Font Size	false	24
-enter-text	config:Chat:Input Font Weight	false	50
-enter-text	config:Chat:Input Color	false	#abcdef
-enter-text	config:Chat:Output Font	false	Cascadia Mono
-enter-text	config:Chat:Output Font Size	false	20
-enter-text	config:Chat:Output Font Weight	false	60
-enter-text	config:Chat:Top Margin	false	25
-enter-text	config:Chat:Left Margin	false	20
-enter-text	config:Chat:Bottom Margin	false	30
-enter-text	config:Chat:OSD Margin	false	110
-activate	config:OSD:Show OSD
-activate	config:OSD:Show OSD
-activate	config:OSD:Show Duration
-activate	config:OSD:Show Duration
-activate	config:OSD:Show Same Room
-activate	config:OSD:Show Same Room
-activate	config:OSD:Show Warnings
-activate	config:OSD:Show Warnings
-activate	config:OSD:Show Slowdown
-activate	config:OSD:Show Noncontroller
-activate	config:OSD:Show Different Room
-activate	config:OSD:Show Contact Info
-enter-text	config:OSD:Notification Timeout	false	3
-enter-text	config:OSD:Alert Timeout	false	5
-enter-text	config:OSD:Chat Timeout	false	7
-enter-text	config:System:Language	false	pt-br
-activate	config:System:Auto Update
-activate	config:System:Autosave Joins To List
-activate	config:System:Force GUI Prompt
-assert-value	config:Connection:Room History Count	2
-assert-value	config:Media Search:Directory Count	2
+activate	settings.privacy.trusted_domains_only
+activate	settings.privacy.trusted_domains_only
+assert-value	settings.privacy.trusted_domains_only	yes
+activate	settings.sync.rewind_on_desync
+activate	settings.sync.rewind_on_desync
+activate	settings.sync.fastforward_on_desync
+activate	settings.sync.fastforward_on_desync
+activate	settings.sync.slow_on_desync
+activate	settings.sync.slow_on_desync
+activate	settings.sync.dont_slow_down_with_me
+enter-text	settings.sync.rewind_threshold	false	1.25
+enter-text	settings.sync.fastforward_threshold	false	3.5
+enter-text	settings.sync.slowdown_threshold	false	2.25
+enter-text	settings.streaming.quality	false	720p
+enter-text	settings.streaming.buffer_target_seconds	false	8
+enter-text	settings.streaming.read_ahead_seconds	false	45
+enter-text	settings.streaming.memory_cache_mib	false	256
+activate	settings.streaming.disk_cache
+enter-text	settings.streaming.recovery_policy	false	balanced
+enter-text	settings.streaming.maximum_catchup_rate	false	1.06
+enter-text	settings.streaming.hard_seek_threshold_seconds	false	9
+enter-text	settings.streaming.maximum_hard_seeks	false	1
+enter-text	settings.streaming.stability_interval_seconds	false	6
+enter-text	settings.streaming.recovery_retry_budget	false	2
+enter-text	settings.streaming.recovery_cooldown_seconds	false	12
+enter-text	settings.streaming.room_buffering_policy	false	quorum
+enter-text	settings.streaming.room_quorum_percent	false	80
+enter-text	settings.streaming.room_maximum_pause_seconds	false	25
+enter-text	settings.streaming.start_synchronization	false	wait-all
+enter-text	settings.streaming.start_quorum_percent	false	80
+enter-text	settings.streaming.start_timeout_seconds	false	20
+enter-text	settings.streaming.start_timeout_action	false	remain-paused
+activate	settings.streaming.quality_downgrade_suggestions
+enter-text	settings.media_library.directories	false	C:/Media\nD:/Archive
+enter-text	settings.media_library.first_file_timeout	false	3.0
+enter-text	settings.media_library.search_timeout	false	30.0
+enter-text	settings.media_library.double_check_interval	false	2.5
+enter-text	settings.media_library.warning_threshold	false	7.5
+activate	settings.chat.input_enabled
+activate	settings.chat.output_enabled
+activate	settings.chat.direct_input
+activate	settings.chat.move_osd
+activate	settings.chat.move_osd
+enter-text	settings.chat.input_position	false	Bottom
+enter-text	settings.chat.output_mode	false	Scrolling
+enter-text	settings.chat.max_lines	false	7
+enter-text	settings.chat.input_font	false	Consolas
+enter-text	settings.chat.input_font_size	false	24
+enter-text	settings.chat.input_font_weight	false	50
+enter-text	settings.chat.input_color	false	#abcdef
+enter-text	settings.chat.output_font	false	Cascadia Mono
+enter-text	settings.chat.output_font_size	false	20
+enter-text	settings.chat.output_font_weight	false	60
+enter-text	settings.chat.top_margin	false	25
+enter-text	settings.chat.left_margin	false	20
+enter-text	settings.chat.bottom_margin	false	30
+enter-text	settings.chat.osd_margin	false	110
+activate	settings.osd.show
+activate	settings.osd.show
+activate	settings.osd.show_duration
+activate	settings.osd.show_duration
+activate	settings.osd.show_same_room
+activate	settings.osd.show_same_room
+activate	settings.osd.show_warnings
+activate	settings.osd.show_warnings
+activate	settings.osd.show_slowdown
+activate	settings.osd.show_noncontroller
+activate	settings.osd.show_different_room
+activate	settings.osd.show_contact_info
+enter-text	settings.osd.notification_timeout	false	3
+enter-text	settings.osd.alert_timeout	false	5
+enter-text	settings.osd.chat_timeout	false	7
+enter-text	settings.general.language	false	pt-br
+activate	settings.general.check_for_updates_automatically
+activate	settings.general.autosave_joins_to_list
+activate	settings.general.force_gui_prompt
+assert-value	settings.connection.room_history_count	2
+assert-value	settings.media_library.directory_count	2
 assert-value	menus:dialog:tls	yes
 assert-value	shell:update-indicator:title	Update
 activate	plugins-root
@@ -132,88 +132,88 @@ assert-enabled	plugins:plex:disable-sync	true
 assert-enabled	plugins:plex:disable-streaming	true
 activate	configuration-root
 assert-selected	configuration-root	true
-enter-text	config:Connection:Port	false	70000
+enter-text	settings.connection.port	false	70000
 assert-value	shell:validation:status	1 issue(s)
-assert-label	shell:validation:issue:0	Connection / Port
-assert-value	shell:validation:issue:0	must be a valid TCP port from 1 to 65535.
+assert-label	settings.connection.port.validation	Connection / Port
+assert-value	settings.connection.port.validation	must be a valid TCP port from 1 to 65535.
 assert-enabled	config-command:save	false
 assert-value	shell:command:save	disabled
-enter-text	config:Connection:Port	false	8999
+enter-text	settings.connection.port	false	8999
 assert-value	shell:validation:status	clean
 assert-value	shell:command:save	enabled
-assert-value	config:Connection:Host	syncplay.example
-assert-value	config:Connection:Player Path	C:/Windows/System32/notepad.exe
-assert-value	config:Connection:Player Arguments	--profile=fast --no-border
-assert-value	config:Connection:Room History	smoke-backup\nsmoke-room
-assert-value	config:Readiness:Unpause Action	Always
-assert-value	config:Readiness:Autoplay Min Users	3
-assert-value	config:Privacy:Filename Privacy	SendHashed
-assert-value	config:Privacy:Filesize Privacy	DoNotSend
-assert-value	config:Privacy:Trusted Domains	youtube.com\n*.example.com/videos
-assert-value	config:Privacy:Trusted Domains Only	yes
-assert-value	config:Privacy:Trusted Domain Count	2
-assert-value	config:Media Search:Directories	C:/Media\nD:/Archive
-assert-value	config:Desync:Rewind Threshold	1.25
-assert-value	config:Desync:Fastforward Threshold	3.5
-assert-value	config:Desync:Slowdown Threshold	2.25
-assert-value	config:Streaming:Quality	720p
-assert-value	config:Streaming:Buffer Target Seconds	8
-assert-value	config:Streaming:Read Ahead Seconds	45
-assert-value	config:Streaming:Memory Cache MiB	256
-assert-value	config:Streaming:Disk Cache	yes
-assert-value	config:Streaming:Recovery Policy	balanced
-assert-value	config:Streaming:Maximum Catchup Rate	1.06
-assert-value	config:Streaming:Hard Seek Threshold Seconds	9
-assert-value	config:Streaming:Maximum Hard Seeks	1
-assert-value	config:Streaming:Stability Interval Seconds	6
-assert-value	config:Streaming:Recovery Retry Budget	2
-assert-value	config:Streaming:Recovery Cooldown Seconds	12
-assert-value	config:Streaming:Room Buffering Policy	quorum
-assert-value	config:Streaming:Room Quorum Percent	80
-assert-value	config:Streaming:Room Maximum Pause Seconds	25
-assert-value	config:Streaming:Start Synchronization	wait-all
-assert-value	config:Streaming:Start Quorum Percent	80
-assert-value	config:Streaming:Start Timeout Seconds	20
-assert-value	config:Streaming:Start Timeout Action	remain-paused
-assert-value	config:Streaming:Quality Downgrade Suggestions	no
-assert-value	config:Streaming:Effective mpv Options	cache=auto; cache-pause=yes; cache-pause-initial=yes; cache-pause-wait=8; cache-secs=45; demuxer-max-bytes=256MiB; cache-on-disk=yes; ytdl-format=bestvideo*[height<=720]+bestaudio/best[height<=720]
-assert-value	config:Media Search:First File Timeout	3.0
-assert-value	config:Media Search:Search Timeout	30.0
-assert-value	config:Media Search:Double Check Interval	2.5
-assert-value	config:Media Search:Warning Threshold	7.5
-assert-value	config:Chat:Input Position	Bottom
-assert-value	config:Chat:Output Mode	Scrolling
-assert-value	config:Chat:Max Lines	7
-assert-value	config:Chat:Input Font	Consolas
-assert-value	config:Chat:Input Font Size	24
-assert-value	config:Chat:Input Font Weight	50
-assert-value	config:Chat:Input Color	#abcdef
-assert-value	config:Chat:Output Font	Cascadia Mono
-assert-value	config:Chat:Output Font Size	20
-assert-value	config:Chat:Output Font Weight	60
-assert-value	config:Chat:Top Margin	25
-assert-value	config:Chat:Left Margin	20
-assert-value	config:Chat:Bottom Margin	30
-assert-value	config:Chat:OSD Margin	110
-assert-value	config:OSD:Show Slowdown	yes
-assert-value	config:OSD:Notification Timeout	3
-assert-value	config:OSD:Alert Timeout	5
-assert-value	config:OSD:Chat Timeout	7
-assert-value	config:System:Language	pt-br
-assert-value	config:System:Autosave Joins To List	yes
-assert-value	config:System:Force GUI Prompt	yes
+assert-value	settings.connection.host	syncplay.example
+assert-value	settings.player.executable	C:/Windows/System32/notepad.exe
+assert-value	settings.player.arguments	--profile=fast --no-border
+assert-value	settings.connection.room_history	smoke-backup\nsmoke-room
+assert-value	settings.playback.unpause_action	Always
+assert-value	settings.playback.autoplay_min_users	3
+assert-value	settings.privacy.filename	SendHashed
+assert-value	settings.privacy.filesize	DoNotSend
+assert-value	settings.privacy.trusted_domains	youtube.com\n*.example.com/videos
+assert-value	settings.privacy.trusted_domains_only	yes
+assert-value	settings.privacy.trusted_domain_count	2
+assert-value	settings.media_library.directories	C:/Media\nD:/Archive
+assert-value	settings.sync.rewind_threshold	1.25
+assert-value	settings.sync.fastforward_threshold	3.5
+assert-value	settings.sync.slowdown_threshold	2.25
+assert-value	settings.streaming.quality	720p
+assert-value	settings.streaming.buffer_target_seconds	8
+assert-value	settings.streaming.read_ahead_seconds	45
+assert-value	settings.streaming.memory_cache_mib	256
+assert-value	settings.streaming.disk_cache	yes
+assert-value	settings.streaming.recovery_policy	balanced
+assert-value	settings.streaming.maximum_catchup_rate	1.06
+assert-value	settings.streaming.hard_seek_threshold_seconds	9
+assert-value	settings.streaming.maximum_hard_seeks	1
+assert-value	settings.streaming.stability_interval_seconds	6
+assert-value	settings.streaming.recovery_retry_budget	2
+assert-value	settings.streaming.recovery_cooldown_seconds	12
+assert-value	settings.streaming.room_buffering_policy	quorum
+assert-value	settings.streaming.room_quorum_percent	80
+assert-value	settings.streaming.room_maximum_pause_seconds	25
+assert-value	settings.streaming.start_synchronization	wait-all
+assert-value	settings.streaming.start_quorum_percent	80
+assert-value	settings.streaming.start_timeout_seconds	20
+assert-value	settings.streaming.start_timeout_action	remain-paused
+assert-value	settings.streaming.quality_downgrade_suggestions	no
+assert-value	settings.streaming.effective_mpv_options	cache=auto; cache-pause=yes; cache-pause-initial=yes; cache-pause-wait=8; cache-secs=45; demuxer-max-bytes=256MiB; cache-on-disk=yes; ytdl-format=bestvideo*[height<=720]+bestaudio/best[height<=720]
+assert-value	settings.media_library.first_file_timeout	3.0
+assert-value	settings.media_library.search_timeout	30.0
+assert-value	settings.media_library.double_check_interval	2.5
+assert-value	settings.media_library.warning_threshold	7.5
+assert-value	settings.chat.input_position	Bottom
+assert-value	settings.chat.output_mode	Scrolling
+assert-value	settings.chat.max_lines	7
+assert-value	settings.chat.input_font	Consolas
+assert-value	settings.chat.input_font_size	24
+assert-value	settings.chat.input_font_weight	50
+assert-value	settings.chat.input_color	#abcdef
+assert-value	settings.chat.output_font	Cascadia Mono
+assert-value	settings.chat.output_font_size	20
+assert-value	settings.chat.output_font_weight	60
+assert-value	settings.chat.top_margin	25
+assert-value	settings.chat.left_margin	20
+assert-value	settings.chat.bottom_margin	30
+assert-value	settings.chat.osd_margin	110
+assert-value	settings.osd.show_slowdown	yes
+assert-value	settings.osd.notification_timeout	3
+assert-value	settings.osd.alert_timeout	5
+assert-value	settings.osd.chat_timeout	7
+assert-value	settings.general.language	pt-br
+assert-value	settings.general.autosave_joins_to_list	yes
+assert-value	settings.general.force_gui_prompt	yes
 activate	config-command:save
 assert-pending	save-configuration
 assert-value	shell:command:busy	yes
 assert-value	shell:command:reload	disabled
-assert-enabled	config:Connection:Host	false
+assert-enabled	settings.connection.host	false
 complete-pending
 assert-pending	none
 assert-value	shell:command:busy	no
-assert-value	shell:command:save	enabled
+assert-value	shell:command:save	disabled
 assert-value	shell:command:connect-saved-server	enabled
-assert-enabled	config:Connection:Host	true
-activate	config-command:connect
+assert-enabled	settings.connection.host	true
+activate	config-command:connect-once
 assert-pending	connect-saved-server
 cancel-pending
 assert-pending	none
@@ -228,8 +228,8 @@ assert-selected	configuration-root	true
 activate	configuration:tab:connection
 activate	public-servers:row:0
 assert-enabled	public-servers:command:connect	true
-assert-value	config:Connection:Host	syncplay.pl
-assert-value	config:Connection:Port	8999
+assert-value	settings.connection.host	syncplay.pl
+assert-value	settings.connection.port	8999
 activate	public-servers:command:connect
 assert-pending	connect-public-server
 cancel-pending

@@ -11,8 +11,8 @@ use super::shell_state::{
     GuiMediaMatchState, GuiPlayerSetupIssueKind, GuiPlexState, GuiPluginEnablementState,
     GuiPluginSelection, GuiSavedSessionConnectTarget, GuiSelectionState, GuiShellModal,
     GuiShellView, GuiValidationState, MainWindowShellState, MediaSearchWorkflowShellState,
-    MenuActionRuntimeOverride, MenuDialogShellState, PublicServerBrowserShellState,
-    SorotteGuiShellAppState,
+    MenuActionId, MenuActionRuntimeOverride, MenuDialogShellState, PublicServerBrowserShellState,
+    SettingId, SorotteGuiShellAppState,
 };
 use super::support::{
     configured_room_name_text, legacy_chat_input_enabled, normalized_editable_text,
@@ -54,7 +54,7 @@ impl SorotteGuiShellAppState {
             pending_operation: None,
             pending_config_storage_target: None,
             pending_local_ready_target: None,
-            pending_saved_server_connect_saves_configuration: false,
+            pending_saved_server_connect_intent: None,
             outgoing_chat_message: None,
             main_window_room_change_expanded: false,
             new_main_window_user_draft: String::new(),
@@ -104,7 +104,7 @@ impl SorotteGuiShellAppState {
     pub(super) fn saved_session_connect_target(&self) -> Option<GuiSavedSessionConnectTarget> {
         let raw_host = self
             .configuration
-            .control_value("Connection", "Host")
+            .control_value(SettingId::ConnectionHost)
             .unwrap_or_default()
             .trim();
         if raw_host.is_empty() {
@@ -119,7 +119,7 @@ impl SorotteGuiShellAppState {
 
         let raw_port = self
             .configuration
-            .control_value("Connection", "Port")
+            .control_value(SettingId::ConnectionPort)
             .unwrap_or_default()
             .trim();
         let port = if raw_port.is_empty() {
@@ -499,13 +499,20 @@ impl SorotteGuiShellAppState {
         self.selected_configuration_tab = tab;
     }
 
-    pub(super) fn configuration_tab_for_section(section: &str) -> Option<GuiConfigurationTab> {
-        match section {
-            "Connection" => Some(GuiConfigurationTab::Connection),
-            "Readiness" | "Desync" | "Media Search" => Some(GuiConfigurationTab::PlaybackSearch),
-            "Privacy" | "Chat" => Some(GuiConfigurationTab::PrivacyChat),
-            "OSD" | "System" => Some(GuiConfigurationTab::InterfaceSystem),
-            _ => None,
+    pub(super) fn configuration_tab_for_setting(id: SettingId) -> GuiConfigurationTab {
+        match id.section_automation_id() {
+            "settings.section.connection" => GuiConfigurationTab::Connection,
+            "settings.section.playback"
+            | "settings.section.sync"
+            | "settings.section.streaming"
+            | "settings.section.media_library" => GuiConfigurationTab::PlaybackSearch,
+            "settings.section.privacy" | "settings.section.chat" => {
+                GuiConfigurationTab::PrivacyChat
+            }
+            "settings.section.osd" | "settings.section.general" => {
+                GuiConfigurationTab::InterfaceSystem
+            }
+            _ => unreachable!("every SettingId maps to a settings section"),
         }
     }
 
@@ -608,50 +615,45 @@ impl SorotteGuiShellAppState {
         });
     }
 
-    pub(super) fn set_menu_action_enabled(
-        &mut self,
-        section_title: &'static str,
-        action_label: &'static str,
-        enabled: bool,
-    ) {
-        let Some(action) = self
-            .menus
-            .sections
-            .iter_mut()
-            .find(|section| section.title == section_title)
-            .and_then(|section| {
-                section
-                    .actions
-                    .iter_mut()
-                    .find(|action| action.label == action_label)
-            })
-        else {
+    pub(super) fn set_menu_action_enabled(&mut self, action_id: MenuActionId, enabled: bool) {
+        let Some(action) = self.menus.action_mut(action_id) else {
             return;
         };
         action.enabled = enabled;
     }
 
-    pub(super) fn set_menu_action_selected(
-        &mut self,
-        section_title: &'static str,
-        action_label: &'static str,
-        selected: bool,
-    ) {
-        let Some(action) = self
-            .menus
-            .sections
-            .iter_mut()
-            .find(|section| section.title == section_title)
-            .and_then(|section| {
-                section
-                    .actions
-                    .iter_mut()
-                    .find(|action| action.label == action_label)
-            })
-        else {
+    pub(super) fn menu_action_available_now(&self, action_id: MenuActionId) -> bool {
+        let playback_controls_available =
+            self.pending_operation.is_none() && !self.main_window.playlist.is_empty();
+        match action_id {
+            MenuActionId::OpenMedia => {
+                self.pending_operation.is_none() && self.media_open_runtime_available()
+            }
+            MenuActionId::Play | MenuActionId::Pause | MenuActionId::TogglePause => {
+                playback_controls_available && self.main_window.playback.can_toggle_pause
+            }
+            MenuActionId::Seek => playback_controls_available && self.main_window.playback.can_seek,
+            MenuActionId::UndoSeek => {
+                playback_controls_available && self.main_window.playback.can_undo_seek
+            }
+            MenuActionId::SharedPlaylist => {
+                self.pending_operation.is_none() && self.main_window.playback.can_manage_playlist
+            }
+            MenuActionId::SetOffset => {
+                playback_controls_available && self.main_window.playback.can_set_offset
+            }
+            _ => self
+                .menus
+                .action(action_id)
+                .is_some_and(|action| action.enabled),
+        }
+    }
+
+    pub(super) fn set_menu_action_checked(&mut self, action_id: MenuActionId, checked: bool) {
+        let Some(action) = self.menus.action_mut(action_id) else {
             return;
         };
-        action.is_selected = selected;
+        action.is_checked = checked;
     }
 
     pub(super) fn set_runtime_menu_action_override(
@@ -661,10 +663,7 @@ impl SorotteGuiShellAppState {
         if let Some(existing) = self
             .runtime_menu_action_overrides
             .iter_mut()
-            .find(|existing| {
-                existing.section_title == action_override.section_title
-                    && existing.action_label == action_override.action_label
-            })
+            .find(|existing| existing.id == action_override.id)
         {
             existing.enabled = action_override.enabled;
             return;
@@ -672,16 +671,9 @@ impl SorotteGuiShellAppState {
         self.runtime_menu_action_overrides.push(action_override);
     }
 
-    pub(super) fn clear_runtime_menu_action_override(
-        &mut self,
-        section_title: &'static str,
-        action_label: &'static str,
-    ) {
+    pub(super) fn clear_runtime_menu_action_override(&mut self, action_id: MenuActionId) {
         self.runtime_menu_action_overrides
-            .retain(|action_override| {
-                action_override.section_title != section_title
-                    || action_override.action_label != action_label
-            });
+            .retain(|action_override| action_override.id != action_id);
     }
 
     pub(super) fn remember_runtime_menu_action_override(
@@ -690,24 +682,13 @@ impl SorotteGuiShellAppState {
         action_override: &MenuActionRuntimeOverride,
     ) {
         let baseline_enabled = baseline_menus
-            .sections
-            .iter()
-            .find(|section| section.title == action_override.section_title)
-            .and_then(|section| {
-                section
-                    .actions
-                    .iter()
-                    .find(|action| action.label == action_override.action_label)
-            })
+            .action(action_override.id)
             .map(|action| action.enabled);
         let Some(baseline_enabled) = baseline_enabled else {
             return;
         };
         if action_override.enabled == baseline_enabled {
-            self.clear_runtime_menu_action_override(
-                action_override.section_title,
-                action_override.action_label,
-            );
+            self.clear_runtime_menu_action_override(action_override.id);
             return;
         }
         self.set_runtime_menu_action_override(action_override.clone());
@@ -721,15 +702,7 @@ impl SorotteGuiShellAppState {
         self.runtime_menu_action_overrides
             .retain(|action_override| {
                 baseline_menus
-                    .sections
-                    .iter()
-                    .find(|section| section.title == action_override.section_title)
-                    .and_then(|section| {
-                        section
-                            .actions
-                            .iter()
-                            .find(|action| action.label == action_override.action_label)
-                    })
+                    .action(action_override.id)
                     .is_some_and(|action| action.enabled != action_override.enabled)
             });
     }
@@ -742,7 +715,9 @@ impl SorotteGuiShellAppState {
         let chat_unavailable_reason =
             self.chat_send_unavailable_reason_from_settings(&settings, true);
         GuiCommandAvailabilityState {
-            can_save_configuration: !busy && self.validation.issues.is_empty(),
+            can_save_configuration: !busy
+                && self.validation.issues.is_empty()
+                && self.has_unsaved_configuration_changes(),
             can_reset_configuration: !busy && self.has_unsaved_configuration_changes(),
             can_reload_configuration: !busy,
             can_connect_saved_server: !busy
@@ -766,30 +741,36 @@ impl SorotteGuiShellAppState {
 
     pub(super) fn sync_playback_menu_actions_from_runtime_state(&mut self, can_toggle_pause: bool) {
         let busy = self.pending_operation.is_some();
+        let playback_controls_available = !busy && !self.main_window.playlist.is_empty();
         let can_open_media_file = !busy && self.media_open_runtime_available();
-        self.set_menu_action_enabled("File", "Open Media File", can_open_media_file);
-        self.set_menu_action_enabled("Playback", "Play", can_toggle_pause);
-        self.set_menu_action_enabled("Playback", "Pause", can_toggle_pause);
-        self.set_menu_action_enabled("Playback", "Toggle Pause", can_toggle_pause);
+        self.set_menu_action_enabled(MenuActionId::OpenMedia, can_open_media_file);
         self.set_menu_action_enabled(
-            "Playback",
-            "Seek",
-            !busy && self.main_window.playback.can_seek,
+            MenuActionId::Play,
+            playback_controls_available && can_toggle_pause,
         );
         self.set_menu_action_enabled(
-            "Playback",
-            "Undo Seek",
-            !busy && self.main_window.playback.can_undo_seek,
+            MenuActionId::Pause,
+            playback_controls_available && can_toggle_pause,
         );
         self.set_menu_action_enabled(
-            "Playback",
-            "Shared Playlist",
+            MenuActionId::TogglePause,
+            playback_controls_available && can_toggle_pause,
+        );
+        self.set_menu_action_enabled(
+            MenuActionId::Seek,
+            playback_controls_available && self.main_window.playback.can_seek,
+        );
+        self.set_menu_action_enabled(
+            MenuActionId::UndoSeek,
+            playback_controls_available && self.main_window.playback.can_undo_seek,
+        );
+        self.set_menu_action_enabled(
+            MenuActionId::SharedPlaylist,
             !busy && self.main_window.playback.can_manage_playlist,
         );
         self.set_menu_action_enabled(
-            "Advanced",
-            "Set Offset",
-            !busy && self.main_window.playback.can_set_offset,
+            MenuActionId::SetOffset,
+            playback_controls_available && self.main_window.playback.can_set_offset,
         );
         self.normalize_selected_menu_action_after_runtime_update();
         self.apply_selection_to_surfaces();
@@ -798,13 +779,9 @@ impl SorotteGuiShellAppState {
     pub(super) fn sync_dialog_menu_actions_from_runtime_state(&mut self) {
         let runtime_menu_action_overrides = self.runtime_menu_action_overrides.clone();
         for action_override in runtime_menu_action_overrides {
-            self.set_menu_action_enabled(
-                action_override.section_title,
-                action_override.action_label,
-                action_override.enabled,
-            );
+            self.set_menu_action_enabled(action_override.id, action_override.enabled);
         }
-        self.set_menu_action_enabled("Help", "About", self.menus.about_dialog_available);
+        self.set_menu_action_enabled(MenuActionId::About, self.menus.about_dialog_available);
     }
 
     pub(super) fn open_newly_expected_modal_if_needed(

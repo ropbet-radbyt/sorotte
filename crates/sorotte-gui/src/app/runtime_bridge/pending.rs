@@ -3,7 +3,7 @@ use super::*;
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::app) enum GuiPendingCompletionRequest {
     SaveConfiguration(StoredClientSettingsMvp),
-    ResetConfiguration(StoredClientSettingsMvp),
+    DiscardConfigurationChanges(StoredClientSettingsMvp),
     ReloadConfiguration(StoredClientSettingsMvp),
     ClearGuiData,
     ChangeConfigStorageRoot {
@@ -27,8 +27,8 @@ impl GuiPendingCompletionRequest {
             GuiPendingOperationKind::SaveConfiguration => {
                 Self::SaveConfiguration(state.configuration.to_stored_settings())
             }
-            GuiPendingOperationKind::ResetConfiguration => {
-                Self::ResetConfiguration(state.saved_configuration.clone())
+            GuiPendingOperationKind::DiscardConfigurationChanges => {
+                Self::DiscardConfigurationChanges(state.saved_configuration.clone())
             }
             GuiPendingOperationKind::ReloadConfiguration => {
                 Self::ReloadConfiguration(state.saved_configuration.clone())
@@ -63,8 +63,8 @@ impl GuiPendingCompletionRequest {
             Self::SaveConfiguration(settings) => {
                 GuiShellAction::CompleteConfigurationSave(settings)
             }
-            Self::ResetConfiguration(settings) => {
-                GuiShellAction::CompleteConfigurationReset(settings)
+            Self::DiscardConfigurationChanges(settings) => {
+                GuiShellAction::CompleteDiscardConfigurationChanges(settings)
             }
             Self::ReloadConfiguration(settings) => {
                 GuiShellAction::CompleteConfigurationReload(settings)

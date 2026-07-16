@@ -20,7 +20,7 @@ fn dismiss_existing_config_player_setup_modal<D: NativeGuiDriver>(
     wait_for_named_control_enabled_state(
         driver,
         window,
-        "Retry mpv",
+        MODAL_PLAYER_SETUP_RETRY_AUTOMATION_ID,
         NativeControlKind::Button,
         true,
         timeout,
@@ -28,7 +28,7 @@ fn dismiss_existing_config_player_setup_modal<D: NativeGuiDriver>(
     invoke_named_control_with_wait(
         driver,
         window,
-        "Open Settings",
+        MODAL_PLAYER_SETUP_OPEN_SETTINGS_AUTOMATION_ID,
         NativeControlKind::Button,
         timeout,
     )?;
@@ -123,7 +123,7 @@ pub(super) fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
             invoke_named_control_with_wait(
                 driver,
                 window,
-                "Trust Certificate",
+                MODAL_TLS_TRUST_AUTOMATION_ID,
                 NativeControlKind::Button,
                 step_timeout,
             )?;
@@ -132,13 +132,11 @@ pub(super) fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
         if dismiss_existing_config_player_setup_modal(driver, window, step_timeout)? {
             steps.push("transport-player-setup-modal".to_owned());
         }
-        navigate_to_view_with_fallback(
+        navigate_to_view_with_wait(
             driver,
             window,
-            "Main Window",
+            ROOM_SURFACE_AUTOMATION_ID,
             "view: room",
-            "Window",
-            "Show Users",
             step_timeout,
         )?;
 

@@ -338,33 +338,23 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
             GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
                 action_overrides: vec![
                     MenuActionRuntimeOverride {
-                        section_title: "Playback",
-                        action_label: "Play",
+                        id: MenuActionId::Play,
                         enabled: true,
                     },
                     MenuActionRuntimeOverride {
-                        section_title: "Playback",
-                        action_label: "Pause",
+                        id: MenuActionId::Pause,
                         enabled: true,
                     },
                     MenuActionRuntimeOverride {
-                        section_title: "Playback",
-                        action_label: "Toggle Pause",
+                        id: MenuActionId::TogglePause,
                         enabled: true,
                     },
                     MenuActionRuntimeOverride {
-                        section_title: "Playback",
-                        action_label: "Seek",
+                        id: MenuActionId::Seek,
                         enabled: true,
                     },
                     MenuActionRuntimeOverride {
-                        section_title: "Playback",
-                        action_label: "Shared Playlist",
-                        enabled: true,
-                    },
-                    MenuActionRuntimeOverride {
-                        section_title: "Advanced",
-                        action_label: "Set Offset",
+                        id: MenuActionId::SharedPlaylist,
                         enabled: true,
                     },
                 ],
@@ -374,7 +364,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
             }),
             GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
                 command_availability: GuiCommandAvailabilityState {
-                    can_save_configuration: true,
+                    can_save_configuration: false,
                     can_reset_configuration: false,
                     can_reload_configuration: true,
                     can_connect_saved_server: false,

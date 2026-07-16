@@ -20,7 +20,7 @@ fn dismiss_existing_config_player_setup_modal<D: NativeGuiDriver>(
     wait_for_named_control_enabled_state(
         driver,
         window,
-        "Retry mpv",
+        MODAL_PLAYER_SETUP_RETRY_AUTOMATION_ID,
         NativeControlKind::Button,
         true,
         timeout,
@@ -28,7 +28,7 @@ fn dismiss_existing_config_player_setup_modal<D: NativeGuiDriver>(
     invoke_named_control_with_wait(
         driver,
         window,
-        "Open Settings",
+        MODAL_PLAYER_SETUP_OPEN_SETTINGS_AUTOMATION_ID,
         NativeControlKind::Button,
         timeout,
     )?;
@@ -106,32 +106,28 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
         if dismiss_existing_config_player_setup_modal(driver, window, step_timeout)? {
             steps.push("transport-python-peer-player-setup-modal".to_owned());
         }
-        navigate_to_view_with_fallback(
+        navigate_to_view_with_wait(
             driver,
             window,
-            "Main Window",
+            ROOM_SURFACE_AUTOMATION_ID,
             "view: room",
-            "Window",
-            "Show Users",
             step_timeout,
         )?;
         wait_for_room_browser_visible(driver, window, step_timeout)?;
         navigate_to_view_with_fallback(
             driver,
             window,
-            "Configuration",
+            SETUP_SURFACE_AUTOMATION_ID,
             "view: setup",
             "Advanced",
             "Trusted Domains",
             step_timeout,
         )?;
-        navigate_to_view_with_fallback(
+        navigate_to_view_with_wait(
             driver,
             window,
-            "Main Window",
+            ROOM_SURFACE_AUTOMATION_ID,
             "view: room",
-            "Window",
-            "Show Users",
             step_timeout,
         )?;
         wait_for_room_browser_visible(driver, window, step_timeout)?;
@@ -148,19 +144,17 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
         navigate_to_view_with_fallback(
             driver,
             window,
-            "Configuration",
+            SETUP_SURFACE_AUTOMATION_ID,
             "view: setup",
             "Advanced",
             "Trusted Domains",
             step_timeout,
         )?;
-        navigate_to_view_with_fallback(
+        navigate_to_view_with_wait(
             driver,
             window,
-            "Main Window",
+            ROOM_SURFACE_AUTOMATION_ID,
             "view: room",
-            "Window",
-            "Show Users",
             step_timeout,
         )?;
         wait_for_room_browser_visible(driver, window, step_timeout)?;
@@ -238,7 +232,7 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             navigate_to_view_with_fallback(
                 driver,
                 window,
-                "Configuration",
+                SETUP_SURFACE_AUTOMATION_ID,
                 "view: setup",
                 "Advanced",
                 "Trusted Domains",
@@ -247,7 +241,7 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             select_top_tab_with_wait(
                 driver,
                 window,
-                "Playback & Search",
+                CONFIG_PLAYBACK_SEARCH_TAB_AUTOMATION_ID,
                 "Shared Playlists",
                 step_timeout,
             )?;
@@ -258,13 +252,11 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
                 NativeControlKind::Any,
                 step_timeout,
             )?;
-            navigate_to_view_with_fallback(
+            navigate_to_view_with_wait(
                 driver,
                 window,
-                "Room",
+                ROOM_SURFACE_AUTOMATION_ID,
                 "view: room",
-                "Window",
-                "Show Users",
                 step_timeout,
             )?;
             wait_for_shared_playlist_controls_enabled(driver, window, step_timeout)?;
@@ -483,13 +475,11 @@ pub(super) fn verify_live_python_peer_controlled_room_contract<D: NativeGuiDrive
         if dismiss_existing_config_player_setup_modal(driver, window, step_timeout)? {
             steps.push("transport-python-peer-controlled-room-player-setup-modal".to_owned());
         }
-        navigate_to_view_with_fallback(
+        navigate_to_view_with_wait(
             driver,
             window,
-            "Main Window",
+            ROOM_SURFACE_AUTOMATION_ID,
             "view: room",
-            "Window",
-            "Show Users",
             step_timeout,
         )?;
         wait_for_accessible_name(

@@ -13,8 +13,8 @@ use super::super::shell_state::{
     GuiPendingOperationKind, GuiPlayerSetupIssue, GuiPlayerSetupIssueKind,
     GuiPlayerSetupRuntimeSnapshot, GuiSeekPreparationDegradedReason, GuiSeekPreparationPhase,
     GuiSeekPreparationRuntimeSnapshot, GuiSeekPreparationState, GuiShellAction,
-    MainWindowRuntimeSnapshot, MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot,
-    MenuSectionShellState, SorotteGuiShellAppState,
+    MainWindowRuntimeSnapshot, MenuActionId, MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot,
+    SorotteGuiShellAppState,
 };
 use super::GuiPersistedConfigRuntimeOwner;
 
@@ -140,19 +140,6 @@ impl GuiPersistedConfigRuntimeOwner {
         self.media_index_runtime_snapshot_impl()
     }
 
-    fn menu_action_enabled(
-        section: Option<&MenuSectionShellState>,
-        action_label: &str,
-    ) -> Option<bool> {
-        section.and_then(|section| {
-            section
-                .actions
-                .iter()
-                .find(|action| action.label == action_label)
-                .map(|action| action.enabled)
-        })
-    }
-
     fn format_local_file_playlist_entry(local_file: &LocalFileUpdate) -> String {
         let mut details = Vec::new();
         if let Some(duration_seconds) = local_file.duration_seconds {
@@ -235,7 +222,9 @@ impl GuiPersistedConfigRuntimeOwner {
         let chat_unavailable_reason =
             state.chat_send_unavailable_reason_from_settings(&settings, self.session.is_some());
         let command_availability = GuiCommandAvailabilityState {
-            can_save_configuration: !busy && state.validation.issues.is_empty(),
+            can_save_configuration: !busy
+                && state.validation.issues.is_empty()
+                && state.has_unsaved_configuration_changes(),
             can_reset_configuration: !busy && state.has_unsaved_configuration_changes(),
             can_reload_configuration: !busy,
             can_connect_saved_server: !busy
@@ -461,54 +450,48 @@ impl GuiPersistedConfigRuntimeOwner {
             );
         }
 
-        let playback_section = state
-            .menus
-            .sections
-            .iter()
-            .find(|section| section.title == "Playback");
-        let advanced_section = state
-            .menus
-            .sections
-            .iter()
-            .find(|section| section.title == "Advanced");
+        let playback_controls_available =
+            state.pending_operation.is_none() && !state.main_window.playlist.is_empty();
         let mut action_overrides = Vec::new();
-        for (action_label, enabled) in [
-            ("Play", player_attached),
-            ("Pause", player_attached),
-            ("Toggle Pause", player_attached),
-            ("Seek", player_attached),
+        for (id, enabled) in [
             (
-                "Undo Seek",
-                state.pending_operation.is_none() && state.main_window.playback.can_undo_seek,
+                MenuActionId::Play,
+                player_runtime_available && playback_controls_available,
             ),
             (
-                "Shared Playlist",
-                self.session
-                    .as_ref()
-                    .map(|session| {
-                        state.main_window.shared_playlist_enabled
-                            && session.playlist_control_available()
-                    })
-                    .unwrap_or(player_attached && state.main_window.shared_playlist_enabled),
+                MenuActionId::Pause,
+                player_runtime_available && playback_controls_available,
             ),
+            (
+                MenuActionId::TogglePause,
+                player_runtime_available && playback_controls_available,
+            ),
+            (
+                MenuActionId::Seek,
+                player_runtime_available && playback_controls_available,
+            ),
+            (
+                MenuActionId::UndoSeek,
+                playback_controls_available && state.main_window.playback.can_undo_seek,
+            ),
+            (MenuActionId::SharedPlaylist, can_manage_playlist),
         ] {
-            let current_enabled = Self::menu_action_enabled(playback_section, action_label);
+            let current_enabled = state.menus.action(id).map(|action| action.enabled);
             if current_enabled.is_some_and(|current_enabled| current_enabled != enabled) {
-                action_overrides.push(MenuActionRuntimeOverride {
-                    section_title: "Playback",
-                    action_label,
-                    enabled,
-                });
+                action_overrides.push(MenuActionRuntimeOverride { id, enabled });
             }
         }
-        let current_offset_enabled = Self::menu_action_enabled(advanced_section, "Set Offset");
-        let desired_offset_enabled = state.pending_operation.is_none();
+        let current_offset_enabled = state
+            .menus
+            .action(MenuActionId::SetOffset)
+            .map(|action| action.enabled);
+        let desired_offset_enabled =
+            playback_controls_available && state.main_window.playback.can_set_offset;
         if current_offset_enabled
             .is_some_and(|current_enabled| current_enabled != desired_offset_enabled)
         {
             action_overrides.push(MenuActionRuntimeOverride {
-                section_title: "Advanced",
-                action_label: "Set Offset",
+                id: MenuActionId::SetOffset,
                 enabled: desired_offset_enabled,
             });
         }

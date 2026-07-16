@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::SecretDraft;
 
 #[test]
 fn gui_shell_app_state_moves_and_removes_media_search_rows() {
@@ -10,7 +11,6 @@ fn gui_shell_app_state_moves_and_removes_media_search_rows() {
         ]),
         ..StoredClientSettingsMvp::default()
     });
-
     assert!(state.apply(GuiShellAction::SelectMediaSearchDirectory(2)));
     assert!(state.apply(GuiShellAction::MoveSelectedMediaSearchDirectoryUp));
     assert_eq!(
@@ -158,11 +158,23 @@ fn gui_shell_app_state_rejects_invalid_media_search_event_actions() {
 fn gui_shell_app_state_handles_save_and_playback_toggle_command_actions() {
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         player_path: Some("mpv".to_owned()),
+        server_password: Some("old-secret".into()),
         ..StoredClientSettingsMvp::default()
     });
+    state.config_storage.source_label = "environment override".to_owned();
+    state.config_storage.config_path = Some("C:/Existing/sorotte.ini".to_owned());
     state.main_window.playback.can_toggle_pause = true;
     state.main_window.playlist = vec![MainWindowPlaylistRow::inferred("episode1.mkv", false)];
-    state.refresh_validation();
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        id: SettingId::GeneralLanguage,
+        value: "pt-br".to_owned().into(),
+    }));
+    assert!(state.apply(GuiShellAction::BeginServerPasswordChange));
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        id: SettingId::ConnectionServerPassword,
+        value: "new-secret".to_owned().into(),
+    }));
+    assert!(state.commands.can_save_configuration);
 
     assert!(state.apply(GuiShellAction::BeginConfigurationSave));
     assert_eq!(
@@ -180,10 +192,38 @@ fn gui_shell_app_state_handles_save_and_playback_toggle_command_actions() {
     );
 
     assert!(state.apply(GuiShellAction::BeginConfigurationSave));
-    assert!(state.apply(GuiShellAction::CompleteConfigurationSave(
-        state.configuration.to_stored_settings(),
-    )));
+    let persisted = state.configuration.to_stored_settings();
+    assert!(state.apply(GuiShellAction::CompleteConfigurationSave(persisted)));
     assert_eq!(state.pending_operation, None);
+    assert_eq!(state.configuration.server_password, SecretDraft::Unchanged);
+    assert_eq!(
+        state
+            .configuration
+            .control_value(SettingId::ConnectionServerPassword),
+        Some("")
+    );
+    assert_eq!(
+        state
+            .configuration
+            .to_stored_settings()
+            .server_password
+            .as_ref()
+            .map(|value| value.expose_secret()),
+        Some("new-secret")
+    );
+    assert_eq!(
+        state
+            .configuration
+            .control_value(SettingId::GeneralLanguage),
+        Some("pt_BR")
+    );
+    assert!(!state.has_unsaved_configuration_changes());
+    assert!(!state.commands.can_save_configuration);
+    assert_eq!(
+        state.config_storage.config_path.as_deref(),
+        Some("C:/Existing/sorotte.ini")
+    );
+    assert_eq!(state.config_storage.source_label, "environment override");
     assert_chat_pane_ready(&state.main_window.chat);
 
     assert!(state.apply(GuiShellAction::BeginPlaybackPauseToggle));
@@ -217,8 +257,7 @@ fn gui_shell_app_state_rejects_invalid_save_and_playback_toggle_command_actions(
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
     assert!(
         invalid_configuration_state.apply(GuiShellAction::EditConfigurationText {
-            section: "Connection",
-            label: "Port",
+            id: SettingId::ConnectionPort,
             value: "70000".to_owned().into(),
         })
     );

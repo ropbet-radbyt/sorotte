@@ -26,13 +26,11 @@ pub(super) fn verify_loopback_chat_contract<D: NativeGuiDriver>(
         let mut steps = Vec::new();
 
         wait_for_any_accessible_name(driver, window, &["view: setup", "view: room"], step_timeout)?;
-        navigate_to_view_with_fallback(
+        navigate_to_view_with_wait(
             driver,
             window,
-            "Main Window",
+            ROOM_SURFACE_AUTOMATION_ID,
             "view: room",
-            "Window",
-            "Show Users",
             step_timeout,
         )?;
 

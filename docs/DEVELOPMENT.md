@@ -54,6 +54,21 @@ powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -Tim
 
 `scripts/gui-native-smoke.ps1` uses the existing `target/debug/sorotte-gui.exe`, so rebuild first after GUI code changes.
 
+Generate the deterministic native Settings review packet on Windows with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/gui-visual-suite.ps1
+```
+
+The suite writes `window.png`, `semantic-tree.json`, and `manifest.json` for
+`settings.first-run.player-missing`, `settings.connection.clean`,
+`settings.connection.dirty`, and `settings.validation-errors` beneath
+`target/gui-visual/`. Each run uses an isolated configuration fixture and the native smoke
+driver's fixed 1700x1100 window bounds. The manifest records the remaining environmental
+inputs: the GUI currently follows the Windows theme, DPI scale, and egui system fonts because
+there are no application test overrides for those values. Use `-Scenario <id>` for a focused
+capture and `-NoBuild` only when `target/debug/sorotte-gui.exe` is already current.
+
 ## GUI Release Publishing
 
 GUI packages are built by `.github/workflows/sorotte-gui-release.yml` and staged locally by:

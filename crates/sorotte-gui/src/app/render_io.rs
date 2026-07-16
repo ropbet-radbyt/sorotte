@@ -4,7 +4,7 @@ use eframe::egui;
 use rfd::FileDialog;
 
 use super::render_egui::GuiWidgetEguiRenderer;
-use super::shell_state::SorotteGuiShellAppState;
+use super::shell_state::{SettingId, SorotteGuiShellAppState};
 use super::startup_support::env_trimmed;
 use super::support::normalized_editable_text;
 
@@ -399,7 +399,7 @@ impl GuiWidgetEguiRenderer {
     fn player_executable_dialog_start_directory(state: &SorotteGuiShellAppState) -> Option<String> {
         state
             .configuration
-            .control_value("Connection", "Player Path")
+            .control_value(SettingId::PlayerExecutable)
             .and_then(normalized_editable_text)
             .and_then(|path| {
                 Path::new(&path)

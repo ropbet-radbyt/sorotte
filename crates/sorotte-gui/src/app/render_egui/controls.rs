@@ -1,6 +1,6 @@
 use eframe::egui;
 
-use super::super::shell_state::SorotteGuiShellAppState;
+use super::super::shell_state::{MenuActionId, SettingId, SorotteGuiShellAppState};
 use super::super::widget_tree::{GuiWidgetKind, GuiWidgetNode};
 use super::{GuiResponsiveColumnsPlan, GuiResponsiveColumnsPlanEntry, GuiWidgetEguiRenderer};
 
@@ -13,6 +13,16 @@ enum GuiCompactActionIcon {
 }
 
 impl GuiWidgetEguiRenderer {
+    pub(super) fn register_automation_id(
+        ui: &egui::Ui,
+        response: &egui::Response,
+        node: &GuiWidgetNode,
+    ) {
+        let _ = ui.ctx().accesskit_node_builder(response.id, |builder| {
+            builder.set_author_id(node.id.clone());
+        });
+    }
+
     pub(super) fn editable_text_value(node: &GuiWidgetNode) -> String {
         node.value.clone().unwrap_or_default()
     }
@@ -197,7 +207,7 @@ impl GuiWidgetEguiRenderer {
         let previous = value.clone();
         let options = Self::configuration_select_options_for_node(state, node)
             .unwrap_or_else(|| vec![previous.clone()]);
-        ui.add_enabled_ui(node.enabled, |ui| {
+        let response = ui.add_enabled_ui(node.enabled, |ui| {
             egui::ComboBox::from_id_salt(&node.id)
                 .selected_text(if value.is_empty() { "(unset)" } else { &value })
                 .width(Self::visible_available_width(ui).max(1.0))
@@ -205,8 +215,10 @@ impl GuiWidgetEguiRenderer {
                     for option in &options {
                         ui.selectable_value(&mut value, option.clone(), option);
                     }
-                });
+                })
+                .response
         });
+        Self::register_automation_id(ui, &response.inner, node);
         if value != previous
             && let Some(actions) =
                 Self::actions_for_text_input_node(state, node, &value, true, false)
@@ -301,6 +313,7 @@ impl GuiWidgetEguiRenderer {
                 let response = ui.add_enabled(
                     node.enabled,
                     egui::TextEdit::singleline(&mut value)
+                        .id_salt(&node.id)
                         .password(matches!(node.kind, GuiWidgetKind::PasswordInput))
                         .desired_width(Self::visible_available_width(ui).max(1.0)),
                 );
@@ -311,6 +324,7 @@ impl GuiWidgetEguiRenderer {
                         node.label.clone(),
                     )
                 });
+                Self::register_automation_id(ui, &response, node);
                 let submitted =
                     response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
                 if let Some(actions) = Self::actions_for_text_input_node(
@@ -331,6 +345,7 @@ impl GuiWidgetEguiRenderer {
                 let response = ui.add_enabled(
                     node.enabled,
                     egui::TextEdit::multiline(&mut value)
+                        .id_salt(&node.id)
                         .desired_width(Self::visible_available_width(ui).max(1.0))
                         .desired_rows(Self::text_area_rows_for_node(node)),
                 );
@@ -341,6 +356,7 @@ impl GuiWidgetEguiRenderer {
                         node.label.clone(),
                     )
                 });
+                Self::register_automation_id(ui, &response, node);
                 if let Some(actions) = Self::actions_for_text_input_node(
                     state,
                     node,
@@ -364,6 +380,7 @@ impl GuiWidgetEguiRenderer {
                     node.enabled,
                     egui::Checkbox::new(&mut checked, checkbox_label),
                 );
+                Self::register_automation_id(ui, &response, node);
                 if response.changed()
                     && let Some(action) = Self::action_for_checkbox_node(state, node, checked)
                 {
@@ -395,7 +412,7 @@ impl GuiWidgetEguiRenderer {
             "main-window:playlist-url-edit:text" | "main-window:media-url-edit:text"
         ) {
             3
-        } else if node.id == "config:Connection:Room History" {
+        } else if node.id == SettingId::ConnectionRoomHistory.automation_id() {
             1
         } else {
             6
@@ -409,11 +426,12 @@ impl GuiWidgetEguiRenderer {
         state: &SorotteGuiShellAppState,
     ) -> bool {
         if !node.children.is_empty() {
-            ui.add_enabled_ui(node.enabled, |ui| {
+            let response = ui.add_enabled_ui(node.enabled, |ui| {
                 ui.menu_button(Self::display_text(node), |ui| {
                     self.render_menu_section(ui, node, state);
-                });
+                })
             });
+            Self::register_automation_id(ui, &response.inner.response, node);
             return false;
         }
         if Self::playback_control_icon(node).is_some() {
@@ -431,8 +449,13 @@ impl GuiWidgetEguiRenderer {
         {
             label = label.color(text_color).strong();
         }
+        let is_checkable_menu_action =
+            MenuActionId::from_automation_id(&node.id).is_some_and(MenuActionId::is_checkable);
         let mut button =
             egui::Button::new(label).min_size(egui::vec2(Self::visible_available_width(ui), 0.0));
+        if is_checkable_menu_action {
+            button = button.selected(node.selected);
+        }
         if node.enabled
             && let Some((fill, hover_fill, _)) = Self::button_colors_for_node(ui, node)
         {
@@ -445,12 +468,22 @@ impl GuiWidgetEguiRenderer {
             );
         }
         let response = ui.add_enabled(node.enabled, button);
+        Self::register_automation_id(ui, &response, node);
         response.widget_info(|| {
-            egui::WidgetInfo::labeled(
-                egui::WidgetType::Button,
-                response.enabled(),
-                Self::display_text(node),
-            )
+            if is_checkable_menu_action {
+                egui::WidgetInfo::selected(
+                    egui::WidgetType::Button,
+                    response.enabled(),
+                    node.selected,
+                    Self::display_text(node),
+                )
+            } else {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::Button,
+                    response.enabled(),
+                    Self::display_text(node),
+                )
+            }
         });
         let response = Self::attach_node_tooltip(response, node);
         let clicked = response.clicked();
@@ -517,6 +550,7 @@ impl GuiWidgetEguiRenderer {
             })
             .inner;
 
+        Self::register_automation_id(ui, &response, node);
         let label = Self::display_text(node).to_owned();
         response.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), label.clone())
@@ -771,7 +805,8 @@ impl GuiWidgetEguiRenderer {
             return Some((palette.primary, palette.primary_hover, palette.primary_text));
         }
         match node.id.as_str() {
-            "config-command:connect"
+            "config-command:connect-once"
+            | "config-command:save-and-connect"
             | "config-command:save"
             | "configuration:alert:fix-player-path"
             | "main-window:connection:connect"
@@ -813,18 +848,8 @@ impl GuiWidgetEguiRenderer {
         state: &SorotteGuiShellAppState,
         node: &GuiWidgetNode,
     ) {
-        if node.id == "shell:quick:open-media-file"
-            || Self::is_open_media_file_menu_action(state, node)
-        {
-            self.selected_media_files = Self::pick_media_files(state);
-        } else if Self::is_exit_menu_action(state, node) {
-            self.close_requested = true;
-        } else if let Some(actions) = Self::direct_menu_actions(state, node) {
-            self.actions.extend(actions);
-        } else {
-            self.actions
-                .extend(Self::actions_for_clicked_button(state, node));
-        }
+        self.actions
+            .extend(Self::actions_for_clicked_button(state, node));
     }
 
     pub(super) fn attach_hover_text(

@@ -1,6 +1,36 @@
 use super::*;
 
 impl GuiNativeApp {
+    pub(super) fn native_effect_for_applied_action(
+        action: &GuiShellAction,
+        action_applied: bool,
+    ) -> Option<GuiNativeShellEffect> {
+        if !action_applied {
+            return None;
+        }
+
+        match action {
+            GuiShellAction::InvokeMenuAction(MenuActionId::OpenMedia) => {
+                Some(GuiNativeShellEffect::PickMediaFiles)
+            }
+            GuiShellAction::InvokeMenuAction(MenuActionId::Exit) => {
+                Some(GuiNativeShellEffect::CloseWindow)
+            }
+            GuiShellAction::InvokeMenuAction(MenuActionId::Seek) => Some(
+                GuiNativeShellEffect::OpenPlaybackPrompt(GuiPlaybackPromptKind::Seek),
+            ),
+            GuiShellAction::InvokeMenuAction(MenuActionId::UndoSeek) => {
+                Some(GuiNativeShellEffect::RequestUndoSeek)
+            }
+            GuiShellAction::InvokeMenuAction(MenuActionId::SetOffset) => Some(
+                GuiNativeShellEffect::OpenPlaybackPrompt(GuiPlaybackPromptKind::Offset),
+            ),
+            GuiShellAction::InvokeMenuAction(MenuActionId::Help)
+            | GuiShellAction::AnnounceHelpRequested => Some(GuiNativeShellEffect::OpenHelp),
+            _ => None,
+        }
+    }
+
     pub(in crate::app) fn new(
         creation_context: &eframe::CreationContext<'_>,
         state: SorotteGuiShellAppState,

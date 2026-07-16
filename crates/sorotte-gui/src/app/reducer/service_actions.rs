@@ -45,17 +45,11 @@ impl SorotteGuiShellAppState {
             GuiShellAction::RemoveSelectedMediaSearchDirectory => {
                 self.remove_selected_media_search_directory()
             }
-            GuiShellAction::EditConfigurationText {
-                section,
-                label,
-                value,
-            } => {
+            GuiShellAction::EditConfigurationText { id, value } => {
                 let previous_settings = self.configuration.to_stored_settings();
-                let applied = self.configuration.apply_text_value(
-                    section,
-                    label,
-                    value.expose_for_config_apply(),
-                );
+                let applied = self
+                    .configuration
+                    .apply_text_value(id, value.expose_for_config_apply());
                 if applied {
                     self.sync_derived_surfaces_from_configuration_settings(&previous_settings);
                     self.clear_action_error_and_refresh();
@@ -65,13 +59,9 @@ impl SorotteGuiShellAppState {
                 }
                 applied
             }
-            GuiShellAction::EditConfigurationBool {
-                section,
-                label,
-                value,
-            } => {
+            GuiShellAction::EditConfigurationBool { id, value } => {
                 let previous_settings = self.configuration.to_stored_settings();
-                let applied = self.configuration.apply_bool_value(section, label, value);
+                let applied = self.configuration.apply_bool_value(id, value);
                 if applied {
                     self.sync_derived_surfaces_from_configuration_settings(&previous_settings);
                     self.clear_action_error_and_refresh();
@@ -85,7 +75,12 @@ impl SorotteGuiShellAppState {
             GuiShellAction::AnnouncePublicServerSelectionChanged(index) => {
                 self.announce_public_server_selection_changed(index)
             }
-            GuiShellAction::BeginSavedServerConnect => self.begin_saved_server_connect(),
+            GuiShellAction::BeginConnectOnce => {
+                self.begin_saved_server_connect(GuiSavedServerConnectIntent::ConnectOnce)
+            }
+            GuiShellAction::BeginSaveAndConnect => {
+                self.begin_saved_server_connect(GuiSavedServerConnectIntent::SaveAndConnect)
+            }
             GuiShellAction::CompleteSavedServerConnect => self.complete_saved_server_connect(),
             GuiShellAction::CancelSavedServerConnect => self.cancel_saved_server_connect(),
             GuiShellAction::BeginSessionDisconnect => self.begin_session_disconnect(),

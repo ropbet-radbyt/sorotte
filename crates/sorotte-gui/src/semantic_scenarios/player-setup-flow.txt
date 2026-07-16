@@ -3,7 +3,7 @@ apply-player-setup-runtime	not-configured	Set playerPath to mpv before connectin
 assert-value	shell:open-modal	player-setup
 assert-value	shell:modal:kind	player-setup
 assert-enabled	shell:modal:close	false
-assert-enabled	config-command:connect	false
+assert-enabled	config-command:connect-once	false
 assert-enabled	config-player-setup:retry	false
 assert-value	shell:modal:player-setup:blocking	Set up mpv before connecting. Use Auto-detect, Choose mpv.exe, or Retry mpv after updating Player Path.
 activate	shell:modal:player-setup:open-settings
@@ -12,7 +12,7 @@ assert-value	shell:open-modal	(none)
 assert-selected	configuration:tab:connection	true
 apply-player-setup-runtime	missing-binary	Configured player path C:/missing/mpv.exe was not found.
 assert-value	shell:open-modal	player-setup
-assert-enabled	config-command:connect	false
+assert-enabled	config-command:connect-once	false
 assert-enabled	config-player-setup:retry	true
 assert-enabled	shell:modal:player-setup:retry	true
 activate	shell:modal:player-setup:retry

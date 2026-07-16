@@ -8,11 +8,15 @@ impl SorotteGuiShellAppState {
                 self.complete_configuration_save(settings)
             }
             GuiShellAction::CancelConfigurationSave => self.cancel_configuration_save(),
-            GuiShellAction::BeginConfigurationReset => self.begin_configuration_reset(),
-            GuiShellAction::CompleteConfigurationReset(settings) => {
-                self.complete_configuration_reset(settings)
+            GuiShellAction::BeginDiscardConfigurationChanges => {
+                self.begin_discard_configuration_changes()
             }
-            GuiShellAction::CancelConfigurationReset => self.cancel_configuration_reset(),
+            GuiShellAction::CompleteDiscardConfigurationChanges(settings) => {
+                self.complete_discard_configuration_changes(settings)
+            }
+            GuiShellAction::CancelDiscardConfigurationChanges => {
+                self.cancel_discard_configuration_changes()
+            }
             GuiShellAction::BeginConfigurationReload => self.begin_configuration_reload(),
             GuiShellAction::CompleteConfigurationReload(settings) => {
                 self.complete_configuration_reload(settings)

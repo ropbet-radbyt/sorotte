@@ -221,6 +221,53 @@ fn pump_startup_public_server_results_until(
 }
 
 #[test]
+fn startup_public_server_hydration_runs_without_starting_disabled_automatic_updates() {
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        check_for_updates_automatically: Some(false),
+        last_checked_for_updates: None,
+        public_servers: None,
+        ..StoredClientSettingsMvp::default()
+    });
+    let results = Arc::new(Mutex::new(std::collections::VecDeque::from([Ok(vec![(
+        "Hydrated".to_owned(),
+        "hydrated.example:8999".to_owned(),
+    )])])));
+
+    pump_startup_public_server_results_until(&mut owner, &handle, &mut state, &results, |owner| {
+        owner.startup_public_server_hydration.completed
+    });
+
+    let actions = handle.drain_actions();
+    assert!(actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::ApplyStartupPublicServerCache(servers)
+            if servers == &vec![(
+                "Hydrated".to_owned(),
+                "hydrated.example:8999".to_owned()
+            )]
+    )));
+    assert!(
+        actions
+            .iter()
+            .all(|action| !matches!(action, GuiShellAction::BeginUpdateCheck { .. })),
+        "disabled automatic updates must not start while public servers hydrate"
+    );
+    assert_eq!(state.public_servers.servers.len(), 1);
+    assert_eq!(
+        state.public_servers.servers[0].address,
+        "hydrated.example:8999"
+    );
+    assert!(
+        results
+            .lock()
+            .expect("startup public-server results should remain available")
+            .is_empty()
+    );
+}
+
+#[test]
 fn startup_public_server_hydration_retries_transient_failure_and_suppresses_duplicates() {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();

@@ -3,8 +3,8 @@ use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
 use super::shell_state::{
     MainWindowChatRow, MainWindowRoomRow, MainWindowRuntimeSnapshot, MainWindowShellState,
     MainWindowUserRow, MediaSearchWorkflowRuntimeFlags, MediaSearchWorkflowShellState,
-    MenuDialogShellState, PublicServerBrowserRuntimeFlags, PublicServerBrowserShellState,
-    SorotteGuiShellAppState,
+    MenuActionId, MenuDialogShellState, PublicServerBrowserRuntimeFlags,
+    PublicServerBrowserShellState, SorotteGuiShellAppState,
 };
 
 impl SorotteGuiShellAppState {
@@ -44,11 +44,6 @@ impl SorotteGuiShellAppState {
         }
         if current_snapshot.hide_empty_rooms != previous_baseline.hide_empty_rooms {
             self.main_window.hide_empty_rooms = current_snapshot.hide_empty_rooms;
-            self.set_menu_action_selected(
-                "Window",
-                "Hide Empty Rooms",
-                current_snapshot.hide_empty_rooms,
-            );
         }
         if preserve_connected_room_surface || current_snapshot.rooms != previous_baseline.rooms {
             self.main_window.rooms = current_snapshot
@@ -203,19 +198,13 @@ impl SorotteGuiShellAppState {
         }
         if current_snapshot.show_playback_buttons != previous_baseline.show_playback_buttons {
             self.main_window.show_playback_buttons = current_snapshot.show_playback_buttons;
-            self.set_menu_action_selected(
-                "Window",
-                "Playback Buttons",
+            self.set_menu_action_checked(
+                MenuActionId::TogglePlaybackButtons,
                 current_snapshot.show_playback_buttons,
             );
         }
         if current_snapshot.show_autoplay_controls != previous_baseline.show_autoplay_controls {
             self.main_window.show_autoplay_controls = current_snapshot.show_autoplay_controls;
-            self.set_menu_action_selected(
-                "Window",
-                "Autoplay",
-                current_snapshot.show_autoplay_controls,
-            );
         }
     }
 
@@ -325,6 +314,7 @@ impl SorotteGuiShellAppState {
     pub(super) fn resync_from_settings(&mut self, settings: StoredClientSettingsMvp) {
         let previous_settings = self.configuration.to_stored_settings();
         let active_view = self.active_view;
+        let selected_configuration_tab = self.selected_configuration_tab;
         let selected_plugin = self.selected_plugin;
         let open_modal = self.open_modal;
         let selection = self.selection.clone();
@@ -332,6 +322,9 @@ impl SorotteGuiShellAppState {
         let runtime_command_availability_override =
             self.runtime_command_availability_override.clone();
         let pending_operation = self.pending_operation.clone();
+        let config_storage = self.config_storage.clone();
+        let pending_config_storage_target = self.pending_config_storage_target.clone();
+        let pending_saved_server_connect_intent = self.pending_saved_server_connect_intent;
         let outgoing_chat_message = self.outgoing_chat_message.clone();
         let new_main_window_user_draft = self.new_main_window_user_draft.clone();
         let focused_configuration_control = self.focused_configuration_control.clone();
@@ -380,12 +373,16 @@ impl SorotteGuiShellAppState {
 
         *self = Self::from_stored_settings(&settings);
         self.active_view = active_view;
+        self.selected_configuration_tab = selected_configuration_tab;
         self.selected_plugin = selected_plugin;
         self.open_modal = open_modal;
         self.selection = selection;
         self.runtime_menu_action_overrides = runtime_menu_action_overrides;
         self.runtime_command_availability_override = runtime_command_availability_override;
         self.pending_operation = pending_operation;
+        self.config_storage = config_storage;
+        self.pending_config_storage_target = pending_config_storage_target;
+        self.pending_saved_server_connect_intent = pending_saved_server_connect_intent;
         self.outgoing_chat_message = outgoing_chat_message;
         self.new_main_window_user_draft = new_main_window_user_draft;
         self.focused_configuration_control = focused_configuration_control;
@@ -449,7 +446,9 @@ impl SorotteGuiShellAppState {
     }
 
     pub(super) fn has_unsaved_configuration_changes(&self) -> bool {
-        self.configuration
-            .has_unsaved_changes_against(&self.saved_configuration)
+        self.pending_config_storage_target.is_some()
+            || self
+                .configuration
+                .has_unsaved_changes_against(&self.saved_configuration)
     }
 }

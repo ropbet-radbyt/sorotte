@@ -9,7 +9,7 @@ use super::super::shell_state::{
     GuiPendingOperationState, GuiPlayerSetupIssue, GuiPlayerSetupRuntimeSnapshot,
     GuiPlaylistTextEditSessionState, GuiPlexRuntimeSnapshot, GuiPlexServerRow,
     GuiPublicServerEditSessionState, GuiSavedConfigurationRuntimeSnapshot,
-    GuiSeekPreparationRuntimeSnapshot, GuiStreamHelperHealth,
+    GuiSavedServerConnectIntent, GuiSeekPreparationRuntimeSnapshot, GuiStreamHelperHealth,
     GuiStreamHelperRemediationRuntimeSnapshot, GuiStreamHelperRuntimeSnapshot,
     GuiTextEditSessionState, GuiTransientNotification, GuiUrlEditSessionState, GuiValidationIssue,
     MenuDialogRuntimeSnapshot, MenuDialogShellState, SorotteGuiShellAppState,
@@ -27,27 +27,13 @@ impl SorotteGuiShellAppState {
         let baseline_menus = MenuDialogShellState::from_stored_settings(&settings);
         for action_override in snapshot.action_overrides {
             self.remember_runtime_menu_action_override(&baseline_menus, &action_override);
-            let mut applied = false;
-            for section in &mut self.menus.sections {
-                if section.title != action_override.section_title {
-                    continue;
-                }
-                if let Some(action) = section
-                    .actions
-                    .iter_mut()
-                    .find(|action| action.label == action_override.action_label)
-                {
-                    action.enabled = action_override.enabled;
-                    applied = true;
-                    break;
-                }
-            }
-            if !applied {
+            let Some(action) = self.menus.action_mut(action_override.id) else {
                 return self.record_action_error(format!(
-                    "No menu action exists for '{} / {}' in the runtime snapshot.",
-                    action_override.section_title, action_override.action_label
+                    "No menu action exists for '{}' in the runtime snapshot.",
+                    action_override.id.automation_id()
                 ));
-            }
+            };
+            action.enabled = action_override.enabled;
         }
 
         self.menus.tls_prompt_expected = snapshot.tls_prompt_expected;
@@ -70,15 +56,21 @@ impl SorotteGuiShellAppState {
     ) -> bool {
         let mut normalized_validation_issues = Vec::with_capacity(snapshot.validation_issues.len());
         for issue in snapshot.validation_issues {
-            let Some(scope) = normalized_editable_text(&issue.scope) else {
-                return self.record_action_error(
-                    "GUI feedback runtime snapshots cannot contain empty validation scopes.",
-                );
-            };
-            let Some(label) = normalized_editable_text(&issue.label) else {
-                return self.record_action_error(
-                    "GUI feedback runtime snapshots cannot contain empty validation labels.",
-                );
+            let setting_id = issue.setting_id;
+            let (scope, label) = if let Some(id) = setting_id {
+                (id.section().to_owned(), id.label().to_owned())
+            } else {
+                let Some(scope) = normalized_editable_text(&issue.scope) else {
+                    return self.record_action_error(
+                        "GUI feedback runtime snapshots cannot contain empty validation scopes.",
+                    );
+                };
+                let Some(label) = normalized_editable_text(&issue.label) else {
+                    return self.record_action_error(
+                        "GUI feedback runtime snapshots cannot contain empty validation labels.",
+                    );
+                };
+                (scope, label)
             };
             let Some(message) = normalized_editable_text(&issue.message) else {
                 return self.record_action_error(
@@ -86,6 +78,7 @@ impl SorotteGuiShellAppState {
                 );
             };
             normalized_validation_issues.push(GuiValidationIssue {
+                setting_id,
                 scope,
                 label,
                 message,
@@ -148,7 +141,7 @@ impl SorotteGuiShellAppState {
             .pending_operation
             .map(|kind| GuiPendingOperationState { kind });
         if snapshot.pending_operation != Some(GuiPendingOperationKind::ConnectSavedServer) {
-            self.pending_saved_server_connect_saves_configuration = false;
+            self.pending_saved_server_connect_intent = None;
         }
         let baseline_command_availability = self.command_availability_without_runtime_override();
         self.runtime_command_availability_override =
@@ -665,19 +658,12 @@ impl SorotteGuiShellAppState {
 
         let focused_configuration_control = match snapshot.focused_configuration_control {
             Some(focused) => {
-                let Some(section) = normalized_editable_text(&focused.section) else {
+                let Some(setting_id) = normalized_editable_text(&focused.setting_id) else {
                     return self.record_action_error(
-                    "GUI interaction runtime snapshots cannot contain an empty focused control section.",
+                    "GUI interaction runtime snapshots cannot contain an empty focused setting ID.",
                 );
                 };
-                let Some(label) = normalized_editable_text(&focused.label) else {
-                    return self.record_action_error(
-                    "GUI interaction runtime snapshots cannot contain an empty focused control label.",
-                );
-                };
-                let Some((section_title, control_label, kind)) =
-                    self.configuration.control_identity(&section, &label)
-                else {
+                let Some((id, kind)) = self.configuration.control_identity(&setting_id) else {
                     return self.record_action_error(
                     "GUI interaction runtime snapshots cannot focus an unknown configuration control.",
                 );
@@ -688,8 +674,7 @@ impl SorotteGuiShellAppState {
                 );
                 }
                 Some(GuiFocusedConfigurationControlState {
-                    section: section_title,
-                    label: control_label,
+                    id,
                     kind,
                     activation_count: focused.activation_count,
                 })
@@ -699,19 +684,12 @@ impl SorotteGuiShellAppState {
 
         let text_edit_session = match snapshot.text_edit_session {
             Some(session) => {
-                let Some(section) = normalized_editable_text(&session.section) else {
+                let Some(setting_id) = normalized_editable_text(&session.setting_id) else {
                     return self.record_action_error(
-                    "GUI interaction runtime snapshots cannot contain an empty text-edit section.",
+                    "GUI interaction runtime snapshots cannot contain an empty text-edit setting ID.",
                 );
                 };
-                let Some(label) = normalized_editable_text(&session.label) else {
-                    return self.record_action_error(
-                    "GUI interaction runtime snapshots cannot contain an empty text-edit label.",
-                );
-                };
-                let Some((section_title, control_label, kind)) =
-                    self.configuration.control_identity(&section, &label)
-                else {
+                let Some((id, kind)) = self.configuration.control_identity(&setting_id) else {
                     return self.record_action_error(
                     "GUI interaction runtime snapshots cannot target an unknown text-edit control.",
                 );
@@ -722,8 +700,7 @@ impl SorotteGuiShellAppState {
                 );
                 }
                 Some(GuiTextEditSessionState {
-                    section: section_title,
-                    label: control_label,
+                    id,
                     buffer: session.buffer,
                     is_dirty: session.is_dirty,
                 })
@@ -899,7 +876,7 @@ impl SorotteGuiShellAppState {
             matches!(
                 pending.kind,
                 GuiPendingOperationKind::SaveConfiguration
-                    | GuiPendingOperationKind::ResetConfiguration
+                    | GuiPendingOperationKind::DiscardConfigurationChanges
                     | GuiPendingOperationKind::ReloadConfiguration
             )
         }) {
@@ -921,7 +898,7 @@ impl SorotteGuiShellAppState {
             matches!(
                 pending.kind,
                 GuiPendingOperationKind::SaveConfiguration
-                    | GuiPendingOperationKind::ResetConfiguration
+                    | GuiPendingOperationKind::DiscardConfigurationChanges
                     | GuiPendingOperationKind::ReloadConfiguration
             )
         }) {
@@ -930,7 +907,17 @@ impl SorotteGuiShellAppState {
         );
         }
 
-        self.saved_configuration = snapshot.settings;
+        if self.pending_saved_server_connect_intent
+            == Some(GuiSavedServerConnectIntent::SaveAndConnect)
+            && self
+                .pending_operation
+                .as_ref()
+                .is_some_and(|pending| pending.kind == GuiPendingOperationKind::ConnectSavedServer)
+        {
+            self.settle_persisted_configuration(snapshot.settings, true);
+        } else {
+            self.saved_configuration = snapshot.settings;
+        }
         self.clear_action_error_and_refresh();
         true
     }
@@ -943,7 +930,7 @@ impl SorotteGuiShellAppState {
             matches!(
                 pending.kind,
                 GuiPendingOperationKind::SaveConfiguration
-                    | GuiPendingOperationKind::ResetConfiguration
+                    | GuiPendingOperationKind::DiscardConfigurationChanges
                     | GuiPendingOperationKind::ReloadConfiguration
             )
         }) {

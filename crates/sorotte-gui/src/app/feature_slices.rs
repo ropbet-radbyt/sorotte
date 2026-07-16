@@ -14,11 +14,11 @@ use super::shell_state::{
     GuiCommandAvailabilityState, GuiConfigStorageChangeTarget, GuiConfigStorageRuntimeSnapshot,
     GuiMediaIndexStatusState, GuiMediaMatchRemediationState, GuiMediaMatchState,
     GuiPendingOperationState, GuiPlayerSetupIssue, GuiPlexPlaylistSearchState, GuiPlexState,
-    GuiPluginEnablementState, GuiSeekPreparationDegradedReason, GuiSeekPreparationState,
-    GuiSelectionState, GuiStreamHelperRemediationState, GuiStreamHelperState, GuiValidationIssue,
-    GuiValidationState, MainWindowShellState, MediaSearchWorkflowShellState,
-    MenuActionRuntimeOverride, MenuDialogShellState, PublicServerBrowserShellState,
-    SorotteGuiShellAppState,
+    GuiPluginEnablementState, GuiSavedServerConnectIntent, GuiSeekPreparationDegradedReason,
+    GuiSeekPreparationState, GuiSelectionState, GuiStreamHelperRemediationState,
+    GuiStreamHelperState, GuiValidationIssue, GuiValidationState, MainWindowShellState,
+    MediaSearchWorkflowShellState, MenuActionRuntimeOverride, MenuDialogShellState,
+    PublicServerBrowserShellState, SorotteGuiShellAppState,
 };
 use super::ui_state::GuiUpdateCheckState;
 use sorotte_client_app::app_boundary::{
@@ -202,7 +202,7 @@ pub(super) mod session {
         pub(super) menus: MenuDialogShellState,
         pub(super) pending_operation: Option<GuiPendingOperationState>,
         pub(super) pending_local_ready_target: Option<bool>,
-        pub(super) pending_saved_server_connect_saves_configuration: bool,
+        pub(super) pending_saved_server_connect_intent: Option<GuiSavedServerConnectIntent>,
         pub(super) outgoing_chat_message: Option<String>,
         pub(super) public_servers: PublicServerBrowserShellState,
     }
@@ -436,8 +436,7 @@ impl GuiRuntimeInput {
                 menus: state.menus.clone(),
                 pending_operation: state.pending_operation.clone(),
                 pending_local_ready_target: state.pending_local_ready_target,
-                pending_saved_server_connect_saves_configuration: state
-                    .pending_saved_server_connect_saves_configuration,
+                pending_saved_server_connect_intent: state.pending_saved_server_connect_intent,
                 outgoing_chat_message: state.outgoing_chat_message.clone(),
                 public_servers: state.public_servers.clone(),
             },
@@ -503,10 +502,8 @@ impl GuiRuntimeInput {
             && self.session.menus == state.menus
             && self.session.pending_operation == state.pending_operation
             && self.session.pending_local_ready_target == state.pending_local_ready_target
-            && self
-                .session
-                .pending_saved_server_connect_saves_configuration
-                == state.pending_saved_server_connect_saves_configuration
+            && self.session.pending_saved_server_connect_intent
+                == state.pending_saved_server_connect_intent
             && self.session.outgoing_chat_message == state.outgoing_chat_message
             && self.session.public_servers == state.public_servers
             && self.player.setup_issue == state.player_setup_issue
@@ -555,9 +552,8 @@ impl GuiRuntimeInput {
         state.menus = self.session.menus.clone();
         state.pending_operation = self.session.pending_operation.clone();
         state.pending_local_ready_target = self.session.pending_local_ready_target;
-        state.pending_saved_server_connect_saves_configuration = self
-            .session
-            .pending_saved_server_connect_saves_configuration;
+        state.pending_saved_server_connect_intent =
+            self.session.pending_saved_server_connect_intent;
         state.outgoing_chat_message = self.session.outgoing_chat_message.clone();
         state.public_servers = self.session.public_servers.clone();
 

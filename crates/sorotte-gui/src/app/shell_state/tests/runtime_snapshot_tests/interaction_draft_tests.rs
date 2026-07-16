@@ -8,18 +8,15 @@ fn gui_shell_app_state_tracks_validation_issues_and_preserves_view_modal_across_
     assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::Setup)));
     assert!(state.apply(GuiShellAction::OpenModal(GuiShellModal::About)));
     assert!(state.apply(GuiShellAction::EditConfigurationText {
-        section: "Connection",
-        label: "Port",
+        id: SettingId::ConnectionPort,
         value: "70000".to_owned().into(),
     }));
     assert!(state.apply(GuiShellAction::EditConfigurationText {
-        section: "System",
-        label: "Language",
+        id: SettingId::GeneralLanguage,
         value: "zz".to_owned().into(),
     }));
     assert!(state.apply(GuiShellAction::EditConfigurationText {
-        section: "System",
-        label: "Update Channel",
+        id: SettingId::GeneralUpdateChannel,
         value: "nightly".to_owned().into(),
     }));
 
@@ -65,8 +62,7 @@ fn gui_shell_app_state_validates_trusted_domain_configuration_text() {
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
-        section: "Privacy",
-        label: "Trusted Domains",
+        id: SettingId::PrivacyTrustedDomains,
         value: "['trusted.example',".to_owned().into(),
     }));
 
@@ -142,13 +138,13 @@ fn gui_shell_app_state_edits_room_history_from_configuration_surface() {
     assert_eq!(
         state
             .configuration
-            .control_value("Connection", "Room History"),
+            .control_value(SettingId::ConnectionRoomHistory),
         Some("alpha\nbeta\nzeta")
     );
     assert_eq!(
         state
             .configuration
-            .control_value("Connection", "Room History Count"),
+            .control_value(SettingId::ConnectionRoomHistoryCount),
         Some("3")
     );
     assert!(state.room_history_edit_session.is_none());
@@ -209,8 +205,7 @@ fn gui_shell_app_state_applies_gui_interaction_runtime_snapshots() {
                 selected_public_server_index: Some(0),
                 focused_configuration_control: Some(
                     GuiFocusedConfigurationControlRuntimeSnapshot {
-                        section: "Connection".to_owned(),
-                        label: "Host".to_owned(),
+                        setting_id: SettingId::ConnectionHost.automation_id().to_owned(),
                         activation_count: 3,
                     }
                 ),
@@ -226,8 +221,7 @@ fn gui_shell_app_state_applies_gui_interaction_runtime_snapshots() {
                     is_dirty: true,
                 }),
                 text_edit_session: Some(GuiTextEditSessionRuntimeSnapshot {
-                    section: "Connection".to_owned(),
-                    label: "Host".to_owned(),
+                    setting_id: SettingId::ConnectionHost.automation_id().to_owned(),
                     buffer: "runtime.example".to_owned().into(),
                     is_dirty: true,
                 }),
@@ -249,12 +243,11 @@ fn gui_shell_app_state_applies_gui_interaction_runtime_snapshots() {
     assert!(state.media_search.directories[0].is_selected);
     assert!(state.public_servers.servers[0].is_selected);
     assert_eq!(
-        state.focused_configuration_control.as_ref().map(|focused| (
-            focused.section,
-            focused.label,
-            focused.activation_count
-        )),
-        Some(("Connection", "Host", 3))
+        state
+            .focused_configuration_control
+            .as_ref()
+            .map(|focused| (focused.id, focused.activation_count)),
+        Some((SettingId::ConnectionHost, 3))
     );
     assert_eq!(
         state
@@ -341,8 +334,7 @@ fn gui_shell_app_state_normalizes_disabled_menu_selection_in_gui_interaction_run
     assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
         MenuDialogRuntimeSnapshot {
             action_overrides: vec![MenuActionRuntimeOverride {
-                section_title: "Playback",
-                action_label: "Seek",
+                id: MenuActionId::Seek,
                 enabled: false,
             }],
             tls_prompt_expected: state.menus.tls_prompt_expected,
@@ -402,8 +394,7 @@ fn gui_shell_app_state_rejects_invalid_gui_interaction_runtime_snapshots() {
                 selected_public_server_index: None,
                 focused_configuration_control: Some(
                     GuiFocusedConfigurationControlRuntimeSnapshot {
-                        section: "Connection".to_owned(),
-                        label: "Missing".to_owned(),
+                        setting_id: "settings.connection.missing".to_owned(),
                         activation_count: 0,
                     }
                 ),
@@ -565,8 +556,7 @@ fn gui_shell_app_state_applies_gui_saved_configuration_runtime_snapshots() {
     });
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
-        section: "Connection",
-        label: "Host",
+        id: SettingId::ConnectionHost,
         value: "dirty.example".to_owned().into(),
     }));
     assert!(state.commands.can_reset_configuration);

@@ -2,156 +2,56 @@ use super::*;
 
 impl MenuDialogShellState {
     pub(in crate::app) fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
-        let config = ClientConfig::resolve(settings).config;
-        let shared_playlist_enabled = config.playback.shared_playlist_enabled;
-        let chat_enabled =
-            config.interface.chat_input_enabled || config.interface.chat_output_enabled;
-
         Self {
             sections: vec![
                 MenuSectionShellState {
                     title: "File",
                     actions: vec![
-                        MenuActionShellItem {
-                            label: "Open Media File",
-                            enabled: false,
-                            is_selected: false,
-                        },
-                        MenuActionShellItem {
-                            label: "Open Media Search",
-                            enabled: true,
-                            is_selected: false,
-                        },
-                        MenuActionShellItem {
-                            label: "Open Public Server Browser",
-                            enabled: true,
-                            is_selected: false,
-                        },
-                        MenuActionShellItem {
-                            label: "Exit",
-                            enabled: true,
-                            is_selected: false,
-                        },
+                        MenuActionShellItem::new(MenuActionId::OpenMedia, false, false),
+                        MenuActionShellItem::new(MenuActionId::OpenMediaSearch, true, false),
+                        MenuActionShellItem::new(
+                            MenuActionId::OpenPublicServerBrowser,
+                            true,
+                            false,
+                        ),
+                        MenuActionShellItem::new(MenuActionId::Exit, true, false),
                     ],
                 },
                 MenuSectionShellState {
                     title: "Playback",
                     actions: vec![
-                        MenuActionShellItem {
-                            label: "Play",
-                            enabled: false,
-                            is_selected: false,
-                        },
-                        MenuActionShellItem {
-                            label: "Pause",
-                            enabled: false,
-                            is_selected: false,
-                        },
-                        MenuActionShellItem {
-                            label: "Toggle Pause",
-                            enabled: false,
-                            is_selected: false,
-                        },
-                        MenuActionShellItem {
-                            label: "Seek",
-                            enabled: false,
-                            is_selected: false,
-                        },
-                        MenuActionShellItem {
-                            label: "Undo Seek",
-                            enabled: false,
-                            is_selected: false,
-                        },
-                        MenuActionShellItem {
-                            label: "Shared Playlist",
-                            enabled: false,
-                            is_selected: false,
-                        },
+                        MenuActionShellItem::new(MenuActionId::Play, false, false),
+                        MenuActionShellItem::new(MenuActionId::Pause, false, false),
+                        MenuActionShellItem::new(MenuActionId::TogglePause, false, false),
+                        MenuActionShellItem::new(MenuActionId::Seek, false, false),
+                        MenuActionShellItem::new(MenuActionId::UndoSeek, false, false),
+                        MenuActionShellItem::new(MenuActionId::SharedPlaylist, false, false),
                     ],
                 },
                 MenuSectionShellState {
                     title: "Advanced",
                     actions: vec![
-                        MenuActionShellItem {
-                            label: "Create Controlled Room",
-                            enabled: false,
-                            is_selected: false,
-                        },
-                        MenuActionShellItem {
-                            label: "Identify As Controller",
-                            enabled: false,
-                            is_selected: false,
-                        },
-                        MenuActionShellItem {
-                            label: "Trusted Domains",
-                            enabled: true,
-                            is_selected: false,
-                        },
-                        MenuActionShellItem {
-                            label: "Set Offset",
-                            enabled: false,
-                            is_selected: false,
-                        },
-                        MenuActionShellItem {
-                            label: "TLS Certificates",
-                            enabled: true,
-                            is_selected: false,
-                        },
+                        MenuActionShellItem::new(MenuActionId::CreateControlledRoom, false, false),
+                        MenuActionShellItem::new(MenuActionId::IdentifyAsController, false, false),
+                        MenuActionShellItem::new(MenuActionId::TrustedDomains, true, false),
+                        MenuActionShellItem::new(MenuActionId::SetOffset, false, false),
+                        MenuActionShellItem::new(MenuActionId::TlsCertificates, true, false),
                     ],
                 },
                 MenuSectionShellState {
                     title: "Window",
-                    actions: vec![
-                        MenuActionShellItem {
-                            label: "Show Chat",
-                            enabled: chat_enabled,
-                            is_selected: false,
-                        },
-                        MenuActionShellItem {
-                            label: "Show Playlist",
-                            enabled: shared_playlist_enabled,
-                            is_selected: false,
-                        },
-                        MenuActionShellItem {
-                            label: "Show Users",
-                            enabled: true,
-                            is_selected: false,
-                        },
-                        MenuActionShellItem {
-                            label: "Playback Buttons",
-                            enabled: true,
-                            is_selected: true,
-                        },
-                        MenuActionShellItem {
-                            label: "Autoplay",
-                            enabled: true,
-                            is_selected: true,
-                        },
-                        MenuActionShellItem {
-                            label: "Hide Empty Rooms",
-                            enabled: true,
-                            is_selected: false,
-                        },
-                    ],
+                    actions: vec![MenuActionShellItem::new(
+                        MenuActionId::TogglePlaybackButtons,
+                        true,
+                        true,
+                    )],
                 },
                 MenuSectionShellState {
                     title: "Help",
                     actions: vec![
-                        MenuActionShellItem {
-                            label: "About",
-                            enabled: true,
-                            is_selected: false,
-                        },
-                        MenuActionShellItem {
-                            label: "Manual / Command Help",
-                            enabled: true,
-                            is_selected: false,
-                        },
-                        MenuActionShellItem {
-                            label: "Check for Updates",
-                            enabled: true,
-                            is_selected: false,
-                        },
+                        MenuActionShellItem::new(MenuActionId::About, true, false),
+                        MenuActionShellItem::new(MenuActionId::Help, true, false),
+                        MenuActionShellItem::new(MenuActionId::CheckForUpdates, true, false),
                     ],
                 },
             ],

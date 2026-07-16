@@ -1,13 +1,11 @@
 use super::super::DEFAULT_MAIN_WINDOW_AUTOPLAY_THRESHOLD;
 use super::super::shell_state::{
     GuiInteractionRuntimeSnapshot, MainWindowRuntimeRoomSnapshot, MainWindowRuntimeSnapshot,
-    MainWindowRuntimeUserSnapshot, MainWindowShellState, MenuActionRuntimeOverride,
+    MainWindowRuntimeUserSnapshot, MainWindowShellState, MenuActionId, MenuActionRuntimeOverride,
     MenuDialogRuntimeSnapshot, SorotteGuiShellAppState, browser_format_duration_label,
     browser_format_size_label, browser_is_url, browser_uri_is_trusted,
 };
-use super::super::support::{
-    legacy_chat_enabled, nonempty_room_name_text, normalized_editable_text,
-};
+use super::super::support::{nonempty_room_name_text, normalized_editable_text};
 use super::GuiClientCoreChatSessionRuntimeAdapter;
 use sorotte_client_app::app_boundary::readiness::{
     ParticipantReadinessPresentation, PendingReadinessIntentPresentation,
@@ -312,7 +310,6 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         shared_playlist_enabled: bool,
     ) -> Option<MenuDialogRuntimeSnapshot> {
         let mut action_overrides = Vec::new();
-        let settings = state.configuration.to_stored_settings();
         let session_room_name = self
             .runtime
             .session()
@@ -324,65 +321,9 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             managed_rooms_server_supported && session_room_name.is_some();
         let identify_as_controller_enabled = managed_rooms_server_supported
             && session_room_name.is_some_and(|room_name| room_name.starts_with('+'));
-        let config_chat_enabled = legacy_chat_enabled(&settings);
-        let desired_show_chat_enabled =
-            config_chat_enabled && self.runtime.session().server_chat_supported();
-
-        let current_show_chat_enabled = state
-            .menus
-            .sections
-            .iter()
-            .find(|section| section.title == "Window")
-            .and_then(|section| {
-                section
-                    .actions
-                    .iter()
-                    .find(|action| action.label == "Show Chat")
-            })
-            .map(|action| action.enabled);
-        if current_show_chat_enabled
-            .is_some_and(|current_enabled| current_enabled != desired_show_chat_enabled)
-        {
-            action_overrides.push(MenuActionRuntimeOverride {
-                section_title: "Window",
-                action_label: "Show Chat",
-                enabled: desired_show_chat_enabled,
-            });
-        }
-
-        let current_show_playlist_enabled = state
-            .menus
-            .sections
-            .iter()
-            .find(|section| section.title == "Window")
-            .and_then(|section| {
-                section
-                    .actions
-                    .iter()
-                    .find(|action| action.label == "Show Playlist")
-            })
-            .map(|action| action.enabled);
-        if current_show_playlist_enabled
-            .is_some_and(|current_enabled| current_enabled != shared_playlist_enabled)
-        {
-            action_overrides.push(MenuActionRuntimeOverride {
-                section_title: "Window",
-                action_label: "Show Playlist",
-                enabled: shared_playlist_enabled,
-            });
-        }
-
         let current_playlist_actions_enabled = state
             .menus
-            .sections
-            .iter()
-            .find(|section| section.title == "Playback")
-            .and_then(|section| {
-                section
-                    .actions
-                    .iter()
-                    .find(|action| action.label == "Shared Playlist")
-            })
+            .action(MenuActionId::SharedPlaylist)
             .map(|action| action.enabled);
         let desired_playlist_actions_enabled =
             shared_playlist_enabled && self.shared_playlist_control_available();
@@ -390,34 +331,24 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             .is_some_and(|current_enabled| current_enabled != desired_playlist_actions_enabled)
         {
             action_overrides.push(MenuActionRuntimeOverride {
-                section_title: "Playback",
-                action_label: "Shared Playlist",
+                id: MenuActionId::SharedPlaylist,
                 enabled: desired_playlist_actions_enabled,
             });
         }
 
-        for (action_label, enabled) in [
-            ("Create Controlled Room", create_controlled_room_enabled),
-            ("Identify As Controller", identify_as_controller_enabled),
+        for (id, enabled) in [
+            (
+                MenuActionId::CreateControlledRoom,
+                create_controlled_room_enabled,
+            ),
+            (
+                MenuActionId::IdentifyAsController,
+                identify_as_controller_enabled,
+            ),
         ] {
-            let current_enabled = state
-                .menus
-                .sections
-                .iter()
-                .find(|section| section.title == "Advanced")
-                .and_then(|section| {
-                    section
-                        .actions
-                        .iter()
-                        .find(|action| action.label == action_label)
-                })
-                .map(|action| action.enabled);
+            let current_enabled = state.menus.action(id).map(|action| action.enabled);
             if current_enabled.is_some_and(|current_enabled| current_enabled != enabled) {
-                action_overrides.push(MenuActionRuntimeOverride {
-                    section_title: "Advanced",
-                    action_label,
-                    enabled,
-                });
+                action_overrides.push(MenuActionRuntimeOverride { id, enabled });
             }
         }
 

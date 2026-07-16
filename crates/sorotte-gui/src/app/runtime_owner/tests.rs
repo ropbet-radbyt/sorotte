@@ -26,11 +26,11 @@ use crate::app::{
     GuiPendingAttachedMediaResolution, GuiPendingCompletionRequest, GuiPendingOperationKind,
     GuiPendingRoomChangeRequest, GuiPersistedUiState, GuiPlayerLaunchRuntimeState,
     GuiPluginSelection, GuiQueuedRuntimeBridgeHandle, GuiQueuedRuntimeOwner, GuiRuntimeRequest,
-    GuiSessionRuntimeAdapter, GuiShellAction, GuiShellView, GuiTestPlayerAdapter,
-    GuiTransientNotificationLevel, MainWindowPlaylistRow, MainWindowRuntimeChatSnapshot,
-    MainWindowRuntimeSnapshot, MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot,
-    SorotteGuiRuntimeSnapshot, SorotteGuiShellAppState, legacy_gui_qsettings_store_path,
-    persist_gui_ui_state_at_root,
+    GuiSavedServerConnectIntent, GuiSessionRuntimeAdapter, GuiShellAction, GuiShellView,
+    GuiTestPlayerAdapter, GuiTransientNotificationLevel, MainWindowPlaylistRow,
+    MainWindowRuntimeChatSnapshot, MainWindowRuntimeSnapshot, MenuActionId,
+    MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot, SettingId, SorotteGuiRuntimeSnapshot,
+    SorotteGuiShellAppState, legacy_gui_qsettings_store_path, persist_gui_ui_state_at_root,
 };
 use sorotte_client_app::app_boundary::persistence::{
     load_sorotte_ini_stored_client_settings_mvp_from_path,

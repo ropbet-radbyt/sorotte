@@ -1,7 +1,10 @@
 use std::{thread, time::Duration};
 
 use super::super::{SMOKE_WINDOW_HEIGHT, SMOKE_WINDOW_WIDTH, SMOKE_WINDOW_X, SMOKE_WINDOW_Y};
-use super::{NativeControlKind, NativeGuiDriver, PlatformNativeGuiDriver, PlatformWindowHandle};
+use super::{
+    NativeAccessibilityNode, NativeControlKind, NativeGuiDriver, PlatformNativeGuiDriver,
+    PlatformWindowHandle,
+};
 
 #[cfg(target_os = "windows")]
 impl PlatformNativeGuiDriver {
@@ -90,29 +93,13 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
     }
 
     fn prepare_window_for_smoke(&self, window: Self::WindowHandle) -> Result<(), String> {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            SWP_NOZORDER, SetForegroundWindow, SetWindowPos,
-        };
-
-        // SAFETY: `window` is the GUI HWND under test. The requested bounds are fixed smoke-test
-        // coordinates and `SetWindowPos` failure is reported to the caller.
-        unsafe {
-            SetForegroundWindow(window);
-            let result = SetWindowPos(
-                window,
-                std::ptr::null_mut(),
-                SMOKE_WINDOW_X,
-                SMOKE_WINDOW_Y,
-                SMOKE_WINDOW_WIDTH,
-                SMOKE_WINDOW_HEIGHT,
-                SWP_NOZORDER,
-            );
-            if result == 0 {
-                return Err("failed to set native smoke window bounds".to_owned());
-            }
-        }
-        thread::sleep(Duration::from_millis(120));
-        Ok(())
+        Self::prepare_visible_window_bounds(
+            window,
+            SMOKE_WINDOW_X,
+            SMOKE_WINDOW_Y,
+            SMOKE_WINDOW_WIDTH,
+            SMOKE_WINDOW_HEIGHT,
+        )
     }
 
     fn scroll_active_view_page_down(&self, window: Self::WindowHandle) -> Result<(), String> {
@@ -169,6 +156,13 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
 
     fn accessible_names(&self, window: Self::WindowHandle) -> Result<Vec<String>, String> {
         Self::collect_accessible_names(window)
+    }
+
+    fn accessibility_nodes(
+        &self,
+        window: Self::WindowHandle,
+    ) -> Result<Vec<NativeAccessibilityNode>, String> {
+        Self::collect_accessibility_nodes(window)
     }
 
     fn top_level_menu_labels(&self, window: Self::WindowHandle) -> Result<Vec<String>, String> {
@@ -232,29 +226,12 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
         Self::editable_text_input_count(window)
     }
 
-    fn get_edit_value_by_index(
-        &self,
-        window: Self::WindowHandle,
-        edit_index: usize,
-    ) -> Result<String, String> {
-        Self::get_edit_value_by_index(window, edit_index)
-    }
-
     fn get_named_edit_value(
         &self,
         window: Self::WindowHandle,
         name: &str,
     ) -> Result<String, String> {
         Self::get_named_edit_value(window, name)
-    }
-
-    fn set_edit_value_by_index(
-        &self,
-        window: Self::WindowHandle,
-        edit_index: usize,
-        value: &str,
-    ) -> Result<(), String> {
-        Self::set_edit_value_by_index(window, edit_index, value)
     }
 
     fn set_named_edit_value(
@@ -274,6 +251,14 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
         control_kind: NativeControlKind,
     ) -> Result<(), String> {
         Self::invoke_named_control_internal(window, name, control_kind, false)
+    }
+
+    fn capture_window_png(
+        &self,
+        window: Self::WindowHandle,
+        output_path: &std::path::Path,
+    ) -> Result<(), String> {
+        Self::capture_window_png_internal(window, output_path)
     }
 
     fn close_window(&self, window: Self::WindowHandle) -> Result<(), String> {

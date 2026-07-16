@@ -7,6 +7,7 @@ fn gui_shell_app_state_triggers_selected_menu_actions() {
         shared_playlist_enabled: Some(true),
         ..StoredClientSettingsMvp::default()
     });
+    state.main_window.playlist = vec![MainWindowPlaylistRow::inferred("episode.mkv", true)];
     state.main_window.playback.can_toggle_pause = true;
     state.refresh_validation();
     state.sync_playback_menu_actions_from_runtime_state(state.commands.can_toggle_pause);
@@ -39,15 +40,142 @@ fn gui_shell_app_state_triggers_selected_menu_actions() {
 
     let mut disabled_state =
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
-    assert!(disabled_state.apply(GuiShellAction::SelectMenuAction {
-        section_index: 1,
-        action_index: 1,
-    }));
-    assert!(!disabled_state.apply(GuiShellAction::TriggerSelectedMenuAction));
+    assert!(!disabled_state.apply(GuiShellAction::InvokeMenuAction(MenuActionId::Pause)));
     assert_eq!(
         disabled_state.validation.last_action_error.as_deref(),
         Some("The selected menu action is currently disabled.")
     );
+}
+
+#[test]
+fn window_menu_exposes_only_real_checkable_visibility_actions() {
+    let mut state =
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::Room)));
+
+    let visible_tree = state.shell_widget_tree();
+    assert!(visible_tree.find("main-window:control:play").is_some());
+
+    assert!(
+        state
+            .menus
+            .action(MenuActionId::TogglePlaybackButtons)
+            .is_some_and(|action| action.is_checked)
+    );
+    assert_eq!(
+        state.menus.sections[3]
+            .actions
+            .iter()
+            .map(|action| action.id)
+            .collect::<Vec<_>>(),
+        vec![MenuActionId::TogglePlaybackButtons],
+        "Window must not expose visibility commands that do not affect the rendered surface",
+    );
+    assert_eq!(
+        MenuActionId::from_automation_id("menu.toggle_hide_empty_rooms"),
+        None,
+    );
+
+    assert!(state.apply(GuiShellAction::SelectMenuAction {
+        section_index: 4,
+        action_index: 0,
+    }));
+    assert!(
+        state
+            .menus
+            .action(MenuActionId::About)
+            .is_some_and(|action| action.is_selected)
+    );
+    assert!(
+        state
+            .menus
+            .action(MenuActionId::TogglePlaybackButtons)
+            .is_some_and(|action| action.is_checked)
+    );
+
+    assert!(state.apply(GuiShellAction::InvokeMenuAction(
+        MenuActionId::TogglePlaybackButtons,
+    )));
+    assert!(
+        state
+            .menus
+            .action(MenuActionId::TogglePlaybackButtons)
+            .is_some_and(|action| !action.is_checked)
+    );
+    assert!(
+        state
+            .shell_widget_tree()
+            .find("main-window:control:play")
+            .is_none()
+    );
+    assert!(
+        state
+            .shell_widget_tree()
+            .find(MenuActionId::TogglePlaybackButtons.automation_id())
+            .is_some_and(|node| !node.selected)
+    );
+}
+
+#[test]
+fn playback_menu_and_toolbar_disable_together_while_an_operation_is_pending() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.main_window.playlist = vec![MainWindowPlaylistRow::inferred("episode.mkv", true)];
+    state.main_window.playback.can_toggle_pause = true;
+    state.main_window.playback.can_seek = true;
+    state.main_window.playback.can_undo_seek = true;
+    state.main_window.playback.can_set_offset = true;
+    state.refresh_validation();
+
+    let available_tree = state.shell_widget_tree();
+    assert!(
+        available_tree
+            .find("menu.seek")
+            .is_some_and(|node| node.enabled)
+    );
+    assert!(
+        available_tree
+            .find("main-window:control:seek")
+            .is_some_and(|node| node.enabled)
+    );
+
+    assert!(state.apply(GuiShellAction::BeginPlaybackPause));
+    let pending_tree = state.shell_widget_tree();
+    for id in [
+        "menu.open_media",
+        "menu.seek",
+        "menu.undo_seek",
+        "menu.set_offset",
+        "main-window:control:seek",
+        "main-window:control:undo-seek",
+    ] {
+        assert!(
+            pending_tree.find(id).is_some_and(|node| !node.enabled),
+            "{id} should be disabled while a playback operation is pending"
+        );
+    }
+    assert!(!state.apply(GuiShellAction::InvokeMenuAction(MenuActionId::Seek)));
+    assert_eq!(
+        state.validation.last_action_error.as_deref(),
+        Some("The selected menu action is currently disabled.")
+    );
+}
+
+#[test]
+fn typed_about_action_opens_the_modal_without_changing_views_or_toggling_closed() {
+    let mut state =
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::Room)));
+
+    assert!(state.apply(GuiShellAction::InvokeMenuAction(MenuActionId::About)));
+    assert_eq!(state.active_view, GuiShellView::Room);
+    assert_eq!(state.open_modal, Some(GuiShellModal::About));
+
+    assert!(state.apply(GuiShellAction::InvokeMenuAction(MenuActionId::About)));
+    assert_eq!(state.open_modal, Some(GuiShellModal::About));
+    assert!(MenuActionId::help_url().starts_with("https://"));
 }
 
 #[test]

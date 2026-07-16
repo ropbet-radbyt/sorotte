@@ -1,4 +1,4 @@
-use super::windows_control_names::matches_control_name;
+use super::windows_control_names::matches_control_identity;
 use super::{NativeControlKind, PlatformNativeGuiDriver, PlatformWindowHandle};
 
 impl PlatformNativeGuiDriver {
@@ -22,7 +22,8 @@ impl PlatformNativeGuiDriver {
                     let Some(current_name) = Self::automation_element_name(&element) else {
                         continue;
                     };
-                    if !matches_control_name(name, &current_name) {
+                    let automation_id = Self::automation_element_automation_id(&element);
+                    if !matches_control_identity(name, &current_name, &automation_id) {
                         continue;
                     }
 
@@ -71,7 +72,8 @@ impl PlatformNativeGuiDriver {
                     let Some(current_name) = Self::automation_element_name(&element) else {
                         continue;
                     };
-                    if !matches_control_name(name, &current_name) {
+                    let automation_id = Self::automation_element_automation_id(&element);
+                    if !matches_control_identity(name, &current_name, &automation_id) {
                         continue;
                     }
 

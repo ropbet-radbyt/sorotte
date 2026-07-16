@@ -3,8 +3,8 @@ use super::{GuiNativeRuntimeBridge, GuiPreviewRuntimeBridge};
 use crate::app::testing::support::test_temp_root;
 use crate::app::{
     GuiPendingOperationKind, GuiPlexPlaylistJobCancellationReason, GuiRuntimeRequest,
-    GuiSavedConfigurationRuntimeSnapshot, GuiShellAction, GuiShellView, MainWindowPlaylistRow,
-    SorotteGuiShellAppState,
+    GuiSavedConfigurationRuntimeSnapshot, GuiSavedServerConnectIntent, GuiShellAction,
+    GuiShellView, MainWindowPlaylistRow, SecretDraft, SettingId, SorotteGuiShellAppState,
 };
 use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
 
@@ -216,27 +216,36 @@ fn gui_preview_runtime_bridge_maps_pending_operations_to_preview_actions() {
 }
 
 #[test]
-fn gui_preview_runtime_bridge_saves_configuration_before_config_view_connect_completion() {
+fn gui_preview_runtime_bridge_saves_configuration_for_explicit_save_and_connect() {
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         host: Some("syncplay.example".to_owned()),
         port: Some(8999),
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
+        server_password: Some("old-secret".into()),
         player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
         ..StoredClientSettingsMvp::default()
     });
     let mut runtime = GuiPreviewRuntimeBridge;
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
-        section: "Connection",
-        label: "Room",
+        id: SettingId::ConnectionRoom,
         value: "room2".to_owned().into(),
     }));
+    assert!(state.apply(GuiShellAction::BeginServerPasswordChange));
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        id: SettingId::ConnectionServerPassword,
+        value: "new-secret".to_owned().into(),
+    }));
     assert_eq!(state.active_view, GuiShellView::Setup);
-    assert!(state.apply(GuiShellAction::BeginSavedServerConnect));
-    assert!(state.pending_saved_server_connect_saves_configuration);
+    assert!(state.apply(GuiShellAction::BeginSaveAndConnect));
     assert_eq!(
-        runtime.actions_for_pending_completion(&state),
+        state.pending_saved_server_connect_intent,
+        Some(GuiSavedServerConnectIntent::SaveAndConnect)
+    );
+    let completion_actions = runtime.actions_for_pending_completion(&state);
+    assert_eq!(
+        completion_actions,
         vec![
             GuiShellAction::ApplyGuiSavedConfigurationRuntimeSnapshot(
                 GuiSavedConfigurationRuntimeSnapshot {
@@ -246,10 +255,30 @@ fn gui_preview_runtime_bridge_saves_configuration_before_config_view_connect_com
             GuiShellAction::CompleteSavedServerConnect,
         ]
     );
+    for action in completion_actions {
+        assert!(state.apply(action));
+    }
+    assert_eq!(state.configuration.server_password, SecretDraft::Unchanged);
+    assert_eq!(
+        state
+            .configuration
+            .control_value(SettingId::ConnectionServerPassword),
+        Some("")
+    );
+    assert_eq!(state.saved_configuration.room.as_deref(), Some("room2"));
+    assert_eq!(
+        state
+            .saved_configuration
+            .server_password
+            .as_ref()
+            .map(|value| value.expose_secret()),
+        Some("new-secret")
+    );
+    assert!(!state.has_unsaved_configuration_changes());
 }
 
 #[test]
-fn gui_preview_runtime_bridge_keeps_main_window_connect_as_plain_connect_completion() {
+fn gui_preview_runtime_bridge_connect_once_never_saves_the_draft() {
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         host: Some("syncplay.example".to_owned()),
         port: Some(8999),
@@ -259,11 +288,24 @@ fn gui_preview_runtime_bridge_keeps_main_window_connect_as_plain_connect_complet
     });
     let mut runtime = GuiPreviewRuntimeBridge;
 
-    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::Room)));
-    assert!(state.apply(GuiShellAction::BeginSavedServerConnect));
-    assert!(!state.pending_saved_server_connect_saves_configuration);
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        id: SettingId::ConnectionRoom,
+        value: "room2".to_owned().into(),
+    }));
+    assert!(state.apply(GuiShellAction::BeginServerPasswordChange));
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        id: SettingId::ConnectionServerPassword,
+        value: "new-secret".to_owned().into(),
+    }));
+    let saved_before_connect = state.saved_configuration.clone();
+    assert!(state.apply(GuiShellAction::BeginConnectOnce));
+    assert_eq!(
+        state.pending_saved_server_connect_intent,
+        Some(GuiSavedServerConnectIntent::ConnectOnce)
+    );
     assert_eq!(
         runtime.actions_for_pending_completion(&state),
         vec![GuiShellAction::CompleteSavedServerConnect]
     );
+    assert_eq!(state.saved_configuration, saved_before_connect);
 }

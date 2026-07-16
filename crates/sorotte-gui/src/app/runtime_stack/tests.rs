@@ -6,8 +6,8 @@ use super::{
 use crate::app::testing::support::browser_runtime_user;
 use crate::app::{
     GuiInteractionRuntimeSnapshot, GuiShellAction, GuiTransientNotificationLevel,
-    MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot, MenuActionRuntimeOverride,
-    MenuDialogRuntimeSnapshot, SorotteGuiShellAppState,
+    MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot, MenuActionId,
+    MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot, SorotteGuiShellAppState,
 };
 use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
 use sorotte_client_core::{

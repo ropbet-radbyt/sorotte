@@ -282,7 +282,7 @@ impl GuiSemanticStep {
         let pending = match token {
             "none" => return Ok(None),
             "save-configuration" => GuiPendingOperationKind::SaveConfiguration,
-            "reset-configuration" => GuiPendingOperationKind::ResetConfiguration,
+            "discard-configuration-changes" => GuiPendingOperationKind::DiscardConfigurationChanges,
             "reload-configuration" => GuiPendingOperationKind::ReloadConfiguration,
             "clear-gui-data" => GuiPendingOperationKind::ClearGuiData,
             "change-config-storage-root" => GuiPendingOperationKind::ChangeConfigStorageRoot,

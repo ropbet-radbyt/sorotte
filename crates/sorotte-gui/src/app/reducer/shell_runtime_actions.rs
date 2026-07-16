@@ -44,6 +44,7 @@ impl SorotteGuiShellAppState {
                 self.complete_tls_certificate_prompt(false)
             }
             GuiShellAction::TriggerSelectedMenuAction => self.trigger_selected_menu_action(),
+            GuiShellAction::InvokeMenuAction(action_id) => self.invoke_menu_action(action_id),
             GuiShellAction::AnnounceTlsCertificatePromptRequired => {
                 self.announce_tls_certificate_prompt_required()
             }

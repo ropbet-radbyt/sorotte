@@ -139,8 +139,7 @@ fn gui_shell_app_state_handles_text_edits_and_room_switches() {
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
-        section: "Connection",
-        label: "Username",
+        id: SettingId::ConnectionUsername,
         value: TEST_USERNAME.to_owned().into(),
     }));
     assert!(state.apply(GuiShellAction::SetMainWindowRoom(
@@ -161,8 +160,7 @@ fn gui_shell_app_state_preserves_whitespace_room_names_in_text_edits_and_room_jo
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
-        section: "Connection",
-        label: "Room",
+        id: SettingId::ConnectionRoom,
         value: "  TeamRoom  ".to_owned().into(),
     }));
     assert!(state.apply(GuiShellAction::SetMainWindowRoom("  TeamRoom  ".to_owned(),)));

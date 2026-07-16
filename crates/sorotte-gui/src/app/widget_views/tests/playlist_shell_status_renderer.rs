@@ -154,12 +154,12 @@ fn gui_shell_app_state_projects_unified_room_content_and_selected_configuration_
         GuiConfigurationTab::InterfaceSystem,
     )));
     let configuration = state.configuration_widget_tree();
-    assert!(configuration.find("config:OSD:Show OSD").is_some());
-    assert!(configuration.find("config:System:Language").is_some());
-    assert!(configuration.find("config:Connection:Host").is_none());
+    assert!(configuration.find("settings.osd.show").is_some());
+    assert!(configuration.find("settings.general.language").is_some());
+    assert!(configuration.find("settings.connection.host").is_none());
     assert!(
         configuration
-            .find("config:Privacy:Trusted Domains")
+            .find("settings.privacy.trusted_domains")
             .is_none()
     );
 }
@@ -223,7 +223,7 @@ fn gui_shell_app_state_projects_shell_widget_trees() {
         .find("shell:command:save")
         .expect("command status row should exist");
     assert_eq!(save_status.kind, GuiWidgetKind::Status);
-    assert_eq!(save_status.value.as_deref(), Some("enabled"));
+    assert_eq!(save_status.value.as_deref(), Some("disabled"));
 
     let validation_status = tree
         .find("shell:validation:status")
@@ -295,8 +295,7 @@ fn gui_shell_app_state_projects_validation_and_busy_command_status_into_widget_t
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
-        section: "Connection",
-        label: "Port",
+        id: SettingId::ConnectionPort,
         value: "70000".to_owned().into(),
     }));
     let invalid_tree = state.shell_widget_tree();
@@ -308,7 +307,7 @@ fn gui_shell_app_state_projects_validation_and_busy_command_status_into_widget_t
     );
     assert_eq!(
         invalid_tree
-            .find("shell:validation:issue:0")
+            .find("settings.connection.port.validation")
             .map(|node| (node.label.as_str(), node.value.as_deref())),
         Some((
             "Connection / Port",
@@ -323,8 +322,7 @@ fn gui_shell_app_state_projects_validation_and_busy_command_status_into_widget_t
     );
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
-        section: "Connection",
-        label: "Port",
+        id: SettingId::ConnectionPort,
         value: "8999".to_owned().into(),
     }));
     assert!(state.apply(GuiShellAction::BeginConfigurationSave));
@@ -337,7 +335,7 @@ fn gui_shell_app_state_projects_validation_and_busy_command_status_into_widget_t
     );
     for widget_id in [
         "shell:command:save",
-        "shell:command:reset",
+        "shell:command:discard",
         "shell:command:reload",
         "shell:command:connect-public-server",
         "shell:command:refresh-public-servers",

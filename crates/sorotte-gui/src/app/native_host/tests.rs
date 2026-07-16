@@ -1,14 +1,15 @@
 use super::{
-    GuiAppHost, GuiNativeApp, GuiNativeRuntimeBridge, GuiPreviewRuntimeBridge, GuiShellAction,
-    GuiShellDispatchPlan, GuiTextPreviewHost, GuiTransientNotificationLevel, GuiWidgetEguiRenderer,
-    SorotteGuiShellAppState,
+    GuiAppHost, GuiNativeApp, GuiNativeRuntimeBridge, GuiNativeShellEffect, GuiPlaybackPromptKind,
+    GuiPreviewRuntimeBridge, GuiShellAction, GuiShellDispatchPlan, GuiTextPreviewHost,
+    GuiTransientNotificationLevel, GuiWidgetEguiRenderer, SorotteGuiShellAppState,
 };
 
 use crate::app::remote_services::UpdateApplyLaunchResult;
 use crate::app::render_io::{GuiDroppedFilesRequest, GuiDroppedFilesTarget};
 use crate::app::{
     GuiConfigurationTab, GuiPlayerSetupIssue, GuiPlayerSetupIssueKind,
-    GuiPlayerSetupRuntimeSnapshot, GuiRuntimeRequest, GuiShellModal, GuiShellView,
+    GuiPlayerSetupRuntimeSnapshot, GuiRuntimeRequest, GuiShellModal, GuiShellView, MenuActionId,
+    SettingId,
 };
 use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
 
@@ -43,6 +44,63 @@ fn gui_native_app_and_preview_runtime_map_seek_prompt_input_to_runtime_actions()
             GuiShellAction::AnnounceSystemChatEvent("Seek requested: 12.5 seconds.".to_owned(),),
         ]
     );
+}
+
+#[test]
+fn gui_native_menu_effects_are_typed_and_only_run_after_reducer_acceptance() {
+    for (action, expected_effect) in [
+        (
+            GuiShellAction::InvokeMenuAction(MenuActionId::OpenMedia),
+            GuiNativeShellEffect::PickMediaFiles,
+        ),
+        (
+            GuiShellAction::InvokeMenuAction(MenuActionId::Exit),
+            GuiNativeShellEffect::CloseWindow,
+        ),
+        (
+            GuiShellAction::InvokeMenuAction(MenuActionId::Seek),
+            GuiNativeShellEffect::OpenPlaybackPrompt(GuiPlaybackPromptKind::Seek),
+        ),
+        (
+            GuiShellAction::InvokeMenuAction(MenuActionId::UndoSeek),
+            GuiNativeShellEffect::RequestUndoSeek,
+        ),
+        (
+            GuiShellAction::InvokeMenuAction(MenuActionId::SetOffset),
+            GuiNativeShellEffect::OpenPlaybackPrompt(GuiPlaybackPromptKind::Offset),
+        ),
+        (
+            GuiShellAction::InvokeMenuAction(MenuActionId::Help),
+            GuiNativeShellEffect::OpenHelp,
+        ),
+    ] {
+        assert_eq!(
+            GuiNativeApp::native_effect_for_applied_action(&action, true),
+            Some(expected_effect),
+        );
+        assert_eq!(
+            GuiNativeApp::native_effect_for_applied_action(&action, false),
+            None,
+            "a rejected command must not open a picker, prompt, URL, or dispatch undo",
+        );
+    }
+
+    let mut disabled_state =
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    for action_id in [
+        MenuActionId::OpenMedia,
+        MenuActionId::Seek,
+        MenuActionId::UndoSeek,
+        MenuActionId::SetOffset,
+    ] {
+        let action = GuiShellAction::InvokeMenuAction(action_id);
+        let action_applied = disabled_state.apply(action.clone());
+        assert!(!action_applied);
+        assert_eq!(
+            GuiNativeApp::native_effect_for_applied_action(&action, action_applied),
+            None,
+        );
+    }
 }
 
 #[test]
@@ -93,8 +151,7 @@ fn gui_text_preview_host_renders_player_setup_shell_state() {
     let mut state =
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
     assert!(state.apply(GuiShellAction::EditConfigurationText {
-        section: "Connection",
-        label: "Host",
+        id: SettingId::ConnectionHost,
         value: "player-setup.example".to_owned().into(),
     }));
     assert!(

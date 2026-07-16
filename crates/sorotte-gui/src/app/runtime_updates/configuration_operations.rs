@@ -8,6 +8,24 @@ use super::super::shell_state::{
 use super::super::support::normalized_editable_text;
 
 impl SorotteGuiShellAppState {
+    pub(in crate::app) fn settle_persisted_configuration(
+        &mut self,
+        settings: StoredClientSettingsMvp,
+        preserve_pending_storage_target: bool,
+    ) {
+        let pending_storage_target = preserve_pending_storage_target
+            .then(|| self.pending_config_storage_target.clone())
+            .flatten();
+        self.resync_from_settings(settings.clone());
+        self.saved_configuration = settings;
+        self.text_edit_session = None;
+        self.room_history_edit_session = None;
+        self.focused_configuration_control = None;
+        if preserve_pending_storage_target {
+            self.pending_config_storage_target = pending_storage_target;
+        }
+    }
+
     pub(in crate::app) fn begin_room_history_edit(&mut self) -> bool {
         if self.room_history_edit_session.is_some() {
             return self.record_action_error("A room-history edit session is already active.");
@@ -95,63 +113,63 @@ impl SorotteGuiShellAppState {
                 .record_action_error("The active GUI operation is not a configuration save.");
         }
 
-        self.saved_configuration = settings;
+        self.settle_persisted_configuration(settings, false);
         self.pending_operation = None;
-        self.pending_saved_server_connect_saves_configuration = false;
+        self.pending_config_storage_target = None;
+        self.pending_saved_server_connect_intent = None;
         self.clear_action_error_and_refresh();
         true
     }
 
-    pub(in crate::app) fn begin_configuration_reset(&mut self) -> bool {
+    pub(in crate::app) fn begin_discard_configuration_changes(&mut self) -> bool {
         if self.pending_operation.is_some() {
             return self.record_action_error("Another GUI operation is already in progress.");
         }
         if !self.has_unsaved_configuration_changes() {
-            return self.record_action_error(
-                "Configuration reset is unavailable with no unsaved changes.",
-            );
+            return self
+                .record_action_error("Discard changes is unavailable with no unsaved changes.");
         }
 
         self.pending_operation = Some(GuiPendingOperationState {
-            kind: GuiPendingOperationKind::ResetConfiguration,
+            kind: GuiPendingOperationKind::DiscardConfigurationChanges,
         });
         self.clear_action_error_and_refresh();
         true
     }
 
-    pub(in crate::app) fn complete_configuration_reset(
+    pub(in crate::app) fn complete_discard_configuration_changes(
         &mut self,
         settings: StoredClientSettingsMvp,
     ) -> bool {
         let Some(pending) = self.pending_operation.as_ref() else {
-            return self.record_action_error("No configuration reset is currently in progress.");
-        };
-        if pending.kind != GuiPendingOperationKind::ResetConfiguration {
             return self
-                .record_action_error("The active GUI operation is not a configuration reset.");
+                .record_action_error("No discard-changes operation is currently in progress.");
+        };
+        if pending.kind != GuiPendingOperationKind::DiscardConfigurationChanges {
+            return self.record_action_error("The active GUI operation is not discard changes.");
         }
 
+        self.settle_persisted_configuration(settings, false);
         self.pending_operation = None;
-        self.pending_saved_server_connect_saves_configuration = false;
-        self.resync_from_settings(settings.clone());
-        self.saved_configuration = settings;
+        self.pending_config_storage_target = None;
+        self.pending_saved_server_connect_intent = None;
         self.clear_action_error_and_refresh();
         true
     }
 
-    pub(in crate::app) fn cancel_configuration_reset(&mut self) -> bool {
+    pub(in crate::app) fn cancel_discard_configuration_changes(&mut self) -> bool {
         let Some(pending) = self.pending_operation.as_ref() else {
-            return self.record_action_error("No configuration reset is currently in progress.");
-        };
-        if pending.kind != GuiPendingOperationKind::ResetConfiguration {
             return self
-                .record_action_error("The active GUI operation is not a configuration reset.");
+                .record_action_error("No discard-changes operation is currently in progress.");
+        };
+        if pending.kind != GuiPendingOperationKind::DiscardConfigurationChanges {
+            return self.record_action_error("The active GUI operation is not discard changes.");
         }
 
         self.pending_operation = None;
         self.push_transient_notification(
             GuiTransientNotificationLevel::Warning,
-            "Configuration reset canceled.".to_owned(),
+            "Discard changes canceled.".to_owned(),
         );
         self.clear_action_error_and_refresh();
         true
@@ -181,10 +199,10 @@ impl SorotteGuiShellAppState {
                 .record_action_error("The active GUI operation is not a configuration reload.");
         }
 
+        self.settle_persisted_configuration(settings, false);
         self.pending_operation = None;
-        self.pending_saved_server_connect_saves_configuration = false;
-        self.resync_from_settings(settings.clone());
-        self.saved_configuration = settings;
+        self.pending_config_storage_target = None;
+        self.pending_saved_server_connect_intent = None;
         self.clear_action_error_and_refresh();
         true
     }
@@ -253,11 +271,11 @@ impl SorotteGuiShellAppState {
                 .record_action_error("The active GUI operation is not a config-location change.");
         }
 
+        self.settle_persisted_configuration(settings, false);
         self.config_storage = snapshot;
-        self.saved_configuration = settings;
         self.pending_operation = None;
         self.pending_config_storage_target = None;
-        self.pending_saved_server_connect_saves_configuration = false;
+        self.pending_saved_server_connect_intent = None;
         self.clear_action_error_and_refresh();
         true
     }
@@ -273,7 +291,7 @@ impl SorotteGuiShellAppState {
 
         self.pending_operation = None;
         self.pending_config_storage_target = None;
-        self.pending_saved_server_connect_saves_configuration = false;
+        self.pending_saved_server_connect_intent = None;
         self.push_transient_notification(
             GuiTransientNotificationLevel::Warning,
             "Config location change canceled.".to_owned(),
@@ -293,7 +311,7 @@ impl SorotteGuiShellAppState {
         }
 
         self.reset_to_first_run_state(StoredClientSettingsMvp::default());
-        self.pending_saved_server_connect_saves_configuration = false;
+        self.pending_saved_server_connect_intent = None;
         self.clear_action_error_and_refresh();
         true
     }
@@ -309,7 +327,7 @@ impl SorotteGuiShellAppState {
         }
 
         self.pending_operation = None;
-        self.pending_saved_server_connect_saves_configuration = false;
+        self.pending_saved_server_connect_intent = None;
         self.push_transient_notification(
             GuiTransientNotificationLevel::Warning,
             "Clear GUI data canceled.".to_owned(),
@@ -328,7 +346,7 @@ impl SorotteGuiShellAppState {
         }
 
         self.pending_operation = None;
-        self.pending_saved_server_connect_saves_configuration = false;
+        self.pending_saved_server_connect_intent = None;
         self.push_transient_notification(
             GuiTransientNotificationLevel::Warning,
             "Configuration reload canceled.".to_owned(),
@@ -347,7 +365,7 @@ impl SorotteGuiShellAppState {
         }
 
         self.pending_operation = None;
-        self.pending_saved_server_connect_saves_configuration = false;
+        self.pending_saved_server_connect_intent = None;
         self.push_transient_notification(
             GuiTransientNotificationLevel::Warning,
             "Configuration save canceled.".to_owned(),

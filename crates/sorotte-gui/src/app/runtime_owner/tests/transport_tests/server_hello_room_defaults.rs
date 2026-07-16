@@ -223,8 +223,7 @@ fn gui_persisted_config_runtime_owner_updates_default_room_fallback_after_detach
     );
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
-        section: "Connection",
-        label: "Room",
+        id: SettingId::ConnectionRoom,
         value: "room9".to_owned().into(),
     }));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);

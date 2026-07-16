@@ -77,7 +77,7 @@ impl SorotteGuiShellAppState {
             "About Details",
             GuiWidgetKind::Status,
             Some(
-                "Use Help and Check for Updates from this surface; only TLS opens a modal."
+                "Help opens the client guide; About and TLS open dialogs from this surface."
                     .to_owned(),
             ),
             self.menus.about_dialog_available,
@@ -97,15 +97,14 @@ impl SorotteGuiShellAppState {
                     section
                         .actions
                         .iter()
-                        .enumerate()
-                        .map(|(action_index, action)| {
+                        .map(|action| {
                             GuiWidgetNode::leaf(
-                                format!("menus:action:{section_index}:{action_index}"),
+                                action.id.automation_id(),
                                 action.label,
                                 GuiWidgetKind::Button,
                                 None,
                                 action.enabled,
-                                action.is_selected,
+                                action.is_checked,
                             )
                         })
                         .collect(),

@@ -182,8 +182,7 @@ fn gui_shell_app_state_preserves_public_server_selection_across_configuration_ed
 
     assert!(state.apply(GuiShellAction::SelectPublicServer(1)));
     assert!(state.apply(GuiShellAction::EditConfigurationBool {
-        section: "Chat",
-        label: "Chat Input",
+        id: SettingId::ChatInputEnabled,
         value: true,
     }));
 

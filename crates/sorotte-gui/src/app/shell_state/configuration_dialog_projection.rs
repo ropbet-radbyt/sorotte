@@ -68,17 +68,26 @@ impl FirstRunConfigurationDialogState {
                 pause_on_leave: config.playback.pause_on_leave,
                 loop_at_end_of_playlist: config.playback.loop_at_end_of_playlist,
                 loop_single_files: config.playback.loop_single_files,
-                unpause_action_label: settings
-                    .unpause_action
-                    .clone()
-                    .map(unpause_action_mode_legacy_name_compatible)
-                    .unwrap_or("IfAlreadyReady")
+                unpause_action: GuiResolvedSettingValue {
+                    stored_override: settings
+                        .unpause_action
+                        .clone()
+                        .map(unpause_action_mode_legacy_name_compatible)
+                        .map(str::to_owned),
+                    effective: unpause_action_mode_legacy_name_compatible(
+                        config.readiness.unpause_action.clone(),
+                    )
                     .to_owned(),
-                autoplay_min_users_label: settings
-                    .autoplay_min_users
-                    .as_ref()
-                    .map(autoplay_threshold_override_legacy_value_compatible)
-                    .unwrap_or_else(|| "app-default".to_owned()),
+                },
+                autoplay_min_users: GuiResolvedSettingValue {
+                    stored_override: settings
+                        .autoplay_min_users
+                        .as_ref()
+                        .map(autoplay_threshold_override_legacy_value_compatible),
+                    effective: autoplay_threshold_override_legacy_value_compatible(
+                        &config.readiness.autoplay_min_users,
+                    ),
+                },
             },
             privacy: GuiPrivacySection {
                 filename_privacy_mode_label: privacy_mode_legacy_name_compatible(
@@ -252,56 +261,62 @@ impl FirstRunConfigurationDialogState {
                 title: "Connection",
                 controls: vec![
                     GuiDialogControl {
-                        label: "Host",
+                        id: SettingId::ConnectionHost,
+                        label: SettingId::ConnectionHost.label(),
                         kind: GuiDialogControlKind::TextInput,
                         value: optional_text(self.connection.host.as_deref()).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Port",
+                        id: SettingId::ConnectionPort,
+                        label: SettingId::ConnectionPort.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: optional_port_text(self.connection.port),
                     },
                     GuiDialogControl {
-                        label: "Username",
+                        id: SettingId::ConnectionUsername,
+                        label: SettingId::ConnectionUsername.label(),
                         kind: GuiDialogControlKind::TextInput,
                         value: optional_text(self.connection.username.as_deref()).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Room",
+                        id: SettingId::ConnectionRoom,
+                        label: SettingId::ConnectionRoom.label(),
                         kind: GuiDialogControlKind::TextInput,
                         value: optional_room_text(self.connection.room.as_deref()).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Server Password",
+                        id: SettingId::ConnectionServerPassword,
+                        label: SettingId::ConnectionServerPassword.label(),
                         kind: GuiDialogControlKind::PasswordInput,
-                        value: if self.connection.server_password_set {
-                            "(configured)".to_owned()
-                        } else {
-                            "(unset)".to_owned()
-                        },
+                        value: String::new(),
                     },
                     GuiDialogControl {
-                        label: "Player Path",
+                        id: SettingId::PlayerExecutable,
+                        label: SettingId::PlayerExecutable.label(),
                         kind: GuiDialogControlKind::TextInput,
                         value: optional_text(self.connection.player_path.as_deref()).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Player Arguments",
+                        id: SettingId::PlayerArguments,
+                        label: SettingId::PlayerArguments.label(),
                         kind: GuiDialogControlKind::TextInput,
                         value: self.connection.player_arguments_text.clone(),
                     },
                     GuiDialogControl {
-                        label: "Public Servers",
+                        id: SettingId::ConnectionPublicServerCount,
+                        label: SettingId::ConnectionPublicServerCount.label(),
                         kind: GuiDialogControlKind::ReadOnly,
                         value: self.connection.public_server_count.to_string(),
                     },
                     GuiDialogControl {
-                        label: "Room History",
+                        id: SettingId::ConnectionRoomHistory,
+                        label: SettingId::ConnectionRoomHistory.label(),
                         kind: GuiDialogControlKind::TextArea,
                         value: self.connection.room_history_text.clone(),
                     },
                     GuiDialogControl {
-                        label: "Room History Count",
+                        id: SettingId::ConnectionRoomHistoryCount,
+                        label: SettingId::ConnectionRoomHistoryCount.label(),
                         kind: GuiDialogControlKind::ReadOnly,
                         value: self.connection.room_history_count.to_string(),
                     },
@@ -311,50 +326,59 @@ impl FirstRunConfigurationDialogState {
                 title: "Readiness",
                 controls: vec![
                     GuiDialogControl {
-                        label: "Ready At Start",
+                        id: SettingId::PlaybackReadyAtStart,
+                        label: SettingId::PlaybackReadyAtStart.label(),
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.readiness.ready_at_start).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Autoplay",
+                        id: SettingId::PlaybackAutoplay,
+                        label: SettingId::PlaybackAutoplay.label(),
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.readiness.autoplay_enabled).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Require Same Filenames",
+                        id: SettingId::PlaybackRequireSameFilenames,
+                        label: SettingId::PlaybackRequireSameFilenames.label(),
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.readiness.autoplay_require_same_filenames)
                             .to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Shared Playlists",
+                        id: SettingId::PlaybackSharedPlaylists,
+                        label: SettingId::PlaybackSharedPlaylists.label(),
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.readiness.shared_playlist_enabled).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Pause On Leave",
+                        id: SettingId::PlaybackPauseOnLeave,
+                        label: SettingId::PlaybackPauseOnLeave.label(),
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.readiness.pause_on_leave).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Loop At End Of Playlist",
+                        id: SettingId::PlaybackLoopPlaylist,
+                        label: SettingId::PlaybackLoopPlaylist.label(),
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.readiness.loop_at_end_of_playlist).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Loop Single Files",
+                        id: SettingId::PlaybackLoopSingleFiles,
+                        label: SettingId::PlaybackLoopSingleFiles.label(),
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.readiness.loop_single_files).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Unpause Action",
+                        id: SettingId::PlaybackUnpauseAction,
+                        label: SettingId::PlaybackUnpauseAction.label(),
                         kind: GuiDialogControlKind::Select,
-                        value: self.readiness.unpause_action_label.clone(),
+                        value: self.readiness.unpause_action.effective.clone(),
                     },
                     GuiDialogControl {
-                        label: "Autoplay Min Users",
+                        id: SettingId::PlaybackAutoplayMinUsers,
+                        label: SettingId::PlaybackAutoplayMinUsers.label(),
                         kind: GuiDialogControlKind::Select,
-                        value: self.readiness.autoplay_min_users_label.clone(),
+                        value: self.readiness.autoplay_min_users.effective.clone(),
                     },
                 ],
             },
@@ -362,27 +386,32 @@ impl FirstRunConfigurationDialogState {
                 title: "Privacy",
                 controls: vec![
                     GuiDialogControl {
-                        label: "Filename Privacy",
+                        id: SettingId::PrivacyFilename,
+                        label: SettingId::PrivacyFilename.label(),
                         kind: GuiDialogControlKind::Select,
                         value: self.privacy.filename_privacy_mode_label.clone(),
                     },
                     GuiDialogControl {
-                        label: "Filesize Privacy",
+                        id: SettingId::PrivacyFilesize,
+                        label: SettingId::PrivacyFilesize.label(),
                         kind: GuiDialogControlKind::Select,
                         value: self.privacy.filesize_privacy_mode_label.clone(),
                     },
                     GuiDialogControl {
-                        label: "Trusted Domains Only",
+                        id: SettingId::PrivacyTrustedDomainsOnly,
+                        label: SettingId::PrivacyTrustedDomainsOnly.label(),
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.privacy.only_switch_to_trusted_domains).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Trusted Domains",
+                        id: SettingId::PrivacyTrustedDomains,
+                        label: SettingId::PrivacyTrustedDomains.label(),
                         kind: GuiDialogControlKind::TextArea,
                         value: self.privacy.trusted_domains_text.clone(),
                     },
                     GuiDialogControl {
-                        label: "Trusted Domain Count",
+                        id: SettingId::PrivacyTrustedDomainCount,
+                        label: SettingId::PrivacyTrustedDomainCount.label(),
                         kind: GuiDialogControlKind::ReadOnly,
                         value: self.privacy.trusted_domain_count.to_string(),
                     },
@@ -392,37 +421,44 @@ impl FirstRunConfigurationDialogState {
                 title: "Desync",
                 controls: vec![
                     GuiDialogControl {
-                        label: "Rewind On Desync",
+                        id: SettingId::SyncRewindOnDesync,
+                        label: SettingId::SyncRewindOnDesync.label(),
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.desync.rewind_on_desync).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Fastforward On Desync",
+                        id: SettingId::SyncFastforwardOnDesync,
+                        label: SettingId::SyncFastforwardOnDesync.label(),
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.desync.fastforward_on_desync).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Slow On Desync",
+                        id: SettingId::SyncSlowOnDesync,
+                        label: SettingId::SyncSlowOnDesync.label(),
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.desync.slow_on_desync).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Dont Slow Down With Me",
+                        id: SettingId::SyncDontSlowDownWithMe,
+                        label: SettingId::SyncDontSlowDownWithMe.label(),
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.desync.dont_slow_down_with_me).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Rewind Threshold",
+                        id: SettingId::SyncRewindThreshold,
+                        label: SettingId::SyncRewindThreshold.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: optional_f64_text(self.desync.rewind_threshold_seconds),
                     },
                     GuiDialogControl {
-                        label: "Fastforward Threshold",
+                        id: SettingId::SyncFastforwardThreshold,
+                        label: SettingId::SyncFastforwardThreshold.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: optional_f64_text(self.desync.fastforward_threshold_seconds),
                     },
                     GuiDialogControl {
-                        label: "Slowdown Threshold",
+                        id: SettingId::SyncSlowdownThreshold,
+                        label: SettingId::SyncSlowdownThreshold.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: optional_f64_text(self.desync.slowdown_threshold_seconds),
                     },
@@ -432,112 +468,134 @@ impl FirstRunConfigurationDialogState {
                 title: "Streaming",
                 controls: vec![
                     GuiDialogControl {
-                        label: "Quality",
+                        id: SettingId::StreamingQuality,
+                        label: SettingId::StreamingQuality.label(),
                         kind: GuiDialogControlKind::Select,
                         value: self.streaming.quality_label.clone(),
                     },
                     GuiDialogControl {
-                        label: "Custom Format",
+                        id: SettingId::StreamingCustomFormat,
+                        label: SettingId::StreamingCustomFormat.label(),
                         kind: GuiDialogControlKind::TextInput,
                         value: optional_text(self.streaming.custom_format.as_deref()).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Buffer Target Seconds",
+                        id: SettingId::StreamingBufferTargetSeconds,
+                        label: SettingId::StreamingBufferTargetSeconds.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: optional_f64_text(Some(self.streaming.buffer_target_seconds)),
                     },
                     GuiDialogControl {
-                        label: "Read Ahead Seconds",
+                        id: SettingId::StreamingReadAheadSeconds,
+                        label: SettingId::StreamingReadAheadSeconds.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: optional_f64_text(Some(self.streaming.read_ahead_seconds)),
                     },
                     GuiDialogControl {
-                        label: "Memory Cache MiB",
+                        id: SettingId::StreamingMemoryCacheMib,
+                        label: SettingId::StreamingMemoryCacheMib.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: self.streaming.memory_cache_mebibytes.to_string(),
                     },
                     GuiDialogControl {
-                        label: "Disk Cache",
+                        id: SettingId::StreamingDiskCache,
+                        label: SettingId::StreamingDiskCache.label(),
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.streaming.disk_cache_enabled).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Recovery Policy",
+                        id: SettingId::StreamingRecoveryPolicy,
+                        label: SettingId::StreamingRecoveryPolicy.label(),
                         kind: GuiDialogControlKind::Select,
                         value: self.streaming.recovery_policy_label.clone(),
                     },
                     GuiDialogControl {
-                        label: "Maximum Catchup Rate",
+                        id: SettingId::StreamingMaximumCatchupRate,
+                        label: SettingId::StreamingMaximumCatchupRate.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: optional_f64_text(Some(self.streaming.maximum_catchup_rate)),
                     },
                     GuiDialogControl {
-                        label: "Hard Seek Threshold Seconds",
+                        id: SettingId::StreamingHardSeekThresholdSeconds,
+                        label: SettingId::StreamingHardSeekThresholdSeconds.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: optional_f64_text(Some(self.streaming.hard_seek_threshold_seconds)),
                     },
                     GuiDialogControl {
-                        label: "Maximum Hard Seeks",
+                        id: SettingId::StreamingMaximumHardSeeks,
+                        label: SettingId::StreamingMaximumHardSeeks.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: self.streaming.maximum_hard_seeks.to_string(),
                     },
                     GuiDialogControl {
-                        label: "Stability Interval Seconds",
+                        id: SettingId::StreamingStabilityIntervalSeconds,
+                        label: SettingId::StreamingStabilityIntervalSeconds.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: optional_f64_text(Some(self.streaming.stability_interval_seconds)),
                     },
                     GuiDialogControl {
-                        label: "Recovery Retry Budget",
+                        id: SettingId::StreamingRecoveryRetryBudget,
+                        label: SettingId::StreamingRecoveryRetryBudget.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: self.streaming.retry_budget.to_string(),
                     },
                     GuiDialogControl {
-                        label: "Recovery Cooldown Seconds",
+                        id: SettingId::StreamingRecoveryCooldownSeconds,
+                        label: SettingId::StreamingRecoveryCooldownSeconds.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: optional_f64_text(Some(self.streaming.recovery_cooldown_seconds)),
                     },
                     GuiDialogControl {
-                        label: "Room Buffering Policy",
+                        id: SettingId::StreamingRoomBufferingPolicy,
+                        label: SettingId::StreamingRoomBufferingPolicy.label(),
                         kind: GuiDialogControlKind::Select,
                         value: self.streaming.room_buffering_policy_label.clone(),
                     },
                     GuiDialogControl {
-                        label: "Room Quorum Percent",
+                        id: SettingId::StreamingRoomQuorumPercent,
+                        label: SettingId::StreamingRoomQuorumPercent.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: optional_f64_text(Some(self.streaming.room_quorum_percent)),
                     },
                     GuiDialogControl {
-                        label: "Room Maximum Pause Seconds",
+                        id: SettingId::StreamingRoomMaximumPauseSeconds,
+                        label: SettingId::StreamingRoomMaximumPauseSeconds.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: optional_f64_text(Some(self.streaming.room_maximum_pause_seconds)),
                     },
                     GuiDialogControl {
-                        label: "Start Synchronization",
+                        id: SettingId::StreamingStartSynchronization,
+                        label: SettingId::StreamingStartSynchronization.label(),
                         kind: GuiDialogControlKind::Select,
                         value: self.streaming.start_policy_label.clone(),
                     },
                     GuiDialogControl {
-                        label: "Start Quorum Percent",
+                        id: SettingId::StreamingStartQuorumPercent,
+                        label: SettingId::StreamingStartQuorumPercent.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: optional_f64_text(Some(self.streaming.start_quorum_percent)),
                     },
                     GuiDialogControl {
-                        label: "Start Timeout Seconds",
+                        id: SettingId::StreamingStartTimeoutSeconds,
+                        label: SettingId::StreamingStartTimeoutSeconds.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: optional_f64_text(Some(self.streaming.start_timeout_seconds)),
                     },
                     GuiDialogControl {
-                        label: "Start Timeout Action",
+                        id: SettingId::StreamingStartTimeoutAction,
+                        label: SettingId::StreamingStartTimeoutAction.label(),
                         kind: GuiDialogControlKind::Select,
                         value: self.streaming.start_timeout_action_label.clone(),
                     },
                     GuiDialogControl {
-                        label: "Quality Downgrade Suggestions",
+                        id: SettingId::StreamingQualityDowngradeSuggestions,
+                        label: SettingId::StreamingQualityDowngradeSuggestions.label(),
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.streaming.quality_downgrade_suggestions).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Effective mpv Options",
+                        id: SettingId::StreamingEffectiveMpvOptions,
+                        label: SettingId::StreamingEffectiveMpvOptions.label(),
                         kind: GuiDialogControlKind::ReadOnly,
                         value: self.streaming.effective_mpv_options.clone(),
                     },
@@ -547,29 +605,34 @@ impl FirstRunConfigurationDialogState {
                 title: "Media Search",
                 controls: vec![
                     GuiDialogControl {
-                        label: "Directories",
+                        id: SettingId::MediaLibraryDirectories,
+                        label: SettingId::MediaLibraryDirectories.label(),
                         kind: GuiDialogControlKind::TextArea,
                         value: self.media_search.media_directories_text.clone(),
                     },
                     GuiDialogControl {
-                        label: "Directory Count",
+                        id: SettingId::MediaLibraryDirectoryCount,
+                        label: SettingId::MediaLibraryDirectoryCount.label(),
                         kind: GuiDialogControlKind::ReadOnly,
                         value: self.media_search.media_directory_count.to_string(),
                     },
                     GuiDialogControl {
-                        label: "First File Timeout",
+                        id: SettingId::MediaLibraryFirstFileTimeout,
+                        label: SettingId::MediaLibraryFirstFileTimeout.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: optional_f64_text(
                             self.media_search.folder_search_first_file_timeout_seconds,
                         ),
                     },
                     GuiDialogControl {
-                        label: "Search Timeout",
+                        id: SettingId::MediaLibrarySearchTimeout,
+                        label: SettingId::MediaLibrarySearchTimeout.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: optional_f64_text(self.media_search.folder_search_timeout_seconds),
                     },
                     GuiDialogControl {
-                        label: "Double Check Interval",
+                        id: SettingId::MediaLibraryDoubleCheckInterval,
+                        label: SettingId::MediaLibraryDoubleCheckInterval.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: optional_f64_text(
                             self.media_search
@@ -577,7 +640,8 @@ impl FirstRunConfigurationDialogState {
                         ),
                     },
                     GuiDialogControl {
-                        label: "Warning Threshold",
+                        id: SettingId::MediaLibraryWarningThreshold,
+                        label: SettingId::MediaLibraryWarningThreshold.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: optional_f64_text(
                             self.media_search.folder_search_warning_threshold_seconds,
@@ -589,94 +653,112 @@ impl FirstRunConfigurationDialogState {
                 title: "Chat",
                 controls: vec![
                     GuiDialogControl {
-                        label: "Chat Input",
+                        id: SettingId::ChatInputEnabled,
+                        label: SettingId::ChatInputEnabled.label(),
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.chat.chat_input_enabled).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Chat Output",
+                        id: SettingId::ChatOutputEnabled,
+                        label: SettingId::ChatOutputEnabled.label(),
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.chat.chat_output_enabled).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Direct Input",
+                        id: SettingId::ChatDirectInput,
+                        label: SettingId::ChatDirectInput.label(),
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.chat.chat_direct_input).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Move OSD",
+                        id: SettingId::ChatMoveOsd,
+                        label: SettingId::ChatMoveOsd.label(),
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.chat.chat_move_osd).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Input Position",
+                        id: SettingId::ChatInputPosition,
+                        label: SettingId::ChatInputPosition.label(),
                         kind: GuiDialogControlKind::Select,
                         value: self.chat.chat_input_position_label.clone(),
                     },
                     GuiDialogControl {
-                        label: "Output Mode",
+                        id: SettingId::ChatOutputMode,
+                        label: SettingId::ChatOutputMode.label(),
                         kind: GuiDialogControlKind::Select,
                         value: self.chat.chat_output_mode_label.clone(),
                     },
                     GuiDialogControl {
-                        label: "Max Lines",
+                        id: SettingId::ChatMaxLines,
+                        label: SettingId::ChatMaxLines.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: optional_i64_text(self.chat.chat_max_lines),
                     },
                     GuiDialogControl {
-                        label: "Input Font",
+                        id: SettingId::ChatInputFont,
+                        label: SettingId::ChatInputFont.label(),
                         kind: GuiDialogControlKind::TextInput,
                         value: optional_text(self.chat.chat_input_font_family.as_deref())
                             .to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Input Font Size",
+                        id: SettingId::ChatInputFontSize,
+                        label: SettingId::ChatInputFontSize.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: optional_i64_text(self.chat.chat_input_relative_font_size),
                     },
                     GuiDialogControl {
-                        label: "Input Font Weight",
+                        id: SettingId::ChatInputFontWeight,
+                        label: SettingId::ChatInputFontWeight.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: optional_i64_text(self.chat.chat_input_font_weight),
                     },
                     GuiDialogControl {
-                        label: "Input Color",
+                        id: SettingId::ChatInputColor,
+                        label: SettingId::ChatInputColor.label(),
                         kind: GuiDialogControlKind::TextInput,
                         value: optional_text(self.chat.chat_input_font_color.as_deref()).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Output Font",
+                        id: SettingId::ChatOutputFont,
+                        label: SettingId::ChatOutputFont.label(),
                         kind: GuiDialogControlKind::TextInput,
                         value: optional_text(self.chat.chat_output_font_family.as_deref())
                             .to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Output Font Size",
+                        id: SettingId::ChatOutputFontSize,
+                        label: SettingId::ChatOutputFontSize.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: optional_i64_text(self.chat.chat_output_relative_font_size),
                     },
                     GuiDialogControl {
-                        label: "Output Font Weight",
+                        id: SettingId::ChatOutputFontWeight,
+                        label: SettingId::ChatOutputFontWeight.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: optional_i64_text(self.chat.chat_output_font_weight),
                     },
                     GuiDialogControl {
-                        label: "Top Margin",
+                        id: SettingId::ChatTopMargin,
+                        label: SettingId::ChatTopMargin.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: optional_i64_text(self.chat.chat_top_margin),
                     },
                     GuiDialogControl {
-                        label: "Left Margin",
+                        id: SettingId::ChatLeftMargin,
+                        label: SettingId::ChatLeftMargin.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: optional_i64_text(self.chat.chat_left_margin),
                     },
                     GuiDialogControl {
-                        label: "Bottom Margin",
+                        id: SettingId::ChatBottomMargin,
+                        label: SettingId::ChatBottomMargin.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: optional_i64_text(self.chat.chat_bottom_margin),
                     },
                     GuiDialogControl {
-                        label: "OSD Margin",
+                        id: SettingId::ChatOsdMargin,
+                        label: SettingId::ChatOsdMargin.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: optional_i64_text(self.chat.chat_osd_margin),
                     },
@@ -686,57 +768,68 @@ impl FirstRunConfigurationDialogState {
                 title: "OSD",
                 controls: vec![
                     GuiDialogControl {
-                        label: "Show OSD",
+                        id: SettingId::OsdShow,
+                        label: SettingId::OsdShow.label(),
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.osd.show_osd).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Show Duration",
+                        id: SettingId::OsdShowDuration,
+                        label: SettingId::OsdShowDuration.label(),
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.osd.show_duration_notification).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Show Same Room",
+                        id: SettingId::OsdShowSameRoom,
+                        label: SettingId::OsdShowSameRoom.label(),
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.osd.show_same_room_osd).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Show Warnings",
+                        id: SettingId::OsdShowWarnings,
+                        label: SettingId::OsdShowWarnings.label(),
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.osd.show_osd_warnings).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Show Slowdown",
+                        id: SettingId::OsdShowSlowdown,
+                        label: SettingId::OsdShowSlowdown.label(),
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.osd.show_slowdown_osd).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Show Noncontroller",
+                        id: SettingId::OsdShowNoncontroller,
+                        label: SettingId::OsdShowNoncontroller.label(),
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.osd.show_noncontroller_osd).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Show Different Room",
+                        id: SettingId::OsdShowDifferentRoom,
+                        label: SettingId::OsdShowDifferentRoom.label(),
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.osd.show_different_room_osd).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Show Contact Info",
+                        id: SettingId::OsdShowContactInfo,
+                        label: SettingId::OsdShowContactInfo.label(),
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.osd.show_contact_info).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Notification Timeout",
+                        id: SettingId::OsdNotificationTimeout,
+                        label: SettingId::OsdNotificationTimeout.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: optional_i64_text(self.osd.notification_timeout_seconds),
                     },
                     GuiDialogControl {
-                        label: "Alert Timeout",
+                        id: SettingId::OsdAlertTimeout,
+                        label: SettingId::OsdAlertTimeout.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: optional_i64_text(self.osd.alert_timeout_seconds),
                     },
                     GuiDialogControl {
-                        label: "Chat Timeout",
+                        id: SettingId::OsdChatTimeout,
+                        label: SettingId::OsdChatTimeout.label(),
                         kind: GuiDialogControlKind::NumericInput,
                         value: optional_i64_text(self.osd.chat_timeout_seconds),
                     },
@@ -746,32 +839,38 @@ impl FirstRunConfigurationDialogState {
                 title: "System",
                 controls: vec![
                     GuiDialogControl {
-                        label: "Language",
+                        id: SettingId::GeneralLanguage,
+                        label: SettingId::GeneralLanguage.label(),
                         kind: GuiDialogControlKind::Select,
                         value: self.system.language_tag.clone(),
                     },
                     GuiDialogControl {
-                        label: "Auto Update",
+                        id: SettingId::GeneralCheckForUpdatesAutomatically,
+                        label: SettingId::GeneralCheckForUpdatesAutomatically.label(),
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.system.check_for_updates_automatically).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Update Channel",
+                        id: SettingId::GeneralUpdateChannel,
+                        label: SettingId::GeneralUpdateChannel.label(),
                         kind: GuiDialogControlKind::Select,
                         value: self.system.update_channel_label.clone(),
                     },
                     GuiDialogControl {
-                        label: "Autosave Joins To List",
+                        id: SettingId::GeneralAutosaveJoinsToList,
+                        label: SettingId::GeneralAutosaveJoinsToList.label(),
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.system.autosave_joins_to_list).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Force GUI Prompt",
+                        id: SettingId::GeneralForceGuiPrompt,
+                        label: SettingId::GeneralForceGuiPrompt.label(),
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.system.force_gui_prompt).to_owned(),
                     },
                     GuiDialogControl {
-                        label: "Supported Languages",
+                        id: SettingId::DiagnosticsSupportedLanguages,
+                        label: SettingId::DiagnosticsSupportedLanguages.label(),
                         kind: GuiDialogControlKind::ReadOnly,
                         value: SUPPORTED_LEGACY_RUNTIME_LANGUAGE_TAGS_DISPLAY.to_owned(),
                     },

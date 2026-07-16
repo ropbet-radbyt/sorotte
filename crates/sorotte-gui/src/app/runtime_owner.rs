@@ -80,12 +80,12 @@ use super::shell_state::{
     GuiMediaSourceProviderId, GuiPlaylistEntryId, GuiPlexPlaylistSearchResult,
     GuiPlexRuntimeSnapshot, GuiPlexServerReachability, GuiPlexServerRow, GuiPluginSelection,
     GuiShellAction, GuiStreamHelperRemediationRuntimeSnapshot, GuiStreamHelperRuntimeSnapshot,
-    GuiTransientNotificationLevel, SorotteGuiShellAppState,
+    GuiTransientNotificationLevel, SettingId, SorotteGuiShellAppState,
 };
 use super::startup::{
     StartupPublicServerOutcome, explicit_mpv_ipc_path_from_lookup,
     gui_startup_public_server_outcome_with_fetcher,
-    resolve_sorotte_gui_config_path_legacy_compatible,
+    resolve_sorotte_gui_config_path_legacy_compatible, should_hydrate_startup_public_servers,
 };
 use super::startup_support::{env_flag_enabled_lookup, env_trimmed};
 use super::stream_support::{
@@ -106,12 +106,7 @@ pub(super) struct StartupPublicServerHydrationContext {
 
 impl StartupPublicServerHydrationContext {
     fn from_settings(settings: &StoredClientSettingsMvp) -> Option<Self> {
-        if settings.check_for_updates_automatically != Some(true)
-            || settings
-                .public_servers
-                .as_ref()
-                .is_some_and(|servers| !servers.is_empty())
-        {
+        if !should_hydrate_startup_public_servers(settings) {
             return None;
         }
         let language = settings

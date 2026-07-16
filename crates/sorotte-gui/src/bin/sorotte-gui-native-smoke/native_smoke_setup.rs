@@ -267,7 +267,13 @@ pub(super) fn launch_sorotte_gui_with_retry<D: NativeGuiDriver>(
         let mut child = launch_sorotte_gui(binary_path, launch)?;
         match wait_for_main_window(driver, &mut child, timeout) {
             Ok(window) => {
-                let _ = driver.prepare_window_for_smoke(window);
+                if let Err(error) = driver.prepare_window_for_smoke(window) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!(
+                        "failed to prepare deterministic native smoke window bounds: {error}"
+                    ));
+                }
                 return Ok((child, window));
             }
             Err(error) => {

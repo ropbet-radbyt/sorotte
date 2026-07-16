@@ -198,7 +198,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_session_runtime_for_session_
             action,
             GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
                 command_availability: GuiCommandAvailabilityState {
-                    can_save_configuration: true,
+                    can_save_configuration: false,
                     can_reset_configuration: false,
                     can_reload_configuration: true,
                     can_connect_public_server: true,

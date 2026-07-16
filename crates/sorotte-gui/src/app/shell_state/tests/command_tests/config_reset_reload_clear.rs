@@ -1,7 +1,8 @@
 use super::*;
+use crate::app::GuiConfigStorageRuntimeSnapshot;
 
 #[test]
-fn gui_shell_app_state_handles_configuration_reset_command_actions() {
+fn gui_shell_app_state_handles_discard_configuration_changes_actions() {
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         host: Some("saved.example".to_owned()),
         room: Some("SavedRoom".to_owned()),
@@ -10,8 +11,7 @@ fn gui_shell_app_state_handles_configuration_reset_command_actions() {
 
     assert!(!state.commands.can_reset_configuration);
     assert!(state.apply(GuiShellAction::EditConfigurationText {
-        section: "Connection",
-        label: "Host",
+        id: SettingId::ConnectionHost,
         value: "draft.example".to_owned().into(),
     }));
     assert_eq!(
@@ -20,15 +20,15 @@ fn gui_shell_app_state_handles_configuration_reset_command_actions() {
     );
     assert!(state.commands.can_reset_configuration);
 
-    assert!(state.apply(GuiShellAction::BeginConfigurationReset));
+    assert!(state.apply(GuiShellAction::BeginDiscardConfigurationChanges));
     assert_eq!(
         state.pending_operation.as_ref().map(|pending| pending.kind),
-        Some(GuiPendingOperationKind::ResetConfiguration)
+        Some(GuiPendingOperationKind::DiscardConfigurationChanges)
     );
     assert!(!state.commands.can_reset_configuration);
     assert!(state.notifications.is_empty());
 
-    assert!(state.apply(GuiShellAction::CancelConfigurationReset));
+    assert!(state.apply(GuiShellAction::CancelDiscardConfigurationChanges));
     assert_eq!(state.pending_operation, None);
     assert_eq!(
         state.configuration.to_stored_settings().host.as_deref(),
@@ -36,10 +36,12 @@ fn gui_shell_app_state_handles_configuration_reset_command_actions() {
     );
     assert!(state.commands.can_reset_configuration);
 
-    assert!(state.apply(GuiShellAction::BeginConfigurationReset));
-    assert!(state.apply(GuiShellAction::CompleteConfigurationReset(
-        state.saved_configuration.clone(),
-    )));
+    assert!(state.apply(GuiShellAction::BeginDiscardConfigurationChanges));
+    assert!(
+        state.apply(GuiShellAction::CompleteDiscardConfigurationChanges(
+            state.saved_configuration.clone(),
+        ))
+    );
     assert_eq!(state.pending_operation, None);
     assert_eq!(
         state.configuration.to_stored_settings().host.as_deref(),
@@ -54,39 +56,40 @@ fn gui_shell_app_state_handles_configuration_reset_command_actions() {
 }
 
 #[test]
-fn gui_shell_app_state_rejects_invalid_configuration_reset_command_actions() {
+fn gui_shell_app_state_rejects_invalid_discard_configuration_changes_actions() {
     let mut state =
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
 
-    assert!(!state.apply(GuiShellAction::BeginConfigurationReset));
+    assert!(!state.apply(GuiShellAction::BeginDiscardConfigurationChanges));
     assert_eq!(
         state.validation.last_action_error.as_deref(),
-        Some("Configuration reset is unavailable with no unsaved changes.")
+        Some("Discard changes is unavailable with no unsaved changes.")
     );
 
-    assert!(!state.apply(GuiShellAction::CompleteConfigurationReset(
-        StoredClientSettingsMvp::default(),
-    )));
+    assert!(
+        !state.apply(GuiShellAction::CompleteDiscardConfigurationChanges(
+            StoredClientSettingsMvp::default(),
+        ))
+    );
     assert_eq!(
         state.validation.last_action_error.as_deref(),
-        Some("No configuration reset is currently in progress.")
+        Some("No discard-changes operation is currently in progress.")
     );
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
-        section: "Connection",
-        label: "Host",
+        id: SettingId::ConnectionHost,
         value: "dirty.example".to_owned().into(),
     }));
     assert!(state.apply(GuiShellAction::BeginConfigurationSave));
-    assert!(!state.apply(GuiShellAction::BeginConfigurationReset));
+    assert!(!state.apply(GuiShellAction::BeginDiscardConfigurationChanges));
     assert_eq!(
         state.validation.last_action_error.as_deref(),
         Some("Another GUI operation is already in progress.")
     );
-    assert!(!state.apply(GuiShellAction::CancelConfigurationReset));
+    assert!(!state.apply(GuiShellAction::CancelDiscardConfigurationChanges));
     assert_eq!(
         state.validation.last_action_error.as_deref(),
-        Some("The active GUI operation is not a configuration reset.")
+        Some("The active GUI operation is not discard changes.")
     );
 }
 
@@ -100,8 +103,7 @@ fn gui_shell_app_state_handles_configuration_reload_command_actions() {
 
     assert!(state.commands.can_reload_configuration);
     assert!(state.apply(GuiShellAction::EditConfigurationText {
-        section: "Connection",
-        label: "Host",
+        id: SettingId::ConnectionHost,
         value: "dirty.example".to_owned().into(),
     }));
     assert!(state.commands.can_reset_configuration);
@@ -257,4 +259,174 @@ fn gui_shell_app_state_rejects_invalid_clear_gui_data_command_actions() {
         state.validation.last_action_error.as_deref(),
         Some("The active GUI operation is not a clear-GUI-data request.")
     );
+}
+
+#[test]
+fn gui_shell_app_state_settles_secret_draft_after_config_storage_save() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        server_password: Some("old-secret".into()),
+        ..StoredClientSettingsMvp::default()
+    });
+    assert!(state.apply(GuiShellAction::BeginServerPasswordChange));
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        id: SettingId::ConnectionServerPassword,
+        value: "new-secret".to_owned().into(),
+    }));
+    assert!(state.apply(GuiShellAction::BeginConfigStorageRootChange(
+        "C:/SorotteConfig".to_owned(),
+    )));
+    assert!(state.apply(GuiShellAction::BeginConfigurationSave));
+
+    let persisted = state.configuration.to_stored_settings();
+    assert!(
+        state.apply(GuiShellAction::CompleteConfigStorageRootChange {
+            snapshot: GuiConfigStorageRuntimeSnapshot {
+                config_path: Some("C:/SorotteConfig/sorotte.ini".to_owned()),
+                storage_root: Some("C:/SorotteConfig".to_owned()),
+                default_storage_root: Some("C:/Default".to_owned()),
+                source_label: "custom".to_owned(),
+                external_override_active: false,
+            },
+            settings: persisted,
+        })
+    );
+
+    assert_eq!(
+        state.configuration.server_password,
+        crate::app::SecretDraft::Unchanged
+    );
+    assert_eq!(
+        state
+            .configuration
+            .control_value(SettingId::ConnectionServerPassword),
+        Some("")
+    );
+    assert!(!state.has_unsaved_configuration_changes());
+}
+
+#[test]
+fn gui_shell_app_state_requires_pending_config_location_to_be_saved_before_save_and_connect() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        host: Some("syncplay.example".to_owned()),
+        port: Some(8999),
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    assert!(state.apply(GuiShellAction::BeginConfigStorageRootChange(
+        "C:/SorotteConfig".to_owned(),
+    )));
+    assert_eq!(
+        state
+            .configuration_widget_tree()
+            .find("config-command:save-and-connect")
+            .map(|button| button.enabled),
+        Some(false)
+    );
+
+    assert!(!state.apply(GuiShellAction::BeginSaveAndConnect));
+    assert_eq!(
+        state.validation.last_action_error.as_deref(),
+        Some("Save the pending config-location change before using Save & connect.")
+    );
+    assert_eq!(
+        state.pending_config_storage_target,
+        Some(crate::app::GuiConfigStorageChangeTarget::CustomRoot(
+            "C:/SorotteConfig".to_owned()
+        ))
+    );
+    assert_eq!(state.pending_operation, None);
+}
+
+#[test]
+fn gui_shell_app_state_discard_clears_active_configuration_edit_buffers() {
+    let saved = StoredClientSettingsMvp {
+        host: Some("saved.example".to_owned()),
+        room: Some("saved-room".to_owned()),
+        room_list: Some(vec!["saved-room".to_owned()]),
+        ..StoredClientSettingsMvp::default()
+    };
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&saved);
+
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        id: SettingId::ConnectionHost,
+        value: "draft.example".to_owned().into(),
+    }));
+    assert!(state.apply(GuiShellAction::BeginRoomHistoryEdit));
+    assert!(state.apply(GuiShellAction::UpdateRoomHistoryEdit(
+        "stale-room".to_owned(),
+    )));
+    assert!(state.apply(GuiShellAction::FocusConfigurationControl(
+        SettingId::ConnectionRoom,
+    )));
+    assert!(state.apply(GuiShellAction::BeginConfigurationTextEdit(
+        SettingId::ConnectionRoom,
+    )));
+    assert!(state.apply(GuiShellAction::UpdateConfigurationTextEdit(
+        "stale-room".to_owned().into(),
+    )));
+
+    assert!(state.apply(GuiShellAction::BeginDiscardConfigurationChanges));
+    assert!(
+        state.apply(GuiShellAction::CompleteDiscardConfigurationChanges(
+            saved.clone(),
+        ))
+    );
+
+    assert!(state.text_edit_session.is_none());
+    assert!(state.room_history_edit_session.is_none());
+    assert!(state.focused_configuration_control.is_none());
+    assert_eq!(state.configuration.to_stored_settings(), saved);
+    assert!(!state.has_unsaved_configuration_changes());
+    assert!(!state.apply(GuiShellAction::CommitConfigurationTextEdit));
+    assert_eq!(state.configuration.to_stored_settings(), saved);
+}
+
+#[test]
+fn gui_shell_app_state_reload_clears_active_secret_edit_and_staged_storage_target() {
+    let saved = StoredClientSettingsMvp {
+        host: Some("saved.example".to_owned()),
+        server_password: Some("saved-secret".into()),
+        ..StoredClientSettingsMvp::default()
+    };
+    let replacement = StoredClientSettingsMvp {
+        host: Some("disk.example".to_owned()),
+        server_password: Some("disk-secret".into()),
+        ..StoredClientSettingsMvp::default()
+    };
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&saved);
+
+    assert!(state.apply(GuiShellAction::BeginConfigStorageRootChange(
+        "C:/StagedSorotteConfig".to_owned(),
+    )));
+    assert!(state.apply(GuiShellAction::BeginServerPasswordChange));
+    assert!(state.apply(GuiShellAction::FocusConfigurationControl(
+        SettingId::ConnectionServerPassword,
+    )));
+    assert!(state.apply(GuiShellAction::BeginConfigurationTextEdit(
+        SettingId::ConnectionServerPassword,
+    )));
+    assert!(state.apply(GuiShellAction::UpdateConfigurationTextEdit(
+        "replacement-secret".to_owned().into(),
+    )));
+
+    assert!(state.apply(GuiShellAction::BeginConfigurationReload));
+    assert!(state.apply(GuiShellAction::CompleteConfigurationReload(
+        replacement.clone(),
+    )));
+
+    assert!(state.text_edit_session.is_none());
+    assert!(state.focused_configuration_control.is_none());
+    assert_eq!(state.pending_config_storage_target, None);
+    assert_eq!(
+        state.configuration.server_password,
+        crate::app::SecretDraft::Unchanged
+    );
+    assert_eq!(state.configuration.to_stored_settings(), replacement);
+    assert!(!state.has_unsaved_configuration_changes());
+    assert!(!state.apply(GuiShellAction::CommitConfigurationTextEdit));
+    assert_eq!(state.configuration.to_stored_settings(), replacement);
+    assert!(!format!("{state:?}").contains("replacement-secret"));
 }

@@ -155,7 +155,7 @@ fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
         action,
         GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
             command_availability: GuiCommandAvailabilityState {
-                can_save_configuration: true,
+                can_save_configuration: false,
                 can_reset_configuration: false,
                 can_reload_configuration: true,
                 can_connect_public_server: false,
@@ -185,7 +185,7 @@ fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
         action,
         GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
             command_availability: GuiCommandAvailabilityState {
-                can_save_configuration: true,
+                can_save_configuration: false,
                 can_reset_configuration: false,
                 can_reload_configuration: true,
                 can_connect_public_server: false,
@@ -217,7 +217,79 @@ fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
 }
 
 #[test]
-fn gui_persisted_config_runtime_owner_saves_configuration_before_config_connect() {
+fn gui_persisted_config_runtime_owner_connect_once_does_not_persist_unrelated_draft() {
+    use std::net::TcpListener;
+
+    let root = test_temp_root("config-connect-once-does-not-save");
+    let config_path = root.join("sorotte.ini");
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .expect("connect-once test should reserve a local TCP port");
+    let address = listener
+        .local_addr()
+        .expect("connect-once test listener should expose an address");
+    drop(listener);
+
+    let stored_settings = StoredClientSettingsMvp {
+        host: Some(address.ip().to_string()),
+        port: Some(address.port()),
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        language: Some("en".to_owned()),
+        player_path: Some("C:/Program Files/VideoLAN/VLC/vlc.exe".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    };
+    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &stored_settings)
+        .expect("initial connect-once config should be written");
+    let config_before_connect =
+        std::fs::read(&config_path).expect("initial connect-once config should remain readable");
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&stored_settings);
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        id: SettingId::GeneralLanguage,
+        value: "pt-br".to_owned().into(),
+    }));
+    assert!(state.has_unsaved_configuration_changes());
+    assert!(state.apply(GuiShellAction::BeginConnectOnce));
+    assert_eq!(
+        state.pending_saved_server_connect_intent,
+        Some(GuiSavedServerConnectIntent::ConnectOnce)
+    );
+
+    handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+        GuiPendingCompletionRequest::ConnectSavedServer,
+    ));
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    let connect_actions = handle.drain_actions();
+
+    assert!(
+        connect_actions.iter().all(|action| !matches!(
+            action,
+            GuiShellAction::ApplyGuiSavedConfigurationRuntimeSnapshot(_)
+        )),
+        "Connect once must never project the draft as saved configuration",
+    );
+    assert_eq!(
+        std::fs::read(&config_path).expect("connect-once config should remain readable"),
+        config_before_connect,
+        "Connect once must not rewrite the persisted INI",
+    );
+    for action in connect_actions {
+        assert!(state.apply(action));
+    }
+    assert_eq!(state.saved_configuration.language.as_deref(), Some("en"));
+    assert_eq!(
+        state.configuration.to_stored_settings().language.as_deref(),
+        Some("pt_BR")
+    );
+    assert!(state.has_unsaved_configuration_changes());
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_saves_configuration_for_save_and_connect() {
     use std::{
         io::{BufReader, Write},
         net::TcpListener,
@@ -294,12 +366,14 @@ fn gui_persisted_config_runtime_owner_saves_configuration_before_config_connect(
     });
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
-        section: "Connection",
-        label: "Room",
+        id: SettingId::ConnectionRoom,
         value: "room2".to_owned().into(),
     }));
-    assert!(state.apply(GuiShellAction::BeginSavedServerConnect));
-    assert!(state.pending_saved_server_connect_saves_configuration);
+    assert!(state.apply(GuiShellAction::BeginSaveAndConnect));
+    assert_eq!(
+        state.pending_saved_server_connect_intent,
+        Some(GuiSavedServerConnectIntent::SaveAndConnect)
+    );
 
     handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
         GuiPendingCompletionRequest::ConnectSavedServer,
@@ -329,7 +403,7 @@ fn gui_persisted_config_runtime_owner_saves_configuration_before_config_connect(
     }
     assert_eq!(state.active_view, GuiShellView::Room);
     assert!(state.pending_operation.is_none());
-    assert!(!state.pending_saved_server_connect_saves_configuration);
+    assert_eq!(state.pending_saved_server_connect_intent, None);
     assert_eq!(state.saved_configuration.room.as_deref(), Some("room2"));
     assert_eq!(
         state.saved_configuration.host.as_deref(),

@@ -41,7 +41,7 @@ sorotte-secret = { path = "../sorotte-secret" }
 webpki-roots.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys.workspace = true
+windows-sys = { workspace = true, features = ["Win32_Graphics_Dwm", "Win32_Graphics_Gdi"] }
 windows.workspace = true
 
 [build-dependencies]

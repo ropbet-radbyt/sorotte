@@ -249,8 +249,8 @@ impl GuiQueuedRuntimeBridge {
             action,
             GuiShellAction::CompleteConfigurationSave(_)
                 | GuiShellAction::CancelConfigurationSave
-                | GuiShellAction::CompleteConfigurationReset(_)
-                | GuiShellAction::CancelConfigurationReset
+                | GuiShellAction::CompleteDiscardConfigurationChanges(_)
+                | GuiShellAction::CancelDiscardConfigurationChanges
                 | GuiShellAction::CompleteConfigurationReload(_)
                 | GuiShellAction::CancelConfigurationReload
                 | GuiShellAction::CompleteClearGuiData

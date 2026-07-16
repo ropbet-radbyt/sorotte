@@ -631,27 +631,21 @@ impl GuiWidgetEguiRenderer {
         state: &SorotteGuiShellAppState,
         tab_width: f32,
     ) {
-        let mut clicked = false;
         let label = if tab_width < 104.0 {
             egui::RichText::new(Self::display_text(node)).small()
         } else {
             egui::RichText::new(Self::display_text(node))
         };
-        ui.add_enabled_ui(node.enabled, |ui| {
-            clicked = ui
-                .add_sized(
-                    [tab_width.max(0.0), 0.0],
-                    egui::Button::new(label).selected(node.selected),
-                )
-                .clicked();
+        let response = ui.add_enabled_ui(node.enabled, |ui| {
+            ui.add_sized(
+                [tab_width.max(0.0), 0.0],
+                egui::Button::new(label).selected(node.selected),
+            )
         });
-        if clicked {
-            if let Some(actions) = Self::direct_menu_actions(state, node) {
-                self.actions.extend(actions);
-            } else {
-                self.actions
-                    .extend(Self::actions_for_clicked_button(state, node));
-            }
+        Self::register_automation_id(ui, &response.inner, node);
+        if response.inner.clicked() {
+            self.actions
+                .extend(Self::actions_for_clicked_button(state, node));
         }
     }
 }

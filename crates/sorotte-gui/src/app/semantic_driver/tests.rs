@@ -1,6 +1,7 @@
 use sorotte_client_app::app_boundary::state::AutoplayThresholdOverride;
 use sorotte_client_core::{PrivacyMode, UnpauseActionMode};
 
+use crate::app::SettingId;
 use crate::app::semantic_smoke::gui_semantic_scenario_named;
 
 #[test]
@@ -13,6 +14,16 @@ fn gui_semantic_driver_runs_widget_id_scenario_without_platform_ui() {
 
     let stored = driver.state().configuration.to_stored_settings();
     let saved = &driver.state().saved_configuration;
+    assert!(
+        driver
+            .widget(SettingId::ConnectionHost.automation_id())
+            .is_ok(),
+        "typed setting automation ID should resolve"
+    );
+    assert!(
+        driver.widget("config:Connection:Host").is_err(),
+        "semantic driver must not retain visible-label setting IDs"
+    );
     assert_eq!(stored.host.as_deref(), Some("syncplay.pl"));
     assert_eq!(stored.port, Some(8999));
     assert_eq!(stored.username.as_deref(), Some("smoke-user"));
@@ -227,7 +238,7 @@ fn gui_semantic_driver_runs_player_setup_scenario_without_platform_ui() {
     );
     assert!(
         !driver
-            .widget("config-command:connect")
+            .widget("config-command:connect-once")
             .expect("connect button should exist")
             .enabled
     );

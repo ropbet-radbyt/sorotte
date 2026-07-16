@@ -29,6 +29,7 @@ pub(in crate::app) enum GuiShellAction {
     TrustTlsCertificatePrompt,
     RejectTlsCertificatePrompt,
     TriggerSelectedMenuAction,
+    InvokeMenuAction(MenuActionId),
     SetPluginEnabled {
         plugin: GuiPluginSelection,
         enabled: bool,
@@ -58,9 +59,9 @@ pub(in crate::app) enum GuiShellAction {
     BeginConfigurationSave,
     CompleteConfigurationSave(StoredClientSettingsMvp),
     CancelConfigurationSave,
-    BeginConfigurationReset,
-    CompleteConfigurationReset(StoredClientSettingsMvp),
-    CancelConfigurationReset,
+    BeginDiscardConfigurationChanges,
+    CompleteDiscardConfigurationChanges(StoredClientSettingsMvp),
+    CancelDiscardConfigurationChanges,
     BeginConfigurationReload,
     CompleteConfigurationReload(StoredClientSettingsMvp),
     CancelConfigurationReload,
@@ -77,10 +78,7 @@ pub(in crate::app) enum GuiShellAction {
     BeginPendingOperation(GuiPendingOperationKind),
     CompletePendingOperation,
     CancelPendingOperation,
-    FocusConfigurationControl {
-        section: &'static str,
-        label: &'static str,
-    },
+    FocusConfigurationControl(SettingId),
     ActivateFocusedConfigurationControl,
     ClearConfigurationControlFocus,
     BeginAddPublicServer,
@@ -101,13 +99,13 @@ pub(in crate::app) enum GuiShellAction {
     DismissTransientNotification(usize),
     DismissSetupAlert,
     ClearTransientNotifications,
-    BeginConfigurationTextEdit {
-        section: &'static str,
-        label: &'static str,
-    },
+    BeginConfigurationTextEdit(SettingId),
     UpdateConfigurationTextEdit(GuiConfigurationTextValue),
     CommitConfigurationTextEdit,
     CancelConfigurationTextEdit,
+    BeginServerPasswordChange,
+    RemoveServerPassword,
+    CancelServerPasswordChange,
     BeginRoomHistoryEdit,
     UpdateRoomHistoryEdit(String),
     CommitRoomHistoryEdit,
@@ -176,9 +174,6 @@ pub(in crate::app) enum GuiShellAction {
     CancelPlaybackPauseToggle,
     AnnouncePlaybackPaused,
     AnnouncePlaybackResumed,
-    RequestSeekPrompt,
-    RequestOffsetPrompt,
-    RequestPlaybackUndoSeek,
     RequestSeekPreparationKeepWaiting,
     RequestSeekPreparationCancel,
     RequestSeekPreparationJoinNearest,
@@ -234,17 +229,16 @@ pub(in crate::app) enum GuiShellAction {
     MoveSelectedMediaSearchDirectoryDown,
     RemoveSelectedMediaSearchDirectory,
     EditConfigurationText {
-        section: &'static str,
-        label: &'static str,
+        id: SettingId,
         value: GuiConfigurationTextValue,
     },
     EditConfigurationBool {
-        section: &'static str,
-        label: &'static str,
+        id: SettingId,
         value: bool,
     },
     AnnouncePublicServerSelectionChanged(usize),
-    BeginSavedServerConnect,
+    BeginConnectOnce,
+    BeginSaveAndConnect,
     CompleteSavedServerConnect,
     CancelSavedServerConnect,
     BeginSessionDisconnect,
@@ -327,14 +321,9 @@ impl std::fmt::Debug for GuiShellAction {
                 .debug_tuple("UpdateConfigurationTextEdit")
                 .field(value)
                 .finish(),
-            Self::EditConfigurationText {
-                section,
-                label,
-                value,
-            } => formatter
+            Self::EditConfigurationText { id, value } => formatter
                 .debug_struct("EditConfigurationText")
-                .field("section", section)
-                .field("label", label)
+                .field("id", id)
                 .field("value", value)
                 .finish(),
             Self::UpdateControllerAuthPasswordEdit(password) => formatter

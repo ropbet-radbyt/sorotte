@@ -209,7 +209,8 @@ impl GuiRuntimeRequest {
             }
             Self::TogglePlaybackPause => vec![GuiShellAction::CompletePlaybackPauseToggle],
             Self::CompletePendingOperation(GuiPendingCompletionRequest::ConnectSavedServer)
-                if state.pending_saved_server_connect_saves_configuration =>
+                if state.pending_saved_server_connect_intent
+                    == Some(GuiSavedServerConnectIntent::SaveAndConnect) =>
             {
                 vec![
                     GuiShellAction::ApplyGuiSavedConfigurationRuntimeSnapshot(

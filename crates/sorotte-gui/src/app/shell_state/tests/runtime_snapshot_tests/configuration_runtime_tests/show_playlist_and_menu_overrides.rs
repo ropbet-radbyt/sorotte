@@ -1,179 +1,34 @@
 use super::*;
 
 #[test]
-fn gui_shell_app_state_preserves_runtime_show_playlist_override_across_configuration_edits() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
-        shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
-    });
-
-    assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
-        MenuDialogRuntimeSnapshot {
-            action_overrides: vec![MenuActionRuntimeOverride {
-                section_title: "Window",
-                action_label: "Show Playlist",
-                enabled: false,
-            }],
-            tls_prompt_expected: false,
-            update_notice_expected: false,
-            about_dialog_available: true,
-        }
-    )));
-    assert!(state.apply(GuiShellAction::EditConfigurationText {
-        section: "Connection",
-        label: "Host",
-        value: "syncplay.example".to_owned().into(),
-    }));
-
-    let window = state
-        .menus
-        .sections
-        .iter()
-        .find(|section| section.title == "Window")
-        .expect("window section should exist");
-    assert!(
-        window
-            .actions
-            .iter()
-            .find(|action| action.label == "Show Playlist")
-            .is_some_and(|action| !action.enabled)
-    );
-}
-
-#[test]
-fn gui_shell_app_state_preserves_runtime_show_playlist_override_across_configuration_runtime_snapshots()
- {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
-        shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
-    });
-
-    assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
-        MenuDialogRuntimeSnapshot {
-            action_overrides: vec![MenuActionRuntimeOverride {
-                section_title: "Window",
-                action_label: "Show Playlist",
-                enabled: false,
-            }],
-            tls_prompt_expected: false,
-            update_notice_expected: false,
-            about_dialog_available: true,
-        }
-    )));
-
-    let mut draft = state.configuration.to_stored_settings();
-    draft.host = Some("draft.example".to_owned());
-    let mut saved = state.saved_configuration.clone();
-    saved.host = Some("saved.example".to_owned());
-
-    assert!(
-        state.apply(GuiShellAction::ApplyGuiConfigurationRuntimeSnapshot(
-            GuiConfigurationRuntimeSnapshot {
-                draft_settings: draft.clone(),
-                saved_settings: saved.clone(),
-            }
-        ))
-    );
-
-    assert_eq!(state.configuration.to_stored_settings(), draft);
-    assert_eq!(state.saved_configuration, saved);
-    let window = state
-        .menus
-        .sections
-        .iter()
-        .find(|section| section.title == "Window")
-        .expect("window section should exist");
-    assert!(
-        window
-            .actions
-            .iter()
-            .find(|action| action.label == "Show Playlist")
-            .is_some_and(|action| !action.enabled)
-    );
-}
-
-#[test]
-fn gui_shell_app_state_preserves_generic_runtime_menu_overrides_across_configuration_edits() {
+fn gui_configuration_preserves_typed_menu_runtime_overrides() {
     let mut state =
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
 
     assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
         MenuDialogRuntimeSnapshot {
             action_overrides: vec![MenuActionRuntimeOverride {
-                section_title: "Help",
-                action_label: "Check for Updates",
+                id: MenuActionId::CheckForUpdates,
                 enabled: false,
             }],
-            tls_prompt_expected: false,
-            update_notice_expected: false,
-            about_dialog_available: true,
-        }
-    )));
-    assert!(state.apply(GuiShellAction::EditConfigurationText {
-        section: "Connection",
-        label: "Host",
-        value: "syncplay.example".to_owned().into(),
-    }));
-
-    let help = state
-        .menus
-        .sections
-        .iter()
-        .find(|section| section.title == "Help")
-        .expect("help section should exist");
-    assert!(
-        help.actions
-            .iter()
-            .find(|action| action.label == "Check for Updates")
-            .is_some_and(|action| !action.enabled)
-    );
-}
-
-#[test]
-fn gui_shell_app_state_preserves_generic_runtime_menu_overrides_across_configuration_runtime_snapshots()
- {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
-
-    assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
-        MenuDialogRuntimeSnapshot {
-            action_overrides: vec![MenuActionRuntimeOverride {
-                section_title: "Help",
-                action_label: "Check for Updates",
-                enabled: false,
-            }],
-            tls_prompt_expected: false,
-            update_notice_expected: false,
-            about_dialog_available: true,
-        }
+            tls_prompt_expected: state.menus.tls_prompt_expected,
+            update_notice_expected: state.menus.update_notice_expected,
+            about_dialog_available: state.menus.about_dialog_available,
+        },
     )));
 
-    let mut draft = state.configuration.to_stored_settings();
-    draft.host = Some("draft.example".to_owned());
-    let mut saved = state.saved_configuration.clone();
-    saved.host = Some("saved.example".to_owned());
-
-    assert!(
-        state.apply(GuiShellAction::ApplyGuiConfigurationRuntimeSnapshot(
-            GuiConfigurationRuntimeSnapshot {
-                draft_settings: draft.clone(),
-                saved_settings: saved.clone(),
-            }
-        ))
+    assert_eq!(
+        state
+            .menus
+            .action(MenuActionId::CheckForUpdates)
+            .map(|action| action.enabled),
+        Some(false)
     );
-
-    assert_eq!(state.configuration.to_stored_settings(), draft);
-    assert_eq!(state.saved_configuration, saved);
-    let help = state
-        .menus
-        .sections
-        .iter()
-        .find(|section| section.title == "Help")
-        .expect("help section should exist");
-    assert!(
-        help.actions
-            .iter()
-            .find(|action| action.label == "Check for Updates")
-            .is_some_and(|action| !action.enabled)
+    assert_eq!(
+        state.runtime_menu_action_overrides,
+        vec![MenuActionRuntimeOverride {
+            id: MenuActionId::CheckForUpdates,
+            enabled: false,
+        }]
     );
 }

@@ -4,7 +4,7 @@ use serde_json::{Map, Value};
 use sorotte_client_app::app_boundary::{
     persistence::upsert_sorotte_ini_stored_client_settings_mvp_at_path,
     state::{
-        ClientConfig, StoredClientSettingsMvp, StoredClientSettingsRuntimeSnapshot,
+        StoredClientSettingsMvp, StoredClientSettingsRuntimeSnapshot,
         stored_client_settings_runtime_snapshot_legacy_compatible,
     },
 };
@@ -22,12 +22,12 @@ use super::runtime_stack::{
     GuiQueuedSessionTransportHandle, GuiThreadedTcpSessionTransportDriver,
 };
 use super::shell_state::{
-    GuiCommandRuntimeSnapshot, GuiSavedConfigurationRuntimeSnapshot, GuiShellAction,
-    GuiTransientNotificationLevel, MainWindowRuntimeSnapshot, MainWindowShellState,
-    MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot, SorotteGuiShellAppState,
+    GuiCommandRuntimeSnapshot, GuiSavedConfigurationRuntimeSnapshot, GuiSavedServerConnectIntent,
+    GuiShellAction, GuiTransientNotificationLevel, MainWindowRuntimeSnapshot, MainWindowShellState,
+    MenuActionId, MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot, SorotteGuiShellAppState,
 };
 use super::startup_support::env_trimmed;
-use super::support::{legacy_chat_enabled, system_time_seconds};
+use super::support::system_time_seconds;
 
 impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn detached_runtime_settings_for_state(
@@ -570,37 +570,14 @@ impl GuiPersistedConfigRuntimeOwner {
         &self,
         state: &SorotteGuiShellAppState,
     ) -> Option<MenuDialogRuntimeSnapshot> {
-        let settings = state.configuration.to_stored_settings();
-        let desired_show_chat_enabled = legacy_chat_enabled(&settings);
-        let desired_show_playlist_enabled = ClientConfig::resolve(&settings)
-            .config
-            .playback
-            .shared_playlist_enabled;
         let mut action_overrides = Vec::new();
-        for (section_title, action_label, enabled) in [
-            ("Window", "Show Chat", desired_show_chat_enabled),
-            ("Window", "Show Playlist", desired_show_playlist_enabled),
-            ("Advanced", "Create Controlled Room", false),
-            ("Advanced", "Identify As Controller", false),
+        for (id, enabled) in [
+            (MenuActionId::CreateControlledRoom, false),
+            (MenuActionId::IdentifyAsController, false),
         ] {
-            let current_enabled = state
-                .menus
-                .sections
-                .iter()
-                .find(|section| section.title == section_title)
-                .and_then(|section| {
-                    section
-                        .actions
-                        .iter()
-                        .find(|action| action.label == action_label)
-                })
-                .map(|action| action.enabled);
+            let current_enabled = state.menus.action(id).map(|action| action.enabled);
             if current_enabled.is_some_and(|current_enabled| current_enabled != enabled) {
-                action_overrides.push(MenuActionRuntimeOverride {
-                    section_title,
-                    action_label,
-                    enabled,
-                });
+                action_overrides.push(MenuActionRuntimeOverride { id, enabled });
             }
         }
         if action_overrides.is_empty() {
@@ -652,7 +629,9 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         projected_state: &SorotteGuiShellAppState,
     ) -> Result<Option<StoredClientSettingsMvp>, String> {
-        if !projected_state.pending_saved_server_connect_saves_configuration {
+        if projected_state.pending_saved_server_connect_intent
+            != Some(GuiSavedServerConnectIntent::SaveAndConnect)
+        {
             return Ok(None);
         }
 

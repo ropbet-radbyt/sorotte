@@ -295,7 +295,9 @@ impl GuiPersistedConfigRuntimeOwner {
         Self::push_actions_and_project(
             handle,
             projected_state,
-            vec![GuiShellAction::CompleteConfigurationReset(settings)],
+            vec![GuiShellAction::CompleteDiscardConfigurationChanges(
+                settings,
+            )],
         );
         true
     }

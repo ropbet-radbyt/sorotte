@@ -1,6 +1,6 @@
 use crate::app::render_io::GuiDroppedFilesTarget;
 use crate::app::{
-    GuiPlayerSetupIssue, GuiPlayerSetupIssueKind, GuiPlayerSetupRuntimeSnapshot,
+    GuiPlayerSetupIssue, GuiPlayerSetupIssueKind, GuiPlayerSetupRuntimeSnapshot, SettingId,
     semantic_driver::GuiSemanticStep,
 };
 
@@ -21,6 +21,35 @@ fn normalize_script_line_endings_converts_crlf_to_lf() {
         normalize_script_line_endings(raw),
         "# header\nsetting\tpublic-server\tPrimary\tsyncplay.pl:8999\n"
     );
+}
+
+#[test]
+fn builtin_semantic_setting_ids_match_the_typed_setting_catalog() {
+    for scenario_name in gui_semantic_scenario_names() {
+        let script = gui_semantic_scenario_script(scenario_name)
+            .unwrap_or_else(|| panic!("{scenario_name} should expose its built-in script"));
+        assert!(
+            !script.contains("config:"),
+            "{scenario_name} must not use legacy visible-label setting IDs",
+        );
+        for (line_index, line) in script.lines().enumerate() {
+            let Some(widget_id) = line.split('\t').nth(1) else {
+                continue;
+            };
+            let Some(setting_id) = widget_id.strip_prefix("settings.") else {
+                continue;
+            };
+            let automation_id = format!(
+                "settings.{}",
+                setting_id.strip_suffix(".validation").unwrap_or(setting_id),
+            );
+            assert!(
+                SettingId::from_automation_id(&automation_id).is_some(),
+                "{scenario_name}:{} uses unknown setting ID {widget_id}",
+                line_index + 1,
+            );
+        }
+    }
 }
 
 #[test]

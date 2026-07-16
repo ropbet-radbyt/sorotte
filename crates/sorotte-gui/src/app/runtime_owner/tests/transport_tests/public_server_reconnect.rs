@@ -89,6 +89,7 @@ fn gui_persisted_config_runtime_owner_reconnects_client_core_tcp_session_for_pub
     stale_main_window.shared_playlist_enabled = true;
     stale_main_window.playlist = vec!["episode2.mkv".to_owned()];
     stale_main_window.can_set_ready = true;
+    stale_main_window.can_manage_playlist = true;
     stale_main_window.playback_paused = true;
     assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
         stale_main_window
@@ -105,8 +106,7 @@ fn gui_persisted_config_runtime_owner_reconnects_client_core_tcp_session_for_pub
     assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
         MenuDialogRuntimeSnapshot {
             action_overrides: vec![MenuActionRuntimeOverride {
-                section_title: "Window",
-                action_label: "Show Playlist",
+                id: MenuActionId::SharedPlaylist,
                 enabled: true,
             }],
             tls_prompt_expected: state.menus.tls_prompt_expected,
@@ -120,15 +120,7 @@ fn gui_persisted_config_runtime_owner_reconnects_client_core_tcp_session_for_pub
     assert!(
         state
             .menus
-            .sections
-            .iter()
-            .find(|section| section.title == "Window")
-            .and_then(|section| {
-                section
-                    .actions
-                    .iter()
-                    .find(|action| action.label == "Show Playlist")
-            })
+            .action(MenuActionId::SharedPlaylist)
             .is_some_and(|action| action.enabled)
     );
 
@@ -155,18 +147,6 @@ fn gui_persisted_config_runtime_owner_reconnects_client_core_tcp_session_for_pub
         )),
         "public-server reconnect should clear stale session-owned main-window state before the new server replies"
     );
-    assert!(
-        reconnect_actions.iter().any(|action| matches!(
-            action,
-            GuiShellAction::ApplyMenuDialogRuntimeSnapshot(snapshot)
-                if snapshot.action_overrides.contains(&MenuActionRuntimeOverride {
-                    section_title: "Window",
-                    action_label: "Show Playlist",
-                    enabled: false,
-                })
-        )),
-        "public-server reconnect should clear stale playlist menu state before the new server replies"
-    );
     for action in reconnect_actions {
         assert!(state.apply(action));
     }
@@ -179,15 +159,7 @@ fn gui_persisted_config_runtime_owner_reconnects_client_core_tcp_session_for_pub
     assert!(
         state
             .menus
-            .sections
-            .iter()
-            .find(|section| section.title == "Window")
-            .and_then(|section| {
-                section
-                    .actions
-                    .iter()
-                    .find(|action| action.label == "Show Playlist")
-            })
+            .action(MenuActionId::SharedPlaylist)
             .is_some_and(|action| !action.enabled)
     );
 

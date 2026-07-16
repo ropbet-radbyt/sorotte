@@ -157,18 +157,10 @@ fn gui_client_core_chat_session_runtime_adapter_projects_session_state_into_main
     };
     assert_eq!(
         menu_snapshot.action_overrides,
-        vec![
-            MenuActionRuntimeOverride {
-                section_title: "Window",
-                action_label: "Show Playlist",
-                enabled: true,
-            },
-            MenuActionRuntimeOverride {
-                section_title: "Playback",
-                action_label: "Shared Playlist",
-                enabled: true,
-            },
-        ]
+        vec![MenuActionRuntimeOverride {
+            id: MenuActionId::SharedPlaylist,
+            enabled: true,
+        }]
     );
     for action in actions {
         assert!(state.apply(action));
@@ -178,29 +170,7 @@ fn gui_client_core_chat_session_runtime_adapter_projects_session_state_into_main
     assert!(
         state
             .menus
-            .sections
-            .iter()
-            .find(|section| section.title == "Window")
-            .and_then(|section| {
-                section
-                    .actions
-                    .iter()
-                    .find(|action| action.label == "Show Playlist")
-            })
-            .is_some_and(|action| action.enabled)
-    );
-    assert!(
-        state
-            .menus
-            .sections
-            .iter()
-            .find(|section| section.title == "Playback")
-            .and_then(|section| {
-                section
-                    .actions
-                    .iter()
-                    .find(|action| action.label == "Shared Playlist")
-            })
+            .action(MenuActionId::SharedPlaylist)
             .is_some_and(|action| action.enabled)
     );
     assert!(GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state).is_empty());

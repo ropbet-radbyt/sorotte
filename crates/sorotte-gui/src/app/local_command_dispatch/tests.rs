@@ -6,8 +6,8 @@ use super::super::remote_services::{
 use crate::app::{
     GuiDraftRuntimeSnapshot, GuiPlexPlaylistJobCancellationReason, GuiPlexPlaylistSearchResult,
     GuiPluginSelection, GuiRuntimeRequest, GuiSeekPreparationPhase, GuiSeekPreparationState,
-    GuiShellAction, MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot,
-    SorotteGuiShellAppState, StoredClientSettingsMvp,
+    GuiShellAction, MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot, MenuActionId,
+    SettingId, SorotteGuiShellAppState, StoredClientSettingsMvp,
 };
 use sorotte_plex::PlexMediaType;
 
@@ -68,25 +68,10 @@ fn staged_update(candidate: UpdateCandidate) -> StagedUpdate {
     }
 }
 
-fn menu_action_index(
-    state: &SorotteGuiShellAppState,
-    section_title: &str,
-    action_label: &str,
-) -> (usize, usize) {
+fn menu_action_index(state: &SorotteGuiShellAppState, action_id: MenuActionId) -> (usize, usize) {
     state
         .menus
-        .sections
-        .iter()
-        .enumerate()
-        .find_map(|(section_index, section)| {
-            (section.title == section_title).then(|| {
-                section
-                    .actions
-                    .iter()
-                    .position(|action| action.label == action_label)
-                    .map(|action_index| (section_index, action_index))
-            })?
-        })
+        .action_index(action_id)
         .expect("menu action should exist")
 }
 
@@ -94,8 +79,7 @@ fn menu_action_index(
 fn gui_shell_dispatch_plan_routes_update_checks_to_runtime_owner() {
     let mut state = runtime_ready_state();
     assert!(state.apply(GuiShellAction::EditConfigurationText {
-        section: "System",
-        label: "Update Channel",
+        id: SettingId::GeneralUpdateChannel,
         value: "dev".to_owned().into(),
     }));
     let plan = GuiShellDispatchPlan::from_shell_actions(
@@ -253,7 +237,7 @@ fn gui_shell_dispatch_plan_routes_plex_playlist_picker_requests_to_runtime_owner
 #[test]
 fn gui_shell_dispatch_plan_routes_menu_update_checks_to_runtime_owner() {
     let state = runtime_ready_state();
-    let (section_index, action_index) = menu_action_index(&state, "Help", "Check for Updates");
+    let (section_index, action_index) = menu_action_index(&state, MenuActionId::CheckForUpdates);
     let select_action = GuiShellAction::SelectMenuAction {
         section_index,
         action_index,
@@ -268,7 +252,10 @@ fn gui_shell_dispatch_plan_routes_menu_update_checks_to_runtime_owner() {
 
     assert_eq!(
         plan.shell_actions,
-        vec![select_action, GuiShellAction::TriggerSelectedMenuAction]
+        vec![
+            select_action,
+            GuiShellAction::InvokeMenuAction(MenuActionId::CheckForUpdates),
+        ]
     );
     assert_eq!(
         plan.runtime_requests,
@@ -278,6 +265,14 @@ fn gui_shell_dispatch_plan_routes_menu_update_checks_to_runtime_owner() {
             user_initiated: true,
         }]
     );
+
+    let typed_plan = GuiShellDispatchPlan::from_shell_actions(
+        &state,
+        vec![GuiShellAction::InvokeMenuAction(
+            MenuActionId::CheckForUpdates,
+        )],
+    );
+    assert_eq!(typed_plan.runtime_requests, plan.runtime_requests);
 }
 
 #[test]

@@ -247,41 +247,9 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
                 rooms: browser_runtime_rooms("(no room joined)", false, true),
                 ..Default::default()
             }),
-            GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
-                action_overrides: vec![
-                    MenuActionRuntimeOverride {
-                        section_title: "Playback",
-                        action_label: "Play",
-                        enabled: true,
-                    },
-                    MenuActionRuntimeOverride {
-                        section_title: "Playback",
-                        action_label: "Pause",
-                        enabled: true,
-                    },
-                    MenuActionRuntimeOverride {
-                        section_title: "Playback",
-                        action_label: "Toggle Pause",
-                        enabled: true,
-                    },
-                    MenuActionRuntimeOverride {
-                        section_title: "Playback",
-                        action_label: "Seek",
-                        enabled: true,
-                    },
-                    MenuActionRuntimeOverride {
-                        section_title: "Advanced",
-                        action_label: "Set Offset",
-                        enabled: true,
-                    },
-                ],
-                tls_prompt_expected: false,
-                update_notice_expected: false,
-                about_dialog_available: true,
-            }),
             GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
                 command_availability: GuiCommandAvailabilityState {
-                    can_save_configuration: true,
+                    can_save_configuration: false,
                     can_reset_configuration: false,
                     can_reload_configuration: true,
                     can_connect_public_server: false,
@@ -308,8 +276,7 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
     assert!(state.commands.can_toggle_pause);
 
     assert!(state.apply(GuiShellAction::EditConfigurationBool {
-        section: "Chat",
-        label: "Chat Output",
+        id: SettingId::ChatOutputEnabled,
         value: false,
     }));
     assert!(

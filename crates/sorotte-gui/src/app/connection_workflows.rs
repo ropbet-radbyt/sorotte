@@ -1,8 +1,8 @@
 use sorotte_client_app::app_boundary::state::parse_host_and_optional_port_from_host_arg_legacy_compatible;
 
 use super::shell_state::{
-    GuiPendingOperationKind, GuiPendingOperationState, GuiShellView, GuiTransientNotificationLevel,
-    SorotteGuiShellAppState,
+    GuiPendingOperationKind, GuiPendingOperationState, GuiSavedServerConnectIntent, GuiShellView,
+    GuiTransientNotificationLevel, SettingId, SorotteGuiShellAppState,
 };
 use super::support::normalized_editable_text;
 
@@ -56,10 +56,9 @@ impl SorotteGuiShellAppState {
             parse_host_and_optional_port_from_host_arg_legacy_compatible(&row.address);
         let _ = self
             .configuration
-            .apply_text_value("Connection", "Host", &host);
+            .apply_text_value(SettingId::ConnectionHost, &host);
         let _ = self.configuration.apply_text_value(
-            "Connection",
-            "Port",
+            SettingId::ConnectionPort,
             &port.map_or_else(String::new, |value| value.to_string()),
         );
         true
@@ -79,16 +78,28 @@ impl SorotteGuiShellAppState {
         true
     }
 
-    pub(super) fn begin_saved_server_connect(&mut self) -> bool {
+    pub(super) fn begin_saved_server_connect(
+        &mut self,
+        intent: GuiSavedServerConnectIntent,
+    ) -> bool {
         if self.pending_operation.is_some() {
             return self.record_action_error("Another GUI operation is already in progress.");
         }
         if let Some(message) = self.player_setup_connect_block_message() {
             return self.record_action_error(message);
         }
-        if self.active_view == GuiShellView::Setup && !self.validation.issues.is_empty() {
+        if intent == GuiSavedServerConnectIntent::SaveAndConnect
+            && !self.validation.issues.is_empty()
+        {
             return self.record_action_error(
-                "Configuration connect is unavailable while validation issues remain.",
+                "Save & connect is unavailable while validation issues remain.",
+            );
+        }
+        if intent == GuiSavedServerConnectIntent::SaveAndConnect
+            && self.pending_config_storage_target.is_some()
+        {
+            return self.record_action_error(
+                "Save the pending config-location change before using Save & connect.",
             );
         }
         if !self.commands.can_connect_saved_server {
@@ -101,8 +112,7 @@ impl SorotteGuiShellAppState {
                 "Configured server connect requires a saved host and a valid port.",
             );
         };
-        self.pending_saved_server_connect_saves_configuration =
-            self.active_view == GuiShellView::Setup;
+        self.pending_saved_server_connect_intent = Some(intent);
         self.pending_operation = Some(GuiPendingOperationState {
             kind: GuiPendingOperationKind::ConnectSavedServer,
         });
@@ -121,13 +131,13 @@ impl SorotteGuiShellAppState {
         }
         let Some(_target) = self.saved_session_connect_target() else {
             self.pending_operation = None;
-            self.pending_saved_server_connect_saves_configuration = false;
+            self.pending_saved_server_connect_intent = None;
             return self.record_action_error(
                 "Configured server connect requires a saved host and a valid port.",
             );
         };
         self.pending_operation = None;
-        self.pending_saved_server_connect_saves_configuration = false;
+        self.pending_saved_server_connect_intent = None;
         self.active_view = GuiShellView::Room;
         self.clear_action_error_and_refresh();
         true
@@ -144,7 +154,7 @@ impl SorotteGuiShellAppState {
         }
 
         self.pending_operation = None;
-        self.pending_saved_server_connect_saves_configuration = false;
+        self.pending_saved_server_connect_intent = None;
         self.push_transient_notification(
             GuiTransientNotificationLevel::Warning,
             "Configured server connect canceled.".to_owned(),

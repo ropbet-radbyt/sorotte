@@ -6,17 +6,20 @@ setting	player-path	C:/Windows/System32/notepad.exe
 setting	shared-playlist-enabled	true
 assert-value	shell:active-view	setup
 assert-selected	configuration-root	true
-assert-value	config:Connection:Public Servers	2
-assert-enabled	menus:action:0:0	false
+assert-value	settings.connection.public_server_count	2
+assert-enabled	menu.open_media	false
 assert-enabled	shell:quick:open-media-file	false
-assert-enabled	menus:action:3:0	true
-activate	menus:action:4:0
+assert-enabled	menu.toggle_playback_buttons	true
+activate	menu.about
 assert-value	shell:active-view	setup
+assert-value	shell:open-modal	about
+assert-value	shell:modal:kind	about
+activate	shell:modal:close
 assert-value	shell:open-modal	(none)
-activate	menus:action:4:2
+activate	menu.check_for_updates
 assert-value	shell:open-modal	(none)
 assert-value	shell:update-indicator:title	Checking for updates
-activate	menus:action:2:4
+activate	menu.tls_certificates
 assert-value	shell:open-modal	tls-certificate-prompt
 assert-value	shell:modal:kind	tls-certificate-prompt
 activate	shell:modal:tls:trust
@@ -24,16 +27,16 @@ assert-value	shell:open-modal	(none)
 assert-value	menus:dialog:tls	no
 clear-notifications
 activate	configuration-root
-enter-text	config:Connection:Host	false	syncplay.example
-enter-text	config:Connection:Port	false	8999
-enter-text	config:Connection:Username	false	smoke-user
-enter-text	config:Connection:Room	false	smoke-room
-enter-text	config:Connection:Player Path	false	C:/Windows/System32/notepad.exe
+enter-text	settings.connection.host	false	syncplay.example
+enter-text	settings.connection.port	false	8999
+enter-text	settings.connection.username	false	smoke-user
+enter-text	settings.connection.room	false	smoke-room
+enter-text	settings.player.executable	false	C:/Windows/System32/notepad.exe
 activate	configuration:tab:overview
-enter-text	config:Media Search:First File Timeout	false	3.0
-enter-text	config:Media Search:Search Timeout	false	30.0
-enter-text	config:Media Search:Double Check Interval	false	2.5
-enter-text	config:Media Search:Warning Threshold	false	7.5
+enter-text	settings.media_library.first_file_timeout	false	3.0
+enter-text	settings.media_library.search_timeout	false	30.0
+enter-text	settings.media_library.double_check_interval	false	2.5
+enter-text	settings.media_library.warning_threshold	false	7.5
 clear-notifications
 activate	config-command:save
 assert-pending	save-configuration
@@ -44,8 +47,8 @@ activate	configuration:tab:connection
 assert-selected	configuration-root	true
 assert-value	shell:active-view	setup
 activate	public-servers:row:0
-assert-value	config:Connection:Host	alpha.example
-assert-value	config:Connection:Port	8999
+assert-value	settings.connection.host	alpha.example
+assert-value	settings.connection.port	8999
 activate	public-servers:command:connect
 assert-pending	connect-public-server
 cancel-pending
@@ -64,9 +67,9 @@ activate	public-servers:edit:commit
 assert-label	public-servers:row:2	Custom
 assert-value	public-servers:row:2	custom.example:9001
 assert-selected	public-servers:row:2	true
-assert-value	config:Connection:Public Servers	3
-assert-value	config:Connection:Host	custom.example
-assert-value	config:Connection:Port	9001
+assert-value	settings.connection.public_server_count	3
+assert-value	settings.connection.host	custom.example
+assert-value	settings.connection.port	9001
 activate	public-servers:command:connect
 assert-pending	connect-public-server
 cancel-pending
