@@ -26,7 +26,7 @@ impl SorotteGuiShellAppState {
             ],
         );
 
-        let mut overview_children = vec![top_region];
+        let mut overview_children = vec![top_region, self.main_window_room_filter_widget_node()];
         let mut overview_editor_panels = self.main_window_editor_panels();
         if !overview_editor_panels.is_empty() {
             if overview_editor_panels.len() == 1
@@ -60,6 +60,115 @@ impl SorotteGuiShellAppState {
                 .into_iter()
                 .chain([overview_content])
                 .collect(),
+        )
+    }
+
+    fn main_window_room_filter_widget_node(&self) -> GuiWidgetNode {
+        let can_change_filter = self.pending_operation.is_none();
+        let mut children = vec![GuiWidgetNode::leaf(
+            "main-window:browser:hide-empty",
+            "Hide Empty Rooms",
+            GuiWidgetKind::Checkbox,
+            Some(bool_label(self.main_window.hide_empty_rooms).to_owned()),
+            can_change_filter,
+            false,
+        )];
+
+        children.extend(
+            self.main_window
+                .rooms
+                .iter()
+                .enumerate()
+                .filter(|(_, room)| !self.main_window.hide_empty_rooms || room.has_named_users)
+                .map(|(room_index, room)| {
+                    let mut room_children = vec![GuiWidgetNode::leaf(
+                        format!("main-window:room-group:{room_index}:state"),
+                        "State",
+                        GuiWidgetKind::Status,
+                        Some(format!(
+                            "controlled={}, named_users={}",
+                            bool_label(room.is_controlled),
+                            bool_label(room.has_named_users),
+                        )),
+                        true,
+                        false,
+                    )];
+                    room_children.extend(
+                        self.main_window
+                            .users
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, user)| user.room_name == room.room_name)
+                            .map(|(user_index, user)| {
+                                let mut user_panel = GuiWidgetNode::branch(
+                                    format!("main-window:user:browser:{user_index}"),
+                                    &user.username,
+                                    GuiWidgetKind::Panel,
+                                    vec![
+                                        GuiWidgetNode::leaf(
+                                            format!("main-window:user:browser:{user_index}:state"),
+                                            "State",
+                                            GuiWidgetKind::Status,
+                                            Some(format!(
+                                                "self={}, ready={}, controller={}",
+                                                bool_label(user.is_self),
+                                                bool_label(user.is_ready),
+                                                bool_label(user.is_controller),
+                                            )),
+                                            true,
+                                            user.is_selected,
+                                        ),
+                                        GuiWidgetNode::leaf(
+                                            format!("main-window:user:browser:{user_index}:file"),
+                                            "File",
+                                            GuiWidgetKind::Status,
+                                            Some(user.file_name_label.clone()),
+                                            true,
+                                            false,
+                                        ),
+                                    ],
+                                );
+                                user_panel.selected = user.is_selected;
+                                user_panel
+                            }),
+                    );
+                    if room_children.len() == 1 {
+                        room_children.push(GuiWidgetNode::leaf(
+                            format!("main-window:room-group:{room_index}:empty"),
+                            "Users",
+                            GuiWidgetKind::Status,
+                            Some("(empty room)".to_owned()),
+                            true,
+                            false,
+                        ));
+                    }
+                    let mut room_panel = GuiWidgetNode::branch(
+                        format!("main-window:room-group:{room_index}"),
+                        &room.room_name,
+                        GuiWidgetKind::Panel,
+                        room_children,
+                    );
+                    room_panel.selected = room.room_name == self.main_window.room_name;
+                    room_panel
+                }),
+        );
+
+        if children.len() == 1 {
+            children.push(GuiWidgetNode::leaf(
+                "main-window:browser:empty",
+                "Rooms",
+                GuiWidgetKind::Status,
+                Some("No visible rooms.".to_owned()),
+                true,
+                false,
+            ));
+        }
+
+        GuiWidgetNode::branch(
+            "main-window:browser",
+            "Room Browser",
+            GuiWidgetKind::Panel,
+            children,
         )
     }
 }

@@ -96,6 +96,7 @@ pub mod persistence {
         upsert_sorotte_ini_stored_client_settings_mvp_at_path,
         upsert_sorotte_ini_stored_client_settings_mvp_clearing_plex_identity,
         upsert_sorotte_ini_stored_client_settings_mvp_clearing_plex_identity_at_path,
+        write_sorotte_ini_contents_atomically_at_path,
     };
 }
 

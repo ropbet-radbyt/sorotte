@@ -1,5 +1,25 @@
 use super::*;
+use crate::app::GuiPersistedSettingsPatch;
 use crate::app::runtime_owner::{GuiActivePlexPlaylistResolveJob, GuiActivePlexPlaylistSearchJob};
+use sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot_legacy_compatible;
+use sorotte_plex::{PlexServerConnectionKind, discovery::PlexServerConnection};
+
+fn stage_unrelated_plex_draft(state: &mut SorotteGuiShellAppState) {
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        id: SettingId::GeneralLanguage,
+        value: "fr".to_owned().into(),
+    }));
+    assert!(state.apply(GuiShellAction::RemoveServerPassword));
+    assert!(state.apply(GuiShellAction::FocusConfigurationControl(
+        SettingId::GeneralLanguage,
+    )));
+    assert!(state.apply(GuiShellAction::BeginConfigurationTextEdit(
+        SettingId::GeneralLanguage,
+    )));
+    assert!(state.apply(GuiShellAction::UpdateConfigurationTextEdit(
+        "de".to_owned().into(),
+    )));
+}
 
 #[test]
 fn gui_persisted_config_runtime_owner_persists_save_and_reload_requests() {
@@ -23,6 +43,7 @@ fn gui_persisted_config_runtime_owner_persists_save_and_reload_requests() {
         room: Some("Cinema".to_owned()),
         ..StoredClientSettingsMvp::default()
     };
+    state.resync_from_settings(saved_settings.clone());
     assert!(state.apply(GuiShellAction::BeginConfigurationSave));
     handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
         GuiPendingCompletionRequest::SaveConfiguration(saved_settings.clone()),
@@ -91,6 +112,8 @@ fn gui_persisted_config_runtime_owner_disables_plex_without_clearing_credentials
     let root = test_temp_root("plugin-disable-plex-preserves-settings");
     let config_path = root.join("sorotte.ini");
     let saved_settings = StoredClientSettingsMvp {
+        host: Some("saved.example".to_owned()),
+        server_password: Some("saved-secret".into()),
         plex_user_token: Some("user-token".into()),
         plex_selected_server_id: Some("machine-id".to_owned()),
         plex_selected_server_url: Some("https://plex.example.invalid:32400".to_owned()),
@@ -104,6 +127,19 @@ fn gui_persisted_config_runtime_owner_disables_plex_without_clearing_credentials
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+    owner.active_session_settings = Some(
+        stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {
+            host: Some("active-session.example".to_owned()),
+            room: Some("+Room:CB39A19549E8:ab-123-456".to_owned()),
+            server_password: Some("active-session-secret".into()),
+            ..saved_settings.clone()
+        }),
+    );
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        id: SettingId::ConnectionHost,
+        value: "unsaved-draft.example".to_owned().into(),
+    }));
+    assert!(state.apply(GuiShellAction::RemoveServerPassword));
     state.main_window.playback.can_manage_playlist = true;
     assert!(state.apply(GuiShellAction::BeginPlexPlaylistSearch));
     assert!(state.apply(GuiShellAction::SubmitPlexPlaylistSearch {
@@ -163,11 +199,62 @@ fn gui_persisted_config_runtime_owner_disables_plex_without_clearing_credentials
     );
     assert!(state.plex.enabled);
     assert!(state.plex.streaming_enabled);
+    assert_eq!(
+        state.configuration.to_stored_settings().host.as_deref(),
+        Some("unsaved-draft.example")
+    );
+    assert!(matches!(
+        state.configuration.server_password,
+        SecretDraft::Clear
+    ));
+    let active_settings = &owner
+        .active_session_settings
+        .as_ref()
+        .expect("immediate patch should preserve the active session snapshot")
+        .settings;
+    assert_eq!(active_settings.plex_plugin_enabled, Some(false));
+    assert_eq!(
+        active_settings.host.as_deref(),
+        Some("active-session.example")
+    );
+    assert_eq!(
+        active_settings
+            .server_password
+            .as_ref()
+            .map(|password| password.expose_secret()),
+        Some("active-session-secret")
+    );
+    assert_eq!(
+        owner
+            .active_session_settings
+            .as_ref()
+            .and_then(|settings| settings.controlled_room_password_override.as_ref())
+            .map(|password| password.expose_secret()),
+        Some("AB-123-456")
+    );
+    owner.promote_on_save_runtime_fields(&StoredClientSettingsMvp {
+        media_search_directories: Some(vec!["D:/Saved Media".to_owned()]),
+        ..saved_settings.clone()
+    });
+    assert_eq!(
+        owner
+            .active_session_settings
+            .as_ref()
+            .and_then(|settings| settings.controlled_room_password_override.as_ref())
+            .map(|password| password.expose_secret()),
+        Some("AB-123-456"),
+        "ordinary OnSave promotion must preserve active controlled-room credentials"
+    );
 
     let settings = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
         .expect("Plex plugin setting config should be readable")
         .expect("Plex plugin setting config should exist");
     assert_eq!(settings.plex_plugin_enabled, Some(false));
+    assert_eq!(state.saved_configuration.plex_plugin_enabled, Some(false));
+    assert_eq!(
+        state.configuration.settings.plex_plugin_enabled,
+        Some(false)
+    );
     assert_eq!(
         settings
             .plex_user_token
@@ -197,10 +284,14 @@ fn gui_persisted_config_runtime_owner_disables_plex_without_clearing_credentials
 }
 
 #[test]
-fn gui_persisted_config_runtime_owner_cancels_plex_jobs_when_plugin_disable_persistence_fails() {
+fn gui_persisted_config_runtime_owner_preserves_plex_jobs_when_plugin_disable_persistence_fails() {
     let root = test_temp_root("plugin-disable-plex-persist-failure");
     std::fs::create_dir_all(&root).expect("test directory should be created");
+    let sentinel_path = root.join("unchanged.txt");
+    std::fs::write(&sentinel_path, "unchanged").expect("sentinel should be written");
     let settings = StoredClientSettingsMvp {
+        host: Some("saved.example".to_owned()),
+        server_password: Some("saved-secret".into()),
         plex_plugin_enabled: Some(true),
         shared_playlist_enabled: Some(true),
         plex_user_token: Some("user-token".into()),
@@ -212,6 +303,25 @@ fn gui_persisted_config_runtime_owner_cancels_plex_jobs_when_plugin_disable_pers
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(root.clone()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&settings);
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        id: SettingId::ConnectionHost,
+        value: "draft.example".to_owned().into(),
+    }));
+    assert!(state.apply(GuiShellAction::RemoveServerPassword));
+    assert!(state.apply(GuiShellAction::FocusConfigurationControl(
+        SettingId::ConnectionHost,
+    )));
+    assert!(state.apply(GuiShellAction::BeginConfigurationTextEdit(
+        SettingId::ConnectionHost,
+    )));
+    assert!(state.apply(GuiShellAction::UpdateConfigurationTextEdit(
+        "typing.example".to_owned().into(),
+    )));
+    let saved_before = state.saved_configuration.clone();
+    let draft_before = state.configuration.settings.clone();
+    let secret_before = state.configuration.server_password.clone();
+    let focused_before = state.focused_configuration_control.clone();
+    let edit_before = state.text_edit_session.clone();
     state.main_window.playback.can_manage_playlist = true;
     assert!(state.apply(GuiShellAction::BeginPlexPlaylistSearch));
     assert!(state.apply(GuiShellAction::SubmitPlexPlaylistSearch {
@@ -239,20 +349,32 @@ fn gui_persisted_config_runtime_owner_cancels_plex_jobs_when_plugin_disable_pers
         result_rx: resolve_rx,
     });
 
-    assert!(state.apply(GuiShellAction::SetPluginEnabled {
-        plugin: GuiPluginSelection::Plex,
-        enabled: false,
-    }));
     handle.push_request(GuiRuntimeRequest::SetPluginEnabled {
         plugin: GuiPluginSelection::Plex,
         enabled: false,
     });
     let actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
-    assert_eq!(owner.plex_playlist_job_generation, 10);
-    assert!(owner.plex_playlist_search_job.is_none());
-    assert!(owner.plex_playlist_resolve_job.is_none());
-    assert!(state.plex_playlist_search.is_none());
+    assert_eq!(owner.plex_playlist_job_generation, 9);
+    assert!(owner.plex_playlist_search_job.is_some());
+    assert!(owner.plex_playlist_resolve_job.is_some());
+    assert!(state.plex_playlist_search.is_some());
+    assert!(
+        state
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::Plex)
+    );
+    assert_eq!(state.saved_configuration, saved_before);
+    assert_eq!(state.configuration.settings, draft_before);
+    assert_eq!(state.configuration.server_password, secret_before);
+    assert_eq!(state.focused_configuration_control, focused_before);
+    assert_eq!(state.text_edit_session, edit_before);
+    assert!(state.has_unsaved_configuration_changes());
+    assert!(root.is_dir());
+    assert_eq!(
+        std::fs::read_to_string(&sentinel_path).expect("sentinel should remain readable"),
+        "unchanged"
+    );
     assert!(actions.iter().any(|action| matches!(
         action,
         GuiShellAction::PushTransientNotification {
@@ -461,6 +583,8 @@ fn gui_persisted_config_runtime_owner_disables_stream_support_without_deleting_h
     let root = test_temp_root("plugin-disable-stream-support-clears-work");
     let config_path = root.join("sorotte.ini");
     let saved_settings = StoredClientSettingsMvp {
+        host: Some("saved.example".to_owned()),
+        server_password: Some("saved-secret".into()),
         trusted_domains: Some(vec!["example.invalid".to_owned()]),
         ..StoredClientSettingsMvp::default()
     };
@@ -469,6 +593,22 @@ fn gui_persisted_config_runtime_owner_disables_stream_support_without_deleting_h
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        id: SettingId::ConnectionHost,
+        value: "draft.example".to_owned().into(),
+    }));
+    assert!(state.apply(GuiShellAction::RemoveServerPassword));
+    assert!(state.apply(GuiShellAction::FocusConfigurationControl(
+        SettingId::ConnectionHost,
+    )));
+    assert!(state.apply(GuiShellAction::BeginConfigurationTextEdit(
+        SettingId::ConnectionHost,
+    )));
+    assert!(state.apply(GuiShellAction::UpdateConfigurationTextEdit(
+        "typing.example".to_owned().into(),
+    )));
+    let focused_control = state.focused_configuration_control.clone();
+    let edit_session = state.text_edit_session.clone();
     let (_probe_tx, probe_rx) = mpsc::channel();
     owner.startup_stream_helper_probe_completed = false;
     owner.startup_stream_helper_probe_rx = Some(probe_rx);
@@ -520,10 +660,38 @@ fn gui_persisted_config_runtime_owner_disables_stream_support_without_deleting_h
         .expect("Stream Support plugin setting config should be readable")
         .expect("Stream Support plugin setting config should exist");
     assert_eq!(settings.stream_support_plugin_enabled, Some(false));
+    assert_eq!(settings.host.as_deref(), Some("saved.example"));
+    assert_eq!(
+        settings
+            .server_password
+            .as_ref()
+            .map(|secret| secret.expose_secret()),
+        Some("saved-secret")
+    );
     assert_eq!(
         settings.trusted_domains,
         Some(vec!["example.invalid".to_owned()])
     );
+    assert_eq!(
+        state.saved_configuration.stream_support_plugin_enabled,
+        Some(false)
+    );
+    assert_eq!(
+        state.configuration.settings.stream_support_plugin_enabled,
+        Some(false)
+    );
+    assert_eq!(
+        state.saved_configuration.host.as_deref(),
+        Some("saved.example")
+    );
+    assert_eq!(
+        state.configuration.settings.host.as_deref(),
+        Some("draft.example")
+    );
+    assert_eq!(state.configuration.server_password, SecretDraft::Clear);
+    assert_eq!(state.focused_configuration_control, focused_control);
+    assert_eq!(state.text_edit_session, edit_session);
+    assert!(state.has_unsaved_configuration_changes());
 
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -532,10 +700,37 @@ fn gui_persisted_config_runtime_owner_disables_stream_support_without_deleting_h
 fn gui_persisted_config_runtime_owner_persists_media_match_settings() {
     let root = test_temp_root("media-match-settings-owner");
     let config_path = root.join("sorotte.ini");
+    let saved_settings = StoredClientSettingsMvp {
+        language: Some("en".to_owned()),
+        server_password: Some("saved-secret".into()),
+        media_match_fingerprinting_enabled: Some(false),
+        ..StoredClientSettingsMvp::default()
+    };
+    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &saved_settings)
+        .expect("initial Media Matching settings should persist");
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        id: SettingId::GeneralLanguage,
+        value: "fr".to_owned().into(),
+    }));
+    assert!(state.apply(GuiShellAction::BeginServerPasswordChange));
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        id: SettingId::ConnectionServerPassword,
+        value: "replacement-secret".to_owned().into(),
+    }));
+    assert!(state.apply(GuiShellAction::FocusConfigurationControl(
+        SettingId::GeneralLanguage,
+    )));
+    assert!(state.apply(GuiShellAction::BeginConfigurationTextEdit(
+        SettingId::GeneralLanguage,
+    )));
+    assert!(state.apply(GuiShellAction::UpdateConfigurationTextEdit(
+        "pt-BR".to_owned().into(),
+    )));
+    let focused_control = state.focused_configuration_control.clone();
+    let edit_session = state.text_edit_session.clone();
 
     handle.push_request(GuiRuntimeRequest::SetMediaMatchFingerprintingEnabled(true));
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -565,6 +760,94 @@ fn gui_persisted_config_runtime_owner_persists_media_match_settings() {
         settings.media_match_autoplay_policy.as_deref(),
         Some("AllowStrongSameMedia")
     );
+    assert_eq!(settings.language.as_deref(), Some("en"));
+    assert_eq!(
+        settings
+            .server_password
+            .as_ref()
+            .map(|secret| secret.expose_secret()),
+        Some("saved-secret")
+    );
+    assert_eq!(
+        state.saved_configuration.media_match_fingerprinting_enabled,
+        Some(true)
+    );
+    assert_eq!(
+        state
+            .saved_configuration
+            .media_match_background_warmup_enabled,
+        Some(false)
+    );
+    assert_eq!(
+        state.saved_configuration.media_match_wire_sharing_enabled,
+        Some(false)
+    );
+    assert_eq!(
+        state
+            .saved_configuration
+            .media_match_runtime_tolerance_enabled,
+        Some(false)
+    );
+    assert_eq!(
+        state
+            .saved_configuration
+            .media_match_autoplay_policy
+            .as_deref(),
+        Some("AllowStrongSameMedia")
+    );
+    assert_eq!(
+        state
+            .configuration
+            .settings
+            .media_match_fingerprinting_enabled,
+        Some(true)
+    );
+    assert_eq!(
+        state
+            .configuration
+            .settings
+            .media_match_background_warmup_enabled,
+        Some(false)
+    );
+    assert_eq!(
+        state
+            .configuration
+            .settings
+            .media_match_wire_sharing_enabled,
+        Some(false)
+    );
+    assert_eq!(
+        state
+            .configuration
+            .settings
+            .media_match_runtime_tolerance_enabled,
+        Some(false)
+    );
+    assert_eq!(
+        state
+            .configuration
+            .settings
+            .media_match_autoplay_policy
+            .as_deref(),
+        Some("AllowStrongSameMedia")
+    );
+    assert_eq!(state.saved_configuration.language.as_deref(), Some("en"));
+    assert_eq!(state.configuration.settings.language.as_deref(), Some("fr"));
+    assert_eq!(
+        state.configuration.server_password,
+        SecretDraft::Replace("replacement-secret".into())
+    );
+    assert_eq!(state.focused_configuration_control, focused_control);
+    assert_eq!(state.text_edit_session, edit_session);
+    assert!(state.media_match.settings.fingerprinting_enabled);
+    assert!(!state.media_match.settings.background_warmup_enabled);
+    assert!(!state.media_match.settings.wire_sharing_enabled);
+    assert!(!state.media_match.settings.runtime_tolerance_enabled);
+    assert_eq!(
+        state.media_match.settings.autoplay_policy,
+        sorotte_media_match::MediaMatchAutoplayPolicy::AllowStrongSameMedia
+    );
+    assert!(state.has_unsaved_configuration_changes());
 
     let restarted_owner =
         GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player(Some(config_path));
@@ -598,6 +881,523 @@ fn gui_persisted_config_runtime_owner_persists_media_match_settings() {
             .settings
             .autoplay_policy,
         sorotte_media_match::MediaMatchAutoplayPolicy::AllowStrongSameMedia
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_preserves_media_match_and_draft_when_persistence_fails() {
+    let root = test_temp_root("media-match-settings-persist-failure");
+    std::fs::create_dir_all(&root).expect("test directory should be created");
+    let sentinel_path = root.join("unchanged.txt");
+    std::fs::write(&sentinel_path, "unchanged").expect("sentinel should be written");
+    let saved_settings = StoredClientSettingsMvp {
+        language: Some("en".to_owned()),
+        server_password: Some("saved-secret".into()),
+        media_match_fingerprinting_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    };
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(root.clone()));
+    owner
+        .media_match_runtime_snapshot
+        .settings
+        .fingerprinting_enabled = true;
+    let cancel = Arc::new(AtomicBool::new(false));
+    owner.media_match_background_worker_cancel = Some(Arc::clone(&cancel));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        id: SettingId::GeneralLanguage,
+        value: "fr".to_owned().into(),
+    }));
+    assert!(state.apply(GuiShellAction::BeginServerPasswordChange));
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        id: SettingId::ConnectionServerPassword,
+        value: "replacement-secret".to_owned().into(),
+    }));
+    assert!(state.apply(GuiShellAction::FocusConfigurationControl(
+        SettingId::GeneralLanguage,
+    )));
+    assert!(state.apply(GuiShellAction::BeginConfigurationTextEdit(
+        SettingId::GeneralLanguage,
+    )));
+    assert!(state.apply(GuiShellAction::UpdateConfigurationTextEdit(
+        "pt-BR".to_owned().into(),
+    )));
+    let saved_before = state.saved_configuration.clone();
+    let draft_before = state.configuration.settings.clone();
+    let secret_before = state.configuration.server_password.clone();
+    let focused_before = state.focused_configuration_control.clone();
+    let edit_before = state.text_edit_session.clone();
+
+    handle.push_request(GuiRuntimeRequest::SetMediaMatchFingerprintingEnabled(false));
+    let actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert!(!cancel.load(Ordering::SeqCst));
+    assert!(state.media_match.settings.fingerprinting_enabled);
+    assert!(
+        owner
+            .media_match_runtime_snapshot
+            .settings
+            .fingerprinting_enabled
+    );
+    assert_eq!(state.saved_configuration, saved_before);
+    assert_eq!(state.configuration.settings, draft_before);
+    assert_eq!(state.configuration.server_password, secret_before);
+    assert_eq!(state.focused_configuration_control, focused_before);
+    assert_eq!(state.text_edit_session, edit_before);
+    assert!(state.has_unsaved_configuration_changes());
+    assert!(actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::PushTransientNotification {
+            level: GuiTransientNotificationLevel::Error,
+            message,
+        } if message.contains("Could not persist Media Matching settings")
+    )));
+    assert!(root.is_dir());
+    assert_eq!(
+        std::fs::read_to_string(&sentinel_path).expect("sentinel should remain readable"),
+        "unchanged"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn cancelling_staged_secret_after_unrelated_resync_or_patch_restores_saved_baseline() {
+    for stage_clear in [false, true] {
+        for apply_persisted_patch in [false, true] {
+            let case = format!(
+                "{}-{}",
+                if stage_clear { "clear" } else { "replace" },
+                if apply_persisted_patch {
+                    "persisted-patch"
+                } else {
+                    "resync"
+                },
+            );
+            let root = test_temp_root(&format!("secret-baseline-{case}"));
+            let config_path = root.join("sorotte.ini");
+            let saved_settings = StoredClientSettingsMvp {
+                language: Some("en".to_owned()),
+                server_password: Some("original-secret".into()),
+                plex_plugin_enabled: Some(true),
+                plex_streaming_enabled: Some(false),
+                ..StoredClientSettingsMvp::default()
+            };
+            upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &saved_settings)
+                .expect("secret baseline fixture should persist");
+            let mut owner =
+                GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
+            owner.startup_saved_connect_attempted = true;
+            owner.startup_remote_actions_attempted = true;
+            owner.startup_public_server_hydration.completed = true;
+            let handle = GuiQueuedRuntimeBridgeHandle::default();
+            let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+
+            if stage_clear {
+                assert!(state.apply(GuiShellAction::RemoveServerPassword));
+            } else {
+                assert!(state.apply(GuiShellAction::BeginServerPasswordChange));
+                assert!(state.apply(GuiShellAction::EditConfigurationText {
+                    id: SettingId::ConnectionServerPassword,
+                    value: "replacement-secret".to_owned().into(),
+                }));
+            }
+            let staged_intent = state.configuration.server_password.clone();
+
+            if apply_persisted_patch {
+                assert!(state.apply(GuiShellAction::ApplyGuiPersistedSettingsPatch(
+                    GuiPersistedSettingsPatch::PlexStreamingEnabled(true),
+                )));
+            } else {
+                let mut resynced = state.configuration.to_stored_settings();
+                resynced.language = Some("fr".to_owned());
+                state.resync_from_settings(resynced);
+            }
+
+            assert_eq!(state.configuration.server_password, staged_intent);
+            assert_eq!(
+                state
+                    .configuration
+                    .settings
+                    .server_password
+                    .as_ref()
+                    .map(|secret| secret.expose_secret()),
+                Some("original-secret"),
+                "{case}: unrelated projection must retain the raw saved secret baseline",
+            );
+            assert!(state.apply(GuiShellAction::CancelServerPasswordChange));
+            assert_eq!(state.configuration.server_password, SecretDraft::Unchanged);
+            assert_eq!(
+                state
+                    .configuration
+                    .to_stored_settings()
+                    .server_password
+                    .as_ref()
+                    .map(|secret| secret.expose_secret()),
+                Some("original-secret"),
+                "{case}: cancel must restore the original saved password",
+            );
+
+            if state.configuration.settings.language.as_deref() == Some("en") {
+                assert!(state.apply(GuiShellAction::EditConfigurationText {
+                    id: SettingId::GeneralLanguage,
+                    value: "fr".to_owned().into(),
+                }));
+            }
+            assert!(state.apply(GuiShellAction::BeginConfigurationSave));
+            let submitted = state.configuration.to_stored_settings();
+            handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+                GuiPendingCompletionRequest::SaveConfiguration(submitted),
+            ));
+            pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+            let disk = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
+                .expect("secret baseline config should remain readable")
+                .expect("secret baseline config should remain present");
+            for (layer, settings) in [
+                ("disk", &disk),
+                ("saved", &state.saved_configuration),
+                ("draft", &state.configuration.settings),
+            ] {
+                assert_eq!(
+                    settings
+                        .server_password
+                        .as_ref()
+                        .map(|secret| secret.expose_secret()),
+                    Some("original-secret"),
+                    "{case}: later save must preserve the original password at the {layer} layer",
+                );
+            }
+            assert_eq!(state.configuration.server_password, SecretDraft::Unchanged);
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+}
+
+#[test]
+fn plex_streaming_toggle_persists_disk_saved_draft_and_feature_runtime() {
+    let root = test_temp_root("plex-streaming-four-layer-success");
+    let config_path = root.join("sorotte.ini");
+    let saved_settings = StoredClientSettingsMvp {
+        server_password: Some("saved-secret".into()),
+        plex_plugin_enabled: Some(true),
+        plex_streaming_enabled: Some(false),
+        ..StoredClientSettingsMvp::default()
+    };
+    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &saved_settings)
+        .expect("initial Plex streaming settings should persist");
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+
+    assert!(owner.handle_toggle_plex_streaming_request(&handle, &mut state, true));
+
+    let disk = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
+        .expect("Plex streaming config should be readable")
+        .expect("Plex streaming config should exist");
+    assert_eq!(disk.plex_streaming_enabled, Some(true));
+    assert_eq!(state.saved_configuration.plex_streaming_enabled, Some(true));
+    assert_eq!(
+        state.configuration.settings.plex_streaming_enabled,
+        Some(true)
+    );
+    assert!(state.plex.streaming_enabled);
+    assert!(owner.plex_runtime_snapshot.streaming_enabled);
+    assert_eq!(
+        disk.server_password
+            .as_ref()
+            .map(|secret| secret.expose_secret()),
+        Some("saved-secret")
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn plex_sync_persistence_patch_preserves_unrelated_draft_and_secret_intent() {
+    let root = test_temp_root("plex-sync-field-patch");
+    let config_path = root.join("sorotte.ini");
+    let saved_settings = StoredClientSettingsMvp {
+        language: Some("en".to_owned()),
+        server_password: Some("saved-secret".into()),
+        plex_plugin_enabled: Some(true),
+        plex_sync_enabled: Some(false),
+        ..StoredClientSettingsMvp::default()
+    };
+    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &saved_settings)
+        .expect("initial Plex settings should persist");
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+    stage_unrelated_plex_draft(&mut state);
+    let focused_before = state.focused_configuration_control.clone();
+    let edit_before = state.text_edit_session.clone();
+
+    assert!(owner.handle_toggle_plex_sync_request(&handle, &mut state, true));
+
+    let disk = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
+        .expect("Plex config should be readable")
+        .expect("Plex config should exist");
+    assert_eq!(disk.plex_sync_enabled, Some(true));
+    assert_eq!(disk.language.as_deref(), Some("en"));
+    assert_eq!(
+        disk.server_password
+            .as_ref()
+            .map(|secret| secret.expose_secret()),
+        Some("saved-secret")
+    );
+    assert_eq!(state.saved_configuration.plex_sync_enabled, Some(true));
+    assert_eq!(state.saved_configuration.language.as_deref(), Some("en"));
+    assert_eq!(state.configuration.settings.plex_sync_enabled, Some(true));
+    assert_eq!(state.configuration.settings.language.as_deref(), Some("fr"));
+    assert_eq!(state.configuration.server_password, SecretDraft::Clear);
+    assert_eq!(state.focused_configuration_control, focused_before);
+    assert_eq!(state.text_edit_session, edit_before);
+    assert!(state.plex.enabled);
+    assert!(state.has_unsaved_configuration_changes());
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn plex_server_selection_patch_preserves_unrelated_draft_and_secret_intent() {
+    let root = test_temp_root("plex-server-field-patch");
+    let config_path = root.join("sorotte.ini");
+    let saved_settings = StoredClientSettingsMvp {
+        language: Some("en".to_owned()),
+        server_password: Some("saved-secret".into()),
+        plex_plugin_enabled: Some(true),
+        plex_user_token: Some("user-token".into()),
+        ..StoredClientSettingsMvp::default()
+    };
+    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &saved_settings)
+        .expect("initial Plex settings should persist");
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
+    owner.plex_servers.push(PlexServerConnection {
+        name: "Raptor".to_owned(),
+        machine_identifier: "raptor-machine".to_owned(),
+        uri: "https://raptor.example:32400".to_owned(),
+        access_token: "server-token".into(),
+        owned: true,
+        has_local_connection: false,
+        connection_kind: PlexServerConnectionKind::Remote,
+    });
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+    stage_unrelated_plex_draft(&mut state);
+    let focused_before = state.focused_configuration_control.clone();
+    let edit_before = state.text_edit_session.clone();
+
+    assert!(owner.handle_select_plex_server_request(
+        &handle,
+        &mut state,
+        "raptor-machine".to_owned(),
+        "https://raptor.example:32400".to_owned(),
+    ));
+
+    let disk = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
+        .expect("Plex config should be readable")
+        .expect("Plex config should exist");
+    assert_eq!(
+        disk.plex_selected_server_id.as_deref(),
+        Some("raptor-machine")
+    );
+    assert_eq!(
+        disk.plex_selected_server_url.as_deref(),
+        Some("https://raptor.example:32400")
+    );
+    assert_eq!(
+        disk.plex_selected_server_token
+            .as_ref()
+            .map(|secret| secret.expose_secret()),
+        Some("server-token")
+    );
+    assert_eq!(disk.language.as_deref(), Some("en"));
+    assert_eq!(
+        disk.server_password
+            .as_ref()
+            .map(|secret| secret.expose_secret()),
+        Some("saved-secret")
+    );
+    assert_eq!(
+        state.saved_configuration.plex_selected_server_id.as_deref(),
+        Some("raptor-machine")
+    );
+    assert_eq!(
+        state
+            .saved_configuration
+            .plex_selected_server_url
+            .as_deref(),
+        Some("https://raptor.example:32400")
+    );
+    assert_eq!(
+        state
+            .saved_configuration
+            .plex_selected_server_token
+            .as_ref()
+            .map(|secret| secret.expose_secret()),
+        Some("server-token")
+    );
+    assert_eq!(
+        state
+            .configuration
+            .settings
+            .plex_selected_server_id
+            .as_deref(),
+        Some("raptor-machine")
+    );
+    assert_eq!(
+        state
+            .configuration
+            .settings
+            .plex_selected_server_url
+            .as_deref(),
+        Some("https://raptor.example:32400")
+    );
+    assert_eq!(
+        state
+            .configuration
+            .settings
+            .plex_selected_server_token
+            .as_ref()
+            .map(|secret| secret.expose_secret()),
+        Some("server-token")
+    );
+    assert_eq!(state.saved_configuration.language.as_deref(), Some("en"));
+    assert_eq!(state.configuration.settings.language.as_deref(), Some("fr"));
+    assert_eq!(state.configuration.server_password, SecretDraft::Clear);
+    assert_eq!(state.focused_configuration_control, focused_before);
+    assert_eq!(state.text_edit_session, edit_before);
+    assert_eq!(
+        state.plex.selected_server_id.as_deref(),
+        Some("raptor-machine")
+    );
+    assert_eq!(
+        state.plex.selected_server_url.as_deref(),
+        Some("https://raptor.example:32400")
+    );
+    assert!(state.has_unsaved_configuration_changes());
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn plex_disconnect_patch_preserves_unrelated_draft_and_secret_intent() {
+    let root = test_temp_root("plex-disconnect-field-patch");
+    let config_path = root.join("sorotte.ini");
+    let saved_settings = StoredClientSettingsMvp {
+        language: Some("en".to_owned()),
+        server_password: Some("saved-secret".into()),
+        plex_plugin_enabled: Some(true),
+        plex_sync_enabled: Some(true),
+        plex_streaming_enabled: Some(true),
+        plex_user_token: Some("user-token".into()),
+        plex_selected_server_id: Some("raptor-machine".to_owned()),
+        plex_selected_server_url: Some("https://raptor.example:32400".to_owned()),
+        plex_selected_server_token: Some("server-token".into()),
+        ..StoredClientSettingsMvp::default()
+    };
+    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &saved_settings)
+        .expect("initial Plex settings should persist");
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
+    owner.plex_servers.push(PlexServerConnection {
+        name: "Raptor".to_owned(),
+        machine_identifier: "raptor-machine".to_owned(),
+        uri: "https://raptor.example:32400".to_owned(),
+        access_token: "server-token".into(),
+        owned: true,
+        has_local_connection: false,
+        connection_kind: PlexServerConnectionKind::Remote,
+    });
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+    stage_unrelated_plex_draft(&mut state);
+    let focused_before = state.focused_configuration_control.clone();
+    let edit_before = state.text_edit_session.clone();
+
+    assert!(owner.handle_disconnect_plex_request(&handle, &mut state));
+
+    let disk = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
+        .expect("Plex config should be readable")
+        .expect("Plex config should exist");
+    assert_eq!(disk.plex_sync_enabled, Some(false));
+    assert_eq!(disk.plex_streaming_enabled, Some(false));
+    assert!(disk.plex_user_token.is_none());
+    assert!(disk.plex_selected_server_id.is_none());
+    assert_eq!(disk.language.as_deref(), Some("en"));
+    assert_eq!(
+        disk.server_password
+            .as_ref()
+            .map(|secret| secret.expose_secret()),
+        Some("saved-secret")
+    );
+    assert!(state.saved_configuration.plex_user_token.is_none());
+    assert!(state.saved_configuration.plex_selected_server_id.is_none());
+    assert_eq!(state.saved_configuration.language.as_deref(), Some("en"));
+    assert!(state.configuration.settings.plex_user_token.is_none());
+    assert_eq!(state.configuration.settings.language.as_deref(), Some("fr"));
+    assert_eq!(state.configuration.server_password, SecretDraft::Clear);
+    assert_eq!(state.focused_configuration_control, focused_before);
+    assert_eq!(state.text_edit_session, edit_before);
+    assert!(!state.plex.authenticated);
+    assert!(!state.plex.enabled);
+    assert!(!state.plex.streaming_enabled);
+    assert!(owner.plex_servers.is_empty());
+    assert!(state.has_unsaved_configuration_changes());
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn plex_persistence_failure_preserves_disk_saved_draft_and_runtime_state() {
+    let root = test_temp_root("plex-sync-persist-failure");
+    std::fs::create_dir_all(&root).expect("test directory should be created");
+    let sentinel_path = root.join("unchanged.txt");
+    std::fs::write(&sentinel_path, "unchanged").expect("sentinel should be written");
+    let saved_settings = StoredClientSettingsMvp {
+        language: Some("en".to_owned()),
+        server_password: Some("saved-secret".into()),
+        plex_plugin_enabled: Some(true),
+        plex_sync_enabled: Some(false),
+        ..StoredClientSettingsMvp::default()
+    };
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(root.clone()));
+    owner.plex_sync_next_tick_due_at = Some(std::time::Instant::now());
+    let runtime_due_before = owner.plex_sync_next_tick_due_at;
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+    stage_unrelated_plex_draft(&mut state);
+    let saved_before = state.saved_configuration.clone();
+    let draft_before = state.configuration.settings.clone();
+    let secret_before = state.configuration.server_password.clone();
+    let focused_before = state.focused_configuration_control.clone();
+    let edit_before = state.text_edit_session.clone();
+    let runtime_before = state.plex.clone();
+
+    assert!(owner.handle_toggle_plex_sync_request(&handle, &mut state, true));
+
+    assert_eq!(state.saved_configuration, saved_before);
+    assert_eq!(state.configuration.settings, draft_before);
+    assert_eq!(state.configuration.server_password, secret_before);
+    assert_eq!(state.focused_configuration_control, focused_before);
+    assert_eq!(state.text_edit_session, edit_before);
+    assert_eq!(state.plex, runtime_before);
+    assert_eq!(owner.plex_sync_next_tick_due_at, runtime_due_before);
+    assert!(state.has_unsaved_configuration_changes());
+    assert!(handle.drain_actions().iter().any(|action| matches!(
+        action,
+        GuiShellAction::PushTransientNotification {
+            level: GuiTransientNotificationLevel::Warning,
+            message,
+        } if message.contains("Plex sync setting was not saved")
+    )));
+    assert!(root.is_dir());
+    assert_eq!(
+        std::fs::read_to_string(&sentinel_path).expect("sentinel should remain readable"),
+        "unchanged"
     );
 
     let _ = std::fs::remove_dir_all(&root);
@@ -849,6 +1649,107 @@ fn gui_persisted_config_runtime_owner_changes_config_storage_root_and_copies_kno
 }
 
 #[test]
+fn config_storage_root_change_restores_target_config_when_locator_commit_fails() {
+    let env = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
+    let prior_appdata = std::env::var_os("APPDATA");
+    let prior_home = std::env::var_os("HOME");
+    let prior_xdg_config_home = std::env::var_os("XDG_CONFIG_HOME");
+    let prior_install_root = std::env::var_os(SOROTTE_CLIENT_INSTALL_ROOT_ENV);
+
+    let default_env_parent = test_temp_root("config-storage-rollback-default-parent");
+    let install_root = test_temp_root("config-storage-rollback-install-root");
+    env.set_var(SOROTTE_CLIENT_INSTALL_ROOT_ENV, &install_root);
+    if cfg!(windows) {
+        env.set_var("APPDATA", &default_env_parent);
+    } else if cfg!(target_os = "macos") {
+        env.set_var("HOME", &default_env_parent);
+    } else {
+        env.set_var("XDG_CONFIG_HOME", &default_env_parent);
+    }
+
+    let old_root = test_temp_root("config-storage-rollback-old-root");
+    let target_root = test_temp_root("config-storage-rollback-target-root");
+    let old_config_path = old_root.join("sorotte.ini");
+    let target_config_path = target_root.join("sorotte.ini");
+    let original_target_contents = b"[client_settings]\nname = target-before\n";
+    std::fs::create_dir_all(&target_root).expect("target root should be created");
+    std::fs::write(&target_config_path, original_target_contents)
+        .expect("original target config should be written");
+    std::fs::create_dir_all(sorotte_client_install_locator_path(&install_root))
+        .expect("a directory at the locator path should force locator persistence to fail");
+
+    let saved_settings = StoredClientSettingsMvp {
+        host: Some("saved.example".to_owned()),
+        room: Some("Saved".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    };
+    let attempted_settings = StoredClientSettingsMvp {
+        host: Some("attempted.example".to_owned()),
+        room: Some("Attempted".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    };
+    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&old_config_path, &saved_settings)
+        .expect("old config should be written");
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(old_config_path.clone()));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+    assert!(state.apply(GuiShellAction::BeginConfigStorageRootChange(
+        target_root.display().to_string(),
+    )));
+    assert!(state.apply(GuiShellAction::BeginConfigurationSave));
+    handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+        GuiPendingCompletionRequest::ChangeConfigStorageRoot {
+            target: GuiConfigStorageChangeTarget::CustomRoot(target_root.display().to_string()),
+            settings: attempted_settings,
+        },
+    ));
+
+    let actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    assert!(
+        actions
+            .iter()
+            .any(|action| matches!(action, GuiShellAction::CancelConfigStorageRootChange)),
+        "locator failure should cancel the shell transaction"
+    );
+    assert!(
+        !actions.iter().any(|action| matches!(
+            action,
+            GuiShellAction::CompleteConfigStorageRootChange { .. }
+        )),
+        "locator failure must not publish a successful root change"
+    );
+    assert_eq!(owner.config_path, Some(old_config_path));
+    assert_eq!(state.saved_configuration, saved_settings);
+    assert_eq!(
+        std::fs::read(&target_config_path).expect("target config should remain readable"),
+        original_target_contents,
+        "the pre-existing target config must be restored byte-for-byte"
+    );
+
+    match prior_appdata {
+        Some(value) => env.set_var("APPDATA", value),
+        None => env.remove_var("APPDATA"),
+    }
+    match prior_home {
+        Some(value) => env.set_var("HOME", value),
+        None => env.remove_var("HOME"),
+    }
+    match prior_xdg_config_home {
+        Some(value) => env.set_var("XDG_CONFIG_HOME", value),
+        None => env.remove_var("XDG_CONFIG_HOME"),
+    }
+    match prior_install_root {
+        Some(value) => env.set_var(SOROTTE_CLIENT_INSTALL_ROOT_ENV, value),
+        None => env.remove_var(SOROTTE_CLIENT_INSTALL_ROOT_ENV),
+    }
+    let _ = std::fs::remove_dir_all(&old_root);
+    let _ = std::fs::remove_dir_all(&target_root);
+    let _ = std::fs::remove_dir_all(&default_env_parent);
+    let _ = std::fs::remove_dir_all(&install_root);
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_clears_gui_data_files_and_returns_first_run_state() {
     let root = test_temp_root("clear-gui-data-owner");
     let path = root.join("sorotte.ini");
@@ -944,6 +1845,7 @@ fn gui_persisted_config_runtime_owner_clears_gui_data_files_and_returns_first_ru
     let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
 
     assert!(state.apply(GuiShellAction::BeginClearGuiData));
+    assert!(state.apply(GuiShellAction::ConfirmClearGuiData));
     handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
         GuiPendingCompletionRequest::ClearGuiData,
     ));

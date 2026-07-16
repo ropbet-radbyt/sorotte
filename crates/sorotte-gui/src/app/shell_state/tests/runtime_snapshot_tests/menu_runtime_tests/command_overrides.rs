@@ -4,6 +4,7 @@ use super::*;
 fn gui_shell_app_state_applies_gui_command_runtime_snapshots() {
     let mut state =
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    assert!(state.apply(GuiShellAction::BeginPublicServerRefresh));
 
     assert!(state.apply(GuiShellAction::ApplyGuiCommandRuntimeSnapshot(
         GuiCommandRuntimeSnapshot {
@@ -52,6 +53,56 @@ fn gui_shell_app_state_applies_gui_command_runtime_snapshots() {
     );
     assert!(!state.commands.can_refresh_public_servers);
     assert!(!state.commands.can_send_chat_message);
+}
+
+#[test]
+fn gui_shell_app_state_ignores_command_snapshots_from_stale_pending_contexts() {
+    let mut state =
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let idle_commands = state.commands.clone();
+    let disabled_commands = GuiCommandAvailabilityState {
+        can_save_configuration: false,
+        can_reset_configuration: false,
+        can_reload_configuration: false,
+        can_connect_public_server: false,
+        can_connect_saved_server: false,
+        can_refresh_public_servers: false,
+        can_disconnect_session: false,
+        can_search_missing_media: false,
+        can_toggle_pause: false,
+        can_send_chat_message: false,
+        chat_unavailable_reason: None,
+    };
+
+    assert!(!state.apply(GuiShellAction::ApplyGuiCommandRuntimeSnapshot(
+        GuiCommandRuntimeSnapshot {
+            command_availability: disabled_commands.clone(),
+            pending_operation: Some(GuiPendingOperationKind::ConnectSavedServer),
+        },
+    )));
+    assert!(state.pending_operation.is_none());
+    assert_eq!(state.commands, idle_commands);
+
+    assert!(state.apply(GuiShellAction::BeginPublicServerRefresh));
+    assert!(!state.apply(GuiShellAction::ApplyGuiCommandRuntimeSnapshot(
+        GuiCommandRuntimeSnapshot {
+            command_availability: idle_commands,
+            pending_operation: None,
+        },
+    )));
+    assert_eq!(
+        state.pending_operation.as_ref().map(|pending| pending.kind),
+        Some(GuiPendingOperationKind::RefreshPublicServers)
+    );
+
+    assert!(state.apply(GuiShellAction::ApplyGuiCommandRuntimeSnapshot(
+        GuiCommandRuntimeSnapshot {
+            command_availability: disabled_commands,
+            pending_operation: Some(GuiPendingOperationKind::RefreshPublicServers),
+        },
+    )));
+    assert!(state.apply(GuiShellAction::CompletePublicServerRefresh(Vec::new())));
+    assert!(state.pending_operation.is_none());
 }
 
 #[test]
@@ -203,6 +254,9 @@ fn gui_shell_app_state_syncs_playback_menu_actions_from_gui_command_runtime_snap
         section_index: 1,
         action_index: 0,
     }));
+    state.pending_operation = Some(GuiPendingOperationState {
+        kind: GuiPendingOperationKind::RefreshPublicServers,
+    });
 
     assert!(state.apply(GuiShellAction::ApplyGuiCommandRuntimeSnapshot(
         GuiCommandRuntimeSnapshot {

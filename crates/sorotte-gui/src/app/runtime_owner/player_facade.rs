@@ -158,12 +158,4 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app) fn player_local_file_playlist_entries(&self) -> Vec<String> {
         self.player_local_file_playlist_entries_impl()
     }
-
-    pub(in crate::app) fn command_availability_for_runtime_state(
-        &self,
-        state: &SorotteGuiShellAppState,
-        player_attached: bool,
-    ) -> GuiCommandAvailabilityState {
-        self.command_availability_for_runtime_state_impl(state, player_attached)
-    }
 }

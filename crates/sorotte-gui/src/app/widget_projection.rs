@@ -44,6 +44,10 @@ impl SorotteGuiShellAppState {
         }
         if current_snapshot.hide_empty_rooms != previous_baseline.hide_empty_rooms {
             self.main_window.hide_empty_rooms = current_snapshot.hide_empty_rooms;
+            self.set_menu_action_checked(
+                MenuActionId::ToggleHideEmptyRooms,
+                current_snapshot.hide_empty_rooms,
+            );
         }
         if preserve_connected_room_surface || current_snapshot.rooms != previous_baseline.rooms {
             self.main_window.rooms = current_snapshot
@@ -205,6 +209,10 @@ impl SorotteGuiShellAppState {
         }
         if current_snapshot.show_autoplay_controls != previous_baseline.show_autoplay_controls {
             self.main_window.show_autoplay_controls = current_snapshot.show_autoplay_controls;
+            self.set_menu_action_checked(
+                MenuActionId::ToggleAutoplayControls,
+                current_snapshot.show_autoplay_controls,
+            );
         }
     }
 
@@ -314,6 +322,8 @@ impl SorotteGuiShellAppState {
     pub(super) fn resync_from_settings(&mut self, settings: StoredClientSettingsMvp) {
         let previous_settings = self.configuration.to_stored_settings();
         let active_view = self.active_view;
+        let active_application_language = self.active_application_language.clone();
+        let active_application_force_gui_prompt = self.active_application_force_gui_prompt;
         let selected_configuration_tab = self.selected_configuration_tab;
         let selected_plugin = self.selected_plugin;
         let open_modal = self.open_modal;
@@ -322,6 +332,7 @@ impl SorotteGuiShellAppState {
         let runtime_command_availability_override =
             self.runtime_command_availability_override.clone();
         let pending_operation = self.pending_operation.clone();
+        let clear_gui_data_confirmation_visible = self.clear_gui_data_confirmation_visible;
         let config_storage = self.config_storage.clone();
         let pending_config_storage_target = self.pending_config_storage_target.clone();
         let pending_saved_server_connect_intent = self.pending_saved_server_connect_intent;
@@ -338,6 +349,9 @@ impl SorotteGuiShellAppState {
         let update_check = self.update_check.clone();
         let runtime_validation_issues = self.runtime_validation_issues.clone();
         let notifications = self.notifications.clone();
+        let pending_apply_requirements = self.pending_apply_requirements.clone();
+        let server_password = self.configuration.server_password.clone();
+        let raw_server_password = self.configuration.settings.server_password.clone();
         let last_media_dialog_directory = self.last_media_dialog_directory.clone();
         let last_action_error = self.validation.last_action_error.clone();
         let playlist_undo_snapshot = self.playlist_undo_snapshot.clone();
@@ -373,6 +387,8 @@ impl SorotteGuiShellAppState {
 
         *self = Self::from_stored_settings(&settings);
         self.active_view = active_view;
+        self.active_application_language = active_application_language;
+        self.active_application_force_gui_prompt = active_application_force_gui_prompt;
         self.selected_configuration_tab = selected_configuration_tab;
         self.selected_plugin = selected_plugin;
         self.open_modal = open_modal;
@@ -380,6 +396,7 @@ impl SorotteGuiShellAppState {
         self.runtime_menu_action_overrides = runtime_menu_action_overrides;
         self.runtime_command_availability_override = runtime_command_availability_override;
         self.pending_operation = pending_operation;
+        self.clear_gui_data_confirmation_visible = clear_gui_data_confirmation_visible;
         self.config_storage = config_storage;
         self.pending_config_storage_target = pending_config_storage_target;
         self.pending_saved_server_connect_intent = pending_saved_server_connect_intent;
@@ -396,6 +413,9 @@ impl SorotteGuiShellAppState {
         self.update_check = update_check;
         self.runtime_validation_issues = runtime_validation_issues;
         self.notifications = notifications;
+        self.pending_apply_requirements = pending_apply_requirements;
+        self.configuration.settings.server_password = raw_server_password;
+        self.configuration.server_password = server_password;
         self.last_media_dialog_directory = last_media_dialog_directory;
         self.playlist_undo_snapshot = playlist_undo_snapshot;
         self.playlist_source_undo_snapshot = playlist_source_undo_snapshot;

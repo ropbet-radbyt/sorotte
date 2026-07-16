@@ -317,6 +317,8 @@ pub(super) mod settings {
 
     #[derive(Debug, Clone, PartialEq)]
     pub(super) struct RuntimeView {
+        pub(super) active_application_language: Option<String>,
+        pub(super) active_application_force_gui_prompt: Option<bool>,
         pub(super) plugin_enablement: GuiPluginEnablementState,
         pub(super) config_storage: GuiConfigStorageRuntimeSnapshot,
         pub(super) pending_storage_target: Option<GuiConfigStorageChangeTarget>,
@@ -470,6 +472,8 @@ impl GuiRuntimeInput {
                 playlist_search: state.plex_playlist_search.clone(),
             },
             settings: settings::RuntimeView {
+                active_application_language: state.active_application_language.clone(),
+                active_application_force_gui_prompt: state.active_application_force_gui_prompt,
                 plugin_enablement: state.plugin_enablement,
                 config_storage: state.config_storage.clone(),
                 pending_storage_target: state.pending_config_storage_target.clone(),
@@ -481,11 +485,10 @@ impl GuiRuntimeInput {
             updates: updates::RuntimeView {
                 model: state.update_check.clone(),
                 policy: updates::RuntimePolicy {
-                    automatic: state.configuration.settings.check_for_updates_automatically
+                    automatic: state.saved_configuration.check_for_updates_automatically
                         == Some(true),
                     last_checked_for_updates: state
-                        .configuration
-                        .settings
+                        .saved_configuration
                         .last_checked_for_updates
                         .clone(),
                     language: state.update_check_language(),
@@ -526,6 +529,9 @@ impl GuiRuntimeInput {
             && self.media_match.remediation == state.media_match_remediation
             && self.plex.model == state.plex
             && self.plex.playlist_search == state.plex_playlist_search
+            && self.settings.active_application_language == state.active_application_language
+            && self.settings.active_application_force_gui_prompt
+                == state.active_application_force_gui_prompt
             && self.settings.plugin_enablement == state.plugin_enablement
             && self.settings.config_storage == state.config_storage
             && self.settings.pending_storage_target == state.pending_config_storage_target
@@ -535,9 +541,9 @@ impl GuiRuntimeInput {
             && self.settings.runtime_validation_issues == state.runtime_validation_issues
             && self.updates.model == state.update_check
             && self.updates.policy.automatic
-                == (state.configuration.settings.check_for_updates_automatically == Some(true))
+                == (state.saved_configuration.check_for_updates_automatically == Some(true))
             && self.updates.policy.last_checked_for_updates
-                == state.configuration.settings.last_checked_for_updates
+                == state.saved_configuration.last_checked_for_updates
             && self.updates.policy.language == state.update_check_language()
             && self.updates.policy.channel == state.update_check_channel()
     }
@@ -580,6 +586,9 @@ impl GuiRuntimeInput {
         state.plex = self.plex.model.clone();
         state.plex_playlist_search = self.plex.playlist_search.clone();
 
+        state.active_application_language = self.settings.active_application_language.clone();
+        state.active_application_force_gui_prompt =
+            self.settings.active_application_force_gui_prompt;
         state.plugin_enablement = self.settings.plugin_enablement;
         state.config_storage = self.settings.config_storage.clone();
         state.pending_config_storage_target = self.settings.pending_storage_target.clone();

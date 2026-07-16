@@ -1,4 +1,6 @@
 # Configuration save and follow-on cross-surface workflow
+setting	host	persisted.example
+setting	server-password	semantic-password
 setting	public-server	Primary	syncplay.pl:8999
 setting	chat-input-enabled	false
 setting	chat-output-enabled	false
@@ -6,6 +8,30 @@ setting	plex-selected-server	semantic-machine	https://plex.semantic.invalid:3240
 setting	plex-sync-enabled	true
 setting	plex-streaming-enabled	true
 assert-selected	configuration-root	true
+assert-value	shell:command:save	disabled
+# Immediate plugin persistence must preserve unrelated draft fields and secret
+# intent. Discard then proves neither draft value was silently promoted to the
+# saved configuration by the plugin toggle.
+enter-text	settings.connection.host	false	draft-only.example
+activate	settings.connection.server_password.remove
+assert-value	settings.connection.server_password.status	No password is configured.
+activate	plugins-root
+activate	plugins:list:plex
+activate	plugins:plex:enabled
+assert-value	plugins:plex:enabled	no
+activate	plugins:plex:enabled
+assert-value	plugins:plex:enabled	yes
+activate	configuration-root
+assert-value	settings.connection.host	draft-only.example
+assert-value	settings.connection.server_password.status	No password is configured.
+assert-value	shell:command:save	enabled
+activate	config-command:discard
+assert-pending	discard-configuration-changes
+complete-pending
+assert-pending	none
+assert-value	settings.connection.host	persisted.example
+assert-value	settings.connection.server_password.status	Password is configured.
+assert-value	shell:command:save	disabled
 enter-text	settings.connection.host	false	syncplay.example
 enter-text	settings.connection.port	false	8999
 enter-text	settings.connection.username	false	smoke-user
@@ -234,6 +260,24 @@ activate	public-servers:command:connect
 assert-pending	connect-public-server
 cancel-pending
 assert-pending	none
+# An intentionally empty public-server list must remain explicit across a
+# complete save and reload instead of reverting to an uninitialized cache.
+activate	public-servers:command:remove
+assert-value	settings.connection.public_server_count	0
+enter-text	settings.connection.host	false	syncplay.example
+assert-value	shell:command:save	enabled
+activate	config-command:save
+assert-pending	save-configuration
+complete-pending
+assert-pending	none
+assert-value	shell:command:save	disabled
+activate	config-command:reload
+assert-pending	reload-configuration
+complete-pending
+assert-pending	none
+assert-value	settings.connection.public_server_count	0
+assert-value	settings.connection.host	syncplay.example
+assert-value	shell:command:save	disabled
 activate	configuration:tab:playback-search
 assert-selected	configuration-root	true
 assert-value	media-search:timing:first-file	3.00s
@@ -245,3 +289,5 @@ activate	media-search:command:search
 assert-pending	search-missing-media
 complete-pending
 assert-pending	none
+activate	configuration:tab:connection
+assert-value	settings.connection.public_server_count	0

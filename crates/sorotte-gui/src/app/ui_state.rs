@@ -370,6 +370,7 @@ impl GuiPersistedUiState {
         }
         if self.hide_empty_rooms {
             state.main_window.hide_empty_rooms = true;
+            state.set_menu_action_checked(MenuActionId::ToggleHideEmptyRooms, true);
         }
         if let Some(show_playback_buttons) = self.show_playback_buttons {
             state.main_window.show_playback_buttons = show_playback_buttons;
@@ -380,6 +381,10 @@ impl GuiPersistedUiState {
         }
         if let Some(show_autoplay_controls) = self.show_autoplay_controls {
             state.main_window.show_autoplay_controls = show_autoplay_controls;
+            state.set_menu_action_checked(
+                MenuActionId::ToggleAutoplayControls,
+                show_autoplay_controls,
+            );
         }
         if let Some(autoplay_checked) = self.autoplay_checked {
             state.main_window.autoplay_active = autoplay_checked;

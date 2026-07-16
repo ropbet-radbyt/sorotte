@@ -26,8 +26,12 @@ impl GuiPersistedConfigRuntimeOwner {
             || Path::new(target).components().count() > 1
     }
 
-    fn playlist_target_for_index(state: &SorotteGuiShellAppState, index: usize) -> Option<String> {
-        if !state.main_window.shared_playlist_enabled {
+    fn playlist_target_for_index(
+        state: &SorotteGuiShellAppState,
+        index: usize,
+        shared_playlist_enabled: bool,
+    ) -> Option<String> {
+        if !shared_playlist_enabled {
             return None;
         }
 
@@ -50,20 +54,24 @@ impl GuiPersistedConfigRuntimeOwner {
         &self,
         state: &SorotteGuiShellAppState,
     ) -> Option<(usize, String)> {
+        let shared_playlist_enabled = self.runtime_shared_playlist_enabled(state);
         self.session
             .as_ref()
             .and_then(|session| session.current_room_playlist_index())
             .and_then(|index| {
-                Self::playlist_target_for_index(state, index).map(|target| (index, target))
+                Self::playlist_target_for_index(state, index, shared_playlist_enabled)
+                    .map(|target| (index, target))
             })
             .or_else(|| {
                 state.main_window.active_playlist_index.and_then(|index| {
-                    Self::playlist_target_for_index(state, index).map(|target| (index, target))
+                    Self::playlist_target_for_index(state, index, shared_playlist_enabled)
+                        .map(|target| (index, target))
                 })
             })
             .or_else(|| {
                 self.active_shared_playlist_index.and_then(|index| {
-                    Self::playlist_target_for_index(state, index).map(|target| (index, target))
+                    Self::playlist_target_for_index(state, index, shared_playlist_enabled)
+                        .map(|target| (index, target))
                 })
             })
     }

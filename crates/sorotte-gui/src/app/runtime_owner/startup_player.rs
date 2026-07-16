@@ -9,6 +9,8 @@ impl GuiPersistedConfigRuntimeOwner {
             config_path,
             legacy_projection: None,
             session: None,
+            active_session_settings: None,
+            active_session_configured_settings: None,
             session_generation: 0,
             session_projects_to_shell: false,
             session_transport: None,
@@ -28,6 +30,7 @@ impl GuiPersistedConfigRuntimeOwner {
             startup_stream_helper_probe_rx: None,
             player: None,
             player_launch_state: GuiPlayerLaunchRuntimeState::None,
+            applied_player_launch_state: None,
             managed_mpv_process: None,
             player_unavailability_reason: None,
             player_local_file: None,
@@ -368,6 +371,11 @@ impl GuiPersistedConfigRuntimeOwner {
                 }
             }
         }
+        if self.player.is_some()
+            || matches!(self.player_launch_state, GuiPlayerLaunchRuntimeState::None)
+        {
+            self.applied_player_launch_state = Some(self.player_launch_state.clone());
+        }
     }
 
     pub(super) fn configured_player_launch_state_from_lookup_and_settings<F>(
@@ -457,6 +465,7 @@ impl GuiPersistedConfigRuntimeOwner {
             return false;
         }
         self.player_launch_state = next_launch_state.clone();
+        self.applied_player_launch_state = Some(next_launch_state.clone());
         self.player_unavailability_reason = None;
         true
     }
@@ -503,6 +512,12 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app) fn player_runtime_available_for_actions(&self) -> bool {
         self.player.is_some() || self.player_launch_state.can_attach_on_demand()
+    }
+
+    pub(in crate::app) fn current_player_launch_state_is_applied(&self) -> bool {
+        self.applied_player_launch_state.as_ref() == Some(&self.player_launch_state)
+            && (self.player.is_some()
+                || matches!(self.player_launch_state, GuiPlayerLaunchRuntimeState::None))
     }
 
     pub(super) fn ensure_configured_player_attached_for_active_session(&mut self) {

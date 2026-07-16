@@ -1,5 +1,6 @@
 use super::*;
 use crate::app::runtime_owner::player::SelectedPlaylistMediaSyncOutcome;
+use sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot_legacy_compatible;
 
 #[test]
 fn gui_persisted_config_runtime_owner_auto_advances_shared_playlist_once_at_eof() {
@@ -154,13 +155,39 @@ fn gui_persisted_config_runtime_owner_auto_advances_shared_playlist_once_at_eof(
     })));
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let active_settings = StoredClientSettingsMvp {
         shared_playlist_enabled: Some(true),
         ..StoredClientSettingsMvp::default()
-    });
+    };
+    owner.active_session_settings = Some(
+        stored_client_settings_runtime_snapshot_legacy_compatible(&active_settings),
+    );
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&active_settings);
+    assert!(state.apply(GuiShellAction::EditConfigurationBool {
+        id: SettingId::PlaybackSharedPlaylists,
+        value: false,
+    }));
+    assert!(
+        !state.main_window.shared_playlist_enabled,
+        "the test must exercise an unsaved draft value opposite to the active session"
+    );
 
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
-    handle.drain_actions();
+    for action in handle.drain_actions() {
+        let _ = state.apply(action);
+    }
+    assert!(
+        state.main_window.shared_playlist_enabled,
+        "runtime projection must restore the active session's enabled playlist state"
+    );
+    assert!(
+        state.main_window.playback.can_manage_playlist,
+        "runtime command availability must follow the active session rather than the draft"
+    );
+    assert!(
+        state.main_window.playlist.is_empty(),
+        "an unsaved disable must not replace the session playlist with player-local media"
+    );
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -204,6 +231,49 @@ fn gui_persisted_config_runtime_owner_auto_advances_shared_playlist_once_at_eof(
             .advance_calls,
         1,
         "the EOF auto-advance should stay latched until the player leaves the end-of-file state"
+    );
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_pins_playlist_target_lookup_to_active_settings() {
+    let enabled_settings = StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    };
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.session_projects_to_shell = true;
+    owner.active_session_settings = Some(
+        stored_client_settings_runtime_snapshot_legacy_compatible(&enabled_settings),
+    );
+    owner.active_shared_playlist_index = Some(0);
+
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&enabled_settings);
+    state.apply_shared_playlist_entries(vec!["episode.mkv".to_owned()], Some(0), false);
+    assert!(state.apply(GuiShellAction::EditConfigurationBool {
+        id: SettingId::PlaybackSharedPlaylists,
+        value: false,
+    }));
+    assert_eq!(
+        owner.current_shared_playlist_target(&state).as_deref(),
+        Some("episode.mkv"),
+        "an unsaved disable must not hide the active session playlist target"
+    );
+
+    let disabled_settings = StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(false),
+        ..StoredClientSettingsMvp::default()
+    };
+    owner.active_session_settings = Some(
+        stored_client_settings_runtime_snapshot_legacy_compatible(&disabled_settings),
+    );
+    assert!(state.apply(GuiShellAction::EditConfigurationBool {
+        id: SettingId::PlaybackSharedPlaylists,
+        value: true,
+    }));
+    assert_eq!(
+        owner.current_shared_playlist_target(&state),
+        None,
+        "an unsaved enable must not activate playlist lookup for a disabled session"
     );
 }
 

@@ -293,13 +293,9 @@ fn gui_persisted_config_runtime_owner_routes_missing_media_search_through_client
     let expected_message =
         format!("Opened media file through the attached recording player: {found_path_text}.");
     assert!(
-        actions.iter().any(|action| matches!(
-            action,
-            GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
-                pending_operation: None,
-                ..
-            })
-        )),
+        actions
+            .iter()
+            .any(|action| matches!(action, GuiShellAction::CompletePendingOperation)),
         "queued owner should clear the pending search before continuing the session"
     );
     assert!(

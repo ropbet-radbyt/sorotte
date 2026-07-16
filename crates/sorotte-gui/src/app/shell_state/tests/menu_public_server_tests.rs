@@ -55,6 +55,16 @@ fn window_menu_exposes_only_real_checkable_visibility_actions() {
 
     let visible_tree = state.shell_widget_tree();
     assert!(visible_tree.find("main-window:control:play").is_some());
+    assert!(
+        visible_tree
+            .find("main-window:control:autoplay-toggle")
+            .is_some()
+    );
+    assert!(
+        visible_tree
+            .find("main-window:browser:hide-empty")
+            .is_some()
+    );
 
     assert!(
         state
@@ -68,12 +78,16 @@ fn window_menu_exposes_only_real_checkable_visibility_actions() {
             .iter()
             .map(|action| action.id)
             .collect::<Vec<_>>(),
-        vec![MenuActionId::TogglePlaybackButtons],
+        vec![
+            MenuActionId::TogglePlaybackButtons,
+            MenuActionId::ToggleAutoplayControls,
+            MenuActionId::ToggleHideEmptyRooms,
+        ],
         "Window must not expose visibility commands that do not affect the rendered surface",
     );
     assert_eq!(
         MenuActionId::from_automation_id("menu.toggle_hide_empty_rooms"),
-        None,
+        Some(MenuActionId::ToggleHideEmptyRooms),
     );
 
     assert!(state.apply(GuiShellAction::SelectMenuAction {
@@ -113,6 +127,39 @@ fn window_menu_exposes_only_real_checkable_visibility_actions() {
             .shell_widget_tree()
             .find(MenuActionId::TogglePlaybackButtons.automation_id())
             .is_some_and(|node| !node.selected)
+    );
+
+    assert!(state.apply(GuiShellAction::InvokeMenuAction(
+        MenuActionId::ToggleAutoplayControls,
+    )));
+    assert!(
+        state
+            .shell_widget_tree()
+            .find("main-window:control:autoplay-toggle")
+            .is_none()
+    );
+    assert!(
+        state
+            .shell_widget_tree()
+            .find(MenuActionId::ToggleAutoplayControls.automation_id())
+            .is_some_and(|node| !node.selected)
+    );
+
+    assert!(state.apply(GuiShellAction::InvokeMenuAction(
+        MenuActionId::ToggleHideEmptyRooms,
+    )));
+    assert!(state.main_window.hide_empty_rooms);
+    assert!(
+        state
+            .shell_widget_tree()
+            .find("main-window:browser:hide-empty")
+            .is_some_and(|node| node.value.as_deref() == Some("yes"))
+    );
+    assert!(
+        state
+            .shell_widget_tree()
+            .find(MenuActionId::ToggleHideEmptyRooms.automation_id())
+            .is_some_and(|node| node.selected)
     );
 }
 
@@ -348,8 +395,54 @@ fn gui_shell_app_state_adds_edits_and_removes_public_server_rows() {
     assert!(state.public_servers.servers.is_empty());
     assert_eq!(
         state.configuration.to_stored_settings().public_servers,
-        None
+        Some(Vec::new())
     );
+}
+
+#[test]
+fn gui_shell_app_state_manually_refreshes_an_explicitly_empty_public_server_list() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        public_servers: Some(Vec::new()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    assert!(state.apply(GuiShellAction::BeginPublicServerRefresh));
+    assert!(
+        state.apply(GuiShellAction::CompletePublicServerRefresh(vec![(
+            "Manual".to_owned(),
+            "manual.example:8999".to_owned(),
+        )]))
+    );
+
+    assert_eq!(
+        state.configuration.to_stored_settings().public_servers,
+        Some(vec![(
+            "Manual".to_owned(),
+            "manual.example:8999".to_owned(),
+        )])
+    );
+    assert_eq!(state.selected_public_server_index(), Some(0));
+}
+
+#[test]
+fn gui_shell_app_state_preserves_explicit_empty_result_from_manual_public_server_refresh() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        public_servers: Some(vec![(
+            "Cached".to_owned(),
+            "cached.example:8999".to_owned(),
+        )]),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    assert!(state.apply(GuiShellAction::BeginPublicServerRefresh));
+    assert!(state.apply(GuiShellAction::CompletePublicServerRefresh(Vec::new())));
+
+    assert_eq!(
+        state.configuration.to_stored_settings().public_servers,
+        Some(Vec::new())
+    );
+    assert!(state.public_servers.servers.is_empty());
+    assert_eq!(state.selected_public_server_index(), None);
 }
 
 #[test]

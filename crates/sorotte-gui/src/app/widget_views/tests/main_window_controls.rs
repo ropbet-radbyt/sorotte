@@ -38,7 +38,7 @@ fn gui_shell_app_state_projects_main_window_widget_trees() {
         .expect("combined room panel should exist in widget tree");
     assert_eq!(room_panel.kind, GuiWidgetKind::Panel);
     assert_eq!(room_panel.label, "Room");
-    assert!(tree.find("main-window:browser").is_none());
+    assert!(tree.find("main-window:browser").is_some());
     let participants = tree
         .find("main-window:participants")
         .expect("current-room participants should exist in widget tree");
@@ -390,9 +390,14 @@ fn gui_shell_app_state_disables_playback_controls_when_playlist_is_empty() {
             .enabled
     );
     assert!(tree.find("main-window:control:set-ready").unwrap().enabled);
+    let autoplay = tree
+        .find("main-window:control:autoplay-toggle")
+        .expect("autoplay control should remain keyboard and accessibility reachable");
+    assert!(autoplay.enabled);
+    assert_eq!(autoplay.value.as_deref(), Some("no"));
     assert!(
-        tree.find("main-window:control:autoplay-toggle").is_none(),
-        "autoplay controls should not be shown in the consolidated Room dashboard"
+        tree.find("main-window:control:autoplay-threshold-up")
+            .is_some_and(|node| node.enabled)
     );
 }
 

@@ -217,11 +217,7 @@ impl SorotteGuiShellAppState {
                         .record_action_error("No public server exists at the requested index.");
                 }
                 servers.remove(index);
-                settings.public_servers = if servers.is_empty() {
-                    None
-                } else {
-                    Some(servers)
-                };
+                settings.public_servers = Some(servers);
                 self.resync_from_settings(settings);
                 if self.public_servers.servers.is_empty() {
                     self.set_selected_public_server_index(None);

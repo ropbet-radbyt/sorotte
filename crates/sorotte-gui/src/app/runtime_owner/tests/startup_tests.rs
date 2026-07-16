@@ -184,9 +184,30 @@ fn startup_public_server_test_state() -> SorotteGuiShellAppState {
     SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         check_for_updates_automatically: Some(true),
         last_checked_for_updates: Some("2099-01-01 00:00:00.000".to_owned()),
-        public_servers: Some(Vec::new()),
+        public_servers: None,
         ..StoredClientSettingsMvp::default()
     })
+}
+
+#[test]
+fn startup_public_server_hydration_preserves_explicit_empty_cache_without_fetching() {
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        check_for_updates_automatically: Some(false),
+        public_servers: Some(Vec::new()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    owner.run_deferred_startup_remote_actions_with_fetcher(&handle, &mut state, |_language| {
+        panic!("an explicitly empty public-server list must suppress deferred startup hydration")
+    });
+
+    assert!(owner.startup_public_server_hydration.completed);
+    assert_eq!(owner.startup_public_server_hydration.attempts_started, 0);
+    assert!(owner.startup_remote_actions_rx.is_none());
+    assert!(state.public_servers.servers.is_empty());
+    assert!(handle.drain_actions().is_empty());
 }
 
 type StartupPublicServerResults =
@@ -339,7 +360,80 @@ fn startup_public_server_hydration_retries_transient_failure_and_suppresses_dupl
 }
 
 #[test]
-fn startup_public_server_language_change_during_backoff_resets_retry_context() {
+fn startup_public_server_unsaved_language_change_during_backoff_preserves_retry_context() {
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = startup_public_server_test_state();
+    let results = Arc::new(Mutex::new(std::collections::VecDeque::from([
+        Err("temporary outage".to_owned()),
+        Ok(vec![(
+            "Saved Language".to_owned(),
+            "saved-language.example:8999".to_owned(),
+        )]),
+    ])));
+
+    pump_startup_public_server_results_until(&mut owner, &handle, &mut state, &results, |owner| {
+        owner.startup_public_server_hydration.attempts_started == 1
+            && owner.startup_remote_actions_rx.is_none()
+            && owner
+                .startup_public_server_hydration
+                .next_retry_at
+                .is_some()
+    });
+    let _ = handle.drain_actions();
+    let initial_context = owner.startup_public_server_hydration.context.clone();
+    let initial_retry_at = owner.startup_public_server_hydration.next_retry_at;
+    let initial_warning = owner.startup_public_server_hydration.last_warning.clone();
+
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        id: SettingId::GeneralLanguage,
+        value: "fr".to_owned().into(),
+    }));
+    owner.run_deferred_startup_remote_actions_with_fetcher(&handle, &mut state, |_language| {
+        panic!("an unsaved language edit must not bypass startup hydration backoff")
+    });
+    assert_eq!(
+        owner.startup_public_server_hydration.context,
+        initial_context
+    );
+    assert_eq!(
+        owner.startup_public_server_hydration.attempts_started, 1,
+        "an unsaved language edit must not reset the bounded retry budget"
+    );
+    assert_eq!(
+        owner.startup_public_server_hydration.next_retry_at,
+        initial_retry_at
+    );
+    assert_eq!(
+        owner.startup_public_server_hydration.last_warning,
+        initial_warning
+    );
+
+    owner.startup_public_server_hydration.next_retry_at = Some(std::time::Instant::now());
+    pump_startup_public_server_results_until(&mut owner, &handle, &mut state, &results, |owner| {
+        owner.startup_public_server_hydration.completed
+    });
+
+    assert_eq!(
+        owner.startup_public_server_hydration.attempts_started, 2,
+        "the retry must continue in the original saved-language context"
+    );
+    assert_eq!(state.public_servers.servers.len(), 1);
+    assert_eq!(state.public_servers.servers[0].label, "Saved Language");
+    assert_eq!(
+        state.saved_configuration.language, None,
+        "the unsaved language edit must not replace the frozen startup settings"
+    );
+    assert!(
+        results
+            .lock()
+            .expect("startup public-server results should remain available")
+            .is_empty()
+    );
+}
+
+#[test]
+fn startup_public_server_saved_language_change_during_backoff_resets_retry_context() {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = startup_public_server_test_state();
@@ -361,20 +455,27 @@ fn startup_public_server_language_change_during_backoff_resets_retry_context() {
     });
     let _ = handle.drain_actions();
 
-    let mut changed_settings = state.configuration.to_stored_settings();
+    let mut changed_settings = state.saved_configuration.clone();
     changed_settings.language = Some("fr".to_owned());
-    state.resync_from_settings(changed_settings);
+    assert!(
+        state.apply(GuiShellAction::ApplyGuiSavedConfigurationRuntimeSnapshot(
+            crate::app::GuiSavedConfigurationRuntimeSnapshot {
+                settings: changed_settings,
+            },
+        ))
+    );
     pump_startup_public_server_results_until(&mut owner, &handle, &mut state, &results, |owner| {
         owner.startup_public_server_hydration.completed
     });
 
     assert_eq!(
         owner.startup_public_server_hydration.attempts_started, 1,
-        "the new language should receive a fresh bounded retry budget"
+        "an authoritative saved-language change should receive a fresh retry budget"
     );
     assert_eq!(owner.startup_public_server_hydration.last_warning, None);
     assert_eq!(state.public_servers.servers.len(), 1);
     assert_eq!(state.public_servers.servers[0].label, "French");
+    assert_eq!(state.saved_configuration.language.as_deref(), Some("fr"));
     assert!(
         results
             .lock()
@@ -434,7 +535,102 @@ fn startup_public_server_failure_preserves_cache_added_while_worker_runs() {
 }
 
 #[test]
-fn startup_public_server_hydration_discards_old_language_worker_result() {
+fn startup_public_server_manual_empty_refresh_during_worker_prevents_repopulation() {
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = startup_public_server_test_state();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let (finished_tx, finished_rx) = mpsc::channel();
+
+    owner.run_deferred_startup_remote_actions_with_fetcher(&handle, &mut state, move |_language| {
+        entered_tx
+            .send(())
+            .expect("startup hydration should report entry");
+        release_rx
+            .recv()
+            .expect("startup hydration should be released");
+        finished_tx
+            .send(())
+            .expect("startup hydration should report completion");
+        Ok(vec![(
+            "Remote Cache".to_owned(),
+            "remote.example:8999".to_owned(),
+        )])
+    });
+    entered_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("startup hydration should enter before timeout");
+
+    assert!(state.apply(GuiShellAction::BeginPublicServerRefresh));
+    assert!(state.apply(GuiShellAction::CompletePublicServerRefresh(Vec::new())));
+    assert_eq!(
+        state.configuration.settings.public_servers,
+        Some(Vec::new())
+    );
+    release_tx
+        .send(())
+        .expect("startup hydration release should send");
+    finished_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("startup hydration should finish before timeout");
+
+    owner.run_deferred_startup_remote_actions_with_fetcher(&handle, &mut state, |_language| {
+        panic!("an explicit empty refresh must prevent replacement hydration")
+    });
+
+    assert!(owner.startup_public_server_hydration.completed);
+    assert!(owner.startup_remote_actions_rx.is_none());
+    assert!(state.public_servers.servers.is_empty());
+    assert!(handle.drain_actions().iter().all(|action| !matches!(
+        action,
+        GuiShellAction::ApplyStartupPublicServerCache(servers) if !servers.is_empty()
+    )));
+}
+
+#[test]
+fn startup_public_server_manual_empty_refresh_during_backoff_prevents_retry() {
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = startup_public_server_test_state();
+    let results = Arc::new(Mutex::new(std::collections::VecDeque::from([Err(
+        "temporary outage".to_owned(),
+    )])));
+
+    pump_startup_public_server_results_until(&mut owner, &handle, &mut state, &results, |owner| {
+        owner.startup_public_server_hydration.attempts_started == 1
+            && owner.startup_remote_actions_rx.is_none()
+            && owner
+                .startup_public_server_hydration
+                .next_retry_at
+                .is_some()
+    });
+    let _ = handle.drain_actions();
+
+    assert!(state.apply(GuiShellAction::BeginPublicServerRefresh));
+    assert!(state.apply(GuiShellAction::CompletePublicServerRefresh(Vec::new())));
+    owner.startup_public_server_hydration.next_retry_at = Some(std::time::Instant::now());
+    owner.run_deferred_startup_remote_actions_with_fetcher(&handle, &mut state, |_language| {
+        panic!("an explicit empty refresh must prevent a scheduled retry")
+    });
+
+    assert!(owner.startup_public_server_hydration.completed);
+    assert_eq!(owner.startup_public_server_hydration.attempts_started, 1);
+    assert!(
+        owner
+            .startup_public_server_hydration
+            .next_retry_at
+            .is_none()
+    );
+    assert!(state.public_servers.servers.is_empty());
+    assert_eq!(
+        state.configuration.settings.public_servers,
+        Some(Vec::new())
+    );
+}
+
+#[test]
+fn startup_public_server_hydration_keeps_saved_language_worker_when_draft_changes() {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = startup_public_server_test_state();
@@ -462,52 +658,46 @@ fn startup_public_server_hydration_discards_old_language_worker_result() {
         .recv_timeout(std::time::Duration::from_secs(2))
         .expect("old-language hydration should enter before timeout");
 
-    let mut changed_settings = state.configuration.to_stored_settings();
-    changed_settings.language = Some("fr".to_owned());
-    state.resync_from_settings(changed_settings);
-    owner.run_deferred_startup_remote_actions_with_fetcher(&handle, &mut state, |language| {
-        assert_eq!(language, "fr");
-        Ok(vec![(
-            "French".to_owned(),
-            "french.example:8999".to_owned(),
-        )])
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        id: SettingId::GeneralLanguage,
+        value: "fr".to_owned().into(),
+    }));
+    owner.run_deferred_startup_remote_actions_with_fetcher(&handle, &mut state, |_language| {
+        panic!("an unsaved language edit must not replace the running worker")
     });
-
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while !owner.startup_public_server_hydration.completed {
-        owner.run_deferred_startup_remote_actions_with_fetcher(&handle, &mut state, |_language| {
-            panic!("the current-language hydration should start only once")
-        });
-        assert!(
-            std::time::Instant::now() < deadline,
-            "current-language hydration should complete before timeout"
-        );
-        std::thread::yield_now();
-    }
-
-    assert_eq!(state.public_servers.servers.len(), 1);
-    assert_eq!(state.public_servers.servers[0].label, "French");
-    assert_eq!(
-        state.public_servers.servers[0].address,
-        "french.example:8999"
-    );
-    assert!(handle.drain_actions().iter().any(|action| matches!(
-        action,
-        GuiShellAction::ApplyStartupPublicServerCache(servers)
-            if servers.iter().any(|(label, _)| label == "French")
-    )));
+    assert!(owner.startup_remote_actions_rx.is_some());
 
     old_release_tx
         .send(())
         .expect("old-language hydration release should send");
     old_finished_rx
         .recv_timeout(std::time::Duration::from_secs(2))
-        .expect("old-language hydration should finish before timeout");
-    owner.run_deferred_startup_remote_actions_with_fetcher(&handle, &mut state, |_language| {
-        panic!("completed hydration must not restart")
-    });
-    assert!(handle.drain_actions().is_empty());
-    assert_eq!(state.public_servers.servers[0].label, "French");
+        .expect("saved-language hydration should finish before timeout");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !owner.startup_public_server_hydration.completed {
+        owner.run_deferred_startup_remote_actions_with_fetcher(&handle, &mut state, |_language| {
+            panic!("the saved-language hydration should start only once")
+        });
+        assert!(
+            std::time::Instant::now() < deadline,
+            "saved-language hydration should complete before timeout"
+        );
+        std::thread::yield_now();
+    }
+
+    assert_eq!(state.public_servers.servers.len(), 1);
+    assert_eq!(state.public_servers.servers[0].label, "Old Language");
+    assert_eq!(
+        state.public_servers.servers[0].address,
+        "old-language.example:8999"
+    );
+    assert!(handle.drain_actions().iter().any(|action| matches!(
+        action,
+        GuiShellAction::ApplyStartupPublicServerCache(servers)
+            if servers.iter().any(|(label, _)| label == "Old Language")
+    )));
+    assert_eq!(state.saved_configuration.language, None);
 }
 
 #[test]

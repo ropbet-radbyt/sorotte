@@ -170,7 +170,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let now = Instant::now();
         if !self.startup_remote_actions_attempted {
             self.startup_remote_actions_attempted = true;
-            let settings = projected_state.configuration.to_stored_settings();
+            let settings = projected_state.saved_configuration.clone();
             if remote_services::should_run_automatic_update_check(
                 Some(&settings),
                 std::time::SystemTime::now(),
@@ -184,9 +184,20 @@ impl GuiPersistedConfigRuntimeOwner {
             }
         }
 
-        let settings = projected_state.configuration.to_stored_settings();
+        let settings = projected_state.saved_configuration.clone();
         let current_context = StartupPublicServerHydrationContext::from_settings(&settings);
         self.reconcile_startup_public_server_hydration_context(current_context.clone(), now);
+        if projected_state
+            .configuration
+            .settings
+            .public_servers
+            .is_some()
+        {
+            self.startup_remote_actions_rx = None;
+            self.startup_public_server_hydration.completed = true;
+            self.startup_public_server_hydration.next_retry_at = None;
+            return;
+        }
         self.pump_startup_public_server_outcome(handle, projected_state, now);
         if self.startup_remote_actions_rx.is_some()
             || self.startup_public_server_hydration.completed

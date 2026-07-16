@@ -830,7 +830,9 @@ impl GuiWidgetEguiRenderer {
             | "plugins:media-matching:recheck" => {
                 Some((palette.primary, palette.primary_hover, palette.primary_text))
             }
-            "config-command:disconnect"
+            "config-command:clear-gui-data"
+            | "config-command:confirm-clear-gui-data"
+            | "config-command:disconnect"
             | "main-window:connection:disconnect"
             | "main-window:room:leave"
             | "main-window:media-url-edit:cancel"

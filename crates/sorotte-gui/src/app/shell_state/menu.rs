@@ -16,13 +16,15 @@ pub(in crate::app) enum MenuActionId {
     SetOffset,
     TlsCertificates,
     TogglePlaybackButtons,
+    ToggleAutoplayControls,
+    ToggleHideEmptyRooms,
     About,
     Help,
     CheckForUpdates,
 }
 
 impl MenuActionId {
-    pub(in crate::app) const ALL: [Self; 19] = [
+    pub(in crate::app) const ALL: [Self; 21] = [
         Self::OpenMedia,
         Self::OpenMediaSearch,
         Self::OpenPublicServerBrowser,
@@ -39,6 +41,8 @@ impl MenuActionId {
         Self::SetOffset,
         Self::TlsCertificates,
         Self::TogglePlaybackButtons,
+        Self::ToggleAutoplayControls,
+        Self::ToggleHideEmptyRooms,
         Self::About,
         Self::Help,
         Self::CheckForUpdates,
@@ -62,6 +66,8 @@ impl MenuActionId {
             Self::SetOffset => "menu.set_offset",
             Self::TlsCertificates => "menu.tls_certificates",
             Self::TogglePlaybackButtons => "menu.toggle_playback_buttons",
+            Self::ToggleAutoplayControls => "menu.toggle_autoplay_controls",
+            Self::ToggleHideEmptyRooms => "menu.toggle_hide_empty_rooms",
             Self::About => "menu.about",
             Self::Help => "menu.help",
             Self::CheckForUpdates => "menu.check_for_updates",
@@ -86,6 +92,8 @@ impl MenuActionId {
             Self::SetOffset => "Set Offset",
             Self::TlsCertificates => "TLS Certificates",
             Self::TogglePlaybackButtons => "Playback Buttons",
+            Self::ToggleAutoplayControls => "Autoplay",
+            Self::ToggleHideEmptyRooms => "Hide Empty Rooms",
             Self::About => "About",
             Self::Help => "Manual / Command Help",
             Self::CheckForUpdates => "Check for Updates",
@@ -93,7 +101,10 @@ impl MenuActionId {
     }
 
     pub(in crate::app) const fn is_checkable(self) -> bool {
-        matches!(self, Self::TogglePlaybackButtons)
+        matches!(
+            self,
+            Self::TogglePlaybackButtons | Self::ToggleAutoplayControls | Self::ToggleHideEmptyRooms
+        )
     }
 
     pub(in crate::app) fn from_automation_id(automation_id: &str) -> Option<Self> {
@@ -191,7 +202,11 @@ mod tests {
                 .into_iter()
                 .filter(|action_id| action_id.is_checkable())
                 .collect::<Vec<_>>(),
-            vec![MenuActionId::TogglePlaybackButtons]
+            vec![
+                MenuActionId::TogglePlaybackButtons,
+                MenuActionId::ToggleAutoplayControls,
+                MenuActionId::ToggleHideEmptyRooms,
+            ]
         );
     }
 

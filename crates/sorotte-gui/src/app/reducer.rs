@@ -57,6 +57,8 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::ApplyGuiDraftRuntimeSnapshot(_)
             | GuiShellAction::ApplyGuiConfigurationDraftRuntimeSnapshot(_)
             | GuiShellAction::ApplyGuiSavedConfigurationRuntimeSnapshot(_)
+            | GuiShellAction::ApplyGuiPersistedSettingsPatch(_)
+            | GuiShellAction::ApplyPendingApplyRequirementsSnapshot(_)
             | GuiShellAction::ApplyGuiConfigurationRuntimeSnapshot(_)
             | GuiShellAction::ApplyGuiConfigStorageRuntimeSnapshot(_) => {
                 self.apply_shell_runtime_action(action)
@@ -71,6 +73,8 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::CompleteConfigurationReload(_)
             | GuiShellAction::CancelConfigurationReload
             | GuiShellAction::BeginClearGuiData
+            | GuiShellAction::ConfirmClearGuiData
+            | GuiShellAction::DismissClearGuiDataConfirmation
             | GuiShellAction::CompleteClearGuiData
             | GuiShellAction::CancelClearGuiData
             | GuiShellAction::BeginConfigStorageRootChange(_)

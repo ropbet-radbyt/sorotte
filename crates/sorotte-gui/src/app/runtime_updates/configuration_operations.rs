@@ -3,11 +3,29 @@ use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
 use super::super::shell_state::{
     GuiConfigStorageChangeTarget, GuiConfigStorageRuntimeSnapshot, GuiConfigurationTab,
     GuiPendingOperationKind, GuiPendingOperationState, GuiRoomHistoryEditSessionState,
-    GuiShellView, GuiTransientNotificationLevel, SorotteGuiShellAppState,
+    GuiSettingApplyRequirement, GuiShellView, GuiTransientNotificationLevel,
+    SorotteGuiShellAppState,
 };
 use super::super::support::normalized_editable_text;
 
 impl SorotteGuiShellAppState {
+    pub(in crate::app) fn replace_pending_apply_requirements(
+        &mut self,
+        requirements: impl IntoIterator<Item = GuiSettingApplyRequirement>,
+    ) {
+        self.pending_apply_requirements = requirements
+            .into_iter()
+            .filter(|requirement| {
+                !matches!(
+                    requirement,
+                    GuiSettingApplyRequirement::Immediate | GuiSettingApplyRequirement::OnSave
+                )
+            })
+            .collect();
+        self.pending_apply_requirements.sort_unstable();
+        self.pending_apply_requirements.dedup();
+    }
+
     pub(in crate::app) fn settle_persisted_configuration(
         &mut self,
         settings: StoredClientSettingsMvp,
@@ -18,6 +36,9 @@ impl SorotteGuiShellAppState {
             .flatten();
         self.resync_from_settings(settings.clone());
         self.saved_configuration = settings;
+        self.configuration.settings.server_password =
+            self.saved_configuration.server_password.clone();
+        self.configuration.server_password = super::super::shell_state::SecretDraft::Unchanged;
         self.text_edit_session = None;
         self.room_history_edit_session = None;
         self.focused_configuration_control = None;
@@ -85,6 +106,10 @@ impl SorotteGuiShellAppState {
         if self.pending_operation.is_some() {
             return self.record_action_error("Another GUI operation is already in progress.");
         }
+        if !self.has_unsaved_configuration_changes() {
+            return self
+                .record_action_error("Save changes is unavailable with no unsaved changes.");
+        }
         if !self.validation.issues.is_empty() {
             return self.record_action_error(
                 "Configuration cannot be saved while validation issues remain.",
@@ -117,6 +142,10 @@ impl SorotteGuiShellAppState {
         self.pending_operation = None;
         self.pending_config_storage_target = None;
         self.pending_saved_server_connect_intent = None;
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Success,
+            "Configuration saved.".to_owned(),
+        );
         self.clear_action_error_and_refresh();
         true
     }
@@ -211,10 +240,37 @@ impl SorotteGuiShellAppState {
         if self.pending_operation.is_some() {
             return self.record_action_error("Another GUI operation is already in progress.");
         }
+        if self.clear_gui_data_confirmation_visible {
+            return self.record_action_error("Clear-GUI-data confirmation is already open.");
+        }
 
+        self.clear_gui_data_confirmation_visible = true;
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    pub(in crate::app) fn confirm_clear_gui_data(&mut self) -> bool {
+        if !self.clear_gui_data_confirmation_visible {
+            return self.record_action_error("No clear-GUI-data confirmation is currently open.");
+        }
+        if self.pending_operation.is_some() {
+            return self.record_action_error("Another GUI operation is already in progress.");
+        }
+
+        self.clear_gui_data_confirmation_visible = false;
         self.pending_operation = Some(GuiPendingOperationState {
             kind: GuiPendingOperationKind::ClearGuiData,
         });
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    pub(in crate::app) fn dismiss_clear_gui_data_confirmation(&mut self) -> bool {
+        if !self.clear_gui_data_confirmation_visible {
+            return self.record_action_error("No clear-GUI-data confirmation is currently open.");
+        }
+
+        self.clear_gui_data_confirmation_visible = false;
         self.clear_action_error_and_refresh();
         true
     }
@@ -327,6 +383,7 @@ impl SorotteGuiShellAppState {
         }
 
         self.pending_operation = None;
+        self.clear_gui_data_confirmation_visible = false;
         self.pending_saved_server_connect_intent = None;
         self.push_transient_notification(
             GuiTransientNotificationLevel::Warning,

@@ -234,7 +234,7 @@ fn gui_shell_app_state_handles_save_and_playback_toggle_command_actions() {
     assert!(!state.commands.can_toggle_pause);
     assert_eq!(
         state.notifications.last().map(|item| item.message.as_str()),
-        Some("Configuration save canceled.")
+        Some("Configuration saved.")
     );
 
     assert!(state.apply(GuiShellAction::CompletePlaybackPauseToggle));

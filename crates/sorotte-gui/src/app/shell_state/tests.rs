@@ -7,12 +7,13 @@ use super::{
     GuiDialogControlKind, GuiDraftRuntimeSnapshot, GuiErrorRuntimeSnapshot,
     GuiFeedbackRuntimeSnapshot, GuiFocusedConfigurationControlRuntimeSnapshot,
     GuiInteractionRuntimeSnapshot, GuiMainWindowUserEditSessionRuntimeSnapshot,
-    GuiMediaSourceProviderId, GuiPendingOperationKind, GuiPlaylistDefaultSourceId,
-    GuiPlaylistEntryId, GuiPlaylistResolutionStep, GuiPlaylistSourcePolicy,
-    GuiPlaylistSourceSelectionOrigin, GuiPlaylistSourceState, GuiPlaylistSourceStatus,
-    GuiPlaylistTextEditSessionRuntimeSnapshot, GuiPlaylistTextEditSessionState,
-    GuiPlexPlaylistSearchResult, GuiPlexRuntimeSnapshot, GuiPluginSelection,
-    GuiPublicServerEditSessionRuntimeSnapshot, GuiSavedConfigurationRuntimeSnapshot,
+    GuiMediaSourceProviderId, GuiPendingOperationKind, GuiPendingOperationState,
+    GuiPlaylistDefaultSourceId, GuiPlaylistEntryId, GuiPlaylistResolutionStep,
+    GuiPlaylistSourcePolicy, GuiPlaylistSourceSelectionOrigin, GuiPlaylistSourceState,
+    GuiPlaylistSourceStatus, GuiPlaylistTextEditSessionRuntimeSnapshot,
+    GuiPlaylistTextEditSessionState, GuiPlexPlaylistSearchResult, GuiPlexRuntimeSnapshot,
+    GuiPluginSelection, GuiPublicServerEditSessionRuntimeSnapshot,
+    GuiSavedConfigurationRuntimeSnapshot, GuiSavedServerConnectIntent,
     GuiSavedSessionConnectTarget, GuiSelectionState, GuiShellAction, GuiShellModal, GuiShellView,
     GuiStreamTargetKind, GuiTextEditSessionRuntimeSnapshot, GuiTextEditSessionState,
     GuiTransientNotification, GuiTransientNotificationLevel, GuiUrlEditSessionRuntimeSnapshot,
@@ -545,7 +546,7 @@ fn menu_dialog_shell_state_uses_settings_for_enabled_actions_and_prompts() {
         .iter()
         .find(|section| section.title == "Window")
         .expect("window section should exist");
-    assert_eq!(window.actions.len(), 1);
+    assert_eq!(window.actions.len(), 3);
     assert!(window.actions.iter().all(|item| item.enabled));
 
     assert!(state.tls_prompt_expected);
@@ -557,6 +558,8 @@ fn menu_dialog_shell_state_uses_settings_for_enabled_actions_and_prompts() {
 fn menu_dialog_shell_state_does_not_expose_chat_visibility_without_view_state() {
     let state = MenuDialogShellState::from_stored_settings(&StoredClientSettingsMvp::default());
     assert!(state.action(MenuActionId::TogglePlaybackButtons).is_some());
+    assert!(state.action(MenuActionId::ToggleAutoplayControls).is_some());
+    assert!(state.action(MenuActionId::ToggleHideEmptyRooms).is_some());
     assert!(
         state
             .sections

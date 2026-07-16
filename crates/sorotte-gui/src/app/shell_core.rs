@@ -41,6 +41,8 @@ impl SorotteGuiShellAppState {
             });
         let mut state = Self {
             active_view: GuiShellView::Setup,
+            active_application_language: shell_settings.language.clone(),
+            active_application_force_gui_prompt: shell_settings.force_gui_prompt,
             selected_configuration_tab: GuiConfigurationTab::Connection,
             selected_plugin: GuiPluginSelection::default(),
             plugin_enablement: GuiPluginEnablementState::from_stored_settings(&shell_settings),
@@ -52,6 +54,7 @@ impl SorotteGuiShellAppState {
             config_storage: GuiConfigStorageRuntimeSnapshot::default(),
             commands: GuiCommandAvailabilityState::default(),
             pending_operation: None,
+            clear_gui_data_confirmation_visible: false,
             pending_config_storage_target: None,
             pending_local_ready_target: None,
             pending_saved_server_connect_intent: None,
@@ -72,6 +75,7 @@ impl SorotteGuiShellAppState {
             update_check: GuiUpdateCheckState::default(),
             runtime_validation_issues: Vec::new(),
             notifications: Vec::new(),
+            pending_apply_requirements: Vec::new(),
             validation: GuiValidationState::default(),
             last_media_dialog_directory: None,
             playlist_undo_snapshot: None,

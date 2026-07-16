@@ -183,6 +183,14 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             NativeControlKind::Button,
             step_timeout,
         )?;
+        invoke_named_control_with_wait(
+            driver,
+            window,
+            CONFIG_CONFIRM_CLEAR_GUI_DATA_AUTOMATION_ID,
+            NativeControlKind::Button,
+            step_timeout,
+        )?;
+        steps.push("clear-gui-data-confirmed".to_owned());
         wait_for_pending_operation_to_finish(
             driver,
             window,

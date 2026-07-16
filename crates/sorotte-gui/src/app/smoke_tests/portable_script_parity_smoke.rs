@@ -77,6 +77,7 @@ fn gui_portable_smoke_regression_covers_nontransport_script_parity() {
         check_for_updates_automatically: Some(true),
         ..StoredClientSettingsMvp::default()
     };
+    persisted_state.resync_from_settings(saved_settings.clone());
     assert!(persisted_state.apply(GuiShellAction::BeginConfigurationSave));
     persisted_handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
         GuiPendingCompletionRequest::SaveConfiguration(saved_settings.clone()),

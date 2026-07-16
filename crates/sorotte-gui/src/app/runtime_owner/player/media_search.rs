@@ -241,7 +241,7 @@ impl GuiPersistedConfigRuntimeOwner {
             }
         }
 
-        let settings = state.configuration.to_stored_settings();
+        let settings = self.runtime_operation_settings(state);
         let playback = ClientConfig::resolve(&settings).config.playback;
         for root in playback.media_search_directories {
             for target_candidate in &target_candidates {
@@ -277,7 +277,7 @@ impl GuiPersistedConfigRuntimeOwner {
         }
         let search_roots = self.automatic_media_search_roots(state);
         let roots = Self::automatic_media_search_root_keys(&search_roots);
-        let retry_interval = Self::automatic_media_search_retry_interval(state);
+        let retry_interval = self.automatic_media_search_retry_interval(state);
         if let Some(path) = self.quick_resolve_main_window_user_media_target(state, &target)? {
             if Path::new(&target).is_absolute()
                 || browser_is_url(&target)
@@ -346,7 +346,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 &search_roots,
                 &roots,
                 retry_interval,
-                Self::automatic_media_search_timeout(state),
+                self.automatic_media_search_timeout(state),
             )
         };
         if build_pending || queued_refresh || self.attached_media_search_refresh_pending() {
@@ -374,7 +374,7 @@ impl GuiPersistedConfigRuntimeOwner {
         };
         let search_roots = self.automatic_media_search_roots(state);
         let roots = Self::automatic_media_search_root_keys(&search_roots);
-        let retry_interval = Self::automatic_media_search_retry_interval(state);
+        let retry_interval = self.automatic_media_search_retry_interval(state);
         if let Some(path) = self.quick_resolve_main_window_user_media_target(state, &target)? {
             if Path::new(&target).is_absolute()
                 || browser_is_url(&target)
@@ -429,7 +429,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 &search_roots,
                 &roots,
                 retry_interval,
-                Self::automatic_media_search_timeout(state),
+                self.automatic_media_search_timeout(state),
             )
         };
         if build_pending || queued_refresh || self.attached_media_search_refresh_pending() {
@@ -448,6 +448,7 @@ impl GuiPersistedConfigRuntimeOwner {
     }
 
     fn plex_stream_resolution_config_for_target(
+        &self,
         state: &SorotteGuiShellAppState,
         target: &str,
     ) -> Option<PlexClientConfig> {
@@ -457,7 +458,7 @@ impl GuiPersistedConfigRuntimeOwner {
         {
             return None;
         }
-        let settings = state.configuration.to_stored_settings();
+        let settings = self.runtime_operation_settings(state);
         let config = super::super::plex::plex_config_from_settings(&settings);
         if !config.streaming_enabled {
             return None;
@@ -535,8 +536,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let Some(rx) = self.plex_stream_resolve_rx.take() else {
             return false;
         };
-        let current_context =
-            self.plex_operation_context(&state.configuration.to_stored_settings());
+        let current_context = self.plex_operation_context(&self.runtime_operation_settings(state));
         match rx.try_recv() {
             Ok(result) => {
                 if self.plex_stream_resolve_trigger_key.as_deref()
@@ -604,7 +604,7 @@ impl GuiPersistedConfigRuntimeOwner {
         state: &SorotteGuiShellAppState,
         target: &str,
     ) -> bool {
-        let Some(config) = Self::plex_stream_resolution_config_for_target(state, target) else {
+        let Some(config) = self.plex_stream_resolution_config_for_target(state, target) else {
             return false;
         };
         let trigger_key = Self::plex_stream_resolution_trigger_key(&config, target);
@@ -665,12 +665,12 @@ impl GuiPersistedConfigRuntimeOwner {
         target: &str,
         consume_ready: bool,
     ) -> Result<GuiPlexStreamResolutionState, String> {
-        let Some(config) = Self::plex_stream_resolution_config_for_target(state, target) else {
+        let Some(config) = self.plex_stream_resolution_config_for_target(state, target) else {
             self.clear_plex_stream_resolution_state();
             return Ok(GuiPlexStreamResolutionState::Disabled);
         };
         let operation_context =
-            self.plex_operation_context(&state.configuration.to_stored_settings());
+            self.plex_operation_context(&self.runtime_operation_settings(state));
         let trigger_key = Self::plex_stream_resolution_trigger_key(&config, target);
 
         if self.plex_stream_resolve_context.as_ref() != Some(&operation_context)

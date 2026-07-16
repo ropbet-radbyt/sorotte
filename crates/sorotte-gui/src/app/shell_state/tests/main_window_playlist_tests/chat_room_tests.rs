@@ -224,6 +224,43 @@ fn gui_shell_app_state_preserves_controlled_room_auth_for_saved_connect_target()
 }
 
 #[test]
+fn connect_once_target_ignores_unsaved_room_history_when_room_is_empty() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        host: Some("syncplay.example".to_owned()),
+        port: Some(8999),
+        username: Some("alice".to_owned()),
+        room_list: Some(vec!["saved-room".to_owned()]),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        id: SettingId::ConnectionRoom,
+        value: String::new().into(),
+    }));
+    assert!(state.apply(GuiShellAction::BeginRoomHistoryEdit));
+    assert!(state.apply(GuiShellAction::UpdateRoomHistoryEdit(
+        "unsaved-draft-room".to_owned(),
+    )));
+    assert!(state.apply(GuiShellAction::CommitRoomHistoryEdit));
+
+    let connect_once_target = state
+        .submitted_saved_server_connect_target(GuiSavedServerConnectIntent::ConnectOnce)
+        .expect("Connect Once should produce a target from the captured settings");
+    assert_eq!(connect_once_target.room, "saved-room");
+
+    let save_and_connect_target = state
+        .submitted_saved_server_connect_target(GuiSavedServerConnectIntent::SaveAndConnect)
+        .expect("Save & connect should produce a target from the draft settings");
+    assert_eq!(save_and_connect_target.room, "unsaved-draft-room");
+
+    assert!(state.apply(GuiShellAction::BeginConnectOnce));
+    assert_eq!(
+        state.pending_saved_server_connect_intent,
+        Some(GuiSavedServerConnectIntent::ConnectOnce),
+    );
+}
+
+#[test]
 fn gui_shell_app_state_defers_room_join_and_leave_to_runtime_confirmation() {
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         room: Some("+room:ABCDEF123456".to_owned()),

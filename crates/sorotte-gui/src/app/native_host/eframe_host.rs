@@ -61,10 +61,15 @@ impl GuiEframeNativeHost {
     pub(in crate::app) fn with_queued_preview_runtime_for_config_path(
         config_path: Option<PathBuf>,
     ) -> Self {
-        Self::with_queued_runtime_owner(
-            false,
-            GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player(config_path),
-        )
+        let mut owner =
+            GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player(config_path);
+        if env_trimmed("SOROTTE_GUI_TEST_DISABLE_STARTUP_SAVED_CONNECT")
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case("true"))
+        {
+            owner.startup_saved_connect_attempted = true;
+        }
+        Self::with_queued_runtime_owner(false, owner)
     }
 
     pub(in crate::app) fn with_queued_preview_runtime() -> Self {

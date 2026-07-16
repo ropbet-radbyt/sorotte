@@ -217,7 +217,12 @@ impl GuiPersistedConfigRuntimeOwner {
     ) -> GuiCommandAvailabilityState {
         let player_runtime_available =
             player_attached || self.player_runtime_available_for_actions();
-        let settings = state.configuration.to_stored_settings();
+        let settings = self
+            .active_session_settings
+            .as_ref()
+            .filter(|_| self.session_projects_to_shell)
+            .map(|runtime_settings| runtime_settings.settings.clone())
+            .unwrap_or_else(|| state.configuration.to_stored_settings());
         let busy = state.pending_operation.is_some();
         let chat_unavailable_reason =
             state.chat_send_unavailable_reason_from_settings(&settings, self.session.is_some());
@@ -276,7 +281,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let pre_poll_media_index_revision = self.attached_media_search_index_revision;
         let media_index_was_pending = self.pending_attached_media_resolution.is_some();
         let media_index_still_pending = self.poll_attached_media_search_index_build(
-            Self::automatic_media_search_retry_interval(state),
+            self.automatic_media_search_retry_interval(state),
         );
         if media_index_was_pending
             && !media_index_still_pending
@@ -288,14 +293,13 @@ impl GuiPersistedConfigRuntimeOwner {
         }
         let player_attached = self.player.is_some();
         let player_runtime_available = self.player_runtime_available_for_actions();
+        let shared_playlist_enabled = self.runtime_shared_playlist_enabled(state);
         let can_manage_playlist = self
             .session
             .as_ref()
-            .map(|session| {
-                state.main_window.shared_playlist_enabled && session.playlist_control_available()
-            })
-            .unwrap_or(player_runtime_available && state.main_window.shared_playlist_enabled);
-        let desired_playlist = if state.main_window.shared_playlist_enabled {
+            .map(|session| shared_playlist_enabled && session.playlist_control_available())
+            .unwrap_or(player_runtime_available && shared_playlist_enabled);
+        let desired_playlist = if shared_playlist_enabled {
             None
         } else {
             let playlist = self.player_local_file_playlist_entries_impl();
@@ -309,8 +313,9 @@ impl GuiPersistedConfigRuntimeOwner {
             (!playlist_matches).then_some(playlist)
         };
         let desired_paused = player_attached.then_some(self.player_paused).flatten();
-        let main_window_changed = state.main_window.playback.can_toggle_pause
-            != player_runtime_available
+        let main_window_changed = state.main_window.shared_playlist_enabled
+            != shared_playlist_enabled
+            || state.main_window.playback.can_toggle_pause != player_runtime_available
             || state.main_window.playback.can_seek != player_runtime_available
             || !state.main_window.playback.can_set_offset
             || state.main_window.playback.can_manage_playlist != can_manage_playlist
@@ -322,6 +327,7 @@ impl GuiPersistedConfigRuntimeOwner {
         if main_window_changed {
             let mut desired_main_window =
                 MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
+            desired_main_window.shared_playlist_enabled = shared_playlist_enabled;
             desired_main_window.can_toggle_pause = player_runtime_available;
             desired_main_window.can_seek = player_runtime_available;
             desired_main_window.can_set_offset = true;

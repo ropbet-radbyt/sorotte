@@ -13,6 +13,8 @@ use std::{
 use super::super::runtime_stack::{GuiAttachedPlayerRuntimeAction, GuiSessionRoomPlaystate};
 use super::{GuiMediaMatchBackgroundCancelDisposition, GuiPersistedConfigRuntimeOwner};
 
+use crate::app::runtime_bridge::{GuiNativeRuntimeBridge, GuiNativeRuntimePump};
+use crate::app::runtime_queue::{GuiQueuedRuntimeBridge, GuiThreadedRuntimeOwnerPump};
 use crate::app::testing::support::{
     browser_runtime_rooms, browser_runtime_user, pump_and_apply_runtime_owner_actions,
     pump_and_apply_runtime_owner_actions_until, test_temp_root,
@@ -26,11 +28,12 @@ use crate::app::{
     GuiPendingAttachedMediaResolution, GuiPendingCompletionRequest, GuiPendingOperationKind,
     GuiPendingRoomChangeRequest, GuiPersistedUiState, GuiPlayerLaunchRuntimeState,
     GuiPluginSelection, GuiQueuedRuntimeBridgeHandle, GuiQueuedRuntimeOwner, GuiRuntimeRequest,
-    GuiSavedServerConnectIntent, GuiSessionRuntimeAdapter, GuiShellAction, GuiShellView,
-    GuiTestPlayerAdapter, GuiTransientNotificationLevel, MainWindowPlaylistRow,
-    MainWindowRuntimeChatSnapshot, MainWindowRuntimeSnapshot, MenuActionId,
-    MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot, SettingId, SorotteGuiRuntimeSnapshot,
-    SorotteGuiShellAppState, legacy_gui_qsettings_store_path, persist_gui_ui_state_at_root,
+    GuiSavedServerConnectIntent, GuiSessionRuntimeAdapter, GuiSettingApplyRequirement,
+    GuiShellAction, GuiShellView, GuiTestPlayerAdapter, GuiTransientNotificationLevel,
+    MainWindowPlaylistRow, MainWindowRuntimeChatSnapshot, MainWindowRuntimeSnapshot, MenuActionId,
+    MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot, SecretDraft, SettingId,
+    SorotteGuiRuntimeSnapshot, SorotteGuiShellAppState, legacy_gui_qsettings_store_path,
+    persist_gui_ui_state_at_root,
 };
 use sorotte_client_app::app_boundary::persistence::{
     load_sorotte_ini_stored_client_settings_mvp_from_path,

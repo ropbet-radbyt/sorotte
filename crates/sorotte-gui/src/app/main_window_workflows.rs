@@ -784,6 +784,10 @@ impl SorotteGuiShellAppState {
 
     pub(super) fn toggle_main_window_autoplay_controls(&mut self) -> bool {
         self.main_window.show_autoplay_controls = !self.main_window.show_autoplay_controls;
+        self.set_menu_action_checked(
+            MenuActionId::ToggleAutoplayControls,
+            self.main_window.show_autoplay_controls,
+        );
         self.clear_action_error_and_refresh();
         true
     }

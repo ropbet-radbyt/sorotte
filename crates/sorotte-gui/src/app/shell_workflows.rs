@@ -114,6 +114,8 @@ impl SorotteGuiShellAppState {
             MenuActionId::IdentifyAsController => self.begin_controller_auth_edit(),
             MenuActionId::TlsCertificates => self.announce_tls_certificate_prompt_required(),
             MenuActionId::TogglePlaybackButtons => self.toggle_main_window_playback_buttons(),
+            MenuActionId::ToggleAutoplayControls => self.toggle_main_window_autoplay_controls(),
+            MenuActionId::ToggleHideEmptyRooms => self.toggle_main_window_hide_empty_rooms(),
             MenuActionId::About => self.announce_about_dialog_requested(),
             MenuActionId::Help => self.announce_help_requested(),
             MenuActionId::CheckForUpdates => self.begin_update_check(true),
@@ -535,6 +537,14 @@ impl SorotteGuiShellAppState {
         self.set_menu_action_checked(
             MenuActionId::TogglePlaybackButtons,
             self.main_window.show_playback_buttons,
+        );
+        self.set_menu_action_checked(
+            MenuActionId::ToggleAutoplayControls,
+            self.main_window.show_autoplay_controls,
+        );
+        self.set_menu_action_checked(
+            MenuActionId::ToggleHideEmptyRooms,
+            self.main_window.hide_empty_rooms,
         );
         self.selection.selected_main_window_user = previously_selected_username
             .as_deref()

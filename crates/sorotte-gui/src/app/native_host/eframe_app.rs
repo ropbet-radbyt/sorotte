@@ -2,6 +2,7 @@ use super::*;
 
 impl eframe::App for GuiNativeApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        Self::apply_test_theme_override_from_lookup(ctx, &env_trimmed);
         let mut renderer = GuiWidgetEguiRenderer::default();
         self.state.render_shell_widgets(&mut renderer);
         let show_manual_pending_controls = self.runtime.shows_manual_pending_controls();

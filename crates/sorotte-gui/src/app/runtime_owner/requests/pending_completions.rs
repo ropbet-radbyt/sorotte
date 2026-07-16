@@ -12,20 +12,13 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
+        selected_server: (String, String),
+        active_settings: sorotte_client_app::app_boundary::state::StoredClientSettingsMvp,
     ) -> bool {
-        let selected_server = projected_state
-            .selected_public_server_index()
-            .and_then(|index| projected_state.public_servers.servers.get(index))
-            .map(|row| (row.label.clone(), row.address.clone()));
         let replace_owned_transport = self.session.is_none() || self.session_transport.is_some();
         let replacement_transport_driver = if replace_owned_transport {
-            selected_server
-                .as_ref()
-                .map(|(_label, address)| {
-                    GuiThreadedTcpSessionTransportDriver::connect_from_host_arg(address)
-                        .map(|driver| Box::new(driver) as Box<dyn GuiSessionTransportDriver + Send>)
-                })
-                .transpose()
+            GuiThreadedTcpSessionTransportDriver::connect_from_host_arg(&selected_server.1)
+                .map(|driver| Some(Box::new(driver) as Box<dyn GuiSessionTransportDriver + Send>))
         } else {
             Ok(None)
         };
@@ -42,43 +35,98 @@ impl GuiPersistedConfigRuntimeOwner {
                 return false;
             }
         };
-        if let Err(error) = self.ensure_detached_client_core_chat_session(projected_state) {
-            self.clear_pending_operation_with_runtime_error(
-                handle,
-                projected_state,
-                format!(
-                    "Public server connect through the attached session runtime failed: {error}"
-                ),
-            );
-            return false;
-        }
-        let Some(session) = self.session.as_mut() else {
-            self.clear_pending_operation_with_runtime_error(
-                handle,
-                projected_state,
-                "Public server connect could not bootstrap a detached client-core session runtime."
-                    .to_owned(),
-            );
-            return false;
+        let runtime_settings =
+            stored_client_settings_runtime_snapshot_legacy_compatible(&active_settings);
+        let default_room = runtime_settings
+            .config
+            .connection
+            .room
+            .as_ref()
+            .map(|room| room.as_str().to_owned());
+        let connect_result = if replace_owned_transport {
+            let connection = &runtime_settings.config.connection;
+            let mut session =
+                match GuiClientCoreChatSessionRuntimeAdapter::new_with_control_password(
+                    connection
+                        .username
+                        .as_ref()
+                        .map(|username| username.as_str().to_owned())
+                        .unwrap_or_default(),
+                    connection
+                        .room
+                        .as_ref()
+                        .map(|room| room.as_str().to_owned())
+                        .unwrap_or_default(),
+                    connection.controlled_room_password.clone(),
+                ) {
+                    Ok(session) => session,
+                    Err(error) => {
+                        self.clear_pending_operation_with_runtime_error(
+                        handle,
+                        projected_state,
+                        format!(
+                            "Public server connect through the attached session runtime failed: {error}"
+                        ),
+                    );
+                        return false;
+                    }
+                };
+            session
+                .apply_runtime_settings_snapshot(&runtime_settings)
+                .and_then(|()| session.connect_public_server(Some(selected_server.clone())))
+                .map(|()| {
+                    self.install_active_session_runtime(
+                        Box::new(session),
+                        runtime_settings.clone(),
+                    );
+                })
+        } else {
+            let Some(session) = self.session.as_mut() else {
+                self.clear_pending_operation_with_runtime_error(
+                    handle,
+                    projected_state,
+                    "Public server connect could not bootstrap a detached client-core session runtime."
+                        .to_owned(),
+                );
+                return false;
+            };
+            session
+                .sync_runtime_settings(&runtime_settings)
+                .and_then(|()| session.connect_public_server(Some(selected_server.clone())))
+                .map(|()| {
+                    self.active_session_configured_settings = Some(runtime_settings.clone());
+                    self.active_session_settings = Some(runtime_settings.clone());
+                    self.session_projects_to_shell = true;
+                })
         };
-        match session.connect_public_server(selected_server) {
+        match connect_result {
             Ok(()) => {
-                self.session_projects_to_shell = true;
                 self.reset_session_transport_reconnect_state();
+                self.session_default_room = default_room;
                 self.pending_room_change_request = None;
                 self.clear_session_attached_player_sync_state();
                 self.last_published_local_file = None;
                 self.last_published_media_match_signature = None;
                 if let Some(driver) = replacement_transport_driver {
+                    if self.session_transport.is_none() {
+                        self.session_transport = Some(GuiQueuedSessionTransportHandle::default());
+                    }
                     if let Some(session_transport) = self.session_transport.as_ref() {
                         session_transport.clear_protocol_lines();
                     }
                     self.session_transport_driver = Some(driver);
                 }
+                let pending_requirements = self.pending_apply_requirements_action(
+                    projected_state,
+                    &projected_state.saved_configuration,
+                );
                 Self::push_actions_and_project(
                     handle,
                     projected_state,
-                    vec![GuiShellAction::CompleteSelectedPublicServerConnect],
+                    vec![
+                        GuiShellAction::CompleteSelectedPublicServerConnect,
+                        pending_requirements,
+                    ],
                 )
             }
             Err(error) => self.clear_pending_operation_with_runtime_error(
@@ -217,17 +265,31 @@ impl GuiPersistedConfigRuntimeOwner {
                     projected_state,
                     vec![GuiShellAction::CompleteLocalChatSend],
                 ),
-                Err(error) => self.clear_pending_operation_with_runtime_error(
+                Err(error) => Self::push_actions_and_project(
                     handle,
                     projected_state,
-                    format!("Chat sending through the attached session runtime failed: {error}"),
+                    vec![
+                        GuiShellAction::CompleteLocalChatSend,
+                        GuiShellAction::PushTransientNotification {
+                            level: GuiTransientNotificationLevel::Error,
+                            message: format!(
+                                "Chat sending through the attached session runtime failed: {error}"
+                            ),
+                        },
+                    ],
                 ),
             }
         } else {
-            self.clear_pending_operation_with_runtime_error(
+            Self::push_actions_and_project(
                 handle,
                 projected_state,
-                self.send_chat_unavailable_message(),
+                vec![
+                    GuiShellAction::CompleteLocalChatSend,
+                    GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Error,
+                        message: self.send_chat_unavailable_message(),
+                    },
+                ],
             );
         }
         true
@@ -240,34 +302,42 @@ impl GuiPersistedConfigRuntimeOwner {
         settings: sorotte_client_app::app_boundary::state::StoredClientSettingsMvp,
     ) -> bool {
         let previous_settings = projected_state.saved_configuration.clone();
-        let Some(path) = self.config_path.as_ref() else {
-            self.invalidate_plex_operation_context_if_settings_changed(
-                handle,
-                projected_state,
-                &previous_settings,
-                &settings,
-            );
-            self.sync_player_from_lookup_and_settings(&env_trimmed, Some(&settings), true);
+        let Some(path) = self.persisted_settings_config_path_for_request(projected_state) else {
             Self::push_actions_and_project(
                 handle,
                 projected_state,
-                vec![GuiShellAction::CompleteConfigurationSave(settings)],
+                vec![
+                    GuiShellAction::CancelConfigurationSave,
+                    GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Error,
+                        message:
+                            "Configuration save failed: no writable GUI config path is available."
+                                .to_owned(),
+                    },
+                ],
             );
-            return false;
+            return true;
         };
-        match upsert_sorotte_ini_stored_client_settings_mvp_at_path(path, &settings) {
+        match upsert_sorotte_ini_stored_client_settings_mvp_at_path(&path, &settings) {
             Ok(()) => {
+                self.config_path = Some(path);
+                self.promote_on_save_runtime_fields(&settings);
+                self.adopt_saved_player_launch_state_when_inactive(&settings);
                 self.invalidate_plex_operation_context_if_settings_changed(
                     handle,
                     projected_state,
                     &previous_settings,
                     &settings,
                 );
-                self.sync_player_from_lookup_and_settings(&env_trimmed, Some(&settings), true);
+                let pending_requirements =
+                    self.pending_apply_requirements_action(projected_state, &settings);
                 Self::push_actions_and_project(
                     handle,
                     projected_state,
-                    vec![GuiShellAction::CompleteConfigurationSave(settings)],
+                    vec![
+                        GuiShellAction::CompleteConfigurationSave(settings),
+                        pending_requirements,
+                    ],
                 );
             }
             Err(error) => Self::push_actions_and_project(
@@ -310,12 +380,15 @@ impl GuiPersistedConfigRuntimeOwner {
     ) -> bool {
         let Some(path) = self.config_path.as_ref() else {
             self.invalidate_plex_operation_context(handle, projected_state);
+            let pending_requirements =
+                self.pending_apply_requirements_action(projected_state, &fallback_settings);
             Self::push_actions_and_project(
                 handle,
                 projected_state,
-                vec![GuiShellAction::CompleteConfigurationReload(
-                    fallback_settings,
-                )],
+                vec![
+                    GuiShellAction::CompleteConfigurationReload(fallback_settings),
+                    pending_requirements,
+                ],
             );
             return false;
         };
@@ -323,10 +396,19 @@ impl GuiPersistedConfigRuntimeOwner {
             Ok(Some(settings)) => {
                 self.invalidate_plex_operation_context(handle, projected_state);
                 self.sync_player_from_lookup_and_settings(&env_trimmed, Some(&settings), true);
+                self.promote_on_save_runtime_fields(&settings);
+                if self.current_player_launch_state_is_applied() {
+                    self.promote_restart_player_runtime_fields(&settings);
+                }
+                let pending_requirements =
+                    self.pending_apply_requirements_action(projected_state, &settings);
                 Self::push_actions_and_project(
                     handle,
                     projected_state,
-                    vec![GuiShellAction::CompleteConfigurationReload(settings)],
+                    vec![
+                        GuiShellAction::CompleteConfigurationReload(settings),
+                        pending_requirements,
+                    ],
                 );
             }
             Ok(None) => {
@@ -336,12 +418,19 @@ impl GuiPersistedConfigRuntimeOwner {
                     Some(&fallback_settings),
                     true,
                 );
+                self.promote_on_save_runtime_fields(&fallback_settings);
+                if self.current_player_launch_state_is_applied() {
+                    self.promote_restart_player_runtime_fields(&fallback_settings);
+                }
+                let pending_requirements =
+                    self.pending_apply_requirements_action(projected_state, &fallback_settings);
                 Self::push_actions_and_project(
                     handle,
                     projected_state,
-                    vec![GuiShellAction::CompleteConfigurationReload(
-                        fallback_settings,
-                    )],
+                    vec![
+                        GuiShellAction::CompleteConfigurationReload(fallback_settings),
+                        pending_requirements,
+                    ],
                 );
             }
             Err(error) => Self::push_actions_and_project(
@@ -416,6 +505,21 @@ impl GuiPersistedConfigRuntimeOwner {
             );
         }
 
+        let previous_config_contents = match std::fs::read(&paths.config_path) {
+            Ok(contents) => Some(contents),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return self.cancel_config_storage_change_with_error(
+                    handle,
+                    projected_state,
+                    format!(
+                        "Cannot prepare configuration relocation from {}: {error}",
+                        paths.config_path.display()
+                    ),
+                );
+            }
+        };
+
         if let Err(error) =
             upsert_sorotte_ini_stored_client_settings_mvp_at_path(&paths.config_path, &settings)
         {
@@ -429,23 +533,43 @@ impl GuiPersistedConfigRuntimeOwner {
         if let Err(error) =
             persist_sorotte_client_install_locator(&install_root, &paths.storage_root)
         {
-            return self.cancel_config_storage_change_with_error(
-                handle,
-                projected_state,
-                error.to_string(),
-            );
+            let rollback_error = match previous_config_contents {
+                Some(contents) => {
+                    write_sorotte_ini_contents_atomically_at_path(&paths.config_path, &contents)
+                        .err()
+                }
+                None => match std::fs::remove_file(&paths.config_path) {
+                    Ok(()) => None,
+                    Err(remove_error) if remove_error.kind() == std::io::ErrorKind::NotFound => {
+                        None
+                    }
+                    Err(remove_error) => Some(remove_error.into()),
+                },
+            };
+            let message = match rollback_error {
+                Some(rollback_error) => format!(
+                    "{error}. Restoring {} also failed: {rollback_error}",
+                    paths.config_path.display()
+                ),
+                None => error.to_string(),
+            };
+            return self.cancel_config_storage_change_with_error(handle, projected_state, message);
         }
 
         let copy_warnings =
             Self::copy_known_storage_entries_best_effort(old_root.as_deref(), &paths.storage_root);
         self.invalidate_plex_operation_context(handle, projected_state);
         self.config_path = Some(paths.config_path.clone());
+        self.promote_on_save_runtime_fields(&settings);
+        self.adopt_saved_player_launch_state_when_inactive(&settings);
         self.clear_attached_media_search_runtime_cache();
         let stream_helper_snapshot = self.refresh_stream_helper_runtime_snapshot_for_target(None);
-        self.sync_player_from_lookup_and_settings(&env_trimmed, Some(&settings), true);
         let snapshot = GuiConfigStorageRuntimeSnapshot::from_storage_paths(&paths);
+        let pending_requirements =
+            self.pending_apply_requirements_action(projected_state, &settings);
         let mut actions = vec![
             GuiShellAction::CompleteConfigStorageRootChange { snapshot, settings },
+            pending_requirements,
             GuiShellAction::ApplyGuiStreamHelperRuntimeSnapshot(stream_helper_snapshot),
             GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Success,

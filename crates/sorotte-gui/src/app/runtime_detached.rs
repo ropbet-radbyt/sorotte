@@ -22,12 +22,12 @@ use super::runtime_stack::{
     GuiQueuedSessionTransportHandle, GuiThreadedTcpSessionTransportDriver,
 };
 use super::shell_state::{
-    GuiCommandRuntimeSnapshot, GuiSavedConfigurationRuntimeSnapshot, GuiSavedServerConnectIntent,
-    GuiShellAction, GuiTransientNotificationLevel, MainWindowRuntimeSnapshot, MainWindowShellState,
-    MenuActionId, MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot, SorotteGuiShellAppState,
+    GuiSavedConfigurationRuntimeSnapshot, GuiSavedServerConnectIntent,
+    GuiSavedSessionConnectTarget, GuiShellAction, GuiTransientNotificationLevel,
+    MainWindowRuntimeSnapshot, MainWindowShellState, MenuActionId, MenuActionRuntimeOverride,
+    MenuDialogRuntimeSnapshot, SorotteGuiShellAppState,
 };
-use super::startup_support::env_trimmed;
-use super::support::system_time_seconds;
+use super::support::{autoplay_threshold_from_settings, system_time_seconds};
 
 impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn detached_runtime_settings_for_state(
@@ -36,6 +36,54 @@ impl GuiPersistedConfigRuntimeOwner {
         stored_client_settings_runtime_snapshot_legacy_compatible(
             &state.configuration.to_stored_settings(),
         )
+    }
+
+    fn session_runtime_settings_for_state(
+        &mut self,
+        state: &SorotteGuiShellAppState,
+    ) -> StoredClientSettingsRuntimeSnapshot {
+        if !self.session_projects_to_shell || self.session.is_none() {
+            return Self::detached_runtime_settings_for_state(state);
+        }
+        if let Some(runtime_settings) = self.active_session_settings.as_ref() {
+            return runtime_settings.clone();
+        }
+
+        // Test and embedding adapters can be installed without going through a
+        // network connect. Pin their first effective settings just like a real
+        // active session instead of following later edits to the settings form.
+        let runtime_settings = Self::detached_runtime_settings_for_state(state);
+        self.active_session_configured_settings = Some(runtime_settings.clone());
+        self.active_session_settings = Some(runtime_settings.clone());
+        runtime_settings
+    }
+
+    pub(super) fn saved_server_connect_target_for_runtime_settings(
+        runtime_settings: &StoredClientSettingsRuntimeSnapshot,
+    ) -> Option<GuiSavedSessionConnectTarget> {
+        let connection = &runtime_settings.config.connection;
+        let host = connection.host.as_deref()?.trim();
+        if host.is_empty() {
+            return None;
+        }
+        let port = connection.port.get();
+        Some(GuiSavedSessionConnectTarget {
+            address: format!("{host}:{port}"),
+            username: connection
+                .username
+                .as_ref()
+                .map(|username| username.as_str().to_owned())
+                .unwrap_or_default(),
+            room: connection
+                .room
+                .as_ref()
+                .map(|room| room.as_str().to_owned())
+                .unwrap_or_default(),
+            controlled_room_password_override: runtime_settings
+                .controlled_room_password_override
+                .clone()
+                .or_else(|| connection.controlled_room_password.clone()),
+        })
     }
 
     pub(super) fn ensure_detached_client_core_chat_session(
@@ -172,7 +220,7 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         state: &SorotteGuiShellAppState,
     ) -> Result<(), String> {
-        let runtime_settings = Self::detached_runtime_settings_for_state(state);
+        let runtime_settings = self.session_runtime_settings_for_state(state);
         if !self.session_projects_to_shell {
             self.session_default_room = runtime_settings
                 .config
@@ -384,12 +432,23 @@ impl GuiPersistedConfigRuntimeOwner {
         if auto_advance_playlist_at_eof {
             self.advance_playlist_index_for_attached_player_impl()?;
         }
+        let (autoplay_enabled, autoplay_threshold) = if self.session_projects_to_shell {
+            (
+                runtime_settings.config.readiness.autoplay_initial_state,
+                autoplay_threshold_from_settings(&runtime_settings.settings),
+            )
+        } else {
+            (
+                state.main_window.autoplay_active,
+                state.main_window.autoplay_threshold,
+            )
+        };
         {
             let Some(session) = self.session.as_mut() else {
                 return Ok(());
             };
-            session.set_autoplay_enabled(state.main_window.autoplay_active)?;
-            session.set_autoplay_threshold(state.main_window.autoplay_threshold)?;
+            session.set_autoplay_enabled(autoplay_enabled)?;
+            session.set_autoplay_threshold(autoplay_threshold)?;
         }
         let publish_file = file_publish_pending
             && self
@@ -628,20 +687,22 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn save_configuration_for_connect_runtime(
         &mut self,
         projected_state: &SorotteGuiShellAppState,
-    ) -> Result<Option<StoredClientSettingsMvp>, String> {
-        if projected_state.pending_saved_server_connect_intent
-            != Some(GuiSavedServerConnectIntent::SaveAndConnect)
-        {
-            return Ok(None);
+        intent: GuiSavedServerConnectIntent,
+        submitted_settings: &StoredClientSettingsMvp,
+    ) -> Result<(), String> {
+        if intent != GuiSavedServerConnectIntent::SaveAndConnect {
+            return Ok(());
         }
 
-        let settings = projected_state.configuration.to_stored_settings();
-        if let Some(path) = self.config_path.as_ref() {
-            upsert_sorotte_ini_stored_client_settings_mvp_at_path(path, &settings)
-                .map_err(|error| format!("Configuration save failed: {error}"))?;
-        }
-        self.sync_player_from_lookup_and_settings(&env_trimmed, Some(&settings), false);
-        Ok(Some(settings))
+        let path = self
+            .persisted_settings_config_path_for_request(projected_state)
+            .ok_or_else(|| {
+                "Configuration save failed: no writable GUI config path is available".to_owned()
+            })?;
+        upsert_sorotte_ini_stored_client_settings_mvp_at_path(&path, submitted_settings)
+            .map_err(|error| format!("Configuration save failed: {error}"))?;
+        self.config_path = Some(path);
+        Ok(())
     }
 
     pub(super) fn complete_saved_server_connect_runtime(
@@ -650,17 +711,75 @@ impl GuiPersistedConfigRuntimeOwner {
         projected_state: &mut SorotteGuiShellAppState,
         clear_pending: bool,
     ) {
-        match self.save_configuration_for_connect_runtime(projected_state) {
-            Ok(Some(settings)) => {
+        let submitted = projected_state
+            .pending_saved_server_connect_intent
+            .map(|intent| {
+                (
+                    intent,
+                    projected_state.submitted_saved_server_connect_settings(intent),
+                )
+            });
+        self.complete_saved_server_connect_runtime_with_submission(
+            handle,
+            projected_state,
+            clear_pending,
+            submitted,
+        );
+    }
+
+    pub(super) fn complete_submitted_saved_server_connect_runtime(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        clear_pending: bool,
+        intent: GuiSavedServerConnectIntent,
+        submitted_settings: StoredClientSettingsMvp,
+    ) {
+        self.complete_saved_server_connect_runtime_with_submission(
+            handle,
+            projected_state,
+            clear_pending,
+            Some((intent, submitted_settings)),
+        );
+    }
+
+    fn complete_saved_server_connect_runtime_with_submission(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        clear_pending: bool,
+        submitted: Option<(GuiSavedServerConnectIntent, StoredClientSettingsMvp)>,
+    ) {
+        let (connect_intent, active_settings) = submitted.unwrap_or_else(|| {
+            (
+                GuiSavedServerConnectIntent::ConnectOnce,
+                projected_state.saved_configuration.clone(),
+            )
+        });
+        match self.save_configuration_for_connect_runtime(
+            projected_state,
+            connect_intent,
+            &active_settings,
+        ) {
+            Ok(()) if connect_intent == GuiSavedServerConnectIntent::SaveAndConnect => {
+                self.promote_on_save_runtime_fields(&active_settings);
+                self.adopt_saved_player_launch_state_when_inactive(&active_settings);
+                let pending_requirements =
+                    self.pending_apply_requirements_action(projected_state, &active_settings);
                 Self::push_actions_and_project(
                     handle,
                     projected_state,
-                    vec![GuiShellAction::ApplyGuiSavedConfigurationRuntimeSnapshot(
-                        GuiSavedConfigurationRuntimeSnapshot { settings },
-                    )],
+                    vec![
+                        GuiShellAction::ApplyGuiSavedConfigurationRuntimeSnapshot(
+                            GuiSavedConfigurationRuntimeSnapshot {
+                                settings: active_settings.clone(),
+                            },
+                        ),
+                        pending_requirements,
+                    ],
                 );
             }
-            Ok(None) => {}
+            Ok(()) => {}
             Err(message) => {
                 if clear_pending {
                     self.clear_pending_operation_with_runtime_error(
@@ -674,8 +793,11 @@ impl GuiPersistedConfigRuntimeOwner {
                 return;
             }
         }
-
-        let Some(target) = projected_state.saved_session_connect_target() else {
+        let runtime_settings =
+            stored_client_settings_runtime_snapshot_legacy_compatible(&active_settings);
+        let Some(target) =
+            Self::saved_server_connect_target_for_runtime_settings(&runtime_settings)
+        else {
             let message =
                 "Configured server connect requires a saved host and a valid port.".to_owned();
             if clear_pending {
@@ -706,7 +828,6 @@ impl GuiPersistedConfigRuntimeOwner {
             }
         };
         let default_room = target.room.clone();
-        let runtime_settings = Self::detached_runtime_settings_for_state(projected_state);
         let mut session = match GuiClientCoreChatSessionRuntimeAdapter::new_with_control_password(
             target.username,
             target.room,
@@ -741,8 +862,7 @@ impl GuiPersistedConfigRuntimeOwner {
             return;
         }
 
-        self.install_session_runtime(Box::new(session));
-        self.session_projects_to_shell = true;
+        self.install_active_session_runtime(Box::new(session), runtime_settings);
         self.reset_session_transport_reconnect_state();
         self.session_default_room = Some(default_room);
         self.pending_room_change_request = None;
@@ -763,6 +883,10 @@ impl GuiPersistedConfigRuntimeOwner {
         if clear_pending {
             actions.push(GuiShellAction::CompleteSavedServerConnect);
         }
+        actions.push(self.pending_apply_requirements_action(
+            projected_state,
+            &projected_state.saved_configuration,
+        ));
         Self::push_actions_and_project(handle, projected_state, actions);
     }
 
@@ -806,6 +930,10 @@ impl GuiPersistedConfigRuntimeOwner {
             });
         }
         actions.push(GuiShellAction::CompleteSessionDisconnect);
+        actions.push(self.pending_apply_requirements_action(
+            projected_state,
+            &projected_state.saved_configuration,
+        ));
         Self::push_actions_and_project(handle, projected_state, actions);
     }
 
@@ -829,14 +957,8 @@ impl GuiPersistedConfigRuntimeOwner {
         projected_state: &mut SorotteGuiShellAppState,
         message: String,
     ) {
-        let mut cleared_state = projected_state.clone();
-        cleared_state.pending_operation = None;
         let actions = vec![
-            GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
-                command_availability: self
-                    .command_availability_for_runtime_state(&cleared_state, self.player.is_some()),
-                pending_operation: None,
-            }),
+            GuiShellAction::CompletePendingOperation,
             GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Error,
                 message,
@@ -850,20 +972,10 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) {
-        let mut cleared_state = projected_state.clone();
-        cleared_state.pending_operation = None;
         Self::push_actions_and_project(
             handle,
             projected_state,
-            vec![GuiShellAction::ApplyGuiCommandRuntimeSnapshot(
-                GuiCommandRuntimeSnapshot {
-                    command_availability: self.command_availability_for_runtime_state(
-                        &cleared_state,
-                        self.player.is_some(),
-                    ),
-                    pending_operation: None,
-                },
-            )],
+            vec![GuiShellAction::CompletePendingOperation],
         );
     }
 }

@@ -127,8 +127,7 @@ impl SorotteGuiShellAppState {
     }
 
     pub(super) fn update_check_channel(&self) -> Option<String> {
-        self.configuration
-            .settings
+        self.saved_configuration
             .update_channel
             .as_deref()
             .and_then(normalized_editable_text)

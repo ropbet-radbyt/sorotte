@@ -32,8 +32,9 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         state: &SorotteGuiShellAppState,
         mut command_availability: GuiCommandAvailabilityState,
     ) -> GuiCommandAvailabilityState {
-        let settings = state.configuration.to_stored_settings();
-        if !legacy_chat_input_enabled(&settings) || state.pending_operation.is_some() {
+        if !legacy_chat_input_enabled(&self.runtime_settings.settings)
+            || state.pending_operation.is_some()
+        {
             return command_availability;
         }
         let session = self.runtime.session();

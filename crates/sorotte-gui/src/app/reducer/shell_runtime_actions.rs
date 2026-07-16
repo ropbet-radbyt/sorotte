@@ -101,6 +101,14 @@ impl SorotteGuiShellAppState {
             GuiShellAction::ApplyGuiSavedConfigurationRuntimeSnapshot(snapshot) => {
                 self.apply_gui_saved_configuration_runtime_snapshot(snapshot)
             }
+            GuiShellAction::ApplyGuiPersistedSettingsPatch(patch) => {
+                self.apply_gui_persisted_settings_patch(patch)
+            }
+            GuiShellAction::ApplyPendingApplyRequirementsSnapshot(requirements) => {
+                self.replace_pending_apply_requirements(requirements);
+                self.clear_action_error_and_refresh();
+                true
+            }
             GuiShellAction::ApplyGuiConfigurationRuntimeSnapshot(snapshot) => {
                 self.apply_gui_configuration_runtime_snapshot(snapshot)
             }

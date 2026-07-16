@@ -10,7 +10,6 @@ use super::GuiClientCoreChatSessionRuntimeAdapter;
 use sorotte_client_app::app_boundary::readiness::{
     ParticipantReadinessPresentation, PendingReadinessIntentPresentation,
 };
-use sorotte_client_app::app_boundary::state::ClientConfig;
 use std::collections::BTreeMap;
 
 impl GuiClientCoreChatSessionRuntimeAdapter {
@@ -101,14 +100,10 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         rooms
     }
 
-    pub(super) fn session_runtime_users(
-        &self,
-        state: &SorotteGuiShellAppState,
-    ) -> Vec<MainWindowRuntimeUserSnapshot> {
+    pub(super) fn session_runtime_users(&self) -> Vec<MainWindowRuntimeUserSnapshot> {
         let session = self.runtime.session();
-        let settings = state.configuration.to_stored_settings();
-        let playback = ClientConfig::resolve(&settings).config.playback;
-        let trusted_domains = playback.trusted_domains;
+        let playback = &self.runtime_settings.config.playback;
+        let trusted_domains = &playback.trusted_domains;
         let only_switch_to_trusted_domains = playback.only_switch_to_trusted_domains;
         let local_username = session.username();
         let mut users = Vec::new();
@@ -123,7 +118,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                     browser_uri_is_trusted(
                         file_name,
                         only_switch_to_trusted_domains,
-                        &trusted_domains,
+                        trusted_domains,
                     )
                 });
                 let differences = session
@@ -159,7 +154,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         state: &SorotteGuiShellAppState,
     ) -> Option<MainWindowRuntimeSnapshot> {
         let baseline_main_window =
-            MainWindowShellState::from_stored_settings(&state.configuration.to_stored_settings());
+            MainWindowShellState::from_stored_settings(&self.runtime_settings.settings);
         let session = self.runtime.session();
         let shared_playlist_server_supported = self.shared_playlist_server_supported();
         let mut snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
@@ -225,7 +220,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             snapshot.room_name = room_name.to_owned();
             snapshot.controlled_room_active = controlled_room_active;
             snapshot.rooms = self.session_runtime_rooms(state);
-            snapshot.users = self.session_runtime_users(state);
+            snapshot.users = self.session_runtime_users();
         }
         snapshot.room_control_status =
             self.room_control_status_for_runtime_snapshot(snapshot.controlled_room_active);

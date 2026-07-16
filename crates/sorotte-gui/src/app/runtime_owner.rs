@@ -32,7 +32,7 @@ use sorotte_client_app::app_boundary::{
         load_sorotte_ini_stored_client_settings_mvp_from_path,
     },
     state::{
-        ClientConfig, StoredClientSettingsMvp,
+        ClientConfig, StoredClientSettingsMvp, StoredClientSettingsRuntimeSnapshot,
         stored_client_settings_runtime_snapshot_legacy_compatible,
     },
 };
@@ -75,12 +75,13 @@ use super::runtime_stack::{
     GuiSessionTransportDriver, GuiTestPlayerAdapter, GuiThreadedTcpSessionTransportDriver,
 };
 use super::shell_state::{
-    GuiCommandAvailabilityState, GuiConfigurationRuntimeSnapshot,
-    GuiMediaMatchRemediationRuntimeSnapshot, GuiMediaMatchRuntimeSnapshot, GuiMediaMatchState,
-    GuiMediaSourceProviderId, GuiPlaylistEntryId, GuiPlexPlaylistSearchResult,
+    FirstRunConfigurationDialogDraft, GuiMediaMatchRemediationRuntimeSnapshot,
+    GuiMediaMatchRuntimeSnapshot, GuiMediaMatchState, GuiMediaSourceProviderId,
+    GuiPersistedSettingsPatch, GuiPlaylistEntryId, GuiPlexPlaylistSearchResult,
     GuiPlexRuntimeSnapshot, GuiPlexServerReachability, GuiPlexServerRow, GuiPluginSelection,
-    GuiShellAction, GuiStreamHelperRemediationRuntimeSnapshot, GuiStreamHelperRuntimeSnapshot,
-    GuiTransientNotificationLevel, SettingId, SorotteGuiShellAppState,
+    GuiSettingApplyRequirement, GuiShellAction, GuiStreamHelperRemediationRuntimeSnapshot,
+    GuiStreamHelperRuntimeSnapshot, GuiTransientNotificationLevel, SettingId,
+    SorotteGuiShellAppState,
 };
 use super::startup::{
     StartupPublicServerOutcome, explicit_mpv_ipc_path_from_lookup,
@@ -132,6 +133,8 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) config_path: Option<PathBuf>,
     pub(super) legacy_projection: Option<SorotteGuiShellAppState>,
     pub(super) session: Option<Box<dyn GuiSessionRuntimeAdapter + Send>>,
+    pub(super) active_session_settings: Option<StoredClientSettingsRuntimeSnapshot>,
+    pub(super) active_session_configured_settings: Option<StoredClientSettingsRuntimeSnapshot>,
     pub(super) session_generation: u64,
     pub(super) session_projects_to_shell: bool,
     pub(super) session_transport: Option<GuiQueuedSessionTransportHandle>,
@@ -152,6 +155,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
         Option<mpsc::Receiver<GuiStreamHelperRuntimeSnapshot>>,
     pub(super) player: Option<GuiOwnedPlayer>,
     pub(super) player_launch_state: GuiPlayerLaunchRuntimeState,
+    pub(super) applied_player_launch_state: Option<GuiPlayerLaunchRuntimeState>,
     pub(super) managed_mpv_process: Option<ManagedMpvProcessGuard>,
     pub(super) player_unavailability_reason: Option<String>,
     pub(super) player_local_file: Option<LocalFileUpdate>,
@@ -230,6 +234,253 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) pending_stream_feedback: VecDeque<Vec<GuiShellAction>>,
     pub(super) pending_stream_load_context: Option<GuiPendingStreamLoadContext>,
     pub(super) pending_logical_media_override: Option<GuiPendingLogicalMediaOverride>,
+}
+
+impl GuiPersistedConfigRuntimeOwner {
+    /// Settings that are allowed to influence ordinary runtime work right now.
+    ///
+    /// A connected session is pinned to its explicit active snapshot. Merely editing the
+    /// Settings draft must not alter playback, privacy, media lookup, or integration behavior
+    /// until Save/reconnect or an explicit immediate feature action applies a scoped patch.
+    pub(in crate::app::runtime_owner) fn runtime_operation_settings(
+        &self,
+        state: &SorotteGuiShellAppState,
+    ) -> StoredClientSettingsMvp {
+        if self.session_projects_to_shell {
+            return self
+                .active_session_settings
+                .as_ref()
+                .map(|runtime_settings| runtime_settings.settings.clone())
+                .unwrap_or_else(|| state.saved_configuration.clone());
+        }
+        state.configuration.to_stored_settings()
+    }
+
+    pub(in crate::app::runtime_owner) fn runtime_shared_playlist_enabled(
+        &self,
+        state: &SorotteGuiShellAppState,
+    ) -> bool {
+        stored_client_settings_runtime_snapshot_legacy_compatible(
+            &self.runtime_operation_settings(state),
+        )
+        .config
+        .playback
+        .shared_playlist_enabled
+    }
+
+    pub(in crate::app::runtime_owner) fn apply_patch_to_active_session_settings(
+        &mut self,
+        patch: &GuiPersistedSettingsPatch,
+    ) {
+        for active_settings in [
+            self.active_session_settings.as_mut(),
+            self.active_session_configured_settings.as_mut(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let mut settings = active_settings.settings.clone();
+            patch.apply_to(&mut settings);
+            Self::replace_active_runtime_settings_preserving_controlled_room_password(
+                active_settings,
+                &settings,
+            );
+        }
+    }
+
+    /// Promotes fields whose taxonomy says they become effective on an ordinary successful Save
+    /// and that are consumed directly by connected runtime work. Connection, playback/privacy,
+    /// player, streaming, and application-restart fields deliberately remain pinned until their
+    /// stronger lifecycle boundary is crossed.
+    pub(in crate::app) fn promote_on_save_runtime_fields(
+        &mut self,
+        saved_settings: &StoredClientSettingsMvp,
+    ) {
+        for active_settings in [
+            self.active_session_settings.as_mut(),
+            self.active_session_configured_settings.as_mut(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let mut settings = active_settings.settings.clone();
+            settings.media_search_directories = saved_settings.media_search_directories.clone();
+            settings.folder_search_first_file_timeout_seconds =
+                saved_settings.folder_search_first_file_timeout_seconds;
+            settings.folder_search_timeout_seconds = saved_settings.folder_search_timeout_seconds;
+            settings.folder_search_double_check_interval_seconds =
+                saved_settings.folder_search_double_check_interval_seconds;
+            settings.folder_search_warning_threshold_seconds =
+                saved_settings.folder_search_warning_threshold_seconds;
+            Self::replace_active_runtime_settings_preserving_controlled_room_password(
+                active_settings,
+                &settings,
+            );
+        }
+    }
+
+    pub(in crate::app) fn promote_restart_player_runtime_fields(
+        &mut self,
+        saved_settings: &StoredClientSettingsMvp,
+    ) {
+        for active_settings in [
+            self.active_session_settings.as_mut(),
+            self.active_session_configured_settings.as_mut(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let settings = FirstRunConfigurationDialogDraft::merge_apply_requirement_from_settings(
+                &active_settings.settings,
+                saved_settings,
+                GuiSettingApplyRequirement::RestartPlayer,
+            );
+            Self::replace_active_runtime_settings_preserving_controlled_room_password(
+                active_settings,
+                &settings,
+            );
+        }
+    }
+
+    pub(in crate::app) fn adopt_saved_player_launch_state_when_inactive(
+        &mut self,
+        saved_settings: &StoredClientSettingsMvp,
+    ) {
+        if self.applied_player_launch_state.is_some() || self.player.is_some() {
+            return;
+        }
+        if let Ok(launch_state) = Self::configured_player_launch_state_from_lookup_and_settings(
+            &env_trimmed,
+            Some(saved_settings),
+        ) {
+            self.player_launch_state = launch_state;
+        }
+    }
+
+    fn replace_active_runtime_settings_preserving_controlled_room_password(
+        active_settings: &mut StoredClientSettingsRuntimeSnapshot,
+        settings: &StoredClientSettingsMvp,
+    ) {
+        let controlled_room_password = active_settings
+            .controlled_room_password_override
+            .clone()
+            .or_else(|| {
+                active_settings
+                    .config
+                    .connection
+                    .controlled_room_password
+                    .clone()
+            });
+        let mut replacement = stored_client_settings_runtime_snapshot_legacy_compatible(settings);
+        if let Some(password) = controlled_room_password {
+            replacement.controlled_room_password_override = Some(password.clone());
+            replacement.config.connection.controlled_room_password = Some(password);
+        }
+        *active_settings = replacement;
+    }
+
+    fn comparable_settings_for_runtime_snapshot(
+        snapshot: &StoredClientSettingsRuntimeSnapshot,
+    ) -> StoredClientSettingsMvp {
+        let mut settings = snapshot.settings.clone();
+        if let (Some(room), Some(password)) = (
+            snapshot.config.connection.room.as_ref(),
+            snapshot
+                .controlled_room_password_override
+                .as_ref()
+                .or(snapshot.config.connection.controlled_room_password.as_ref()),
+        ) {
+            settings.room = Some(format!("{}:{}", room.as_str(), password.expose_secret()));
+        }
+        settings
+    }
+
+    fn settings_differ_for_apply_requirement(
+        saved_settings: &StoredClientSettingsMvp,
+        active_settings: &StoredClientSettingsRuntimeSnapshot,
+        requirement: GuiSettingApplyRequirement,
+    ) -> bool {
+        let saved_snapshot =
+            stored_client_settings_runtime_snapshot_legacy_compatible(saved_settings);
+        let saved_settings = Self::comparable_settings_for_runtime_snapshot(&saved_snapshot);
+        let active_settings = Self::comparable_settings_for_runtime_snapshot(active_settings);
+        let saved = FirstRunConfigurationDialogDraft::from_stored_settings(&saved_settings);
+        let active = FirstRunConfigurationDialogDraft::from_stored_settings(&active_settings);
+        SettingId::ALL
+            .iter()
+            .copied()
+            .filter(|id| id.apply_requirement() == requirement)
+            .any(|id| {
+                if id == SettingId::ConnectionServerPassword {
+                    return saved_settings.server_password != active_settings.server_password;
+                }
+                saved.control_value(id) != active.control_value(id)
+            })
+    }
+
+    pub(in crate::app) fn pending_apply_requirements_for_settings(
+        &self,
+        projected_state: &SorotteGuiShellAppState,
+        saved_settings: &StoredClientSettingsMvp,
+    ) -> Vec<GuiSettingApplyRequirement> {
+        let mut requirements = BTreeSet::new();
+        if self.session_projects_to_shell
+            && self
+                .active_session_configured_settings
+                .as_ref()
+                .or(self.active_session_settings.as_ref())
+                .is_some_and(|active| {
+                    Self::settings_differ_for_apply_requirement(
+                        saved_settings,
+                        active,
+                        GuiSettingApplyRequirement::Reconnect,
+                    )
+                })
+        {
+            requirements.insert(GuiSettingApplyRequirement::Reconnect);
+        }
+
+        if let Some(applied_player_launch_state) = self.applied_player_launch_state.as_ref()
+            && Self::configured_player_launch_state_from_lookup_and_settings(
+                &env_trimmed,
+                Some(saved_settings),
+            )
+            .map_or(true, |desired| desired != *applied_player_launch_state)
+        {
+            requirements.insert(GuiSettingApplyRequirement::RestartPlayer);
+        }
+
+        let saved_language = saved_settings
+            .language
+            .as_deref()
+            .and_then(normalized_legacy_runtime_language_tag_legacy_compatible)
+            .unwrap_or("en");
+        let active_language = projected_state
+            .active_application_language
+            .as_deref()
+            .and_then(normalized_legacy_runtime_language_tag_legacy_compatible)
+            .unwrap_or("en");
+        if saved_language != active_language
+            || saved_settings.force_gui_prompt.unwrap_or(false)
+                != projected_state
+                    .active_application_force_gui_prompt
+                    .unwrap_or(false)
+        {
+            requirements.insert(GuiSettingApplyRequirement::RestartApplication);
+        }
+
+        requirements.into_iter().collect()
+    }
+
+    pub(in crate::app) fn pending_apply_requirements_action(
+        &self,
+        projected_state: &SorotteGuiShellAppState,
+        saved_settings: &StoredClientSettingsMvp,
+    ) -> GuiShellAction {
+        GuiShellAction::ApplyPendingApplyRequirementsSnapshot(
+            self.pending_apply_requirements_for_settings(projected_state, saved_settings),
+        )
+    }
 }
 
 pub(super) const ATTACHED_PLAYER_PAUSE_COMMAND_SUPPRESSION: Duration = Duration::from_secs(5);

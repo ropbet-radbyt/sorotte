@@ -99,7 +99,7 @@ fn gui_shell_dispatch_plan_routes_update_checks_to_runtime_owner() {
         plan.runtime_requests,
         vec![GuiRuntimeRequest::CheckForUpdates {
             language: "en".to_owned(),
-            update_channel: Some("dev".to_owned()),
+            update_channel: None,
             user_initiated: true,
         }]
     );
@@ -112,9 +112,9 @@ fn gui_shell_dispatch_plan_routes_plugin_enablement_to_runtime_owner() {
         plugin: GuiPluginSelection::Plex,
         enabled: false,
     };
-    let plan = GuiShellDispatchPlan::from_shell_actions(&state, vec![action.clone()]);
+    let plan = GuiShellDispatchPlan::from_shell_actions(&state, vec![action]);
 
-    assert_eq!(plan.shell_actions, vec![action]);
+    assert!(plan.shell_actions.is_empty());
     assert_eq!(
         plan.pre_shell_runtime_requests,
         vec![GuiRuntimeRequest::SetPluginEnabled {
@@ -693,7 +693,7 @@ fn gui_shell_dispatch_plan_routes_media_match_actions_to_runtime_requests() {
 }
 
 #[test]
-fn gui_shell_dispatch_plan_routes_media_match_settings_to_shell_and_runtime() {
+fn gui_shell_dispatch_plan_routes_media_match_settings_to_write_first_runtime_requests() {
     let state = runtime_ready_state();
     let plan = GuiShellDispatchPlan::from_shell_actions(
         &state,
@@ -708,20 +708,10 @@ fn gui_shell_dispatch_plan_routes_media_match_settings_to_shell_and_runtime() {
         ],
     );
 
+    assert!(plan.shell_actions.is_empty());
+    assert!(plan.runtime_requests.is_empty());
     assert_eq!(
-        plan.shell_actions,
-        vec![
-            GuiShellAction::SetMediaMatchFingerprintingEnabled(true),
-            GuiShellAction::SetMediaMatchBackgroundWarmupEnabled(false),
-            GuiShellAction::SetMediaMatchWireSharingEnabled(false),
-            GuiShellAction::SetMediaMatchRuntimeToleranceEnabled(false),
-            GuiShellAction::SetMediaMatchAutoplayPolicy(
-                sorotte_media_match::MediaMatchAutoplayPolicy::AllowStrongSameMedia,
-            ),
-        ]
-    );
-    assert_eq!(
-        plan.runtime_requests,
+        plan.pre_shell_runtime_requests,
         vec![
             GuiRuntimeRequest::SetMediaMatchFingerprintingEnabled(true),
             GuiRuntimeRequest::SetMediaMatchBackgroundWarmupEnabled(false),

@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use super::{
     FirstRunConfigurationDialogDraft, FirstRunConfigurationDialogState, SecretDraft, SettingId,
 };
-use crate::app::shell_state::GuiSettingValueOrigin;
+use crate::app::shell_state::{GuiSettingApplyRequirement, GuiSettingValueOrigin};
 
 use sorotte_client_app::app_boundary::state::{AutoplayThresholdOverride, StoredClientSettingsMvp};
 use sorotte_client_core::UnpauseActionMode;
@@ -257,5 +257,29 @@ fn configuration_effective_defaults_retain_their_override_origin() {
             .unpause_action
             .origin_against_persisted(&defaults.readiness.unpause_action),
         GuiSettingValueOrigin::ApplicationDefault
+    );
+}
+
+#[test]
+fn changed_setting_ids_include_secret_intent_and_same_length_server_replacement() {
+    let original = StoredClientSettingsMvp {
+        server_password: Some("saved-secret".into()),
+        public_servers: Some(vec![("One".to_owned(), "one.example:8999".to_owned())]),
+        ..StoredClientSettingsMvp::default()
+    };
+    let mut draft = FirstRunConfigurationDialogDraft::from_stored_settings(&original);
+    draft.remove_server_password();
+    draft.settings.public_servers = Some(vec![("Two".to_owned(), "two.example:8999".to_owned())]);
+
+    let changed = draft.changed_setting_ids_against(&original);
+    assert!(changed.contains(&SettingId::ConnectionServerPassword));
+    assert!(changed.contains(&SettingId::ConnectionPublicServerCount));
+    assert_eq!(
+        SettingId::ConnectionServerPassword.apply_requirement(),
+        GuiSettingApplyRequirement::Reconnect
+    );
+    assert_eq!(
+        SettingId::ConnectionPublicServerCount.apply_requirement(),
+        GuiSettingApplyRequirement::OnSave
     );
 }

@@ -277,6 +277,7 @@ fn gui_client_core_chat_session_runtime_adapter_disables_shared_playlist_when_se
 
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
+    sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
         .flush_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
@@ -357,6 +358,7 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_shared_playlist_whe
 
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
+    sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
         .flush_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
@@ -428,6 +430,7 @@ fn gui_client_core_chat_session_runtime_adapter_projects_local_playlist_replace_
     });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
+    sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
         .flush_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
@@ -478,6 +481,7 @@ fn gui_client_core_chat_session_runtime_adapter_projects_local_playlist_replace_
     });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
+    sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
         .flush_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
@@ -547,6 +551,7 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_playback_pause_when
 
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
+    sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
         .flush_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
@@ -604,6 +609,7 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_autoplay_state_when
 
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
+    sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
         .flush_outbound_protocol_lines()
         .expect("startup protocol lines should encode");

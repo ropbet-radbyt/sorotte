@@ -15,13 +15,28 @@ impl GuiPersistedConfigRuntimeOwner {
         session: Box<dyn GuiSessionRuntimeAdapter + Send>,
     ) {
         self.session_generation = self.session_generation.wrapping_add(1);
+        self.active_session_settings = None;
+        self.active_session_configured_settings = None;
         self.session = Some(session);
+    }
+
+    pub(in crate::app) fn install_active_session_runtime(
+        &mut self,
+        session: Box<dyn GuiSessionRuntimeAdapter + Send>,
+        runtime_settings: StoredClientSettingsRuntimeSnapshot,
+    ) {
+        self.install_session_runtime(session);
+        self.active_session_configured_settings = Some(runtime_settings.clone());
+        self.active_session_settings = Some(runtime_settings);
+        self.session_projects_to_shell = true;
     }
 
     pub(in crate::app) fn remove_session_runtime(&mut self) {
         if self.session.take().is_some() {
             self.session_generation = self.session_generation.wrapping_add(1);
         }
+        self.active_session_settings = None;
+        self.active_session_configured_settings = None;
     }
 
     fn with_session_default_room(mut self, room: impl Into<String>) -> Self {

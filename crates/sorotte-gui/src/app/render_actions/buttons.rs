@@ -190,6 +190,10 @@ impl GuiWidgetEguiRenderer {
             "config-command:discard" => vec![GuiShellAction::BeginDiscardConfigurationChanges],
             "config-command:reload" => vec![GuiShellAction::BeginConfigurationReload],
             "config-command:clear-gui-data" => vec![GuiShellAction::BeginClearGuiData],
+            "config-command:confirm-clear-gui-data" => vec![GuiShellAction::ConfirmClearGuiData],
+            "config-command:cancel-clear-gui-data" => {
+                vec![GuiShellAction::DismissClearGuiDataConfirmation]
+            }
             "settings.connection.server_password.change" => {
                 if matches!(
                     &state.configuration.server_password,

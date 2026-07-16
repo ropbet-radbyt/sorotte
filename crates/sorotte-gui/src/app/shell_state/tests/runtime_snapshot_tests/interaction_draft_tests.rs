@@ -586,6 +586,10 @@ fn gui_shell_app_state_rejects_invalid_gui_saved_configuration_runtime_snapshots
     let mut state =
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
 
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        id: SettingId::ConnectionHost,
+        value: "dirty.example".to_owned().into(),
+    }));
     assert!(state.apply(GuiShellAction::BeginConfigurationSave));
     assert!(
         !state.apply(GuiShellAction::ApplyGuiSavedConfigurationRuntimeSnapshot(

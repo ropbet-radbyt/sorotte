@@ -335,7 +335,7 @@ impl GuiPersistedConfigRuntimeOwner {
         {
             return None;
         }
-        let settings = state.configuration.to_stored_settings();
+        let settings = self.runtime_operation_settings(state);
         let config = super::super::plex::plex_config_from_settings(&settings);
         if !config.streaming_enabled || !config.has_selected_server() {
             return None;

@@ -17,3 +17,6 @@ sorotte-plex = { path = "../sorotte-plex" }
 sorotte-protocol = { path = "../sorotte-protocol" }
 sorotte-secret = { path = "../sorotte-secret" }
 tokio.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true

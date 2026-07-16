@@ -397,6 +397,143 @@ define_setting_ids! {
     ),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[allow(
+    dead_code,
+    reason = "Immediate feature transactions share this apply taxonomy but are not editable SettingId controls."
+)]
+pub(in crate::app) enum GuiSettingApplyRequirement {
+    Immediate,
+    OnSave,
+    Reconnect,
+    RestartPlayer,
+    RestartApplication,
+}
+
+impl GuiSettingApplyRequirement {
+    pub(in crate::app) const fn label(self) -> &'static str {
+        match self {
+            Self::Immediate => "Applies immediately",
+            Self::OnSave => "Applies when saved",
+            Self::Reconnect => "Reconnect required",
+            Self::RestartPlayer => "Player restart required",
+            Self::RestartApplication => "Sorotte restart required",
+        }
+    }
+
+    pub(in crate::app) const fn automation_id(self) -> &'static str {
+        match self {
+            Self::Immediate => "settings.apply.immediate",
+            Self::OnSave => "settings.apply.on_save",
+            Self::Reconnect => "settings.apply.reconnect",
+            Self::RestartPlayer => "settings.apply.restart_player",
+            Self::RestartApplication => "settings.apply.restart_application",
+        }
+    }
+}
+
+impl SettingId {
+    pub(in crate::app) const fn apply_requirement(self) -> GuiSettingApplyRequirement {
+        match self {
+            Self::ConnectionHost
+            | Self::ConnectionPort
+            | Self::ConnectionUsername
+            | Self::ConnectionRoom
+            | Self::ConnectionServerPassword
+            | Self::PlaybackReadyAtStart
+            | Self::PlaybackAutoplay
+            | Self::PlaybackRequireSameFilenames
+            | Self::PlaybackSharedPlaylists
+            | Self::PlaybackPauseOnLeave
+            | Self::PlaybackLoopPlaylist
+            | Self::PlaybackLoopSingleFiles
+            | Self::PlaybackUnpauseAction
+            | Self::PlaybackAutoplayMinUsers
+            | Self::PrivacyFilename
+            | Self::PrivacyFilesize
+            | Self::PrivacyTrustedDomainsOnly
+            | Self::PrivacyTrustedDomains
+            | Self::PrivacyTrustedDomainCount
+            | Self::SyncRewindOnDesync
+            | Self::SyncFastforwardOnDesync
+            | Self::SyncSlowOnDesync
+            | Self::SyncDontSlowDownWithMe
+            | Self::SyncRewindThreshold
+            | Self::SyncFastforwardThreshold
+            | Self::SyncSlowdownThreshold
+            | Self::ChatInputEnabled
+            | Self::ChatOutputEnabled
+            | Self::ChatDirectInput
+            | Self::ChatMoveOsd
+            | Self::ChatInputPosition
+            | Self::ChatOutputMode
+            | Self::ChatMaxLines
+            | Self::ChatInputFont
+            | Self::ChatInputFontSize
+            | Self::ChatInputFontWeight
+            | Self::ChatInputColor
+            | Self::ChatOutputFont
+            | Self::ChatOutputFontSize
+            | Self::ChatOutputFontWeight
+            | Self::ChatTopMargin
+            | Self::ChatLeftMargin
+            | Self::ChatBottomMargin
+            | Self::ChatOsdMargin
+            | Self::OsdShow
+            | Self::OsdShowDuration
+            | Self::OsdShowSameRoom
+            | Self::OsdShowWarnings
+            | Self::OsdShowSlowdown
+            | Self::OsdShowNoncontroller
+            | Self::OsdShowDifferentRoom
+            | Self::OsdShowContactInfo
+            | Self::OsdNotificationTimeout
+            | Self::OsdAlertTimeout
+            | Self::OsdChatTimeout => GuiSettingApplyRequirement::Reconnect,
+            Self::PlayerExecutable
+            | Self::PlayerArguments
+            | Self::StreamingQuality
+            | Self::StreamingCustomFormat
+            | Self::StreamingBufferTargetSeconds
+            | Self::StreamingReadAheadSeconds
+            | Self::StreamingMemoryCacheMib
+            | Self::StreamingDiskCache
+            | Self::StreamingRecoveryPolicy
+            | Self::StreamingMaximumCatchupRate
+            | Self::StreamingHardSeekThresholdSeconds
+            | Self::StreamingMaximumHardSeeks
+            | Self::StreamingStabilityIntervalSeconds
+            | Self::StreamingRecoveryRetryBudget
+            | Self::StreamingRecoveryCooldownSeconds
+            | Self::StreamingRoomBufferingPolicy
+            | Self::StreamingRoomQuorumPercent
+            | Self::StreamingRoomMaximumPauseSeconds
+            | Self::StreamingStartSynchronization
+            | Self::StreamingStartQuorumPercent
+            | Self::StreamingStartTimeoutSeconds
+            | Self::StreamingStartTimeoutAction
+            | Self::StreamingQualityDowngradeSuggestions
+            | Self::StreamingEffectiveMpvOptions => GuiSettingApplyRequirement::RestartPlayer,
+            Self::GeneralLanguage | Self::GeneralForceGuiPrompt => {
+                GuiSettingApplyRequirement::RestartApplication
+            }
+            Self::ConnectionPublicServerCount
+            | Self::ConnectionRoomHistory
+            | Self::ConnectionRoomHistoryCount
+            | Self::MediaLibraryDirectories
+            | Self::MediaLibraryDirectoryCount
+            | Self::MediaLibraryFirstFileTimeout
+            | Self::MediaLibrarySearchTimeout
+            | Self::MediaLibraryDoubleCheckInterval
+            | Self::MediaLibraryWarningThreshold
+            | Self::GeneralCheckForUpdatesAutomatically
+            | Self::GeneralUpdateChannel
+            | Self::GeneralAutosaveJoinsToList
+            | Self::DiagnosticsSupportedLanguages => GuiSettingApplyRequirement::OnSave,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::app) enum GuiSettingValueOrigin {
     StoredOverride,

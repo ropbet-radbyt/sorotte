@@ -6,7 +6,7 @@ use super::super::shell_state::{
     GuiErrorRuntimeSnapshot, GuiFeedbackRuntimeSnapshot, GuiFocusedConfigurationControlState,
     GuiInteractionRuntimeSnapshot, GuiMainWindowUserEditSessionState, GuiMediaIndexRuntimeSnapshot,
     GuiMediaMatchRemediationRuntimeSnapshot, GuiMediaMatchRuntimeSnapshot, GuiPendingOperationKind,
-    GuiPendingOperationState, GuiPlayerSetupIssue, GuiPlayerSetupRuntimeSnapshot,
+    GuiPersistedSettingsPatch, GuiPlayerSetupIssue, GuiPlayerSetupRuntimeSnapshot,
     GuiPlaylistTextEditSessionState, GuiPlexRuntimeSnapshot, GuiPlexServerRow,
     GuiPublicServerEditSessionState, GuiSavedConfigurationRuntimeSnapshot,
     GuiSavedServerConnectIntent, GuiSeekPreparationRuntimeSnapshot, GuiStreamHelperHealth,
@@ -135,14 +135,17 @@ impl SorotteGuiShellAppState {
         );
         }
 
+        let current_pending_operation = self.pending_operation.as_ref().map(|pending| pending.kind);
+        if snapshot.pending_operation != current_pending_operation {
+            // Command projections are asynchronous and can arrive after the shell has begun or
+            // completed an operation. Pending lifecycle transitions belong to the explicit
+            // Begin/Complete/Cancel actions; a stale availability snapshot must never resurrect
+            // or retire an unrelated operation.
+            return false;
+        }
+
         let can_toggle_pause = snapshot.command_availability.can_toggle_pause;
         let command_availability = snapshot.command_availability;
-        self.pending_operation = snapshot
-            .pending_operation
-            .map(|kind| GuiPendingOperationState { kind });
-        if snapshot.pending_operation != Some(GuiPendingOperationKind::ConnectSavedServer) {
-            self.pending_saved_server_connect_intent = None;
-        }
         let baseline_command_availability = self.command_availability_without_runtime_override();
         self.runtime_command_availability_override =
             GuiCommandAvailabilityRuntimeOverride::from_baseline_and_snapshot(
@@ -941,6 +944,71 @@ impl SorotteGuiShellAppState {
 
         self.resync_from_settings(snapshot.draft_settings);
         self.saved_configuration = snapshot.saved_settings;
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    pub(in crate::app) fn apply_gui_persisted_settings_patch(
+        &mut self,
+        patch: GuiPersistedSettingsPatch,
+    ) -> bool {
+        patch.apply_to(&mut self.saved_configuration);
+        patch.apply_to(&mut self.configuration.settings);
+
+        match patch {
+            GuiPersistedSettingsPatch::PluginEnabled { plugin, enabled } => {
+                self.plugin_enablement.set_enabled_for(plugin, enabled);
+                self.refresh_playlist_source_states();
+            }
+            GuiPersistedSettingsPatch::MediaMatchFingerprintingEnabled(enabled) => {
+                self.media_match.settings.fingerprinting_enabled = enabled;
+                self.refresh_playlist_source_states();
+            }
+            GuiPersistedSettingsPatch::MediaMatchBackgroundWarmupEnabled(enabled) => {
+                self.media_match.settings.background_warmup_enabled = enabled;
+            }
+            GuiPersistedSettingsPatch::MediaMatchWireSharingEnabled(enabled) => {
+                self.media_match.settings.wire_sharing_enabled = enabled;
+            }
+            GuiPersistedSettingsPatch::MediaMatchRuntimeToleranceEnabled(enabled) => {
+                self.media_match.settings.runtime_tolerance_enabled = enabled;
+            }
+            GuiPersistedSettingsPatch::MediaMatchAutoplayPolicy(policy) => {
+                self.media_match.settings.autoplay_policy = policy;
+            }
+            GuiPersistedSettingsPatch::PlexAuthenticated {
+                clear_selected_server,
+                ..
+            } => {
+                self.plex.authenticated = true;
+                if clear_selected_server {
+                    self.plex.selected_server_id = None;
+                    self.plex.selected_server_url = None;
+                }
+            }
+            GuiPersistedSettingsPatch::PlexServerSelected {
+                machine_identifier,
+                uri,
+                ..
+            } => {
+                self.plex.selected_server_id = Some(machine_identifier);
+                self.plex.selected_server_url = Some(uri);
+            }
+            GuiPersistedSettingsPatch::PlexSyncEnabled(enabled) => {
+                self.plex.enabled = enabled;
+            }
+            GuiPersistedSettingsPatch::PlexStreamingEnabled(enabled) => {
+                self.plex.streaming_enabled = enabled;
+            }
+            GuiPersistedSettingsPatch::PlexDisconnected => {
+                self.plex.enabled = false;
+                self.plex.streaming_enabled = false;
+                self.plex.authenticated = false;
+                self.plex.selected_server_id = None;
+                self.plex.selected_server_url = None;
+            }
+        }
+
         self.clear_action_error_and_refresh();
         true
     }

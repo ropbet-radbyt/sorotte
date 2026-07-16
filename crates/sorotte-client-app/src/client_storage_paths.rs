@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::anyhow;
 
+use crate::sorotte_ini::write_sorotte_ini_contents_atomically_at_path;
+
 pub const SOROTTE_CONFIG_FILE_NAME: &str = "sorotte.ini";
 pub const SOROTTE_CLIENT_CONFIG_PATH_ENV: &str = "SOROTTE_CLIENT_CONFIG_PATH";
 pub const SOROTTE_CLIENT_CONFIG_ROOT_ENV: &str = "SOROTTE_CLIENT_CONFIG_ROOT";
@@ -423,16 +425,15 @@ pub fn persist_sorotte_client_install_locator(
     } else {
         String::new()
     };
-    std::fs::write(
-        &locator_path,
-        upsert_install_locator_config_root(&existing_contents, install_root, storage_root),
-    )
-    .map_err(|error| {
-        anyhow!(
-            "failed writing install config locator {}: {error}",
-            locator_path.display()
-        )
-    })
+    let updated_contents =
+        upsert_install_locator_config_root(&existing_contents, install_root, storage_root);
+    write_sorotte_ini_contents_atomically_at_path(&locator_path, updated_contents.as_bytes())
+        .map_err(|error| {
+            anyhow!(
+                "failed writing install config locator {}: {error}",
+                locator_path.display()
+            )
+        })
 }
 
 pub fn ensure_sorotte_client_install_locator(

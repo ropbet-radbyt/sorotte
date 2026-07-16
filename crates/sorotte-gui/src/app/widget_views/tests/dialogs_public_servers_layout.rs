@@ -27,6 +27,14 @@ fn gui_shell_app_state_projects_menu_dialog_widget_trees() {
             .is_some_and(|action| action.selected),
         "checkable Window state must be independent from menu-row selection"
     );
+    assert!(
+        tree.find("menu.toggle_autoplay_controls")
+            .is_some_and(|action| action.selected)
+    );
+    assert!(
+        tree.find("menu.toggle_hide_empty_rooms")
+            .is_some_and(|action| !action.selected)
+    );
 
     let about = tree
         .find("menus:dialog:about")
@@ -209,7 +217,7 @@ fn gui_shell_app_state_projects_responsive_layout_metadata_for_major_surfaces() 
     let room_panel = main_window.find("main-window:connection").unwrap();
     assert_eq!(room_panel.label, "Room");
     assert_eq!(room_panel.min_content_height, Some(320.0));
-    assert!(main_window.find("main-window:browser").is_none());
+    assert!(main_window.find("main-window:browser").is_some());
     let playlist = main_window.find("main-window:playlist").unwrap();
     assert_eq!(playlist.min_content_height, Some(220.0));
     let chat = main_window.find("main-window:chat").unwrap();

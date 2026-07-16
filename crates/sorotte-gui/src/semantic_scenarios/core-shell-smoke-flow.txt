@@ -10,6 +10,16 @@ assert-value	settings.connection.public_server_count	2
 assert-enabled	menu.open_media	false
 assert-enabled	shell:quick:open-media-file	false
 assert-enabled	menu.toggle_playback_buttons	true
+assert-enabled	menu.toggle_autoplay_controls	true
+assert-selected	menu.toggle_autoplay_controls	true
+assert-enabled	menu.toggle_hide_empty_rooms	true
+assert-selected	menu.toggle_hide_empty_rooms	false
+activate	menu.toggle_autoplay_controls
+assert-selected	menu.toggle_autoplay_controls	false
+activate	menu.toggle_autoplay_controls
+assert-selected	menu.toggle_autoplay_controls	true
+activate	menu.toggle_hide_empty_rooms
+assert-selected	menu.toggle_hide_empty_rooms	true
 activate	menu.about
 assert-value	shell:active-view	setup
 assert-value	shell:open-modal	about
@@ -91,3 +101,5 @@ open-media-files	fixture-media://open-target.mkv
 assert-selected	main-window-root	true
 assert-value	shell:active-view	room
 assert-label	main-window:playlist:0	open-target.mkv
+assert-enabled	main-window:control:autoplay-toggle	true
+assert-value	main-window:browser:hide-empty	yes

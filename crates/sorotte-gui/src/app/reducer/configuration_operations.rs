@@ -23,6 +23,10 @@ impl SorotteGuiShellAppState {
             }
             GuiShellAction::CancelConfigurationReload => self.cancel_configuration_reload(),
             GuiShellAction::BeginClearGuiData => self.begin_clear_gui_data(),
+            GuiShellAction::ConfirmClearGuiData => self.confirm_clear_gui_data(),
+            GuiShellAction::DismissClearGuiDataConfirmation => {
+                self.dismiss_clear_gui_data_confirmation()
+            }
             GuiShellAction::CompleteClearGuiData => self.complete_clear_gui_data(),
             GuiShellAction::CancelClearGuiData => self.cancel_clear_gui_data(),
             GuiShellAction::BeginConfigStorageRootChange(root) => {

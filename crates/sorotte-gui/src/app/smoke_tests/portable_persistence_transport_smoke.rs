@@ -25,6 +25,7 @@ fn gui_portable_smoke_regression_sequences_persistence_and_transport_flows() {
         room: Some("portable-room-a".to_owned()),
         ..StoredClientSettingsMvp::default()
     };
+    persisted_state.resync_from_settings(saved_settings.clone());
     assert!(persisted_state.apply(GuiShellAction::BeginConfigurationSave));
     persisted_handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
         GuiPendingCompletionRequest::SaveConfiguration(saved_settings.clone()),
@@ -208,7 +209,8 @@ fn gui_portable_smoke_regression_sequences_persistence_and_transport_flows() {
 
     assert!(tcp_state.apply(GuiShellAction::BeginSelectedPublicServerConnect));
     tcp_handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
-        GuiPendingCompletionRequest::ConnectPublicServer,
+        GuiPendingCompletionRequest::from_state(&tcp_state)
+            .expect("staged portable reconnect should capture its submitted public server"),
     ));
     GuiQueuedRuntimeOwner::pump(&mut tcp_owner, &tcp_handle, &tcp_state);
     let reconnect_actions = tcp_handle.drain_actions();

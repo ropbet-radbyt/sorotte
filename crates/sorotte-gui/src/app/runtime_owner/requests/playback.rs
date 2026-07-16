@@ -106,15 +106,23 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) -> bool {
-        let settings = projected_state.configuration.to_stored_settings();
+        let settings = projected_state.saved_configuration.clone();
         self.sync_player_from_lookup_and_settings(&env_trimmed, Some(&settings), true);
         self.refresh_player_state();
         let stream_helper_snapshot = self.recheck_stream_helper_runtime_snapshot(projected_state);
+        let player_settings_applied = self.current_player_launch_state_is_applied();
 
         let (level, message) = if self.player.is_some() {
             (
                 GuiTransientNotificationLevel::Success,
                 "mpv is ready with the current player settings.".to_owned(),
+            )
+        } else if player_settings_applied
+            && matches!(self.player_launch_state, GuiPlayerLaunchRuntimeState::None)
+        {
+            (
+                GuiTransientNotificationLevel::Success,
+                "The saved configuration has no active player.".to_owned(),
             )
         } else {
             (
@@ -126,18 +134,19 @@ impl GuiPersistedConfigRuntimeOwner {
                     }),
             )
         };
-        Self::push_actions_and_project(
-            handle,
-            projected_state,
-            vec![
-                GuiShellAction::ApplyGuiStreamHelperRuntimeSnapshot(stream_helper_snapshot),
-                GuiShellAction::PushTransientNotification {
-                    level,
-                    message: message.clone(),
-                },
-                GuiShellAction::AnnounceSystemChatEvent(message),
-            ],
-        );
+        let mut actions = vec![
+            GuiShellAction::ApplyGuiStreamHelperRuntimeSnapshot(stream_helper_snapshot),
+            GuiShellAction::PushTransientNotification {
+                level,
+                message: message.clone(),
+            },
+            GuiShellAction::AnnounceSystemChatEvent(message),
+        ];
+        if player_settings_applied {
+            self.promote_restart_player_runtime_fields(&settings);
+            actions.push(self.pending_apply_requirements_action(projected_state, &settings));
+        }
+        Self::push_actions_and_project(handle, projected_state, actions);
         true
     }
 
@@ -280,10 +289,16 @@ impl GuiPersistedConfigRuntimeOwner {
             Self::push_player_error(handle, error);
             return false;
         }
-        if let Some(session) = self.session.as_mut()
-            && let Err(error) = session.set_autoplay_enabled(enabled)
-        {
-            Self::push_player_error(handle, error);
+        if let Some(session) = self.session.as_mut() {
+            match session.set_autoplay_enabled(enabled) {
+                Ok(()) => {
+                    if let Some(runtime_settings) = self.active_session_settings.as_mut() {
+                        runtime_settings.settings.autoplay_initial_state = Some(enabled);
+                        runtime_settings.config.readiness.autoplay_initial_state = enabled;
+                    }
+                }
+                Err(error) => Self::push_player_error(handle, error),
+            }
         }
         true
     }
@@ -298,10 +313,20 @@ impl GuiPersistedConfigRuntimeOwner {
             Self::push_player_error(handle, error);
             return false;
         }
-        if let Some(session) = self.session.as_mut()
-            && let Err(error) = session.set_autoplay_threshold(threshold)
-        {
-            Self::push_player_error(handle, error);
+        if let Some(session) = self.session.as_mut() {
+            match session.set_autoplay_threshold(threshold) {
+                Ok(()) => {
+                    let threshold =
+                        sorotte_client_app::app_boundary::state::AutoplayThresholdOverride::Set(
+                            threshold,
+                        );
+                    if let Some(runtime_settings) = self.active_session_settings.as_mut() {
+                        runtime_settings.settings.autoplay_min_users = Some(threshold.clone());
+                        runtime_settings.config.readiness.autoplay_min_users = threshold;
+                    }
+                }
+                Err(error) => Self::push_player_error(handle, error),
+            }
         }
         true
     }

@@ -44,8 +44,8 @@ pub(super) use self::configuration_dialog::{
     FirstRunConfigurationDialogDraft, FirstRunConfigurationDialogState, GuiChatSection,
     GuiConfigurationTextValue, GuiConnectionSettingsSection, GuiDesyncSection, GuiDialogControl,
     GuiDialogControlKind, GuiDialogSection, GuiMediaSearchSection, GuiOsdSection,
-    GuiPrivacySection, GuiReadinessSection, GuiResolvedSettingValue, GuiSettingValueOrigin,
-    GuiStreamingSection, GuiSystemSection, SecretDraft, SettingId,
+    GuiPrivacySection, GuiReadinessSection, GuiResolvedSettingValue, GuiSettingApplyRequirement,
+    GuiSettingValueOrigin, GuiStreamingSection, GuiSystemSection, SecretDraft, SettingId,
 };
 #[cfg(any(test, feature = "gui-semantic-smoke"))]
 pub(super) use self::main_window::MainWindowRuntimeChatSnapshot;
@@ -817,6 +817,176 @@ impl GuiPluginSelection {
     }
 }
 
+/// A successfully persisted, feature-owned settings change.
+///
+/// Each variant deliberately owns only the listed fields. Applying one of these patches to the
+/// saved settings and to the raw editable settings preserves unrelated draft values and the
+/// separately tracked `SecretDraft`.
+#[derive(Clone, PartialEq)]
+pub(super) enum GuiPersistedSettingsPatch {
+    PluginEnabled {
+        plugin: GuiPluginSelection,
+        enabled: bool,
+    },
+    MediaMatchFingerprintingEnabled(bool),
+    MediaMatchBackgroundWarmupEnabled(bool),
+    MediaMatchWireSharingEnabled(bool),
+    MediaMatchRuntimeToleranceEnabled(bool),
+    MediaMatchAutoplayPolicy(MediaMatchAutoplayPolicy),
+    PlexAuthenticated {
+        user_token: SecretValue,
+        sync_enabled: bool,
+        clear_selected_server: bool,
+    },
+    PlexServerSelected {
+        machine_identifier: String,
+        uri: String,
+        access_token: SecretValue,
+    },
+    PlexSyncEnabled(bool),
+    PlexStreamingEnabled(bool),
+    PlexDisconnected,
+}
+
+impl std::fmt::Debug for GuiPersistedSettingsPatch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PluginEnabled { plugin, enabled } => formatter
+                .debug_struct("PluginEnabled")
+                .field("plugin", plugin)
+                .field("enabled", enabled)
+                .finish(),
+            Self::MediaMatchFingerprintingEnabled(enabled) => formatter
+                .debug_tuple("MediaMatchFingerprintingEnabled")
+                .field(enabled)
+                .finish(),
+            Self::MediaMatchBackgroundWarmupEnabled(enabled) => formatter
+                .debug_tuple("MediaMatchBackgroundWarmupEnabled")
+                .field(enabled)
+                .finish(),
+            Self::MediaMatchWireSharingEnabled(enabled) => formatter
+                .debug_tuple("MediaMatchWireSharingEnabled")
+                .field(enabled)
+                .finish(),
+            Self::MediaMatchRuntimeToleranceEnabled(enabled) => formatter
+                .debug_tuple("MediaMatchRuntimeToleranceEnabled")
+                .field(enabled)
+                .finish(),
+            Self::MediaMatchAutoplayPolicy(policy) => formatter
+                .debug_tuple("MediaMatchAutoplayPolicy")
+                .field(policy)
+                .finish(),
+            Self::PlexAuthenticated {
+                user_token,
+                sync_enabled,
+                clear_selected_server,
+            } => formatter
+                .debug_struct("PlexAuthenticated")
+                .field("user_token", user_token)
+                .field("sync_enabled", sync_enabled)
+                .field("clear_selected_server", clear_selected_server)
+                .finish(),
+            Self::PlexServerSelected {
+                machine_identifier,
+                access_token,
+                ..
+            } => formatter
+                .debug_struct("PlexServerSelected")
+                .field("machine_identifier", machine_identifier)
+                .field("uri", &sorotte_secret::REDACTED_SECRET)
+                .field("access_token", access_token)
+                .finish(),
+            Self::PlexSyncEnabled(enabled) => formatter
+                .debug_tuple("PlexSyncEnabled")
+                .field(enabled)
+                .finish(),
+            Self::PlexStreamingEnabled(enabled) => formatter
+                .debug_tuple("PlexStreamingEnabled")
+                .field(enabled)
+                .finish(),
+            Self::PlexDisconnected => formatter.write_str("PlexDisconnected"),
+        }
+    }
+}
+
+impl GuiPersistedSettingsPatch {
+    pub(super) fn apply_to(&self, settings: &mut StoredClientSettingsMvp) {
+        match self {
+            Self::PluginEnabled { plugin, enabled } => match plugin {
+                GuiPluginSelection::StreamSupport => {
+                    settings.stream_support_plugin_enabled = Some(*enabled);
+                }
+                GuiPluginSelection::MediaMatching => {
+                    settings.media_matching_plugin_enabled = Some(*enabled);
+                }
+                GuiPluginSelection::Plex => {
+                    settings.plex_plugin_enabled = Some(*enabled);
+                }
+            },
+            Self::MediaMatchFingerprintingEnabled(enabled) => {
+                settings.media_match_fingerprinting_enabled = Some(*enabled);
+            }
+            Self::MediaMatchBackgroundWarmupEnabled(enabled) => {
+                settings.media_match_background_warmup_enabled = Some(*enabled);
+            }
+            Self::MediaMatchWireSharingEnabled(enabled) => {
+                settings.media_match_wire_sharing_enabled = Some(*enabled);
+            }
+            Self::MediaMatchRuntimeToleranceEnabled(enabled) => {
+                settings.media_match_runtime_tolerance_enabled = Some(*enabled);
+            }
+            Self::MediaMatchAutoplayPolicy(policy) => {
+                settings.media_match_autoplay_policy =
+                    Some(media_match_autoplay_policy_label(*policy).to_owned());
+            }
+            Self::PlexAuthenticated {
+                user_token,
+                sync_enabled,
+                clear_selected_server,
+            } => {
+                settings.plex_user_token = Some(user_token.clone());
+                settings.plex_sync_enabled = Some(*sync_enabled);
+                if *clear_selected_server {
+                    settings.plex_selected_server_id = None;
+                    settings.plex_selected_server_url = None;
+                    settings.plex_selected_server_token = None;
+                }
+            }
+            Self::PlexServerSelected {
+                machine_identifier,
+                uri,
+                access_token,
+            } => {
+                settings.plex_selected_server_id = Some(machine_identifier.clone());
+                settings.plex_selected_server_url = Some(uri.clone());
+                settings.plex_selected_server_token = Some(access_token.clone());
+            }
+            Self::PlexSyncEnabled(enabled) => settings.plex_sync_enabled = Some(*enabled),
+            Self::PlexStreamingEnabled(enabled) => {
+                settings.plex_streaming_enabled = Some(*enabled);
+            }
+            Self::PlexDisconnected => {
+                settings.plex_sync_enabled = Some(false);
+                settings.plex_streaming_enabled = Some(false);
+                settings.plex_user_token = None;
+                settings.plex_selected_server_id = None;
+                settings.plex_selected_server_url = None;
+                settings.plex_selected_server_token = None;
+            }
+        }
+    }
+
+    pub(super) fn clears_plex_identity_on_disk(&self) -> bool {
+        matches!(
+            self,
+            Self::PlexAuthenticated {
+                clear_selected_server: true,
+                ..
+            } | Self::PlexDisconnected
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct GuiPluginEnablementState {
     pub(super) stream_support_enabled: bool,
@@ -881,6 +1051,8 @@ pub(super) struct GuiErrorRuntimeSnapshot {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct SorotteGuiShellAppState {
     pub(super) active_view: GuiShellView,
+    pub(super) active_application_language: Option<String>,
+    pub(super) active_application_force_gui_prompt: Option<bool>,
     pub(super) selected_configuration_tab: GuiConfigurationTab,
     pub(super) selected_plugin: GuiPluginSelection,
     pub(super) plugin_enablement: GuiPluginEnablementState,
@@ -892,6 +1064,7 @@ pub(super) struct SorotteGuiShellAppState {
     pub(super) config_storage: GuiConfigStorageRuntimeSnapshot,
     pub(super) commands: GuiCommandAvailabilityState,
     pub(super) pending_operation: Option<GuiPendingOperationState>,
+    pub(super) clear_gui_data_confirmation_visible: bool,
     pub(super) pending_config_storage_target: Option<GuiConfigStorageChangeTarget>,
     pub(super) pending_local_ready_target: Option<bool>,
     pub(super) pending_saved_server_connect_intent: Option<GuiSavedServerConnectIntent>,
@@ -912,6 +1085,7 @@ pub(super) struct SorotteGuiShellAppState {
     pub(super) update_check: GuiUpdateCheckState,
     pub(super) runtime_validation_issues: Vec<GuiValidationIssue>,
     pub(super) notifications: Vec<GuiTransientNotification>,
+    pub(super) pending_apply_requirements: Vec<GuiSettingApplyRequirement>,
     pub(super) validation: GuiValidationState,
     pub(super) last_media_dialog_directory: Option<String>,
     pub(super) playlist_undo_snapshot: Option<Vec<String>>,

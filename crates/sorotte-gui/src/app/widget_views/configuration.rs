@@ -3,6 +3,19 @@ use super::*;
 impl SorotteGuiShellAppState {
     pub(crate) fn configuration_widget_tree(&self) -> GuiWidgetNode {
         let busy = self.pending_operation.is_some();
+        let changed_setting_ids = self
+            .configuration
+            .changed_setting_ids_against(&self.saved_configuration);
+        let mut apply_requirements = changed_setting_ids
+            .iter()
+            .map(|id| id.apply_requirement())
+            .collect::<std::collections::BTreeSet<_>>();
+        if self.pending_config_storage_target.is_some() {
+            apply_requirements.insert(GuiSettingApplyRequirement::OnSave);
+        }
+        if self.has_unsaved_configuration_changes() && apply_requirements.is_empty() {
+            apply_requirements.insert(GuiSettingApplyRequirement::OnSave);
+        }
         let resolved_draft =
             FirstRunConfigurationDialogState::from_stored_settings(&self.configuration.settings);
         let resolved_persisted =
@@ -295,7 +308,7 @@ impl SorotteGuiShellAppState {
                 "Edit Room History",
                 GuiWidgetKind::Button,
                 None,
-                self.pending_operation.is_none(),
+                self.pending_operation.is_none() && !self.clear_gui_data_confirmation_visible,
                 false,
             ),
             GuiWidgetNode::leaf(
@@ -303,23 +316,68 @@ impl SorotteGuiShellAppState {
                 "Clear GUI Data",
                 GuiWidgetKind::Button,
                 None,
-                self.pending_operation.is_none(),
+                self.pending_operation.is_none() && !self.clear_gui_data_confirmation_visible,
                 false,
             ),
         ]);
+
+        let change_summary = self.has_unsaved_configuration_changes().then(|| {
+            let mut children = vec![GuiWidgetNode::leaf(
+                "configuration:changes:count",
+                "Unsaved changes",
+                GuiWidgetKind::Status,
+                Some(
+                    (changed_setting_ids.len()
+                        + usize::from(self.pending_config_storage_target.is_some()))
+                    .max(1)
+                    .to_string(),
+                ),
+                true,
+                false,
+            )];
+            children.extend(apply_requirements.iter().map(|requirement| {
+                GuiWidgetNode::leaf(
+                    requirement.automation_id(),
+                    "Apply requirement",
+                    GuiWidgetKind::Status,
+                    Some(requirement.label().to_owned()),
+                    true,
+                    false,
+                )
+            }));
+            children.extend(changed_setting_ids.iter().map(|id| {
+                GuiWidgetNode::leaf(
+                    format!("{}.apply-requirement", id.automation_id()),
+                    format!("{} apply requirement", id.label()),
+                    GuiWidgetKind::ReadOnly,
+                    Some(id.apply_requirement().label().to_owned()),
+                    true,
+                    false,
+                )
+            }));
+            GuiWidgetNode::branch(
+                "configuration:changes",
+                "Pending changes",
+                GuiWidgetKind::Panel,
+                children,
+            )
+        });
 
         let commands_panel = GuiWidgetNode::branch(
             "config-commands",
             "Commands",
             GuiWidgetKind::Panel,
-            vec![GuiWidgetNode::layout(
-                "config-commands:buttons",
-                "Command Buttons",
-                GuiLayoutMode::ButtonWrap {
-                    min_button_width: 140.0,
-                },
-                command_buttons,
-            )],
+            change_summary
+                .into_iter()
+                .chain([GuiWidgetNode::layout(
+                    "config-commands:buttons",
+                    "Command Buttons",
+                    GuiLayoutMode::ButtonWrap {
+                        min_button_width: 140.0,
+                    },
+                    command_buttons,
+                )])
+                .collect(),
         );
 
         let room_history_panel = self.room_history_edit_session.as_ref().map(|session| {
@@ -594,6 +652,8 @@ impl SorotteGuiShellAppState {
             player_setup_panel
                 .into_iter()
                 .chain(self.setup_action_alert_widget_tree())
+                .chain(self.clear_gui_data_confirmation_widget_tree())
+                .chain(self.setup_pending_apply_widget_tree())
                 .chain([
                     GuiWidgetNode::layout(
                         "configuration:tabs",
@@ -651,6 +711,84 @@ impl SorotteGuiShellAppState {
                 ])
                 .collect(),
         )
+    }
+
+    fn setup_pending_apply_widget_tree(&self) -> Option<GuiWidgetNode> {
+        if self.pending_apply_requirements.is_empty() {
+            return None;
+        }
+        let children = self
+            .pending_apply_requirements
+            .iter()
+            .copied()
+            .map(|requirement| {
+                GuiWidgetNode::leaf(
+                    format!(
+                        "configuration:pending-apply:{}",
+                        requirement.automation_id()
+                    ),
+                    "Saved change requirement",
+                    GuiWidgetKind::Status,
+                    Some(requirement.label().to_owned()),
+                    true,
+                    false,
+                )
+            })
+            .collect();
+        Some(GuiWidgetNode::branch(
+            "configuration:pending-apply",
+            "Saved changes pending apply",
+            GuiWidgetKind::Panel,
+            children,
+        ))
+    }
+
+    fn clear_gui_data_confirmation_widget_tree(&self) -> Option<GuiWidgetNode> {
+        self.clear_gui_data_confirmation_visible.then(|| {
+            GuiWidgetNode::branch(
+                "configuration:clear-gui-data-confirmation",
+                "Clear GUI data?",
+                GuiWidgetKind::Panel,
+                vec![
+                    GuiWidgetNode::leaf(
+                        "configuration:clear-gui-data-confirmation:warning",
+                        "Warning",
+                        GuiWidgetKind::Status,
+                        Some(
+                            "This permanently removes saved settings, GUI state, caches, and managed tools."
+                                .to_owned(),
+                        ),
+                        true,
+                        false,
+                    ),
+                    GuiWidgetNode::layout(
+                        "configuration:clear-gui-data-confirmation:actions",
+                        "Confirmation actions",
+                        GuiLayoutMode::ButtonWrap {
+                            min_button_width: 180.0,
+                        },
+                        vec![
+                            GuiWidgetNode::leaf(
+                                "config-command:cancel-clear-gui-data",
+                                "Keep my data",
+                                GuiWidgetKind::Button,
+                                None,
+                                true,
+                                false,
+                            ),
+                            GuiWidgetNode::leaf(
+                                "config-command:confirm-clear-gui-data",
+                                "Permanently clear GUI data",
+                                GuiWidgetKind::Button,
+                                None,
+                                true,
+                                false,
+                            ),
+                        ],
+                    ),
+                ],
+            )
+        })
     }
 
     fn setup_action_alert_widget_tree(&self) -> Option<GuiWidgetNode> {

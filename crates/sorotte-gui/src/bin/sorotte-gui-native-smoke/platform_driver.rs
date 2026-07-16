@@ -33,6 +33,12 @@ pub(super) trait NativeGuiDriver {
 
     fn find_main_window(&self, pid: u32) -> Result<Option<Self::WindowHandle>, String>;
     fn prepare_window_for_smoke(&self, window: Self::WindowHandle) -> Result<(), String>;
+    fn prepare_window_for_dimensions(
+        &self,
+        window: Self::WindowHandle,
+        width: i32,
+        height: i32,
+    ) -> Result<(), String>;
     fn scroll_active_view_page_down(&self, window: Self::WindowHandle) -> Result<(), String>;
     fn scroll_active_view_page_up(&self, window: Self::WindowHandle) -> Result<(), String>;
     fn scroll_named_control_down(

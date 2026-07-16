@@ -126,7 +126,8 @@ fn gui_persisted_config_runtime_owner_reconnects_client_core_tcp_session_for_pub
 
     assert!(state.apply(GuiShellAction::BeginSelectedPublicServerConnect));
     handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
-        GuiPendingCompletionRequest::ConnectPublicServer,
+        GuiPendingCompletionRequest::from_state(&state)
+            .expect("staged public-server connect should capture submitted settings"),
     ));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     let reconnect_actions = handle.drain_actions();
@@ -140,18 +141,17 @@ fn gui_persisted_config_runtime_owner_reconnects_client_core_tcp_session_for_pub
         reconnect_actions.iter().any(|action| matches!(
             action,
             GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot)
-                if !snapshot.shared_playlist_enabled
-                    && snapshot.playlist.is_empty()
+                if snapshot.playlist.is_empty()
                     && !snapshot.can_set_ready
                     && !snapshot.playback_paused
         )),
-        "public-server reconnect should clear stale session-owned main-window state before the new server replies"
+        "public-server reconnect should clear stale dynamic session state before the new server replies"
     );
     for action in reconnect_actions {
         assert!(state.apply(action));
     }
     assert!(state.pending_operation.is_none());
-    assert!(!state.main_window.shared_playlist_enabled);
+    assert!(state.main_window.shared_playlist_enabled);
     assert!(state.main_window.playlist.is_empty());
     assert!(!state.main_window.playback.can_set_ready);
     assert!(!state.main_window.playback_paused);
@@ -297,7 +297,8 @@ fn gui_persisted_config_runtime_owner_clears_pending_room_change_request_for_pub
 
     assert!(state.apply(GuiShellAction::BeginSelectedPublicServerConnect));
     handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
-        GuiPendingCompletionRequest::ConnectPublicServer,
+        GuiPendingCompletionRequest::from_state(&state)
+            .expect("staged public-server reconnect should capture submitted settings"),
     ));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     let connect_actions = handle.drain_actions();
@@ -512,7 +513,8 @@ fn gui_persisted_config_runtime_owner_republishes_local_file_after_public_server
 
     assert!(state.apply(GuiShellAction::BeginSelectedPublicServerConnect));
     handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
-        GuiPendingCompletionRequest::ConnectPublicServer,
+        GuiPendingCompletionRequest::from_state(&state)
+            .expect("staged failover connect should capture submitted settings"),
     ));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     for action in handle.drain_actions() {

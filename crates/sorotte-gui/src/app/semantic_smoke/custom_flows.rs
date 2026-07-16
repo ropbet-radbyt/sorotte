@@ -166,6 +166,9 @@ pub(super) fn run_gui_semantic_persistence_reset_flow() -> Result<GuiSemanticSce
         if !clear_state.apply(GuiShellAction::BeginClearGuiData) {
             return Err("failed to begin semantic clear-GUI-data flow".to_owned());
         }
+        if !clear_state.apply(GuiShellAction::ConfirmClearGuiData) {
+            return Err("failed to confirm semantic clear-GUI-data flow".to_owned());
+        }
         handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
             GuiPendingCompletionRequest::ClearGuiData,
         ));
@@ -364,7 +367,8 @@ pub(super) fn run_gui_semantic_detached_runtime_ownership_flow()
             );
         }
         connect_handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
-            GuiPendingCompletionRequest::ConnectPublicServer,
+            GuiPendingCompletionRequest::from_state(&connect_state)
+                .expect("staged semantic connect should capture its submitted public server"),
         ));
         connect_owner.pump_compatibility_state(&connect_handle, &connect_state);
         let connect_actions = connect_handle.drain_actions();

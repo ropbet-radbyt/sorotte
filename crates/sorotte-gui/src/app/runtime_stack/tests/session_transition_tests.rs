@@ -53,6 +53,7 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_session_state_befor
 
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
+    sync_adapter_to_saved_session_settings(&mut adapter, &state);
 
     let actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
     let snapshot = actions
@@ -421,6 +422,7 @@ fn gui_client_core_chat_session_runtime_adapter_projects_remote_user_after_playl
     });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("smoke-user", "smoke-room")
         .expect("client-core chat adapter should bootstrap");
+    sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
         .flush_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
@@ -719,6 +721,7 @@ fn gui_client_core_chat_session_runtime_adapter_restores_readiness_controls_afte
 
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
+    sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
         .flush_outbound_protocol_lines()
         .expect("startup protocol lines should encode");

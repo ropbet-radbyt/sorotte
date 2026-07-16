@@ -8,6 +8,22 @@ use super::{
 
 #[cfg(target_os = "windows")]
 impl PlatformNativeGuiDriver {
+    fn retry_transient_automation_read<T>(
+        mut read: impl FnMut() -> Result<T, String>,
+    ) -> Result<T, String> {
+        const MAX_ATTEMPTS: usize = 3;
+        for attempt in 1..=MAX_ATTEMPTS {
+            match read() {
+                Ok(value) => return Ok(value),
+                Err(error) if error.contains("0x80040201") && attempt < MAX_ATTEMPTS => {
+                    thread::sleep(Duration::from_millis(50));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        unreachable!("bounded UI Automation retry loop always returns on its final attempt")
+    }
+
     fn window_text_for_handle(window: PlatformWindowHandle) -> String {
         use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowTextLengthW, GetWindowTextW};
 
@@ -102,6 +118,15 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
         )
     }
 
+    fn prepare_window_for_dimensions(
+        &self,
+        window: Self::WindowHandle,
+        width: i32,
+        height: i32,
+    ) -> Result<(), String> {
+        Self::prepare_visible_window_bounds(window, SMOKE_WINDOW_X, SMOKE_WINDOW_Y, width, height)
+    }
+
     fn scroll_active_view_page_down(&self, window: Self::WindowHandle) -> Result<(), String> {
         use windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
 
@@ -155,14 +180,14 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
     }
 
     fn accessible_names(&self, window: Self::WindowHandle) -> Result<Vec<String>, String> {
-        Self::collect_accessible_names(window)
+        Self::retry_transient_automation_read(|| Self::collect_accessible_names(window))
     }
 
     fn accessibility_nodes(
         &self,
         window: Self::WindowHandle,
     ) -> Result<Vec<NativeAccessibilityNode>, String> {
-        Self::collect_accessibility_nodes(window)
+        Self::retry_transient_automation_read(|| Self::collect_accessibility_nodes(window))
     }
 
     fn top_level_menu_labels(&self, window: Self::WindowHandle) -> Result<Vec<String>, String> {

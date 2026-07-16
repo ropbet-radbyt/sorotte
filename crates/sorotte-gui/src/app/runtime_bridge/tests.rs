@@ -159,6 +159,10 @@ fn gui_preview_runtime_bridge_maps_pending_operations_to_preview_actions() {
 
     assert!(runtime.shows_manual_pending_controls());
 
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        id: SettingId::ConnectionHost,
+        value: "draft.example".to_owned().into(),
+    }));
     assert!(state.apply(GuiShellAction::BeginConfigurationSave));
     assert_eq!(
         runtime.actions_for_pending_completion(&state),

@@ -166,8 +166,6 @@ impl GuiShellDispatchPlan {
                     }
                 }
                 GuiShellAction::SetPluginEnabled { plugin, enabled } => {
-                    plan.shell_actions
-                        .push(GuiShellAction::SetPluginEnabled { plugin, enabled });
                     plan.pre_shell_runtime_requests
                         .push(GuiRuntimeRequest::SetPluginEnabled { plugin, enabled });
                 }
@@ -228,40 +226,26 @@ impl GuiShellDispatchPlan {
                         .push(GuiRuntimeRequest::ClearMediaMatchCache);
                 }
                 GuiShellAction::SetMediaMatchFingerprintingEnabled(enabled) => {
-                    plan.shell_actions
-                        .push(GuiShellAction::SetMediaMatchFingerprintingEnabled(enabled));
-                    plan.runtime_requests.push(
+                    plan.pre_shell_runtime_requests.push(
                         GuiRuntimeRequest::SetMediaMatchFingerprintingEnabled(enabled),
                     );
                 }
                 GuiShellAction::SetMediaMatchBackgroundWarmupEnabled(enabled) => {
-                    plan.shell_actions
-                        .push(GuiShellAction::SetMediaMatchBackgroundWarmupEnabled(
-                            enabled,
-                        ));
-                    plan.runtime_requests.push(
+                    plan.pre_shell_runtime_requests.push(
                         GuiRuntimeRequest::SetMediaMatchBackgroundWarmupEnabled(enabled),
                     );
                 }
                 GuiShellAction::SetMediaMatchWireSharingEnabled(enabled) => {
-                    plan.shell_actions
-                        .push(GuiShellAction::SetMediaMatchWireSharingEnabled(enabled));
-                    plan.runtime_requests
+                    plan.pre_shell_runtime_requests
                         .push(GuiRuntimeRequest::SetMediaMatchWireSharingEnabled(enabled));
                 }
                 GuiShellAction::SetMediaMatchRuntimeToleranceEnabled(enabled) => {
-                    plan.shell_actions
-                        .push(GuiShellAction::SetMediaMatchRuntimeToleranceEnabled(
-                            enabled,
-                        ));
-                    plan.runtime_requests.push(
+                    plan.pre_shell_runtime_requests.push(
                         GuiRuntimeRequest::SetMediaMatchRuntimeToleranceEnabled(enabled),
                     );
                 }
                 GuiShellAction::SetMediaMatchAutoplayPolicy(policy) => {
-                    plan.shell_actions
-                        .push(GuiShellAction::SetMediaMatchAutoplayPolicy(policy));
-                    plan.runtime_requests
+                    plan.pre_shell_runtime_requests
                         .push(GuiRuntimeRequest::SetMediaMatchAutoplayPolicy(policy));
                 }
                 GuiShellAction::StartPlexAuth => {

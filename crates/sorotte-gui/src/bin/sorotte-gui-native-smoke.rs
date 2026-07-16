@@ -69,6 +69,14 @@ struct GuiLaunchConfig<'a> {
     drop_target: Option<&'a str>,
 }
 
+#[derive(Clone, Copy, Default)]
+struct GuiLaunchTestOverrides<'a> {
+    theme: Option<&'a str>,
+    appdata_root: Option<&'a Path>,
+    config_storage_browse_path: Option<&'a Path>,
+    disable_startup_saved_connect: bool,
+}
+
 struct MockSessionServer {
     address: String,
     port: u16,
@@ -109,6 +117,7 @@ const CONFIG_INTERFACE_SYSTEM_TAB_AUTOMATION_ID: &str = "configuration:tab:inter
 const CONFIG_SAVE_AUTOMATION_ID: &str = "config-command:save";
 const CONFIG_RELOAD_AUTOMATION_ID: &str = "config-command:reload";
 const CONFIG_CLEAR_GUI_DATA_AUTOMATION_ID: &str = "config-command:clear-gui-data";
+const CONFIG_CONFIRM_CLEAR_GUI_DATA_AUTOMATION_ID: &str = "config-command:confirm-clear-gui-data";
 const CONFIG_CONNECT_ONCE_AUTOMATION_ID: &str = "config-command:connect-once";
 const MODAL_TLS_TRUST_AUTOMATION_ID: &str = "shell:modal:tls:trust";
 const MODAL_CLOSE_AUTOMATION_ID: &str = "shell:modal:close";

@@ -517,6 +517,20 @@ pub(super) fn start_mock_session_server(
     first_chat_followup_lines: &'static [&'static str],
     second_chat_followup_lines: &'static [&'static str],
 ) -> Result<MockSessionServer, String> {
+    start_mock_session_server_with_hold_timeout(
+        initial_lines,
+        first_chat_followup_lines,
+        second_chat_followup_lines,
+        Duration::from_secs(10),
+    )
+}
+
+pub(super) fn start_mock_session_server_with_hold_timeout(
+    initial_lines: &'static [&'static str],
+    first_chat_followup_lines: &'static [&'static str],
+    second_chat_followup_lines: &'static [&'static str],
+    hold_timeout: Duration,
+) -> Result<MockSessionServer, String> {
     let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|error| format!("failed to bind mock TCP listener: {error}"))?;
     listener
@@ -634,7 +648,7 @@ pub(super) fn start_mock_session_server(
         process_followup("first", first_chat_followup_lines)?;
         process_followup("second", second_chat_followup_lines)?;
 
-        let _ = release_rx.recv_timeout(Duration::from_secs(10));
+        let _ = release_rx.recv_timeout(hold_timeout);
         Ok(())
     });
 

@@ -40,11 +40,11 @@ impl MenuDialogShellState {
                 },
                 MenuSectionShellState {
                     title: "Window",
-                    actions: vec![MenuActionShellItem::new(
-                        MenuActionId::TogglePlaybackButtons,
-                        true,
-                        true,
-                    )],
+                    actions: vec![
+                        MenuActionShellItem::new(MenuActionId::TogglePlaybackButtons, true, true),
+                        MenuActionShellItem::new(MenuActionId::ToggleAutoplayControls, true, true),
+                        MenuActionShellItem::new(MenuActionId::ToggleHideEmptyRooms, true, false),
+                    ],
                 },
                 MenuSectionShellState {
                     title: "Help",

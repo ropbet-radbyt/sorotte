@@ -69,33 +69,52 @@ fn startup_preview_includes_shell_summary_and_widget_tree_preview() {
 }
 
 #[test]
-fn gui_startup_public_server_outcome_hydrates_absent_and_empty_caches_independent_of_updates() {
+fn gui_startup_public_server_outcome_hydrates_uninitialized_cache_independent_of_updates() {
     for automatic_updates in [None, Some(false), Some(true)] {
-        for public_servers in [None, Some(Vec::new())] {
-            let settings = StoredClientSettingsMvp {
-                check_for_updates_automatically: automatic_updates,
-                last_checked_for_updates: Some("2027-01-14 09:10:11.123".to_owned()),
-                public_servers,
-                ..StoredClientSettingsMvp::default()
-            };
-            let fetch_calls = std::cell::Cell::new(0);
+        let settings = StoredClientSettingsMvp {
+            check_for_updates_automatically: automatic_updates,
+            last_checked_for_updates: Some("2027-01-14 09:10:11.123".to_owned()),
+            public_servers: None,
+            ..StoredClientSettingsMvp::default()
+        };
+        let fetch_calls = std::cell::Cell::new(0);
 
-            let outcome =
-                super::super::gui_startup_public_server_outcome_with_fetcher(&settings, |_| {
-                    fetch_calls.set(fetch_calls.get() + 1);
-                    Ok(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())])
-                });
+        let outcome =
+            super::super::gui_startup_public_server_outcome_with_fetcher(&settings, |_| {
+                fetch_calls.set(fetch_calls.get() + 1);
+                Ok(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())])
+            });
 
-            assert_eq!(fetch_calls.get(), 1);
-            assert_eq!(
-                outcome,
-                super::super::StartupPublicServerOutcome::Loaded(vec![(
-                    "Primary".to_owned(),
-                    "syncplay.pl:8999".to_owned(),
-                )]),
-                "startup hydration should ignore automatic update preference {automatic_updates:?}"
-            );
-        }
+        assert_eq!(fetch_calls.get(), 1);
+        assert_eq!(
+            outcome,
+            super::super::StartupPublicServerOutcome::Loaded(vec![(
+                "Primary".to_owned(),
+                "syncplay.pl:8999".to_owned(),
+            )]),
+            "startup hydration should ignore automatic update preference {automatic_updates:?}"
+        );
+    }
+}
+
+#[test]
+fn gui_startup_public_server_outcome_preserves_explicit_empty_cache_without_fetching() {
+    for automatic_updates in [None, Some(false), Some(true)] {
+        let settings = StoredClientSettingsMvp {
+            check_for_updates_automatically: automatic_updates,
+            public_servers: Some(Vec::new()),
+            ..StoredClientSettingsMvp::default()
+        };
+
+        let outcome =
+            super::super::gui_startup_public_server_outcome_with_fetcher(&settings, |_| {
+                panic!("an explicitly empty public-server list must prevent startup hydration")
+            });
+
+        assert_eq!(
+            outcome,
+            super::super::StartupPublicServerOutcome::AlreadyCached
+        );
     }
 }
 
@@ -114,6 +133,19 @@ fn gui_startup_public_server_outcome_reports_empty_service_response() {
         super::super::StartupPublicServerOutcome::Failed(message)
             if message.contains("empty list")
     ));
+}
+
+#[test]
+fn gui_startup_public_server_outcome_reports_offline_fetch_failure() {
+    let outcome = super::super::gui_startup_public_server_outcome_with_fetcher(
+        &StoredClientSettingsMvp::default(),
+        |_| Err("offline".to_owned()),
+    );
+
+    assert_eq!(
+        outcome,
+        super::super::StartupPublicServerOutcome::Failed("offline".to_owned())
+    );
 }
 
 #[test]

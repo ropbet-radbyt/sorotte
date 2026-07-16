@@ -435,7 +435,9 @@ pub(super) enum StartupPublicServerOutcome {
 }
 
 pub(super) fn should_hydrate_startup_public_servers(settings: &StoredClientSettingsMvp) -> bool {
-    settings.public_servers.as_ref().is_none_or(Vec::is_empty)
+    // `None` means the cache has never been initialized. `Some([])` records an
+    // explicit empty choice and must survive startup without a remote refill.
+    settings.public_servers.is_none()
 }
 
 pub(super) fn gui_startup_public_server_outcome_with_fetcher<FPublicServers>(

@@ -225,8 +225,8 @@ fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
         "Open URL should not be exposed from the Controls pane"
     );
     assert!(
-        shell_tree.find("main-window:browser").is_none(),
-        "the old separate room browser should not be projected"
+        shell_tree.find("main-window:browser").is_some(),
+        "the compact room filter should be projected"
     );
     assert!(
         shell_tree.find("main-window:room-group:1:join").is_none(),

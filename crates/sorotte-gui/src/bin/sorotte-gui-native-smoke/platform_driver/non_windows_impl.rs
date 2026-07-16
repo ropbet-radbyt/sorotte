@@ -16,6 +16,15 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
         Ok(())
     }
 
+    fn prepare_window_for_dimensions(
+        &self,
+        _window: Self::WindowHandle,
+        _width: i32,
+        _height: i32,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
     fn scroll_active_view_page_down(&self, _window: Self::WindowHandle) -> Result<(), String> {
         Ok(())
     }

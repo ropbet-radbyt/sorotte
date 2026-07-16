@@ -26,9 +26,10 @@ pub(super) fn resolve_binary_path(path: &Path) -> Result<PathBuf, String> {
         .map_err(|error| format!("failed to resolve sorotte-gui binary at {path:?}: {error}"))
 }
 
-pub(super) fn launch_sorotte_gui(
+pub(super) fn launch_sorotte_gui_with_test_overrides(
     binary_path: &Path,
     launch: GuiLaunchConfig<'_>,
+    test_overrides: GuiLaunchTestOverrides<'_>,
 ) -> Result<Child, String> {
     let mut command = Command::new(binary_path);
     if let Some(parent) = binary_path.parent() {
@@ -47,10 +48,33 @@ pub(super) fn launch_sorotte_gui(
         "SOROTTE_GUI_TEST_DROP_FILE_PATHS",
         "SOROTTE_GUI_TEST_DROP_TARGET",
         "SOROTTE_GUI_UPDATE_CHECK_RESPONSE",
+        "SOROTTE_GUI_TEST_THEME",
+        "SOROTTE_GUI_TEST_CONFIG_ROOT_BROWSE_PATH",
+        "SOROTTE_GUI_TEST_DISABLE_STARTUP_SAVED_CONNECT",
+        "SOROTTE_CLIENT_CONFIG_ROOT",
+        "SOROTTE_CLIENT_INSTALL_ROOT",
     ] {
         command.env_remove(name);
     }
-    command.env("SOROTTE_CLIENT_CONFIG_PATH", launch.config_path);
+    if let Some(appdata_root) = test_overrides.appdata_root {
+        command.env_remove("SOROTTE_CLIENT_CONFIG_PATH");
+        command.env("APPDATA", appdata_root);
+        command.env(
+            "SOROTTE_CLIENT_INSTALL_ROOT",
+            appdata_root.join("isolated-install-root"),
+        );
+    } else {
+        command.env("SOROTTE_CLIENT_CONFIG_PATH", launch.config_path);
+    }
+    if let Some(theme) = test_overrides.theme {
+        command.env("SOROTTE_GUI_TEST_THEME", theme);
+    }
+    if let Some(path) = test_overrides.config_storage_browse_path {
+        command.env("SOROTTE_GUI_TEST_CONFIG_ROOT_BROWSE_PATH", path);
+    }
+    if test_overrides.disable_startup_saved_connect {
+        command.env("SOROTTE_GUI_TEST_DISABLE_STARTUP_SAVED_CONNECT", "true");
+    }
     command.env(
         "SOROTTE_GUI_REFRESH_PUBLIC_SERVERS",
         launch.public_servers_spec,
@@ -262,9 +286,26 @@ pub(super) fn launch_sorotte_gui_with_retry<D: NativeGuiDriver>(
     launch: GuiLaunchConfig<'_>,
     timeout: Duration,
 ) -> Result<(Child, D::WindowHandle), String> {
+    launch_sorotte_gui_with_retry_and_test_overrides(
+        driver,
+        binary_path,
+        launch,
+        timeout,
+        GuiLaunchTestOverrides::default(),
+    )
+}
+
+pub(super) fn launch_sorotte_gui_with_retry_and_test_overrides<D: NativeGuiDriver>(
+    driver: &D,
+    binary_path: &Path,
+    launch: GuiLaunchConfig<'_>,
+    timeout: Duration,
+    test_overrides: GuiLaunchTestOverrides<'_>,
+) -> Result<(Child, D::WindowHandle), String> {
     let mut last_error = String::new();
     for attempt in 1..=LAUNCH_ATTEMPTS {
-        let mut child = launch_sorotte_gui(binary_path, launch)?;
+        let mut child =
+            launch_sorotte_gui_with_test_overrides(binary_path, launch, test_overrides)?;
         match wait_for_main_window(driver, &mut child, timeout) {
             Ok(window) => {
                 if let Err(error) = driver.prepare_window_for_smoke(window) {

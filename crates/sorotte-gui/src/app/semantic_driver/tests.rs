@@ -24,7 +24,7 @@ fn gui_semantic_driver_runs_widget_id_scenario_without_platform_ui() {
         driver.widget("config:Connection:Host").is_err(),
         "semantic driver must not retain visible-label setting IDs"
     );
-    assert_eq!(stored.host.as_deref(), Some("syncplay.pl"));
+    assert_eq!(stored.host.as_deref(), Some("syncplay.example"));
     assert_eq!(stored.port, Some(8999));
     assert_eq!(stored.username.as_deref(), Some("smoke-user"));
     assert_eq!(stored.room.as_deref(), Some("smoke-room"));
@@ -133,7 +133,8 @@ fn gui_semantic_driver_runs_widget_id_scenario_without_platform_ui() {
     assert_eq!(saved.force_gui_prompt, Some(true));
     assert!(driver.state().menus.tls_prompt_expected);
     assert!(!driver.state().menus.update_notice_expected);
-    assert_eq!(driver.state().selected_public_server_index(), Some(0));
+    assert_eq!(stored.public_servers, Some(Vec::new()));
+    assert_eq!(driver.state().selected_public_server_index(), None);
     assert_eq!(
         driver.state().selection.selected_media_search_directory,
         Some(0)

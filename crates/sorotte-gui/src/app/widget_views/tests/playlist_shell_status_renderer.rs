@@ -148,7 +148,7 @@ fn gui_shell_app_state_projects_unified_room_content_and_selected_configuration_
     assert!(main_window.find("main-window:playlist").is_some());
     assert!(main_window.find("main-window:connection").is_some());
     assert!(main_window.find("main-window:participants").is_some());
-    assert!(main_window.find("main-window:browser").is_none());
+    assert!(main_window.find("main-window:browser").is_some());
 
     assert!(state.apply(GuiShellAction::SelectConfigurationTab(
         GuiConfigurationTab::InterfaceSystem,

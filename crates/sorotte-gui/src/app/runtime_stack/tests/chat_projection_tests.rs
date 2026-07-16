@@ -104,6 +104,7 @@ fn gui_client_core_chat_session_runtime_adapter_projects_session_state_into_main
     )));
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
+    sync_adapter_to_saved_session_settings(&mut adapter, &state);
 
     let startup_lines = adapter
         .flush_outbound_protocol_lines()
@@ -240,6 +241,7 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_user_changes_as_system_
     });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
+    sync_adapter_to_saved_session_settings(&mut adapter, &state);
 
     let startup_lines = adapter
         .flush_outbound_protocol_lines()

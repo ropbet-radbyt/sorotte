@@ -9,7 +9,7 @@ use sorotte_client_core::PrivacyMode;
 
 use super::shell_state::{
     FirstRunConfigurationDialogDraft, FirstRunConfigurationDialogState, GuiDialogControl,
-    GuiDialogControlKind, SecretDraft, SettingId,
+    GuiDialogControlKind, GuiSettingApplyRequirement, SecretDraft, SettingId,
 };
 use super::support::{
     bool_label, configured_room_name_text, normalized_editable_text,
@@ -59,6 +59,65 @@ impl FirstRunConfigurationDialogDraft {
     pub(super) fn has_unsaved_changes_against(&self, settings: &StoredClientSettingsMvp) -> bool {
         self.to_stored_settings() != *settings
             || self.sections != Self::from_stored_settings(settings).sections
+    }
+
+    pub(super) fn changed_setting_ids_against(
+        &self,
+        settings: &StoredClientSettingsMvp,
+    ) -> Vec<SettingId> {
+        let persisted = Self::from_stored_settings(settings);
+        let mut changed = SettingId::ALL
+            .iter()
+            .copied()
+            .filter(|id| {
+                if *id == SettingId::ConnectionServerPassword {
+                    return !matches!(self.server_password, SecretDraft::Unchanged);
+                }
+                self.control_value(*id) != persisted.control_value(*id)
+            })
+            .collect::<Vec<_>>();
+
+        // Public-server rows are edited through their own workflow. Count-only controls do not
+        // detect a same-length replacement, so lock that typed change to the public-server ID.
+        if self.settings.public_servers != settings.public_servers
+            && !changed.contains(&SettingId::ConnectionPublicServerCount)
+        {
+            changed.push(SettingId::ConnectionPublicServerCount);
+        }
+        changed.sort_unstable();
+        changed.dedup();
+        changed
+    }
+
+    pub(super) fn merge_apply_requirement_from_settings(
+        baseline: &StoredClientSettingsMvp,
+        source: &StoredClientSettingsMvp,
+        requirement: GuiSettingApplyRequirement,
+    ) -> StoredClientSettingsMvp {
+        let mut merged = Self::from_stored_settings(baseline);
+        let source = Self::from_stored_settings(source);
+        for id in SettingId::ALL
+            .iter()
+            .copied()
+            .filter(|id| id.apply_requirement() == requirement)
+        {
+            let Some(control) = source.control(id) else {
+                continue;
+            };
+            match control.kind {
+                GuiDialogControlKind::Checkbox => {
+                    let _ = merged.apply_bool_value(id, control.value == "yes");
+                }
+                kind if kind.is_editable() => {
+                    let _ = merged.apply_text_value(id, &control.value);
+                }
+                _ => {}
+            }
+        }
+        if requirement == GuiSettingApplyRequirement::Reconnect {
+            merged.settings.server_password = source.settings.server_password.clone();
+        }
+        merged.to_stored_settings()
     }
 
     pub(super) fn control(&self, id: SettingId) -> Option<&GuiDialogControl> {

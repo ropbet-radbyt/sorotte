@@ -1,12 +1,52 @@
 use sorotte_client_app::app_boundary::state::parse_host_and_optional_port_from_host_arg_legacy_compatible;
 
+use sorotte_client_app::app_boundary::state::{
+    StoredClientSettingsMvp, stored_client_settings_runtime_snapshot_legacy_compatible,
+};
+
+use super::runtime_owner::GuiPersistedConfigRuntimeOwner;
 use super::shell_state::{
     GuiPendingOperationKind, GuiPendingOperationState, GuiSavedServerConnectIntent, GuiShellView,
-    GuiTransientNotificationLevel, SettingId, SorotteGuiShellAppState,
+    GuiTransientNotificationLevel, SecretDraft, SettingId, SorotteGuiShellAppState,
 };
 use super::support::normalized_editable_text;
 
 impl SorotteGuiShellAppState {
+    pub(in crate::app) fn connect_once_runtime_settings(&self) -> StoredClientSettingsMvp {
+        let draft = self.configuration.to_stored_settings();
+        let mut settings = self.saved_configuration.clone();
+        settings.host = draft.host;
+        settings.port = draft.port;
+        settings.username = draft.username;
+        settings.room = draft.room;
+        if !matches!(&self.configuration.server_password, SecretDraft::Unchanged) {
+            settings.server_password = draft.server_password;
+        }
+        settings
+    }
+
+    pub(in crate::app) fn submitted_saved_server_connect_settings(
+        &self,
+        intent: GuiSavedServerConnectIntent,
+    ) -> StoredClientSettingsMvp {
+        match intent {
+            GuiSavedServerConnectIntent::ConnectOnce => self.connect_once_runtime_settings(),
+            GuiSavedServerConnectIntent::SaveAndConnect => self.configuration.to_stored_settings(),
+        }
+    }
+
+    pub(in crate::app) fn submitted_saved_server_connect_target(
+        &self,
+        intent: GuiSavedServerConnectIntent,
+    ) -> Option<super::shell_state::GuiSavedSessionConnectTarget> {
+        let runtime_settings = stored_client_settings_runtime_snapshot_legacy_compatible(
+            &self.submitted_saved_server_connect_settings(intent),
+        );
+        GuiPersistedConfigRuntimeOwner::saved_server_connect_target_for_runtime_settings(
+            &runtime_settings,
+        )
+    }
+
     pub(super) fn selected_public_server_index(&self) -> Option<usize> {
         self.public_servers
             .servers
@@ -107,7 +147,7 @@ impl SorotteGuiShellAppState {
                 "Configured server connect requires a saved host and a valid port.",
             );
         }
-        let Some(_target) = self.saved_session_connect_target() else {
+        let Some(_target) = self.submitted_saved_server_connect_target(intent) else {
             return self.record_action_error(
                 "Configured server connect requires a saved host and a valid port.",
             );
@@ -129,7 +169,13 @@ impl SorotteGuiShellAppState {
             return self
                 .record_action_error("No configured-server connect is currently in progress.");
         }
-        let Some(_target) = self.saved_session_connect_target() else {
+        let Some(connect_intent) = self.pending_saved_server_connect_intent else {
+            self.pending_operation = None;
+            return self.record_action_error(
+                "Configured server connect is missing its submitted connection intent.",
+            );
+        };
+        let Some(_target) = self.submitted_saved_server_connect_target(connect_intent) else {
             self.pending_operation = None;
             self.pending_saved_server_connect_intent = None;
             return self.record_action_error(
@@ -310,11 +356,7 @@ impl SorotteGuiShellAppState {
         }
 
         let mut settings = self.configuration.to_stored_settings();
-        settings.public_servers = if normalized.is_empty() {
-            None
-        } else {
-            Some(normalized)
-        };
+        settings.public_servers = Some(normalized);
         self.resync_from_settings(settings);
         self.pending_operation = None;
         if self.public_servers.servers.is_empty() {

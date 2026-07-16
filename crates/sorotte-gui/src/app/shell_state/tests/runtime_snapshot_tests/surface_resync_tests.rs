@@ -83,6 +83,9 @@ fn gui_shell_app_state_resyncs_surfaces_from_configuration_edits() {
         section_index: 0,
         action_index: 0,
     }));
+    state.pending_operation = Some(GuiPendingOperationState {
+        kind: GuiPendingOperationKind::RefreshPublicServers,
+    });
     assert!(state.apply(GuiShellAction::ApplyGuiCommandRuntimeSnapshot(
         GuiCommandRuntimeSnapshot {
             command_availability: GuiCommandAvailabilityState {

@@ -64,6 +64,22 @@ impl GuiNativeApp {
         }
     }
 
+    pub(super) fn apply_test_theme_override_from_lookup<F>(ctx: &egui::Context, lookup: &F)
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        match lookup("SOROTTE_GUI_TEST_THEME")
+            .as_deref()
+            .map(str::trim)
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("dark") => ctx.set_visuals(egui::Visuals::dark()),
+            Some("light") => ctx.set_visuals(egui::Visuals::light()),
+            _ => {}
+        }
+    }
+
     pub(in crate::app) fn parse_seek_offset_seconds(value: &str) -> Option<f64> {
         let offset = value.trim().parse::<f64>().ok()?;
         offset.is_finite().then_some(offset)
