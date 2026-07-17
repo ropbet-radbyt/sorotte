@@ -456,19 +456,33 @@ mod shutdown_release_tests {
     use super::*;
 
     #[test]
-    fn cli_shutdown_release_helper_clears_bridge_readiness_before_runtime_drop() {
-        let settings = sorotte_player_mpv::LegacySyncplayUiSettings {
-            chat_move_osd: false,
-            ..sorotte_player_mpv::LegacySyncplayUiSettings::default()
-        };
-        let mut player = MpvAdapter::with_unacknowledging_syncplayintf_test_ipc(settings);
+    fn cli_external_player_shutdown_restores_osd_before_releasing_bridge() {
+        let (player, commands) = MpvAdapter::with_cleanup_recording_sorotte_bridge_test_ipc(
+            sorotte_player_mpv::LegacySyncplayUiSettings::default(),
+            Some(("top".to_owned(), 16)),
+        );
         assert_eq!(
-            player.configure_bundled_sorotte_bridge(),
-            sorotte_player_mpv::SorotteBridgeHealth::Ready
+            player.sorotte_bridge_health(),
+            sorotte_player_mpv::SorotteBridgeHealth::Ready,
         );
         let mut runtime = ClientApplication::with_default_session(player);
 
         release_cli_runtime_sorotte_bridge_best_effort(&mut runtime);
+
+        let commands = commands
+            .lock()
+            .expect("cleanup command log should not be poisoned")
+            .clone();
+        assert_eq!(commands.len(), 3, "CLI cleanup should queue three commands");
+        assert_eq!(
+            commands[0],
+            serde_json::json!(["set_property", "osd-align-y", "top"])
+        );
+        assert_eq!(
+            commands[1],
+            serde_json::json!(["set_property", "osd-margin-y", 16])
+        );
+        assert_eq!(commands[2][2], "sorotte_syncplayintf_release");
 
         assert_eq!(
             runtime.player().sorotte_bridge_health(),

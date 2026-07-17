@@ -32,13 +32,14 @@ use sorotte_client_app::app_boundary::{
         load_sorotte_ini_stored_client_settings_mvp_from_path,
     },
     state::{
-        ClientConfig, StoredClientSettingsMvp, StoredClientSettingsRuntimeSnapshot,
+        ClientConfig, EffectiveMpvStreamingOption, StoredClientSettingsMvp,
+        StoredClientSettingsRuntimeSnapshot,
         stored_client_settings_runtime_snapshot_legacy_compatible,
     },
 };
 use sorotte_client_core::PlayerCommandCause;
 use sorotte_player_api::{LocalFileUpdate, PlayerAdapter};
-use sorotte_player_mpv::{MpvAdapter, SorotteBridgeHealth};
+use sorotte_player_mpv::{LegacySyncplayUiSettings, MpvAdapter, SorotteBridgeHealth};
 use sorotte_plex::{
     PlexClientConfig, PlexMatchCacheStagedWrite, SecretPlexPlaybackUrl,
     auth::{PlexAuthPollResult, PlexAuthService, PlexAuthSession},
@@ -141,7 +142,9 @@ pub(super) enum GuiPlayerIntegrationHealth {
 impl GuiPlayerIntegrationHealth {
     fn from_sorotte_bridge_health(health: SorotteBridgeHealth) -> Self {
         match health {
-            SorotteBridgeHealth::Disabled | SorotteBridgeHealth::Ready => Self::Ready,
+            SorotteBridgeHealth::Disabled
+            | SorotteBridgeHealth::Ready
+            | SorotteBridgeHealth::Recovering => Self::Ready,
             SorotteBridgeHealth::Degraded(failure) => Self::BridgeDegraded {
                 retryable_in_place: failure.retryable_in_place(),
                 reason: failure.reason,
@@ -164,6 +167,98 @@ impl GuiPlayerIntegrationHealth {
                 ..
             }
         )
+    }
+}
+
+#[derive(Debug, Default)]
+pub(super) struct GuiPlayerApplyState {
+    /// The last process target and launch arguments that actually became active.
+    pub(super) applied_process_target: Option<GuiPlayerProcessTarget>,
+    /// The effective streaming options last accepted by the active mpv runtime.
+    pub(super) applied_streaming_options: Option<Vec<EffectiveMpvStreamingOption>>,
+    /// The mpv UI properties last accepted by the attached mpv process.
+    pub(super) applied_mpv_ui_settings: Option<LegacySyncplayUiSettings>,
+    /// The Lua bridge settings last acknowledged independently of mpv UI-property application.
+    pub(super) acknowledged_bridge_settings: Option<LegacySyncplayUiSettings>,
+    /// The exact Lua settings generation acknowledged for `acknowledged_bridge_settings`.
+    pub(super) acknowledged_bridge_generation: Option<u64>,
+    /// A process or streaming apply failed and still needs a core player retry/restart.
+    pub(super) core_reapply_required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum GuiPlayerProcessTarget {
+    None,
+    TestPlayer,
+    ExplicitMpvIpc {
+        ipc_path: String,
+    },
+    ManagedMpv {
+        requested_player_path: String,
+        program: PathBuf,
+        extra_args: Vec<String>,
+    },
+    UnsupportedConfiguredPlayer {
+        player_path: String,
+    },
+}
+
+impl From<&GuiPlayerLaunchRuntimeState> for GuiPlayerProcessTarget {
+    fn from(launch_state: &GuiPlayerLaunchRuntimeState) -> Self {
+        match launch_state {
+            GuiPlayerLaunchRuntimeState::None => Self::None,
+            GuiPlayerLaunchRuntimeState::TestPlayer => Self::TestPlayer,
+            GuiPlayerLaunchRuntimeState::ExplicitMpvIpc { ipc_path, .. } => Self::ExplicitMpvIpc {
+                ipc_path: ipc_path.clone(),
+            },
+            GuiPlayerLaunchRuntimeState::ManagedMpv(config) => Self::ManagedMpv {
+                requested_player_path: config.requested_player_path.clone(),
+                program: config.program.clone(),
+                extra_args: config.extra_args.clone(),
+            },
+            GuiPlayerLaunchRuntimeState::UnsupportedConfiguredPlayer { player_path } => {
+                Self::UnsupportedConfiguredPlayer {
+                    player_path: player_path.clone(),
+                }
+            }
+        }
+    }
+}
+
+impl GuiPlayerApplyState {
+    fn process_target_is_applied(&self, desired: &GuiPlayerLaunchRuntimeState) -> bool {
+        self.applied_process_target.as_ref() == Some(&GuiPlayerProcessTarget::from(desired))
+    }
+
+    fn streaming_options_are_applied(&self, desired: &GuiPlayerLaunchRuntimeState) -> bool {
+        desired.effective_mpv_streaming_options() == self.applied_streaming_options.as_deref()
+    }
+
+    fn mpv_ui_settings_are_applied(&self, desired: &GuiPlayerLaunchRuntimeState) -> bool {
+        desired.mpv_ui_settings() == self.applied_mpv_ui_settings.as_ref()
+    }
+
+    fn bridge_settings_are_acknowledged(&self, desired: &GuiPlayerLaunchRuntimeState) -> bool {
+        let desired_settings = desired.mpv_ui_settings();
+        desired_settings == self.acknowledged_bridge_settings.as_ref()
+            && desired_settings.is_none_or(|settings| {
+                !settings.uses_syncplayintf_bridge()
+                    || self.acknowledged_bridge_generation.is_some()
+            })
+    }
+
+    fn record_core_apply(&mut self, launch_state: &GuiPlayerLaunchRuntimeState) {
+        self.applied_process_target = Some(GuiPlayerProcessTarget::from(launch_state));
+        self.applied_streaming_options = launch_state
+            .effective_mpv_streaming_options()
+            .map(<[_]>::to_vec);
+        self.core_reapply_required = false;
+    }
+
+    fn clear_integration_baselines(&mut self) {
+        self.applied_mpv_ui_settings = None;
+        self.acknowledged_bridge_settings = None;
+        self.acknowledged_bridge_generation = None;
     }
 }
 
@@ -193,9 +288,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
         Option<mpsc::Receiver<GuiStreamHelperRuntimeSnapshot>>,
     pub(super) player: Option<GuiOwnedPlayer>,
     pub(super) player_launch_state: GuiPlayerLaunchRuntimeState,
-    pub(super) applied_player_launch_state: Option<GuiPlayerLaunchRuntimeState>,
-    pub(super) player_settings_reapply_required: bool,
-    pub(super) explicit_mpv_osd_placement_restore: Option<(String, String, i64)>,
+    pub(super) player_apply_state: GuiPlayerApplyState,
     pub(super) managed_mpv_process: Option<ManagedMpvProcessGuard>,
     pub(super) player_unavailability_reason: Option<String>,
     pub(super) player_integration_health: GuiPlayerIntegrationHealth,
@@ -384,7 +477,7 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         saved_settings: &StoredClientSettingsMvp,
     ) {
-        if self.applied_player_launch_state.is_some() || self.player.is_some() {
+        if self.player_apply_state.applied_process_target.is_some() || self.player.is_some() {
             return;
         }
         if let Ok(launch_state) = Self::configured_player_launch_state_from_lookup_and_settings(
@@ -483,24 +576,17 @@ impl GuiPersistedConfigRuntimeOwner {
                 &env_trimmed,
                 Some(saved_settings),
             );
-        let player_target_differs =
-            self.applied_player_launch_state
+        let core_player_state_differs = (self.player_apply_state.applied_process_target.is_some()
+            || self.player.is_some())
+            && desired_player_launch_state
                 .as_ref()
-                .is_some_and(|applied_player_launch_state| {
-                    desired_player_launch_state.as_ref() != Ok(applied_player_launch_state)
+                .map_or(true, |desired| {
+                    !self.player_apply_state.process_target_is_applied(desired)
+                        || !self
+                            .player_apply_state
+                            .streaming_options_are_applied(desired)
                 });
-        let retryable_bridge_delta_can_apply_in_place =
-            self.player_integration_health.bridge_retryable_in_place()
-                && self
-                    .applied_player_launch_state
-                    .as_ref()
-                    .zip(desired_player_launch_state.as_ref().ok())
-                    .is_some_and(|(applied, desired)| {
-                        applied.can_apply_mpv_ui_settings_in_place(desired)
-                    });
-        if !retryable_bridge_delta_can_apply_in_place
-            && (self.player_settings_reapply_required || player_target_differs)
-        {
+        if self.player_apply_state.core_reapply_required || core_player_state_differs {
             requirements.insert(GuiSettingApplyRequirement::RestartPlayer);
         }
 

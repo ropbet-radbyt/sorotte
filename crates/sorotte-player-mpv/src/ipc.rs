@@ -99,7 +99,10 @@ impl MpvJsonIpcClient {
             .name(format!("sorotte-mpv-ipc-{generation}"))
             .spawn(move || {
                 let mut worker = MpvIpcWorker::new(transport);
-                while let Ok(message) = command_rx.recv() {
+                let final_completion_tx = loop {
+                    let Ok(message) = command_rx.recv() else {
+                        break None;
+                    };
                     match message {
                         MpvIpcActorMessage::Command(request) => {
                             let outcome = worker.send_command(
@@ -113,15 +116,22 @@ impl MpvJsonIpcClient {
                                 .is_err_and(MpvIpcCommandFailure::is_connection_fatal);
                             let _ = request.response_tx.send(outcome);
                             if connection_is_fatal {
-                                break;
+                                break None;
                             }
                         }
-                        MpvIpcActorMessage::FinalCommand { command, deadline } => {
-                            worker.send_final_command_best_effort(command, deadline);
-                            break;
+                        MpvIpcActorMessage::FinalCommands {
+                            commands,
+                            completion_tx,
+                        } => {
+                            worker.send_final_commands_best_effort(commands);
+                            break Some(completion_tx);
                         }
-                        MpvIpcActorMessage::Shutdown => break,
+                        MpvIpcActorMessage::Shutdown => break None,
                     }
+                };
+                drop(worker);
+                if let Some(completion_tx) = final_completion_tx {
+                    let _ = completion_tx.send(());
                 }
             })
             .expect("mpv IPC worker thread should start");
@@ -174,22 +184,37 @@ impl MpvJsonIpcClient {
         self.send_command(command).map(|_| ())
     }
 
-    /// Queues one final JSON IPC write and immediately detaches the worker.
+    /// Queues final JSON IPC writes and waits for their bounded attempts to finish.
     ///
     /// This is intentionally terminal: the client becomes unhealthy and must not be reused. The
-    /// worker does not wait for mpv's response and is allowed at most a short write deadline.
-    pub(crate) fn send_final_command_best_effort(&mut self, command: Value) {
+    /// worker does not wait for mpv's responses. Each command receives its own short write
+    /// deadline, commands retain their order, and a failed write does not prevent later cleanup
+    /// commands from being attempted. The bounded completion wait ensures callers cannot reattach
+    /// to an external mpv or exit the process before the cleanup worker has made every attempt.
+    pub(crate) fn send_final_commands_best_effort(&mut self, commands: Vec<Value>) {
         if !self.healthy {
             return;
         }
-        let deadline = Instant::now()
-            .checked_add(MPV_IPC_FINAL_WRITE_TIMEOUT)
-            .unwrap_or_else(Instant::now);
-        let _ = self
+        let command_count = u32::try_from(commands.len()).unwrap_or(u32::MAX);
+        let completion_timeout = MPV_IPC_FINAL_WRITE_TIMEOUT
+            .saturating_mul(command_count)
+            .saturating_add(MPV_IPC_ACTOR_RESPONSE_GRACE);
+        let (completion_tx, completion_rx) = mpsc::channel();
+        let queued = self
             .command_tx
-            .try_send(MpvIpcActorMessage::FinalCommand { command, deadline });
+            .try_send(MpvIpcActorMessage::FinalCommands {
+                commands,
+                completion_tx,
+            })
+            .is_ok();
         self.healthy = false;
-        let _ = self.worker_thread.take();
+        if queued && completion_rx.recv_timeout(completion_timeout).is_ok() {
+            if let Some(worker_thread) = self.worker_thread.take() {
+                let _ = worker_thread.join();
+            }
+        } else {
+            let _ = self.worker_thread.take();
+        }
     }
 
     /// Sends a command whose server-side rejection may indicate an older mpv
@@ -408,7 +433,10 @@ impl Drop for MpvJsonIpcClient {
 
 enum MpvIpcActorMessage {
     Command(MpvIpcWorkerRequest),
-    FinalCommand { command: Value, deadline: Instant },
+    FinalCommands {
+        commands: Vec<Value>,
+        completion_tx: mpsc::Sender<()>,
+    },
     Shutdown,
 }
 
@@ -676,18 +704,23 @@ impl MpvIpcWorker {
         }
     }
 
-    fn send_final_command_best_effort(&mut self, command: Value, deadline: Instant) {
-        let request_id = self.next_request_id;
-        self.next_request_id = self.next_request_id.wrapping_add(1);
-        let request = json!({
-            "command": command,
-            "request_id": request_id,
-        });
-        let Ok(mut line) = serde_json::to_string(&request) else {
-            return;
-        };
-        line.push('\n');
-        let _ = self.transport.send_line_until(&line, deadline);
+    fn send_final_commands_best_effort(&mut self, commands: Vec<Value>) {
+        for command in commands {
+            let request_id = self.next_request_id;
+            self.next_request_id = self.next_request_id.wrapping_add(1);
+            let request = json!({
+                "command": command,
+                "request_id": request_id,
+            });
+            let Ok(mut line) = serde_json::to_string(&request) else {
+                continue;
+            };
+            line.push('\n');
+            let deadline = Instant::now()
+                .checked_add(MPV_IPC_FINAL_WRITE_TIMEOUT)
+                .unwrap_or_else(Instant::now);
+            let _ = self.transport.send_line_until(&line, deadline);
+        }
     }
 }
 

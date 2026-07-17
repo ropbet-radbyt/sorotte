@@ -152,6 +152,10 @@ impl fmt::Debug for MpvAdapter {
                 &self.legacy_syncplayintf_pending_options_generation,
             )
             .field(
+                "legacy_syncplayintf_acknowledged_options_generation",
+                &self.legacy_syncplayintf_acknowledged_options_generation,
+            )
+            .field(
                 "legacy_syncplayintf_lease_reacquire_required",
                 &self.legacy_syncplayintf_lease_reacquire_required,
             )
@@ -245,12 +249,18 @@ impl Default for MpvAdapter {
             ),
             legacy_syncplayintf_next_options_generation: 1,
             legacy_syncplayintf_pending_options_generation: None,
+            legacy_syncplayintf_acknowledged_options_generation: None,
             legacy_syncplayintf_options_ack_error: None,
             legacy_syncplayintf_next_ping_nonce: 1,
             legacy_syncplayintf_pending_ping_nonce: None,
             legacy_syncplayintf_last_heartbeat_at: None,
+            legacy_syncplayintf_last_discovery_at: None,
             legacy_syncplayintf_lease_reacquire_required: false,
+            legacy_syncplayintf_runtime_rediscovery_required: false,
+            legacy_syncplayintf_runtime_recovery_attempts: 0,
+            legacy_syncplayintf_runtime_recovery_failure: None,
             sorotte_bridge_health: SorotteBridgeHealth::Disabled,
+            pending_sorotte_bridge_health_transitions: VecDeque::new(),
             ipc_endpoint: None,
             simulation_mode: false,
             ipc_client: None,

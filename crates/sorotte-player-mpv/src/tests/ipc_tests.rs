@@ -82,6 +82,50 @@ impl MpvJsonIpcTransport for DropObservedTransport {
     }
 }
 
+#[derive(Debug)]
+struct FailFirstFinalWriteTransport {
+    writes: Arc<Mutex<Vec<String>>>,
+    dropped: Arc<AtomicBool>,
+    sends: usize,
+}
+
+impl Drop for FailFirstFinalWriteTransport {
+    fn drop(&mut self) {
+        self.dropped.store(true, Ordering::SeqCst);
+    }
+}
+
+impl MpvJsonIpcTransport for FailFirstFinalWriteTransport {
+    fn send_line_until(&mut self, line: &str, deadline: Instant) -> io::Result<()> {
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "cleanup command received no independent write budget",
+            ));
+        }
+        self.writes
+            .lock()
+            .expect("final-write transport mutex should not be poisoned")
+            .push(line.to_owned());
+        self.sends += 1;
+        if self.sends == 1 {
+            if let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+                std::thread::sleep(remaining);
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "first cleanup write intentionally exhausted its deadline",
+            ));
+        }
+        Ok(())
+    }
+
+    fn read_line_until(&mut self, line: &mut String, _deadline: Instant) -> io::Result<usize> {
+        line.clear();
+        Ok(0)
+    }
+}
+
 #[test]
 fn mpv_ipc_client_joins_worker_during_shutdown() {
     let dropped = Arc::new(AtomicBool::new(false));
@@ -95,6 +139,58 @@ fn mpv_ipc_client_joins_worker_during_shutdown() {
         dropped.load(Ordering::SeqCst),
         "transport should be dropped before client shutdown returns"
     );
+}
+
+#[test]
+fn terminal_cleanup_preserves_order_and_attempts_release_after_restore_failure() {
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let dropped = Arc::new(AtomicBool::new(false));
+    let mut client = MpvJsonIpcClient::new(Box::new(FailFirstFinalWriteTransport {
+        writes: Arc::clone(&writes),
+        dropped: Arc::clone(&dropped),
+        sends: 0,
+    }));
+
+    client.send_final_commands_best_effort(vec![
+        json!(["set_property", "osd-align-y", "top"]),
+        json!(["set_property", "osd-margin-y", 16]),
+        json!([
+            "script-message-to",
+            "sorotte_syncplayintf",
+            "release",
+            "owner"
+        ]),
+    ]);
+
+    assert!(
+        dropped.load(Ordering::SeqCst),
+        "terminal cleanup must finish its bounded attempts before returning"
+    );
+    let commands = writes
+        .lock()
+        .expect("final-write transport mutex should not be poisoned")
+        .iter()
+        .map(|line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .expect("terminal command should be valid JSON")["command"]
+                .clone()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        commands,
+        vec![
+            json!(["set_property", "osd-align-y", "top"]),
+            json!(["set_property", "osd-margin-y", 16]),
+            json!([
+                "script-message-to",
+                "sorotte_syncplayintf",
+                "release",
+                "owner"
+            ]),
+        ],
+        "a failed restoration write must not suppress the later release attempt"
+    );
+    assert!(!client.is_healthy());
 }
 
 #[test]

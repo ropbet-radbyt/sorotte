@@ -49,6 +49,8 @@ const PLAYBACK_ADVANCEMENT_EPSILON_SECONDS: f64 = 0.01;
 const YTDL_LIVE_PROBE_TIMEOUT: Duration = Duration::from_secs(8);
 const LEGACY_SYNCPLAYINTF_OWNER_LEASE_MS: u64 = 2_000;
 const LEGACY_SYNCPLAYINTF_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
+const LEGACY_SYNCPLAYINTF_RUNTIME_DISCOVERY_INTERVAL: Duration = Duration::from_secs(2);
+const LEGACY_SYNCPLAYINTF_RUNTIME_RECOVERY_ATTEMPTS: usize = 3;
 const LEGACY_SYNCPLAYINTF_DISCOVERY_ATTEMPTS: usize = 3;
 const LEGACY_SYNCPLAYINTF_REGISTRATION_ATTEMPTS: usize = 20;
 const LEGACY_SYNCPLAYINTF_CONFIGURATION_RETRY_WINDOW: Duration = Duration::from_millis(2_500);
@@ -265,12 +267,18 @@ pub struct MpvAdapter {
     legacy_syncplayintf_attachment_id: String,
     legacy_syncplayintf_next_options_generation: u64,
     legacy_syncplayintf_pending_options_generation: Option<u64>,
+    legacy_syncplayintf_acknowledged_options_generation: Option<u64>,
     legacy_syncplayintf_options_ack_error: Option<String>,
     legacy_syncplayintf_next_ping_nonce: u64,
     legacy_syncplayintf_pending_ping_nonce: Option<u64>,
     legacy_syncplayintf_last_heartbeat_at: Option<Instant>,
+    legacy_syncplayintf_last_discovery_at: Option<Instant>,
     legacy_syncplayintf_lease_reacquire_required: bool,
+    legacy_syncplayintf_runtime_rediscovery_required: bool,
+    legacy_syncplayintf_runtime_recovery_attempts: usize,
+    legacy_syncplayintf_runtime_recovery_failure: Option<SorotteBridgeFailure>,
     sorotte_bridge_health: SorotteBridgeHealth,
+    pending_sorotte_bridge_health_transitions: VecDeque<SorotteBridgeHealth>,
     ipc_endpoint: Option<PathBuf>,
     simulation_mode: bool,
     ipc_client: Option<MpvJsonIpcClient>,
@@ -315,11 +323,16 @@ impl MpvAdapter {
         self.legacy_syncplayintf_script_name = LEGACY_SYNCPLAYINTF_SCRIPT_NAME.to_owned();
         self.legacy_syncplayintf_bridge_instance_id = None;
         self.legacy_syncplayintf_pending_options_generation = None;
+        self.legacy_syncplayintf_acknowledged_options_generation = None;
         self.legacy_syncplayintf_options_ack_error = None;
         self.legacy_syncplayintf_pending_ping_nonce = None;
         self.legacy_syncplayintf_last_heartbeat_at = None;
+        self.legacy_syncplayintf_last_discovery_at = None;
         self.legacy_syncplayintf_lease_reacquire_required = false;
-        self.sorotte_bridge_health = SorotteBridgeHealth::Disabled;
+        self.legacy_syncplayintf_runtime_rediscovery_required = false;
+        self.legacy_syncplayintf_runtime_recovery_attempts = 0;
+        self.legacy_syncplayintf_runtime_recovery_failure = None;
+        self.set_sorotte_bridge_health(SorotteBridgeHealth::Disabled);
         self.pending_chat_requests.clear();
         let connection_generation = self
             .ipc_client
@@ -404,11 +417,57 @@ impl MpvAdapter {
             legacy_syncplayintf_script_loaded: true,
             legacy_syncplayintf_options_applied: true,
             legacy_syncplayintf_bridge_instance_id: Some("test-bridge".to_owned()),
+            legacy_syncplayintf_acknowledged_options_generation: Some(1),
             sorotte_bridge_health: SorotteBridgeHealth::Ready,
             ipc_client: Some(ipc_client),
             ..Self::default()
         };
         (adapter, release_count)
+    }
+
+    /// Builds a ready bridge attachment whose terminal cleanup commands are recorded in order.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn with_cleanup_recording_sorotte_bridge_test_ipc(
+        settings: LegacySyncplayUiSettings,
+        osd_placement_restore: Option<(String, i64)>,
+    ) -> (
+        Self,
+        std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    ) {
+        let (ipc_client, commands) = crate::test_support::cleanup_recording_syncplayintf_client();
+        let adapter = Self {
+            legacy_syncplay_ui_settings: settings,
+            legacy_syncplay_osd_placement_restore: osd_placement_restore,
+            legacy_syncplayintf_script_loaded: true,
+            legacy_syncplayintf_options_applied: true,
+            legacy_syncplayintf_bridge_instance_id: Some("test-bridge".to_owned()),
+            legacy_syncplayintf_acknowledged_options_generation: Some(1),
+            sorotte_bridge_health: SorotteBridgeHealth::Ready,
+            ipc_client: Some(ipc_client),
+            ..Self::default()
+        };
+        (adapter, commands)
+    }
+
+    /// Builds a ready simulated bridge over connected IPC that rejects the first active-network
+    /// option write while accepting a later retry.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn with_first_active_network_option_rejection_test_ipc(
+        settings: LegacySyncplayUiSettings,
+    ) -> Self {
+        Self {
+            legacy_syncplay_ui_settings: settings,
+            legacy_syncplayintf_script_loaded: true,
+            legacy_syncplayintf_options_applied: true,
+            legacy_syncplayintf_bridge_instance_id: Some("test-bridge".to_owned()),
+            legacy_syncplayintf_acknowledged_options_generation: Some(1),
+            sorotte_bridge_health: SorotteBridgeHealth::Ready,
+            simulation_mode: true,
+            ipc_client: Some(crate::test_support::reject_first_active_network_option_client()),
+            ..Self::default()
+        }
     }
 
     /// Marks a feature-gated fake IPC client unhealthy so higher-layer tests can distinguish a
@@ -833,6 +892,7 @@ impl MpvAdapter {
         self.legacy_syncplayintf_bridge_instance_id = None;
         self.legacy_syncplayintf_options_applied = false;
         self.legacy_syncplayintf_pending_options_generation = None;
+        self.legacy_syncplayintf_acknowledged_options_generation = None;
         if !self.discover_legacy_syncplayintf_bridge(true)? {
             return Err(PlayerError::OperationFailed(
                 "loaded the Sorotte syncplayintf resource, but its stable bridge did not answer discovery"
@@ -889,11 +949,27 @@ impl MpvAdapter {
         }
         self.legacy_syncplay_ui_settings = settings;
         if syncplayintf_options_changed {
+            let runtime_bridge_was_active = matches!(
+                self.sorotte_bridge_health,
+                SorotteBridgeHealth::Ready | SorotteBridgeHealth::Recovering
+            );
             self.legacy_syncplayintf_options_applied = false;
             self.legacy_syncplayintf_pending_options_generation = None;
+            self.legacy_syncplayintf_acknowledged_options_generation = None;
             self.legacy_syncplayintf_options_ack_error = None;
             self.legacy_syncplayintf_lease_reacquire_required = false;
-            self.try_send_legacy_syncplayintf_options_if_pending();
+            if runtime_bridge_was_active {
+                self.legacy_syncplayintf_runtime_recovery_attempts = 0;
+                self.legacy_syncplayintf_runtime_recovery_failure = None;
+                self.begin_sorotte_bridge_runtime_recovery(
+                    SorotteBridgeFailureKind::AcknowledgementTimeout,
+                    "updated Chat/OSD settings are awaiting bridge acknowledgement",
+                    false,
+                );
+                self.attempt_sorotte_bridge_runtime_recovery();
+            } else {
+                self.try_send_legacy_syncplayintf_options_if_pending();
+            }
         }
         Ok(())
     }
@@ -905,13 +981,34 @@ impl MpvAdapter {
     pub fn retry_bundled_sorotte_bridge(&mut self) -> SorotteBridgeHealth {
         self.legacy_syncplayintf_options_applied = false;
         self.legacy_syncplayintf_pending_options_generation = None;
+        self.legacy_syncplayintf_acknowledged_options_generation = None;
         self.legacy_syncplayintf_options_ack_error = None;
         self.legacy_syncplayintf_lease_reacquire_required = false;
+        self.legacy_syncplayintf_runtime_rediscovery_required = false;
+        self.legacy_syncplayintf_runtime_recovery_attempts = 0;
+        self.legacy_syncplayintf_runtime_recovery_failure = None;
         self.configure_bundled_sorotte_bridge_inner(LEGACY_SYNCPLAYINTF_CONFIGURATION_RETRY_WINDOW)
     }
 
     pub fn sorotte_bridge_health(&self) -> SorotteBridgeHealth {
         self.sorotte_bridge_health.clone()
+    }
+
+    /// Returns the exact settings generation acknowledged by the current bridge attachment.
+    pub fn sorotte_bridge_acknowledged_generation(&self) -> Option<u64> {
+        self.legacy_syncplayintf_options_applied
+            .then_some(self.legacy_syncplayintf_acknowledged_options_generation)
+            .flatten()
+    }
+
+    /// Advances bounded bridge maintenance and returns the oldest unconsumed health transition.
+    ///
+    /// Bridge transitions are independent of core mpv JSON IPC health. A `Recovering` or
+    /// `Degraded` transition gates player chat and causes OSD output to use mpv's `show-text`, but
+    /// does not detach the adapter or make playback commands unavailable.
+    pub fn take_sorotte_bridge_health_transition(&mut self) -> Option<SorotteBridgeHealth> {
+        self.maintain_legacy_syncplayintf_lease();
+        self.pending_sorotte_bridge_health_transitions.pop_front()
     }
 
     pub fn mark_sorotte_bridge_degraded(
@@ -1005,7 +1102,22 @@ impl MpvAdapter {
     }
 
     fn set_sorotte_bridge_health(&mut self, health: SorotteBridgeHealth) -> SorotteBridgeHealth {
+        if self.sorotte_bridge_health == health {
+            return health;
+        }
         self.sorotte_bridge_health = health.clone();
+        if self.pending_sorotte_bridge_health_transitions.back() != Some(&health) {
+            self.pending_sorotte_bridge_health_transitions
+                .push_back(health.clone());
+        }
+        if matches!(
+            health,
+            SorotteBridgeHealth::Ready | SorotteBridgeHealth::Disabled
+        ) {
+            self.legacy_syncplayintf_runtime_rediscovery_required = false;
+            self.legacy_syncplayintf_runtime_recovery_attempts = 0;
+            self.legacy_syncplayintf_runtime_recovery_failure = None;
+        }
         health
     }
 
@@ -1049,16 +1161,17 @@ impl MpvAdapter {
                 LegacySyncplayOsdKind::Notification => "notification-osd-neutral",
                 LegacySyncplayOsdKind::Alert => "alert-osd-neutral",
             };
-            if self
-                .send_syncplayintf_script_message(
-                    script_message_name,
-                    &sanitize_legacy_syncplay_script_message_text(message),
-                )
-                .is_ok()
-            {
-                return Ok(());
+            match self.send_syncplayintf_script_message(
+                script_message_name,
+                &sanitize_legacy_syncplay_script_message_text(message),
+            ) {
+                Ok(()) => return Ok(()),
+                Err(error) => self.begin_sorotte_bridge_runtime_recovery(
+                    SorotteBridgeFailureKind::IpcCommand,
+                    format!("Sorotte's mpv bridge rejected {script_message_name}: {error}"),
+                    true,
+                ),
             }
-            self.legacy_syncplayintf_options_applied = false;
         }
         self.show_text(message, duration_ms, LEGACY_SYNCPLAY_SHOW_TEXT_OSD_LEVEL)
     }
@@ -1071,16 +1184,17 @@ impl MpvAdapter {
         if self.legacy_syncplay_ui_settings.chat_output_enabled
             && self.ensure_legacy_syncplayintf_ready()
         {
-            if self
-                .send_syncplayintf_script_message(
-                    "chat",
-                    &sanitize_legacy_syncplay_script_message_text(message),
-                )
-                .is_ok()
-            {
-                return Ok(());
+            match self.send_syncplayintf_script_message(
+                "chat",
+                &sanitize_legacy_syncplay_script_message_text(message),
+            ) {
+                Ok(()) => return Ok(()),
+                Err(error) => self.begin_sorotte_bridge_runtime_recovery(
+                    SorotteBridgeFailureKind::IpcCommand,
+                    format!("Sorotte's mpv bridge rejected chat output: {error}"),
+                    true,
+                ),
             }
-            self.legacy_syncplayintf_options_applied = false;
         }
 
         let maybe_duration_ms = if self.legacy_syncplay_ui_settings.chat_output_enabled {
@@ -1145,6 +1259,7 @@ impl MpvAdapter {
             self.legacy_syncplayintf_script_loaded = true;
             self.legacy_syncplayintf_bridge_instance_id =
                 Some("simulated-sorotte-syncplayintf".to_owned());
+            self.legacy_syncplayintf_last_discovery_at = Some(Instant::now());
             return Ok(true);
         }
 
@@ -1208,7 +1323,13 @@ impl MpvAdapter {
             ));
         }
         if self.simulation_mode {
+            let generation = self.legacy_syncplayintf_next_options_generation;
+            self.legacy_syncplayintf_next_options_generation = self
+                .legacy_syncplayintf_next_options_generation
+                .wrapping_add(1)
+                .max(1);
             self.legacy_syncplayintf_options_applied = true;
+            self.legacy_syncplayintf_acknowledged_options_generation = Some(generation);
             return Ok(());
         }
 
@@ -1269,7 +1390,10 @@ impl MpvAdapter {
     fn try_send_legacy_syncplayintf_options_if_pending(&mut self) {
         if self.legacy_syncplayintf_options_applied
             || self.legacy_syncplayintf_lease_reacquire_required
-            || matches!(self.sorotte_bridge_health, SorotteBridgeHealth::Degraded(_))
+            || matches!(
+                self.sorotte_bridge_health,
+                SorotteBridgeHealth::Recovering | SorotteBridgeHealth::Degraded(_)
+            )
         {
             return;
         }
@@ -1294,44 +1418,180 @@ impl MpvAdapter {
         )
     }
 
-    fn maintain_legacy_syncplayintf_lease(&mut self) {
-        self.drain_ipc_events_if_attached();
-        if matches!(self.sorotte_bridge_health, SorotteBridgeHealth::Degraded(_)) {
+    fn begin_sorotte_bridge_runtime_recovery(
+        &mut self,
+        kind: SorotteBridgeFailureKind,
+        reason: impl Into<String>,
+        rediscovery_required: bool,
+    ) {
+        if !matches!(
+            self.sorotte_bridge_health,
+            SorotteBridgeHealth::Ready | SorotteBridgeHealth::Recovering
+        ) {
             return;
         }
+        let reason = reason.into();
+        if !matches!(self.sorotte_bridge_health, SorotteBridgeHealth::Recovering) {
+            self.legacy_syncplayintf_runtime_recovery_attempts = 0;
+        }
+        self.legacy_syncplayintf_options_applied = false;
+        self.legacy_syncplayintf_last_heartbeat_at = None;
+        self.legacy_syncplayintf_lease_reacquire_required = true;
+        self.legacy_syncplayintf_runtime_rediscovery_required |= rediscovery_required;
+        self.legacy_syncplayintf_runtime_recovery_failure =
+            Some(SorotteBridgeFailure::new(kind, reason));
+        self.pending_chat_requests.clear();
+        self.set_sorotte_bridge_health(SorotteBridgeHealth::Recovering);
+    }
+
+    fn attempt_sorotte_bridge_runtime_recovery(&mut self) {
+        if !matches!(self.sorotte_bridge_health, SorotteBridgeHealth::Recovering)
+            || (self.legacy_syncplayintf_runtime_recovery_attempts > 0
+                && self
+                    .legacy_syncplayintf_last_heartbeat_at
+                    .is_some_and(|last| last.elapsed() < LEGACY_SYNCPLAYINTF_HEARTBEAT_INTERVAL))
+        {
+            return;
+        }
+        self.legacy_syncplayintf_last_heartbeat_at = Some(Instant::now());
+
+        let mut forced_failure_kind = None;
+        let result = if self.legacy_syncplayintf_runtime_rediscovery_required {
+            match self.discover_legacy_syncplayintf_bridge(false) {
+                Ok(true) => {
+                    self.legacy_syncplayintf_runtime_rediscovery_required = false;
+                    self.send_legacy_syncplayintf_options_if_loaded()
+                }
+                Ok(false) => {
+                    forced_failure_kind = Some(SorotteBridgeFailureKind::Discovery);
+                    Err(PlayerError::OperationFailed(
+                        "Sorotte's stable mpv bridge target is no longer registered".to_owned(),
+                    ))
+                }
+                Err(error) => {
+                    forced_failure_kind = Some(SorotteBridgeFailureKind::Discovery);
+                    Err(error)
+                }
+            }
+        } else {
+            self.send_legacy_syncplayintf_options_if_loaded()
+        };
+
+        if result.is_ok() && self.legacy_syncplayintf_options_ready() {
+            let health = if self.legacy_syncplay_ui_settings.uses_syncplayintf_bridge() {
+                SorotteBridgeHealth::Ready
+            } else {
+                SorotteBridgeHealth::Disabled
+            };
+            self.set_sorotte_bridge_health(health);
+            return;
+        }
+        if !matches!(self.sorotte_bridge_health, SorotteBridgeHealth::Recovering) {
+            return;
+        }
+
+        self.legacy_syncplayintf_runtime_recovery_attempts += 1;
+        if let Err(error) = result {
+            let acknowledged_error = self.legacy_syncplayintf_options_ack_error.clone();
+            let reason = acknowledged_error
+                .clone()
+                .unwrap_or_else(|| error.to_string());
+            let kind = forced_failure_kind.unwrap_or_else(|| {
+                classify_sorotte_bridge_configuration_failure(&reason, acknowledged_error.is_some())
+            });
+            self.legacy_syncplayintf_runtime_recovery_failure =
+                Some(SorotteBridgeFailure::new(kind, reason));
+        }
+
+        if self.legacy_syncplayintf_runtime_recovery_attempts
+            >= LEGACY_SYNCPLAYINTF_RUNTIME_RECOVERY_ATTEMPTS
+        {
+            let failure = self
+                .legacy_syncplayintf_runtime_recovery_failure
+                .clone()
+                .unwrap_or_else(|| {
+                    SorotteBridgeFailure::new(
+                        SorotteBridgeFailureKind::AcknowledgementTimeout,
+                        "Sorotte's mpv bridge did not acknowledge bounded runtime recovery",
+                    )
+                });
+            self.degrade_sorotte_bridge(failure.kind, failure.reason);
+        }
+    }
+
+    fn maintain_legacy_syncplayintf_lease(&mut self) {
+        self.drain_ipc_events_if_attached();
+        if matches!(
+            self.sorotte_bridge_health,
+            SorotteBridgeHealth::Disabled | SorotteBridgeHealth::Degraded(_)
+        ) {
+            return;
+        }
+        if matches!(self.sorotte_bridge_health, SorotteBridgeHealth::Recovering) {
+            self.attempt_sorotte_bridge_runtime_recovery();
+            return;
+        }
+
+        if self.legacy_syncplay_ui_settings.uses_syncplayintf_bridge()
+            && self
+                .legacy_syncplayintf_last_discovery_at
+                .is_none_or(|last| last.elapsed() >= LEGACY_SYNCPLAYINTF_RUNTIME_DISCOVERY_INTERVAL)
+        {
+            match self.discover_legacy_syncplayintf_bridge(false) {
+                Ok(true) => {}
+                Ok(false) => self.begin_sorotte_bridge_runtime_recovery(
+                    SorotteBridgeFailureKind::Discovery,
+                    "Sorotte's stable mpv bridge target is no longer registered",
+                    true,
+                ),
+                Err(error) => self.begin_sorotte_bridge_runtime_recovery(
+                    SorotteBridgeFailureKind::Discovery,
+                    format!("failed to rediscover Sorotte's mpv bridge: {error}"),
+                    true,
+                ),
+            }
+            if matches!(self.sorotte_bridge_health, SorotteBridgeHealth::Recovering) {
+                self.attempt_sorotte_bridge_runtime_recovery();
+                return;
+            }
+        }
+
         if !self.legacy_syncplay_ui_settings.chat_input_enabled {
             self.legacy_syncplayintf_last_heartbeat_at = None;
             return;
         }
-        if self.legacy_syncplayintf_lease_reacquire_required {
-            if self
-                .legacy_syncplayintf_last_heartbeat_at
-                .is_some_and(|last| last.elapsed() < LEGACY_SYNCPLAYINTF_HEARTBEAT_INTERVAL)
-            {
-                return;
-            }
-            self.legacy_syncplayintf_last_heartbeat_at = Some(Instant::now());
-            let _ = self.send_legacy_syncplayintf_options_if_loaded();
+        if !self.legacy_syncplayintf_options_ready() {
+            self.begin_sorotte_bridge_runtime_recovery(
+                SorotteBridgeFailureKind::AcknowledgementTimeout,
+                "Sorotte's mpv bridge lost its acknowledged runtime settings",
+                false,
+            );
+            self.attempt_sorotte_bridge_runtime_recovery();
             return;
         }
-        if !self.legacy_syncplayintf_options_ready()
-            || self
-                .legacy_syncplayintf_last_heartbeat_at
-                .is_some_and(|last| last.elapsed() < LEGACY_SYNCPLAYINTF_HEARTBEAT_INTERVAL)
+        if self
+            .legacy_syncplayintf_last_heartbeat_at
+            .is_some_and(|last| last.elapsed() < LEGACY_SYNCPLAYINTF_HEARTBEAT_INTERVAL)
         {
             return;
         }
         let Some(payload) = self.legacy_syncplayintf_controller_payload() else {
             return;
         };
-        let heartbeat_result = self
-            .send_syncplayintf_script_message(LEGACY_SYNCPLAYINTF_HEARTBEAT_MESSAGE, &payload)
-            .is_ok();
-        if self.legacy_syncplayintf_lease_reacquire_required {
-            self.legacy_syncplayintf_last_heartbeat_at = None;
-            let _ = self.send_legacy_syncplayintf_options_if_loaded();
-        } else if heartbeat_result {
-            self.legacy_syncplayintf_last_heartbeat_at = Some(Instant::now());
+        match self.send_syncplayintf_script_message(LEGACY_SYNCPLAYINTF_HEARTBEAT_MESSAGE, &payload)
+        {
+            Ok(()) if matches!(self.sorotte_bridge_health, SorotteBridgeHealth::Ready) => {
+                self.legacy_syncplayintf_last_heartbeat_at = Some(Instant::now());
+            }
+            Ok(()) => {
+                self.legacy_syncplayintf_last_heartbeat_at = None;
+                self.attempt_sorotte_bridge_runtime_recovery();
+            }
+            Err(error) => self.begin_sorotte_bridge_runtime_recovery(
+                SorotteBridgeFailureKind::IpcCommand,
+                format!("failed to renew Sorotte's mpv bridge lease: {error}"),
+                true,
+            ),
         }
     }
 
@@ -1342,21 +1602,39 @@ impl MpvAdapter {
     /// replacing the adapter. Lease expiry remains the fallback when the best-effort write cannot
     /// be queued or completed.
     pub fn release_sorotte_bridge_best_effort(&mut self) {
+        let mut final_commands = Vec::with_capacity(3);
+        if let Some((align_y, margin_y)) = self.legacy_syncplay_osd_placement_restore.take() {
+            final_commands.push(json!([
+                MPV_COMMAND_SET_PROPERTY,
+                MPV_PROPERTY_OSD_ALIGN_Y,
+                align_y
+            ]));
+            final_commands.push(json!([
+                MPV_COMMAND_SET_PROPERTY,
+                MPV_PROPERTY_OSD_MARGIN_Y,
+                margin_y
+            ]));
+        }
         if self.legacy_syncplayintf_script_loaded
             && let Some(payload) = self.legacy_syncplayintf_controller_payload()
-            && let Some(client) = self.ipc_client.as_mut()
         {
-            client.send_final_command_best_effort(json!([
+            final_commands.push(json!([
                 MPV_COMMAND_SCRIPT_MESSAGE_TO,
                 self.legacy_syncplayintf_script_name.as_str(),
                 LEGACY_SYNCPLAYINTF_RELEASE_MESSAGE,
                 payload
             ]));
         }
+        if !final_commands.is_empty()
+            && let Some(client) = self.ipc_client.as_mut()
+        {
+            client.send_final_commands_best_effort(final_commands);
+        }
         self.legacy_syncplayintf_script_loaded = false;
         self.legacy_syncplayintf_bridge_instance_id = None;
         self.legacy_syncplayintf_options_applied = false;
         self.legacy_syncplayintf_pending_options_generation = None;
+        self.legacy_syncplayintf_acknowledged_options_generation = None;
         self.legacy_syncplayintf_options_ack_error = None;
         self.legacy_syncplayintf_pending_ping_nonce = None;
         self.legacy_syncplayintf_last_heartbeat_at = None;
@@ -3025,14 +3303,15 @@ impl MpvAdapter {
             Some("applied") => {
                 self.legacy_syncplayintf_options_applied = true;
                 self.legacy_syncplayintf_pending_options_generation = None;
+                self.legacy_syncplayintf_acknowledged_options_generation = Some(generation);
                 self.legacy_syncplayintf_options_ack_error = None;
                 self.legacy_syncplayintf_lease_reacquire_required = false;
-                self.sorotte_bridge_health =
-                    if self.legacy_syncplay_ui_settings.uses_syncplayintf_bridge() {
-                        SorotteBridgeHealth::Ready
-                    } else {
-                        SorotteBridgeHealth::Disabled
-                    };
+                let health = if self.legacy_syncplay_ui_settings.uses_syncplayintf_bridge() {
+                    SorotteBridgeHealth::Ready
+                } else {
+                    SorotteBridgeHealth::Disabled
+                };
+                self.set_sorotte_bridge_health(health);
             }
             Some(status @ ("busy" | "rejected")) => {
                 let detail = parsed
@@ -3088,13 +3367,14 @@ impl MpvAdapter {
         else {
             return;
         };
-        if self
+        let bridge_instance_changed = self
             .legacy_syncplayintf_bridge_instance_id
             .as_deref()
-            .is_some_and(|current| current != bridge_instance_id)
-        {
+            .is_some_and(|current| current != bridge_instance_id);
+        if bridge_instance_changed {
             self.legacy_syncplayintf_options_applied = false;
             self.legacy_syncplayintf_pending_options_generation = None;
+            self.legacy_syncplayintf_acknowledged_options_generation = None;
             self.legacy_syncplayintf_options_ack_error = None;
             self.legacy_syncplayintf_lease_reacquire_required = false;
         }
@@ -3102,6 +3382,16 @@ impl MpvAdapter {
         self.legacy_syncplayintf_script_name = script_name.to_owned();
         self.legacy_syncplayintf_script_loaded = true;
         self.legacy_syncplayintf_pending_ping_nonce = None;
+        self.legacy_syncplayintf_last_discovery_at = Some(Instant::now());
+        if bridge_instance_changed {
+            self.begin_sorotte_bridge_runtime_recovery(
+                SorotteBridgeFailureKind::Discovery,
+                format!(
+                    "Sorotte's mpv bridge instance changed to {bridge_instance_id}; reapplying runtime settings"
+                ),
+                false,
+            );
+        }
     }
 
     fn handle_legacy_syncplayintf_lease_expired(&mut self, payload: Option<&str>) {
@@ -3122,13 +3412,16 @@ impl MpvAdapter {
         {
             return;
         }
-        self.legacy_syncplayintf_options_applied = false;
         self.legacy_syncplayintf_pending_options_generation = None;
+        self.legacy_syncplayintf_acknowledged_options_generation = None;
         self.legacy_syncplayintf_options_ack_error = Some(
             "Sorotte syncplayintf input lease expired; reapplying the current settings".to_owned(),
         );
-        self.legacy_syncplayintf_last_heartbeat_at = None;
-        self.legacy_syncplayintf_lease_reacquire_required = true;
+        self.begin_sorotte_bridge_runtime_recovery(
+            SorotteBridgeFailureKind::AcknowledgementTimeout,
+            "Sorotte syncplayintf input lease expired; reapplying the current settings",
+            false,
+        );
     }
 
     fn handle_legacy_syncplayintf_chat_request(&mut self, payload: Option<&str>) {
@@ -3327,6 +3620,7 @@ impl MpvAdapter {
         self.legacy_syncplayintf_attachment_id = "test-attachment".to_owned();
         self.legacy_syncplayintf_options_applied = true;
         self.legacy_syncplayintf_pending_options_generation = None;
+        self.legacy_syncplayintf_acknowledged_options_generation = Some(1);
         self.legacy_syncplayintf_lease_reacquire_required = false;
         self.legacy_syncplay_ui_settings.chat_input_enabled = true;
     }
@@ -3340,6 +3634,13 @@ impl MpvAdapter {
     pub(crate) fn force_test_legacy_syncplayintf_heartbeat_due(&mut self) {
         self.legacy_syncplayintf_last_heartbeat_at =
             Some(Instant::now() - LEGACY_SYNCPLAYINTF_HEARTBEAT_INTERVAL);
+        self.maintain_legacy_syncplayintf_lease();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn force_test_legacy_syncplayintf_discovery_due(&mut self) {
+        self.legacy_syncplayintf_last_discovery_at =
+            Some(Instant::now() - LEGACY_SYNCPLAYINTF_RUNTIME_DISCOVERY_INTERVAL);
         self.maintain_legacy_syncplayintf_lease();
     }
 

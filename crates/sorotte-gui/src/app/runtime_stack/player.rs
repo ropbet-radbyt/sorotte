@@ -301,25 +301,6 @@ impl GuiPlayerLaunchRuntimeState {
         )
     }
 
-    pub(in super::super) fn can_apply_mpv_ui_settings_in_place(&self, next: &Self) -> bool {
-        match (self, next) {
-            (
-                Self::ExplicitMpvIpc {
-                    ipc_path: current_path,
-                    ..
-                },
-                Self::ExplicitMpvIpc {
-                    ipc_path: next_path,
-                    ..
-                },
-            ) => current_path == next_path,
-            (Self::ManagedMpv(current), Self::ManagedMpv(next)) => {
-                current.matches_process_target(next)
-            }
-            _ => false,
-        }
-    }
-
     pub(in super::super) fn mpv_ui_settings(&self) -> Option<&LegacySyncplayUiSettings> {
         match self {
             Self::ExplicitMpvIpc { ui_settings, .. } => Some(ui_settings),

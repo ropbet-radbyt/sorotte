@@ -106,9 +106,9 @@ where
     if player_was_connected && !player.is_connected() {
         let detail = match &bridge_health {
             SorotteBridgeHealth::Degraded(failure) => failure.reason.as_str(),
-            SorotteBridgeHealth::Disabled | SorotteBridgeHealth::Ready => {
-                "the mpv JSON IPC transport became unhealthy"
-            }
+            SorotteBridgeHealth::Disabled
+            | SorotteBridgeHealth::Ready
+            | SorotteBridgeHealth::Recovering => "the mpv JSON IPC transport became unhealthy",
         };
         return Err(anyhow!(
             "mpv JSON IPC became unavailable while configuring optional Chat/OSD integration: {detail}"

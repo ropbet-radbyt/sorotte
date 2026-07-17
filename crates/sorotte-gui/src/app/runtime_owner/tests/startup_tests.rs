@@ -7,20 +7,26 @@ fn acknowledgement_timeout_health() -> sorotte_player_mpv::SorotteBridgeHealth {
     })
 }
 
-fn wait_for_terminal_bridge_release(
-    release_count: &std::sync::Arc<std::sync::atomic::AtomicUsize>,
-) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
-    while release_count.load(std::sync::atomic::Ordering::Acquire) == 0
-        && std::time::Instant::now() < deadline
-    {
-        std::thread::yield_now();
-    }
+fn terminal_cleanup_commands(
+    commands: &std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+) -> Vec<serde_json::Value> {
+    commands
+        .lock()
+        .expect("terminal cleanup command log should not be poisoned")
+        .clone()
+}
+
+fn assert_original_osd_restored_before_bridge_release(commands: &[serde_json::Value]) {
+    assert_eq!(commands.len(), 3, "GUI cleanup should queue three commands");
     assert_eq!(
-        release_count.load(std::sync::atomic::Ordering::Acquire),
-        1,
-        "the GUI lifecycle path must queue exactly one terminal bridge release"
+        commands[0],
+        serde_json::json!(["set_property", "osd-align-y", "top"])
     );
+    assert_eq!(
+        commands[1],
+        serde_json::json!(["set_property", "osd-margin-y", 16])
+    );
+    assert_eq!(commands[2][2], "sorotte_syncplayintf_release");
 }
 
 #[test]
@@ -36,7 +42,7 @@ fn explicit_mpv_discovery_failure_uses_shared_completion_and_retains_core_playba
     };
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player_launch_state = launch_state.clone();
-    owner.applied_player_launch_state = Some(launch_state);
+    owner.record_fully_applied_player_launch_state(&launch_state);
     let adapter = sorotte_player_mpv::MpvAdapter::with_rejected_sorotte_bridge_discovery_test_ipc(
         ui_settings.clone(),
     );
@@ -46,13 +52,14 @@ fn explicit_mpv_discovery_failure_uses_shared_completion_and_retains_core_playba
 
     assert!(owner.player.is_some(), "bridge failure must retain mpv");
     assert!(owner.player_unavailability_reason.is_none());
-    assert!(owner.player_settings_reapply_required);
+    assert!(!owner.player_apply_state.core_reapply_required);
     assert!(matches!(
         owner.player_integration_health,
         GuiPlayerIntegrationHealth::BridgeDegraded { ref reason, .. }
             if reason.contains("discover")
     ));
-    assert!(owner.current_player_launch_state_is_applied());
+    assert!(!owner.current_player_launch_state_is_applied());
+    assert!(owner.current_player_core_state_is_applied());
     let player = owner.player.as_mut().expect("retained mpv should exist");
     player
         .open_file("degraded-playback.mkv")
@@ -86,7 +93,8 @@ fn optional_bridge_degradation_is_fatal_only_when_core_ipc_becomes_unhealthy() {
         let bridge_health = crate::app::mpv_launch::configure_sorotte_chat_osd_integration(
             &mut adapter,
             &ui_settings,
-        );
+        )
+        .bridge_health;
         assert!(matches!(
             bridge_health,
             sorotte_player_mpv::SorotteBridgeHealth::Degraded(_)
@@ -144,7 +152,8 @@ fn osd_configuration_failure_transitions_ready_adapter_and_disables_player_chat(
     let health = crate::app::mpv_launch::configure_sorotte_chat_osd_integration(
         &mut adapter,
         &target_ui_settings,
-    );
+    )
+    .bridge_health;
 
     assert!(adapter.is_connected());
     assert!(matches!(
@@ -162,36 +171,174 @@ fn osd_configuration_failure_transitions_ready_adapter_and_disables_player_chat(
 }
 
 #[test]
-fn graceful_gui_detach_emits_terminal_bridge_release() {
-    let ui_settings = sorotte_player_mpv::LegacySyncplayUiSettings {
-        chat_move_osd: false,
-        ..sorotte_player_mpv::LegacySyncplayUiSettings::default()
-    };
-    let (adapter, release_count) =
-        sorotte_player_mpv::MpvAdapter::with_release_recording_sorotte_bridge_test_ipc(ui_settings);
+fn graceful_explicit_gui_detach_restores_osd_before_terminal_bridge_release() {
+    let ui_settings = sorotte_player_mpv::LegacySyncplayUiSettings::default();
+    let (adapter, commands) =
+        sorotte_player_mpv::MpvAdapter::with_cleanup_recording_sorotte_bridge_test_ipc(
+            ui_settings.clone(),
+            Some(("top".to_owned(), 16)),
+        );
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player_launch_state = GuiPlayerLaunchRuntimeState::ExplicitMpvIpc {
+        ipc_path: r"\\.\pipe\sorotte-cleanup-test".to_owned(),
+        ui_settings: Box::new(ui_settings),
+        effective_streaming_options: Vec::new(),
+    };
     owner.player = Some(GuiOwnedPlayer::Mpv(Box::new(adapter)));
 
     owner.detach_player();
 
     assert!(owner.player.is_none());
-    wait_for_terminal_bridge_release(&release_count);
+    let commands = terminal_cleanup_commands(&commands);
+    assert_original_osd_restored_before_bridge_release(&commands);
 }
 
 #[test]
-fn gui_runtime_owner_drop_emits_terminal_bridge_release() {
-    let ui_settings = sorotte_player_mpv::LegacySyncplayUiSettings {
-        chat_move_osd: false,
-        ..sorotte_player_mpv::LegacySyncplayUiSettings::default()
-    };
-    let (adapter, release_count) =
-        sorotte_player_mpv::MpvAdapter::with_release_recording_sorotte_bridge_test_ipc(ui_settings);
+fn gui_runtime_owner_drop_restores_osd_before_terminal_bridge_release() {
+    let (adapter, commands) =
+        sorotte_player_mpv::MpvAdapter::with_cleanup_recording_sorotte_bridge_test_ipc(
+            sorotte_player_mpv::LegacySyncplayUiSettings::default(),
+            Some(("top".to_owned(), 16)),
+        );
     {
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         owner.player = Some(GuiOwnedPlayer::Mpv(Box::new(adapter)));
     }
 
-    wait_for_terminal_bridge_release(&release_count);
+    let commands = terminal_cleanup_commands(&commands);
+    assert_original_osd_restored_before_bridge_release(&commands);
+}
+
+#[test]
+fn gui_player_pump_projects_runtime_bridge_degradation_and_recovery() {
+    let mut adapter = sorotte_player_mpv::SimulatedPlayer::new().into_inner();
+    assert!(matches!(
+        adapter.mark_sorotte_bridge_degraded(
+            sorotte_player_mpv::SorotteBridgeFailureKind::LeaseBusy,
+            "another mpv bridge owner retained the input lease",
+        ),
+        sorotte_player_mpv::SorotteBridgeHealth::Degraded(_)
+    ));
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Mpv(Box::new(adapter)));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state =
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+    let degraded_actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert!(degraded_actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::ApplyGuiPlayerSetupRuntimeSnapshot(snapshot)
+            if snapshot.issue.as_ref().is_some_and(|issue| {
+                issue.kind == crate::app::shell_state::GuiPlayerSetupIssueKind::BridgeDegraded
+                    && issue.retry_available
+            })
+    )));
+    assert!(state.player_setup_issue.as_ref().is_some_and(|issue| {
+        issue.kind == crate::app::shell_state::GuiPlayerSetupIssueKind::BridgeDegraded
+            && issue.retry_available
+    }));
+    let player = owner
+        .player
+        .as_mut()
+        .expect("runtime-degraded player should stay attached");
+    player
+        .open_file("runtime-degraded-playback.mkv")
+        .expect("runtime bridge degradation must preserve open");
+    player
+        .set_paused(false)
+        .expect("runtime bridge degradation must preserve pause control");
+    player
+        .set_position(23.0)
+        .expect("runtime bridge degradation must preserve seek control");
+
+    owner.player_apply_state.core_reapply_required = true;
+    owner.player_unavailability_reason =
+        Some("failed to update active mpv network-media options".to_owned());
+    let recovered_health = match owner.player.as_mut() {
+        Some(GuiOwnedPlayer::Mpv(player)) => player.configure_bundled_sorotte_bridge(),
+        _ => panic!("runtime-degraded mpv should stay attached"),
+    };
+    assert_eq!(
+        recovered_health,
+        sorotte_player_mpv::SorotteBridgeHealth::Ready
+    );
+
+    let recovered_actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert!(matches!(
+        owner.player_integration_health,
+        GuiPlayerIntegrationHealth::Ready
+    ));
+    assert!(state.player_setup_issue.is_none());
+    assert!(recovered_actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::ApplyGuiPlayerSetupRuntimeSnapshot(snapshot)
+            if snapshot.issue.is_none()
+    )));
+    assert!(
+        owner.player_apply_state.core_reapply_required,
+        "bridge recovery must not clear an independent core restart requirement"
+    );
+    assert_eq!(
+        owner.player_unavailability_reason.as_deref(),
+        Some("failed to update active mpv network-media options"),
+        "bridge recovery must not clear the independent streaming failure"
+    );
+    assert!(owner.player.is_some(), "bridge recovery must retain mpv");
+}
+
+#[test]
+fn gui_player_pump_does_not_promote_historical_ready_after_current_degradation() {
+    let mut adapter = sorotte_player_mpv::SimulatedPlayer::new().into_inner();
+    assert_eq!(
+        adapter.configure_bundled_sorotte_bridge(),
+        sorotte_player_mpv::SorotteBridgeHealth::Ready
+    );
+    assert!(matches!(
+        adapter.mark_sorotte_bridge_degraded(
+            sorotte_player_mpv::SorotteBridgeFailureKind::LeaseBusy,
+            "the bridge lease was lost before the GUI observed readiness",
+        ),
+        sorotte_player_mpv::SorotteBridgeHealth::Degraded(_)
+    ));
+
+    let acknowledged_settings = sorotte_player_mpv::LegacySyncplayUiSettings {
+        notification_timeout_ms: 1_234,
+        ..sorotte_player_mpv::LegacySyncplayUiSettings::default()
+    };
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player_apply_state.acknowledged_bridge_settings = Some(acknowledged_settings.clone());
+    owner.player_apply_state.acknowledged_bridge_generation = Some(77);
+    owner.player = Some(GuiOwnedPlayer::Mpv(Box::new(adapter)));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state =
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+    let actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert!(matches!(
+        owner.player_integration_health,
+        GuiPlayerIntegrationHealth::BridgeDegraded { .. }
+    ));
+    assert!(actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::ApplyGuiPlayerSetupRuntimeSnapshot(snapshot)
+            if snapshot.issue.as_ref().is_some_and(|issue| {
+                issue.kind == crate::app::shell_state::GuiPlayerSetupIssueKind::BridgeDegraded
+            })
+    )));
+    assert_eq!(
+        owner.player_apply_state.acknowledged_bridge_settings,
+        Some(acknowledged_settings),
+        "a stale Ready event must not replace the last authoritative bridge baseline"
+    );
+    assert_eq!(
+        owner.player_apply_state.acknowledged_bridge_generation,
+        Some(77),
+        "a stale Ready event must not clear the last authoritative acknowledged generation"
+    );
 }
 
 #[test]
@@ -305,7 +452,7 @@ fn bridge_retry_runs_in_place_and_clears_degraded_health() {
     let desired_launch_state = launch_state_for(&desired_settings);
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player_launch_state = desired_launch_state.clone();
-    owner.applied_player_launch_state = Some(initial_launch_state);
+    owner.record_fully_applied_player_launch_state(&initial_launch_state);
     owner
         .retain_mpv_after_optional_bridge_attempt(
             sorotte_player_mpv::SimulatedPlayer::new().into_inner(),
@@ -336,7 +483,7 @@ fn bridge_retry_runs_in_place_and_clears_degraded_health() {
         owner.player_integration_health,
         GuiPlayerIntegrationHealth::Ready
     ));
-    assert!(!owner.player_settings_reapply_required);
+    assert!(!owner.player_apply_state.core_reapply_required);
     assert_eq!(
         owner.player.as_ref().and_then(|player| match player {
             GuiOwnedPlayer::Mpv(player) => {
@@ -357,12 +504,28 @@ fn bridge_retry_runs_in_place_and_clears_degraded_health() {
     );
     assert_eq!(
         owner
-            .applied_player_launch_state
+            .player_apply_state
+            .acknowledged_bridge_settings
             .as_ref()
-            .and_then(GuiPlayerLaunchRuntimeState::mpv_ui_settings)
             .map(|settings| settings.notification_timeout_ms),
         Some(9_000),
         "successful retry must promote the desired settings to the applied baseline"
+    );
+    assert_eq!(
+        owner
+            .player_apply_state
+            .applied_mpv_ui_settings
+            .as_ref()
+            .map(|settings| settings.notification_timeout_ms),
+        Some(9_000),
+        "successful retry must separately retain the mpv UI-property baseline"
+    );
+    assert!(
+        owner
+            .player_apply_state
+            .acknowledged_bridge_generation
+            .is_some(),
+        "successful retry must retain the exact acknowledged Lua generation"
     );
 }
 

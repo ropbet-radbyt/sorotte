@@ -4,6 +4,9 @@ use std::fmt;
 pub enum SorotteBridgeHealth {
     Disabled,
     Ready,
+    /// The bridge was ready, but is temporarily reacquiring ownership or rediscovering the
+    /// stable Lua target. Core mpv JSON IPC remains usable while player chat is gated.
+    Recovering,
     Degraded(SorotteBridgeFailure),
 }
 

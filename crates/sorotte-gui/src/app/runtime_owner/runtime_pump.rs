@@ -27,6 +27,7 @@ impl GuiPersistedConfigRuntimeOwner {
     ) -> SorotteGuiShellAppState {
         self.runtime_pump_generation = self.runtime_pump_generation.wrapping_add(1);
         self.poll_managed_mpv_process();
+        self.pump_sorotte_bridge_health_transitions();
         let mut media_resolution_completed = false;
         self.pump_due_session_transport_reconnect(handle, &mut projected_state);
         self.sync_detached_session_runtime_state_or_notify(handle, &mut projected_state);
@@ -132,6 +133,40 @@ impl GuiPersistedConfigRuntimeOwner {
         self.update_runtime.pump_background_check(handle);
         self.run_deferred_startup_stream_helper_probe(handle, &mut projected_state);
         projected_state
+    }
+
+    fn pump_sorotte_bridge_health_transitions(&mut self) {
+        let (transitions, current_acknowledgement) = self
+            .player
+            .as_mut()
+            .and_then(GuiOwnedPlayer::as_mpv_mut)
+            .map(|player| {
+                let mut transitions = Vec::new();
+                while let Some(health) = player.take_sorotte_bridge_health_transition() {
+                    transitions.push(health);
+                }
+                let current_acknowledgement = (!transitions.is_empty()
+                    && matches!(
+                        player.sorotte_bridge_health(),
+                        SorotteBridgeHealth::Ready | SorotteBridgeHealth::Disabled
+                    ))
+                .then(|| {
+                    (
+                        player.legacy_syncplay_ui_settings().clone(),
+                        player.sorotte_bridge_acknowledged_generation(),
+                    )
+                });
+                (transitions, current_acknowledgement)
+            })
+            .unwrap_or_default();
+
+        for transition in transitions {
+            self.record_sorotte_bridge_health(transition);
+        }
+        if let Some((settings, generation)) = current_acknowledgement {
+            self.player_apply_state.acknowledged_bridge_settings = Some(settings);
+            self.player_apply_state.acknowledged_bridge_generation = generation;
+        }
     }
 
     pub(super) fn reconcile_playlist_resolution_scope(

@@ -56,14 +56,6 @@ impl std::fmt::Debug for ManagedMpvLaunchConfig {
     }
 }
 
-impl ManagedMpvLaunchConfig {
-    pub(crate) fn matches_process_target(&self, other: &Self) -> bool {
-        self.requested_player_path == other.requested_player_path
-            && self.program == other.program
-            && self.extra_args == other.extra_args
-    }
-}
-
 #[derive(Debug)]
 pub(crate) struct ManagedMpvProcessGuard {
     child: Child,
@@ -134,17 +126,23 @@ pub(crate) fn managed_mpv_settings_decision_from_settings(
     }))
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SorotteChatOsdIntegrationOutcome {
+    pub(crate) bridge_health: SorotteBridgeHealth,
+    pub(crate) mpv_ui_settings_applied: bool,
+}
+
 pub(crate) fn configure_sorotte_chat_osd_integration(
     player: &mut MpvAdapter,
     ui_settings: &LegacySyncplayUiSettings,
-) -> SorotteBridgeHealth {
+) -> SorotteChatOsdIntegrationOutcome {
     configure_sorotte_chat_osd_integration_inner(player, ui_settings, false)
 }
 
 pub(crate) fn retry_sorotte_chat_osd_integration(
     player: &mut MpvAdapter,
     ui_settings: &LegacySyncplayUiSettings,
-) -> SorotteBridgeHealth {
+) -> SorotteChatOsdIntegrationOutcome {
     configure_sorotte_chat_osd_integration_inner(player, ui_settings, true)
 }
 
@@ -152,12 +150,15 @@ fn configure_sorotte_chat_osd_integration_inner(
     player: &mut MpvAdapter,
     ui_settings: &LegacySyncplayUiSettings,
     retry: bool,
-) -> SorotteBridgeHealth {
+) -> SorotteChatOsdIntegrationOutcome {
     if let Err(error) = player.configure_legacy_syncplay_ui_settings(ui_settings.clone()) {
-        return player.mark_sorotte_bridge_degraded(
-            SorotteBridgeFailureKind::IpcCommand,
-            format!("failed to configure mpv OSD/chat settings: {error}"),
-        );
+        return SorotteChatOsdIntegrationOutcome {
+            bridge_health: player.mark_sorotte_bridge_degraded(
+                SorotteBridgeFailureKind::IpcCommand,
+                format!("failed to configure mpv OSD/chat settings: {error}"),
+            ),
+            mpv_ui_settings_applied: false,
+        };
     }
     if let Err(error) = player.set_option_string("drag-and-drop", "no") {
         eprintln!("warning: failed to disable mpv drag-and-drop handling: {error}");
@@ -168,10 +169,14 @@ fn configure_sorotte_chat_osd_integration_inner(
             error
         );
     }
-    if retry {
+    let bridge_health = if retry {
         player.retry_bundled_sorotte_bridge()
     } else {
         player.configure_bundled_sorotte_bridge()
+    };
+    SorotteChatOsdIntegrationOutcome {
+        bridge_health,
+        mpv_ui_settings_applied: true,
     }
 }
 

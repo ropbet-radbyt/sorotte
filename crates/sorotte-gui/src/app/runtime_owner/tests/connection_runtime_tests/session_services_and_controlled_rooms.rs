@@ -194,6 +194,37 @@ fn gui_persisted_config_runtime_owner_keeps_chat_disabled_until_server_hello_rep
         assert!(state.apply(action));
     }
     assert!(state.commands.can_send_chat_message);
+
+    let mut runtime_degraded_player = sorotte_player_mpv::SimulatedPlayer::new().into_inner();
+    runtime_degraded_player.mark_sorotte_bridge_degraded(
+        sorotte_player_mpv::SorotteBridgeFailureKind::LeaseBusy,
+        "another mpv bridge owner retained the input lease",
+    );
+    owner.player = Some(GuiOwnedPlayer::Mpv(Box::new(runtime_degraded_player)));
+    let _ = session_transport.drain_outbound_protocol_lines();
+    handle.push_request(GuiRuntimeRequest::SendChatMessage(
+        "chat survives bridge degradation".to_owned(),
+    ));
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    for action in handle.drain_actions() {
+        assert!(state.apply(action));
+    }
+
+    assert!(
+        state.commands.can_send_chat_message,
+        "runtime player-bridge degradation must not disable GUI session chat"
+    );
+    assert!(state.player_setup_issue.as_ref().is_some_and(|issue| {
+        issue.kind == crate::app::shell_state::GuiPlayerSetupIssueKind::BridgeDegraded
+            && issue.retry_available
+    }));
+    assert!(
+        session_transport
+            .drain_outbound_protocol_lines()
+            .iter()
+            .any(|line| line.contains("chat survives bridge degradation")),
+        "GUI chat must continue through the client-core session while the player bridge is degraded"
+    );
 }
 
 #[test]

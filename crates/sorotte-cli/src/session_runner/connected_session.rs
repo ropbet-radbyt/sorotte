@@ -9,6 +9,7 @@ use self::execution::{
     run_connected_session_event_plan_legacy_compatible,
 };
 use rustls::{ClientConfig, RootCertStore, pki_types::ServerName};
+use sorotte_player_mpv::SorotteBridgeHealth;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_rustls::TlsConnector;
 
@@ -68,6 +69,148 @@ fn emit_application_service_events(events: Vec<ClientEvent>) {
             ClientEvent::OperationFailed { message, .. } => eprintln!("warning: {message}"),
             _ => {}
         }
+    }
+}
+
+#[derive(Debug)]
+struct CliBridgeRuntimeHealthReporter {
+    degradation_reported: bool,
+}
+
+impl CliBridgeRuntimeHealthReporter {
+    fn new(initial_health: &SorotteBridgeHealth) -> Self {
+        Self {
+            degradation_reported: matches!(initial_health, SorotteBridgeHealth::Degraded(_)),
+        }
+    }
+
+    fn line_for_transition(&mut self, health: &SorotteBridgeHealth) -> Option<String> {
+        match health {
+            SorotteBridgeHealth::Degraded(failure) if !self.degradation_reported => {
+                self.degradation_reported = true;
+                Some(format!(
+                    "warning: mpv remains ready, but Chat/OSD integration degraded at runtime: {}",
+                    failure.reason
+                ))
+            }
+            SorotteBridgeHealth::Ready if self.degradation_reported => {
+                self.degradation_reported = false;
+                Some("info: mpv Chat/OSD integration recovered".to_owned())
+            }
+            SorotteBridgeHealth::Disabled => {
+                self.degradation_reported = false;
+                None
+            }
+            SorotteBridgeHealth::Ready
+            | SorotteBridgeHealth::Recovering
+            | SorotteBridgeHealth::Degraded(_) => None,
+        }
+    }
+}
+
+fn drain_cli_bridge_runtime_health_transitions_to_sink(
+    runtime: &mut ClientApplication<MpvAdapter>,
+    reporter: &mut CliBridgeRuntimeHealthReporter,
+    mut emit: impl FnMut(String),
+) {
+    let transitions = runtime.with_player_io(|player| {
+        std::iter::from_fn(|| player.take_sorotte_bridge_health_transition()).collect::<Vec<_>>()
+    });
+    for health in transitions {
+        if let Some(line) = reporter.line_for_transition(&health) {
+            emit(line);
+        }
+    }
+}
+
+fn report_cli_bridge_runtime_health_transitions(
+    runtime: &mut ClientApplication<MpvAdapter>,
+    reporter: &mut CliBridgeRuntimeHealthReporter,
+) {
+    drain_cli_bridge_runtime_health_transitions_to_sink(runtime, reporter, |line| {
+        eprintln!("{line}");
+    });
+}
+
+#[cfg(test)]
+mod bridge_runtime_health_reporter_tests {
+    use super::*;
+    use sorotte_player_mpv::{
+        LegacySyncplayUiSettings, SorotteBridgeFailure, SorotteBridgeFailureKind,
+    };
+
+    fn degraded(reason: &str) -> SorotteBridgeHealth {
+        SorotteBridgeHealth::Degraded(SorotteBridgeFailure {
+            kind: SorotteBridgeFailureKind::LeaseBusy,
+            reason: reason.to_owned(),
+        })
+    }
+
+    #[test]
+    fn cli_runtime_health_reporter_logs_each_degradation_and_recovery_once() {
+        let mut reporter = CliBridgeRuntimeHealthReporter::new(&SorotteBridgeHealth::Ready);
+
+        assert!(
+            reporter
+                .line_for_transition(&SorotteBridgeHealth::Ready)
+                .is_none()
+        );
+        assert!(
+            reporter
+                .line_for_transition(&SorotteBridgeHealth::Recovering)
+                .is_none()
+        );
+        assert_eq!(
+            reporter
+                .line_for_transition(&degraded("another owner holds the input lease"))
+                .as_deref(),
+            Some(
+                "warning: mpv remains ready, but Chat/OSD integration degraded at runtime: another owner holds the input lease"
+            )
+        );
+        assert!(
+            reporter
+                .line_for_transition(&degraded("same degradation repeated"))
+                .is_none()
+        );
+        assert_eq!(
+            reporter
+                .line_for_transition(&SorotteBridgeHealth::Ready)
+                .as_deref(),
+            Some("info: mpv Chat/OSD integration recovered")
+        );
+        assert!(
+            reporter
+                .line_for_transition(&SorotteBridgeHealth::Ready)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn cli_player_pump_consumes_runtime_degradation_transition_only_once() {
+        let (mut player, _release_count) =
+            MpvAdapter::with_release_recording_sorotte_bridge_test_ipc(LegacySyncplayUiSettings {
+                chat_move_osd: false,
+                ..LegacySyncplayUiSettings::default()
+            });
+        let mut reporter = CliBridgeRuntimeHealthReporter::new(&player.sorotte_bridge_health());
+        player.mark_sorotte_bridge_degraded(
+            SorotteBridgeFailureKind::LeaseBusy,
+            "runtime lease reacquisition was rejected",
+        );
+        let mut runtime = ClientApplication::with_default_session(player);
+        let mut lines = Vec::new();
+
+        drain_cli_bridge_runtime_health_transitions_to_sink(&mut runtime, &mut reporter, |line| {
+            lines.push(line)
+        });
+        drain_cli_bridge_runtime_health_transitions_to_sink(&mut runtime, &mut reporter, |line| {
+            lines.push(line)
+        });
+
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("runtime lease reacquisition was rejected"));
+        assert!(runtime.player().is_connected());
     }
 }
 
@@ -349,6 +492,8 @@ where
     };
     let shared_playlists_enabled = shared_playlists_enabled_cli_legacy_compatible(config);
     let dont_slow_down_with_me = config.dont_slow_down_with_me_override.unwrap_or(false);
+    let mut bridge_health_reporter =
+        CliBridgeRuntimeHealthReporter::new(&runtime.player().sorotte_bridge_health());
 
     loop {
         if connected_start.elapsed().as_secs_f64() >= config.max_connected_runtime_seconds {
@@ -480,6 +625,10 @@ where
                 emit_application_service_events(runtime.pump_plex_service().await);
             }
             _ = player_chat_input_tick.tick() => {
+                report_cli_bridge_runtime_health_transitions(
+                    runtime,
+                    &mut bridge_health_reporter,
+                );
                 if drain_player_chat_input_legacy_compatible(runtime)? {
                     flush_runtime_protocol_lines(runtime, &mut writer).await?;
                 }

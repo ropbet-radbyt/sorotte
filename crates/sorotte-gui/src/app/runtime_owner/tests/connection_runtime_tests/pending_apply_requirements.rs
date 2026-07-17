@@ -72,7 +72,7 @@ fn install_attached_mpv_baseline(
         GuiPlayerLaunchRuntimeState::ManagedMpv(_)
     ));
     owner.player_launch_state = applied.clone();
-    owner.applied_player_launch_state = Some(applied);
+    owner.record_fully_applied_player_launch_state(&applied);
     owner.player = Some(GuiOwnedPlayer::Mpv(Box::new(
         sorotte_player_mpv::SimulatedPlayer::new().into_inner(),
     )));
@@ -95,7 +95,7 @@ fn install_attached_unacknowledging_mpv_baseline(
     let ui_settings =
         crate::app::mpv_launch::legacy_syncplay_ui_settings_from_stored_settings(Some(settings));
     owner.player_launch_state = applied.clone();
-    owner.applied_player_launch_state = Some(applied);
+    owner.record_fully_applied_player_launch_state(&applied);
     owner.player = Some(GuiOwnedPlayer::Mpv(Box::new(
         sorotte_player_mpv::MpvAdapter::with_unacknowledging_syncplayintf_test_ipc(ui_settings),
     )));
@@ -314,7 +314,7 @@ fn active_player_save_and_revert_toggle_restart_player_symmetrically() {
         )
         .expect("initial player settings should resolve to a launch state");
     owner.player_launch_state = applied.clone();
-    owner.applied_player_launch_state = Some(applied);
+    owner.record_fully_applied_player_launch_state(&applied);
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         id: SettingId::PlayerExecutable,
@@ -341,7 +341,7 @@ fn active_player_save_and_revert_toggle_restart_player_symmetrically() {
 }
 
 #[test]
-fn tainted_partial_player_apply_is_rolled_back_before_restart_guidance_clears() {
+fn tainted_partial_bridge_apply_is_rolled_back_without_core_restart_guidance() {
     let applied_settings = StoredClientSettingsMvp {
         player_path: Some("C:/Players/mpv.exe".to_owned()),
         chat_top_margin: Some(25),
@@ -366,9 +366,12 @@ fn tainted_partial_player_apply_is_rolled_back_before_restart_guidance_clears() 
     player
         .configure_legacy_syncplay_ui_settings(failed_ui)
         .expect("the fixture should model the locally mutated side of a partial failure");
-    owner.player_settings_reapply_required = true;
-    owner.player_unavailability_reason =
-        Some("mpv player settings were only partially applied".to_owned());
+    owner.player_apply_state.acknowledged_bridge_settings = None;
+    owner.player_apply_state.acknowledged_bridge_generation = None;
+    owner.player_integration_health = GuiPlayerIntegrationHealth::BridgeDegraded {
+        reason: "mpv bridge settings were only partially applied".to_owned(),
+        retryable_in_place: true,
+    };
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         id: SettingId::ChatTopMargin,
@@ -377,8 +380,8 @@ fn tainted_partial_player_apply_is_rolled_back_before_restart_guidance_clears() 
     save_current_draft(&mut owner, &handle, &mut state);
 
     assert!(
-        !owner.player_settings_reapply_required,
-        "the uncertainty marker may clear only after the applied baseline is re-established"
+        !owner.player_apply_state.core_reapply_required,
+        "bridge uncertainty must never become a core restart marker"
     );
     assert!(state.pending_apply_requirements.is_empty());
     let Some(GuiOwnedPlayer::Mpv(player)) = owner.player.as_ref() else {
@@ -404,9 +407,9 @@ fn tainted_player_without_a_live_adapter_keeps_restart_guidance_and_failure_reas
         )
         .expect("tainted player settings should resolve to a launch state");
     owner.player_launch_state = applied.clone();
-    owner.applied_player_launch_state = Some(applied);
+    owner.record_fully_applied_player_launch_state(&applied);
     owner.player = None;
-    owner.player_settings_reapply_required = true;
+    owner.player_apply_state.core_reapply_required = true;
     owner.player_unavailability_reason =
         Some("mpv exited after a partial settings apply".to_owned());
 
@@ -452,7 +455,7 @@ fn reverting_a_failed_player_target_reconciles_the_stale_target_and_error() {
             Some(&settings_b),
         )
         .expect("player target B should resolve");
-    owner.applied_player_launch_state = Some(launch_a.clone());
+    owner.record_fully_applied_player_launch_state(&launch_a);
     owner.player_launch_state = launch_b;
     owner.player_unavailability_reason = Some("failed to launch vlc-b.exe".to_owned());
     state.pending_apply_requirements = vec![GuiSettingApplyRequirement::RestartPlayer];
@@ -504,7 +507,7 @@ fn reverting_a_failed_attachable_target_keeps_restart_until_the_restored_target_
             Some(&settings_b),
         )
         .expect("attachable player target B should resolve");
-    owner.applied_player_launch_state = Some(launch_a.clone());
+    owner.record_fully_applied_player_launch_state(&launch_a);
     owner.player_launch_state = launch_b;
     owner.player = None;
     owner.player_unavailability_reason = Some("failed to launch C:/Players/B/mpv.exe".to_owned());
@@ -516,7 +519,7 @@ fn reverting_a_failed_attachable_target_keeps_restart_until_the_restored_target_
     save_current_draft(&mut owner, &handle, &mut state);
 
     assert_eq!(owner.player_launch_state, launch_a);
-    assert!(owner.player_settings_reapply_required);
+    assert!(owner.player_apply_state.core_reapply_required);
     assert_eq!(
         state.pending_apply_requirements,
         vec![GuiSettingApplyRequirement::RestartPlayer]
@@ -572,9 +575,9 @@ fn osd_timeout_save_applies_to_attached_mpv_without_reconnect_or_restart() {
     );
     assert_eq!(
         owner
-            .applied_player_launch_state
+            .player_apply_state
+            .acknowledged_bridge_settings
             .as_ref()
-            .and_then(GuiPlayerLaunchRuntimeState::mpv_ui_settings)
             .map(|settings| settings.notification_timeout_ms),
         Some(9_000)
     );
@@ -603,7 +606,7 @@ fn missing_syncplayintf_ack_keeps_player_and_offers_bridge_retry_after_save() {
         state.saved_configuration.notification_timeout_seconds,
         Some(9)
     );
-    assert!(owner.player_settings_reapply_required);
+    assert!(!owner.player_apply_state.core_reapply_required);
     assert!(
         state.pending_apply_requirements.is_empty(),
         "a retryable bridge failure must not request a player restart"
@@ -628,12 +631,26 @@ fn missing_syncplayintf_ack_keeps_player_and_offers_bridge_retry_after_save() {
     );
     assert_eq!(
         owner
-            .applied_player_launch_state
+            .player_apply_state
+            .acknowledged_bridge_settings
             .as_ref()
-            .and_then(GuiPlayerLaunchRuntimeState::mpv_ui_settings)
             .map(|settings| settings.notification_timeout_ms),
         Some(3_000),
         "a missing acknowledgement must preserve the last applied player baseline"
+    );
+    assert_eq!(
+        owner
+            .player_apply_state
+            .applied_mpv_ui_settings
+            .as_ref()
+            .map(|settings| settings.notification_timeout_ms),
+        Some(9_000),
+        "mpv UI-property application must advance independently of the missing Lua acknowledgement"
+    );
+    assert_eq!(
+        owner.player_apply_state.acknowledged_bridge_generation,
+        Some(1),
+        "the last exact Lua generation must remain distinct from the newer mpv UI baseline"
     );
     assert!(!owner.current_player_launch_state_is_applied());
     let Some(GuiOwnedPlayer::Mpv(player)) = owner.player.as_ref() else {
@@ -660,8 +677,8 @@ fn bridge_warning_does_not_suppress_restart_for_incompatible_player_target() {
             Some(&initial),
         )
         .expect("initial player target should resolve");
-    owner.applied_player_launch_state = Some(applied);
-    owner.player_settings_reapply_required = true;
+    owner.record_fully_applied_player_launch_state(&applied);
+    owner.player_apply_state.core_reapply_required = true;
     owner.player_integration_health = GuiPlayerIntegrationHealth::BridgeDegraded {
         reason: "retryable bridge warning".to_owned(),
         retryable_in_place: true,
@@ -672,6 +689,114 @@ fn bridge_warning_does_not_suppress_restart_for_incompatible_player_target() {
         owner.pending_apply_requirements_for_settings(&state, &desired),
         vec![GuiSettingApplyRequirement::RestartPlayer],
         "a bridge warning must not mask a process-target change"
+    );
+}
+
+#[test]
+fn bridge_retry_clears_only_bridge_state_while_streaming_reapply_is_pending() {
+    let initial = StoredClientSettingsMvp {
+        player_path: Some("C:/Players/mpv.exe".to_owned()),
+        streaming_read_ahead_seconds: Some(3.0),
+        ..StoredClientSettingsMvp::default()
+    };
+    let desired = StoredClientSettingsMvp {
+        streaming_read_ahead_seconds: Some(9.0),
+        ..initial.clone()
+    };
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    install_attached_mpv_baseline(&mut owner, &initial);
+    let initial_ui_settings =
+        crate::app::mpv_launch::legacy_syncplay_ui_settings_from_stored_settings(Some(&initial));
+    owner.player = Some(GuiOwnedPlayer::Mpv(Box::new(
+        sorotte_player_mpv::MpvAdapter::with_first_active_network_option_rejection_test_ipc(
+            initial_ui_settings,
+        ),
+    )));
+    let initial_streaming_baseline = owner
+        .player_apply_state
+        .applied_streaming_options
+        .clone()
+        .expect("initial mpv streaming settings should have an applied baseline");
+    let desired_launch_state =
+        GuiPersistedConfigRuntimeOwner::configured_player_launch_state_from_lookup_and_settings(
+            &crate::app::startup_support::env_trimmed,
+            Some(&desired),
+        )
+        .expect("desired streaming settings should resolve to the same mpv target");
+    let desired_streaming_options = desired_launch_state
+        .effective_mpv_streaming_options()
+        .expect("managed mpv should expose effective streaming options")
+        .to_vec();
+    assert_ne!(initial_streaming_baseline, desired_streaming_options);
+
+    let health = owner
+        .player
+        .as_mut()
+        .and_then(GuiOwnedPlayer::as_mpv_mut)
+        .expect("mixed-state fixture should retain mpv")
+        .mark_sorotte_bridge_degraded(
+            sorotte_player_mpv::SorotteBridgeFailureKind::AcknowledgementTimeout,
+            "test bridge acknowledgement timed out",
+        );
+    owner.record_sorotte_bridge_health(health);
+    assert!(
+        !owner.apply_saved_player_settings_in_place(&desired),
+        "the first production-path active-network option write should be rejected"
+    );
+    assert!(owner.player_apply_state.core_reapply_required);
+    let streaming_error = owner
+        .player_unavailability_reason
+        .clone()
+        .expect("the active-network rejection should remain visible");
+    assert!(
+        streaming_error.contains("failed to update active mpv network-media options")
+            && streaming_error.contains("invalid parameter")
+    );
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&desired);
+    assert_eq!(
+        owner.pending_apply_requirements_for_settings(&state, &desired),
+        vec![GuiSettingApplyRequirement::RestartPlayer],
+        "bridge degradation must not suppress the independent streaming requirement"
+    );
+
+    handle.push_request(GuiRuntimeRequest::RetryChatOsdIntegration);
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert!(matches!(
+        owner.player_integration_health,
+        GuiPlayerIntegrationHealth::Ready
+    ));
+    assert!(owner.player_apply_state.core_reapply_required);
+    assert_eq!(
+        owner.player_apply_state.applied_streaming_options,
+        Some(initial_streaming_baseline),
+        "a bridge-only retry must not promote unapplied streaming options"
+    );
+    assert_eq!(
+        owner.player_unavailability_reason.as_deref(),
+        Some(streaming_error.as_str()),
+        "a bridge-only retry must not clear the core streaming failure"
+    );
+    assert_eq!(
+        state.pending_apply_requirements,
+        vec![GuiSettingApplyRequirement::RestartPlayer]
+    );
+
+    assert!(owner.apply_saved_player_settings_in_place(&desired));
+    assert!(!owner.player_apply_state.core_reapply_required);
+    assert_eq!(
+        owner.player_apply_state.applied_streaming_options,
+        Some(desired_streaming_options),
+        "only the later successful core apply may promote the streaming baseline"
+    );
+    assert!(owner.player_unavailability_reason.is_none());
+    assert!(
+        owner
+            .pending_apply_requirements_for_settings(&state, &desired)
+            .is_empty(),
+        "the successful streaming apply should clear only the remaining core requirement"
     );
 }
 
@@ -749,7 +874,7 @@ fn successful_player_retry_reconciles_restart_player_requirement() {
     let (root, mut owner, handle, mut state) =
         persisted_owner_and_state("pending-apply-player-retry", &initial);
     owner.player_launch_state = GuiPlayerLaunchRuntimeState::TestPlayer;
-    owner.applied_player_launch_state = Some(GuiPlayerLaunchRuntimeState::TestPlayer);
+    owner.record_fully_applied_player_launch_state(&GuiPlayerLaunchRuntimeState::TestPlayer);
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     state.pending_apply_requirements = vec![GuiSettingApplyRequirement::RestartPlayer];
 
@@ -848,7 +973,7 @@ fn reload_to_intentionally_unconfigured_player_clears_restart_requirement() {
         persisted_owner_and_state("pending-apply-reload-no-player", &initial);
     owner.player = None;
     owner.player_launch_state = GuiPlayerLaunchRuntimeState::None;
-    owner.applied_player_launch_state = Some(GuiPlayerLaunchRuntimeState::None);
+    owner.record_fully_applied_player_launch_state(&GuiPlayerLaunchRuntimeState::None);
     state.pending_apply_requirements = vec![GuiSettingApplyRequirement::RestartPlayer];
 
     let reloaded = StoredClientSettingsMvp {
@@ -872,7 +997,7 @@ fn reload_to_intentionally_unconfigured_player_clears_restart_requirement() {
         owner.current_player_launch_state_is_applied(),
         "reload launch state should be applied: launch={:?}, applied={:?}",
         owner.player_launch_state,
-        owner.applied_player_launch_state,
+        owner.player_apply_state.applied_process_target,
     );
     assert_eq!(state.saved_configuration.player_path, None);
     assert!(

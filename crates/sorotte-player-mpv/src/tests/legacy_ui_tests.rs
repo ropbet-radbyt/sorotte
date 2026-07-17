@@ -222,6 +222,46 @@ fn graceful_bridge_release_is_terminal_nonblocking_and_idempotent() {
 }
 
 #[test]
+fn graceful_bridge_release_restores_original_osd_placement_before_releasing_owner() {
+    let (transport, state) = fake_transport_with_reads(&[
+        r#"{"request_id":1,"error":"success","data":"top"}"#,
+        r#"{"request_id":2,"error":"success","data":16}"#,
+        r#"{"request_id":3,"error":"success"}"#,
+        r#"{"request_id":4,"error":"success"}"#,
+        FAKE_SYNCPLAYINTF_PONG_EVENT,
+        r#"{"request_id":5,"error":"success"}"#,
+        FAKE_SYNCPLAYINTF_ACK_EVENT,
+        r#"{"request_id":6,"error":"success"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter
+        .configure_legacy_syncplay_ui_settings(LegacySyncplayUiSettings::default())
+        .expect("chat OSD placement should capture and move the original properties");
+    assert_eq!(
+        adapter.configure_bundled_sorotte_bridge(),
+        SorotteBridgeHealth::Ready
+    );
+
+    adapter.release_sorotte_bridge_best_effort();
+
+    wait_for_write_count(&state, 9);
+    let writes = parsed_writes(&state);
+    assert_eq!(
+        writes[6]["command"],
+        json!(["set_property", "osd-align-y", "top"])
+    );
+    assert_eq!(
+        writes[7]["command"],
+        json!(["set_property", "osd-margin-y", 16])
+    );
+    assert_eq!(
+        writes[8]["command"][2], LEGACY_SYNCPLAYINTF_RELEASE_MESSAGE,
+        "the input owner must be released after both OSD restoration attempts"
+    );
+    assert!(adapter.legacy_syncplay_osd_placement_restore().is_none());
+}
+
+#[test]
 fn disabled_bridge_configuration_never_disturbs_core_ipc() {
     let (transport, state) = fake_transport_with_reads(&[]);
     let mut adapter = MpvAdapter::with_test_transport(transport);
@@ -385,6 +425,11 @@ fn expired_input_lease_is_reacquired_with_a_fresh_acknowledged_generation() {
         ))
         .expect("initial bridge configuration should succeed");
     assert!(adapter.legacy_syncplayintf_options_ready());
+    assert_eq!(
+        adapter.take_sorotte_bridge_health_transition(),
+        Some(SorotteBridgeHealth::Ready)
+    );
+    assert_eq!(adapter.take_sorotte_bridge_health_transition(), None);
 
     adapter.force_test_legacy_syncplayintf_heartbeat_due();
 
@@ -392,6 +437,15 @@ fn expired_input_lease_is_reacquired_with_a_fresh_acknowledged_generation() {
         adapter.legacy_syncplayintf_options_ready(),
         "a lease-expired event observed during heartbeat must trigger a fresh exact options acknowledgement"
     );
+    assert_eq!(
+        adapter.take_sorotte_bridge_health_transition(),
+        Some(SorotteBridgeHealth::Recovering)
+    );
+    assert_eq!(
+        adapter.take_sorotte_bridge_health_transition(),
+        Some(SorotteBridgeHealth::Ready)
+    );
+    assert_eq!(adapter.take_sorotte_bridge_health_transition(), None);
     let writes = parsed_writes(&state);
     assert_eq!(writes.len(), 4);
     assert_eq!(writes[2]["command"][2], "sorotte_syncplayintf_heartbeat");
@@ -401,6 +455,272 @@ fn expired_input_lease_is_reacquired_with_a_fresh_acknowledged_generation() {
     assert_eq!(reacquired["generation"], 2);
     assert_eq!(reacquired["ownerId"], initial["ownerId"]);
     assert_eq!(reacquired["attachmentId"], initial["attachmentId"]);
+}
+
+#[test]
+fn busy_runtime_lease_reacquisition_degrades_after_bounded_attempts_without_losing_core_ipc() {
+    let (transport, state) = fake_transport_with_reads(&[
+        FAKE_SYNCPLAYINTF_PONG_EVENT,
+        r#"{"request_id":1,"error":"success"}"#,
+        FAKE_SYNCPLAYINTF_ACK_EVENT,
+        r#"{"request_id":2,"error":"success"}"#,
+        FAKE_SYNCPLAYINTF_LEASE_EXPIRED_EVENT,
+        r#"{"request_id":3,"error":"success"}"#,
+        FAKE_SYNCPLAYINTF_REJECTED_ACK_EVENT,
+        r#"{"request_id":4,"error":"success"}"#,
+        r#"{"request_id":5,"error":"success","data":false}"#,
+        FAKE_SYNCPLAYINTF_REJECTED_ACK_EVENT,
+        r#"{"request_id":6,"error":"success"}"#,
+        r#"{"request_id":7,"error":"success","data":false}"#,
+        FAKE_SYNCPLAYINTF_REJECTED_ACK_EVENT,
+        r#"{"request_id":8,"error":"success"}"#,
+        r#"{"request_id":9,"error":"success","data":false}"#,
+        r#"{"request_id":10,"error":"success"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter
+        .configure_legacy_syncplay_ui_settings(settings_without_osd_move())
+        .expect("core settings should configure");
+    assert_eq!(
+        adapter.configure_bundled_sorotte_bridge(),
+        SorotteBridgeHealth::Ready
+    );
+    assert_eq!(
+        adapter.take_sorotte_bridge_health_transition(),
+        Some(SorotteBridgeHealth::Ready)
+    );
+
+    adapter.queue_test_pending_chat_request("must be gated after lease loss");
+    adapter.force_test_legacy_syncplayintf_heartbeat_due();
+    assert_eq!(
+        adapter.sorotte_bridge_health(),
+        SorotteBridgeHealth::Recovering
+    );
+    assert!(!adapter.legacy_syncplayintf_options_ready());
+    assert_eq!(adapter.take_pending_chat_request(), None);
+    assert_eq!(
+        adapter.take_sorotte_bridge_health_transition(),
+        Some(SorotteBridgeHealth::Recovering)
+    );
+
+    adapter.force_test_legacy_syncplayintf_heartbeat_due();
+    assert_eq!(adapter.take_sorotte_bridge_health_transition(), None);
+    adapter.force_test_legacy_syncplayintf_heartbeat_due();
+
+    let SorotteBridgeHealth::Degraded(failure) = adapter.sorotte_bridge_health() else {
+        panic!("bounded busy reacquisition should degrade only the optional bridge");
+    };
+    assert_eq!(failure.kind, SorotteBridgeFailureKind::LeaseBusy);
+    assert_eq!(
+        adapter.take_sorotte_bridge_health_transition(),
+        Some(SorotteBridgeHealth::Degraded(failure))
+    );
+    assert!(adapter.is_connected());
+    adapter
+        .set_paused(true)
+        .expect("core playback commands must survive bridge degradation");
+    assert_eq!(
+        parsed_writes(&state).last().unwrap()["command"],
+        json!(["set_property", "pause", true])
+    );
+}
+
+#[test]
+fn missing_runtime_reacquisition_ack_degrades_with_acknowledgement_timeout() {
+    let (transport, _) = fake_transport_with_reads(&[
+        FAKE_SYNCPLAYINTF_PONG_EVENT,
+        r#"{"request_id":1,"error":"success"}"#,
+        FAKE_SYNCPLAYINTF_ACK_EVENT,
+        r#"{"request_id":2,"error":"success"}"#,
+        FAKE_SYNCPLAYINTF_LEASE_EXPIRED_EVENT,
+        r#"{"request_id":3,"error":"success"}"#,
+        r#"{"request_id":4,"error":"success"}"#,
+        r#"{"request_id":5,"error":"success","data":false}"#,
+        r#"{"request_id":6,"error":"success"}"#,
+        r#"{"request_id":7,"error":"success","data":false}"#,
+        r#"{"request_id":8,"error":"success"}"#,
+        r#"{"request_id":9,"error":"success","data":false}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter
+        .configure_legacy_syncplay_ui_settings(settings_without_osd_move())
+        .expect("core settings should configure");
+    assert_eq!(
+        adapter.configure_bundled_sorotte_bridge(),
+        SorotteBridgeHealth::Ready
+    );
+    assert_eq!(
+        adapter.take_sorotte_bridge_health_transition(),
+        Some(SorotteBridgeHealth::Ready)
+    );
+
+    adapter.force_test_legacy_syncplayintf_heartbeat_due();
+    assert_eq!(
+        adapter.take_sorotte_bridge_health_transition(),
+        Some(SorotteBridgeHealth::Recovering)
+    );
+    adapter.force_test_legacy_syncplayintf_heartbeat_due();
+    adapter.force_test_legacy_syncplayintf_heartbeat_due();
+
+    let SorotteBridgeHealth::Degraded(failure) = adapter.sorotte_bridge_health() else {
+        panic!("a missing bounded runtime acknowledgement should become visible degradation");
+    };
+    assert_eq!(
+        failure.kind,
+        SorotteBridgeFailureKind::AcknowledgementTimeout
+    );
+    assert!(
+        failure
+            .reason
+            .contains("did not acknowledge settings generation")
+    );
+    assert!(adapter.is_connected());
+}
+
+#[test]
+fn rejected_runtime_settings_ack_degrades_with_typed_settings_failure() {
+    let (transport, _) = fake_transport_with_reads(&[
+        FAKE_SYNCPLAYINTF_PONG_EVENT,
+        r#"{"request_id":1,"error":"success"}"#,
+        FAKE_SYNCPLAYINTF_ACK_EVENT,
+        r#"{"request_id":2,"error":"success"}"#,
+        FAKE_SYNCPLAYINTF_SETTINGS_REJECTED_ACK_EVENT,
+        r#"{"request_id":3,"error":"success"}"#,
+        r#"{"request_id":4,"error":"success","data":false}"#,
+        FAKE_SYNCPLAYINTF_SETTINGS_REJECTED_ACK_EVENT,
+        r#"{"request_id":5,"error":"success"}"#,
+        r#"{"request_id":6,"error":"success","data":false}"#,
+        FAKE_SYNCPLAYINTF_SETTINGS_REJECTED_ACK_EVENT,
+        r#"{"request_id":7,"error":"success"}"#,
+        r#"{"request_id":8,"error":"success","data":false}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    let baseline = settings_without_osd_move();
+    adapter
+        .configure_legacy_syncplay_ui_settings(baseline.clone())
+        .expect("core settings should configure");
+    assert_eq!(
+        adapter.configure_bundled_sorotte_bridge(),
+        SorotteBridgeHealth::Ready
+    );
+    assert_eq!(
+        adapter.take_sorotte_bridge_health_transition(),
+        Some(SorotteBridgeHealth::Ready)
+    );
+
+    let mut changed = baseline;
+    changed.chat_timeout_ms += 1;
+    adapter
+        .configure_legacy_syncplay_ui_settings(changed)
+        .expect("a bridge settings rejection must not reject core mpv settings");
+    assert_eq!(
+        adapter.take_sorotte_bridge_health_transition(),
+        Some(SorotteBridgeHealth::Recovering)
+    );
+    adapter.force_test_legacy_syncplayintf_heartbeat_due();
+    adapter.force_test_legacy_syncplayintf_heartbeat_due();
+
+    let SorotteBridgeHealth::Degraded(failure) = adapter.sorotte_bridge_health() else {
+        panic!("a bounded rejected settings generation should become visible degradation");
+    };
+    assert_eq!(failure.kind, SorotteBridgeFailureKind::SettingsRejected);
+    assert!(failure.reason.contains("settings were rejected"));
+    assert!(adapter.is_connected());
+}
+
+#[test]
+fn runtime_discovery_instance_change_reapplies_settings_and_emits_recovery_transitions() {
+    let (transport, state) = fake_transport_with_reads(&[
+        FAKE_SYNCPLAYINTF_PONG_EVENT,
+        r#"{"request_id":1,"error":"success"}"#,
+        FAKE_SYNCPLAYINTF_ACK_EVENT,
+        r#"{"request_id":2,"error":"success"}"#,
+        FAKE_SYNCPLAYINTF_RELOADED_PONG_EVENT,
+        r#"{"request_id":3,"error":"success"}"#,
+        FAKE_SYNCPLAYINTF_ACK_EVENT,
+        r#"{"request_id":4,"error":"success"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter
+        .configure_legacy_syncplay_ui_settings(settings_without_osd_move())
+        .expect("core settings should configure");
+    assert_eq!(
+        adapter.configure_bundled_sorotte_bridge(),
+        SorotteBridgeHealth::Ready
+    );
+    assert_eq!(
+        adapter.take_sorotte_bridge_health_transition(),
+        Some(SorotteBridgeHealth::Ready)
+    );
+
+    adapter.force_test_legacy_syncplayintf_discovery_due();
+
+    assert_eq!(adapter.sorotte_bridge_health(), SorotteBridgeHealth::Ready);
+    assert_eq!(
+        adapter.take_sorotte_bridge_health_transition(),
+        Some(SorotteBridgeHealth::Recovering)
+    );
+    assert_eq!(
+        adapter.take_sorotte_bridge_health_transition(),
+        Some(SorotteBridgeHealth::Ready)
+    );
+    let writes = parsed_writes(&state);
+    assert_eq!(writes[2]["command"][2], "sorotte_syncplayintf_ping");
+    let reapplied = options_payload(&writes[3]);
+    assert_eq!(reapplied["bridgeInstanceId"], "reloaded-test-bridge");
+    assert_eq!(reapplied["generation"], 2);
+}
+
+#[test]
+fn bridge_targeted_output_failure_falls_back_and_bounded_rediscovery_degrades() {
+    let (transport, state) = fake_transport_with_reads(&[
+        FAKE_SYNCPLAYINTF_PONG_EVENT,
+        r#"{"request_id":1,"error":"success"}"#,
+        FAKE_SYNCPLAYINTF_ACK_EVENT,
+        r#"{"request_id":2,"error":"success"}"#,
+        r#"{"request_id":3,"error":"error running command"}"#,
+        r#"{"request_id":4,"error":"success"}"#,
+        r#"{"request_id":5,"error":"error running command"}"#,
+        r#"{"request_id":6,"error":"error running command"}"#,
+        r#"{"request_id":7,"error":"error running command"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter
+        .configure_legacy_syncplay_ui_settings(settings_without_osd_move())
+        .expect("core settings should configure");
+    assert_eq!(
+        adapter.configure_bundled_sorotte_bridge(),
+        SorotteBridgeHealth::Ready
+    );
+    assert_eq!(
+        adapter.take_sorotte_bridge_health_transition(),
+        Some(SorotteBridgeHealth::Ready)
+    );
+
+    adapter
+        .show_syncplay_legacy_chat_message("<alice> still visible")
+        .expect("bridge failure should use core mpv show-text");
+    assert_eq!(
+        adapter.sorotte_bridge_health(),
+        SorotteBridgeHealth::Recovering
+    );
+    assert!(!adapter.legacy_syncplayintf_options_ready());
+    assert_eq!(
+        parsed_writes(&state)[3]["command"],
+        json!(["show-text", "<alice> still visible", 7_000, 1])
+    );
+    assert_eq!(
+        adapter.take_sorotte_bridge_health_transition(),
+        Some(SorotteBridgeHealth::Recovering)
+    );
+    adapter.force_test_legacy_syncplayintf_heartbeat_due();
+    adapter.force_test_legacy_syncplayintf_heartbeat_due();
+
+    let SorotteBridgeHealth::Degraded(failure) = adapter.sorotte_bridge_health() else {
+        panic!("bounded rediscovery failure should degrade the optional bridge");
+    };
+    assert_eq!(failure.kind, SorotteBridgeFailureKind::Discovery);
+    assert!(adapter.is_connected());
 }
 
 #[test]

@@ -5,6 +5,7 @@ use crate::app::runtime_owner::GuiPlayerIntegrationHealth;
 use crate::app::runtime_stack::GuiAttachedPlayerRuntimeAction;
 use crate::app::runtime_stack::GuiOwnedPlayer;
 use crate::app::support::system_time_seconds;
+use sorotte_player_mpv::SorotteBridgeHealth;
 
 impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn handle_player_command(
@@ -116,7 +117,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.sync_player_from_lookup_and_settings(&env_trimmed, Some(&settings), true);
         self.refresh_player_state();
         let stream_helper_snapshot = self.recheck_stream_helper_runtime_snapshot(projected_state);
-        let player_settings_applied = self.current_player_launch_state_is_applied();
+        let player_settings_applied = self.current_player_core_state_is_applied();
 
         let (level, message) = if self.player.is_some() {
             (
@@ -177,7 +178,8 @@ impl GuiPersistedConfigRuntimeOwner {
         };
 
         let core_ipc_was_connected = player.is_connected();
-        let health = retry_sorotte_chat_osd_integration(player, &ui_settings);
+        let integration = retry_sorotte_chat_osd_integration(player, &ui_settings);
+        let acknowledged_generation = player.sorotte_bridge_acknowledged_generation();
         if core_ipc_was_connected && !player.is_connected() {
             self.detach_player();
             let message =
@@ -186,13 +188,16 @@ impl GuiPersistedConfigRuntimeOwner {
             Self::push_player_error(handle, message);
             return true;
         }
-        self.record_sorotte_bridge_health(health);
-        self.player_unavailability_reason = None;
+        if integration.mpv_ui_settings_applied {
+            self.player_apply_state.applied_mpv_ui_settings = Some(ui_settings.clone());
+        }
+        self.record_sorotte_bridge_health(integration.bridge_health.clone());
         if matches!(
-            self.player_integration_health,
-            GuiPlayerIntegrationHealth::Ready
+            integration.bridge_health,
+            SorotteBridgeHealth::Ready | SorotteBridgeHealth::Disabled
         ) {
-            self.applied_player_launch_state = Some(self.player_launch_state.clone());
+            self.player_apply_state.acknowledged_bridge_settings = Some(ui_settings);
+            self.player_apply_state.acknowledged_bridge_generation = acknowledged_generation;
         }
 
         let (level, message) = match &self.player_integration_health {

@@ -413,7 +413,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.invalidate_plex_operation_context(handle, projected_state);
                 self.sync_player_from_lookup_and_settings(&env_trimmed, Some(&settings), true);
                 self.promote_on_save_runtime_fields(&settings);
-                if self.current_player_launch_state_is_applied() {
+                if self.current_player_core_state_is_applied() {
                     self.promote_restart_player_runtime_fields(&settings);
                 }
                 let pending_requirements =
@@ -435,7 +435,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     true,
                 );
                 self.promote_on_save_runtime_fields(&fallback_settings);
-                if self.current_player_launch_state_is_applied() {
+                if self.current_player_core_state_is_applied() {
                     self.promote_restart_player_runtime_fields(&fallback_settings);
                 }
                 let pending_requirements =

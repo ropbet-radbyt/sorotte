@@ -5,7 +5,8 @@ use super::{
 use crate::constants::{
     LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_LEASE_EXPIRED,
     LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_OPTIONS_APPLIED, LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_PONG,
-    LEGACY_SYNCPLAYINTF_PROTOCOL, LEGACY_SYNCPLAYINTF_SCRIPT_NAME,
+    LEGACY_SYNCPLAYINTF_PROTOCOL, LEGACY_SYNCPLAYINTF_RELEASE_MESSAGE,
+    LEGACY_SYNCPLAYINTF_SCRIPT_NAME,
 };
 use crate::ipc::{MpvJsonIpcTransport, read_line_from_stream};
 use serde_json::{Value, json};
@@ -31,10 +32,13 @@ mod state_tests;
 mod syncplayintf_lua_tests;
 
 const FAKE_SYNCPLAYINTF_PONG_EVENT: &str = "__SOROTTE_SYNCPLAYINTF_PONG__";
+const FAKE_SYNCPLAYINTF_RELOADED_PONG_EVENT: &str = "__SOROTTE_SYNCPLAYINTF_RELOADED_PONG__";
 const FAKE_SYNCPLAYINTF_ACK_EVENT: &str = "__SOROTTE_SYNCPLAYINTF_ACK__";
 const FAKE_SYNCPLAYINTF_STALE_ACK_EVENT: &str = "__SOROTTE_SYNCPLAYINTF_STALE_ACK__";
 const FAKE_SYNCPLAYINTF_FUTURE_ACK_EVENT: &str = "__SOROTTE_SYNCPLAYINTF_FUTURE_ACK__";
 const FAKE_SYNCPLAYINTF_REJECTED_ACK_EVENT: &str = "__SOROTTE_SYNCPLAYINTF_REJECTED_ACK__";
+const FAKE_SYNCPLAYINTF_SETTINGS_REJECTED_ACK_EVENT: &str =
+    "__SOROTTE_SYNCPLAYINTF_SETTINGS_REJECTED_ACK__";
 const FAKE_SYNCPLAYINTF_MALFORMED_ACK_EVENT: &str = "__SOROTTE_SYNCPLAYINTF_MALFORMED_ACK__";
 const FAKE_SYNCPLAYINTF_LEASE_EXPIRED_EVENT: &str = "__SOROTTE_SYNCPLAYINTF_LEASE_EXPIRED__";
 
@@ -95,12 +99,15 @@ impl MpvJsonIpcTransport for FakeTransport {
 
 fn fake_syncplayintf_event_for_marker(marker: &str, writes: &[String]) -> Option<String> {
     let message_name = match marker {
-        FAKE_SYNCPLAYINTF_PONG_EVENT => LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_PONG,
+        FAKE_SYNCPLAYINTF_PONG_EVENT | FAKE_SYNCPLAYINTF_RELOADED_PONG_EVENT => {
+            LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_PONG
+        }
         FAKE_SYNCPLAYINTF_LEASE_EXPIRED_EVENT => LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_LEASE_EXPIRED,
         FAKE_SYNCPLAYINTF_ACK_EVENT
         | FAKE_SYNCPLAYINTF_STALE_ACK_EVENT
         | FAKE_SYNCPLAYINTF_FUTURE_ACK_EVENT
         | FAKE_SYNCPLAYINTF_REJECTED_ACK_EVENT
+        | FAKE_SYNCPLAYINTF_SETTINGS_REJECTED_ACK_EVENT
         | FAKE_SYNCPLAYINTF_MALFORMED_ACK_EVENT => {
             LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_OPTIONS_APPLIED
         }
@@ -124,11 +131,18 @@ fn fake_syncplayintf_event_for_marker(marker: &str, writes: &[String]) -> Option
         .pointer("/command/3")
         .and_then(Value::as_str)
         .and_then(|payload| serde_json::from_str::<Value>(payload).ok())?;
-    let payload = if marker == FAKE_SYNCPLAYINTF_PONG_EVENT {
+    let payload = if matches!(
+        marker,
+        FAKE_SYNCPLAYINTF_PONG_EVENT | FAKE_SYNCPLAYINTF_RELOADED_PONG_EVENT
+    ) {
         json!({
             "protocol": LEGACY_SYNCPLAYINTF_PROTOCOL,
             "nonce": request_payload.get("nonce")?,
-            "bridgeInstanceId": "test-bridge",
+            "bridgeInstanceId": if marker == FAKE_SYNCPLAYINTF_RELOADED_PONG_EVENT {
+                "reloaded-test-bridge"
+            } else {
+                "test-bridge"
+            },
             "scriptName": LEGACY_SYNCPLAYINTF_SCRIPT_NAME,
         })
     } else if marker == FAKE_SYNCPLAYINTF_LEASE_EXPIRED_EVENT {
@@ -145,10 +159,10 @@ fn fake_syncplayintf_event_for_marker(marker: &str, writes: &[String]) -> Option
             FAKE_SYNCPLAYINTF_FUTURE_ACK_EVENT => generation.saturating_add(1),
             _ => generation,
         };
-        let status = if marker == FAKE_SYNCPLAYINTF_REJECTED_ACK_EVENT {
-            "busy"
-        } else {
-            "applied"
+        let status = match marker {
+            FAKE_SYNCPLAYINTF_REJECTED_ACK_EVENT => "busy",
+            FAKE_SYNCPLAYINTF_SETTINGS_REJECTED_ACK_EVENT => "rejected",
+            _ => "applied",
         };
         json!({
             "protocol": LEGACY_SYNCPLAYINTF_PROTOCOL,
@@ -157,7 +171,11 @@ fn fake_syncplayintf_event_for_marker(marker: &str, writes: &[String]) -> Option
             "attachmentId": request_payload.get("attachmentId")?,
             "generation": generation,
             "status": status,
-            "error": (status != "applied").then_some("another Sorotte owner holds the live lease"),
+            "error": match status {
+                "busy" => Some("another Sorotte owner holds the live lease"),
+                "rejected" => Some("the requested bridge settings were rejected"),
+                _ => None,
+            },
         })
     };
     Some(
