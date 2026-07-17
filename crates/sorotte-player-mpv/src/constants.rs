@@ -71,5 +71,15 @@ pub(crate) const MPV_OBS_EOF_REACHED_ID: u64 = 14;
 pub(crate) const MPV_OBS_YTDL_IS_LIVE_ID: u64 = 15;
 pub(crate) const MPV_OBS_METADATA_ID: u64 = 16;
 pub(crate) const LEGACY_SYNCPLAY_SHOW_TEXT_OSD_LEVEL: i64 = 1;
-pub(crate) const LEGACY_SYNCPLAYINTF_SCRIPT_NAME: &str = "syncplayintf";
+pub(crate) const LEGACY_SYNCPLAYINTF_SCRIPT_NAME: &str = "sorotte_syncplayintf";
+pub(crate) const LEGACY_SYNCPLAYINTF_PROTOCOL: &str = "sorotte-syncplayintf-v1";
+pub(crate) const LEGACY_SYNCPLAYINTF_SET_OPTIONS_MESSAGE: &str = "set_sorotte_syncplayintf_options";
+pub(crate) const LEGACY_SYNCPLAYINTF_PING_MESSAGE: &str = "sorotte_syncplayintf_ping";
+pub(crate) const LEGACY_SYNCPLAYINTF_HEARTBEAT_MESSAGE: &str = "sorotte_syncplayintf_heartbeat";
+pub(crate) const LEGACY_SYNCPLAYINTF_RELEASE_MESSAGE: &str = "sorotte_syncplayintf_release";
 pub(crate) const LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_CHAT: &str = "syncplayintf-chat";
+pub(crate) const LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_OPTIONS_APPLIED: &str =
+    "sorotte-syncplayintf-options-applied";
+pub(crate) const LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_PONG: &str = "sorotte-syncplayintf-pong";
+pub(crate) const LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_LEASE_EXPIRED: &str =
+    "sorotte-syncplayintf-lease-expired";

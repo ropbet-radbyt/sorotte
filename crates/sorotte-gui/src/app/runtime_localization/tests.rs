@@ -71,3 +71,28 @@ fn localized_runtime_message_preserves_english_wording_and_localizes_runtime_pat
         "Ecart detecte lors de la restauration de l'etat de session (2.500 secondes)."
     );
 }
+
+#[test]
+fn localized_runtime_message_translates_slowdown_and_restoration_osd_copy() {
+    assert_eq!(
+        localize_gui_runtime_message_legacy_compatible(
+            "Slowing playback to synchronize with the room.",
+            Some("fr"),
+        ),
+        "Ralentissement de la lecture pour synchroniser avec la salle."
+    );
+    assert_eq!(
+        localize_gui_runtime_message_legacy_compatible(
+            "Restoring normal playback speed.",
+            Some("fr"),
+        ),
+        "Retour a la vitesse de lecture normale."
+    );
+    assert_eq!(
+        localize_gui_runtime_message_legacy_compatible(
+            "Slowing playback to synchronize with the room",
+            Some("xx"),
+        ),
+        "Slowing playback to synchronize with the room"
+    );
+}

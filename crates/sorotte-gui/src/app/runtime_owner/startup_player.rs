@@ -33,7 +33,6 @@ impl GuiPersistedConfigRuntimeOwner {
             applied_player_launch_state: None,
             player_settings_reapply_required: false,
             explicit_mpv_osd_placement_restore: None,
-            explicit_mpv_syncplayintf_script: None,
             managed_mpv_process: None,
             player_unavailability_reason: None,
             player_local_file: None,
@@ -279,9 +278,6 @@ impl GuiPersistedConfigRuntimeOwner {
             self.explicit_mpv_osd_placement_restore = player
                 .legacy_syncplay_osd_placement_restore()
                 .map(|(align, margin)| (ipc_path.clone(), align, margin));
-            self.explicit_mpv_syncplayintf_script = player
-                .legacy_syncplayintf_script_attachment()
-                .map(|script_name| (ipc_path.clone(), script_name));
         }
         self.player = None;
         self.managed_mpv_process = None;
@@ -323,13 +319,6 @@ impl GuiPersistedConfigRuntimeOwner {
                             *margin,
                         )));
                     }
-                    if let Some((bridge_path, script_name)) =
-                        self.explicit_mpv_syncplayintf_script.as_ref()
-                        && bridge_path == &ipc_path
-                    {
-                        adapter
-                            .set_legacy_syncplayintf_script_attachment(Some(script_name.clone()));
-                    }
                     let apply_result = apply_legacy_syncplay_ui_settings_to_mpv_adapter(
                         &mut adapter,
                         &ui_settings,
@@ -344,9 +333,6 @@ impl GuiPersistedConfigRuntimeOwner {
                     self.explicit_mpv_osd_placement_restore = adapter
                         .legacy_syncplay_osd_placement_restore()
                         .map(|(align, margin)| (ipc_path.clone(), align, margin));
-                    self.explicit_mpv_syncplayintf_script = adapter
-                        .legacy_syncplayintf_script_attachment()
-                        .map(|script_name| (ipc_path.clone(), script_name));
                     match apply_result {
                         Ok(()) => {
                             self.player = Some(GuiOwnedPlayer::Mpv(Box::new(adapter)));

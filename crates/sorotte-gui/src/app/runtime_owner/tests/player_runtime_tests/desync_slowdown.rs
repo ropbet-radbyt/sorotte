@@ -98,15 +98,23 @@ fn gui_persisted_config_runtime_owner_applies_desync_slowdown_when_room_playstat
 
 #[test]
 fn slowdown_osd_follows_the_active_session_setting() {
-    for (show_slowdown_osd, expected_slowdown_message, expected_restore_message) in [
+    for (language, show_slowdown_osd, expected_slowdown_message, expected_restore_message) in [
         (
+            None,
             true,
             Some("Slowing playback to synchronize with the room."),
             Some("Restoring normal playback speed."),
         ),
-        (false, None, None),
+        (
+            Some("fr"),
+            true,
+            Some("Ralentissement de la lecture pour synchroniser avec la salle."),
+            Some("Retour a la vitesse de lecture normale."),
+        ),
+        (None, false, None, None),
     ] {
         let settings = StoredClientSettingsMvp {
+            language: language.map(str::to_owned),
             show_slowdown_osd: Some(show_slowdown_osd),
             ..StoredClientSettingsMvp::default()
         };

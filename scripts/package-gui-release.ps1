@@ -120,7 +120,7 @@ Copy-ReleaseFile (Join-Path $RepoRoot "README.md") (Join-Path $packageRoot "READ
 Copy-ReleaseFile (Join-Path $RepoRoot "LICENSE") (Join-Path $packageRoot "LICENSE")
 $packageResources = Join-Path $packageRoot "resources"
 New-Item -ItemType Directory -Force -Path $packageResources | Out-Null
-Copy-ReleaseFile (Join-Path $RepoRoot "resources/syncplayintf.lua") (Join-Path $packageResources "syncplayintf.lua")
+Copy-ReleaseFile (Join-Path $RepoRoot "resources/sorotte_syncplayintf.lua") (Join-Path $packageResources "sorotte_syncplayintf.lua")
 
 $pdbPaths = @()
 foreach ($pdbName in @("sorotte_gui.pdb", "sorotte-gui.pdb", "sorotte_gui_updater.pdb", "sorotte-gui-updater.pdb")) {

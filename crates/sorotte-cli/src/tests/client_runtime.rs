@@ -108,21 +108,6 @@ fn legacy_syncplay_ui_settings_from_stored_settings_uses_python_defaults_and_sup
 }
 
 #[test]
-fn legacy_syncplayintf_script_source_with_chat_input_bridge_appends_once() {
-    let source = "function handle_enter()\nend\n";
-
-    let patched =
-        legacy_syncplayintf_script_source_with_chat_input_bridge_legacy_compatible(source);
-    assert!(patched.contains(source));
-    assert!(patched.contains(LEGACY_SYNCPLAYINTF_CHAT_INPUT_BRIDGE_MARKER));
-    assert!(patched.contains(r#"mp.commandv("script-message", "syncplayintf-chat""#));
-
-    let repatched =
-        legacy_syncplayintf_script_source_with_chat_input_bridge_legacy_compatible(&patched);
-    assert_eq!(repatched, patched);
-}
-
-#[test]
 fn create_client_runtime_with_managed_mpv_support_applies_legacy_syncplay_ui_settings() {
     let config = test_client_loop_config();
     let settings = StoredClientSettingsMvp {

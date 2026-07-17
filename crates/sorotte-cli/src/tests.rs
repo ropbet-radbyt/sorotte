@@ -2,7 +2,7 @@
 use super::spawn_legacy_external_player_from_spec_legacy_compatible;
 use super::{
     AutoplayThresholdOverride, ChatPolicyOverrides, ClientBehaviorOverrides, ClientLoopConfig,
-    ConnectedSessionExit, LEGACY_SYNCPLAYINTF_CHAT_INPUT_BRIDGE_MARKER, LegacyClientArgOverrides,
+    ConnectedSessionExit, LegacyClientArgOverrides,
     LegacyExplicitMpvIpcStartupPlayerArgDiagnostics, LegacyExplicitMpvIpcStartupPlayerCommand,
     LegacyExternalPlayerLaunchSpec, LocalInputCommand, LocalOffsetCommand,
     ManagedMpvLaunchEnvConfig, PlannedLocalRuntimeAction, ReadinessAutoplayOverrides,
@@ -27,7 +27,6 @@ use super::{
     legacy_explicit_mpv_ipc_startup_player_arg_diagnostic_lines_legacy_compatible,
     legacy_external_player_launch_spec_from_overrides_legacy_compatible,
     legacy_syncplay_ui_settings_from_stored_settings,
-    legacy_syncplayintf_script_source_with_chat_input_bridge_legacy_compatible,
     legacy_utc_timestamp_string_legacy_compatible,
     load_sorotte_cli_stored_settings_mvp_legacy_compatible,
     managed_mpv_launch_base_args_legacy_compatible, managed_mpv_launch_env_config_from_env,

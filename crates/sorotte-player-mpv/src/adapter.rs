@@ -6,8 +6,13 @@ mod state;
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     path::{Path, PathBuf},
-    sync::mpsc::TryRecvError,
-    time::{Duration, Instant},
+    process,
+    sync::{
+        LazyLock,
+        atomic::{AtomicU64, Ordering},
+        mpsc::TryRecvError,
+    },
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use serde_json::{Value, json};
@@ -24,8 +29,7 @@ use crate::constants::*;
 use crate::ipc::MpvJsonIpcTransport;
 use crate::ipc::{MpvIpcConnectionEvent, MpvJsonIpcClient};
 use crate::legacy_ui::{
-    LegacySyncplayOsdKind, LegacySyncplayUiSettings, legacy_syncplayintf_script_name_for_path,
-    sanitize_legacy_syncplay_script_message_text,
+    LegacySyncplayOsdKind, LegacySyncplayUiSettings, sanitize_legacy_syncplay_script_message_text,
 };
 use crate::live_probe::{
     PendingYtdlLiveProbe, YtdlLiveMetadataCapability, YtdlLiveProbeOutcome, spawn_ytdl_live_probe,
@@ -41,6 +45,18 @@ const PLAYER_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 const PLAYER_LOAD_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 const PLAYBACK_ADVANCEMENT_EPSILON_SECONDS: f64 = 0.01;
 const YTDL_LIVE_PROBE_TIMEOUT: Duration = Duration::from_secs(8);
+const LEGACY_SYNCPLAYINTF_OWNER_LEASE_MS: u64 = 2_000;
+const LEGACY_SYNCPLAYINTF_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
+const LEGACY_SYNCPLAYINTF_DISCOVERY_ATTEMPTS: usize = 3;
+const LEGACY_SYNCPLAYINTF_REGISTRATION_ATTEMPTS: usize = 20;
+static NEXT_LEGACY_SYNCPLAYINTF_ATTACHMENT: AtomicU64 = AtomicU64::new(1);
+static LEGACY_SYNCPLAYINTF_OWNER_ID: LazyLock<String> = LazyLock::new(|| {
+    let started_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("sorotte-{}-{started_at}", process::id())
+});
 
 fn uses_network_media_options(path: &str) -> bool {
     let Some((scheme, _)) = path.trim().split_once("://") else {
@@ -221,6 +237,17 @@ pub struct MpvAdapter {
     legacy_syncplayintf_script_loaded: bool,
     legacy_syncplayintf_options_applied: bool,
     legacy_syncplayintf_script_name: String,
+    legacy_syncplayintf_bridge_instance_id: Option<String>,
+    legacy_syncplayintf_owner_id: String,
+    legacy_syncplayintf_attachment_id: String,
+    legacy_syncplayintf_next_options_generation: u64,
+    legacy_syncplayintf_pending_options_generation: Option<u64>,
+    legacy_syncplayintf_options_ack_error: Option<String>,
+    legacy_syncplayintf_next_ping_nonce: u64,
+    legacy_syncplayintf_pending_ping_nonce: Option<u64>,
+    legacy_syncplayintf_last_heartbeat_at: Option<Instant>,
+    legacy_syncplayintf_lease_reacquire_required: bool,
+    ipc_endpoint: Option<PathBuf>,
     simulation_mode: bool,
     ipc_client: Option<MpvJsonIpcClient>,
     pending_ipc_connection_events: VecDeque<MpvIpcConnectionEvent>,
@@ -234,16 +261,20 @@ impl MpvAdapter {
     }
 
     pub fn connect_json_ipc(&mut self, path: impl AsRef<Path>) -> Result<(), PlayerError> {
+        let endpoint = path.as_ref().to_path_buf();
         let mut client =
-            MpvJsonIpcClient::connect(path.as_ref()).map_err(PlayerError::OperationFailed)?;
+            MpvJsonIpcClient::connect(&endpoint).map_err(PlayerError::OperationFailed)?;
         let version = match client.get_property_string_classified(MPV_PROPERTY_VERSION) {
             Ok(version) => version,
             Err(error) if error.is_property_unavailable() => None,
             Err(error) => return Err(PlayerError::OperationFailed(error.into_message())),
         };
+        self.release_legacy_syncplayintf_controller_best_effort();
         self.collect_ipc_connection_events();
         self.simulation_mode = false;
         self.ipc_client = Some(client);
+        self.ipc_endpoint = Some(endpoint);
+        self.reset_legacy_syncplayintf_attachment_for_new_ipc();
         self.observers_registered = false;
         self.transport_observers_registered = false;
         self.loadfile_options_syntax = None;
@@ -252,6 +283,28 @@ impl MpvAdapter {
             .and_then(Self::parse_mpv_major_minor_version);
         self.legacy_syncplay_osd_placement_restore = None;
         Ok(())
+    }
+
+    fn reset_legacy_syncplayintf_attachment_for_new_ipc(&mut self) {
+        self.legacy_syncplayintf_script_loaded = false;
+        self.legacy_syncplayintf_options_applied = false;
+        self.legacy_syncplayintf_script_name = LEGACY_SYNCPLAYINTF_SCRIPT_NAME.to_owned();
+        self.legacy_syncplayintf_bridge_instance_id = None;
+        self.legacy_syncplayintf_pending_options_generation = None;
+        self.legacy_syncplayintf_options_ack_error = None;
+        self.legacy_syncplayintf_pending_ping_nonce = None;
+        self.legacy_syncplayintf_last_heartbeat_at = None;
+        self.legacy_syncplayintf_lease_reacquire_required = false;
+        self.pending_chat_requests.clear();
+        let connection_generation = self
+            .ipc_client
+            .as_ref()
+            .map(MpvJsonIpcClient::generation)
+            .unwrap_or_else(|| NEXT_LEGACY_SYNCPLAYINTF_ATTACHMENT.fetch_add(1, Ordering::Relaxed));
+        self.legacy_syncplayintf_attachment_id = format!(
+            "{}-{connection_generation}",
+            self.legacy_syncplayintf_owner_id
+        );
     }
 
     pub fn is_connected(&self) -> bool {
@@ -263,6 +316,21 @@ impl MpvAdapter {
     pub(crate) fn simulated() -> Self {
         Self {
             simulation_mode: true,
+            ..Self::default()
+        }
+    }
+
+    /// Builds a connected adapter whose test transport accepts mpv commands but never emits the
+    /// Lua settings acknowledgement.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn with_unacknowledging_syncplayintf_test_ipc(settings: LegacySyncplayUiSettings) -> Self {
+        Self {
+            legacy_syncplay_ui_settings: settings,
+            legacy_syncplayintf_script_loaded: true,
+            legacy_syncplayintf_options_applied: true,
+            legacy_syncplayintf_bridge_instance_id: Some("test-bridge".to_owned()),
+            ipc_client: Some(crate::test_support::unacknowledging_syncplayintf_client()),
             ..Self::default()
         }
     }
@@ -603,27 +671,16 @@ impl MpvAdapter {
     }
 
     pub fn legacy_syncplayintf_options_ready(&self) -> bool {
-        self.legacy_syncplayintf_script_loaded && self.legacy_syncplayintf_options_applied
+        self.legacy_syncplayintf_script_loaded
+            && self.legacy_syncplayintf_bridge_instance_id.is_some()
+            && self.legacy_syncplayintf_options_applied
+            && self
+                .legacy_syncplayintf_pending_options_generation
+                .is_none()
     }
 
     pub fn legacy_syncplayintf_script_loaded(&self) -> bool {
         self.legacy_syncplayintf_script_loaded
-    }
-
-    pub fn legacy_syncplayintf_script_attachment(&self) -> Option<String> {
-        self.legacy_syncplayintf_script_loaded
-            .then(|| self.legacy_syncplayintf_script_name.clone())
-    }
-
-    pub fn set_legacy_syncplayintf_script_attachment(&mut self, script_name: Option<String>) {
-        if let Some(script_name) = script_name {
-            self.legacy_syncplayintf_script_name = script_name;
-            self.legacy_syncplayintf_script_loaded = true;
-            self.legacy_syncplayintf_options_applied = false;
-        } else {
-            self.legacy_syncplayintf_script_loaded = false;
-            self.legacy_syncplayintf_options_applied = false;
-        }
     }
 
     pub fn apply_pending_legacy_syncplayintf_options(&mut self) -> Result<(), PlayerError> {
@@ -668,15 +725,33 @@ impl MpvAdapter {
         path: impl AsRef<Path>,
     ) -> Result<(), PlayerError> {
         if self.ipc_client.is_none() {
+            if self.simulation_mode {
+                self.legacy_syncplayintf_script_loaded = true;
+                self.legacy_syncplayintf_bridge_instance_id =
+                    Some("simulated-sorotte-syncplayintf".to_owned());
+                self.legacy_syncplayintf_options_applied = true;
+            }
+            return Ok(());
+        }
+
+        if self.discover_legacy_syncplayintf_bridge(false)? {
+            self.try_send_legacy_syncplayintf_options_if_pending();
             return Ok(());
         }
 
         let script_path = path.as_ref().to_string_lossy().into_owned();
-        let script_name = legacy_syncplayintf_script_name_for_path(path.as_ref());
         self.send_ipc_command_if_attached(json!([MPV_COMMAND_LOAD_SCRIPT, script_path]))?;
-        self.legacy_syncplayintf_script_name = script_name;
-        self.legacy_syncplayintf_script_loaded = true;
+        self.legacy_syncplayintf_script_name = LEGACY_SYNCPLAYINTF_SCRIPT_NAME.to_owned();
+        self.legacy_syncplayintf_script_loaded = false;
+        self.legacy_syncplayintf_bridge_instance_id = None;
         self.legacy_syncplayintf_options_applied = false;
+        self.legacy_syncplayintf_pending_options_generation = None;
+        if !self.discover_legacy_syncplayintf_bridge(true)? {
+            return Err(PlayerError::OperationFailed(
+                "loaded the Sorotte syncplayintf resource, but its stable bridge did not answer discovery"
+                    .to_owned(),
+            ));
+        }
         self.try_send_legacy_syncplayintf_options_if_pending();
         Ok(())
     }
@@ -728,6 +803,9 @@ impl MpvAdapter {
         self.legacy_syncplay_ui_settings = settings;
         if syncplayintf_options_changed {
             self.legacy_syncplayintf_options_applied = false;
+            self.legacy_syncplayintf_pending_options_generation = None;
+            self.legacy_syncplayintf_options_ack_error = None;
+            self.legacy_syncplayintf_lease_reacquire_required = false;
             self.try_send_legacy_syncplayintf_options_if_pending();
         }
         Ok(())
@@ -819,26 +897,166 @@ impl MpvAdapter {
         ]))
     }
 
-    fn send_legacy_syncplayintf_options_if_loaded(&mut self) -> Result<(), PlayerError> {
-        if !self.legacy_syncplayintf_script_loaded {
-            return Ok(());
+    fn send_syncplayintf_probe_message(
+        &mut self,
+        message_name: &str,
+        payload: &str,
+    ) -> Result<bool, PlayerError> {
+        let result = match self.ipc_client.as_mut() {
+            Some(client) => client.send_compatibility_probe_expect_success(json!([
+                MPV_COMMAND_SCRIPT_MESSAGE_TO,
+                LEGACY_SYNCPLAYINTF_SCRIPT_NAME,
+                message_name,
+                payload
+            ])),
+            None if self.simulation_mode => return Ok(true),
+            None => return Err(PlayerError::NotConnected),
+        };
+        self.drain_ipc_events_if_attached();
+        match result {
+            Ok(()) => Ok(true),
+            Err(error) if error.is_server_rejection() => Ok(false),
+            Err(error) => Err(PlayerError::OperationFailed(error.into_message())),
+        }
+    }
+
+    pub fn discover_loaded_legacy_syncplayintf_script(&mut self) -> Result<bool, PlayerError> {
+        self.discover_legacy_syncplayintf_bridge(false)
+    }
+
+    fn discover_legacy_syncplayintf_bridge(
+        &mut self,
+        wait_for_registration: bool,
+    ) -> Result<bool, PlayerError> {
+        if self.simulation_mode {
+            self.legacy_syncplayintf_script_loaded = true;
+            self.legacy_syncplayintf_bridge_instance_id =
+                Some("simulated-sorotte-syncplayintf".to_owned());
+            return Ok(true);
         }
 
-        let payload = self
-            .legacy_syncplay_ui_settings
-            .syncplayintf_options_payload();
-        if payload.trim().is_empty() {
+        let nonce = self.legacy_syncplayintf_next_ping_nonce;
+        self.legacy_syncplayintf_next_ping_nonce = self
+            .legacy_syncplayintf_next_ping_nonce
+            .wrapping_add(1)
+            .max(1);
+        self.legacy_syncplayintf_pending_ping_nonce = Some(nonce);
+        let payload = json!({
+            "protocol": LEGACY_SYNCPLAYINTF_PROTOCOL,
+            "nonce": nonce,
+        })
+        .to_string();
+        let mut target_accepted_a_ping = false;
+        let attempts = if wait_for_registration {
+            LEGACY_SYNCPLAYINTF_REGISTRATION_ATTEMPTS
+        } else {
+            LEGACY_SYNCPLAYINTF_DISCOVERY_ATTEMPTS
+        };
+        for _ in 0..attempts {
+            let ping_accepted =
+                self.send_syncplayintf_probe_message(LEGACY_SYNCPLAYINTF_PING_MESSAGE, &payload)?;
+            target_accepted_a_ping |= ping_accepted;
+            if !ping_accepted {
+                if !wait_for_registration {
+                    self.legacy_syncplayintf_pending_ping_nonce = None;
+                    return Ok(false);
+                }
+                std::thread::sleep(Duration::from_millis(25));
+                continue;
+            }
+            if self.legacy_syncplayintf_pending_ping_nonce.is_some()
+                && let Some(client) = self.ipc_client.as_mut()
+            {
+                let _ = client.get_property(MPV_PROPERTY_PAUSE);
+                self.drain_ipc_events_if_attached();
+            }
+            if self.legacy_syncplayintf_pending_ping_nonce.is_none()
+                && self.legacy_syncplayintf_bridge_instance_id.is_some()
+            {
+                self.legacy_syncplayintf_script_loaded = true;
+                return Ok(true);
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        self.legacy_syncplayintf_pending_ping_nonce = None;
+        if target_accepted_a_ping {
+            return Err(PlayerError::OperationFailed(
+                "the stable Sorotte syncplayintf target accepted discovery messages but did not return a valid pong; refusing to load a duplicate bridge"
+                    .to_owned(),
+            ));
+        }
+        Ok(false)
+    }
+
+    fn send_legacy_syncplayintf_options_if_loaded(&mut self) -> Result<(), PlayerError> {
+        if !self.legacy_syncplayintf_script_loaded {
+            return Err(PlayerError::OperationFailed(
+                "the Sorotte syncplayintf bridge has not been discovered".to_owned(),
+            ));
+        }
+        if self.simulation_mode {
             self.legacy_syncplayintf_options_applied = true;
             return Ok(());
         }
 
-        self.send_syncplayintf_script_message("set_syncplayintf_options", &payload)?;
-        self.legacy_syncplayintf_options_applied = true;
-        Ok(())
+        let bridge_instance_id = self
+            .legacy_syncplayintf_bridge_instance_id
+            .clone()
+            .ok_or_else(|| {
+                PlayerError::OperationFailed(
+                    "the Sorotte syncplayintf bridge instance is unknown".to_owned(),
+                )
+            })?;
+        let generation = match self.legacy_syncplayintf_pending_options_generation {
+            Some(generation) => generation,
+            None => {
+                let generation = self.legacy_syncplayintf_next_options_generation;
+                self.legacy_syncplayintf_next_options_generation = self
+                    .legacy_syncplayintf_next_options_generation
+                    .wrapping_add(1)
+                    .max(1);
+                self.legacy_syncplayintf_pending_options_generation = Some(generation);
+                generation
+            }
+        };
+        self.legacy_syncplayintf_options_applied = false;
+        self.legacy_syncplayintf_options_ack_error = None;
+        let payload = self
+            .legacy_syncplay_ui_settings
+            .syncplayintf_options_payload(
+                &bridge_instance_id,
+                &self.legacy_syncplayintf_owner_id,
+                &self.legacy_syncplayintf_attachment_id,
+                generation,
+                LEGACY_SYNCPLAYINTF_OWNER_LEASE_MS,
+            );
+
+        self.send_syncplayintf_script_message(LEGACY_SYNCPLAYINTF_SET_OPTIONS_MESSAGE, &payload)?;
+        if !self.legacy_syncplayintf_options_applied
+            && let Some(client) = self.ipc_client.as_mut()
+        {
+            let _ = client.get_property(MPV_PROPERTY_PAUSE);
+            self.drain_ipc_events_if_attached();
+        }
+        if self.legacy_syncplayintf_options_applied {
+            self.legacy_syncplayintf_last_heartbeat_at = Some(Instant::now());
+            return Ok(());
+        }
+        Err(PlayerError::OperationFailed(
+            self.legacy_syncplayintf_options_ack_error
+                .clone()
+                .unwrap_or_else(|| {
+                    format!(
+                        "Sorotte syncplayintf did not acknowledge settings generation {generation}"
+                    )
+                }),
+        ))
     }
 
     fn try_send_legacy_syncplayintf_options_if_pending(&mut self) {
-        if self.legacy_syncplayintf_options_applied {
+        if self.legacy_syncplayintf_options_applied
+            || self.legacy_syncplayintf_lease_reacquire_required
+        {
             return;
         }
 
@@ -847,7 +1065,71 @@ impl MpvAdapter {
 
     fn ensure_legacy_syncplayintf_ready(&mut self) -> bool {
         self.try_send_legacy_syncplayintf_options_if_pending();
-        self.legacy_syncplayintf_script_loaded && self.legacy_syncplayintf_options_applied
+        self.legacy_syncplayintf_options_ready()
+    }
+
+    fn legacy_syncplayintf_controller_payload(&self) -> Option<String> {
+        Some(
+            json!({
+                "protocol": LEGACY_SYNCPLAYINTF_PROTOCOL,
+                "bridgeInstanceId": self.legacy_syncplayintf_bridge_instance_id.as_deref()?,
+                "ownerId": self.legacy_syncplayintf_owner_id.as_str(),
+                "attachmentId": self.legacy_syncplayintf_attachment_id.as_str(),
+            })
+            .to_string(),
+        )
+    }
+
+    fn maintain_legacy_syncplayintf_lease(&mut self) {
+        self.drain_ipc_events_if_attached();
+        if !self.legacy_syncplay_ui_settings.chat_input_enabled {
+            self.legacy_syncplayintf_last_heartbeat_at = None;
+            return;
+        }
+        if self.legacy_syncplayintf_lease_reacquire_required {
+            if self
+                .legacy_syncplayintf_last_heartbeat_at
+                .is_some_and(|last| last.elapsed() < LEGACY_SYNCPLAYINTF_HEARTBEAT_INTERVAL)
+            {
+                return;
+            }
+            self.legacy_syncplayintf_last_heartbeat_at = Some(Instant::now());
+            let _ = self.send_legacy_syncplayintf_options_if_loaded();
+            return;
+        }
+        if !self.legacy_syncplayintf_options_ready()
+            || self
+                .legacy_syncplayintf_last_heartbeat_at
+                .is_some_and(|last| last.elapsed() < LEGACY_SYNCPLAYINTF_HEARTBEAT_INTERVAL)
+        {
+            return;
+        }
+        let Some(payload) = self.legacy_syncplayintf_controller_payload() else {
+            return;
+        };
+        let heartbeat_result = self
+            .send_syncplayintf_script_message(LEGACY_SYNCPLAYINTF_HEARTBEAT_MESSAGE, &payload)
+            .is_ok();
+        if self.legacy_syncplayintf_lease_reacquire_required {
+            self.legacy_syncplayintf_last_heartbeat_at = None;
+            let _ = self.send_legacy_syncplayintf_options_if_loaded();
+        } else if heartbeat_result {
+            self.legacy_syncplayintf_last_heartbeat_at = Some(Instant::now());
+        }
+    }
+
+    fn release_legacy_syncplayintf_controller_best_effort(&mut self) {
+        if !self.legacy_syncplayintf_script_loaded {
+            return;
+        }
+        if let Some(payload) = self.legacy_syncplayintf_controller_payload() {
+            let _ = self
+                .send_syncplayintf_script_message(LEGACY_SYNCPLAYINTF_RELEASE_MESSAGE, &payload);
+        }
+        self.legacy_syncplayintf_options_applied = false;
+        self.legacy_syncplayintf_pending_options_generation = None;
+        self.legacy_syncplayintf_last_heartbeat_at = None;
+        self.legacy_syncplayintf_lease_reacquire_required = false;
     }
 
     fn ensure_observers_registered_if_attached(&mut self) {
@@ -2444,10 +2726,191 @@ impl MpvAdapter {
         let Some(message_name) = args.first().and_then(Value::as_str) else {
             return;
         };
-        if message_name != LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_CHAT {
+        let payload = args.get(1).and_then(Value::as_str);
+        match message_name {
+            LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_OPTIONS_APPLIED => {
+                self.handle_legacy_syncplayintf_options_ack(payload);
+            }
+            LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_PONG => {
+                self.handle_legacy_syncplayintf_pong(payload);
+            }
+            LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_LEASE_EXPIRED => {
+                self.handle_legacy_syncplayintf_lease_expired(payload);
+            }
+            LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_CHAT => {
+                self.handle_legacy_syncplayintf_chat_request(payload);
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_legacy_syncplayintf_options_ack(&mut self, payload: Option<&str>) {
+        let parsed = payload.and_then(|payload| serde_json::from_str::<Value>(payload).ok());
+        let Some(parsed) = parsed else {
+            if self
+                .legacy_syncplayintf_pending_options_generation
+                .is_some()
+            {
+                self.legacy_syncplayintf_options_ack_error = Some(
+                    "Sorotte syncplayintf returned a malformed settings acknowledgement".to_owned(),
+                );
+            }
+            return;
+        };
+        if parsed.get("protocol").and_then(Value::as_str) != Some(LEGACY_SYNCPLAYINTF_PROTOCOL)
+            || parsed.get("bridgeInstanceId").and_then(Value::as_str)
+                != self.legacy_syncplayintf_bridge_instance_id.as_deref()
+            || parsed.get("ownerId").and_then(Value::as_str)
+                != Some(self.legacy_syncplayintf_owner_id.as_str())
+            || parsed.get("attachmentId").and_then(Value::as_str)
+                != Some(self.legacy_syncplayintf_attachment_id.as_str())
+        {
             return;
         }
-        let Some(message) = args.get(1).and_then(Value::as_str) else {
+        let Some(pending_generation) = self.legacy_syncplayintf_pending_options_generation else {
+            return;
+        };
+        let Some(generation) = parsed.get("generation").and_then(|value| {
+            value
+                .as_u64()
+                .or_else(|| value.as_str()?.parse::<u64>().ok())
+        }) else {
+            self.legacy_syncplayintf_options_ack_error =
+                Some("Sorotte syncplayintf acknowledgement omitted a valid generation".to_owned());
+            return;
+        };
+        if generation < pending_generation {
+            return;
+        }
+        if generation > pending_generation {
+            self.legacy_syncplayintf_options_ack_error = Some(format!(
+                "Sorotte syncplayintf acknowledged unexpected future generation {generation} while waiting for {pending_generation}"
+            ));
+            return;
+        }
+        match parsed.get("status").and_then(Value::as_str) {
+            Some("applied") => {
+                self.legacy_syncplayintf_options_applied = true;
+                self.legacy_syncplayintf_pending_options_generation = None;
+                self.legacy_syncplayintf_options_ack_error = None;
+                self.legacy_syncplayintf_lease_reacquire_required = false;
+            }
+            Some(status @ ("busy" | "rejected")) => {
+                let detail = parsed
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("the bridge rejected the settings update");
+                self.legacy_syncplayintf_options_ack_error = Some(format!(
+                    "Sorotte syncplayintf did not apply generation {generation}: {detail}"
+                ));
+                if status == "busy" {
+                    self.legacy_syncplayintf_lease_reacquire_required = true;
+                }
+            }
+            _ => {
+                self.legacy_syncplayintf_options_ack_error = Some(format!(
+                    "Sorotte syncplayintf returned an invalid status for generation {generation}"
+                ));
+            }
+        }
+    }
+
+    fn handle_legacy_syncplayintf_pong(&mut self, payload: Option<&str>) {
+        let Some(parsed) = payload.and_then(|payload| serde_json::from_str::<Value>(payload).ok())
+        else {
+            return;
+        };
+        if parsed.get("protocol").and_then(Value::as_str) != Some(LEGACY_SYNCPLAYINTF_PROTOCOL) {
+            return;
+        }
+        let Some(nonce) = parsed.get("nonce").and_then(|value| {
+            value
+                .as_u64()
+                .or_else(|| value.as_str()?.parse::<u64>().ok())
+        }) else {
+            return;
+        };
+        if self.legacy_syncplayintf_pending_ping_nonce != Some(nonce) {
+            return;
+        }
+        let Some(bridge_instance_id) = parsed
+            .get("bridgeInstanceId")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return;
+        };
+        let Some(script_name) = parsed
+            .get("scriptName")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return;
+        };
+        if self
+            .legacy_syncplayintf_bridge_instance_id
+            .as_deref()
+            .is_some_and(|current| current != bridge_instance_id)
+        {
+            self.legacy_syncplayintf_options_applied = false;
+            self.legacy_syncplayintf_pending_options_generation = None;
+            self.legacy_syncplayintf_options_ack_error = None;
+            self.legacy_syncplayintf_lease_reacquire_required = false;
+        }
+        self.legacy_syncplayintf_bridge_instance_id = Some(bridge_instance_id.to_owned());
+        self.legacy_syncplayintf_script_name = script_name.to_owned();
+        self.legacy_syncplayintf_script_loaded = true;
+        self.legacy_syncplayintf_pending_ping_nonce = None;
+    }
+
+    fn handle_legacy_syncplayintf_lease_expired(&mut self, payload: Option<&str>) {
+        if !self.legacy_syncplay_ui_settings.chat_input_enabled {
+            return;
+        }
+        let Some(parsed) = payload.and_then(|payload| serde_json::from_str::<Value>(payload).ok())
+        else {
+            return;
+        };
+        if parsed.get("protocol").and_then(Value::as_str) != Some(LEGACY_SYNCPLAYINTF_PROTOCOL)
+            || parsed.get("bridgeInstanceId").and_then(Value::as_str)
+                != self.legacy_syncplayintf_bridge_instance_id.as_deref()
+            || parsed.get("ownerId").and_then(Value::as_str)
+                != Some(self.legacy_syncplayintf_owner_id.as_str())
+            || parsed.get("attachmentId").and_then(Value::as_str)
+                != Some(self.legacy_syncplayintf_attachment_id.as_str())
+        {
+            return;
+        }
+        self.legacy_syncplayintf_options_applied = false;
+        self.legacy_syncplayintf_pending_options_generation = None;
+        self.legacy_syncplayintf_options_ack_error = Some(
+            "Sorotte syncplayintf input lease expired; reapplying the current settings".to_owned(),
+        );
+        self.legacy_syncplayintf_last_heartbeat_at = None;
+        self.legacy_syncplayintf_lease_reacquire_required = true;
+    }
+
+    fn handle_legacy_syncplayintf_chat_request(&mut self, payload: Option<&str>) {
+        if !self.chat_input_polling_enabled() {
+            return;
+        }
+        let Some(parsed) = payload.and_then(|payload| serde_json::from_str::<Value>(payload).ok())
+        else {
+            return;
+        };
+        if parsed.get("protocol").and_then(Value::as_str) != Some(LEGACY_SYNCPLAYINTF_PROTOCOL)
+            || parsed.get("bridgeInstanceId").and_then(Value::as_str)
+                != self.legacy_syncplayintf_bridge_instance_id.as_deref()
+            || parsed.get("ownerId").and_then(Value::as_str)
+                != Some(self.legacy_syncplayintf_owner_id.as_str())
+            || parsed.get("attachmentId").and_then(Value::as_str)
+                != Some(self.legacy_syncplayintf_attachment_id.as_str())
+        {
+            return;
+        }
+        let Some(message) = parsed.get("text").and_then(Value::as_str) else {
             return;
         };
         self.pending_chat_requests.push_back(message.to_owned());
@@ -2579,22 +3042,26 @@ impl MpvAdapter {
 
     #[cfg(test)]
     pub(crate) fn with_test_transport(transport: impl MpvJsonIpcTransport + 'static) -> Self {
-        Self {
+        let mut adapter = Self {
             ipc_client: Some(MpvJsonIpcClient::new(Box::new(transport))),
             ..Self::default()
-        }
+        };
+        adapter.reset_legacy_syncplayintf_attachment_for_new_ipc();
+        adapter
     }
 
     #[cfg(test)]
     pub(crate) fn with_test_transport_and_registered_observers(
         transport: impl MpvJsonIpcTransport + 'static,
     ) -> Self {
-        Self {
+        let mut adapter = Self {
             ipc_client: Some(MpvJsonIpcClient::new(Box::new(transport))),
             observers_registered: true,
             transport_observers_registered: true,
             ..Self::default()
-        }
+        };
+        adapter.reset_legacy_syncplayintf_attachment_for_new_ipc();
+        adapter
     }
 
     #[cfg(test)]
@@ -2602,20 +3069,39 @@ impl MpvAdapter {
         transport: impl MpvJsonIpcTransport + 'static,
         command_timeout: std::time::Duration,
     ) -> Self {
-        Self {
+        let mut adapter = Self {
             ipc_client: Some(MpvJsonIpcClient::new_with_command_timeout(
                 Box::new(transport),
                 command_timeout,
             )),
             ..Self::default()
-        }
+        };
+        adapter.reset_legacy_syncplayintf_attachment_for_new_ipc();
+        adapter
     }
 
     #[cfg(test)]
     pub(crate) fn enable_test_legacy_chat_input(&mut self) {
         self.legacy_syncplayintf_script_loaded = true;
+        self.legacy_syncplayintf_bridge_instance_id = Some("test-bridge".to_owned());
+        self.legacy_syncplayintf_owner_id = "test-owner".to_owned();
+        self.legacy_syncplayintf_attachment_id = "test-attachment".to_owned();
         self.legacy_syncplayintf_options_applied = true;
+        self.legacy_syncplayintf_pending_options_generation = None;
+        self.legacy_syncplayintf_lease_reacquire_required = false;
         self.legacy_syncplay_ui_settings.chat_input_enabled = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reset_test_legacy_syncplayintf_attachment(&mut self) {
+        self.reset_legacy_syncplayintf_attachment_for_new_ipc();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn force_test_legacy_syncplayintf_heartbeat_due(&mut self) {
+        self.legacy_syncplayintf_last_heartbeat_at =
+            Some(Instant::now() - LEGACY_SYNCPLAYINTF_HEARTBEAT_INTERVAL);
+        self.maintain_legacy_syncplayintf_lease();
     }
 }
 

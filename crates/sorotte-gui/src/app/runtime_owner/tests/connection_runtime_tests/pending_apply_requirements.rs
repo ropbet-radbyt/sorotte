@@ -78,6 +78,29 @@ fn install_attached_mpv_baseline(
     )));
 }
 
+fn install_attached_unacknowledging_mpv_baseline(
+    owner: &mut GuiPersistedConfigRuntimeOwner,
+    settings: &StoredClientSettingsMvp,
+) {
+    let applied =
+        GuiPersistedConfigRuntimeOwner::configured_player_launch_state_from_lookup_and_settings(
+            &crate::app::startup_support::env_trimmed,
+            Some(settings),
+        )
+        .expect("unacknowledged mpv fixture should resolve to a launch state");
+    assert!(matches!(
+        applied,
+        GuiPlayerLaunchRuntimeState::ManagedMpv(_)
+    ));
+    let ui_settings =
+        crate::app::mpv_launch::legacy_syncplay_ui_settings_from_stored_settings(Some(settings));
+    owner.player_launch_state = applied.clone();
+    owner.applied_player_launch_state = Some(applied);
+    owner.player = Some(GuiOwnedPlayer::Mpv(Box::new(
+        sorotte_player_mpv::MpvAdapter::with_unacknowledging_syncplayintf_test_ipc(ui_settings),
+    )));
+}
+
 #[test]
 fn chat_and_osd_requirements_follow_their_runtime_consumers() {
     for id in [
@@ -555,6 +578,58 @@ fn osd_timeout_save_applies_to_attached_mpv_without_reconnect_or_restart() {
             .map(|settings| settings.notification_timeout_ms),
         Some(9_000)
     );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn missing_syncplayintf_ack_keeps_restart_player_guidance_after_save() {
+    let initial = StoredClientSettingsMvp {
+        player_path: Some("C:/Players/mpv.exe".to_owned()),
+        chat_move_osd: Some(false),
+        notification_timeout_seconds: Some(3),
+        ..StoredClientSettingsMvp::default()
+    };
+    let (root, mut owner, handle, mut state) =
+        persisted_owner_and_state("pending-apply-missing-syncplayintf-ack", &initial);
+    install_attached_unacknowledging_mpv_baseline(&mut owner, &initial);
+
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        id: SettingId::OsdNotificationTimeout,
+        value: "9".to_owned().into(),
+    }));
+    save_current_draft(&mut owner, &handle, &mut state);
+
+    assert_eq!(
+        state.saved_configuration.notification_timeout_seconds,
+        Some(9)
+    );
+    assert!(owner.player_settings_reapply_required);
+    assert_eq!(
+        state.pending_apply_requirements,
+        vec![GuiSettingApplyRequirement::RestartPlayer]
+    );
+    assert!(
+        owner
+            .player_unavailability_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("did not acknowledge")),
+        "the player failure should identify the missing Lua acknowledgement: {:?}",
+        owner.player_unavailability_reason
+    );
+    assert_eq!(
+        owner
+            .applied_player_launch_state
+            .as_ref()
+            .and_then(GuiPlayerLaunchRuntimeState::mpv_ui_settings)
+            .map(|settings| settings.notification_timeout_ms),
+        Some(3_000),
+        "an unacknowledged update must not advance the applied player baseline"
+    );
+    assert!(!owner.current_player_launch_state_is_applied());
+    let Some(GuiOwnedPlayer::Mpv(player)) = owner.player.as_ref() else {
+        panic!("missing-ack fixture should retain its connected mpv adapter");
+    };
+    assert!(!player.legacy_syncplayintf_options_ready());
     let _ = std::fs::remove_dir_all(root);
 }
 

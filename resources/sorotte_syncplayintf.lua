@@ -1,4 +1,5 @@
--- syncplayintf.lua -- An interface for communication between mpv and Syncplay
+-- sorotte_syncplayintf.lua -- Sorotte's stable mpv bridge, based on Syncplay's interface
+-- sorotte-chat-input-bridge (integrated; do not append a runtime wrapper)
 -- Author: Etoh, utilising repl.lua code by James Ross-Gowan (see below)
 -- Thanks: RiCON, James Ross-Gowan, Argon-, wm4, uau
 
@@ -19,6 +20,19 @@
 -- CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 -- See https://github.com/rossy/mpv-repl for a copy of repl.lua
+
+local SOROTTE_CANONICAL_SCRIPT_NAME = "sorotte_syncplayintf"
+local sorotte_script_name = mp.get_script_name ~= nil
+    and mp.get_script_name()
+    or mp.script_name
+
+-- mpv gives every loaded script client a unique name. Sorotte addresses only
+-- the canonical client, so a simultaneous second load receives a suffixed name
+-- and must stop before it can register another live bridge, timer, or binding.
+if sorotte_script_name ~= SOROTTE_CANONICAL_SCRIPT_NAME then
+    mp.keep_running = false
+    return
+end
 
 local CANVAS_WIDTH = 1920
 local CANVAS_HEIGHT = 1080
@@ -59,6 +73,32 @@ local insert_mode = false
 local line = ''
 local cursor = 1
 local key_hints_enabled = false
+
+local SOROTTE_PROTOCOL = "sorotte-syncplayintf-v1"
+local SOROTTE_ENTER_BINDING = "sorotte-chat-enter"
+local SOROTTE_KP_ENTER_BINDING = "sorotte-chat-kp-enter"
+local SOROTTE_TAB_BINDING = "sorotte-chat-direct-tab"
+local sorotte_bridge_instance_id = sorotte_script_name .. ":" .. tostring({})
+local sorotte_owner_id = nil
+local sorotte_attachment_id = nil
+local sorotte_owner_live = false
+local sorotte_owner_last_seen = nil
+local sorotte_owner_lease_seconds = 5
+local syncplayintf_initialized = false
+local repl_alpha_bindings_defined = false
+local enter_bindings_active = false
+local direct_input_bindings_active = false
+local last_applied_owner_id = nil
+local last_applied_attachment_id = nil
+local last_applied_generation = nil
+local emit_sorotte_payload = nil
+
+local function sorotte_chat_input_allowed()
+    return opts ~= nil
+        and opts['chatInputEnabled'] == true
+        and sorotte_owner_id ~= nil
+        and sorotte_owner_live == true
+end
 
 non_us_chars = {
     'А','а',
@@ -143,6 +183,9 @@ end
 
 local old_ass_text = ''
 function chat_update()
+    if expire_sorotte_owner_if_needed ~= nil then
+        expire_sorotte_owner_if_needed()
+    end
     local ass = assdraw.ass_new()
     local chat_ass = ''
     local rowsAdded = 0
@@ -154,21 +197,23 @@ function chat_update()
             clear_chat()
         end
     end
-    rowsAdded,to_add = process_alert_osd()
-    if to_add ~= nil and to_add ~= "" then
-        chat_ass = to_add
-    end
-    incrementRow,to_add = process_notification_osd(rowsAdded)
-    rowsAdded = rowsAdded + incrementRow
-    if to_add ~= nil and to_add ~= "" then
-        chat_ass = chat_ass .. to_add
-    end
+    if opts['chatOutputEnabled'] == true then
+        rowsAdded,to_add = process_alert_osd()
+        if to_add ~= nil and to_add ~= "" then
+            chat_ass = to_add
+        end
+        incrementRow,to_add = process_notification_osd(rowsAdded)
+        rowsAdded = rowsAdded + incrementRow
+        if to_add ~= nil and to_add ~= "" then
+            chat_ass = chat_ass .. to_add
+        end
 
-    if #chat_log > 0 then
-        for i = 1, #chat_log do
-            local to_add = process_chat_item(i,rowsAdded)
-            if to_add ~= nil and to_add ~= "" then
-                chat_ass = chat_ass .. to_add
+        if #chat_log > 0 then
+            for i = 1, #chat_log do
+                local to_add = process_chat_item(i,rowsAdded)
+                if to_add ~= nil and to_add ~= "" then
+                    chat_ass = chat_ass .. to_add
+                end
             end
         end
     end
@@ -230,7 +275,7 @@ function process_notification_osd(startRow)
     local rowsCreated = 0
     local startRow = startRow
     local stringToAdd = ""
-    if notification_osd ~= "" and mp.get_time() - last_notification_osd_time < opts['alertTimeout'] and last_notification_osd_time ~= nil then
+    if notification_osd ~= "" and mp.get_time() - last_notification_osd_time < opts['notificationTimeout'] and last_notification_osd_time ~= nil then
         local messageColour
         messageColour = "{\\1c&H"..NOTIFICATION_TEXT_COLOUR.."}"
         local messageString
@@ -393,6 +438,7 @@ opts = {
     ['MaxChatMessageLength'] = 500,
     ['chatOutputFontFamily'] = "sans serif",
     ['chatOutputFontSize'] = 50,
+    ['chatOutputRelativeFontSize'] = 50,
     ['chatOutputFontWeight'] = 1,
     ['chatOutputFontUnderline'] = false,
     ['chatOutputFontColor'] = "#FFFFFF",
@@ -402,6 +448,7 @@ opts = {
     ['chatMaxLines'] = 7,
     ['chatTopMargin'] = 25,
     ['chatLeftMargin'] = 20,
+    ['chatBottomMargin'] = 30,
     ['chatDirectInput'] = true,
     --
     ['notificationTimeout'] = 3,
@@ -551,7 +598,9 @@ end
 
 -- Set the REPL visibility (`, Esc)
 function set_active(active)
-    if use_alpha_rows_for_chat == false then active = false end
+    if active and (use_alpha_rows_for_chat == false or not sorotte_chat_input_allowed()) then
+        active = false
+    end
     if active == repl_active then return end
     if active then
         repl_active = true
@@ -573,6 +622,11 @@ end
 -- Show the repl if hidden and replace its contents with 'text'
 -- (script-message-to repl type)
 function show_and_type(text)
+    if not sorotte_chat_input_allowed() then
+        set_active(false)
+        clear()
+        return
+    end
     text = text or ''
 
     line = text
@@ -686,6 +740,7 @@ end
 
 -- Insert a character at the current cursor position (' '-'~', Shift+Enter)
 function handle_char_input(c)
+    if not sorotte_chat_input_allowed() then return end
     if c == nil then return end
     if c == "\\" then c = opts['backslashSubstituteCharacter'] end
     if key_hints_enabled and (string.len(line) > 0 or opts['chatDirectInput'] == false) then
@@ -726,6 +781,9 @@ end
 --local was_active_before_tab = false
 
 function handle_tab()
+    if not sorotte_chat_input_allowed() or opts['chatDirectInput'] ~= true then
+        return
+    end
     use_alpha_rows_for_chat = not use_alpha_rows_for_chat
     if use_alpha_rows_for_chat then
         mp.enable_key_bindings('repl-alpha-input')
@@ -767,6 +825,11 @@ end
 
 -- Run the current command and clear the line (Enter)
 function handle_enter()
+    if not sorotte_chat_input_allowed() then
+        set_active(false)
+        clear()
+        return
+    end
     if not repl_active then
         set_active(true)
         return
@@ -777,6 +840,17 @@ function handle_enter()
         return
     end
     key_hints_enabled = false
+    local sorotte_chat_line = line
+    if opts['backslashSubstituteCharacter'] ~= nil then
+        sorotte_chat_line = string.gsub(
+            sorotte_chat_line,
+            opts['backslashSubstituteCharacter'],
+            "\\"
+        )
+    end
+    if emit_sorotte_chat_request ~= nil then
+        emit_sorotte_chat_request(sorotte_chat_line)
+    end
     line = string.gsub(line,"\\", "\\\\")
     line = string.gsub(line,"\"", "\\\"")
     mp.command('print-text "<chat>'..line..'</chat>"')
@@ -874,7 +948,7 @@ function add_repl_bindings(bindings)
         local fn = binding[2]
         local name = '__repl_binding_' .. i
         mp.add_forced_key_binding(nil, name, fn, 'repeatable')
-        cfg = cfg .. key .. ' script-binding ' .. mp.script_name .. '/' ..
+        cfg = cfg .. key .. ' script-binding ' .. sorotte_script_name .. '/' ..
               name .. '\n'
     end
     mp.commandv('define-section', 'repl-input', cfg, 'force')
@@ -887,11 +961,10 @@ function add_repl_alpharow_bindings(bindings)
         local fn = binding[2]
         local name = '__repl_alpha_binding_' .. i
         mp.add_forced_key_binding(nil, name, fn, 'repeatable')
-        cfg = cfg .. key .. ' script-binding ' .. mp.script_name .. '/' ..
+        cfg = cfg .. key .. ' script-binding ' .. sorotte_script_name .. '/' ..
               name .. '\n'
     end
     mp.commandv('define-section', 'repl-alpha-input', cfg, 'force')
-    mp.enable_key_bindings('repl-alpha-input')
 end
 
 -- Mapping from characters to mpv key names
@@ -976,46 +1049,386 @@ mp.register_script_message('type', function(text)
     show_and_type(text)
 end)
 
-local syncplayintfSet = false
-mp.command('print-text "<get_syncplayintf_options>"')
+local sorotte_mutable_option_names = {
+    'chatInputEnabled',
+    'chatInputFontFamily',
+    'chatInputRelativeFontSize',
+    'chatInputFontWeight',
+    'chatInputFontUnderline',
+    'chatInputFontColor',
+    'chatInputPosition',
+    'chatOutputFontFamily',
+    'chatOutputRelativeFontSize',
+    'chatOutputFontWeight',
+    'chatOutputFontUnderline',
+    'chatOutputMode',
+    'chatMaxLines',
+    'chatTopMargin',
+    'chatLeftMargin',
+    'chatBottomMargin',
+    'chatDirectInput',
+    'notificationTimeout',
+    'alertTimeout',
+    'chatTimeout',
+    'chatOutputEnabled',
+}
+
+local sorotte_mutable_option_lookup = {}
+for _, option_name in ipairs(sorotte_mutable_option_names) do
+    sorotte_mutable_option_lookup[option_name] = true
+end
+
+local function initialize_syncplayintf_once()
+    if syncplayintf_initialized then return end
+
+    local user_opts = { visibility = "auto", }
+    opt.read_options(user_opts, "osc")
+    default_oscvisibility_state = user_opts.visibility
+    add_repl_alpharow_bindings(alpharowbindings)
+    repl_alpha_bindings_defined = true
+    mp.disable_key_bindings('repl-input')
+    mp.disable_key_bindings('repl-alpha-input')
+    syncplayintf_initialized = true
+end
+
+local function clear_repl_state()
+    set_active(false)
+    line = ''
+    cursor = 1
+    insert_mode = false
+    key_hints_enabled = false
+    update()
+end
+
+local function deactivate_sorotte_input_bindings()
+    clear_repl_state()
+    mp.disable_key_bindings('repl-input')
+    mp.disable_key_bindings('repl-alpha-input')
+    mp.remove_key_binding(SOROTTE_ENTER_BINDING)
+    mp.remove_key_binding(SOROTTE_KP_ENTER_BINDING)
+    mp.remove_key_binding(SOROTTE_TAB_BINDING)
+    use_alpha_rows_for_chat = true
+    enter_bindings_active = false
+    direct_input_bindings_active = false
+end
+
+local function recalculate_syncplayintf_derived_state()
+    chat_format = get_output_style()
+    local font_height = math.max(
+        1,
+        opts['chatOutputRelativeFontSize'] * FONT_SIZE_MULTIPLIER
+    )
+    local vertical_output_area = CANVAS_HEIGHT - (
+        opts['chatTopMargin']
+        + opts['chatBottomMargin']
+        + (font_height * opts['scrollingFirstRowOffset'])
+        + SCROLLING_ADDITIONAL_BOTTOM_MARGIN
+    )
+    max_scrolling_rows = math.max(1, math.floor(vertical_output_area / font_height))
+
+    for index, entry in ipairs(chat_log) do
+        entry.row = ((index - 1) % max_scrolling_rows) + 1
+    end
+    if opts['chatOutputMode'] == CHAT_MODE_CHATROOM then
+        while #chat_log > math.max(0, opts['chatMaxLines']) do
+            table.remove(chat_log, 1)
+        end
+    end
+    if opts['chatOutputEnabled'] ~= true then
+        clear_chat()
+        alert_osd = ''
+        last_alert_osd_time = nil
+        notification_osd = ''
+        last_notification_osd_time = nil
+    end
+end
+
+local function reconcile_sorotte_input_bindings()
+    initialize_syncplayintf_once()
+    if not sorotte_chat_input_allowed() then
+        deactivate_sorotte_input_bindings()
+        return
+    end
+
+    if not enter_bindings_active then
+        mp.add_forced_key_binding(
+            'enter',
+            SOROTTE_ENTER_BINDING,
+            handle_enter
+        )
+        mp.add_forced_key_binding(
+            'kp_enter',
+            SOROTTE_KP_ENTER_BINDING,
+            handle_enter
+        )
+        enter_bindings_active = true
+        key_hints_enabled = true
+    end
+
+    if opts['chatDirectInput'] == true then
+        use_alpha_rows_for_chat = true
+        if repl_alpha_bindings_defined then
+            mp.enable_key_bindings('repl-alpha-input')
+        end
+        if not direct_input_bindings_active then
+            mp.add_forced_key_binding(
+                'tab',
+                SOROTTE_TAB_BINDING,
+                handle_tab
+            )
+            direct_input_bindings_active = true
+        end
+    else
+        use_alpha_rows_for_chat = true
+        mp.disable_key_bindings('repl-alpha-input')
+        mp.remove_key_binding(SOROTTE_TAB_BINDING)
+        direct_input_bindings_active = false
+    end
+end
+
+function expire_sorotte_owner_if_needed()
+    if not sorotte_owner_live
+        or sorotte_owner_last_seen == nil
+        or sorotte_owner_id == nil
+    then
+        return
+    end
+    if mp.get_time() - sorotte_owner_last_seen <= sorotte_owner_lease_seconds then
+        return
+    end
+    local expired_owner_id = sorotte_owner_id
+    local expired_attachment_id = sorotte_attachment_id
+    sorotte_owner_live = false
+    deactivate_sorotte_input_bindings()
+    if emit_sorotte_payload ~= nil then
+        emit_sorotte_payload('sorotte-syncplayintf-lease-expired', {
+            protocol = SOROTTE_PROTOCOL,
+            bridgeInstanceId = sorotte_bridge_instance_id,
+            ownerId = expired_owner_id,
+            attachmentId = expired_attachment_id,
+        })
+    end
+    sorotte_owner_id = nil
+    sorotte_attachment_id = nil
+    sorotte_owner_last_seen = nil
+end
+
+local function parse_sorotte_payload(input)
+    if type(input) ~= 'string' then return nil end
+    local payload = utils.parse_json(input)
+    if type(payload) ~= 'table' then return nil end
+    return payload
+end
+
+emit_sorotte_payload = function(message_name, payload)
+    local encoded = utils.format_json(payload)
+    if type(encoded) ~= 'string' then return end
+    mp.commandv('script-message', message_name, encoded)
+end
+
+local function emit_sorotte_options_ack(payload, status, error_message)
+    local ack = {
+        protocol = SOROTTE_PROTOCOL,
+        bridgeInstanceId = sorotte_bridge_instance_id,
+        ownerId = payload['ownerId'],
+        attachmentId = payload['attachmentId'],
+        generation = payload['generation'],
+        status = status,
+    }
+    if error_message ~= nil then
+        ack['error'] = error_message
+    end
+    emit_sorotte_payload('sorotte-syncplayintf-options-applied', ack)
+end
+
+function emit_sorotte_chat_request(text)
+    if not sorotte_chat_input_allowed() or type(text) ~= 'string' or text == '' then
+        return
+    end
+    emit_sorotte_payload('syncplayintf-chat', {
+        protocol = SOROTTE_PROTOCOL,
+        bridgeInstanceId = sorotte_bridge_instance_id,
+        ownerId = sorotte_owner_id,
+        attachmentId = sorotte_attachment_id,
+        text = text,
+    })
+end
+
+local function apply_sorotte_syncplayintf_options(input)
+    local payload = parse_sorotte_payload(input)
+    if payload == nil
+        or payload['protocol'] ~= SOROTTE_PROTOCOL
+        or payload['bridgeInstanceId'] ~= sorotte_bridge_instance_id
+        or type(payload['ownerId']) ~= 'string'
+        or payload['ownerId'] == ''
+        or type(payload['attachmentId']) ~= 'string'
+        or payload['attachmentId'] == ''
+        or payload['generation'] == nil
+        or type(payload['settings']) ~= 'table'
+    then
+        return false
+    end
+
+    local generation = tonumber(payload['generation'])
+    if generation == nil or generation < 1 or generation ~= math.floor(generation) then
+        return false
+    end
+    local lease_ms = tonumber(payload['leaseMs'])
+    if lease_ms == nil or lease_ms < 1000 or lease_ms > 60000 then
+        return false
+    end
+
+    local settings = payload['settings']
+    for _, option_name in ipairs(sorotte_mutable_option_names) do
+        local next_value = settings[option_name]
+        if next_value == nil or type(next_value) ~= type(opts[option_name]) then
+            return false
+        end
+    end
+    for option_name, _ in pairs(settings) do
+        if sorotte_mutable_option_lookup[option_name] ~= true then
+            return false
+        end
+    end
+
+    expire_sorotte_owner_if_needed()
+    if sorotte_owner_live
+        and sorotte_owner_id ~= nil
+        and sorotte_owner_id ~= payload['ownerId']
+    then
+        emit_sorotte_options_ack(payload, 'busy', 'another Sorotte owner holds the live bridge lease')
+        return false
+    end
+    if last_applied_owner_id == payload['ownerId']
+        and last_applied_attachment_id == payload['attachmentId']
+        and last_applied_generation ~= nil
+    then
+        if generation < last_applied_generation then
+            emit_sorotte_options_ack(payload, 'rejected', 'stale settings generation')
+            return false
+        elseif generation == last_applied_generation then
+            local lease_was_live = sorotte_owner_live
+            if opts['chatInputEnabled'] == true then
+                sorotte_owner_id = payload['ownerId']
+                sorotte_attachment_id = payload['attachmentId']
+                sorotte_owner_lease_seconds = lease_ms / 1000
+                sorotte_owner_last_seen = mp.get_time()
+                sorotte_owner_live = true
+                if not lease_was_live then
+                    initialize_syncplayintf_once()
+                    recalculate_syncplayintf_derived_state()
+                    reconcile_sorotte_input_bindings()
+                end
+            else
+                sorotte_owner_id = nil
+                sorotte_attachment_id = nil
+                sorotte_owner_last_seen = nil
+                sorotte_owner_live = false
+            end
+            emit_sorotte_options_ack(payload, 'applied', nil)
+            return true
+        end
+    end
+
+    for _, option_name in ipairs(sorotte_mutable_option_names) do
+        opts[option_name] = settings[option_name]
+    end
+    if opts['chatInputEnabled'] == true then
+        sorotte_owner_id = payload['ownerId']
+        sorotte_attachment_id = payload['attachmentId']
+        sorotte_owner_lease_seconds = lease_ms / 1000
+        sorotte_owner_last_seen = mp.get_time()
+        sorotte_owner_live = true
+    else
+        sorotte_owner_id = nil
+        sorotte_attachment_id = nil
+        sorotte_owner_last_seen = nil
+        sorotte_owner_live = false
+    end
+
+    initialize_syncplayintf_once()
+    recalculate_syncplayintf_derived_state()
+    reconcile_sorotte_input_bindings()
+    last_applied_owner_id = payload['ownerId']
+    last_applied_attachment_id = payload['attachmentId']
+    last_applied_generation = generation
+    emit_sorotte_options_ack(payload, 'applied', nil)
+    return true
+end
 
 function readyMpvAfterSettingsKnown()
-    if syncplayintfSet == false then
-        local vertical_output_area = CANVAS_HEIGHT-(opts['chatTopMargin']+opts['chatBottomMargin']+((opts['chatOutputRelativeFontSize']*FONT_SIZE_MULTIPLIER)*opts['scrollingFirstRowOffset'])+SCROLLING_ADDITIONAL_BOTTOM_MARGIN)
-        max_scrolling_rows = math.floor(vertical_output_area/(opts['chatOutputRelativeFontSize']*FONT_SIZE_MULTIPLIER))
-        local user_opts = { visibility = "auto", }
-        opt.read_options(user_opts, "osc")
-        default_oscvisibility_state = user_opts.visibility
-        if opts['chatInputEnabled'] == true then
-            key_hints_enabled = true
-            mp.add_forced_key_binding('enter', handle_enter)
-            mp.add_forced_key_binding('kp_enter', handle_enter)
-            if opts['chatDirectInput'] == true then
-                add_repl_alpharow_bindings(alpharowbindings)
-                mp.add_forced_key_binding('tab', handle_tab)
-            end
-        end
-        syncplayintfSet = true
-    end
+    initialize_syncplayintf_once()
+    recalculate_syncplayintf_derived_state()
+    reconcile_sorotte_input_bindings()
 end
 
 function set_syncplayintf_options(input)
-    --mp.command('print-text "<chat>...'..input..'</chat>"')
-    for option, value in string.gmatch(input, "([^ ,=]+)=([^,]+)") do
-        local valueType = type(opts[option])
-        if valueType == "number" then
-            value = tonumber(value)
-        elseif valueType == "boolean" then
-            if value == "True" then
-                value = true
-            else
-                value = false
-            end
-        end
-        opts[option] = value
-        --mp.command('print-text "<chat>'..option.."="..tostring(value).." - "..valueType..'</chat>"')
-    end
-    chat_format = get_output_style()
-    readyMpvAfterSettingsKnown()
+    return apply_sorotte_syncplayintf_options(input)
 end
 
+mp.register_script_message('set_sorotte_syncplayintf_options', function(input)
+    apply_sorotte_syncplayintf_options(input)
+end)
+
+mp.register_script_message('sorotte_syncplayintf_ping', function(input)
+    local payload = parse_sorotte_payload(input)
+    if payload == nil
+        or payload['protocol'] ~= SOROTTE_PROTOCOL
+        or payload['nonce'] == nil
+    then
+        return
+    end
+    expire_sorotte_owner_if_needed()
+    local lease_remaining_ms = 0
+    if sorotte_owner_live and sorotte_owner_last_seen ~= nil then
+        lease_remaining_ms = math.max(
+            0,
+            math.floor(
+                (sorotte_owner_lease_seconds - (mp.get_time() - sorotte_owner_last_seen))
+                * 1000
+            )
+        )
+    end
+    emit_sorotte_payload('sorotte-syncplayintf-pong', {
+        protocol = SOROTTE_PROTOCOL,
+        nonce = payload['nonce'],
+        bridgeInstanceId = sorotte_bridge_instance_id,
+        scriptName = sorotte_script_name,
+        activeOwnerId = sorotte_owner_id,
+        activeAttachmentId = sorotte_attachment_id,
+        leaseRemainingMs = lease_remaining_ms,
+    })
+end)
+
+mp.register_script_message('sorotte_syncplayintf_heartbeat', function(input)
+    local payload = parse_sorotte_payload(input)
+    if payload == nil
+        or payload['protocol'] ~= SOROTTE_PROTOCOL
+        or payload['bridgeInstanceId'] ~= sorotte_bridge_instance_id
+        or payload['ownerId'] ~= sorotte_owner_id
+        or payload['attachmentId'] ~= sorotte_attachment_id
+        or not sorotte_owner_live
+    then
+        return
+    end
+    sorotte_owner_last_seen = mp.get_time()
+end)
+
+mp.register_script_message('sorotte_syncplayintf_release', function(input)
+    local payload = parse_sorotte_payload(input)
+    if payload == nil
+        or payload['protocol'] ~= SOROTTE_PROTOCOL
+        or payload['bridgeInstanceId'] ~= sorotte_bridge_instance_id
+        or payload['ownerId'] ~= sorotte_owner_id
+        or payload['attachmentId'] ~= sorotte_attachment_id
+    then
+        return
+    end
+    sorotte_owner_live = false
+    sorotte_owner_id = nil
+    sorotte_attachment_id = nil
+    sorotte_owner_last_seen = nil
+    deactivate_sorotte_input_bindings()
+end)
+
+mp.command('print-text "<get_syncplayintf_options>"')

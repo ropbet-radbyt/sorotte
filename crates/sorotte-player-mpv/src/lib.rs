@@ -4,6 +4,8 @@ mod ipc;
 mod legacy_ui;
 mod live_probe;
 mod players;
+#[cfg(feature = "test-support")]
+mod test_support;
 
 /// Maximum absolute position error accepted when an mpv seek is acknowledged.
 ///

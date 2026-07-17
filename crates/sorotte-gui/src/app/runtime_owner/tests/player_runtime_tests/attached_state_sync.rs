@@ -143,7 +143,6 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         applied_player_launch_state: None,
         player_settings_reapply_required: false,
         explicit_mpv_osd_placement_restore: None,
-        explicit_mpv_syncplayintf_script: None,
         managed_mpv_process: None,
         player_unavailability_reason: None,
         player_local_file: None,

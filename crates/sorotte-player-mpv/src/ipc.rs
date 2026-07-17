@@ -138,6 +138,10 @@ impl MpvJsonIpcClient {
         self.healthy
     }
 
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
     #[cfg(all(test, windows))]
     pub(crate) fn connect_with_command_timeout(
         path: &Path,

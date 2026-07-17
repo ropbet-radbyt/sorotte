@@ -558,6 +558,7 @@ impl PlayerAdapter for MpvAdapter {
     }
 
     fn take_playback_telemetry_update(&mut self) -> Option<PlayerPlaybackTelemetryUpdate> {
+        self.maintain_legacy_syncplayintf_lease();
         self.ensure_transport_observers_registered_if_attached();
         self.drain_ipc_events_if_attached();
         if self.pending_playback_telemetry_update.is_none() {

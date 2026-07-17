@@ -47,6 +47,9 @@ windows.workspace = true
 [build-dependencies]
 embed-resource = "3.0.9"
 
+[dev-dependencies]
+sorotte-player-mpv = { path = "../sorotte-player-mpv", features = ["test-support"] }
+
 [[bin]]
 name = "sorotte-gui-semantic-smoke"
 path = "src/bin/sorotte-gui-semantic-smoke.rs"

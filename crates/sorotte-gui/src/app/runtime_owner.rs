@@ -158,7 +158,6 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) applied_player_launch_state: Option<GuiPlayerLaunchRuntimeState>,
     pub(super) player_settings_reapply_required: bool,
     pub(super) explicit_mpv_osd_placement_restore: Option<(String, String, i64)>,
-    pub(super) explicit_mpv_syncplayintf_script: Option<(String, String)>,
     pub(super) managed_mpv_process: Option<ManagedMpvProcessGuard>,
     pub(super) player_unavailability_reason: Option<String>,
     pub(super) player_local_file: Option<LocalFileUpdate>,

@@ -143,6 +143,19 @@ impl fmt::Debug for MpvAdapter {
                 "legacy_syncplayintf_script_name",
                 &self.legacy_syncplayintf_script_name,
             )
+            .field(
+                "legacy_syncplayintf_bridge_instance_id",
+                &self.legacy_syncplayintf_bridge_instance_id,
+            )
+            .field(
+                "legacy_syncplayintf_pending_options_generation",
+                &self.legacy_syncplayintf_pending_options_generation,
+            )
+            .field(
+                "legacy_syncplayintf_lease_reacquire_required",
+                &self.legacy_syncplayintf_lease_reacquire_required,
+            )
+            .field("ipc_endpoint", &self.ipc_endpoint)
             .field("simulation_mode", &self.simulation_mode)
             .field("ipc_attached", &self.ipc_client.is_some())
             .field(
@@ -223,6 +236,20 @@ impl Default for MpvAdapter {
             legacy_syncplayintf_script_loaded: false,
             legacy_syncplayintf_options_applied: false,
             legacy_syncplayintf_script_name: LEGACY_SYNCPLAYINTF_SCRIPT_NAME.to_owned(),
+            legacy_syncplayintf_bridge_instance_id: None,
+            legacy_syncplayintf_owner_id: (*LEGACY_SYNCPLAYINTF_OWNER_ID).clone(),
+            legacy_syncplayintf_attachment_id: format!(
+                "detached-{}",
+                NEXT_LEGACY_SYNCPLAYINTF_ATTACHMENT.fetch_add(1, Ordering::Relaxed)
+            ),
+            legacy_syncplayintf_next_options_generation: 1,
+            legacy_syncplayintf_pending_options_generation: None,
+            legacy_syncplayintf_options_ack_error: None,
+            legacy_syncplayintf_next_ping_nonce: 1,
+            legacy_syncplayintf_pending_ping_nonce: None,
+            legacy_syncplayintf_last_heartbeat_at: None,
+            legacy_syncplayintf_lease_reacquire_required: false,
+            ipc_endpoint: None,
             simulation_mode: false,
             ipc_client: None,
             pending_ipc_connection_events: VecDeque::new(),

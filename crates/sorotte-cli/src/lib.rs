@@ -153,11 +153,8 @@ use self::session_runner::{
 use self::startup_playlist::protocol_lines_for_startup_playlist_load_from_file_legacy_compatible;
 #[cfg(test)]
 use self::stored_settings::{
-    LEGACY_SYNCPLAYINTF_CHAT_INPUT_BRIDGE_MARKER,
     apply_legacy_syncplay_ui_settings_to_mpv_adapter_legacy_compatible,
-    legacy_syncplay_ui_settings_from_stored_settings,
-    legacy_syncplayintf_script_source_with_chat_input_bridge_legacy_compatible,
-    parse_sorotte_ini_stored_client_settings_mvp,
+    legacy_syncplay_ui_settings_from_stored_settings, parse_sorotte_ini_stored_client_settings_mvp,
     resolve_legacy_startup_file_with_media_search_fallback_legacy_compatible,
     upsert_sorotte_ini_stored_client_settings_mvp,
 };

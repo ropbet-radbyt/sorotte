@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_localization::localize_gui_runtime_message_legacy_compatible;
 
 const ATTACHED_UNPAUSE_MIN_OBSERVED_ADVANCEMENT_SECONDS: f64 = 0.01;
 
@@ -171,26 +172,35 @@ impl GuiPersistedConfigRuntimeOwner {
                     }
                 }
                 GuiAttachedPlayerRuntimeAction::PlaybackRate(playback_rate) => {
-                    let slowdown_osd_message = self
-                        .active_session_settings
-                        .as_ref()
-                        .is_some_and(|settings| settings.config.interface.show_slowdown_osd)
-                        .then_some(playback_rate)
-                        .and_then(|rate| {
-                            if rate < 1.0 {
-                                Some("Slowing playback to synchronize with the room.")
-                            } else if (rate - 1.0).abs() < f64::EPSILON {
-                                Some("Restoring normal playback speed.")
-                            } else {
-                                None
-                            }
+                    let slowdown_osd_message =
+                        self.active_session_settings.as_ref().and_then(|settings| {
+                            settings
+                                .config
+                                .interface
+                                .show_slowdown_osd
+                                .then(|| {
+                                    if playback_rate < 1.0 {
+                                        Some("Slowing playback to synchronize with the room.")
+                                    } else if (playback_rate - 1.0).abs() < f64::EPSILON {
+                                        Some("Restoring normal playback speed.")
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .flatten()
+                                .map(|message| {
+                                    localize_gui_runtime_message_legacy_compatible(
+                                        message,
+                                        Some(settings.config.interface.language.as_str()),
+                                    )
+                                })
                         });
                     let Some(player) = self.player.as_mut() else {
                         return state_changed;
                     };
                     match player.set_playback_rate(playback_rate) {
                         Ok(()) => {
-                            if let Some(message) = slowdown_osd_message
+                            if let Some(message) = slowdown_osd_message.as_deref()
                                 && let Some(player) = player.as_mpv_mut()
                                 && let Err(error) = player.show_syncplay_legacy_message(
                                     message,
