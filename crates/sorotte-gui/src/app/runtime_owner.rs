@@ -38,7 +38,7 @@ use sorotte_client_app::app_boundary::{
 };
 use sorotte_client_core::PlayerCommandCause;
 use sorotte_player_api::{LocalFileUpdate, PlayerAdapter};
-use sorotte_player_mpv::MpvAdapter;
+use sorotte_player_mpv::{MpvAdapter, SorotteBridgeHealth};
 use sorotte_plex::{
     PlexClientConfig, PlexMatchCacheStagedWrite, SecretPlexPlaybackUrl,
     auth::{PlexAuthPollResult, PlexAuthService, PlexAuthSession},
@@ -62,9 +62,8 @@ use super::mpv_launch;
 use super::mpv_launch::{
     ManagedMpvProcessGuard, ManagedMpvSettingsDecision,
     apply_effective_streaming_options_to_active_network_media,
-    apply_legacy_syncplay_ui_settings_to_mpv_adapter,
     configure_effective_streaming_options_for_network_media,
-    managed_mpv_settings_decision_from_settings,
+    configure_sorotte_chat_osd_integration, managed_mpv_settings_decision_from_settings,
 };
 use super::runtime_bridge::GuiPendingRoomChangeRequest;
 use super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
@@ -129,6 +128,45 @@ pub(super) struct StartupPublicServerHydrationState {
     pub(super) context: Option<StartupPublicServerHydrationContext>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) enum GuiPlayerIntegrationHealth {
+    #[default]
+    Ready,
+    BridgeDegraded {
+        reason: String,
+        retryable_in_place: bool,
+    },
+}
+
+impl GuiPlayerIntegrationHealth {
+    fn from_sorotte_bridge_health(health: SorotteBridgeHealth) -> Self {
+        match health {
+            SorotteBridgeHealth::Disabled | SorotteBridgeHealth::Ready => Self::Ready,
+            SorotteBridgeHealth::Degraded(failure) => Self::BridgeDegraded {
+                retryable_in_place: failure.retryable_in_place(),
+                reason: failure.reason,
+            },
+        }
+    }
+
+    fn bridge_degraded_reason(&self) -> Option<&str> {
+        match self {
+            Self::Ready => None,
+            Self::BridgeDegraded { reason, .. } => Some(reason),
+        }
+    }
+
+    fn bridge_retryable_in_place(&self) -> bool {
+        matches!(
+            self,
+            Self::BridgeDegraded {
+                retryable_in_place: true,
+                ..
+            }
+        )
+    }
+}
+
 pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) config_path: Option<PathBuf>,
     pub(super) legacy_projection: Option<SorotteGuiShellAppState>,
@@ -160,6 +198,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) explicit_mpv_osd_placement_restore: Option<(String, String, i64)>,
     pub(super) managed_mpv_process: Option<ManagedMpvProcessGuard>,
     pub(super) player_unavailability_reason: Option<String>,
+    pub(super) player_integration_health: GuiPlayerIntegrationHealth,
     pub(super) player_local_file: Option<LocalFileUpdate>,
     pub(super) player_local_file_placeholder: bool,
     pub(super) last_published_local_file: Option<LocalFileUpdate>,
@@ -439,16 +478,28 @@ impl GuiPersistedConfigRuntimeOwner {
             requirements.insert(GuiSettingApplyRequirement::Reconnect);
         }
 
-        if self.player_settings_reapply_required
-            || self.applied_player_launch_state.as_ref().is_some_and(
-                |applied_player_launch_state| {
-                    Self::configured_player_launch_state_from_lookup_and_settings(
-                        &env_trimmed,
-                        Some(saved_settings),
-                    )
-                    .map_or(true, |desired| desired != *applied_player_launch_state)
-                },
-            )
+        let desired_player_launch_state =
+            Self::configured_player_launch_state_from_lookup_and_settings(
+                &env_trimmed,
+                Some(saved_settings),
+            );
+        let player_target_differs =
+            self.applied_player_launch_state
+                .as_ref()
+                .is_some_and(|applied_player_launch_state| {
+                    desired_player_launch_state.as_ref() != Ok(applied_player_launch_state)
+                });
+        let retryable_bridge_delta_can_apply_in_place =
+            self.player_integration_health.bridge_retryable_in_place()
+                && self
+                    .applied_player_launch_state
+                    .as_ref()
+                    .zip(desired_player_launch_state.as_ref().ok())
+                    .is_some_and(|(applied, desired)| {
+                        applied.can_apply_mpv_ui_settings_in_place(desired)
+                    });
+        if !retryable_bridge_delta_can_apply_in_place
+            && (self.player_settings_reapply_required || player_target_differs)
         {
             requirements.insert(GuiSettingApplyRequirement::RestartPlayer);
         }

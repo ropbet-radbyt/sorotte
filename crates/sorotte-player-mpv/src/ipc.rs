@@ -28,6 +28,7 @@ pub(crate) trait MpvJsonIpcTransport: Send + Sync {
 
 pub(crate) const MPV_IPC_MAX_LINE_BYTES: usize = 1024 * 1024;
 pub(crate) const MPV_IPC_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+const MPV_IPC_FINAL_WRITE_TIMEOUT: Duration = Duration::from_millis(100);
 const MPV_IPC_COMMAND_QUEUE_CAPACITY: usize = 1;
 const MPV_IPC_ACTOR_RESPONSE_GRACE: Duration = Duration::from_millis(100);
 static NEXT_MPV_IPC_GENERATION: AtomicU64 = AtomicU64::new(1);
@@ -99,18 +100,27 @@ impl MpvJsonIpcClient {
             .spawn(move || {
                 let mut worker = MpvIpcWorker::new(transport);
                 while let Ok(message) = command_rx.recv() {
-                    let MpvIpcActorMessage::Command(request) = message else {
-                        break;
-                    };
-                    let outcome =
-                        worker.send_command(request.command, request.deadline, request.timeout);
-                    let connection_is_fatal = outcome
-                        .result
-                        .as_ref()
-                        .is_err_and(MpvIpcCommandFailure::is_connection_fatal);
-                    let _ = request.response_tx.send(outcome);
-                    if connection_is_fatal {
-                        break;
+                    match message {
+                        MpvIpcActorMessage::Command(request) => {
+                            let outcome = worker.send_command(
+                                request.command,
+                                request.deadline,
+                                request.timeout,
+                            );
+                            let connection_is_fatal = outcome
+                                .result
+                                .as_ref()
+                                .is_err_and(MpvIpcCommandFailure::is_connection_fatal);
+                            let _ = request.response_tx.send(outcome);
+                            if connection_is_fatal {
+                                break;
+                            }
+                        }
+                        MpvIpcActorMessage::FinalCommand { command, deadline } => {
+                            worker.send_final_command_best_effort(command, deadline);
+                            break;
+                        }
+                        MpvIpcActorMessage::Shutdown => break,
                     }
                 }
             })
@@ -138,6 +148,11 @@ impl MpvJsonIpcClient {
         self.healthy
     }
 
+    #[cfg(feature = "test-support")]
+    pub(crate) fn mark_unhealthy_for_test(&mut self, reason: impl Into<String>) {
+        self.mark_disconnected(reason.into());
+    }
+
     pub(crate) fn generation(&self) -> u64 {
         self.generation
     }
@@ -157,6 +172,24 @@ impl MpvJsonIpcClient {
 
     pub(crate) fn send_command_expect_success(&mut self, command: Value) -> Result<(), String> {
         self.send_command(command).map(|_| ())
+    }
+
+    /// Queues one final JSON IPC write and immediately detaches the worker.
+    ///
+    /// This is intentionally terminal: the client becomes unhealthy and must not be reused. The
+    /// worker does not wait for mpv's response and is allowed at most a short write deadline.
+    pub(crate) fn send_final_command_best_effort(&mut self, command: Value) {
+        if !self.healthy {
+            return;
+        }
+        let deadline = Instant::now()
+            .checked_add(MPV_IPC_FINAL_WRITE_TIMEOUT)
+            .unwrap_or_else(Instant::now);
+        let _ = self
+            .command_tx
+            .try_send(MpvIpcActorMessage::FinalCommand { command, deadline });
+        self.healthy = false;
+        let _ = self.worker_thread.take();
     }
 
     /// Sends a command whose server-side rejection may indicate an older mpv
@@ -375,6 +408,7 @@ impl Drop for MpvJsonIpcClient {
 
 enum MpvIpcActorMessage {
     Command(MpvIpcWorkerRequest),
+    FinalCommand { command: Value, deadline: Instant },
     Shutdown,
 }
 
@@ -640,6 +674,20 @@ impl MpvIpcWorker {
                 pending_events,
             };
         }
+    }
+
+    fn send_final_command_best_effort(&mut self, command: Value, deadline: Instant) {
+        let request_id = self.next_request_id;
+        self.next_request_id = self.next_request_id.wrapping_add(1);
+        let request = json!({
+            "command": command,
+            "request_id": request_id,
+        });
+        let Ok(mut line) = serde_json::to_string(&request) else {
+            return;
+        };
+        line.push('\n');
+        let _ = self.transport.send_line_until(&line, deadline);
     }
 }
 

@@ -240,18 +240,20 @@ impl SorotteGuiShellAppState {
             }
             _ => {}
         }
-        children.extend(GuiWidgetEguiRenderer::modal_actions(modal).into_iter().map(
-            |(id, label)| {
-                GuiWidgetNode::leaf(
-                    id,
-                    label,
-                    GuiWidgetKind::Button,
-                    None,
-                    GuiWidgetEguiRenderer::modal_action_enabled(self, id),
-                    false,
-                )
-            },
-        ));
+        children.extend(
+            GuiWidgetEguiRenderer::modal_actions_for_state(modal, self)
+                .into_iter()
+                .map(|(id, label)| {
+                    GuiWidgetNode::leaf(
+                        id,
+                        label,
+                        GuiWidgetKind::Button,
+                        None,
+                        GuiWidgetEguiRenderer::modal_action_enabled(self, id),
+                        false,
+                    )
+                }),
+        );
         children.push(GuiWidgetNode::leaf(
             "shell:modal:close",
             "Close",

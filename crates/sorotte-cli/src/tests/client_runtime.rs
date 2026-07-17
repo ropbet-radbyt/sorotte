@@ -147,6 +147,205 @@ fn create_client_runtime_with_managed_mpv_support_applies_legacy_syncplay_ui_set
 }
 
 #[test]
+fn cli_runtime_retains_connected_mpv_when_optional_bridge_is_degraded() {
+    let config = test_client_loop_config();
+    let baseline = LegacySyncplayUiSettings {
+        chat_move_osd: false,
+        notification_timeout_ms: 3_000,
+        ..LegacySyncplayUiSettings::default()
+    };
+    let player = MpvAdapter::with_unacknowledging_syncplayintf_test_ipc(baseline);
+    let settings = StoredClientSettingsMvp {
+        chat_move_osd: Some(false),
+        notification_timeout_seconds: Some(9),
+        ..StoredClientSettingsMvp::default()
+    };
+
+    let (mut runtime, bridge_health) =
+        create_client_runtime_with_prepared_mpv_for_test(&config, Some(&settings), player)
+            .expect("an optional bridge failure must not abort CLI runtime construction");
+
+    let SorotteBridgeHealth::Degraded(failure) = bridge_health else {
+        panic!("unacknowledged bridge settings should report degraded health");
+    };
+    assert!(
+        !failure.reason.trim().is_empty(),
+        "the CLI warning must include a useful bridge failure reason"
+    );
+    assert!(runtime.player().is_connected());
+    assert_eq!(
+        runtime
+            .player()
+            .legacy_syncplay_ui_settings()
+            .notification_timeout_ms,
+        9_000
+    );
+
+    runtime
+        .with_player_io(|player| {
+            player.open_file("C:/media/degraded-bridge.mkv")?;
+            player.set_paused(false)?;
+            player.set_position(12.5)?;
+            let _ = player.take_playback_telemetry_update();
+            Ok::<(), PlayerError>(())
+        })
+        .expect(
+            "open, pause, seek, and telemetry polling must remain available while the bridge is degraded",
+        );
+    assert!(
+        runtime.player().is_connected(),
+        "telemetry polling must not disturb the healthy core mpv transport"
+    );
+}
+
+#[test]
+fn cli_production_finish_seam_retains_connected_player_on_script_load_degradation() {
+    let config = test_client_loop_config();
+    let player = MpvAdapter::with_unacknowledging_syncplayintf_test_ipc(LegacySyncplayUiSettings {
+        chat_move_osd: false,
+        notification_timeout_ms: 7_777,
+        ..LegacySyncplayUiSettings::default()
+    });
+    let expected_health = SorotteBridgeHealth::Degraded(SorotteBridgeFailure {
+        kind: SorotteBridgeFailureKind::ScriptLoad,
+        reason: "injected bundled bridge script load failure".to_owned(),
+    });
+
+    let (mut runtime, health) = create_client_runtime_with_prepared_mpv_and_bridge_setup_for_test(
+        &config,
+        None,
+        player,
+        |_player, _settings| expected_health.clone(),
+    )
+    .expect("a ScriptLoad-only degradation must not abort production runtime construction");
+
+    assert_eq!(health, expected_health);
+    assert!(runtime.player().is_connected());
+    assert_eq!(
+        runtime
+            .player()
+            .legacy_syncplay_ui_settings()
+            .notification_timeout_ms,
+        7_777,
+        "the connected player passed into the production finish seam must be retained"
+    );
+    runtime
+        .with_player_io(|player| {
+            player.open_file("C:/media/script-load-degraded.mkv")?;
+            player.set_paused(true)
+        })
+        .expect("core playback must remain available after ScriptLoad degradation");
+}
+
+#[test]
+fn cli_optional_osd_setup_failure_clears_bridge_readiness_and_player_chat_state() {
+    let baseline = LegacySyncplayUiSettings {
+        chat_move_osd: false,
+        ..LegacySyncplayUiSettings::default()
+    };
+    let mut player = MpvAdapter::with_unacknowledging_syncplayintf_test_ipc(baseline);
+    assert!(player.legacy_syncplayintf_options_ready());
+
+    let health = apply_legacy_syncplay_ui_settings_to_mpv_adapter_legacy_compatible(
+        &mut player,
+        Some(&StoredClientSettingsMvp {
+            chat_move_osd: Some(true),
+            ..StoredClientSettingsMvp::default()
+        }),
+    );
+
+    assert!(matches!(
+        health,
+        SorotteBridgeHealth::Degraded(ref failure)
+            if failure.kind == SorotteBridgeFailureKind::IpcCommand
+    ));
+    assert_eq!(player.sorotte_bridge_health(), health);
+    assert!(
+        player.is_connected(),
+        "the fake IPC transport remains healthy"
+    );
+    assert!(
+        !player.legacy_syncplayintf_options_ready(),
+        "degraded integration must stop player-originated chat polling immediately"
+    );
+}
+
+#[test]
+fn cli_runtime_rejects_transport_loss_during_optional_bridge_setup() {
+    let config = test_client_loop_config();
+    let baseline = LegacySyncplayUiSettings {
+        chat_move_osd: false,
+        ..LegacySyncplayUiSettings::default()
+    };
+    let player = MpvAdapter::with_unacknowledging_syncplayintf_test_ipc(baseline);
+
+    let result = create_client_runtime_with_prepared_mpv_and_bridge_setup_for_test(
+        &config,
+        None,
+        player,
+        |player, _settings| {
+            player.mark_test_ipc_unhealthy("test transport failed during bridge setup");
+            player.mark_sorotte_bridge_degraded(
+                SorotteBridgeFailureKind::IpcCommand,
+                "optional bridge command failed after transport loss",
+            )
+        },
+    );
+
+    let Err(error) = result else {
+        panic!("a previously healthy mpv transport becoming unavailable must remain fatal");
+    };
+    let message = error.to_string();
+    assert!(message.contains("mpv JSON IPC became unavailable"));
+    assert!(message.contains("optional bridge command failed after transport loss"));
+}
+
+#[test]
+fn cli_can_materialize_embedded_bridge_without_an_executable_or_source_tree_resource() {
+    let unique_suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time should be after unix epoch")
+        .as_nanos();
+    let cache_root = std::env::temp_dir().join(format!(
+        "sorotte-cli-embedded-mpv-bridge-{}-{unique_suffix}",
+        std::process::id()
+    ));
+
+    let first = sorotte_player_mpv::materialize_bundled_sorotte_bridge_in(&cache_root)
+        .expect("the CLI dependency must materialize its embedded bridge");
+    let second = sorotte_player_mpv::materialize_bundled_sorotte_bridge_in(&cache_root)
+        .expect("materializing the same embedded bridge should be idempotent");
+
+    assert_eq!(first, second);
+    assert_eq!(
+        first.file_name().and_then(|name| name.to_str()),
+        Some("sorotte_syncplayintf.lua")
+    );
+    assert_eq!(
+        first.parent().and_then(Path::parent),
+        Some(cache_root.as_path()),
+        "the resource should live under a content-address directory in the requested cache"
+    );
+    let content_hash = first
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .expect("the materialized bridge should have a content-address directory");
+    assert_eq!(content_hash.len(), 64);
+    assert!(
+        content_hash
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    );
+    let script = std::fs::read_to_string(&first)
+        .expect("the materialized embedded bridge should be readable");
+    assert!(script.contains("sorotte-syncplayintf-v1"));
+    assert!(script.contains("sorotte_syncplayintf"));
+
+    let _ = std::fs::remove_dir_all(cache_root);
+}
+
+#[test]
 fn create_client_runtime_applies_autoplay_require_same_filenames_flag() {
     let config = ClientLoopConfig {
         host: "127.0.0.1".to_owned(),

@@ -287,6 +287,7 @@ clear-notifications\n",
                 issue: Some(GuiPlayerSetupIssue {
                     kind: GuiPlayerSetupIssueKind::MissingBinary,
                     message: "Configured player path C:/missing/mpv.exe was not found.".to_owned(),
+                    retry_available: true,
                 }),
             }),
             GuiSemanticStep::CloseModal,

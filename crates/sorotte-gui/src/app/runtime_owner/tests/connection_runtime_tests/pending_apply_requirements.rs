@@ -582,7 +582,7 @@ fn osd_timeout_save_applies_to_attached_mpv_without_reconnect_or_restart() {
 }
 
 #[test]
-fn missing_syncplayintf_ack_keeps_restart_player_guidance_after_save() {
+fn missing_syncplayintf_ack_keeps_player_and_offers_bridge_retry_after_save() {
     let initial = StoredClientSettingsMvp {
         player_path: Some("C:/Players/mpv.exe".to_owned()),
         chat_move_osd: Some(false),
@@ -604,17 +604,27 @@ fn missing_syncplayintf_ack_keeps_restart_player_guidance_after_save() {
         Some(9)
     );
     assert!(owner.player_settings_reapply_required);
-    assert_eq!(
-        state.pending_apply_requirements,
-        vec![GuiSettingApplyRequirement::RestartPlayer]
-    );
     assert!(
+        state.pending_apply_requirements.is_empty(),
+        "a retryable bridge failure must not request a player restart"
+    );
+    assert!(owner.player_unavailability_reason.is_none());
+    assert!(matches!(
+        &owner.player_integration_health,
+        GuiPlayerIntegrationHealth::BridgeDegraded {
+            reason,
+            retryable_in_place: true,
+        } if reason.contains("acknowledge")
+    ));
+    assert_eq!(
         owner
-            .player_unavailability_reason
-            .as_deref()
-            .is_some_and(|reason| reason.contains("did not acknowledge")),
-        "the player failure should identify the missing Lua acknowledgement: {:?}",
-        owner.player_unavailability_reason
+            .player_setup_runtime_snapshot_impl()
+            .issue
+            .map(|issue| (issue.kind, issue.retry_available)),
+        Some((
+            crate::app::shell_state::GuiPlayerSetupIssueKind::BridgeDegraded,
+            true,
+        ))
     );
     assert_eq!(
         owner
@@ -623,7 +633,7 @@ fn missing_syncplayintf_ack_keeps_restart_player_guidance_after_save() {
             .and_then(GuiPlayerLaunchRuntimeState::mpv_ui_settings)
             .map(|settings| settings.notification_timeout_ms),
         Some(3_000),
-        "an unacknowledged update must not advance the applied player baseline"
+        "a missing acknowledgement must preserve the last applied player baseline"
     );
     assert!(!owner.current_player_launch_state_is_applied());
     let Some(GuiOwnedPlayer::Mpv(player)) = owner.player.as_ref() else {
@@ -631,6 +641,38 @@ fn missing_syncplayintf_ack_keeps_restart_player_guidance_after_save() {
     };
     assert!(!player.legacy_syncplayintf_options_ready());
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn bridge_warning_does_not_suppress_restart_for_incompatible_player_target() {
+    let initial = StoredClientSettingsMvp {
+        player_path: Some("C:/Players/mpv-a.exe".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    };
+    let desired = StoredClientSettingsMvp {
+        player_path: Some("C:/Players/mpv-b.exe".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    };
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    let applied =
+        GuiPersistedConfigRuntimeOwner::configured_player_launch_state_from_lookup_and_settings(
+            &crate::app::startup_support::env_trimmed,
+            Some(&initial),
+        )
+        .expect("initial player target should resolve");
+    owner.applied_player_launch_state = Some(applied);
+    owner.player_settings_reapply_required = true;
+    owner.player_integration_health = GuiPlayerIntegrationHealth::BridgeDegraded {
+        reason: "retryable bridge warning".to_owned(),
+        retryable_in_place: true,
+    };
+    let state = SorotteGuiShellAppState::from_stored_settings(&desired);
+
+    assert_eq!(
+        owner.pending_apply_requirements_for_settings(&state, &desired),
+        vec![GuiSettingApplyRequirement::RestartPlayer],
+        "a bridge warning must not mask a process-target change"
+    );
 }
 
 #[test]

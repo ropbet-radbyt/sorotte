@@ -3573,6 +3573,7 @@ dependencies = [
  "anyhow",
  "mlua",
  "serde_json",
+ "sha2",
  "sorotte-client-core",
  "sorotte-player-api",
  "sorotte-secret",

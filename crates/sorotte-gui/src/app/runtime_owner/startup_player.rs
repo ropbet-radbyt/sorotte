@@ -35,6 +35,7 @@ impl GuiPersistedConfigRuntimeOwner {
             explicit_mpv_osd_placement_restore: None,
             managed_mpv_process: None,
             player_unavailability_reason: None,
+            player_integration_health: GuiPlayerIntegrationHealth::Ready,
             player_local_file: None,
             player_local_file_placeholder: false,
             last_published_local_file: None,
@@ -269,7 +270,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.media_match_remote_lookup_result = None;
     }
 
-    fn detach_player(&mut self) {
+    pub(in crate::app::runtime_owner) fn detach_player(&mut self) {
         if let (
             GuiPlayerLaunchRuntimeState::ExplicitMpvIpc { ipc_path, .. },
             Some(GuiOwnedPlayer::Mpv(player)),
@@ -279,9 +280,66 @@ impl GuiPersistedConfigRuntimeOwner {
                 .legacy_syncplay_osd_placement_restore()
                 .map(|(align, margin)| (ipc_path.clone(), align, margin));
         }
+        self.release_attached_sorotte_bridge_best_effort();
         self.player = None;
         self.managed_mpv_process = None;
+        self.player_integration_health = GuiPlayerIntegrationHealth::Ready;
         self.clear_player_runtime_cache();
+    }
+
+    pub(in crate::app::runtime_owner) fn release_attached_sorotte_bridge_best_effort(&mut self) {
+        if let Some(player) = self.player.as_mut().and_then(GuiOwnedPlayer::as_mpv_mut) {
+            player.release_sorotte_bridge_best_effort();
+        }
+    }
+
+    pub(in crate::app::runtime_owner) fn record_sorotte_bridge_health(
+        &mut self,
+        health: SorotteBridgeHealth,
+    ) {
+        self.player_integration_health =
+            GuiPlayerIntegrationHealth::from_sorotte_bridge_health(health);
+        self.player_settings_reapply_required = matches!(
+            self.player_integration_health,
+            GuiPlayerIntegrationHealth::BridgeDegraded { .. }
+        );
+    }
+
+    pub(in crate::app::runtime_owner) fn retain_mpv_after_optional_bridge_attempt(
+        &mut self,
+        adapter: MpvAdapter,
+        managed_process: Option<ManagedMpvProcessGuard>,
+        bridge_health: SorotteBridgeHealth,
+        core_ipc_was_connected: bool,
+    ) -> Result<(), String> {
+        if core_ipc_was_connected && !adapter.is_connected() {
+            return Err(
+                "mpv JSON IPC became unavailable while configuring optional Chat/OSD integration"
+                    .to_owned(),
+            );
+        }
+        self.managed_mpv_process = managed_process;
+        self.player = Some(GuiOwnedPlayer::Mpv(Box::new(adapter)));
+        self.record_sorotte_bridge_health(bridge_health);
+        self.managed_stream_helper_refresh_required = false;
+        self.player_unavailability_reason = None;
+        Ok(())
+    }
+
+    pub(in crate::app::runtime_owner) fn complete_mpv_attachment_after_core_configuration(
+        &mut self,
+        mut adapter: MpvAdapter,
+        managed_process: Option<ManagedMpvProcessGuard>,
+        ui_settings: &sorotte_player_mpv::LegacySyncplayUiSettings,
+    ) -> Result<(), String> {
+        let core_ipc_was_connected = adapter.is_connected();
+        let bridge_health = configure_sorotte_chat_osd_integration(&mut adapter, ui_settings);
+        self.retain_mpv_after_optional_bridge_attempt(
+            adapter,
+            managed_process,
+            bridge_health,
+            core_ipc_was_connected,
+        )
     }
 
     fn attach_player_from_launch_state(&mut self, launch_state: GuiPlayerLaunchRuntimeState) {
@@ -319,25 +377,28 @@ impl GuiPersistedConfigRuntimeOwner {
                             *margin,
                         )));
                     }
-                    let apply_result = apply_legacy_syncplay_ui_settings_to_mpv_adapter(
+                    configure_effective_streaming_options_for_network_media(
                         &mut adapter,
-                        &ui_settings,
-                    )
-                    .and_then(|()| {
-                        configure_effective_streaming_options_for_network_media(
-                            &mut adapter,
-                            &effective_streaming_options,
-                        );
-                        apply_effective_streaming_options_to_active_network_media(&mut adapter)
-                    });
+                        &effective_streaming_options,
+                    );
+                    let apply_result =
+                        apply_effective_streaming_options_to_active_network_media(&mut adapter);
                     self.explicit_mpv_osd_placement_restore = adapter
                         .legacy_syncplay_osd_placement_restore()
                         .map(|(align, margin)| (ipc_path.clone(), align, margin));
                     match apply_result {
                         Ok(()) => {
-                            self.player = Some(GuiOwnedPlayer::Mpv(Box::new(adapter)));
-                            self.managed_stream_helper_refresh_required = false;
-                            self.player_unavailability_reason = None;
+                            if let Err(error) = self
+                                .complete_mpv_attachment_after_core_configuration(
+                                    adapter,
+                                    None,
+                                    &ui_settings,
+                                )
+                            {
+                                self.player_unavailability_reason = Some(format!(
+                                    "mpv JSON IPC at '{ipc_path}' became unavailable: {error}"
+                                ));
+                            }
                         }
                         Err(error) => {
                             self.player_settings_reapply_required = true;
@@ -367,26 +428,17 @@ impl GuiPersistedConfigRuntimeOwner {
                     helper_downloader_path.as_deref(),
                 ) {
                     Ok((mut adapter, guard)) => {
-                        match apply_legacy_syncplay_ui_settings_to_mpv_adapter(
+                        configure_effective_streaming_options_for_network_media(
                             &mut adapter,
+                            &config.effective_streaming_options,
+                        );
+                        if let Err(error) = self.complete_mpv_attachment_after_core_configuration(
+                            adapter,
+                            Some(guard),
                             &config.ui_settings,
                         ) {
-                            Ok(()) => {
-                                configure_effective_streaming_options_for_network_media(
-                                    &mut adapter,
-                                    &config.effective_streaming_options,
-                                );
-                                self.managed_mpv_process = Some(guard);
-                                self.player = Some(GuiOwnedPlayer::Mpv(Box::new(adapter)));
-                                self.managed_stream_helper_refresh_required = false;
-                                self.player_unavailability_reason = None;
-                            }
-                            Err(error) => {
-                                self.player_settings_reapply_required = true;
-                                self.player_unavailability_reason = Some(format!(
-                                    "GUI-owned mpv started, but legacy GUI settings could not be applied: {error}"
-                                ));
-                            }
+                            self.player_unavailability_reason =
+                                Some(format!("GUI-owned mpv became unavailable: {error}"));
                         }
                     }
                     Err(error) => {
@@ -402,7 +454,12 @@ impl GuiPersistedConfigRuntimeOwner {
             || matches!(self.player_launch_state, GuiPlayerLaunchRuntimeState::None)
         {
             self.applied_player_launch_state = Some(self.player_launch_state.clone());
-            self.player_settings_reapply_required = false;
+            if matches!(
+                self.player_integration_health,
+                GuiPlayerIntegrationHealth::Ready
+            ) {
+                self.player_settings_reapply_required = false;
+            }
         }
     }
 
@@ -497,30 +554,50 @@ impl GuiPersistedConfigRuntimeOwner {
         let Some(player) = self.player.as_mut().and_then(GuiOwnedPlayer::as_mpv_mut) else {
             return false;
         };
-        if ui_settings_changed
-            && let Err(error) =
-                apply_legacy_syncplay_ui_settings_to_mpv_adapter(player, &next_ui_settings)
-        {
-            self.player_settings_reapply_required = true;
-            self.player_unavailability_reason =
-                Some(format!("mpv legacy GUI settings reapply failed: {error}"));
-            return false;
-        }
+        let core_ipc_was_connected = player.is_connected();
+        let bridge_health = ui_settings_changed
+            .then(|| configure_sorotte_chat_osd_integration(player, &next_ui_settings));
         if streaming_options_changed {
             configure_effective_streaming_options_for_network_media(
                 player,
                 &next_streaming_options,
             );
             if let Err(error) = apply_effective_streaming_options_to_active_network_media(player) {
-                self.player_settings_reapply_required = true;
-                self.player_unavailability_reason = Some(error);
+                let ipc_unhealthy = !player.is_connected();
+                if ipc_unhealthy {
+                    self.detach_player();
+                    self.player_unavailability_reason = Some(format!(
+                        "mpv JSON IPC became unavailable while applying core streaming settings: {error}"
+                    ));
+                } else {
+                    self.player_settings_reapply_required = true;
+                    self.player_unavailability_reason = Some(error);
+                }
                 return false;
             }
         }
+        if core_ipc_was_connected && !player.is_connected() {
+            self.detach_player();
+            self.player_unavailability_reason = Some(
+                "mpv JSON IPC became unavailable while configuring optional Chat/OSD integration"
+                    .to_owned(),
+            );
+            return false;
+        }
         self.player_launch_state = next_launch_state.clone();
-        self.applied_player_launch_state = Some(next_launch_state.clone());
-        self.player_settings_reapply_required = false;
         self.player_unavailability_reason = None;
+        if let Some(bridge_health) = bridge_health {
+            self.record_sorotte_bridge_health(bridge_health);
+            if matches!(
+                self.player_integration_health,
+                GuiPlayerIntegrationHealth::BridgeDegraded { .. }
+            ) {
+                return true;
+            }
+        } else {
+            self.player_settings_reapply_required = false;
+        }
+        self.applied_player_launch_state = Some(next_launch_state.clone());
         true
     }
 
@@ -545,7 +622,8 @@ impl GuiPersistedConfigRuntimeOwner {
         if self.applied_player_launch_state.as_ref() == Some(&next_launch_state) {
             let target_was_stale = self.player_launch_state != next_launch_state;
             if self.player_settings_reapply_required && self.player.is_some() {
-                return self.try_apply_mpv_ui_settings_in_place(&next_launch_state, true);
+                return self.try_apply_mpv_ui_settings_in_place(&next_launch_state, true)
+                    && !self.player_settings_reapply_required;
             }
             // A failed relaunch can leave the desired launch state pointing at the failed target
             // while the last-applied baseline still describes the saved target. Reconcile the
@@ -580,6 +658,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 || matches!(self.player_launch_state, GuiPlayerLaunchRuntimeState::None);
         }
         self.try_apply_mpv_ui_settings_in_place(&next_launch_state, false)
+            && !self.player_settings_reapply_required
     }
 
     pub(in crate::app) fn sync_player_from_lookup_and_settings<F>(
@@ -627,7 +706,11 @@ impl GuiPersistedConfigRuntimeOwner {
     }
 
     pub(in crate::app) fn current_player_launch_state_is_applied(&self) -> bool {
-        !self.player_settings_reapply_required
+        (!self.player_settings_reapply_required
+            || matches!(
+                self.player_integration_health,
+                GuiPlayerIntegrationHealth::BridgeDegraded { .. }
+            ))
             && self.applied_player_launch_state.as_ref() == Some(&self.player_launch_state)
             && (self.player.is_some()
                 || matches!(self.player_launch_state, GuiPlayerLaunchRuntimeState::None))
@@ -949,5 +1032,11 @@ impl GuiPersistedConfigRuntimeOwner {
         self.session_transport_driver = None;
         self.reset_session_transport_reconnect_state();
         Ok(())
+    }
+}
+
+impl Drop for GuiPersistedConfigRuntimeOwner {
+    fn drop(&mut self) {
+        self.release_attached_sorotte_bridge_best_effort();
     }
 }

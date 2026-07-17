@@ -308,6 +308,7 @@ impl GuiSemanticStep {
             "launch-failed" => Ok(GuiPlayerSetupIssueKind::LaunchFailed),
             "ipc-attach-failed" => Ok(GuiPlayerSetupIssueKind::IpcAttachFailed),
             "exited-after-launch" => Ok(GuiPlayerSetupIssueKind::ExitedAfterLaunch),
+            "bridge-degraded" => Ok(GuiPlayerSetupIssueKind::BridgeDegraded),
             _ => Err(format!("unknown player-setup issue label {token:?}")),
         }
     }
@@ -605,7 +606,11 @@ impl GuiSemanticStep {
                     );
                 }
                 Self::ApplyPlayerSetupRuntimeSnapshot(GuiPlayerSetupRuntimeSnapshot {
-                    issue: Some(GuiPlayerSetupIssue { kind, message }),
+                    issue: Some(GuiPlayerSetupIssue {
+                        retry_available: kind != GuiPlayerSetupIssueKind::NotConfigured,
+                        kind,
+                        message,
+                    }),
                 })
             }
             "apply-seek-preparation-runtime" => {

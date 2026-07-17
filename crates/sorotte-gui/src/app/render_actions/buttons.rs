@@ -229,7 +229,7 @@ impl GuiWidgetEguiRenderer {
                 Self::actions_for_player_setup_choose_path(state)
             }
             "config-player-setup:retry" | "main-window:player-setup:retry" => {
-                vec![GuiShellAction::RetryPlayerLaunch]
+                vec![state.player_setup_retry_action()]
             }
             "config-stream-support:import-downloader"
             | "plugins:stream-support:import-downloader" => {
@@ -570,7 +570,7 @@ impl GuiWidgetEguiRenderer {
                 }
                 actions
             }
-            "shell:modal:player-setup:retry" => vec![GuiShellAction::RetryPlayerLaunch],
+            "shell:modal:player-setup:retry" => vec![state.player_setup_retry_action()],
             "shell:modal:player-setup:open-settings" => vec![
                 GuiShellAction::CloseModal,
                 GuiShellAction::SwitchView(GuiShellView::Setup),

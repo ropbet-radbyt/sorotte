@@ -229,7 +229,7 @@ fn gui_semantic_driver_runs_player_setup_scenario_without_platform_ui() {
             .player_setup_issue
             .as_ref()
             .map(|issue| issue.kind.label()),
-        Some("missing-binary")
+        Some("bridge-degraded")
     );
     assert!(
         driver
@@ -238,15 +238,15 @@ fn gui_semantic_driver_runs_player_setup_scenario_without_platform_ui() {
             .enabled
     );
     assert!(
-        !driver
-            .widget("config-command:connect-once")
-            .expect("connect button should exist")
-            .enabled
-    );
-    assert!(
         driver.state().notifications.iter().any(|notification| {
             notification.message == "Retrying mpv launch with the current player settings."
         }),
         "retry button should route through runtime preview dispatch"
+    );
+    assert!(
+        driver.state().notifications.iter().any(|notification| {
+            notification.message == "Retrying mpv Chat/OSD integration in place."
+        }),
+        "degraded retry button should route through the distinct integration request"
     );
 }

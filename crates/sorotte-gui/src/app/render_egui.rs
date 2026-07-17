@@ -356,7 +356,7 @@ impl GuiWidgetEguiRenderer {
         }
         let mut open = true;
         let mut close_clicked = false;
-        egui::Window::new(Self::modal_window_title(modal))
+        egui::Window::new(Self::modal_window_title_for_state(modal, state))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
@@ -371,7 +371,7 @@ impl GuiWidgetEguiRenderer {
                 }
                 ui.separator();
                 ui.horizontal_wrapped(|ui| {
-                    for (id, label) in Self::modal_actions(modal) {
+                    for (id, label) in Self::modal_actions_for_state(modal, state) {
                         let response = ui.add_enabled(
                             Self::modal_action_enabled(state, id),
                             egui::Button::new(label),

@@ -1,4 +1,6 @@
 mod adapter;
+mod bridge;
+mod bridge_resource;
 mod constants;
 mod ipc;
 mod legacy_ui;
@@ -15,6 +17,10 @@ mod test_support;
 pub const MPV_SEEK_COMPLETION_TOLERANCE_SECONDS: f64 = 0.5;
 
 pub use adapter::MpvAdapter;
+pub use bridge::{SorotteBridgeFailure, SorotteBridgeFailureKind, SorotteBridgeHealth};
+pub use bridge_resource::{
+    materialize_bundled_sorotte_bridge, materialize_bundled_sorotte_bridge_in,
+};
 pub use ipc::MpvIpcConnectionEvent;
 pub use legacy_ui::{LegacySyncplayOsdKind, LegacySyncplayUiSettings};
 pub use players::{ConnectedMpvPlayer, SimulatedPlayer};

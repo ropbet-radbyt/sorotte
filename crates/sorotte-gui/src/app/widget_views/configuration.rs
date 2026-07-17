@@ -238,7 +238,7 @@ impl SorotteGuiShellAppState {
                     ),
                     GuiWidgetNode::leaf(
                         "config-player-setup:retry",
-                        "Retry mpv",
+                        self.player_setup_retry_label(),
                         GuiWidgetKind::Button,
                         None,
                         self.player_setup_retry_available(),

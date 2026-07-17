@@ -117,6 +117,8 @@ use self::mpv_startup::{
 use self::mpv_startup::{
     apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_legacy_compatible,
     create_client_runtime_with_managed_mpv_support,
+    create_client_runtime_with_prepared_mpv_and_bridge_setup_for_test,
+    create_client_runtime_with_prepared_mpv_for_test,
     legacy_player_path_compatibility_warning_line_legacy_compatible,
 };
 #[cfg(all(test, windows))]

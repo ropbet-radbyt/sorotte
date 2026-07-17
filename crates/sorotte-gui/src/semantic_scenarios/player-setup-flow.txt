@@ -17,3 +17,10 @@ assert-enabled	config-player-setup:retry	true
 assert-enabled	shell:modal:player-setup:retry	true
 activate	shell:modal:player-setup:retry
 assert-value	shell:open-modal	player-setup
+apply-player-setup-runtime	bridge-degraded	Another Sorotte owner currently holds the mpv Chat/OSD bridge lease.
+assert-enabled	shell:modal:close	true
+assert-value	config-player-setup:summary	mpv is ready, but Chat/OSD integration could not be configured.
+assert-label	config-player-setup:retry	Retry Chat/OSD integration
+assert-enabled	config-player-setup:retry	true
+assert-label	shell:modal:player-setup:retry	Retry Chat/OSD integration
+activate	config-player-setup:retry

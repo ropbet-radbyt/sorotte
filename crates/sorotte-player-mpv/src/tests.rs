@@ -1,6 +1,6 @@
 use super::{
     ConnectedMpvPlayer, LegacySyncplayOsdKind, LegacySyncplayUiSettings, MpvAdapter,
-    SimulatedPlayer,
+    SimulatedPlayer, SorotteBridgeFailureKind, SorotteBridgeHealth,
 };
 use crate::constants::{
     LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_LEASE_EXPIRED,
@@ -26,7 +26,6 @@ mod command_tests;
 mod event_tests;
 mod ipc_tests;
 mod legacy_ui_tests;
-#[cfg(windows)]
 mod smoke_tests;
 mod state_tests;
 mod syncplayintf_lua_tests;

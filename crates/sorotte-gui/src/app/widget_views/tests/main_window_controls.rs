@@ -444,6 +444,7 @@ fn gui_shell_app_state_projects_player_setup_into_main_window_widgets() {
                 issue: Some(GuiPlayerSetupIssue {
                     kind: GuiPlayerSetupIssueKind::ExitedAfterLaunch,
                     message: "GUI-owned mpv exited with exit code 1.".to_owned(),
+                    retry_available: true,
                 }),
             },
         ))

@@ -64,6 +64,9 @@ impl GuiClientCommand {
                 Self::Player(player::Command::SetAutoplayThreshold(threshold))
             }
             Request::RetryPlayerLaunch => Self::Player(player::Command::RetryLaunch),
+            Request::RetryChatOsdIntegration => {
+                Self::Player(player::Command::RetryChatOsdIntegration)
+            }
             Request::SeekOffset(offset_seconds) => {
                 Self::Player(player::Command::SeekOffset(offset_seconds))
             }
@@ -132,6 +135,7 @@ impl GuiClientCommand {
             | Request::SetAutoplayEnabled(_)
             | Request::SetAutoplayThreshold(_)
             | Request::RetryPlayerLaunch
+            | Request::RetryChatOsdIntegration
             | Request::SeekOffset(_)
             | Request::SeekToPosition(_)
             | Request::KeepWaitingForSeekPreparation
@@ -218,6 +222,7 @@ pub(super) mod player {
         SetAutoplayEnabled(bool),
         SetAutoplayThreshold(usize),
         RetryLaunch,
+        RetryChatOsdIntegration,
         SeekOffset(f64),
         SeekToPosition(f64),
         KeepWaitingForSeekPreparation,
@@ -237,6 +242,7 @@ pub(super) mod player {
                     GuiRuntimeRequest::SetAutoplayThreshold(threshold)
                 }
                 Self::RetryLaunch => GuiRuntimeRequest::RetryPlayerLaunch,
+                Self::RetryChatOsdIntegration => GuiRuntimeRequest::RetryChatOsdIntegration,
                 Self::SeekOffset(offset_seconds) => GuiRuntimeRequest::SeekOffset(offset_seconds),
                 Self::SeekToPosition(position_seconds) => {
                     GuiRuntimeRequest::SeekToPosition(position_seconds)

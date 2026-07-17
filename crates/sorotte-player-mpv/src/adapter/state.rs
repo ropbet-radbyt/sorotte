@@ -155,6 +155,7 @@ impl fmt::Debug for MpvAdapter {
                 "legacy_syncplayintf_lease_reacquire_required",
                 &self.legacy_syncplayintf_lease_reacquire_required,
             )
+            .field("sorotte_bridge_health", &self.sorotte_bridge_health)
             .field("ipc_endpoint", &self.ipc_endpoint)
             .field("simulation_mode", &self.simulation_mode)
             .field("ipc_attached", &self.ipc_client.is_some())
@@ -249,6 +250,7 @@ impl Default for MpvAdapter {
             legacy_syncplayintf_pending_ping_nonce: None,
             legacy_syncplayintf_last_heartbeat_at: None,
             legacy_syncplayintf_lease_reacquire_required: false,
+            sorotte_bridge_health: SorotteBridgeHealth::Disabled,
             ipc_endpoint: None,
             simulation_mode: false,
             ipc_client: None,

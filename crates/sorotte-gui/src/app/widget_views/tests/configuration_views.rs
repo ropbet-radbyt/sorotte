@@ -121,6 +121,7 @@ fn gui_shell_app_state_projects_player_setup_into_configuration_widgets() {
                 issue: Some(GuiPlayerSetupIssue {
                     kind: GuiPlayerSetupIssueKind::NotConfigured,
                     message: "Set playerPath to mpv before connecting.".to_owned(),
+                    retry_available: false,
                 }),
             },
         ))

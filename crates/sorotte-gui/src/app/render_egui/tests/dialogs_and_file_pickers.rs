@@ -115,6 +115,53 @@ fn gui_widget_egui_renderer_reads_media_search_browse_override_paths_from_lookup
 }
 
 #[test]
+fn bridge_degraded_modal_is_contextual_closable_and_retries_only_integration() {
+    let mut state =
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    assert!(
+        state.apply(GuiShellAction::ApplyGuiPlayerSetupRuntimeSnapshot(
+            GuiPlayerSetupRuntimeSnapshot {
+                issue: Some(GuiPlayerSetupIssue {
+                    kind: GuiPlayerSetupIssueKind::BridgeDegraded,
+                    message: "another Sorotte owner holds the bridge lease".to_owned(),
+                    retry_available: true,
+                }),
+            },
+        ))
+    );
+
+    assert_eq!(
+        GuiWidgetEguiRenderer::modal_window_title_for_state(GuiShellModal::PlayerSetup, &state),
+        "mpv Chat/OSD Integration"
+    );
+    assert!(GuiWidgetEguiRenderer::modal_close_enabled(
+        &state,
+        GuiShellModal::PlayerSetup
+    ));
+    assert!(
+        !state.connect_blocked_by_player_setup_issue(),
+        "bridge degradation must not block first-run connection"
+    );
+    assert!(
+        GuiWidgetEguiRenderer::modal_actions_for_state(GuiShellModal::PlayerSetup, &state)
+            .contains(&(
+                "shell:modal:player-setup:retry",
+                "Retry Chat/OSD integration"
+            ))
+    );
+
+    let configuration = state.configuration_widget_tree();
+    let retry = configuration
+        .find("config-player-setup:retry")
+        .expect("bridge retry button should be projected");
+    assert_eq!(retry.label, "Retry Chat/OSD integration");
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, retry),
+        vec![GuiShellAction::RetryChatOsdIntegration]
+    );
+}
+
+#[test]
 fn gui_widget_egui_renderer_reads_config_storage_browse_override_path_from_lookup() {
     assert_eq!(
         GuiWidgetEguiRenderer::config_storage_browse_override_path_from_lookup(&|name| {

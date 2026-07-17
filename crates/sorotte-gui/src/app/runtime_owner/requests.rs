@@ -224,6 +224,7 @@ impl GuiPersistedConfigRuntimeOwner {
             | GuiRuntimeRequest::SetAutoplayEnabled(_)
             | GuiRuntimeRequest::SetAutoplayThreshold(_)
             | GuiRuntimeRequest::RetryPlayerLaunch
+            | GuiRuntimeRequest::RetryChatOsdIntegration
             | GuiRuntimeRequest::SeekOffset(_)
             | GuiRuntimeRequest::SeekToPosition(_)
             | GuiRuntimeRequest::KeepWaitingForSeekPreparation

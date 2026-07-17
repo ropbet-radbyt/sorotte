@@ -24,6 +24,8 @@ use sorotte_player_api::{
     PlayerTransportTelemetryUpdate,
 };
 
+use crate::bridge::{SorotteBridgeFailure, SorotteBridgeFailureKind, SorotteBridgeHealth};
+use crate::bridge_resource::materialize_bundled_sorotte_bridge;
 use crate::constants::*;
 #[cfg(test)]
 use crate::ipc::MpvJsonIpcTransport;
@@ -49,6 +51,8 @@ const LEGACY_SYNCPLAYINTF_OWNER_LEASE_MS: u64 = 2_000;
 const LEGACY_SYNCPLAYINTF_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
 const LEGACY_SYNCPLAYINTF_DISCOVERY_ATTEMPTS: usize = 3;
 const LEGACY_SYNCPLAYINTF_REGISTRATION_ATTEMPTS: usize = 20;
+const LEGACY_SYNCPLAYINTF_CONFIGURATION_RETRY_WINDOW: Duration = Duration::from_millis(2_500);
+const LEGACY_SYNCPLAYINTF_CONFIGURATION_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 static NEXT_LEGACY_SYNCPLAYINTF_ATTACHMENT: AtomicU64 = AtomicU64::new(1);
 static LEGACY_SYNCPLAYINTF_OWNER_ID: LazyLock<String> = LazyLock::new(|| {
     let started_at = SystemTime::now()
@@ -63,6 +67,25 @@ fn uses_network_media_options(path: &str) -> bool {
         return false;
     };
     !scheme.eq_ignore_ascii_case("file")
+}
+
+fn classify_sorotte_bridge_configuration_failure(
+    reason: &str,
+    acknowledged_rejection: bool,
+) -> SorotteBridgeFailureKind {
+    let normalized = reason.to_ascii_lowercase();
+    if normalized.contains("another sorotte owner") || normalized.contains("live bridge lease") {
+        SorotteBridgeFailureKind::LeaseBusy
+    } else if acknowledged_rejection {
+        SorotteBridgeFailureKind::SettingsRejected
+    } else if normalized.contains("json ipc")
+        || normalized.contains("not connected")
+        || normalized.contains("command queue")
+    {
+        SorotteBridgeFailureKind::IpcCommand
+    } else {
+        SorotteBridgeFailureKind::AcknowledgementTimeout
+    }
 }
 
 #[derive(Debug)]
@@ -247,6 +270,7 @@ pub struct MpvAdapter {
     legacy_syncplayintf_pending_ping_nonce: Option<u64>,
     legacy_syncplayintf_last_heartbeat_at: Option<Instant>,
     legacy_syncplayintf_lease_reacquire_required: bool,
+    sorotte_bridge_health: SorotteBridgeHealth,
     ipc_endpoint: Option<PathBuf>,
     simulation_mode: bool,
     ipc_client: Option<MpvJsonIpcClient>,
@@ -269,7 +293,7 @@ impl MpvAdapter {
             Err(error) if error.is_property_unavailable() => None,
             Err(error) => return Err(PlayerError::OperationFailed(error.into_message())),
         };
-        self.release_legacy_syncplayintf_controller_best_effort();
+        self.release_sorotte_bridge_best_effort();
         self.collect_ipc_connection_events();
         self.simulation_mode = false;
         self.ipc_client = Some(client);
@@ -295,6 +319,7 @@ impl MpvAdapter {
         self.legacy_syncplayintf_pending_ping_nonce = None;
         self.legacy_syncplayintf_last_heartbeat_at = None;
         self.legacy_syncplayintf_lease_reacquire_required = false;
+        self.sorotte_bridge_health = SorotteBridgeHealth::Disabled;
         self.pending_chat_requests.clear();
         let connection_generation = self
             .ipc_client
@@ -333,6 +358,68 @@ impl MpvAdapter {
             ipc_client: Some(crate::test_support::unacknowledging_syncplayintf_client()),
             ..Self::default()
         }
+    }
+
+    /// Builds a connected adapter whose test transport accepts bridge discovery commands but
+    /// never emits the canonical pong.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn with_undiscoverable_sorotte_bridge_test_ipc(settings: LegacySyncplayUiSettings) -> Self {
+        let mut adapter = Self {
+            legacy_syncplay_ui_settings: settings,
+            ipc_client: Some(crate::test_support::undiscoverable_syncplayintf_client()),
+            ..Self::default()
+        };
+        adapter.reset_legacy_syncplayintf_attachment_for_new_ipc();
+        adapter
+    }
+
+    /// Builds a connected adapter whose fake mpv rejects only canonical bridge discovery while
+    /// leaving the core JSON IPC transport healthy.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn with_rejected_sorotte_bridge_discovery_test_ipc(
+        settings: LegacySyncplayUiSettings,
+    ) -> Self {
+        let mut adapter = Self {
+            legacy_syncplay_ui_settings: settings,
+            ipc_client: Some(crate::test_support::rejecting_syncplayintf_discovery_client()),
+            ..Self::default()
+        };
+        adapter.reset_legacy_syncplayintf_attachment_for_new_ipc();
+        adapter
+    }
+
+    /// Builds a ready bridge attachment and returns a counter incremented when its terminal
+    /// release reaches the fake IPC transport.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn with_release_recording_sorotte_bridge_test_ipc(
+        settings: LegacySyncplayUiSettings,
+    ) -> (Self, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        let (ipc_client, release_count) =
+            crate::test_support::release_recording_syncplayintf_client();
+        let adapter = Self {
+            legacy_syncplay_ui_settings: settings,
+            legacy_syncplayintf_script_loaded: true,
+            legacy_syncplayintf_options_applied: true,
+            legacy_syncplayintf_bridge_instance_id: Some("test-bridge".to_owned()),
+            sorotte_bridge_health: SorotteBridgeHealth::Ready,
+            ipc_client: Some(ipc_client),
+            ..Self::default()
+        };
+        (adapter, release_count)
+    }
+
+    /// Marks a feature-gated fake IPC client unhealthy so higher-layer tests can distinguish a
+    /// fatal player transport loss from optional bridge degradation.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn mark_test_ipc_unhealthy(&mut self, reason: impl Into<String>) {
+        if let Some(client) = self.ipc_client.as_mut() {
+            client.mark_unhealthy_for_test(reason);
+        }
+        self.collect_ipc_connection_events();
     }
 
     pub fn take_ipc_connection_events(&mut self) -> Vec<MpvIpcConnectionEvent> {
@@ -811,6 +898,132 @@ impl MpvAdapter {
         Ok(())
     }
 
+    pub fn configure_bundled_sorotte_bridge(&mut self) -> SorotteBridgeHealth {
+        self.configure_bundled_sorotte_bridge_inner(LEGACY_SYNCPLAYINTF_CONFIGURATION_RETRY_WINDOW)
+    }
+
+    pub fn retry_bundled_sorotte_bridge(&mut self) -> SorotteBridgeHealth {
+        self.legacy_syncplayintf_options_applied = false;
+        self.legacy_syncplayintf_pending_options_generation = None;
+        self.legacy_syncplayintf_options_ack_error = None;
+        self.legacy_syncplayintf_lease_reacquire_required = false;
+        self.configure_bundled_sorotte_bridge_inner(LEGACY_SYNCPLAYINTF_CONFIGURATION_RETRY_WINDOW)
+    }
+
+    pub fn sorotte_bridge_health(&self) -> SorotteBridgeHealth {
+        self.sorotte_bridge_health.clone()
+    }
+
+    pub fn mark_sorotte_bridge_degraded(
+        &mut self,
+        kind: SorotteBridgeFailureKind,
+        reason: impl Into<String>,
+    ) -> SorotteBridgeHealth {
+        self.degrade_sorotte_bridge(kind, reason)
+    }
+
+    fn configure_bundled_sorotte_bridge_inner(
+        &mut self,
+        retry_window: Duration,
+    ) -> SorotteBridgeHealth {
+        let bridge_requested = self.legacy_syncplay_ui_settings.uses_syncplayintf_bridge();
+        if !bridge_requested && !self.legacy_syncplayintf_script_loaded {
+            return self.set_sorotte_bridge_health(SorotteBridgeHealth::Disabled);
+        }
+
+        if !self.legacy_syncplayintf_script_loaded {
+            match self.discover_loaded_legacy_syncplayintf_script() {
+                Ok(true) => {}
+                Ok(false) if bridge_requested => {
+                    let script_path = match materialize_bundled_sorotte_bridge() {
+                        Ok(path) => path,
+                        Err(error) => {
+                            return self.degrade_sorotte_bridge(
+                                SorotteBridgeFailureKind::ResourceMaterialization,
+                                format!(
+                                    "failed to materialize Sorotte's bundled mpv bridge: {error}"
+                                ),
+                            );
+                        }
+                    };
+                    if let Err(error) = self.load_legacy_syncplayintf_script(&script_path) {
+                        return self.degrade_sorotte_bridge(
+                            SorotteBridgeFailureKind::ScriptLoad,
+                            format!(
+                                "failed to load Sorotte's bundled mpv bridge from '{}': {error}",
+                                script_path.display()
+                            ),
+                        );
+                    }
+                }
+                Ok(false) => {
+                    return self.set_sorotte_bridge_health(SorotteBridgeHealth::Disabled);
+                }
+                Err(error) => {
+                    return self.degrade_sorotte_bridge(
+                        SorotteBridgeFailureKind::Discovery,
+                        format!("failed to discover Sorotte's mpv bridge: {error}"),
+                    );
+                }
+            }
+        }
+
+        let deadline = Instant::now() + retry_window;
+        let mut last_acknowledged_error = None;
+        let last_error = loop {
+            let error = match self.apply_pending_legacy_syncplayintf_options() {
+                Ok(()) if self.legacy_syncplayintf_options_ready() => {
+                    let health = if bridge_requested {
+                        SorotteBridgeHealth::Ready
+                    } else {
+                        SorotteBridgeHealth::Disabled
+                    };
+                    return self.set_sorotte_bridge_health(health);
+                }
+                Ok(()) => {
+                    "Sorotte's mpv bridge did not report that its settings are ready".to_owned()
+                }
+                Err(error) => error.to_string(),
+            };
+            if let Some(acknowledged_error) = self.legacy_syncplayintf_options_ack_error.clone() {
+                last_acknowledged_error = Some(acknowledged_error);
+            }
+            if Instant::now() >= deadline {
+                break error;
+            }
+            std::thread::sleep(LEGACY_SYNCPLAYINTF_CONFIGURATION_RETRY_INTERVAL);
+        };
+
+        let acknowledged_error = self
+            .legacy_syncplayintf_options_ack_error
+            .clone()
+            .or(last_acknowledged_error);
+        let reason = acknowledged_error.clone().unwrap_or(last_error);
+        let kind =
+            classify_sorotte_bridge_configuration_failure(&reason, acknowledged_error.is_some());
+        self.degrade_sorotte_bridge(kind, reason)
+    }
+
+    fn set_sorotte_bridge_health(&mut self, health: SorotteBridgeHealth) -> SorotteBridgeHealth {
+        self.sorotte_bridge_health = health.clone();
+        health
+    }
+
+    fn degrade_sorotte_bridge(
+        &mut self,
+        kind: SorotteBridgeFailureKind,
+        reason: impl Into<String>,
+    ) -> SorotteBridgeHealth {
+        self.legacy_syncplayintf_options_applied = false;
+        self.legacy_syncplayintf_last_heartbeat_at = None;
+        self.legacy_syncplayintf_lease_reacquire_required =
+            kind == SorotteBridgeFailureKind::LeaseBusy;
+        self.pending_chat_requests.clear();
+        self.set_sorotte_bridge_health(SorotteBridgeHealth::Degraded(SorotteBridgeFailure::new(
+            kind, reason,
+        )))
+    }
+
     pub fn show_syncplay_legacy_message(
         &mut self,
         message: &str,
@@ -1056,6 +1269,7 @@ impl MpvAdapter {
     fn try_send_legacy_syncplayintf_options_if_pending(&mut self) {
         if self.legacy_syncplayintf_options_applied
             || self.legacy_syncplayintf_lease_reacquire_required
+            || matches!(self.sorotte_bridge_health, SorotteBridgeHealth::Degraded(_))
         {
             return;
         }
@@ -1082,6 +1296,9 @@ impl MpvAdapter {
 
     fn maintain_legacy_syncplayintf_lease(&mut self) {
         self.drain_ipc_events_if_attached();
+        if matches!(self.sorotte_bridge_health, SorotteBridgeHealth::Degraded(_)) {
+            return;
+        }
         if !self.legacy_syncplay_ui_settings.chat_input_enabled {
             self.legacy_syncplayintf_last_heartbeat_at = None;
             return;
@@ -1118,18 +1335,34 @@ impl MpvAdapter {
         }
     }
 
-    fn release_legacy_syncplayintf_controller_best_effort(&mut self) {
-        if !self.legacy_syncplayintf_script_loaded {
-            return;
+    /// Queues a terminal, one-way bridge release and immediately clears local bridge state.
+    ///
+    /// This is a shutdown-only operation. If an IPC final write is queued, the current JSON IPC
+    /// client becomes unusable; callers should invoke this immediately before detaching or
+    /// replacing the adapter. Lease expiry remains the fallback when the best-effort write cannot
+    /// be queued or completed.
+    pub fn release_sorotte_bridge_best_effort(&mut self) {
+        if self.legacy_syncplayintf_script_loaded
+            && let Some(payload) = self.legacy_syncplayintf_controller_payload()
+            && let Some(client) = self.ipc_client.as_mut()
+        {
+            client.send_final_command_best_effort(json!([
+                MPV_COMMAND_SCRIPT_MESSAGE_TO,
+                self.legacy_syncplayintf_script_name.as_str(),
+                LEGACY_SYNCPLAYINTF_RELEASE_MESSAGE,
+                payload
+            ]));
         }
-        if let Some(payload) = self.legacy_syncplayintf_controller_payload() {
-            let _ = self
-                .send_syncplayintf_script_message(LEGACY_SYNCPLAYINTF_RELEASE_MESSAGE, &payload);
-        }
+        self.legacy_syncplayintf_script_loaded = false;
+        self.legacy_syncplayintf_bridge_instance_id = None;
         self.legacy_syncplayintf_options_applied = false;
         self.legacy_syncplayintf_pending_options_generation = None;
+        self.legacy_syncplayintf_options_ack_error = None;
+        self.legacy_syncplayintf_pending_ping_nonce = None;
         self.legacy_syncplayintf_last_heartbeat_at = None;
         self.legacy_syncplayintf_lease_reacquire_required = false;
+        self.pending_chat_requests.clear();
+        self.sorotte_bridge_health = SorotteBridgeHealth::Disabled;
     }
 
     fn ensure_observers_registered_if_attached(&mut self) {
@@ -2794,6 +3027,12 @@ impl MpvAdapter {
                 self.legacy_syncplayintf_pending_options_generation = None;
                 self.legacy_syncplayintf_options_ack_error = None;
                 self.legacy_syncplayintf_lease_reacquire_required = false;
+                self.sorotte_bridge_health =
+                    if self.legacy_syncplay_ui_settings.uses_syncplayintf_bridge() {
+                        SorotteBridgeHealth::Ready
+                    } else {
+                        SorotteBridgeHealth::Disabled
+                    };
             }
             Some(status @ ("busy" | "rejected")) => {
                 let detail = parsed
@@ -3102,6 +3341,23 @@ impl MpvAdapter {
         self.legacy_syncplayintf_last_heartbeat_at =
             Some(Instant::now() - LEGACY_SYNCPLAYINTF_HEARTBEAT_INTERVAL);
         self.maintain_legacy_syncplayintf_lease();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn configure_test_bundled_sorotte_bridge_without_retry(
+        &mut self,
+    ) -> SorotteBridgeHealth {
+        self.configure_bundled_sorotte_bridge_inner(Duration::ZERO)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_test_sorotte_bridge_owner_id(&mut self, owner_id: impl Into<String>) {
+        self.legacy_syncplayintf_owner_id = owner_id.into();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn queue_test_pending_chat_request(&mut self, message: impl Into<String>) {
+        self.pending_chat_requests.push_back(message.into());
     }
 }
 

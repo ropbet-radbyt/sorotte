@@ -28,6 +28,221 @@ fn is_command(write: &Value, command: &str) -> bool {
     write.pointer("/command/0").and_then(Value::as_str) == Some(command)
 }
 
+fn wait_for_write_count(state: &FakeTransportStateHandle, expected: usize) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    while state.writes().len() < expected && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert_eq!(state.writes().len(), expected);
+}
+
+#[test]
+fn ready_bridge_can_be_marked_degraded_and_discards_pending_player_chat() {
+    let (transport, state) = fake_transport_with_reads(&[
+        FAKE_SYNCPLAYINTF_PONG_EVENT,
+        r#"{"request_id":1,"error":"success"}"#,
+        FAKE_SYNCPLAYINTF_ACK_EVENT,
+        r#"{"request_id":2,"error":"success"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter
+        .configure_legacy_syncplay_ui_settings(settings_without_osd_move())
+        .expect("core mpv UI properties should configure independently");
+    assert_eq!(
+        adapter.configure_bundled_sorotte_bridge(),
+        SorotteBridgeHealth::Ready
+    );
+    adapter.queue_test_pending_chat_request("stale player chat");
+
+    let health = adapter.mark_sorotte_bridge_degraded(
+        SorotteBridgeFailureKind::SettingsRejected,
+        "the bridge rejected a runtime update",
+    );
+
+    assert_eq!(health, adapter.sorotte_bridge_health());
+    let SorotteBridgeHealth::Degraded(failure) = health else {
+        panic!("ready bridge should transition to degraded");
+    };
+    assert_eq!(failure.kind, SorotteBridgeFailureKind::SettingsRejected);
+    assert_eq!(failure.reason, "the bridge rejected a runtime update");
+    assert!(!adapter.legacy_syncplayintf_options_ready());
+    assert_eq!(adapter.take_pending_chat_request(), None);
+    assert_eq!(state.writes().len(), 2, "marking degraded must not retry");
+    assert!(adapter.is_connected(), "core mpv IPC must remain healthy");
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn undiscoverable_test_bridge_degrades_while_core_ipc_stays_connected() {
+    let mut adapter =
+        MpvAdapter::with_undiscoverable_sorotte_bridge_test_ipc(settings_without_osd_move());
+    assert!(adapter.is_connected());
+
+    let health = adapter.configure_bundled_sorotte_bridge();
+
+    assert!(matches!(
+        health,
+        SorotteBridgeHealth::Degraded(failure)
+            if failure.kind == SorotteBridgeFailureKind::Discovery
+    ));
+    assert!(adapter.is_connected());
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn test_support_can_turn_an_initially_connected_ipc_unhealthy() {
+    let mut adapter =
+        MpvAdapter::with_unacknowledging_syncplayintf_test_ipc(settings_without_osd_move());
+    assert!(adapter.is_connected());
+
+    adapter.mark_test_ipc_unhealthy("simulated core IPC loss during bridge setup");
+
+    assert!(!adapter.is_connected());
+    let events = adapter.take_ipc_connection_events();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, crate::MpvIpcConnectionEvent::Disconnected { .. }))
+    );
+}
+
+#[test]
+fn bundled_bridge_degradation_preserves_core_playback_and_retry_after_simulated_release_recovers() {
+    let (transport, state) = fake_transport_with_reads(&[
+        FAKE_SYNCPLAYINTF_PONG_EVENT,
+        r#"{"request_id":1,"error":"success"}"#,
+        FAKE_SYNCPLAYINTF_REJECTED_ACK_EVENT,
+        r#"{"request_id":2,"error":"success"}"#,
+        r#"{"request_id":3,"error":"success","data":false}"#,
+        r#"{"request_id":4,"error":"success"}"#,
+        r#"{"request_id":5,"error":"success"}"#,
+        r#"{"request_id":6,"error":"success"}"#,
+        FAKE_SYNCPLAYINTF_ACK_EVENT,
+        r#"{"request_id":7,"error":"success"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter
+        .configure_legacy_syncplay_ui_settings(settings_without_osd_move())
+        .expect("core mpv UI properties should configure independently");
+
+    let degraded = adapter.configure_test_bundled_sorotte_bridge_without_retry();
+    let SorotteBridgeHealth::Degraded(failure) = degraded else {
+        panic!("a competing owner should degrade only the optional bridge");
+    };
+    assert_eq!(failure.kind, SorotteBridgeFailureKind::LeaseBusy);
+    assert!(failure.retryable_in_place());
+    assert!(adapter.is_connected());
+    assert!(!adapter.legacy_syncplayintf_options_ready());
+
+    let writes_before_polling = state.writes().len();
+    assert_eq!(adapter.take_pending_chat_request(), None);
+    adapter.force_test_legacy_syncplayintf_heartbeat_due();
+    assert_eq!(
+        state.writes().len(),
+        writes_before_polling,
+        "degraded chat polling and heartbeat maintenance must not opportunistically reacquire the lease"
+    );
+
+    adapter
+        .show_syncplay_legacy_message("bridge degraded", LegacySyncplayOsdKind::Notification)
+        .expect("OSD should fall back to core mpv show-text");
+    adapter
+        .set_paused(true)
+        .expect("pause must remain available while the optional bridge is degraded");
+    adapter
+        .set_position(12.0)
+        .unwrap_or_else(|error| {
+            panic!(
+                "seek must remain available while the optional bridge is degraded: {error}; writes={:?}",
+                parsed_writes(&state)
+            )
+        });
+
+    let health = adapter.retry_bundled_sorotte_bridge();
+    assert_eq!(health, SorotteBridgeHealth::Ready);
+    assert_eq!(adapter.sorotte_bridge_health(), SorotteBridgeHealth::Ready);
+    assert!(adapter.legacy_syncplayintf_options_ready());
+
+    let writes = parsed_writes(&state);
+    assert_eq!(
+        writes[3]["command"],
+        json!(["show-text", "bridge degraded", 3_000, 1])
+    );
+    assert_eq!(writes[4]["command"], json!(["set_property", "pause", true]));
+    assert_eq!(
+        writes[5]["command"],
+        json!(["set_property", "time-pos", 12.0])
+    );
+    assert_eq!(writes[6]["command"][2], "set_sorotte_syncplayintf_options");
+    assert_eq!(options_payload(&writes[6])["generation"], 2);
+}
+
+#[test]
+fn graceful_bridge_release_is_terminal_nonblocking_and_idempotent() {
+    let (transport, state) = fake_transport_with_reads(&[
+        FAKE_SYNCPLAYINTF_PONG_EVENT,
+        r#"{"request_id":1,"error":"success"}"#,
+        FAKE_SYNCPLAYINTF_ACK_EVENT,
+        r#"{"request_id":2,"error":"success"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter
+        .configure_legacy_syncplay_ui_settings(settings_without_osd_move())
+        .expect("core mpv UI properties should configure independently");
+    assert_eq!(
+        adapter.configure_bundled_sorotte_bridge(),
+        SorotteBridgeHealth::Ready
+    );
+
+    let started = std::time::Instant::now();
+    adapter.release_sorotte_bridge_best_effort();
+    assert!(started.elapsed() < std::time::Duration::from_millis(250));
+    wait_for_write_count(&state, 3);
+    assert_eq!(
+        adapter.sorotte_bridge_health(),
+        SorotteBridgeHealth::Disabled
+    );
+    assert!(!adapter.legacy_syncplayintf_options_ready());
+    assert!(
+        !adapter.is_connected(),
+        "a final-write client must not be reused"
+    );
+
+    let writes = parsed_writes(&state);
+    assert_eq!(writes[2]["command"][0], "script-message-to");
+    assert_eq!(writes[2]["command"][1], LEGACY_SYNCPLAYINTF_SCRIPT_NAME);
+    assert_eq!(writes[2]["command"][2], "sorotte_syncplayintf_release");
+    let release_payload: Value = serde_json::from_str(writes[2]["command"][3].as_str().unwrap())
+        .expect("release payload should be structured JSON");
+    assert_eq!(release_payload["protocol"], LEGACY_SYNCPLAYINTF_PROTOCOL);
+    assert_eq!(release_payload["bridgeInstanceId"], "test-bridge");
+
+    adapter.release_sorotte_bridge_best_effort();
+    assert_eq!(state.writes().len(), 3, "release should be one-shot");
+}
+
+#[test]
+fn disabled_bridge_configuration_never_disturbs_core_ipc() {
+    let (transport, state) = fake_transport_with_reads(&[]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    let settings = LegacySyncplayUiSettings {
+        chat_input_enabled: false,
+        chat_output_enabled: false,
+        chat_move_osd: false,
+        ..LegacySyncplayUiSettings::default()
+    };
+    adapter
+        .configure_legacy_syncplay_ui_settings(settings)
+        .expect("disabled optional integration should not affect core settings");
+
+    assert_eq!(
+        adapter.configure_bundled_sorotte_bridge(),
+        SorotteBridgeHealth::Disabled
+    );
+    assert!(adapter.is_connected());
+    assert!(state.writes().is_empty());
+}
+
 #[test]
 fn missing_legacy_bridge_loads_stable_resource_then_discovers_and_configures_it() {
     let (transport, state) = fake_transport_with_reads(&[

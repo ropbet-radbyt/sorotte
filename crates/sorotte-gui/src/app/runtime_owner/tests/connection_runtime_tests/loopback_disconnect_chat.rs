@@ -5,6 +5,13 @@ fn gui_persisted_config_runtime_owner_loopback_transport_echoes_client_core_chat
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_loopback_session_runtime("alice", "room1")
         .expect("client-core loopback chat runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Mpv(Box::new(
+        sorotte_player_mpv::SimulatedPlayer::new().into_inner(),
+    )));
+    owner.player_integration_health = GuiPlayerIntegrationHealth::BridgeDegraded {
+        reason: "test bridge is unavailable".to_owned(),
+        retryable_in_place: true,
+    };
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         chat_input_enabled: Some(true),

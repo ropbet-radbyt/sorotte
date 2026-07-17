@@ -1,6 +1,9 @@
 use super::*;
 use crate::app::feature_slices::player::Command;
+use crate::app::mpv_launch::retry_sorotte_chat_osd_integration;
+use crate::app::runtime_owner::GuiPlayerIntegrationHealth;
 use crate::app::runtime_stack::GuiAttachedPlayerRuntimeAction;
+use crate::app::runtime_stack::GuiOwnedPlayer;
 use crate::app::support::system_time_seconds;
 
 impl GuiPersistedConfigRuntimeOwner {
@@ -23,6 +26,9 @@ impl GuiPersistedConfigRuntimeOwner {
             }
             Command::RetryLaunch => {
                 self.handle_retry_player_launch_request(handle, projected_state)
+            }
+            Command::RetryChatOsdIntegration => {
+                self.handle_retry_chat_osd_integration_request(handle, projected_state)
             }
             Command::SeekOffset(offset_seconds) => {
                 self.handle_seek_offset_request(handle, projected_state, offset_seconds)
@@ -147,6 +153,75 @@ impl GuiPersistedConfigRuntimeOwner {
             actions.push(self.pending_apply_requirements_action(projected_state, &settings));
         }
         Self::push_actions_and_project(handle, projected_state, actions);
+        true
+    }
+
+    pub(super) fn handle_retry_chat_osd_integration_request(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+    ) -> bool {
+        let Some(ui_settings) = self.player_launch_state.mpv_ui_settings().cloned() else {
+            Self::push_player_error(
+                handle,
+                "Retrying Chat/OSD integration requires an attached mpv runtime.".to_owned(),
+            );
+            return true;
+        };
+        let Some(player) = self.player.as_mut().and_then(GuiOwnedPlayer::as_mpv_mut) else {
+            Self::push_player_error(
+                handle,
+                "Retrying Chat/OSD integration requires an attached mpv runtime.".to_owned(),
+            );
+            return true;
+        };
+
+        let core_ipc_was_connected = player.is_connected();
+        let health = retry_sorotte_chat_osd_integration(player, &ui_settings);
+        if core_ipc_was_connected && !player.is_connected() {
+            self.detach_player();
+            let message =
+                "mpv JSON IPC became unavailable while retrying Chat/OSD integration.".to_owned();
+            self.player_unavailability_reason = Some(message.clone());
+            Self::push_player_error(handle, message);
+            return true;
+        }
+        self.record_sorotte_bridge_health(health);
+        self.player_unavailability_reason = None;
+        if matches!(
+            self.player_integration_health,
+            GuiPlayerIntegrationHealth::Ready
+        ) {
+            self.applied_player_launch_state = Some(self.player_launch_state.clone());
+        }
+
+        let (level, message) = match &self.player_integration_health {
+            GuiPlayerIntegrationHealth::Ready => (
+                GuiTransientNotificationLevel::Success,
+                "mpv Chat/OSD integration is ready.".to_owned(),
+            ),
+            GuiPlayerIntegrationHealth::BridgeDegraded { reason, .. } => (
+                GuiTransientNotificationLevel::Warning,
+                format!(
+                    "mpv remains ready, but Chat/OSD integration could not be configured: {reason}"
+                ),
+            ),
+        };
+        let settings = projected_state.saved_configuration.clone();
+        let pending_requirements =
+            self.pending_apply_requirements_action(projected_state, &settings);
+        Self::push_actions_and_project(
+            handle,
+            projected_state,
+            vec![
+                GuiShellAction::PushTransientNotification {
+                    level,
+                    message: message.clone(),
+                },
+                GuiShellAction::AnnounceSystemChatEvent(message),
+                pending_requirements,
+            ],
+        );
         true
     }
 

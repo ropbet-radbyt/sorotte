@@ -9,9 +9,9 @@ use sorotte_client_app::app_boundary::{
     state::{ClientConfig, StoredClientSettingsMvp},
 };
 use sorotte_player_api::{PlayerAdapter, PlayerCommand, PlayerError};
-use sorotte_player_mpv::MpvAdapter;
 #[cfg(test)]
 use sorotte_player_mpv::SimulatedPlayer;
+use sorotte_player_mpv::{MpvAdapter, SorotteBridgeHealth};
 use sorotte_secret::RedactedCommandArgs;
 
 use crate::client_args::LegacyClientArgOverrides;
@@ -61,10 +61,14 @@ pub(super) use self::external_launch::{
 };
 #[cfg(all(test, windows))]
 pub(super) use self::managed_process::connect_mpv_adapter_with_retry;
-#[cfg(test)]
-pub(super) use self::managed_process::managed_mpv_launch_base_args_legacy_compatible;
 pub(super) use self::managed_process::{
     ManagedMpvProcessGuard, create_client_runtime_with_managed_mpv_support,
+};
+#[cfg(test)]
+pub(super) use self::managed_process::{
+    create_client_runtime_with_prepared_mpv_and_bridge_setup_for_test,
+    create_client_runtime_with_prepared_mpv_for_test,
+    managed_mpv_launch_base_args_legacy_compatible,
 };
 pub(super) use self::program_resolution::{
     find_default_managed_mpv_bin, resolve_managed_mpv_launch_program_legacy_compatible,

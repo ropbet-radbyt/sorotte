@@ -7,8 +7,7 @@ use super::*;
 pub(crate) fn create_client_runtime(config: &ClientLoopConfig) -> ClientApplication<MpvAdapter> {
     let session = create_client_session(config);
     let mut player = SimulatedPlayer::new().into_inner();
-    apply_legacy_syncplay_ui_settings_to_mpv_adapter_legacy_compatible(&mut player, None)
-        .expect("default legacy mpv OSD/chat settings should apply");
+    let _ = apply_legacy_syncplay_ui_settings_to_mpv_adapter_legacy_compatible(&mut player, None);
     ClientApplication::new(session, player)
 }
 

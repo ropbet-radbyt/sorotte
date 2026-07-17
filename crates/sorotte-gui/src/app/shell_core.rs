@@ -9,10 +9,10 @@ use super::shell_state::{
     FirstRunConfigurationDialogDraft, GuiCommandAvailabilityRuntimeOverride,
     GuiCommandAvailabilityState, GuiConfigStorageRuntimeSnapshot, GuiConfigurationTab,
     GuiMediaMatchState, GuiPlayerSetupIssueKind, GuiPlexState, GuiPluginEnablementState,
-    GuiPluginSelection, GuiSavedSessionConnectTarget, GuiSelectionState, GuiShellModal,
-    GuiShellView, GuiValidationState, MainWindowShellState, MediaSearchWorkflowShellState,
-    MenuActionId, MenuActionRuntimeOverride, MenuDialogShellState, PublicServerBrowserShellState,
-    SettingId, SorotteGuiShellAppState,
+    GuiPluginSelection, GuiSavedSessionConnectTarget, GuiSelectionState, GuiShellAction,
+    GuiShellModal, GuiShellView, GuiValidationState, MainWindowShellState,
+    MediaSearchWorkflowShellState, MenuActionId, MenuActionRuntimeOverride, MenuDialogShellState,
+    PublicServerBrowserShellState, SettingId, SorotteGuiShellAppState,
 };
 use super::support::{
     configured_room_name_text, legacy_chat_input_enabled, normalized_editable_text,
@@ -186,7 +186,10 @@ impl SorotteGuiShellAppState {
 
     pub(super) fn connect_blocked_by_player_setup_issue(&self) -> bool {
         self.configuration.launch_mode == super::GuiLaunchMode::FirstRun
-            && self.player_setup_issue.is_some()
+            && self
+                .player_setup_issue
+                .as_ref()
+                .is_some_and(|issue| issue.kind != GuiPlayerSetupIssueKind::BridgeDegraded)
     }
 
     pub(super) fn player_setup_connect_block_message(&self) -> Option<String> {
@@ -209,6 +212,7 @@ impl SorotteGuiShellAppState {
                 GuiPlayerSetupIssueKind::LaunchFailed => "mpv failed to launch",
                 GuiPlayerSetupIssueKind::IpcAttachFailed => "mpv did not respond",
                 GuiPlayerSetupIssueKind::ExitedAfterLaunch => "mpv closed unexpectedly",
+                GuiPlayerSetupIssueKind::BridgeDegraded => "mpv Chat/OSD integration unavailable",
             })
     }
 
@@ -234,13 +238,40 @@ impl SorotteGuiShellAppState {
                 GuiPlayerSetupIssueKind::ExitedAfterLaunch => {
                     "mpv exited after it had already been launched."
                 }
+                GuiPlayerSetupIssueKind::BridgeDegraded => {
+                    "mpv is ready, but Chat/OSD integration could not be configured."
+                }
             })
+    }
+
+    pub(super) fn player_setup_retry_label(&self) -> &'static str {
+        if self
+            .player_setup_issue
+            .as_ref()
+            .is_some_and(|issue| issue.kind == GuiPlayerSetupIssueKind::BridgeDegraded)
+        {
+            "Retry Chat/OSD integration"
+        } else {
+            "Retry mpv"
+        }
+    }
+
+    pub(super) fn player_setup_retry_action(&self) -> GuiShellAction {
+        if self
+            .player_setup_issue
+            .as_ref()
+            .is_some_and(|issue| issue.kind == GuiPlayerSetupIssueKind::BridgeDegraded)
+        {
+            GuiShellAction::RetryChatOsdIntegration
+        } else {
+            GuiShellAction::RetryPlayerLaunch
+        }
     }
 
     pub(super) fn player_setup_retry_available(&self) -> bool {
         self.player_setup_issue
             .as_ref()
-            .is_some_and(|issue| issue.kind != GuiPlayerSetupIssueKind::NotConfigured)
+            .is_some_and(|issue| issue.retry_available)
             && self.pending_operation.is_none()
     }
 

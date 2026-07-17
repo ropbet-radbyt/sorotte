@@ -206,6 +206,7 @@ impl SorotteGuiShellAppState {
                 Some(GuiPlayerSetupIssue {
                     kind: issue.kind,
                     message,
+                    retry_available: issue.retry_available,
                 })
             }
             None => None,

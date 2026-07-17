@@ -3,7 +3,7 @@ use super::*;
 impl SorotteGuiShellAppState {
     pub(super) fn apply_misc_action(&mut self, action: GuiShellAction) -> bool {
         match action {
-            GuiShellAction::RetryPlayerLaunch => {
+            GuiShellAction::RetryPlayerLaunch | GuiShellAction::RetryChatOsdIntegration => {
                 self.clear_action_error_and_refresh();
                 true
             }

@@ -160,6 +160,7 @@ fn gui_text_preview_host_renders_player_setup_shell_state() {
                 issue: Some(GuiPlayerSetupIssue {
                     kind: GuiPlayerSetupIssueKind::NotConfigured,
                     message: "Set playerPath to mpv before connecting.".to_owned(),
+                    retry_available: false,
                 }),
             },
         ))
@@ -185,6 +186,7 @@ fn gui_native_app_routes_player_setup_modal_retry_through_runtime_dispatch() {
                 issue: Some(GuiPlayerSetupIssue {
                     kind: GuiPlayerSetupIssueKind::MissingBinary,
                     message: "GUI-owned mpv launch failed from saved player path.".to_owned(),
+                    retry_available: true,
                 }),
             },
         ))
@@ -236,6 +238,7 @@ fn gui_native_app_routes_player_setup_modal_open_settings_to_connection_tab() {
                 issue: Some(GuiPlayerSetupIssue {
                     kind: GuiPlayerSetupIssueKind::MissingBinary,
                     message: "GUI-owned mpv launch failed from saved player path.".to_owned(),
+                    retry_available: true,
                 }),
             },
         ))

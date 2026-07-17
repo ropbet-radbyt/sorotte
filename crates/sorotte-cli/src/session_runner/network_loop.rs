@@ -140,6 +140,20 @@ where
     _managed_mpv_process_guard: Option<ManagedMpvProcessGuard>,
 }
 
+fn release_cli_runtime_sorotte_bridge_best_effort(runtime: &mut ClientApplication<MpvAdapter>) {
+    runtime.with_player_io(MpvAdapter::release_sorotte_bridge_best_effort);
+}
+
+impl<F, G> Drop for ClientNetworkLoopBootstrapState<F, G>
+where
+    F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
+    G: FnMut(&str) -> anyhow::Result<()>,
+{
+    fn drop(&mut self) {
+        release_cli_runtime_sorotte_bridge_best_effort(&mut self.retry_state.runtime);
+    }
+}
+
 struct ClientNetworkLoopStartupExecutionPlan {
     diagnostics_config: ClientLoopDiagnosticsConfig,
     startup_plan: ClientNetworkLoopStartupPlan,
@@ -435,4 +449,31 @@ pub(crate) async fn run_client_network_loop_with_legacy_startup_overrides_and_st
         stored_settings,
     )
     .await
+}
+
+#[cfg(test)]
+mod shutdown_release_tests {
+    use super::*;
+
+    #[test]
+    fn cli_shutdown_release_helper_clears_bridge_readiness_before_runtime_drop() {
+        let settings = sorotte_player_mpv::LegacySyncplayUiSettings {
+            chat_move_osd: false,
+            ..sorotte_player_mpv::LegacySyncplayUiSettings::default()
+        };
+        let mut player = MpvAdapter::with_unacknowledging_syncplayintf_test_ipc(settings);
+        assert_eq!(
+            player.configure_bundled_sorotte_bridge(),
+            sorotte_player_mpv::SorotteBridgeHealth::Ready
+        );
+        let mut runtime = ClientApplication::with_default_session(player);
+
+        release_cli_runtime_sorotte_bridge_best_effort(&mut runtime);
+
+        assert_eq!(
+            runtime.player().sorotte_bridge_health(),
+            sorotte_player_mpv::SorotteBridgeHealth::Disabled
+        );
+        assert!(!runtime.player().legacy_syncplayintf_options_ready());
+    }
 }

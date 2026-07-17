@@ -21,7 +21,9 @@ use sorotte_client_app::app_boundary::{
         stored_client_settings_config_plan_legacy_compatible,
     },
 };
-use sorotte_player_mpv::{LegacySyncplayUiSettings, MpvAdapter};
+use sorotte_player_mpv::{
+    LegacySyncplayUiSettings, MpvAdapter, SorotteBridgeFailureKind, SorotteBridgeHealth,
+};
 
 use crate::client_args::LegacyClientArgOverrides;
 use crate::client_config::ClientLoopConfig;

@@ -136,6 +136,10 @@ impl GuiShellDispatchPlan {
                     plan.runtime_requests
                         .push(GuiRuntimeRequest::RetryPlayerLaunch);
                 }
+                GuiShellAction::RetryChatOsdIntegration => {
+                    plan.runtime_requests
+                        .push(GuiRuntimeRequest::RetryChatOsdIntegration);
+                }
                 GuiShellAction::RequestSeekPreparationKeepWaiting => {
                     if state
                         .seek_preparation

@@ -4,14 +4,16 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use sorotte_client_app::app_boundary::state::{
     ClientConfig, EffectiveMpvStreamingOption, StoredClientSettingsMvp,
 };
 use sorotte_player_api::PlayerAdapter;
-use sorotte_player_mpv::{LegacySyncplayUiSettings, MpvAdapter};
+use sorotte_player_mpv::{
+    LegacySyncplayUiSettings, MpvAdapter, SorotteBridgeFailureKind, SorotteBridgeHealth,
+};
 use sorotte_secret::RedactedCommandArgs;
 
 use super::child_process::configure_gui_child_process;
@@ -74,6 +76,14 @@ impl ManagedMpvProcessGuard {
             .try_wait()
             .map_err(|error| format!("failed checking GUI-owned mpv process state: {error}"))
     }
+
+    #[cfg(test)]
+    pub(crate) fn from_test_child(child: Child) -> Self {
+        Self {
+            child,
+            ipc_cleanup_path: None,
+        }
+    }
 }
 
 impl Drop for ManagedMpvProcessGuard {
@@ -124,74 +134,44 @@ pub(crate) fn managed_mpv_settings_decision_from_settings(
     }))
 }
 
-pub(crate) fn apply_legacy_syncplay_ui_settings_to_mpv_adapter(
+pub(crate) fn configure_sorotte_chat_osd_integration(
     player: &mut MpvAdapter,
     ui_settings: &LegacySyncplayUiSettings,
-) -> Result<(), String> {
-    let player_is_connected = player.is_connected();
-    player
-        .configure_legacy_syncplay_ui_settings(ui_settings.clone())
-        .map_err(|error| format!("failed to configure mpv OSD/chat settings: {error}"))?;
-    player
-        .set_option_string("drag-and-drop", "no")
-        .map_err(|error| format!("failed to disable mpv drag-and-drop handling: {error}"))?;
+) -> SorotteBridgeHealth {
+    configure_sorotte_chat_osd_integration_inner(player, ui_settings, false)
+}
+
+pub(crate) fn retry_sorotte_chat_osd_integration(
+    player: &mut MpvAdapter,
+    ui_settings: &LegacySyncplayUiSettings,
+) -> SorotteBridgeHealth {
+    configure_sorotte_chat_osd_integration_inner(player, ui_settings, true)
+}
+
+fn configure_sorotte_chat_osd_integration_inner(
+    player: &mut MpvAdapter,
+    ui_settings: &LegacySyncplayUiSettings,
+    retry: bool,
+) -> SorotteBridgeHealth {
+    if let Err(error) = player.configure_legacy_syncplay_ui_settings(ui_settings.clone()) {
+        return player.mark_sorotte_bridge_degraded(
+            SorotteBridgeFailureKind::IpcCommand,
+            format!("failed to configure mpv OSD/chat settings: {error}"),
+        );
+    }
+    if let Err(error) = player.set_option_string("drag-and-drop", "no") {
+        eprintln!("warning: failed to disable mpv drag-and-drop handling: {error}");
+    }
     if let Err(error) = player.set_option_string("ytdl", "yes") {
         eprintln!(
             "warning: failed to enable mpv yt-dlp hook via GUI JSON IPC: {}",
             error
         );
     }
-    if player_is_connected {
-        if !player.legacy_syncplayintf_script_loaded() {
-            if ui_settings.uses_syncplayintf_bridge() {
-                load_legacy_syncplayintf_bridge(player)?;
-            } else if !player
-                .discover_loaded_legacy_syncplayintf_script()
-                .map_err(|error| {
-                    format!("failed to discover an existing Sorotte mpv bridge: {error}")
-                })?
-            {
-                return Ok(());
-            }
-        }
-        apply_pending_legacy_syncplayintf_options_with_retry(player).map_err(|error| {
-            format!("syncplayintf did not acknowledge the updated GUI options: {error}")
-        })?;
-        if !player.legacy_syncplayintf_options_ready() {
-            return Err("syncplayintf did not acknowledge the updated GUI options".to_owned());
-        }
-    }
-
-    Ok(())
-}
-
-fn load_legacy_syncplayintf_bridge(player: &mut MpvAdapter) -> Result<(), String> {
-    let script_path = find_legacy_syncplayintf_script_path().ok_or_else(|| {
-        "Sorotte's bundled mpv bridge could not be found for enabled chat input/output".to_owned()
-    })?;
-    player
-        .load_legacy_syncplayintf_script(&script_path)
-        .map_err(|error| {
-            format!(
-                "failed to load Sorotte's bundled mpv bridge from '{}': {error}",
-                script_path.display()
-            )
-        })
-}
-
-fn apply_pending_legacy_syncplayintf_options_with_retry(
-    player: &mut MpvAdapter,
-) -> Result<(), sorotte_player_api::PlayerError> {
-    const RETRY_WINDOW: Duration = Duration::from_millis(2_500);
-    const RETRY_INTERVAL: Duration = Duration::from_millis(25);
-
-    let deadline = Instant::now() + RETRY_WINDOW;
-    loop {
-        match player.apply_pending_legacy_syncplayintf_options() {
-            Ok(()) => return Ok(()),
-            Err(error) if Instant::now() >= deadline => return Err(error),
-            Err(_) => std::thread::sleep(RETRY_INTERVAL),
-        }
+    if retry {
+        player.retry_bundled_sorotte_bridge()
+    } else {
+        player.configure_bundled_sorotte_bridge()
     }
 }
 
@@ -438,24 +418,6 @@ fn timeout_ms_from_stored_client_setting(value: Option<i64>, default_ms: u64) ->
         .unwrap_or(default_ms)
 }
 
-fn legacy_syncplayintf_script_candidate_paths() -> Vec<PathBuf> {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let mut paths = Vec::new();
-    if let Ok(executable_path) = env::current_exe()
-        && let Some(executable_dir) = executable_path.parent()
-    {
-        paths.push(executable_dir.join("resources/sorotte_syncplayintf.lua"));
-    }
-    paths.push(manifest_dir.join("../../resources/sorotte_syncplayintf.lua"));
-    paths
-}
-
-fn find_legacy_syncplayintf_script_path() -> Option<PathBuf> {
-    legacy_syncplayintf_script_candidate_paths()
-        .into_iter()
-        .find(|candidate| candidate.is_file())
-}
-
 #[cfg(windows)]
 fn managed_mpv_launch_candidate_file_names_legacy_compatible() -> &'static [&'static str] {
     &["mpv.exe", "mpv.com"]
@@ -638,8 +600,7 @@ mod tests {
 
     use super::{
         ManagedMpvLaunchConfig, ManagedMpvSettingsDecision,
-        autodetect_mpv_player_path_legacy_compatible_from_lookup,
-        legacy_syncplayintf_script_candidate_paths, managed_mpv_launch_args,
+        autodetect_mpv_player_path_legacy_compatible_from_lookup, managed_mpv_launch_args,
         managed_mpv_settings_decision_from_settings,
     };
     use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
@@ -737,18 +698,6 @@ mod tests {
             })),
             ManagedMpvSettingsDecision::NotConfigured
         );
-    }
-
-    #[test]
-    fn legacy_syncplayintf_candidates_include_the_tracked_bundled_resource() {
-        let bundled = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../resources/sorotte_syncplayintf.lua");
-
-        assert!(
-            bundled.is_file(),
-            "chat-enabled player startup must not depend on an ignored cache or sibling checkout"
-        );
-        assert!(legacy_syncplayintf_script_candidate_paths().contains(&bundled));
     }
 
     #[test]

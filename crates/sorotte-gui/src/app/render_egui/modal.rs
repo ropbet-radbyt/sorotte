@@ -129,6 +129,36 @@ impl GuiWidgetEguiRenderer {
         }
     }
 
+    pub(in crate::app) fn modal_window_title_for_state(
+        modal: GuiShellModal,
+        state: &SorotteGuiShellAppState,
+    ) -> &'static str {
+        if modal == GuiShellModal::PlayerSetup
+            && state.player_setup_issue.as_ref().is_some_and(|issue| {
+                issue.kind == super::super::shell_state::GuiPlayerSetupIssueKind::BridgeDegraded
+            })
+        {
+            "mpv Chat/OSD Integration"
+        } else {
+            Self::modal_window_title(modal)
+        }
+    }
+
+    pub(in crate::app) fn modal_actions_for_state(
+        modal: GuiShellModal,
+        state: &SorotteGuiShellAppState,
+    ) -> Vec<(&'static str, &'static str)> {
+        let mut actions = Self::modal_actions(modal);
+        if modal == GuiShellModal::PlayerSetup
+            && let Some((_, label)) = actions
+                .iter_mut()
+                .find(|(id, _)| *id == "shell:modal:player-setup:retry")
+        {
+            *label = state.player_setup_retry_label();
+        }
+        actions
+    }
+
     pub(in crate::app) fn modal_action_enabled(state: &SorotteGuiShellAppState, id: &str) -> bool {
         match id {
             "shell:modal:player-setup:autodetect"

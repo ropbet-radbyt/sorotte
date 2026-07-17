@@ -148,6 +148,7 @@ pub(super) enum GuiPlayerSetupIssueKind {
     LaunchFailed,
     IpcAttachFailed,
     ExitedAfterLaunch,
+    BridgeDegraded,
 }
 
 impl GuiPlayerSetupIssueKind {
@@ -160,6 +161,7 @@ impl GuiPlayerSetupIssueKind {
             Self::LaunchFailed => "launch-failed",
             Self::IpcAttachFailed => "ipc-attach-failed",
             Self::ExitedAfterLaunch => "exited-after-launch",
+            Self::BridgeDegraded => "bridge-degraded",
         }
     }
 }
@@ -168,6 +170,7 @@ impl GuiPlayerSetupIssueKind {
 pub(super) struct GuiPlayerSetupIssue {
     pub(super) kind: GuiPlayerSetupIssueKind,
     pub(super) message: String,
+    pub(super) retry_available: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

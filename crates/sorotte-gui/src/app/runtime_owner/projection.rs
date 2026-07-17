@@ -164,6 +164,13 @@ impl GuiPersistedConfigRuntimeOwner {
     }
 
     fn player_setup_issue_impl(&self) -> Option<GuiPlayerSetupIssue> {
+        if let Some(reason) = self.player_integration_health.bridge_degraded_reason() {
+            return Some(GuiPlayerSetupIssue {
+                kind: GuiPlayerSetupIssueKind::BridgeDegraded,
+                message: reason.to_owned(),
+                retry_available: self.player_integration_health.bridge_retryable_in_place(),
+            });
+        }
         if self.player.is_some() {
             return None;
         }
@@ -191,7 +198,11 @@ impl GuiPersistedConfigRuntimeOwner {
             GuiPlayerLaunchRuntimeState::TestPlayer => return None,
         };
 
-        Some(GuiPlayerSetupIssue { kind, message })
+        Some(GuiPlayerSetupIssue {
+            retry_available: kind != GuiPlayerSetupIssueKind::NotConfigured,
+            kind,
+            message,
+        })
     }
 
     pub(super) fn player_setup_runtime_snapshot_impl(&self) -> GuiPlayerSetupRuntimeSnapshot {

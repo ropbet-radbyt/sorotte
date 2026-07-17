@@ -11,7 +11,10 @@ use std::{
 };
 
 use super::super::runtime_stack::{GuiAttachedPlayerRuntimeAction, GuiSessionRoomPlaystate};
-use super::{GuiMediaMatchBackgroundCancelDisposition, GuiPersistedConfigRuntimeOwner};
+use super::{
+    GuiMediaMatchBackgroundCancelDisposition, GuiPersistedConfigRuntimeOwner,
+    GuiPlayerIntegrationHealth,
+};
 
 use crate::app::runtime_bridge::{GuiNativeRuntimeBridge, GuiNativeRuntimePump};
 use crate::app::runtime_queue::{GuiQueuedRuntimeBridge, GuiThreadedRuntimeOwnerPump};

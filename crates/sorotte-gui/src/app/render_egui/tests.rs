@@ -8,7 +8,8 @@ use super::GuiWidgetEguiRenderer;
 use crate::app::render_io::{GuiDroppedFilesRequest, GuiDroppedFilesTarget};
 use crate::app::shell_state::{
     GuiConfigStorageRuntimeSnapshot, GuiConfigurationTab, GuiDraftRuntimeSnapshot,
-    GuiMediaSourceProviderId, GuiPendingOperationKind, GuiPlaylistDefaultSourceId,
+    GuiMediaSourceProviderId, GuiPendingOperationKind, GuiPlayerSetupIssue,
+    GuiPlayerSetupIssueKind, GuiPlayerSetupRuntimeSnapshot, GuiPlaylistDefaultSourceId,
     GuiPlexPlaylistSearchResult, GuiPluginSelection, GuiShellAction, GuiShellModal, GuiShellView,
     GuiStreamHelperHealth, GuiStreamHelperRemediationRuntimeSnapshot,
     GuiStreamHelperRuntimeSnapshot, MainWindowRuntimeRoomSnapshot, MainWindowRuntimeSnapshot,
