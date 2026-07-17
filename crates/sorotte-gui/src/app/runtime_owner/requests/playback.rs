@@ -28,6 +28,9 @@ impl GuiPersistedConfigRuntimeOwner {
             Command::RetryLaunch => {
                 self.handle_retry_player_launch_request(handle, projected_state)
             }
+            Command::RetrySettings => {
+                self.handle_retry_player_settings_request(handle, projected_state)
+            }
             Command::RetryChatOsdIntegration => {
                 self.handle_retry_chat_osd_integration_request(handle, projected_state)
             }
@@ -143,6 +146,46 @@ impl GuiPersistedConfigRuntimeOwner {
         };
         let mut actions = vec![
             GuiShellAction::ApplyGuiStreamHelperRuntimeSnapshot(stream_helper_snapshot),
+            GuiShellAction::PushTransientNotification {
+                level,
+                message: message.clone(),
+            },
+            GuiShellAction::AnnounceSystemChatEvent(message),
+        ];
+        if player_settings_applied {
+            self.promote_restart_player_runtime_fields(&settings);
+            actions.push(self.pending_apply_requirements_action(projected_state, &settings));
+        }
+        Self::push_actions_and_project(handle, projected_state, actions);
+        true
+    }
+
+    pub(super) fn handle_retry_player_settings_request(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+    ) -> bool {
+        let settings = projected_state.saved_configuration.clone();
+        let _ = self.apply_saved_player_settings_in_place(&settings);
+        self.refresh_player_state();
+        let player_settings_applied = self.current_player_core_state_is_applied();
+
+        let (level, message) = if player_settings_applied {
+            (
+                GuiTransientNotificationLevel::Success,
+                "mpv streaming settings were applied without restarting playback.".to_owned(),
+            )
+        } else {
+            (
+                GuiTransientNotificationLevel::Error,
+                self.player_unavailability_reason
+                    .clone()
+                    .unwrap_or_else(|| {
+                        "Retrying mpv streaming settings did not complete.".to_owned()
+                    }),
+            )
+        };
+        let mut actions = vec![
             GuiShellAction::PushTransientNotification {
                 level,
                 message: message.clone(),

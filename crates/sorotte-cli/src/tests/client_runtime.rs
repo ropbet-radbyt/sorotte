@@ -301,6 +301,92 @@ fn cli_runtime_rejects_transport_loss_during_optional_bridge_setup() {
 }
 
 #[test]
+fn cli_runtime_contains_healthy_active_network_option_rejection() {
+    let config = test_client_loop_config();
+    let player = MpvAdapter::with_first_active_network_option_rejection_test_ipc(
+        LegacySyncplayUiSettings::default(),
+    );
+    let settings = StoredClientSettingsMvp {
+        streaming_read_ahead_seconds: Some(91.0),
+        ..StoredClientSettingsMvp::default()
+    };
+    let mut bridge_setup_called = false;
+
+    let (mut runtime, bridge_health, streaming_warning) =
+        create_client_runtime_with_prepared_mpv_and_startup_health_for_test(
+            &config,
+            Some(&settings),
+            player,
+            |_player, _settings| {
+                bridge_setup_called = true;
+                SorotteBridgeHealth::Ready
+            },
+        )
+        .expect("a server-side option rejection over healthy IPC must not abort CLI startup");
+
+    assert!(
+        bridge_setup_called,
+        "optional Chat/OSD setup must still run"
+    );
+    assert_eq!(bridge_health, SorotteBridgeHealth::Ready);
+    let warning = streaming_warning.expect("the partial streaming apply must remain visible");
+    assert!(warning.starts_with(
+        "warning: mpv playback is ready, but streaming options could not be applied to the active media:"
+    ));
+    assert!(warning.contains("invalid parameter"));
+    assert!(warning.contains("desired options will be used for future network loads"));
+    assert!(runtime.player().is_connected());
+
+    runtime
+        .with_player_io(|player| {
+            player.set_paused(true)?;
+            player.set_position(12.5)?;
+            player.open_file("https://media.example.test/future.m3u8")?;
+            player.apply_network_media_options_to_active_media()?;
+            let _ = player.take_playback_telemetry_update();
+            Ok::<(), PlayerError>(())
+        })
+        .expect(
+            "pause, seek, network loads, telemetry, and a later streaming retry must remain available",
+        );
+    assert!(runtime.player().is_connected());
+}
+
+#[test]
+fn cli_runtime_keeps_unhealthy_transport_during_initial_streaming_apply_fatal() {
+    let config = test_client_loop_config();
+    let mut player = MpvAdapter::with_first_active_network_option_rejection_test_ipc(
+        LegacySyncplayUiSettings::default(),
+    );
+    player.mark_test_ipc_unhealthy("test transport unavailable before streaming setup");
+    let mut bridge_setup_called = false;
+
+    let result = create_client_runtime_with_prepared_mpv_and_startup_health_for_test(
+        &config,
+        None,
+        player,
+        |_player, _settings| {
+            bridge_setup_called = true;
+            SorotteBridgeHealth::Ready
+        },
+    );
+
+    let Err(error) = result else {
+        panic!("an unhealthy mpv transport must remain fatal during CLI startup");
+    };
+    assert!(
+        !bridge_setup_called,
+        "bridge setup must not mask core IPC loss"
+    );
+    let message = error.to_string();
+    assert!(message.contains("failed updating active mpv network-media options"));
+    assert!(
+        message.contains("mpv IPC connection is not connected"),
+        "fatal startup error should identify the unhealthy transport: {message}"
+    );
+}
+
+#[test]
 fn cli_can_materialize_embedded_bridge_without_an_executable_or_source_tree_resource() {
     let unique_suffix = SystemTime::now()
         .duration_since(UNIX_EPOCH)

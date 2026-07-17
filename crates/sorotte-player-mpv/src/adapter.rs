@@ -332,6 +332,8 @@ impl MpvAdapter {
         self.legacy_syncplayintf_runtime_rediscovery_required = false;
         self.legacy_syncplayintf_runtime_recovery_attempts = 0;
         self.legacy_syncplayintf_runtime_recovery_failure = None;
+        // Health transitions are scoped to one IPC endpoint and must never outlive it.
+        self.pending_sorotte_bridge_health_transitions.clear();
         self.set_sorotte_bridge_health(SorotteBridgeHealth::Disabled);
         self.pending_chat_requests.clear();
         let connection_generation = self
@@ -1640,6 +1642,8 @@ impl MpvAdapter {
         self.legacy_syncplayintf_last_heartbeat_at = None;
         self.legacy_syncplayintf_lease_reacquire_required = false;
         self.pending_chat_requests.clear();
+        // Release is terminal for this endpoint; queued observations are no longer actionable.
+        self.pending_sorotte_bridge_health_transitions.clear();
         self.sorotte_bridge_health = SorotteBridgeHealth::Disabled;
     }
 
@@ -3628,6 +3632,24 @@ impl MpvAdapter {
     #[cfg(test)]
     pub(crate) fn reset_test_legacy_syncplayintf_attachment(&mut self) {
         self.reset_legacy_syncplayintf_attachment_for_new_ipc();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_test_ipc_transport(
+        &mut self,
+        transport: impl MpvJsonIpcTransport + 'static,
+    ) {
+        self.release_sorotte_bridge_best_effort();
+        self.collect_ipc_connection_events();
+        self.simulation_mode = false;
+        self.ipc_client = Some(MpvJsonIpcClient::new(Box::new(transport)));
+        self.ipc_endpoint = None;
+        self.reset_legacy_syncplayintf_attachment_for_new_ipc();
+        self.observers_registered = false;
+        self.transport_observers_registered = false;
+        self.loadfile_options_syntax = None;
+        self.mpv_version = None;
+        self.legacy_syncplay_osd_placement_restore = None;
     }
 
     #[cfg(test)]

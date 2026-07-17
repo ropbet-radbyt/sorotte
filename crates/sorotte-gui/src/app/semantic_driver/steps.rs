@@ -308,6 +308,7 @@ impl GuiSemanticStep {
             "launch-failed" => Ok(GuiPlayerSetupIssueKind::LaunchFailed),
             "ipc-attach-failed" => Ok(GuiPlayerSetupIssueKind::IpcAttachFailed),
             "exited-after-launch" => Ok(GuiPlayerSetupIssueKind::ExitedAfterLaunch),
+            "player-settings-degraded" => Ok(GuiPlayerSetupIssueKind::PlayerSettingsDegraded),
             "bridge-degraded" => Ok(GuiPlayerSetupIssueKind::BridgeDegraded),
             _ => Err(format!("unknown player-setup issue label {token:?}")),
         }

@@ -21,6 +21,7 @@ use super::{
     controller_auth_transition_notification_message, create_client_runtime,
     create_client_runtime_with_managed_mpv_support,
     create_client_runtime_with_prepared_mpv_and_bridge_setup_for_test,
+    create_client_runtime_with_prepared_mpv_and_startup_health_for_test,
     create_client_runtime_with_prepared_mpv_for_test, create_client_session,
     flush_autoplay_notifications_to_sink, flush_chat_notifications_to_sink,
     flush_controller_auth_notifications_to_sink, flush_file_difference_notifications_to_sink,

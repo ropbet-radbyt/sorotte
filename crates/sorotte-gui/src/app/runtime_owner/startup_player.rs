@@ -33,6 +33,7 @@ impl GuiPersistedConfigRuntimeOwner {
             player_apply_state: GuiPlayerApplyState::default(),
             managed_mpv_process: None,
             player_unavailability_reason: None,
+            core_player_configuration_health: GuiCorePlayerConfigurationHealth::Ready,
             player_integration_health: GuiPlayerIntegrationHealth::Ready,
             player_local_file: None,
             player_local_file_placeholder: false,
@@ -272,6 +273,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.release_attached_sorotte_bridge_best_effort();
         self.player = None;
         self.managed_mpv_process = None;
+        self.core_player_configuration_health = GuiCorePlayerConfigurationHealth::Ready;
         self.player_integration_health = GuiPlayerIntegrationHealth::Ready;
         self.clear_player_runtime_cache();
     }
@@ -354,6 +356,116 @@ impl GuiPersistedConfigRuntimeOwner {
         Ok(())
     }
 
+    fn record_streaming_options_applied(&mut self, launch_state: &GuiPlayerLaunchRuntimeState) {
+        self.player_apply_state
+            .record_streaming_options_applied(launch_state);
+        self.core_player_configuration_health = GuiCorePlayerConfigurationHealth::Ready;
+    }
+
+    fn mark_streaming_apply_failed(&mut self, reason: String, retryable_in_place: bool) {
+        self.player_apply_state.mark_streaming_apply_failed();
+        self.core_player_configuration_health =
+            GuiCorePlayerConfigurationHealth::StreamingDegraded {
+                reason: reason.clone(),
+                retryable_in_place,
+            };
+        self.player_unavailability_reason = Some(reason);
+    }
+
+    pub(in crate::app::runtime_owner) fn complete_explicit_mpv_attachment_after_ipc_connect(
+        &mut self,
+        ipc_path: &str,
+        ui_settings: &LegacySyncplayUiSettings,
+        effective_streaming_options: &[EffectiveMpvStreamingOption],
+        adapter: MpvAdapter,
+    ) {
+        self.complete_explicit_mpv_attachment_with_active_apply(
+            ipc_path,
+            ui_settings,
+            effective_streaming_options,
+            adapter,
+            apply_effective_streaming_options_to_active_network_media,
+        );
+    }
+
+    fn complete_explicit_mpv_attachment_with_active_apply<F>(
+        &mut self,
+        ipc_path: &str,
+        ui_settings: &LegacySyncplayUiSettings,
+        effective_streaming_options: &[EffectiveMpvStreamingOption],
+        mut adapter: MpvAdapter,
+        apply_to_active_media: F,
+    ) where
+        F: FnOnce(&mut MpvAdapter) -> Result<(), String>,
+    {
+        let launch_state = self.player_launch_state.clone();
+        self.player_apply_state
+            .record_process_target_applied(&launch_state);
+        configure_effective_streaming_options_for_network_media(
+            &mut adapter,
+            effective_streaming_options,
+        );
+
+        let streaming_failure = match apply_to_active_media(&mut adapter) {
+            Ok(()) => {
+                self.record_streaming_options_applied(&launch_state);
+                None
+            }
+            Err(error) if adapter.is_connected() => {
+                let reason = format!(
+                    "mpv JSON IPC attach succeeded at '{ipc_path}', but player streaming settings could not be applied: {error}"
+                );
+                self.mark_streaming_apply_failed(reason.clone(), true);
+                Some(reason)
+            }
+            Err(error) => {
+                self.player_apply_state.mark_streaming_apply_failed();
+                self.player_unavailability_reason = Some(format!(
+                    "mpv JSON IPC at '{ipc_path}' became unavailable while applying player streaming settings: {error}"
+                ));
+                return;
+            }
+        };
+
+        if let Err(error) =
+            self.complete_mpv_attachment_after_core_configuration(adapter, None, ui_settings)
+        {
+            self.player_unavailability_reason = Some(format!(
+                "mpv JSON IPC at '{ipc_path}' became unavailable: {error}"
+            ));
+            return;
+        }
+
+        if let Some(reason) = streaming_failure {
+            // Retaining the healthy adapter clears generic unavailability state. Restore the
+            // scoped core error after optional Chat/OSD setup so it remains visible and cannot be
+            // mistaken for an IPC attachment failure.
+            self.player_unavailability_reason = Some(reason);
+        }
+    }
+
+    #[cfg(test)]
+    pub(in crate::app::runtime_owner) fn complete_explicit_mpv_attachment_with_active_apply_for_test<
+        F,
+    >(
+        &mut self,
+        ipc_path: &str,
+        ui_settings: &LegacySyncplayUiSettings,
+        effective_streaming_options: &[EffectiveMpvStreamingOption],
+        adapter: MpvAdapter,
+        apply_to_active_media: F,
+    ) where
+        F: FnOnce(&mut MpvAdapter) -> Result<(), String>,
+    {
+        self.complete_explicit_mpv_attachment_with_active_apply(
+            ipc_path,
+            ui_settings,
+            effective_streaming_options,
+            adapter,
+            apply_to_active_media,
+        );
+    }
+
     fn attach_player_from_launch_state(&mut self, launch_state: GuiPlayerLaunchRuntimeState) {
         self.detach_player();
         self.player_apply_state.clear_integration_baselines();
@@ -374,40 +486,21 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
                 self.managed_stream_helper_refresh_required = false;
                 self.player_unavailability_reason = None;
+                self.player_apply_state
+                    .record_core_apply(&self.player_launch_state);
             }
             GuiPlayerLaunchRuntimeState::ExplicitMpvIpc {
                 ipc_path,
                 ui_settings,
                 effective_streaming_options,
             } => match MpvAdapter::with_json_ipc(&ipc_path) {
-                Ok(mut adapter) => {
-                    configure_effective_streaming_options_for_network_media(
-                        &mut adapter,
+                Ok(adapter) => {
+                    self.complete_explicit_mpv_attachment_after_ipc_connect(
+                        &ipc_path,
+                        &ui_settings,
                         &effective_streaming_options,
+                        adapter,
                     );
-                    let apply_result =
-                        apply_effective_streaming_options_to_active_network_media(&mut adapter);
-                    match apply_result {
-                        Ok(()) => {
-                            if let Err(error) = self
-                                .complete_mpv_attachment_after_core_configuration(
-                                    adapter,
-                                    None,
-                                    &ui_settings,
-                                )
-                            {
-                                self.player_unavailability_reason = Some(format!(
-                                    "mpv JSON IPC at '{ipc_path}' became unavailable: {error}"
-                                ));
-                            }
-                        }
-                        Err(error) => {
-                            self.player_apply_state.core_reapply_required = true;
-                            self.player_unavailability_reason = Some(format!(
-                                "mpv JSON IPC attach succeeded at '{ipc_path}', but player settings could not be applied: {error}"
-                            ));
-                        }
-                    }
                 }
                 Err(error) => {
                     self.player_unavailability_reason = Some(format!(
@@ -440,6 +533,9 @@ impl GuiPersistedConfigRuntimeOwner {
                         ) {
                             self.player_unavailability_reason =
                                 Some(format!("GUI-owned mpv became unavailable: {error}"));
+                        } else {
+                            self.player_apply_state
+                                .record_core_apply(&self.player_launch_state);
                         }
                     }
                     Err(error) => {
@@ -451,9 +547,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 }
             }
         }
-        if self.player.is_some()
-            || matches!(self.player_launch_state, GuiPlayerLaunchRuntimeState::None)
-        {
+        if matches!(self.player_launch_state, GuiPlayerLaunchRuntimeState::None) {
             self.player_apply_state
                 .record_core_apply(&self.player_launch_state);
         }
@@ -562,13 +656,13 @@ impl GuiPersistedConfigRuntimeOwner {
                         "mpv JSON IPC became unavailable while applying core streaming settings: {error}"
                     ));
                 } else {
-                    self.player_apply_state.core_reapply_required = true;
-                    self.player_unavailability_reason = Some(error);
+                    self.mark_streaming_apply_failed(error, true);
                 }
                 return false;
             }
-            self.player_apply_state.applied_streaming_options = Some(next_streaming_options);
-            self.player_apply_state.core_reapply_required = false;
+            self.player_apply_state
+                .record_streaming_options_applied(next_launch_state);
+            self.core_player_configuration_health = GuiCorePlayerConfigurationHealth::Ready;
             self.player_unavailability_reason = None;
         }
         self.player_launch_state = next_launch_state.clone();

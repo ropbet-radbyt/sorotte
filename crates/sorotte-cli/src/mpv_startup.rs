@@ -67,6 +67,7 @@ pub(super) use self::managed_process::{
 #[cfg(test)]
 pub(super) use self::managed_process::{
     create_client_runtime_with_prepared_mpv_and_bridge_setup_for_test,
+    create_client_runtime_with_prepared_mpv_and_startup_health_for_test,
     create_client_runtime_with_prepared_mpv_for_test,
     managed_mpv_launch_base_args_legacy_compatible,
 };

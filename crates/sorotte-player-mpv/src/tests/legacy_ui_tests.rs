@@ -1092,6 +1092,60 @@ fn explicit_ipc_reattach_rediscovers_bridge_without_transferring_script_identity
 }
 
 #[test]
+fn same_adapter_ipc_replacement_discards_old_health_and_reports_new_endpoint_health() {
+    let (first_transport, _first_state) = fake_transport_with_reads(&[
+        FAKE_SYNCPLAYINTF_PONG_EVENT,
+        r#"{"request_id":1,"error":"success"}"#,
+        FAKE_SYNCPLAYINTF_ACK_EVENT,
+        r#"{"request_id":2,"error":"success"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(first_transport);
+    adapter
+        .configure_legacy_syncplay_ui_settings(settings_without_osd_move())
+        .expect("first endpoint settings should configure independently");
+    assert_eq!(
+        adapter.configure_bundled_sorotte_bridge(),
+        SorotteBridgeHealth::Ready
+    );
+    assert!(matches!(
+        adapter.mark_sorotte_bridge_degraded(
+            SorotteBridgeFailureKind::SettingsRejected,
+            "old endpoint bridge failure",
+        ),
+        SorotteBridgeHealth::Degraded(_)
+    ));
+
+    let (second_transport, _second_state) = fake_transport_with_reads(&[
+        FAKE_SYNCPLAYINTF_PONG_EVENT,
+        r#"{"request_id":1,"error":"success"}"#,
+        FAKE_SYNCPLAYINTF_ACK_EVENT,
+        r#"{"request_id":2,"error":"success"}"#,
+    ]);
+    adapter.replace_test_ipc_transport(second_transport);
+
+    assert_eq!(
+        adapter.sorotte_bridge_health(),
+        SorotteBridgeHealth::Disabled
+    );
+    assert_eq!(
+        adapter.take_sorotte_bridge_health_transition(),
+        None,
+        "endpoint replacement must discard every unconsumed transition from the old endpoint"
+    );
+
+    assert_eq!(
+        adapter.configure_bundled_sorotte_bridge(),
+        SorotteBridgeHealth::Ready
+    );
+    assert_eq!(
+        adapter.take_sorotte_bridge_health_transition(),
+        Some(SorotteBridgeHealth::Ready),
+        "a transition produced by the new endpoint must remain observable"
+    );
+    assert_eq!(adapter.take_sorotte_bridge_health_transition(), None);
+}
+
+#[test]
 fn legacy_notification_and_chat_messages_target_the_stable_script_name() {
     let (transport, state) = fake_transport_with_reads(&[
         FAKE_SYNCPLAYINTF_PONG_EVENT,

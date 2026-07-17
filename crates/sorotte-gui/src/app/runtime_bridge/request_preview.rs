@@ -90,6 +90,10 @@ impl GuiRuntimeRequest {
                 level: GuiTransientNotificationLevel::Info,
                 message: "Retrying mpv launch with the current player settings.".to_owned(),
             }],
+            Self::RetryPlayerSettings => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Retrying mpv streaming settings in place.".to_owned(),
+            }],
             Self::RetryChatOsdIntegration => vec![GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Info,
                 message: "Retrying mpv Chat/OSD integration in place.".to_owned(),
@@ -327,6 +331,10 @@ impl GuiRuntimeRequest {
             Self::RetryPlayerLaunch => vec![GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Info,
                 message: "Retrying mpv launch with the current player settings.".to_owned(),
+            }],
+            Self::RetryPlayerSettings => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Retrying mpv streaming settings in place.".to_owned(),
             }],
             Self::RetryChatOsdIntegration => vec![GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Info,

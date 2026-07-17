@@ -148,6 +148,7 @@ pub(super) enum GuiPlayerSetupIssueKind {
     LaunchFailed,
     IpcAttachFailed,
     ExitedAfterLaunch,
+    PlayerSettingsDegraded,
     BridgeDegraded,
 }
 
@@ -161,6 +162,7 @@ impl GuiPlayerSetupIssueKind {
             Self::LaunchFailed => "launch-failed",
             Self::IpcAttachFailed => "ipc-attach-failed",
             Self::ExitedAfterLaunch => "exited-after-launch",
+            Self::PlayerSettingsDegraded => "player-settings-degraded",
             Self::BridgeDegraded => "bridge-degraded",
         }
     }

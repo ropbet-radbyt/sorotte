@@ -263,6 +263,7 @@ pub(in crate::app) enum GuiShellAction {
     BeginMissingMediaSearch,
     CompleteMissingMediaSearch(Option<String>),
     RetryPlayerLaunch,
+    RetryPlayerSettings,
     RetryChatOsdIntegration,
     InstallStreamHelper,
     IntegrateStreamHelperDownloader(String),

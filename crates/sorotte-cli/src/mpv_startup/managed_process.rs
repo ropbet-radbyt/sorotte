@@ -6,6 +6,13 @@ pub(crate) struct ManagedMpvProcessGuard {
     ipc_cleanup_path: Option<PathBuf>,
 }
 
+struct FinishedClientRuntime {
+    runtime: ClientApplication<MpvAdapter>,
+    managed_guard: Option<ManagedMpvProcessGuard>,
+    bridge_health: SorotteBridgeHealth,
+    streaming_warning: Option<String>,
+}
+
 impl Drop for ManagedMpvProcessGuard {
     fn drop(&mut self) {
         let _ = self.child.kill();
@@ -26,7 +33,12 @@ pub(crate) fn create_client_runtime_with_managed_mpv_support(
 )> {
     let (player, managed_guard, managed_startup_media) =
         create_mpv_adapter_and_optional_managed_process_from_env(legacy_overrides)?;
-    let (runtime, managed_guard, bridge_health) = finish_client_runtime_with_mpv(
+    let FinishedClientRuntime {
+        runtime,
+        managed_guard,
+        bridge_health,
+        streaming_warning,
+    } = finish_client_runtime_with_mpv(
         config,
         legacy_overrides,
         stored_settings,
@@ -34,6 +46,9 @@ pub(crate) fn create_client_runtime_with_managed_mpv_support(
         managed_guard,
         managed_startup_media,
     )?;
+    if let Some(warning) = streaming_warning {
+        eprintln!("{warning}");
+    }
     if let Some(warning) = sorotte_bridge_warning_line(&bridge_health) {
         eprintln!("{warning}");
     }
@@ -47,11 +62,7 @@ fn finish_client_runtime_with_mpv(
     player: MpvAdapter,
     managed_guard: Option<ManagedMpvProcessGuard>,
     managed_startup_media: Option<String>,
-) -> anyhow::Result<(
-    ClientApplication<MpvAdapter>,
-    Option<ManagedMpvProcessGuard>,
-    SorotteBridgeHealth,
-)> {
+) -> anyhow::Result<FinishedClientRuntime> {
     finish_client_runtime_with_mpv_and_bridge_setup(
         config,
         legacy_overrides,
@@ -71,11 +82,7 @@ fn finish_client_runtime_with_mpv_and_bridge_setup<F>(
     managed_guard: Option<ManagedMpvProcessGuard>,
     managed_startup_media: Option<String>,
     configure_bridge: F,
-) -> anyhow::Result<(
-    ClientApplication<MpvAdapter>,
-    Option<ManagedMpvProcessGuard>,
-    SorotteBridgeHealth,
-)>
+) -> anyhow::Result<FinishedClientRuntime>
 where
     F: FnOnce(&mut MpvAdapter, Option<&StoredClientSettingsMvp>) -> SorotteBridgeHealth,
 {
@@ -93,9 +100,15 @@ where
             .iter()
             .map(|option| (option.name.clone(), option.effective_value.clone())),
     );
-    player
-        .apply_network_media_options_to_active_media()
-        .map_err(|error| anyhow!("failed updating active mpv network-media options: {error}"))?;
+    let streaming_warning = match player.apply_network_media_options_to_active_media() {
+        Ok(()) => None,
+        Err(error) if player.is_connected() => Some(active_network_options_warning_line(&error)),
+        Err(error) => {
+            return Err(anyhow!(
+                "failed updating active mpv network-media options: {error}"
+            ));
+        }
+    };
     if let Some(media) = managed_startup_media {
         player
             .open_file(&media)
@@ -114,11 +127,18 @@ where
             "mpv JSON IPC became unavailable while configuring optional Chat/OSD integration: {detail}"
         ));
     }
-    Ok((
-        ClientApplication::new(session, player),
+    Ok(FinishedClientRuntime {
+        runtime: ClientApplication::new(session, player),
         managed_guard,
         bridge_health,
-    ))
+        streaming_warning,
+    })
+}
+
+fn active_network_options_warning_line(error: &PlayerError) -> String {
+    format!(
+        "warning: mpv playback is ready, but streaming options could not be applied to the active media: {error}; desired options will be used for future network loads"
+    )
 }
 
 fn sorotte_bridge_warning_line(health: &SorotteBridgeHealth) -> Option<String> {
@@ -137,8 +157,12 @@ pub(crate) fn create_client_runtime_with_prepared_mpv_for_test(
     stored_settings: Option<&StoredClientSettingsMvp>,
     player: MpvAdapter,
 ) -> anyhow::Result<(ClientApplication<MpvAdapter>, SorotteBridgeHealth)> {
-    let (runtime, managed_guard, bridge_health) =
-        finish_client_runtime_with_mpv(config, None, stored_settings, player, None, None)?;
+    let FinishedClientRuntime {
+        runtime,
+        managed_guard,
+        bridge_health,
+        ..
+    } = finish_client_runtime_with_mpv(config, None, stored_settings, player, None, None)?;
     debug_assert!(managed_guard.is_none());
     Ok((runtime, bridge_health))
 }
@@ -153,7 +177,12 @@ pub(crate) fn create_client_runtime_with_prepared_mpv_and_bridge_setup_for_test<
 where
     F: FnOnce(&mut MpvAdapter, Option<&StoredClientSettingsMvp>) -> SorotteBridgeHealth,
 {
-    let (runtime, managed_guard, bridge_health) = finish_client_runtime_with_mpv_and_bridge_setup(
+    let FinishedClientRuntime {
+        runtime,
+        managed_guard,
+        bridge_health,
+        ..
+    } = finish_client_runtime_with_mpv_and_bridge_setup(
         config,
         None,
         stored_settings,
@@ -164,6 +193,38 @@ where
     )?;
     debug_assert!(managed_guard.is_none());
     Ok((runtime, bridge_health))
+}
+
+#[cfg(test)]
+pub(crate) fn create_client_runtime_with_prepared_mpv_and_startup_health_for_test<F>(
+    config: &ClientLoopConfig,
+    stored_settings: Option<&StoredClientSettingsMvp>,
+    player: MpvAdapter,
+    configure_bridge: F,
+) -> anyhow::Result<(
+    ClientApplication<MpvAdapter>,
+    SorotteBridgeHealth,
+    Option<String>,
+)>
+where
+    F: FnOnce(&mut MpvAdapter, Option<&StoredClientSettingsMvp>) -> SorotteBridgeHealth,
+{
+    let FinishedClientRuntime {
+        runtime,
+        managed_guard,
+        bridge_health,
+        streaming_warning,
+    } = finish_client_runtime_with_mpv_and_bridge_setup(
+        config,
+        None,
+        stored_settings,
+        player,
+        None,
+        None,
+        configure_bridge,
+    )?;
+    debug_assert!(managed_guard.is_none());
+    Ok((runtime, bridge_health, streaming_warning))
 }
 
 fn create_mpv_adapter_and_optional_managed_process_from_env(

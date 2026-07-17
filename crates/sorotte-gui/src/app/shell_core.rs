@@ -186,10 +186,13 @@ impl SorotteGuiShellAppState {
 
     pub(super) fn connect_blocked_by_player_setup_issue(&self) -> bool {
         self.configuration.launch_mode == super::GuiLaunchMode::FirstRun
-            && self
-                .player_setup_issue
-                .as_ref()
-                .is_some_and(|issue| issue.kind != GuiPlayerSetupIssueKind::BridgeDegraded)
+            && self.player_setup_issue.as_ref().is_some_and(|issue| {
+                !matches!(
+                    issue.kind,
+                    GuiPlayerSetupIssueKind::PlayerSettingsDegraded
+                        | GuiPlayerSetupIssueKind::BridgeDegraded
+                )
+            })
     }
 
     pub(super) fn player_setup_connect_block_message(&self) -> Option<String> {
@@ -212,6 +215,9 @@ impl SorotteGuiShellAppState {
                 GuiPlayerSetupIssueKind::LaunchFailed => "mpv failed to launch",
                 GuiPlayerSetupIssueKind::IpcAttachFailed => "mpv did not respond",
                 GuiPlayerSetupIssueKind::ExitedAfterLaunch => "mpv closed unexpectedly",
+                GuiPlayerSetupIssueKind::PlayerSettingsDegraded => {
+                    "mpv streaming settings incomplete"
+                }
                 GuiPlayerSetupIssueKind::BridgeDegraded => "mpv Chat/OSD integration unavailable",
             })
     }
@@ -238,6 +244,9 @@ impl SorotteGuiShellAppState {
                 GuiPlayerSetupIssueKind::ExitedAfterLaunch => {
                     "mpv exited after it had already been launched."
                 }
+                GuiPlayerSetupIssueKind::PlayerSettingsDegraded => {
+                    "mpv is ready, but some streaming settings could not be applied to the active media."
+                }
                 GuiPlayerSetupIssueKind::BridgeDegraded => {
                     "mpv is ready, but Chat/OSD integration could not be configured."
                 }
@@ -245,26 +254,22 @@ impl SorotteGuiShellAppState {
     }
 
     pub(super) fn player_setup_retry_label(&self) -> &'static str {
-        if self
-            .player_setup_issue
-            .as_ref()
-            .is_some_and(|issue| issue.kind == GuiPlayerSetupIssueKind::BridgeDegraded)
-        {
-            "Retry Chat/OSD integration"
-        } else {
-            "Retry mpv"
+        match self.player_setup_issue.as_ref().map(|issue| issue.kind) {
+            Some(GuiPlayerSetupIssueKind::BridgeDegraded) => "Retry Chat/OSD integration",
+            Some(GuiPlayerSetupIssueKind::PlayerSettingsDegraded) => "Retry mpv settings",
+            _ => "Retry mpv",
         }
     }
 
     pub(super) fn player_setup_retry_action(&self) -> GuiShellAction {
-        if self
-            .player_setup_issue
-            .as_ref()
-            .is_some_and(|issue| issue.kind == GuiPlayerSetupIssueKind::BridgeDegraded)
-        {
-            GuiShellAction::RetryChatOsdIntegration
-        } else {
-            GuiShellAction::RetryPlayerLaunch
+        match self.player_setup_issue.as_ref().map(|issue| issue.kind) {
+            Some(GuiPlayerSetupIssueKind::PlayerSettingsDegraded) => {
+                GuiShellAction::RetryPlayerSettings
+            }
+            Some(GuiPlayerSetupIssueKind::BridgeDegraded) => {
+                GuiShellAction::RetryChatOsdIntegration
+            }
+            _ => GuiShellAction::RetryPlayerLaunch,
         }
     }
 

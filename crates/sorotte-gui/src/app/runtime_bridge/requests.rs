@@ -69,6 +69,7 @@ pub(in crate::app) enum GuiRuntimeRequest {
         provider_id: GuiMediaSourceProviderId,
     },
     RetryPlayerLaunch,
+    RetryPlayerSettings,
     RetryChatOsdIntegration,
     SetPluginEnabled {
         plugin: GuiPluginSelection,

@@ -170,6 +170,35 @@ impl GuiPlayerIntegrationHealth {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) enum GuiCorePlayerConfigurationHealth {
+    #[default]
+    Ready,
+    StreamingDegraded {
+        reason: String,
+        retryable_in_place: bool,
+    },
+}
+
+impl GuiCorePlayerConfigurationHealth {
+    fn streaming_degraded_reason(&self) -> Option<&str> {
+        match self {
+            Self::Ready => None,
+            Self::StreamingDegraded { reason, .. } => Some(reason),
+        }
+    }
+
+    fn streaming_retryable_in_place(&self) -> bool {
+        matches!(
+            self,
+            Self::StreamingDegraded {
+                retryable_in_place: true,
+                ..
+            }
+        )
+    }
+}
+
 #[derive(Debug, Default)]
 pub(super) struct GuiPlayerApplyState {
     /// The last process target and launch arguments that actually became active.
@@ -248,11 +277,23 @@ impl GuiPlayerApplyState {
     }
 
     fn record_core_apply(&mut self, launch_state: &GuiPlayerLaunchRuntimeState) {
+        self.record_process_target_applied(launch_state);
+        self.record_streaming_options_applied(launch_state);
+    }
+
+    fn record_process_target_applied(&mut self, launch_state: &GuiPlayerLaunchRuntimeState) {
         self.applied_process_target = Some(GuiPlayerProcessTarget::from(launch_state));
+    }
+
+    fn record_streaming_options_applied(&mut self, launch_state: &GuiPlayerLaunchRuntimeState) {
         self.applied_streaming_options = launch_state
             .effective_mpv_streaming_options()
             .map(<[_]>::to_vec);
         self.core_reapply_required = false;
+    }
+
+    fn mark_streaming_apply_failed(&mut self) {
+        self.core_reapply_required = true;
     }
 
     fn clear_integration_baselines(&mut self) {
@@ -291,6 +332,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) player_apply_state: GuiPlayerApplyState,
     pub(super) managed_mpv_process: Option<ManagedMpvProcessGuard>,
     pub(super) player_unavailability_reason: Option<String>,
+    pub(super) core_player_configuration_health: GuiCorePlayerConfigurationHealth,
     pub(super) player_integration_health: GuiPlayerIntegrationHealth,
     pub(super) player_local_file: Option<LocalFileUpdate>,
     pub(super) player_local_file_placeholder: bool,

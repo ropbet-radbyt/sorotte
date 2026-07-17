@@ -221,6 +221,7 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::BeginMissingMediaSearch
             | GuiShellAction::CompleteMissingMediaSearch(_) => self.apply_service_action(action),
             GuiShellAction::RetryPlayerLaunch
+            | GuiShellAction::RetryPlayerSettings
             | GuiShellAction::RetryChatOsdIntegration
             | GuiShellAction::InstallStreamHelper
             | GuiShellAction::SetPluginEnabled { .. }

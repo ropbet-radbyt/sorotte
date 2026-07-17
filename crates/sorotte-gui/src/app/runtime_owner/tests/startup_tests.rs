@@ -1,4 +1,6 @@
 use super::*;
+use crate::app::runtime_owner::{GuiCorePlayerConfigurationHealth, GuiPlayerProcessTarget};
+use sorotte_client_app::app_boundary::state::EffectiveMpvStreamingOption;
 
 fn acknowledgement_timeout_health() -> sorotte_player_mpv::SorotteBridgeHealth {
     sorotte_player_mpv::SorotteBridgeHealth::Degraded(sorotte_player_mpv::SorotteBridgeFailure {
@@ -76,6 +78,307 @@ fn explicit_mpv_discovery_failure_uses_shared_completion_and_retains_core_playba
         issue.kind == crate::app::shell_state::GuiPlayerSetupIssueKind::BridgeDegraded
             && issue.retry_available
     }));
+}
+
+#[test]
+fn initial_explicit_mpv_streaming_rejection_retains_core_player_and_continues_optional_setup() {
+    let ipc_path = r"\\.\pipe\sorotte-streaming-degraded-test";
+    let ui_settings = sorotte_player_mpv::LegacySyncplayUiSettings::default();
+    let desired_streaming_options = vec![EffectiveMpvStreamingOption {
+        name: "cache-secs".to_owned(),
+        configured_value: "30".to_owned(),
+        effective_value: "75".to_owned(),
+        overridden_by_advanced_arguments: true,
+    }];
+    let previous_streaming_options = vec![EffectiveMpvStreamingOption {
+        name: "cache-secs".to_owned(),
+        configured_value: "15".to_owned(),
+        effective_value: "15".to_owned(),
+        overridden_by_advanced_arguments: false,
+    }];
+    let launch_state = GuiPlayerLaunchRuntimeState::ExplicitMpvIpc {
+        ipc_path: ipc_path.to_owned(),
+        ui_settings: Box::new(ui_settings.clone()),
+        effective_streaming_options: desired_streaming_options.clone(),
+    };
+    let adapter =
+        sorotte_player_mpv::MpvAdapter::with_first_active_network_option_rejection_test_ipc(
+            ui_settings.clone(),
+        );
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player_launch_state = launch_state.clone();
+    owner.player_apply_state.applied_streaming_options = Some(previous_streaming_options.clone());
+
+    owner.complete_explicit_mpv_attachment_after_ipc_connect(
+        ipc_path,
+        &ui_settings,
+        &desired_streaming_options,
+        adapter,
+    );
+
+    assert_eq!(
+        owner.player_apply_state.applied_process_target,
+        Some(GuiPlayerProcessTarget::ExplicitMpvIpc {
+            ipc_path: ipc_path.to_owned(),
+        }),
+        "a successful IPC connection must promote the process target independently"
+    );
+    assert_eq!(
+        owner.player_apply_state.applied_streaming_options,
+        Some(previous_streaming_options),
+        "a partial active-file apply must preserve the previous streaming baseline"
+    );
+    assert!(owner.player_apply_state.core_reapply_required);
+    assert!(!owner.current_player_core_state_is_applied());
+    assert!(matches!(
+        owner.core_player_configuration_health,
+        GuiCorePlayerConfigurationHealth::StreamingDegraded {
+            retryable_in_place: true,
+            ..
+        }
+    ));
+    assert!(matches!(
+        owner.player_integration_health,
+        GuiPlayerIntegrationHealth::Ready
+    ));
+    assert_eq!(
+        owner.player_apply_state.applied_mpv_ui_settings,
+        Some(ui_settings.clone()),
+        "optional mpv UI setup must continue after the scoped streaming failure"
+    );
+    assert_eq!(
+        owner.player_apply_state.acknowledged_bridge_settings,
+        Some(ui_settings),
+        "optional Lua setup must continue after the scoped streaming failure"
+    );
+    assert!(
+        owner
+            .player_apply_state
+            .acknowledged_bridge_generation
+            .is_some(),
+        "optional Lua setup should retain its exact acknowledgement generation"
+    );
+    assert!(
+        owner
+            .player_unavailability_reason
+            .as_deref()
+            .is_some_and(|reason| {
+                reason.contains("player streaming settings could not be applied")
+                    && reason.contains("invalid parameter")
+            }),
+        "optional setup must not clear the scoped core error"
+    );
+
+    let issue = owner
+        .player_setup_runtime_snapshot_impl()
+        .issue
+        .expect("a retained partial streaming failure should remain visible");
+    assert_eq!(
+        issue.kind,
+        crate::app::shell_state::GuiPlayerSetupIssueKind::PlayerSettingsDegraded
+    );
+    assert!(issue.retry_available);
+    assert_ne!(
+        issue.kind,
+        crate::app::shell_state::GuiPlayerSetupIssueKind::IpcAttachFailed
+    );
+    let mut projected_state =
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    projected_state.player_setup_issue = Some(issue);
+    assert_eq!(
+        projected_state.player_setup_retry_action(),
+        GuiShellAction::RetryPlayerSettings,
+        "the degraded-settings issue must route to the in-place retry action"
+    );
+
+    let player = owner
+        .player
+        .as_mut()
+        .expect("healthy IPC must retain the attached player");
+    player
+        .open_file("https://media.example.test/next.m3u8")
+        .expect("network media open must remain available");
+    player
+        .set_paused(true)
+        .expect("pause must remain available");
+    player
+        .set_position(42.0)
+        .expect("seek must remain available");
+    assert!(
+        player.take_transport_telemetry_update().is_some(),
+        "transport telemetry must remain available"
+    );
+    let _ = player.take_playback_telemetry_update();
+    let retained_player_address = match player {
+        GuiOwnedPlayer::Mpv(player) => {
+            assert!(
+                player.is_connected(),
+                "playback telemetry polling must preserve the healthy IPC attachment"
+            );
+            &**player as *const sorotte_player_mpv::MpvAdapter
+        }
+        _ => panic!("fixture should retain mpv"),
+    };
+    owner.ensure_configured_player_attached();
+    assert_eq!(
+        owner.player.as_ref().and_then(|player| match player {
+            GuiOwnedPlayer::Mpv(player) => {
+                Some(&**player as *const sorotte_player_mpv::MpvAdapter)
+            }
+            _ => None,
+        }),
+        Some(retained_player_address),
+        "on-demand actions must reuse the healthy retained adapter"
+    );
+}
+
+#[test]
+fn initial_explicit_mpv_streaming_failure_remains_fatal_when_ipc_is_unhealthy() {
+    let ipc_path = r"\\.\pipe\sorotte-streaming-disconnect-test";
+    let ui_settings = sorotte_player_mpv::LegacySyncplayUiSettings::default();
+    let desired_streaming_options = vec![EffectiveMpvStreamingOption {
+        name: "cache-secs".to_owned(),
+        configured_value: "30".to_owned(),
+        effective_value: "75".to_owned(),
+        overridden_by_advanced_arguments: true,
+    }];
+    let launch_state = GuiPlayerLaunchRuntimeState::ExplicitMpvIpc {
+        ipc_path: ipc_path.to_owned(),
+        ui_settings: Box::new(ui_settings.clone()),
+        effective_streaming_options: desired_streaming_options.clone(),
+    };
+    let adapter =
+        sorotte_player_mpv::MpvAdapter::with_first_active_network_option_rejection_test_ipc(
+            ui_settings.clone(),
+        );
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player_launch_state = launch_state;
+
+    owner.complete_explicit_mpv_attachment_with_active_apply_for_test(
+        ipc_path,
+        &ui_settings,
+        &desired_streaming_options,
+        adapter,
+        |adapter| {
+            adapter.mark_test_ipc_unhealthy("test transport disconnected during active apply");
+            Err("test transport disconnected during active apply".to_owned())
+        },
+    );
+
+    assert!(
+        owner.player.is_none(),
+        "an unhealthy adapter must not be retained"
+    );
+    assert!(owner.player_apply_state.core_reapply_required);
+    assert!(owner.player_apply_state.applied_streaming_options.is_none());
+    assert!(owner.player_apply_state.applied_mpv_ui_settings.is_none());
+    assert!(
+        owner
+            .player_apply_state
+            .acknowledged_bridge_settings
+            .is_none(),
+        "optional setup must not run after fatal core transport loss"
+    );
+    assert!(
+        owner
+            .player_unavailability_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("became unavailable"))
+    );
+    let issue = owner
+        .player_setup_runtime_snapshot_impl()
+        .issue
+        .expect("fatal IPC loss should remain visible");
+    assert_eq!(
+        issue.kind,
+        crate::app::shell_state::GuiPlayerSetupIssueKind::IpcAttachFailed
+    );
+}
+
+#[test]
+fn player_settings_retry_request_reuses_attached_adapter_and_clears_streaming_degradation() {
+    let env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
+    let ipc_path = r"\\.\pipe\sorotte-streaming-in-place-retry-test";
+    env_guard.set_var("SOROTTE_CLIENT_MPV_IPC_PATH", ipc_path);
+    let settings = StoredClientSettingsMvp::default();
+    let launch_state =
+        GuiPersistedConfigRuntimeOwner::configured_player_launch_state_from_lookup_and_settings(
+            &|name| match name {
+                "SOROTTE_CLIENT_MPV_IPC_PATH" => Some(ipc_path.to_owned()),
+                _ => None,
+            },
+            Some(&settings),
+        )
+        .expect("explicit mpv launch state should resolve");
+    let (ui_settings, effective_streaming_options) = match &launch_state {
+        GuiPlayerLaunchRuntimeState::ExplicitMpvIpc {
+            ui_settings,
+            effective_streaming_options,
+            ..
+        } => ((**ui_settings).clone(), effective_streaming_options.clone()),
+        _ => panic!("expected explicit mpv launch state"),
+    };
+    assert!(
+        !effective_streaming_options.is_empty(),
+        "the regression requires a real active-media option write"
+    );
+    let adapter =
+        sorotte_player_mpv::MpvAdapter::with_first_active_network_option_rejection_test_ipc(
+            ui_settings.clone(),
+        );
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player_launch_state = launch_state;
+    owner.complete_explicit_mpv_attachment_after_ipc_connect(
+        ipc_path,
+        &ui_settings,
+        &effective_streaming_options,
+        adapter,
+    );
+    assert!(owner.player_apply_state.core_reapply_required);
+    let original_player_address = match owner.player.as_ref() {
+        Some(GuiOwnedPlayer::Mpv(player)) => &**player as *const sorotte_player_mpv::MpvAdapter,
+        _ => panic!("healthy rejected adapter should remain attached"),
+    };
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&settings);
+
+    handle.push_request(GuiRuntimeRequest::RetryPlayerSettings);
+    let actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert_eq!(
+        owner.player.as_ref().and_then(|player| match player {
+            GuiOwnedPlayer::Mpv(player) => {
+                Some(&**player as *const sorotte_player_mpv::MpvAdapter)
+            }
+            _ => None,
+        }),
+        Some(original_player_address),
+        "the streaming retry must not detach or replace healthy mpv"
+    );
+    assert!(!owner.player_apply_state.core_reapply_required);
+    assert_eq!(
+        owner
+            .player_apply_state
+            .applied_streaming_options
+            .as_deref(),
+        owner.player_launch_state.effective_mpv_streaming_options(),
+        "a successful retry should promote only the now-accepted streaming baseline"
+    );
+    assert!(matches!(
+        owner.core_player_configuration_health,
+        GuiCorePlayerConfigurationHealth::Ready
+    ));
+    assert!(owner.player_unavailability_reason.is_none());
+    assert!(owner.player_setup_runtime_snapshot_impl().issue.is_none());
+    assert!(actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::PushTransientNotification {
+            level: GuiTransientNotificationLevel::Success,
+            message,
+        } if message.contains("without restarting playback")
+    )));
+
+    env_guard.remove_var("SOROTTE_CLIENT_MPV_IPC_PATH");
 }
 
 #[test]
