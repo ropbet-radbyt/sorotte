@@ -1,12 +1,17 @@
 local utils = require "mp.utils"
 
 local SCRIPT_NAME = "sorotte_network_options"
-local PROTOCOL = "sorotte-network-options-v1"
+local PROTOCOL = "sorotte-network-options-v2"
 local CONFIGURE_MESSAGE = "sorotte_network_options_configure"
+local HEARTBEAT_MESSAGE = "sorotte_network_options_heartbeat"
+local RELEASE_MESSAGE = "sorotte_network_options_release"
 local APPLY_ACTIVE_MESSAGE = "sorotte_network_options_apply_active"
 local CONFIGURED_MESSAGE = "sorotte-network-options-configured"
+local OWNERSHIP_MESSAGE = "sorotte-network-options-ownership"
 local ACTIVE_RESULT_MESSAGE = "sorotte-network-options-active-result"
 local TRANSITION_RESULT_MESSAGE = "sorotte-network-options-transition-result"
+local MINIMUM_LEASE_MS = 250
+local MAXIMUM_LEASE_MS = 30000
 
 -- `load-script` gives duplicate clients a suffixed name. Only the stable canonical client owns
 -- core policy so reconnecting Sorotte processes cannot install duplicate on-load hooks.
@@ -16,9 +21,12 @@ if script_name ~= SCRIPT_NAME then
     return
 end
 
+local owner_id = nil
+local attachment_id = nil
 local generation = 0
-local attachment = nil
 local options = {}
+local owner_last_seen = nil
+local owner_lease_seconds = 0
 local last_active_attempt = nil
 local last_active_result = nil
 
@@ -30,6 +38,49 @@ local function network_path(path)
     if type(path) ~= "string" then return false end
     local scheme = path:match("^%s*([^:]+)://")
     return scheme ~= nil and scheme:lower() ~= "file"
+end
+
+local function clear_owner()
+    owner_id = nil
+    attachment_id = nil
+    generation = 0
+    options = {}
+    owner_last_seen = nil
+    owner_lease_seconds = 0
+    last_active_attempt = nil
+    last_active_result = nil
+end
+
+local function owner_is_live()
+    return owner_id ~= nil
+        and attachment_id ~= nil
+        and owner_last_seen ~= nil
+        and mp.get_time() - owner_last_seen < owner_lease_seconds
+end
+
+local function ownership_payload(status, target_owner_id, target_attachment_id, target_generation)
+    return {
+        protocol = PROTOCOL,
+        ownerId = target_owner_id,
+        attachmentId = target_attachment_id,
+        generation = target_generation,
+        status = status,
+    }
+end
+
+local function expire_owner_if_needed()
+    if owner_id == nil or owner_is_live() then return false end
+    local expired_owner_id = owner_id
+    local expired_attachment_id = attachment_id
+    local expired_generation = generation
+    clear_owner()
+    emit(OWNERSHIP_MESSAGE, ownership_payload(
+        "lease-expired",
+        expired_owner_id,
+        expired_attachment_id,
+        expired_generation
+    ))
+    return true
 end
 
 local function apply_options(path)
@@ -48,7 +99,8 @@ end
 local function result_payload(status, path, error_message)
     local payload = {
         protocol = PROTOCOL,
-        attachment = attachment,
+        ownerId = owner_id,
+        attachmentId = attachment_id,
         generation = generation,
         status = status,
         path = path,
@@ -57,37 +109,122 @@ local function result_payload(status, path, error_message)
     return payload
 end
 
+local function valid_controller_payload(payload)
+    return type(payload) == "table"
+        and payload.protocol == PROTOCOL
+        and type(payload.ownerId) == "string"
+        and payload.ownerId ~= ""
+        and type(payload.attachmentId) == "string"
+        and payload.attachmentId ~= ""
+end
+
 mp.register_script_message(CONFIGURE_MESSAGE, function(payload_text)
     local payload = utils.parse_json(payload_text)
-    if type(payload) ~= "table" or payload.protocol ~= PROTOCOL then return end
-    if type(payload.attachment) ~= "string" or payload.attachment == "" then return end
-    if type(payload.generation) ~= "number" or type(payload.options) ~= "table" then return end
-
-    if payload.attachment ~= attachment then
-        attachment = payload.attachment
-        generation = 0
-        last_active_attempt = nil
-        last_active_result = nil
+    if not valid_controller_payload(payload)
+        or type(payload.generation) ~= "number"
+        or type(payload.leaseMs) ~= "number"
+        or type(payload.options) ~= "table"
+    then
+        return
     end
-    if payload.attachment == attachment and payload.generation >= generation then
+
+    expire_owner_if_needed()
+    if owner_is_live()
+        and (payload.ownerId ~= owner_id or payload.attachmentId ~= attachment_id)
+    then
+        local rejected = ownership_payload(
+            "owner-live",
+            payload.ownerId,
+            payload.attachmentId,
+            payload.generation
+        )
+        rejected.activeOwnerId = owner_id
+        rejected.activeAttachmentId = attachment_id
+        emit(CONFIGURED_MESSAGE, rejected)
+        return
+    end
+
+    local same_attachment = payload.ownerId == owner_id
+        and payload.attachmentId == attachment_id
+    local status = "configured"
+    if same_attachment and payload.generation < generation then
+        status = "stale"
+    else
+        owner_id = payload.ownerId
+        attachment_id = payload.attachmentId
         generation = payload.generation
         options = payload.options
         last_active_attempt = nil
         last_active_result = nil
     end
-    emit(CONFIGURED_MESSAGE, {
-        protocol = PROTOCOL,
-        attachment = payload.attachment,
-        generation = payload.generation,
-        status = payload.generation == generation and "configured" or "stale",
-    })
+    owner_lease_seconds = math.max(
+        MINIMUM_LEASE_MS,
+        math.min(MAXIMUM_LEASE_MS, payload.leaseMs)
+    ) / 1000
+    owner_last_seen = mp.get_time()
+    emit(CONFIGURED_MESSAGE, ownership_payload(
+        status,
+        payload.ownerId,
+        payload.attachmentId,
+        payload.generation
+    ))
+end)
+
+mp.register_script_message(HEARTBEAT_MESSAGE, function(payload_text)
+    local payload = utils.parse_json(payload_text)
+    if not valid_controller_payload(payload) then return end
+    expire_owner_if_needed()
+    if payload.ownerId ~= owner_id or payload.attachmentId ~= attachment_id then
+        emit(OWNERSHIP_MESSAGE, ownership_payload(
+            "ownership-lost",
+            payload.ownerId,
+            payload.attachmentId,
+            payload.generation
+        ))
+        return
+    end
+    owner_last_seen = mp.get_time()
+end)
+
+mp.register_script_message(RELEASE_MESSAGE, function(payload_text)
+    local payload = utils.parse_json(payload_text)
+    if not valid_controller_payload(payload) then return end
+    expire_owner_if_needed()
+    if payload.ownerId ~= owner_id or payload.attachmentId ~= attachment_id then return end
+    local released_generation = generation
+    clear_owner()
+    emit(OWNERSHIP_MESSAGE, ownership_payload(
+        "released",
+        payload.ownerId,
+        payload.attachmentId,
+        released_generation
+    ))
 end)
 
 mp.register_script_message(APPLY_ACTIVE_MESSAGE, function(payload_text)
     local payload = utils.parse_json(payload_text)
-    if type(payload) ~= "table" or payload.protocol ~= PROTOCOL then return end
-    if payload.attachment ~= attachment then return end
-    if type(payload.generation) ~= "number" or type(payload.attempt) ~= "number" then return end
+    if not valid_controller_payload(payload)
+        or type(payload.generation) ~= "number"
+        or type(payload.attempt) ~= "number"
+    then
+        return
+    end
+
+    expire_owner_if_needed()
+    if payload.ownerId ~= owner_id or payload.attachmentId ~= attachment_id then
+        local lost = ownership_payload(
+            "ownership-lost",
+            payload.ownerId,
+            payload.attachmentId,
+            payload.generation
+        )
+        lost.attempt = payload.attempt
+        lost.path = mp.get_property("path", "")
+        lost.error = "network-options hook ownership was lost"
+        lost.status = "failed"
+        emit(ACTIVE_RESULT_MESSAGE, lost)
+        return
+    end
 
     if last_active_attempt == payload.attempt and last_active_result ~= nil then
         emit(ACTIVE_RESULT_MESSAGE, last_active_result)
@@ -111,11 +248,14 @@ end)
 
 -- This hook runs synchronously before mpv opens the file. The path classification and all
 -- file-local writes therefore happen in one mpv event-loop callback and cannot cross into a
--- superseding local file between JSON IPC commands.
+-- superseding local file between JSON IPC commands. Local media emits an explicit completion so
+-- an older superseded network attempt cannot remain authoritative.
 mp.add_hook("on_load", 50, function()
-    if generation == 0 then return end
+    expire_owner_if_needed()
+    if not owner_is_live() then return end
     local path = mp.get_property("stream-open-filename", "")
-    if not network_path(path) then return end
     local status, error_message = apply_options(path)
     emit(TRANSITION_RESULT_MESSAGE, result_payload(status, path, error_message))
 end)
+
+mp.add_periodic_timer(0.1, expire_owner_if_needed)

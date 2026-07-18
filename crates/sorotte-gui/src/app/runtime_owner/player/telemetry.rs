@@ -156,6 +156,19 @@ impl GuiPersistedConfigRuntimeOwner {
                 MpvNetworkMediaOptionsTransitionOutcome::Applied => {
                     self.record_network_media_transition_recovered();
                 }
+                MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error) if mpv_connected => {
+                    self.mark_network_media_transition_apply_failed(format!(
+                        "mpv playback remains available, but Sorotte's core streaming-settings hook needs retry or player restart: {error}"
+                    ));
+                }
+                MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error) => {
+                    self.player_apply_state.mark_streaming_apply_failed();
+                    self.detach_player();
+                    self.player_unavailability_reason = Some(format!(
+                        "mpv JSON IPC became unavailable while maintaining Sorotte's core streaming-settings hook: {error}"
+                    ));
+                    return;
+                }
                 MpvNetworkMediaOptionsTransitionOutcome::Failed(error) if mpv_connected => {
                     self.mark_network_media_transition_apply_failed(format!(
                         "mpv switched to network media, but configured streaming settings could not be applied to the new file: {error}"

@@ -1,8 +1,10 @@
 use mlua::{Function, Lua, LuaSerdeExt, Table, Value};
 use serde_json::{Value as JsonValue, json};
 
-const PROTOCOL: &str = "sorotte-network-options-v1";
+const PROTOCOL: &str = "sorotte-network-options-v2";
 const CONFIGURE_MESSAGE: &str = "sorotte_network_options_configure";
+const HEARTBEAT_MESSAGE: &str = "sorotte_network_options_heartbeat";
+const RELEASE_MESSAGE: &str = "sorotte_network_options_release";
 const APPLY_ACTIVE_MESSAGE: &str = "sorotte_network_options_apply_active";
 const SCRIPT_SOURCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -11,12 +13,18 @@ const SCRIPT_SOURCE: &str = include_str!(concat!(
 
 const MP_MOCK_SOURCE: &str = r#"
 __harness = {
-    messages = {}, hooks = {}, properties = {}, writes = {}, emissions = {}, reject = nil,
+    messages = {}, hooks = {}, timers = {}, properties = {}, writes = {}, emissions = {},
+    reject = nil, time = 0,
 }
 mp = { keep_running = true }
 function mp.get_script_name() return __script_name end
 function mp.register_script_message(name, callback) __harness.messages[name] = callback end
 function mp.add_hook(name, priority, callback) __harness.hooks[name] = callback end
+function mp.add_periodic_timer(interval, callback)
+    table.insert(__harness.timers, { interval = interval, callback = callback })
+    return { kill = function() end }
+end
+function mp.get_time() return __harness.time end
 function mp.get_property(name, default)
     local value = __harness.properties[name]
     if value == nil then return default end
@@ -72,16 +80,33 @@ impl Harness {
         callback.call(serde_json::to_string(&payload).unwrap())
     }
 
-    fn configure(&self) -> mlua::Result<()> {
+    fn configure_as(
+        &self,
+        owner: &str,
+        attachment: &str,
+        generation: u64,
+        options: JsonValue,
+    ) -> mlua::Result<()> {
         self.send(
             CONFIGURE_MESSAGE,
             json!({
                 "protocol": PROTOCOL,
-                "attachment": "harness-attachment",
-                "generation": 7,
-                "options": {"cache-secs": "75", "cache-pause-wait": "5"},
+                "ownerId": owner,
+                "attachmentId": attachment,
+                "generation": generation,
+                "leaseMs": 2_000,
+                "options": options,
             }),
         )
+    }
+
+    fn controller_payload(owner: &str, attachment: &str, generation: u64) -> JsonValue {
+        json!({
+            "protocol": PROTOCOL,
+            "ownerId": owner,
+            "attachmentId": attachment,
+            "generation": generation,
+        })
     }
 
     fn set_path(&self, property: &str, path: &str) -> mlua::Result<()> {
@@ -89,10 +114,25 @@ impl Harness {
         properties.set(property, path)
     }
 
+    fn set_rejected_property(&self, property: Option<&str>) -> mlua::Result<()> {
+        self.table()?.set("reject", property)
+    }
+
     fn invoke_on_load(&self) -> mlua::Result<()> {
         let hooks: Table = self.table()?.get("hooks")?;
         let callback: Function = hooks.get("on_load")?;
         callback.call(())
+    }
+
+    fn advance(&self, seconds: f64) -> mlua::Result<()> {
+        let table = self.table()?;
+        let now: f64 = table.get("time")?;
+        table.set("time", now + seconds)?;
+        let timers: Table = table.get("timers")?;
+        for timer in timers.sequence_values::<Table>() {
+            timer?.get::<Function>("callback")?.call::<()>(())?;
+        }
+        Ok(())
     }
 
     fn writes(&self) -> mlua::Result<Vec<(String, String, String)>> {
@@ -124,43 +164,158 @@ impl Harness {
 }
 
 #[test]
-fn on_load_applies_the_complete_map_only_to_the_path_sampled_inside_mpv() -> mlua::Result<()> {
+fn configure_heartbeat_release_and_expiry_bound_network_writes() -> mlua::Result<()> {
     let harness = Harness::new()?;
-    harness.configure()?;
+    harness.configure_as("owner-a", "attachment-a", 7, json!({"cache-secs": "75"}))?;
+    assert_eq!(
+        harness.emissions("sorotte-network-options-configured")?[0]["status"],
+        "configured"
+    );
+
+    harness.advance(1.5)?;
+    harness.send(
+        HEARTBEAT_MESSAGE,
+        Harness::controller_payload("owner-a", "attachment-a", 7),
+    )?;
+    harness.advance(1.5)?;
+    harness.set_path("path", "https://media.example.test/live-a.m3u8")?;
+    harness.set_path(
+        "stream-open-filename",
+        "https://media.example.test/live-a.m3u8",
+    )?;
+    harness.invoke_on_load()?;
+    assert_eq!(harness.writes()?.len(), 1, "heartbeat must renew the lease");
+
+    harness.send(
+        RELEASE_MESSAGE,
+        Harness::controller_payload("owner-a", "attachment-a", 7),
+    )?;
+    harness.set_path("path", "https://media.example.test/after-release.m3u8")?;
+    harness.set_path(
+        "stream-open-filename",
+        "https://media.example.test/after-release.m3u8",
+    )?;
+    harness.invoke_on_load()?;
+    assert_eq!(
+        harness.writes()?.len(),
+        1,
+        "release must clear the policy map"
+    );
+
+    harness.configure_as("owner-a", "attachment-b", 8, json!({"cache-secs": "90"}))?;
+    harness.advance(2.1)?;
+    harness.invoke_on_load()?;
+    assert_eq!(
+        harness.writes()?.len(),
+        1,
+        "expiry must clear the policy map"
+    );
+    assert_eq!(
+        harness
+            .emissions("sorotte-network-options-ownership")?
+            .last()
+            .unwrap()["status"],
+        "lease-expired"
+    );
+    Ok(())
+}
+
+#[test]
+fn live_owner_contention_is_rejected_and_takeover_follows_release_or_expiry() -> mlua::Result<()> {
+    let harness = Harness::new()?;
+    harness.configure_as("owner-a", "attachment-a", 1, json!({"cache-secs": "75"}))?;
+    harness.configure_as("owner-b", "attachment-b", 1, json!({"cache-secs": "90"}))?;
+    let configured = harness.emissions("sorotte-network-options-configured")?;
+    assert_eq!(configured.last().unwrap()["status"], "owner-live");
+
+    harness.send(
+        RELEASE_MESSAGE,
+        Harness::controller_payload("owner-a", "attachment-a", 1),
+    )?;
+    harness.configure_as("owner-b", "attachment-b", 1, json!({"cache-secs": "90"}))?;
+    harness.set_path("path", "https://media.example.test/b.m3u8")?;
+    harness.set_path("stream-open-filename", "https://media.example.test/b.m3u8")?;
+    harness.invoke_on_load()?;
+    assert_eq!(
+        harness.writes()?[0].1,
+        "90",
+        "release enables immediate takeover"
+    );
+
+    harness.advance(2.1)?;
+    harness.configure_as("owner-c", "attachment-c", 1, json!({"cache-secs": "120"}))?;
+    harness.set_path("path", "https://media.example.test/c.m3u8")?;
+    harness.set_path("stream-open-filename", "https://media.example.test/c.m3u8")?;
+    harness.invoke_on_load()?;
+    assert_eq!(harness.writes()?.last().unwrap().1, "120");
+    assert_eq!(
+        harness
+            .emissions("sorotte-network-options-configured")?
+            .last()
+            .unwrap()["status"],
+        "configured",
+        "expiry enables a different owner to take over"
+    );
+    Ok(())
+}
+
+#[test]
+fn same_owner_attachment_contention_is_rejected_until_release() -> mlua::Result<()> {
+    let harness = Harness::new()?;
+    harness.configure_as("owner-a", "attachment-a", 1, json!({"cache-secs": "75"}))?;
+    harness.configure_as("owner-a", "attachment-b", 2, json!({"cache-secs": "90"}))?;
+    let configured = harness.emissions("sorotte-network-options-configured")?;
+    assert_eq!(configured.last().unwrap()["status"], "owner-live");
+    assert_eq!(configured.last().unwrap()["attachmentId"], "attachment-b");
+    Ok(())
+}
+
+#[test]
+fn on_load_emits_local_completion_without_writes() -> mlua::Result<()> {
+    let harness = Harness::new()?;
+    harness.configure_as("owner-a", "attachment-a", 7, json!({"cache-secs": "75"}))?;
+    harness.set_path("path", "C:/media/local.mkv")?;
+    harness.set_path("stream-open-filename", "C:/media/local.mkv")?;
+    harness.invoke_on_load()?;
+    assert!(harness.writes()?.is_empty());
+    let transitions = harness.emissions("sorotte-network-options-transition-result")?;
+    assert_eq!(transitions[0]["status"], "local");
+    assert_eq!(transitions[0]["path"], "C:/media/local.mkv");
+    Ok(())
+}
+
+#[test]
+fn network_on_load_reports_success_and_failure_for_the_exact_sampled_path() -> mlua::Result<()> {
+    let harness = Harness::new()?;
+    harness.configure_as(
+        "owner-a",
+        "attachment-a",
+        7,
+        json!({"cache-secs": "75", "cache-pause-wait": "5"}),
+    )?;
     harness.set_path("path", "https://media.example.test/a.m3u8")?;
     harness.set_path("stream-open-filename", "https://media.example.test/a.m3u8")?;
     harness.invoke_on_load()?;
 
     let mut writes = harness.writes()?;
     writes.sort_unstable();
-    assert_eq!(
-        writes,
-        [
-            (
-                "file-local-options/cache-pause-wait".to_owned(),
-                "5".to_owned(),
-                "https://media.example.test/a.m3u8".to_owned(),
-            ),
-            (
-                "file-local-options/cache-secs".to_owned(),
-                "75".to_owned(),
-                "https://media.example.test/a.m3u8".to_owned(),
-            ),
-        ]
+    assert_eq!(writes.len(), 2);
+    assert!(
+        writes
+            .iter()
+            .all(|(_, _, path)| path == "https://media.example.test/a.m3u8")
     );
-    assert_eq!(
-        harness.emissions("sorotte-network-options-transition-result")?[0]["status"],
-        "network-updated"
-    );
+    let transitions = harness.emissions("sorotte-network-options-transition-result")?;
+    assert_eq!(transitions[0]["status"], "network-updated");
+    assert_eq!(transitions[0]["path"], "https://media.example.test/a.m3u8");
 
-    harness.set_path("path", "C:/media/local.mkv")?;
-    harness.set_path("stream-open-filename", "C:/media/local.mkv")?;
+    harness.set_rejected_property(Some("file-local-options/cache-secs"))?;
+    harness.set_path("path", "https://media.example.test/b.m3u8")?;
+    harness.set_path("stream-open-filename", "https://media.example.test/b.m3u8")?;
     harness.invoke_on_load()?;
-    assert_eq!(
-        harness.writes()?.len(),
-        2,
-        "a later local on-load callback must not inherit any network-only write"
-    );
+    let transitions = harness.emissions("sorotte-network-options-transition-result")?;
+    assert_eq!(transitions[1]["status"], "failed");
+    assert_eq!(transitions[1]["path"], "https://media.example.test/b.m3u8");
     Ok(())
 }
 
@@ -168,17 +323,11 @@ fn on_load_applies_the_complete_map_only_to_the_path_sampled_inside_mpv() -> mlu
 fn explicit_apply_reports_the_authoritative_path_used_for_its_atomic_write_set() -> mlua::Result<()>
 {
     let harness = Harness::new()?;
-    harness.configure()?;
+    harness.configure_as("owner-a", "attachment-a", 7, json!({"cache-secs": "75"}))?;
     harness.set_path("path", "https://media.example.test/b.m3u8")?;
-    harness.send(
-        APPLY_ACTIVE_MESSAGE,
-        json!({
-            "protocol": PROTOCOL,
-            "attachment": "harness-attachment",
-            "generation": 7,
-            "attempt": 42,
-        }),
-    )?;
+    let mut payload = Harness::controller_payload("owner-a", "attachment-a", 7);
+    payload["attempt"] = json!(42);
+    harness.send(APPLY_ACTIVE_MESSAGE, payload)?;
 
     let result = &harness.emissions("sorotte-network-options-active-result")?[0];
     assert_eq!(result["attempt"], 42);

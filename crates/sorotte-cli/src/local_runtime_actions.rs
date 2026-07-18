@@ -72,6 +72,13 @@ fn fold_network_media_options_transition_outcome(
             *latest_healthy_failure = None;
             Ok(())
         }
+        MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error) if !player_connected => {
+            Err(error)
+        }
+        MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error) => {
+            *latest_healthy_failure = Some(error);
+            Ok(())
+        }
         MpvNetworkMediaOptionsTransitionOutcome::Failed(error) if !player_connected => Err(error),
         MpvNetworkMediaOptionsTransitionOutcome::Failed(error) => {
             *latest_healthy_failure = Some(error);

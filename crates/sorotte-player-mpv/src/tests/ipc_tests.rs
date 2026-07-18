@@ -18,6 +18,348 @@ struct NetworkOptionsHookSupersessionTransport {
     responses: VecDeque<String>,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum HookSupersessionTarget {
+    Local,
+    Idle,
+    NetworkSuccess,
+    NetworkFailure,
+    NetworkAwaitingResult,
+}
+
+#[derive(Debug)]
+struct NetworkOptionsHookScenarioTransport {
+    writes: Arc<Mutex<Vec<String>>>,
+    responses: VecDeque<String>,
+    old_network_succeeds: bool,
+    target: HookSupersessionTarget,
+    lose_ownership_on_heartbeat: bool,
+}
+
+impl NetworkOptionsHookScenarioTransport {
+    fn push(&mut self, value: Value) {
+        self.responses.push_back(value.to_string() + "\n");
+    }
+
+    fn client_message(name: &str, payload: Value) -> Value {
+        json!({
+            "event": "client-message",
+            "args": [name, payload.to_string()],
+        })
+    }
+}
+
+impl MpvJsonIpcTransport for NetworkOptionsHookScenarioTransport {
+    fn send_line_until(&mut self, line: &str, _deadline: Instant) -> io::Result<()> {
+        self.writes
+            .lock()
+            .expect("network-options scenario writes should not be poisoned")
+            .push(line.to_owned());
+        let request: Value = serde_json::from_str(line.trim_end()).map_err(io::Error::other)?;
+        let request_id = request["request_id"]
+            .as_u64()
+            .expect("test request should contain an id");
+        let command = request["command"]
+            .as_array()
+            .expect("test request should contain a command");
+        match command.first().and_then(Value::as_str) {
+            Some("get_property") if command.get(1).and_then(Value::as_str) == Some("path") => {
+                self.push(json!({
+                    "request_id": request_id,
+                    "error": "success",
+                    "data": "https://media.example.test/a.m3u8",
+                }));
+            }
+            Some("script-message-to")
+                if command.get(2).and_then(Value::as_str)
+                    == Some("sorotte_network_options_configure") =>
+            {
+                let payload: Value = serde_json::from_str(
+                    command
+                        .get(3)
+                        .and_then(Value::as_str)
+                        .expect("configure command should contain JSON"),
+                )
+                .expect("configure payload should be valid");
+                self.push(Self::client_message(
+                    "sorotte-network-options-configured",
+                    json!({
+                        "protocol": "sorotte-network-options-v2",
+                        "ownerId": payload["ownerId"],
+                        "attachmentId": payload["attachmentId"],
+                        "generation": payload["generation"],
+                        "status": "configured",
+                    }),
+                ));
+                self.push(json!({"request_id": request_id, "error": "success"}));
+            }
+            Some("script-message-to")
+                if command.get(2).and_then(Value::as_str)
+                    == Some("sorotte_network_options_apply_active") =>
+            {
+                let payload: Value = serde_json::from_str(
+                    command
+                        .get(3)
+                        .and_then(Value::as_str)
+                        .expect("apply command should contain JSON"),
+                )
+                .expect("apply payload should be valid");
+                let base = json!({
+                    "protocol": "sorotte-network-options-v2",
+                    "ownerId": payload["ownerId"],
+                    "attachmentId": payload["attachmentId"],
+                    "generation": payload["generation"],
+                });
+                let mut active_result = base.clone();
+                active_result["attempt"] = payload["attempt"].clone();
+                active_result["path"] = json!("https://media.example.test/a.m3u8");
+                if self.old_network_succeeds {
+                    active_result["status"] = json!("network-updated");
+                } else {
+                    active_result["status"] = json!("failed");
+                    active_result["error"] = json!("A rejected cache-secs");
+                }
+                self.push(Self::client_message(
+                    "sorotte-network-options-active-result",
+                    active_result,
+                ));
+
+                match self.target {
+                    HookSupersessionTarget::Local => {
+                        self.push(json!({"event": "start-file", "playlist_entry_id": 102}));
+                        self.push(json!({
+                            "event": "property-change",
+                            "name": "path",
+                            "data": "C:/media/local-b.mkv",
+                        }));
+                        let mut transition = base;
+                        transition["path"] = json!("C:/media/local-b.mkv");
+                        transition["status"] = json!("local");
+                        self.push(Self::client_message(
+                            "sorotte-network-options-transition-result",
+                            transition,
+                        ));
+                    }
+                    HookSupersessionTarget::Idle => {
+                        self.push(json!({
+                            "event": "property-change",
+                            "name": "path",
+                            "data": null,
+                        }));
+                    }
+                    HookSupersessionTarget::NetworkSuccess
+                    | HookSupersessionTarget::NetworkFailure
+                    | HookSupersessionTarget::NetworkAwaitingResult => {
+                        self.push(json!({"event": "start-file", "playlist_entry_id": 103}));
+                        self.push(json!({
+                            "event": "property-change",
+                            "name": "path",
+                            "data": "https://media.example.test/b.m3u8",
+                        }));
+                        if !matches!(self.target, HookSupersessionTarget::NetworkAwaitingResult) {
+                            let mut transition = base;
+                            transition["path"] = json!("https://media.example.test/b.m3u8");
+                            if matches!(self.target, HookSupersessionTarget::NetworkSuccess) {
+                                transition["status"] = json!("network-updated");
+                            } else {
+                                transition["status"] = json!("failed");
+                                transition["error"] = json!("B rejected cache-secs");
+                            }
+                            self.push(Self::client_message(
+                                "sorotte-network-options-transition-result",
+                                transition,
+                            ));
+                        }
+                    }
+                }
+                self.push(json!({"request_id": request_id, "error": "success"}));
+            }
+            Some("script-message-to")
+                if command.get(2).and_then(Value::as_str)
+                    == Some("sorotte_network_options_heartbeat")
+                    && self.lose_ownership_on_heartbeat =>
+            {
+                let payload: Value =
+                    serde_json::from_str(command.get(3).and_then(Value::as_str).unwrap()).unwrap();
+                self.push(Self::client_message(
+                    "sorotte-network-options-ownership",
+                    json!({
+                        "protocol": "sorotte-network-options-v2",
+                        "ownerId": payload["ownerId"],
+                        "attachmentId": payload["attachmentId"],
+                        "generation": payload["generation"],
+                        "status": "ownership-lost",
+                    }),
+                ));
+                self.push(json!({"request_id": request_id, "error": "success"}));
+            }
+            _ => self.push(json!({"request_id": request_id, "error": "success"})),
+        }
+        Ok(())
+    }
+
+    fn read_line_until(&mut self, line: &mut String, _deadline: Instant) -> io::Result<usize> {
+        let response = self.responses.pop_front().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "network-options scenario omitted a response",
+            )
+        })?;
+        line.clear();
+        line.push_str(&response);
+        Ok(line.len())
+    }
+}
+
+#[derive(Debug)]
+struct NetworkOptionsHookConfigurationTimeoutTransport {
+    writes: Arc<Mutex<Vec<String>>>,
+    responses: VecDeque<String>,
+    transition_injected: bool,
+}
+
+impl NetworkOptionsHookConfigurationTimeoutTransport {
+    fn push(&mut self, value: Value) {
+        self.responses.push_back(value.to_string() + "\n");
+    }
+}
+
+impl MpvJsonIpcTransport for NetworkOptionsHookConfigurationTimeoutTransport {
+    fn send_line_until(&mut self, line: &str, _deadline: Instant) -> io::Result<()> {
+        self.writes
+            .lock()
+            .expect("hook timeout writes should not be poisoned")
+            .push(line.to_owned());
+        let request: Value = serde_json::from_str(line.trim_end()).map_err(io::Error::other)?;
+        let request_id = request["request_id"].as_u64().unwrap();
+        let command = request["command"].as_array().unwrap();
+        if command.first().and_then(Value::as_str) == Some("script-message-to")
+            && command.get(2).and_then(Value::as_str) == Some("sorotte_network_options_configure")
+            && !self.transition_injected
+        {
+            self.transition_injected = true;
+            self.push(json!({"event": "start-file", "playlist_entry_id": 201}));
+            self.push(json!({
+                "event": "property-change",
+                "name": "path",
+                "data": "https://media.example.test/a.m3u8",
+            }));
+            self.push(json!({"event": "start-file", "playlist_entry_id": 202}));
+            self.push(json!({
+                "event": "property-change",
+                "name": "path",
+                "data": "C:/media/local-b.mkv",
+            }));
+        }
+        self.push(json!({"request_id": request_id, "error": "success"}));
+        Ok(())
+    }
+
+    fn read_line_until(&mut self, line: &mut String, _deadline: Instant) -> io::Result<usize> {
+        let response = self.responses.pop_front().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "hook timeout response missing",
+            )
+        })?;
+        line.clear();
+        line.push_str(&response);
+        Ok(line.len())
+    }
+}
+
+#[derive(Debug)]
+struct NetworkOptionsHookReloadTransport {
+    writes: Arc<Mutex<Vec<String>>>,
+    responses: VecDeque<String>,
+    configure_attempts: usize,
+}
+
+impl NetworkOptionsHookReloadTransport {
+    fn push(&mut self, value: Value) {
+        self.responses.push_back(value.to_string() + "\n");
+    }
+}
+
+impl MpvJsonIpcTransport for NetworkOptionsHookReloadTransport {
+    fn send_line_until(&mut self, line: &str, _deadline: Instant) -> io::Result<()> {
+        self.writes
+            .lock()
+            .expect("hook reload writes should not be poisoned")
+            .push(line.to_owned());
+        let request: Value = serde_json::from_str(line.trim_end()).map_err(io::Error::other)?;
+        let request_id = request["request_id"].as_u64().unwrap();
+        let command = request["command"].as_array().unwrap();
+        match command.first().and_then(Value::as_str) {
+            Some("script-message-to")
+                if command.get(2).and_then(Value::as_str)
+                    == Some("sorotte_network_options_configure") =>
+            {
+                self.configure_attempts += 1;
+                if self.configure_attempts == 1 {
+                    self.push(json!({
+                        "request_id": request_id,
+                        "error": "target client not found",
+                    }));
+                } else {
+                    let payload: Value =
+                        serde_json::from_str(command.get(3).and_then(Value::as_str).unwrap())
+                            .unwrap();
+                    self.push(NetworkOptionsHookScenarioTransport::client_message(
+                        "sorotte-network-options-configured",
+                        json!({
+                            "protocol": "sorotte-network-options-v2",
+                            "ownerId": payload["ownerId"],
+                            "attachmentId": payload["attachmentId"],
+                            "generation": payload["generation"],
+                            "status": "configured",
+                        }),
+                    ));
+                    self.push(json!({"request_id": request_id, "error": "success"}));
+                }
+            }
+            Some("get_property") if command.get(1).and_then(Value::as_str) == Some("path") => {
+                self.push(json!({
+                    "request_id": request_id,
+                    "error": "success",
+                    "data": "https://media.example.test/recovered.m3u8",
+                }));
+            }
+            Some("script-message-to")
+                if command.get(2).and_then(Value::as_str)
+                    == Some("sorotte_network_options_apply_active") =>
+            {
+                let payload: Value =
+                    serde_json::from_str(command.get(3).and_then(Value::as_str).unwrap()).unwrap();
+                self.push(NetworkOptionsHookScenarioTransport::client_message(
+                    "sorotte-network-options-active-result",
+                    json!({
+                        "protocol": "sorotte-network-options-v2",
+                        "ownerId": payload["ownerId"],
+                        "attachmentId": payload["attachmentId"],
+                        "generation": payload["generation"],
+                        "attempt": payload["attempt"],
+                        "path": "https://media.example.test/recovered.m3u8",
+                        "status": "network-updated",
+                    }),
+                ));
+                self.push(json!({"request_id": request_id, "error": "success"}));
+            }
+            _ => self.push(json!({"request_id": request_id, "error": "success"})),
+        }
+        Ok(())
+    }
+
+    fn read_line_until(&mut self, line: &mut String, _deadline: Instant) -> io::Result<usize> {
+        let response = self.responses.pop_front().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::UnexpectedEof, "hook reload response missing")
+        })?;
+        line.clear();
+        line.push_str(&response);
+        Ok(line.len())
+    }
+}
+
 impl NetworkOptionsHookSupersessionTransport {
     fn push(&mut self, value: Value) {
         self.responses.push_back(value.to_string() + "\n");
@@ -59,8 +401,9 @@ impl MpvJsonIpcTransport for NetworkOptionsHookSupersessionTransport {
                 self.push(json!({
                     "event": "client-message",
                     "args": ["sorotte-network-options-configured", json!({
-                        "protocol": "sorotte-network-options-v1",
-                        "attachment": payload["attachment"],
+                        "protocol": "sorotte-network-options-v2",
+                        "ownerId": payload["ownerId"],
+                        "attachmentId": payload["attachmentId"],
                         "generation": payload["generation"],
                         "status": "configured",
                     }).to_string()],
@@ -79,8 +422,9 @@ impl MpvJsonIpcTransport for NetworkOptionsHookSupersessionTransport {
                 )
                 .expect("apply payload should be valid");
                 let result = json!({
-                    "protocol": "sorotte-network-options-v1",
-                    "attachment": payload["attachment"],
+                    "protocol": "sorotte-network-options-v2",
+                    "ownerId": payload["ownerId"],
+                    "attachmentId": payload["attachmentId"],
                     "generation": payload["generation"],
                     "path": "https://media.example.test/b.m3u8",
                     "status": "network-updated",
@@ -88,6 +432,11 @@ impl MpvJsonIpcTransport for NetworkOptionsHookSupersessionTransport {
                 self.push(json!({
                     "event": "start-file",
                     "playlist_entry_id": 92,
+                }));
+                self.push(json!({
+                    "event": "property-change",
+                    "name": "path",
+                    "data": "https://media.example.test/b.m3u8",
                 }));
                 self.push(json!({
                     "event": "client-message",
@@ -1846,6 +2195,246 @@ fn core_hook_keeps_network_option_writes_inside_mpv_and_classifies_a_to_b_as_sup
         adapter.take_network_media_options_transition_outcome(),
         None,
         "the explicit result and on-load result should converge without duplicate recovery"
+    );
+}
+
+fn run_core_hook_supersession_scenario(
+    old_network_succeeds: bool,
+    target: HookSupersessionTarget,
+) -> (
+    MpvActiveNetworkMediaOptionsApplyOutcome,
+    Option<MpvNetworkMediaOptionsTransitionOutcome>,
+    Arc<Mutex<Vec<String>>>,
+) {
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let transport = NetworkOptionsHookScenarioTransport {
+        writes: Arc::clone(&writes),
+        responses: VecDeque::new(),
+        old_network_succeeds,
+        target,
+        lose_ownership_on_heartbeat: false,
+    };
+    let mut adapter = MpvAdapter::with_network_options_hook_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+    let apply = adapter
+        .apply_network_media_options_to_active_media_classified()
+        .expect("the explicit A apply should defer to the authoritative successor");
+    let outcome = adapter.take_network_media_options_transition_outcome();
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None
+    );
+    assert!(adapter.is_connected());
+    assert!(
+        writes
+            .lock()
+            .expect("scenario writes should not be poisoned")
+            .iter()
+            .all(|write| !write.contains("file-local-options/")),
+        "production hook scenarios must never use direct file-local writes"
+    );
+    (apply, outcome, writes)
+}
+
+#[test]
+fn failed_network_a_superseded_by_local_b_recovers_without_stale_failure() {
+    let (apply, outcome, _) =
+        run_core_hook_supersession_scenario(false, HookSupersessionTarget::Local);
+    assert_eq!(apply, MpvActiveNetworkMediaOptionsApplyOutcome::Superseded);
+    assert_eq!(
+        outcome,
+        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
+    );
+}
+
+#[test]
+fn failed_network_a_superseded_by_idle_recovers_without_stale_failure() {
+    let (apply, outcome, _) =
+        run_core_hook_supersession_scenario(false, HookSupersessionTarget::Idle);
+    assert_eq!(apply, MpvActiveNetworkMediaOptionsApplyOutcome::Superseded);
+    assert_eq!(
+        outcome,
+        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
+    );
+}
+
+#[test]
+fn failed_network_a_superseded_by_successful_network_b_applies_b() {
+    let (apply, outcome, _) =
+        run_core_hook_supersession_scenario(false, HookSupersessionTarget::NetworkSuccess);
+    assert_eq!(apply, MpvActiveNetworkMediaOptionsApplyOutcome::Superseded);
+    assert_eq!(
+        outcome,
+        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
+    );
+}
+
+#[test]
+fn failed_network_a_superseded_by_failed_network_b_reports_only_b_failure() {
+    let (apply, outcome, _) =
+        run_core_hook_supersession_scenario(false, HookSupersessionTarget::NetworkFailure);
+    assert_eq!(apply, MpvActiveNetworkMediaOptionsApplyOutcome::Superseded);
+    let Some(MpvNetworkMediaOptionsTransitionOutcome::Failed(error)) = outcome else {
+        panic!("expected authoritative B failure, got {outcome:?}");
+    };
+    assert!(error.to_string().contains("B rejected cache-secs"));
+    assert!(!error.to_string().contains("A rejected cache-secs"));
+}
+
+#[test]
+fn successful_network_a_superseded_by_failed_network_b_reports_b_failure() {
+    let (apply, outcome, _) =
+        run_core_hook_supersession_scenario(true, HookSupersessionTarget::NetworkFailure);
+    assert_eq!(apply, MpvActiveNetworkMediaOptionsApplyOutcome::Superseded);
+    let Some(MpvNetworkMediaOptionsTransitionOutcome::Failed(error)) = outcome else {
+        panic!("expected authoritative B failure, got {outcome:?}");
+    };
+    assert!(error.to_string().contains("B rejected cache-secs"));
+}
+
+#[test]
+fn superseded_apply_emits_no_outcome_before_network_b_reports_its_result() {
+    let (apply, outcome, _) =
+        run_core_hook_supersession_scenario(false, HookSupersessionTarget::NetworkAwaitingResult);
+    assert_eq!(apply, MpvActiveNetworkMediaOptionsApplyOutcome::Superseded);
+    assert_eq!(outcome, None);
+}
+
+#[test]
+fn hook_configuration_timeout_never_reenters_direct_writes_across_network_to_local() {
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let transport = NetworkOptionsHookConfigurationTimeoutTransport {
+        writes: Arc::clone(&writes),
+        responses: VecDeque::new(),
+        transition_injected: false,
+    };
+    let mut adapter = MpvAdapter::with_network_options_hook_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+
+    let error = adapter
+        .apply_network_media_options_to_active_media_classified()
+        .expect_err("a missing configuration acknowledgement must remain retryable");
+    assert!(error.to_string().contains("did not acknowledge generation"));
+    assert_eq!(adapter.current_path(), Some("C:/media/local-b.mkv"));
+    assert!(adapter.is_connected());
+    assert!(
+        writes
+            .lock()
+            .expect("hook timeout writes should not be poisoned")
+            .iter()
+            .all(|write| !write.contains("file-local-options/")),
+        "an unavailable production hook must never re-enable direct per-option writes"
+    );
+}
+
+#[test]
+fn missing_canonical_hook_is_loaded_again_and_recovers_on_retry() {
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let transport = NetworkOptionsHookReloadTransport {
+        writes: Arc::clone(&writes),
+        responses: VecDeque::new(),
+        configure_attempts: 0,
+    };
+    let mut adapter = MpvAdapter::with_network_options_hook_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+
+    adapter
+        .apply_network_media_options_to_active_media_classified()
+        .expect_err("the missing canonical target should fail the first configure delivery");
+    assert_eq!(
+        adapter
+            .apply_network_media_options_to_active_media_classified()
+            .expect("retry should reload and configure the canonical hook"),
+        MpvActiveNetworkMediaOptionsApplyOutcome::NetworkMediaUpdated
+    );
+
+    let writes = writes
+        .lock()
+        .expect("hook reload writes should not be poisoned");
+    assert_eq!(
+        writes
+            .iter()
+            .filter(|write| write.contains("\"load-script\""))
+            .count(),
+        2,
+        "a rejected canonical target must clear the loaded assumption"
+    );
+    assert!(
+        writes
+            .iter()
+            .all(|write| !write.contains("file-local-options/"))
+    );
+}
+
+#[test]
+fn ownership_loss_is_typed_and_keeps_playback_attached() {
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let transport = NetworkOptionsHookScenarioTransport {
+        writes,
+        responses: VecDeque::new(),
+        old_network_succeeds: true,
+        target: HookSupersessionTarget::NetworkSuccess,
+        lose_ownership_on_heartbeat: true,
+    };
+    let mut adapter = MpvAdapter::with_network_options_hook_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+    assert_eq!(
+        adapter
+            .apply_network_media_options_to_active_media_classified()
+            .expect("initial hook ownership should configure"),
+        MpvActiveNetworkMediaOptionsApplyOutcome::Superseded
+    );
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
+    );
+
+    adapter.force_test_network_media_options_hook_heartbeat_due();
+    let Some(MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error)) =
+        adapter.take_network_media_options_transition_outcome()
+    else {
+        panic!("ownership loss should publish a typed hook degradation");
+    };
+    assert!(error.to_string().contains("ownership was replaced"));
+    assert!(
+        adapter.is_connected(),
+        "hook ownership loss is not IPC loss"
+    );
+}
+
+#[test]
+fn graceful_cleanup_releases_the_core_hook_before_optional_bridge_release() {
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let transport = NetworkOptionsHookScenarioTransport {
+        writes: Arc::clone(&writes),
+        responses: VecDeque::new(),
+        old_network_succeeds: true,
+        target: HookSupersessionTarget::NetworkSuccess,
+        lose_ownership_on_heartbeat: false,
+    };
+    let mut adapter = MpvAdapter::with_network_options_hook_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+    adapter
+        .apply_network_media_options_to_active_media_classified()
+        .expect("hook ownership should configure before cleanup");
+    adapter.release_sorotte_bridge_best_effort();
+
+    let commands = writes
+        .lock()
+        .expect("cleanup writes should not be poisoned")
+        .iter()
+        .map(|line| serde_json::from_str::<Value>(line.trim_end()).unwrap())
+        .collect::<Vec<_>>();
+    let release = commands
+        .iter()
+        .find(|request| {
+            request.pointer("/command/2").and_then(Value::as_str)
+                == Some("sorotte_network_options_release")
+        })
+        .expect("terminal cleanup must release core network-hook ownership");
+    assert_eq!(
+        release.pointer("/command/1").and_then(Value::as_str),
+        Some("sorotte_network_options")
     );
 }
 

@@ -43,6 +43,19 @@ fn real_mpv_bridge_lifecycle_over_json_ipc() {
         );
     }
 
+    fn wait_for_network_outcome(
+        adapter: &mut MpvAdapter,
+    ) -> MpvNetworkMediaOptionsTransitionOutcome {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if let Some(outcome) = adapter.take_network_media_options_transition_outcome() {
+                return outcome;
+            }
+            sleep(Duration::from_millis(25));
+        }
+        panic!("real mpv did not publish a network-options transition outcome");
+    }
+
     let mpv_bin = std::env::var_os("SOROTTE_TEST_MPV_BIN")
         .map(PathBuf::from)
         .expect("set SOROTTE_TEST_MPV_BIN to an mpv executable before running this ignored test");
@@ -152,6 +165,65 @@ fn real_mpv_bridge_lifecycle_over_json_ipc() {
         SorotteBridgeHealth::Ready,
         "graceful release should allow immediate in-place takeover"
     );
+
+    contender.configure_network_media_options([("cache-secs", "75")]);
+    assert_eq!(
+        contender
+            .apply_network_media_options_to_active_media_classified()
+            .expect("the core network hook should load, acknowledge, and own the idle player"),
+        MpvActiveNetworkMediaOptionsApplyOutcome::NoActiveMedia
+    );
+
+    let mut hook_contender = connect_with_retry(&endpoint);
+    hook_contender.set_test_sorotte_bridge_owner_id("real-mpv-network-hook-contender");
+    hook_contender.configure_network_media_options([("cache-secs", "90")]);
+    let busy_error = hook_contender
+        .apply_network_media_options_to_active_media_classified()
+        .expect_err("a live different core-hook owner must reject takeover");
+    assert!(busy_error.to_string().contains("owned by"));
+    assert!(hook_contender.is_connected());
+
+    hook_contender
+        .open_file("https://127.0.0.1:9/sorotte-network-hook-smoke.m3u8")
+        .expect("real mpv should accept the asynchronous network load request");
+    assert_eq!(
+        wait_for_network_outcome(&mut contender),
+        MpvNetworkMediaOptionsTransitionOutcome::Applied,
+        "the on-load hook should apply the owned option map to network media"
+    );
+
+    let missing_local = std::env::temp_dir().join(format!(
+        "sorotte-network-hook-local-{}-{unique}.mkv",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&missing_local);
+    hook_contender
+        .open_file(&missing_local.to_string_lossy())
+        .expect("real mpv should accept the asynchronous local load request");
+    assert_eq!(
+        wait_for_network_outcome(&mut contender),
+        MpvNetworkMediaOptionsTransitionOutcome::Applied,
+        "local on-load must complete the installed policy without a file-local write"
+    );
+
+    sleep(Duration::from_millis(2_200));
+    assert!(matches!(
+        wait_for_network_outcome(&mut contender),
+        MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error)
+            if error.to_string().contains("lease expired")
+    ));
+    assert!(
+        contender.is_connected(),
+        "lease expiry must not detach playback"
+    );
+    assert!(matches!(
+        hook_contender
+            .apply_network_media_options_to_active_media_classified()
+            .expect("an expired lease should allow the contender to take over"),
+        MpvActiveNetworkMediaOptionsApplyOutcome::NoActiveMedia
+            | MpvActiveNetworkMediaOptionsApplyOutcome::LocalMediaUnchanged
+    ));
+    hook_contender.release_sorotte_bridge_best_effort();
 
     settings.chat_input_enabled = false;
     contender
