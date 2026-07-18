@@ -1,7 +1,7 @@
 use mlua::{Function, Lua, LuaSerdeExt, Table, Value};
 use serde_json::{Value as JsonValue, json};
 
-const PROTOCOL: &str = "sorotte-network-options-v2";
+const PROTOCOL: &str = "sorotte-network-options-v3";
 const CONFIGURE_MESSAGE: &str = "sorotte_network_options_configure";
 const HEARTBEAT_MESSAGE: &str = "sorotte_network_options_heartbeat";
 const RELEASE_MESSAGE: &str = "sorotte_network_options_release";
@@ -93,7 +93,7 @@ impl Harness {
                 "protocol": PROTOCOL,
                 "ownerId": owner,
                 "attachmentId": attachment,
-                "generation": generation,
+                "configurationGeneration": generation,
                 "leaseMs": 2_000,
                 "options": options,
             }),
@@ -105,7 +105,8 @@ impl Harness {
             "protocol": PROTOCOL,
             "ownerId": owner,
             "attachmentId": attachment,
-            "generation": generation,
+            "configurationGeneration": generation,
+            "heartbeatNonce": 1,
         })
     }
 
@@ -177,6 +178,9 @@ fn configure_heartbeat_release_and_expiry_bound_network_writes() -> mlua::Result
         HEARTBEAT_MESSAGE,
         Harness::controller_payload("owner-a", "attachment-a", 7),
     )?;
+    let heartbeat = harness.emissions("sorotte-network-options-heartbeat")?;
+    assert_eq!(heartbeat[0]["status"], "renewed");
+    assert_eq!(heartbeat[0]["heartbeatNonce"], 1);
     harness.advance(1.5)?;
     harness.set_path("path", "https://media.example.test/live-a.m3u8")?;
     harness.set_path(
@@ -280,7 +284,9 @@ fn on_load_emits_local_completion_without_writes() -> mlua::Result<()> {
     assert!(harness.writes()?.is_empty());
     let transitions = harness.emissions("sorotte-network-options-transition-result")?;
     assert_eq!(transitions[0]["status"], "local");
-    assert_eq!(transitions[0]["path"], "C:/media/local.mkv");
+    assert_eq!(transitions[0]["loadSequence"], 1);
+    assert_eq!(transitions[0]["sourcePath"], "C:/media/local.mkv");
+    assert_eq!(transitions[0]["streamOpenFilename"], "C:/media/local.mkv");
     Ok(())
 }
 
@@ -307,7 +313,11 @@ fn network_on_load_reports_success_and_failure_for_the_exact_sampled_path() -> m
     );
     let transitions = harness.emissions("sorotte-network-options-transition-result")?;
     assert_eq!(transitions[0]["status"], "network-updated");
-    assert_eq!(transitions[0]["path"], "https://media.example.test/a.m3u8");
+    assert_eq!(transitions[0]["loadSequence"], 1);
+    assert_eq!(
+        transitions[0]["sourcePath"],
+        "https://media.example.test/a.m3u8"
+    );
 
     harness.set_rejected_property(Some("file-local-options/cache-secs"))?;
     harness.set_path("path", "https://media.example.test/b.m3u8")?;
@@ -315,7 +325,54 @@ fn network_on_load_reports_success_and_failure_for_the_exact_sampled_path() -> m
     harness.invoke_on_load()?;
     let transitions = harness.emissions("sorotte-network-options-transition-result")?;
     assert_eq!(transitions[1]["status"], "failed");
-    assert_eq!(transitions[1]["path"], "https://media.example.test/b.m3u8");
+    assert_eq!(transitions[1]["loadSequence"], 2);
+    assert_eq!(
+        transitions[1]["sourcePath"],
+        "https://media.example.test/b.m3u8"
+    );
+    Ok(())
+}
+
+#[test]
+fn rewritten_stream_target_is_classified_separately_and_same_source_loads_are_sequenced()
+-> mlua::Result<()> {
+    let harness = Harness::new()?;
+    harness.configure_as(
+        "owner-a",
+        "attachment-a",
+        7,
+        json!({"cache-secs": "75", "cache-pause-wait": "5"}),
+    )?;
+    let source = "https://service.example/watch/123";
+    harness.set_path("path", source)?;
+    harness.set_path("stream-open-filename", "edl://resolved-stream-a")?;
+    harness.invoke_on_load()?;
+
+    assert_eq!(
+        harness.writes()?.len(),
+        2,
+        "the complete option map should apply"
+    );
+    let transitions = harness.emissions("sorotte-network-options-transition-result")?;
+    assert_eq!(transitions[0]["status"], "network-updated");
+    assert_eq!(transitions[0]["loadSequence"], 1);
+    assert_eq!(transitions[0]["sourcePath"], source);
+    assert_eq!(
+        transitions[0]["streamOpenFilename"],
+        "edl://resolved-stream-a"
+    );
+
+    harness.set_rejected_property(Some("file-local-options/cache-secs"))?;
+    harness.set_path("stream-open-filename", "edl://resolved-stream-b")?;
+    harness.invoke_on_load()?;
+    let transitions = harness.emissions("sorotte-network-options-transition-result")?;
+    assert_eq!(transitions[1]["status"], "failed");
+    assert_eq!(transitions[1]["loadSequence"], 2);
+    assert_eq!(transitions[1]["sourcePath"], source);
+    assert_eq!(
+        transitions[1]["streamOpenFilename"],
+        "edl://resolved-stream-b"
+    );
     Ok(())
 }
 
@@ -331,7 +388,8 @@ fn explicit_apply_reports_the_authoritative_path_used_for_its_atomic_write_set()
 
     let result = &harness.emissions("sorotte-network-options-active-result")?[0];
     assert_eq!(result["attempt"], 42);
-    assert_eq!(result["path"], "https://media.example.test/b.m3u8");
+    assert_eq!(result["loadSequence"], 0);
+    assert_eq!(result["sourcePath"], "https://media.example.test/b.m3u8");
     assert_eq!(result["status"], "network-updated");
     assert!(
         harness

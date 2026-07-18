@@ -10,6 +10,24 @@ fn ensure_application_command_succeeded(events: Vec<ClientEvent>) -> anyhow::Res
     Ok(())
 }
 
+async fn wait_with_player_integration_maintenance(
+    runtime: &mut ClientApplication<MpvAdapter>,
+    duration: Duration,
+) {
+    let delay = tokio::time::sleep(duration);
+    tokio::pin!(delay);
+    let mut maintenance_tick =
+        tokio::time::interval(Duration::from_millis(PLAYER_CHAT_INPUT_POLL_INTERVAL_MS));
+    loop {
+        tokio::select! {
+            _ = &mut delay => break,
+            _ = maintenance_tick.tick() => {
+                runtime.with_player_io(MpvAdapter::maintain_runtime_integrations);
+            }
+        }
+    }
+}
+
 async fn run_reconnect_backoff(
     runtime: &mut ClientApplication<MpvAdapter>,
     retries: &mut u32,
@@ -36,7 +54,7 @@ async fn run_reconnect_backoff(
             "active reconnect backoff plan did not include a sleep delay"
         ));
     };
-    tokio::time::sleep(Duration::from_secs_f64(delay_seconds)).await;
+    wait_with_player_integration_maintenance(runtime, Duration::from_secs_f64(delay_seconds)).await;
     *retries = plan.next_retries;
     Ok(false)
 }
@@ -326,7 +344,21 @@ where
     F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
     G: FnMut(&str) -> anyhow::Result<()>,
 {
-    Ok(match TcpStream::connect(endpoint).await {
+    let connect = TcpStream::connect(endpoint);
+    tokio::pin!(connect);
+    let mut maintenance_tick =
+        tokio::time::interval(Duration::from_millis(PLAYER_CHAT_INPUT_POLL_INTERVAL_MS));
+    let connect_result = loop {
+        tokio::select! {
+            result = &mut connect => break result,
+            _ = maintenance_tick.tick() => {
+                launch
+                    .runtime
+                    .with_player_io(MpvAdapter::maintain_runtime_integrations);
+            }
+        }
+    };
+    Ok(match connect_result {
         Ok(stream) => (
             client_network_loop_attempt_execution_plan_for_connected_session_exit_legacy_compatible(
                 run_connected_client_session_with_legacy_startup_overrides_and_diagnostics(

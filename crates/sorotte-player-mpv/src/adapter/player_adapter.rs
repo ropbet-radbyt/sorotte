@@ -565,13 +565,13 @@ impl PlayerAdapter for MpvAdapter {
     }
 
     fn take_local_file_update(&mut self) -> Option<LocalFileUpdate> {
+        self.maintain_runtime_integrations();
         self.poll_ipc_local_file_update_if_attached();
         self.pending_local_file_update.take()
     }
 
     fn take_playback_telemetry_update(&mut self) -> Option<PlayerPlaybackTelemetryUpdate> {
-        self.maintain_network_media_options_hook_lease();
-        self.maintain_legacy_syncplayintf_lease();
+        self.maintain_runtime_integrations();
         self.ensure_transport_observers_registered_if_attached();
         self.drain_ipc_events_if_attached();
         if self.pending_playback_telemetry_update.is_none() {
@@ -581,6 +581,7 @@ impl PlayerAdapter for MpvAdapter {
     }
 
     fn take_transport_telemetry_update(&mut self) -> Option<PlayerTransportTelemetryUpdate> {
+        self.maintain_runtime_integrations();
         self.ensure_transport_observers_registered_if_attached();
         self.drain_ipc_events_if_attached();
         self.observe_unhealthy_ipc_transport();
@@ -589,6 +590,7 @@ impl PlayerAdapter for MpvAdapter {
     }
 
     fn take_command_progress(&mut self) -> Option<PlayerCommandProgress> {
+        self.maintain_runtime_integrations();
         self.ensure_transport_observers_registered_if_attached();
         self.drain_ipc_events_if_attached();
         self.observe_unhealthy_ipc_transport();
@@ -606,12 +608,14 @@ impl PlayerAdapter for MpvAdapter {
     }
 
     fn take_media_load_outcome(&mut self) -> Option<PlayerMediaLoadOutcome> {
+        self.maintain_runtime_integrations();
         self.ensure_observers_registered_if_attached();
         self.drain_ipc_events_if_attached();
         self.pending_media_load_outcomes.pop_front()
     }
 
     fn take_pending_chat_request(&mut self) -> Option<String> {
+        self.maintain_runtime_integrations();
         self.try_send_legacy_syncplayintf_options_if_pending();
         if self.pending_chat_requests.is_empty() && !self.chat_input_polling_enabled() {
             return None;

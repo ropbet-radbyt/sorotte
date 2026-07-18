@@ -1,13 +1,14 @@
 local utils = require "mp.utils"
 
 local SCRIPT_NAME = "sorotte_network_options"
-local PROTOCOL = "sorotte-network-options-v2"
+local PROTOCOL = "sorotte-network-options-v3"
 local CONFIGURE_MESSAGE = "sorotte_network_options_configure"
 local HEARTBEAT_MESSAGE = "sorotte_network_options_heartbeat"
 local RELEASE_MESSAGE = "sorotte_network_options_release"
 local APPLY_ACTIVE_MESSAGE = "sorotte_network_options_apply_active"
 local CONFIGURED_MESSAGE = "sorotte-network-options-configured"
 local OWNERSHIP_MESSAGE = "sorotte-network-options-ownership"
+local HEARTBEAT_RESULT_MESSAGE = "sorotte-network-options-heartbeat"
 local ACTIVE_RESULT_MESSAGE = "sorotte-network-options-active-result"
 local TRANSITION_RESULT_MESSAGE = "sorotte-network-options-transition-result"
 local MINIMUM_LEASE_MS = 250
@@ -29,6 +30,7 @@ local owner_last_seen = nil
 local owner_lease_seconds = 0
 local last_active_attempt = nil
 local last_active_result = nil
+local load_sequence = 0
 
 local function emit(name, payload)
     mp.commandv("script-message", name, utils.format_json(payload))
@@ -49,6 +51,7 @@ local function clear_owner()
     owner_lease_seconds = 0
     last_active_attempt = nil
     last_active_result = nil
+    load_sequence = 0
 end
 
 local function owner_is_live()
@@ -63,7 +66,7 @@ local function ownership_payload(status, target_owner_id, target_attachment_id, 
         protocol = PROTOCOL,
         ownerId = target_owner_id,
         attachmentId = target_attachment_id,
-        generation = target_generation,
+        configurationGeneration = target_generation,
         status = status,
     }
 end
@@ -96,14 +99,16 @@ local function apply_options(path)
     return "network-updated", nil
 end
 
-local function result_payload(status, path, error_message)
+local function result_payload(status, sequence, source_path, stream_open_filename, error_message)
     local payload = {
         protocol = PROTOCOL,
         ownerId = owner_id,
         attachmentId = attachment_id,
-        generation = generation,
+        configurationGeneration = generation,
+        loadSequence = sequence,
+        sourcePath = source_path,
+        streamOpenFilename = stream_open_filename,
         status = status,
-        path = path,
     }
     if error_message ~= nil then payload.error = tostring(error_message) end
     return payload
@@ -121,7 +126,7 @@ end
 mp.register_script_message(CONFIGURE_MESSAGE, function(payload_text)
     local payload = utils.parse_json(payload_text)
     if not valid_controller_payload(payload)
-        or type(payload.generation) ~= "number"
+        or type(payload.configurationGeneration) ~= "number"
         or type(payload.leaseMs) ~= "number"
         or type(payload.options) ~= "table"
     then
@@ -136,7 +141,7 @@ mp.register_script_message(CONFIGURE_MESSAGE, function(payload_text)
             "owner-live",
             payload.ownerId,
             payload.attachmentId,
-            payload.generation
+            payload.configurationGeneration
         )
         rejected.activeOwnerId = owner_id
         rejected.activeAttachmentId = attachment_id
@@ -147,12 +152,12 @@ mp.register_script_message(CONFIGURE_MESSAGE, function(payload_text)
     local same_attachment = payload.ownerId == owner_id
         and payload.attachmentId == attachment_id
     local status = "configured"
-    if same_attachment and payload.generation < generation then
+    if same_attachment and payload.configurationGeneration < generation then
         status = "stale"
     else
         owner_id = payload.ownerId
         attachment_id = payload.attachmentId
-        generation = payload.generation
+        generation = payload.configurationGeneration
         options = payload.options
         last_active_attempt = nil
         last_active_result = nil
@@ -166,24 +171,40 @@ mp.register_script_message(CONFIGURE_MESSAGE, function(payload_text)
         status,
         payload.ownerId,
         payload.attachmentId,
-        payload.generation
+        payload.configurationGeneration
     ))
 end)
 
 mp.register_script_message(HEARTBEAT_MESSAGE, function(payload_text)
     local payload = utils.parse_json(payload_text)
-    if not valid_controller_payload(payload) then return end
+    if not valid_controller_payload(payload)
+        or type(payload.configurationGeneration) ~= "number"
+        or type(payload.heartbeatNonce) ~= "number"
+    then
+        return
+    end
     expire_owner_if_needed()
-    if payload.ownerId ~= owner_id or payload.attachmentId ~= attachment_id then
+    if payload.ownerId ~= owner_id
+        or payload.attachmentId ~= attachment_id
+        or payload.configurationGeneration ~= generation
+    then
         emit(OWNERSHIP_MESSAGE, ownership_payload(
             "ownership-lost",
             payload.ownerId,
             payload.attachmentId,
-            payload.generation
+            payload.configurationGeneration
         ))
         return
     end
     owner_last_seen = mp.get_time()
+    local acknowledged = ownership_payload(
+        "renewed",
+        payload.ownerId,
+        payload.attachmentId,
+        generation
+    )
+    acknowledged.heartbeatNonce = payload.heartbeatNonce
+    emit(HEARTBEAT_RESULT_MESSAGE, acknowledged)
 end)
 
 mp.register_script_message(RELEASE_MESSAGE, function(payload_text)
@@ -204,7 +225,7 @@ end)
 mp.register_script_message(APPLY_ACTIVE_MESSAGE, function(payload_text)
     local payload = utils.parse_json(payload_text)
     if not valid_controller_payload(payload)
-        or type(payload.generation) ~= "number"
+        or type(payload.configurationGeneration) ~= "number"
         or type(payload.attempt) ~= "number"
     then
         return
@@ -216,10 +237,12 @@ mp.register_script_message(APPLY_ACTIVE_MESSAGE, function(payload_text)
             "ownership-lost",
             payload.ownerId,
             payload.attachmentId,
-            payload.generation
+            payload.configurationGeneration
         )
         lost.attempt = payload.attempt
-        lost.path = mp.get_property("path", "")
+        lost.sourcePath = mp.get_property("path", "")
+        lost.streamOpenFilename = mp.get_property("stream-open-filename", lost.sourcePath)
+        lost.loadSequence = load_sequence
         lost.error = "network-options hook ownership was lost"
         lost.status = "failed"
         emit(ACTIVE_RESULT_MESSAGE, lost)
@@ -231,15 +254,23 @@ mp.register_script_message(APPLY_ACTIVE_MESSAGE, function(payload_text)
         return
     end
 
-    local path = mp.get_property("path", "")
+    local source_path = mp.get_property("path", "")
+    local stream_open_filename = mp.get_property("stream-open-filename", source_path)
+    if stream_open_filename == "" then stream_open_filename = source_path end
     local status, error_message
-    if payload.generation ~= generation then
+    if payload.configurationGeneration ~= generation then
         status = "failed"
         error_message = "network-options configuration generation changed"
     else
-        status, error_message = apply_options(path)
+        status, error_message = apply_options(stream_open_filename)
     end
-    local result = result_payload(status, path, error_message)
+    local result = result_payload(
+        status,
+        load_sequence,
+        source_path,
+        stream_open_filename,
+        error_message
+    )
     result.attempt = payload.attempt
     last_active_attempt = payload.attempt
     last_active_result = result
@@ -253,9 +284,18 @@ end)
 mp.add_hook("on_load", 50, function()
     expire_owner_if_needed()
     if not owner_is_live() then return end
-    local path = mp.get_property("stream-open-filename", "")
-    local status, error_message = apply_options(path)
-    emit(TRANSITION_RESULT_MESSAGE, result_payload(status, path, error_message))
+    load_sequence = load_sequence + 1
+    local source_path = mp.get_property("path", "")
+    local stream_open_filename = mp.get_property("stream-open-filename", source_path)
+    if stream_open_filename == "" then stream_open_filename = source_path end
+    local status, error_message = apply_options(stream_open_filename)
+    emit(TRANSITION_RESULT_MESSAGE, result_payload(
+        status,
+        load_sequence,
+        source_path,
+        stream_open_filename,
+        error_message
+    ))
 end)
 
 mp.add_periodic_timer(0.1, expire_owner_if_needed)

@@ -34,6 +34,7 @@ struct NetworkOptionsHookScenarioTransport {
     old_network_succeeds: bool,
     target: HookSupersessionTarget,
     lose_ownership_on_heartbeat: bool,
+    acknowledge_heartbeats: bool,
 }
 
 impl NetworkOptionsHookScenarioTransport {
@@ -84,10 +85,10 @@ impl MpvJsonIpcTransport for NetworkOptionsHookScenarioTransport {
                 self.push(Self::client_message(
                     "sorotte-network-options-configured",
                     json!({
-                        "protocol": "sorotte-network-options-v2",
+                        "protocol": "sorotte-network-options-v3",
                         "ownerId": payload["ownerId"],
                         "attachmentId": payload["attachmentId"],
-                        "generation": payload["generation"],
+                        "configurationGeneration": payload["configurationGeneration"],
                         "status": "configured",
                     }),
                 ));
@@ -105,14 +106,16 @@ impl MpvJsonIpcTransport for NetworkOptionsHookScenarioTransport {
                 )
                 .expect("apply payload should be valid");
                 let base = json!({
-                    "protocol": "sorotte-network-options-v2",
+                    "protocol": "sorotte-network-options-v3",
                     "ownerId": payload["ownerId"],
                     "attachmentId": payload["attachmentId"],
-                    "generation": payload["generation"],
+                    "configurationGeneration": payload["configurationGeneration"],
                 });
                 let mut active_result = base.clone();
                 active_result["attempt"] = payload["attempt"].clone();
-                active_result["path"] = json!("https://media.example.test/a.m3u8");
+                active_result["loadSequence"] = json!(1);
+                active_result["sourcePath"] = json!("https://media.example.test/a.m3u8");
+                active_result["streamOpenFilename"] = json!("https://media.example.test/a.m3u8");
                 if self.old_network_succeeds {
                     active_result["status"] = json!("network-updated");
                 } else {
@@ -133,7 +136,9 @@ impl MpvJsonIpcTransport for NetworkOptionsHookScenarioTransport {
                             "data": "C:/media/local-b.mkv",
                         }));
                         let mut transition = base;
-                        transition["path"] = json!("C:/media/local-b.mkv");
+                        transition["loadSequence"] = json!(2);
+                        transition["sourcePath"] = json!("C:/media/local-b.mkv");
+                        transition["streamOpenFilename"] = json!("C:/media/local-b.mkv");
                         transition["status"] = json!("local");
                         self.push(Self::client_message(
                             "sorotte-network-options-transition-result",
@@ -158,7 +163,10 @@ impl MpvJsonIpcTransport for NetworkOptionsHookScenarioTransport {
                         }));
                         if !matches!(self.target, HookSupersessionTarget::NetworkAwaitingResult) {
                             let mut transition = base;
-                            transition["path"] = json!("https://media.example.test/b.m3u8");
+                            transition["loadSequence"] = json!(2);
+                            transition["sourcePath"] = json!("https://media.example.test/b.m3u8");
+                            transition["streamOpenFilename"] =
+                                json!("https://media.example.test/b.m3u8");
                             if matches!(self.target, HookSupersessionTarget::NetworkSuccess) {
                                 transition["status"] = json!("network-updated");
                             } else {
@@ -176,21 +184,34 @@ impl MpvJsonIpcTransport for NetworkOptionsHookScenarioTransport {
             }
             Some("script-message-to")
                 if command.get(2).and_then(Value::as_str)
-                    == Some("sorotte_network_options_heartbeat")
-                    && self.lose_ownership_on_heartbeat =>
+                    == Some("sorotte_network_options_heartbeat") =>
             {
                 let payload: Value =
                     serde_json::from_str(command.get(3).and_then(Value::as_str).unwrap()).unwrap();
-                self.push(Self::client_message(
-                    "sorotte-network-options-ownership",
-                    json!({
-                        "protocol": "sorotte-network-options-v2",
-                        "ownerId": payload["ownerId"],
-                        "attachmentId": payload["attachmentId"],
-                        "generation": payload["generation"],
-                        "status": "ownership-lost",
-                    }),
-                ));
+                if self.lose_ownership_on_heartbeat {
+                    self.push(Self::client_message(
+                        "sorotte-network-options-ownership",
+                        json!({
+                            "protocol": "sorotte-network-options-v3",
+                            "ownerId": payload["ownerId"],
+                            "attachmentId": payload["attachmentId"],
+                            "configurationGeneration": payload["configurationGeneration"],
+                            "status": "ownership-lost",
+                        }),
+                    ));
+                } else if self.acknowledge_heartbeats {
+                    self.push(Self::client_message(
+                        "sorotte-network-options-heartbeat",
+                        json!({
+                            "protocol": "sorotte-network-options-v3",
+                            "ownerId": payload["ownerId"],
+                            "attachmentId": payload["attachmentId"],
+                            "configurationGeneration": payload["configurationGeneration"],
+                            "heartbeatNonce": payload["heartbeatNonce"],
+                            "status": "renewed",
+                        }),
+                    ));
+                }
                 self.push(json!({"request_id": request_id, "error": "success"}));
             }
             _ => self.push(json!({"request_id": request_id, "error": "success"})),
@@ -308,10 +329,10 @@ impl MpvJsonIpcTransport for NetworkOptionsHookReloadTransport {
                     self.push(NetworkOptionsHookScenarioTransport::client_message(
                         "sorotte-network-options-configured",
                         json!({
-                            "protocol": "sorotte-network-options-v2",
+                            "protocol": "sorotte-network-options-v3",
                             "ownerId": payload["ownerId"],
                             "attachmentId": payload["attachmentId"],
-                            "generation": payload["generation"],
+                            "configurationGeneration": payload["configurationGeneration"],
                             "status": "configured",
                         }),
                     ));
@@ -334,12 +355,14 @@ impl MpvJsonIpcTransport for NetworkOptionsHookReloadTransport {
                 self.push(NetworkOptionsHookScenarioTransport::client_message(
                     "sorotte-network-options-active-result",
                     json!({
-                        "protocol": "sorotte-network-options-v2",
+                        "protocol": "sorotte-network-options-v3",
                         "ownerId": payload["ownerId"],
                         "attachmentId": payload["attachmentId"],
-                        "generation": payload["generation"],
+                        "configurationGeneration": payload["configurationGeneration"],
                         "attempt": payload["attempt"],
-                        "path": "https://media.example.test/recovered.m3u8",
+                        "loadSequence": 0,
+                        "sourcePath": "https://media.example.test/recovered.m3u8",
+                        "streamOpenFilename": "https://media.example.test/recovered.m3u8",
                         "status": "network-updated",
                     }),
                 ));
@@ -401,10 +424,10 @@ impl MpvJsonIpcTransport for NetworkOptionsHookSupersessionTransport {
                 self.push(json!({
                     "event": "client-message",
                     "args": ["sorotte-network-options-configured", json!({
-                        "protocol": "sorotte-network-options-v2",
+                        "protocol": "sorotte-network-options-v3",
                         "ownerId": payload["ownerId"],
                         "attachmentId": payload["attachmentId"],
-                        "generation": payload["generation"],
+                        "configurationGeneration": payload["configurationGeneration"],
                         "status": "configured",
                     }).to_string()],
                 }));
@@ -422,11 +445,13 @@ impl MpvJsonIpcTransport for NetworkOptionsHookSupersessionTransport {
                 )
                 .expect("apply payload should be valid");
                 let result = json!({
-                    "protocol": "sorotte-network-options-v2",
+                    "protocol": "sorotte-network-options-v3",
                     "ownerId": payload["ownerId"],
                     "attachmentId": payload["attachmentId"],
-                    "generation": payload["generation"],
-                    "path": "https://media.example.test/b.m3u8",
+                    "configurationGeneration": payload["configurationGeneration"],
+                    "loadSequence": 2,
+                    "sourcePath": "https://media.example.test/b.m3u8",
+                    "streamOpenFilename": "https://media.example.test/b.m3u8",
                     "status": "network-updated",
                 });
                 self.push(json!({
@@ -2213,6 +2238,7 @@ fn run_core_hook_supersession_scenario(
         old_network_succeeds,
         target,
         lose_ownership_on_heartbeat: false,
+        acknowledge_heartbeats: true,
     };
     let mut adapter = MpvAdapter::with_network_options_hook_test_transport(transport);
     adapter.configure_network_media_options([("cache-secs", "75")]);
@@ -2234,6 +2260,193 @@ fn run_core_hook_supersession_scenario(
         "production hook scenarios must never use direct file-local writes"
     );
     (apply, outcome, writes)
+}
+
+fn configured_v3_hook_reducer_adapter() -> MpvAdapter {
+    let mut adapter =
+        MpvAdapter::with_network_options_hook_test_transport(NeverRespondingTransport);
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+    adapter.prepare_test_network_options_hook_v3_reducer();
+    adapter
+}
+
+fn defer_v3_transition(
+    adapter: &mut MpvAdapter,
+    load_sequence: u64,
+    source_path: &str,
+    stream_open_filename: &str,
+    status: &str,
+    error: Option<&str>,
+) {
+    adapter.defer_test_network_options_hook_v3_transition(
+        load_sequence,
+        source_path,
+        stream_open_filename,
+        status,
+        error,
+    );
+}
+
+fn apply_deferred_v3_transition(adapter: &mut MpvAdapter) {
+    adapter.flush_test_network_options_hook_v3_transition();
+}
+
+#[test]
+fn rewritten_stream_result_is_accepted_and_rejection_remains_visible_and_retryable() {
+    let mut adapter = configured_v3_hook_reducer_adapter();
+    let source = "https://service.example/watch/123";
+
+    defer_v3_transition(
+        &mut adapter,
+        1,
+        source,
+        "edl://resolved-stream-a",
+        "network-updated",
+        None,
+    );
+    apply_deferred_v3_transition(&mut adapter);
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
+    );
+    assert_eq!(
+        adapter.test_network_options_policy_source_path(),
+        Some(source),
+        "logical source identity must not be replaced by the rewritten stream target"
+    );
+
+    defer_v3_transition(
+        &mut adapter,
+        2,
+        source,
+        "edl://resolved-stream-b",
+        "failed",
+        Some("mpv rejected cache-secs"),
+    );
+    apply_deferred_v3_transition(&mut adapter);
+    let Some(MpvNetworkMediaOptionsTransitionOutcome::Failed(error)) =
+        adapter.take_network_media_options_transition_outcome()
+    else {
+        panic!("rewritten target rejection should remain visible");
+    };
+    assert!(error.to_string().contains("mpv rejected cache-secs"));
+    assert!(error.to_string().contains("edl://resolved-stream-b"));
+
+    defer_v3_transition(
+        &mut adapter,
+        3,
+        source,
+        "edl://resolved-stream-c",
+        "network-updated",
+        None,
+    );
+    apply_deferred_v3_transition(&mut adapter);
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied),
+        "a later load sequence must recover a retryable rejection"
+    );
+}
+
+#[test]
+fn same_url_higher_sequence_is_final_for_success_failure_and_delayed_results() {
+    let source = "https://service.example/watch/123";
+    let stream = "edl://resolved-stream";
+    let mut adapter = configured_v3_hook_reducer_adapter();
+
+    defer_v3_transition(&mut adapter, 1, source, stream, "network-updated", None);
+    apply_deferred_v3_transition(&mut adapter);
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
+    );
+
+    adapter.begin_test_network_options_event_batch();
+    adapter.observe_test_network_options_path(source);
+    defer_v3_transition(&mut adapter, 1, source, stream, "network-updated", None);
+    defer_v3_transition(
+        &mut adapter,
+        2,
+        source,
+        stream,
+        "failed",
+        Some("same-URL B rejected cache-secs"),
+    );
+    adapter.end_test_network_options_event_batch();
+    let Some(MpvNetworkMediaOptionsTransitionOutcome::Failed(error)) =
+        adapter.take_network_media_options_transition_outcome()
+    else {
+        panic!("same-URL B failure should supersede delayed A success");
+    };
+    assert!(error.to_string().contains("same-URL B rejected"));
+    assert_eq!(
+        adapter.test_network_options_last_accepted_load_sequence(),
+        Some(2)
+    );
+
+    let mut adapter = configured_v3_hook_reducer_adapter();
+    defer_v3_transition(
+        &mut adapter,
+        1,
+        source,
+        stream,
+        "failed",
+        Some("same-URL A rejected cache-secs"),
+    );
+    apply_deferred_v3_transition(&mut adapter);
+    assert!(matches!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::Failed(_))
+    ));
+
+    adapter.set_test_network_options_awaiting_authoritative_transition(true);
+    defer_v3_transition(&mut adapter, 2, source, stream, "network-updated", None);
+    defer_v3_transition(
+        &mut adapter,
+        1,
+        source,
+        stream,
+        "failed",
+        Some("delayed A rejection"),
+    );
+    apply_deferred_v3_transition(&mut adapter);
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied),
+        "same-URL B success must supersede delayed A failure"
+    );
+    assert!(
+        !adapter.test_network_options_awaiting_authoritative_transition(),
+        "B success must clear the stale explicit-apply requirement"
+    );
+}
+
+#[test]
+fn higher_sequence_result_before_same_url_path_observation_completes_once() {
+    let source = "https://service.example/watch/123";
+    let mut adapter = configured_v3_hook_reducer_adapter();
+    adapter.set_test_network_options_awaiting_authoritative_transition(true);
+    adapter.begin_test_network_options_event_batch();
+    defer_v3_transition(
+        &mut adapter,
+        2,
+        source,
+        "edl://resolved-stream-b",
+        "network-updated",
+        None,
+    );
+    adapter.observe_test_network_options_path(source);
+    adapter.end_test_network_options_event_batch();
+
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
+    );
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None
+    );
+    assert!(!adapter.test_network_options_awaiting_authoritative_transition());
 }
 
 #[test]
@@ -2375,6 +2588,7 @@ fn ownership_loss_is_typed_and_keeps_playback_attached() {
         old_network_succeeds: true,
         target: HookSupersessionTarget::NetworkSuccess,
         lose_ownership_on_heartbeat: true,
+        acknowledge_heartbeats: false,
     };
     let mut adapter = MpvAdapter::with_network_options_hook_test_transport(transport);
     adapter.configure_network_media_options([("cache-secs", "75")]);
@@ -2387,6 +2601,10 @@ fn ownership_loss_is_typed_and_keeps_playback_attached() {
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
         Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
+    );
+    assert!(
+        adapter.test_network_media_options_hook_is_ready(),
+        "configured hook should remain ready before heartbeat testing"
     );
 
     adapter.force_test_network_media_options_hook_heartbeat_due();
@@ -2403,6 +2621,95 @@ fn ownership_loss_is_typed_and_keeps_playback_attached() {
 }
 
 #[test]
+fn transport_telemetry_only_pump_keeps_core_hook_ownership_live_past_the_lease() {
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let transport = NetworkOptionsHookScenarioTransport {
+        writes: Arc::clone(&writes),
+        responses: VecDeque::new(),
+        old_network_succeeds: true,
+        target: HookSupersessionTarget::NetworkSuccess,
+        lose_ownership_on_heartbeat: false,
+        acknowledge_heartbeats: true,
+    };
+    let mut adapter = MpvAdapter::with_network_options_hook_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+    adapter
+        .apply_network_media_options_to_active_media_classified()
+        .expect("initial hook ownership should configure");
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
+    );
+
+    let deadline = Instant::now() + Duration::from_millis(2_200);
+    while Instant::now() < deadline {
+        let _ = adapter.take_transport_telemetry_update();
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let _ = adapter.take_transport_telemetry_update();
+
+    assert!(adapter.is_connected());
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None
+    );
+    let heartbeat_count = writes
+        .lock()
+        .expect("transport-only heartbeat writes should not be poisoned")
+        .iter()
+        .filter(|line| line.contains("sorotte_network_options_heartbeat"))
+        .count();
+    assert!(
+        heartbeat_count >= 3,
+        "transport-only polling should positively renew the two-second lease"
+    );
+}
+
+#[test]
+fn accepted_but_unacknowledged_heartbeat_degrades_after_bounded_deadline() {
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let transport = NetworkOptionsHookScenarioTransport {
+        writes,
+        responses: VecDeque::new(),
+        old_network_succeeds: true,
+        target: HookSupersessionTarget::NetworkSuccess,
+        lose_ownership_on_heartbeat: false,
+        acknowledge_heartbeats: false,
+    };
+    let mut adapter = MpvAdapter::with_network_options_hook_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+    adapter
+        .apply_network_media_options_to_active_media_classified()
+        .expect("initial hook ownership should configure");
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
+    );
+
+    adapter.force_test_network_media_options_hook_heartbeat_due();
+    assert!(
+        adapter.test_network_media_options_hook_heartbeat_pending(),
+        "accepted heartbeat should remain pending until a positive acknowledgement"
+    );
+    adapter.force_test_network_media_options_hook_heartbeat_ack_timeout();
+    let outcome = adapter.take_network_media_options_transition_outcome();
+    let Some(MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error)) = outcome else {
+        panic!(
+            "missing positive heartbeat acknowledgement should degrade the hook, got {outcome:?}"
+        );
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("did not acknowledge heartbeat nonce")
+    );
+    assert!(
+        adapter.is_connected(),
+        "hook degradation must remain scoped"
+    );
+}
+
+#[test]
 fn graceful_cleanup_releases_the_core_hook_before_optional_bridge_release() {
     let writes = Arc::new(Mutex::new(Vec::new()));
     let transport = NetworkOptionsHookScenarioTransport {
@@ -2411,6 +2718,7 @@ fn graceful_cleanup_releases_the_core_hook_before_optional_bridge_release() {
         old_network_succeeds: true,
         target: HookSupersessionTarget::NetworkSuccess,
         lose_ownership_on_heartbeat: false,
+        acknowledge_heartbeats: true,
     };
     let mut adapter = MpvAdapter::with_network_options_hook_test_transport(transport);
     adapter.configure_network_media_options([("cache-secs", "75")]);

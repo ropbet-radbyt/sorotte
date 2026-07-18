@@ -141,6 +141,7 @@ impl GuiPersistedConfigRuntimeOwner {
             .as_mut()
             .and_then(GuiOwnedPlayer::as_mpv_mut)
             .map(|player| {
+                player.maintain_runtime_integrations();
                 let mut transitions = Vec::new();
                 while let Some(health) = player.take_sorotte_bridge_health_transition() {
                     transitions.push(health);

@@ -114,6 +114,7 @@ fn drain_cli_bridge_runtime_health_transitions_to_sink(
     mut emit: impl FnMut(String),
 ) {
     let transitions = runtime.with_player_io(|player| {
+        player.maintain_runtime_integrations();
         std::iter::from_fn(|| player.take_sorotte_bridge_health_transition()).collect::<Vec<_>>()
     });
     for health in transitions {
