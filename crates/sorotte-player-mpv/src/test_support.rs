@@ -45,7 +45,34 @@ pub(crate) fn cleanup_recording_syncplayintf_client() -> (MpvJsonIpcClient, Arc<
 }
 
 pub(crate) fn reject_first_active_network_option_client() -> MpvJsonIpcClient {
-    MpvJsonIpcClient::new(Box::new(RejectFirstActiveNetworkOptionTransport::default()))
+    reject_nth_active_network_option_client(1).0
+}
+
+pub(crate) fn reject_nth_active_network_option_client(
+    rejected_write: usize,
+) -> (MpvJsonIpcClient, Arc<Mutex<Vec<Value>>>) {
+    assert!(
+        rejected_write > 0,
+        "active-network option write indices are one-based"
+    );
+    let commands = Arc::new(Mutex::new(Vec::new()));
+    let transport = RejectNthActiveNetworkOptionTransport {
+        responses: VecDeque::new(),
+        rejected_write,
+        active_network_option_writes: 0,
+        commands: Arc::clone(&commands),
+    };
+    (MpvJsonIpcClient::new(Box::new(transport)), commands)
+}
+
+pub(crate) fn delayed_active_network_media_client() -> (MpvJsonIpcClient, Arc<Mutex<Vec<Value>>>) {
+    let commands = Arc::new(Mutex::new(Vec::new()));
+    let transport = DelayedActiveNetworkMediaTransport {
+        responses: VecDeque::new(),
+        path_queries: 0,
+        commands: Arc::clone(&commands),
+    };
+    (MpvJsonIpcClient::new(Box::new(transport)), commands)
 }
 
 #[derive(Debug, Default)]
@@ -89,13 +116,15 @@ impl MpvJsonIpcTransport for SuccessfulNoAckTransport {
     }
 }
 
-#[derive(Debug, Default)]
-struct RejectFirstActiveNetworkOptionTransport {
+#[derive(Debug)]
+struct RejectNthActiveNetworkOptionTransport {
     responses: VecDeque<String>,
-    active_network_option_rejected: bool,
+    rejected_write: usize,
+    active_network_option_writes: usize,
+    commands: Arc<Mutex<Vec<Value>>>,
 }
 
-impl MpvJsonIpcTransport for RejectFirstActiveNetworkOptionTransport {
+impl MpvJsonIpcTransport for RejectNthActiveNetworkOptionTransport {
     fn send_line_until(&mut self, line: &str, _deadline: Instant) -> io::Result<()> {
         let request: Value = serde_json::from_str(line.trim())
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
@@ -111,6 +140,16 @@ impl MpvJsonIpcTransport for RejectFirstActiveNetworkOptionTransport {
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing command array"))?;
         let command_name = command.first().and_then(Value::as_str);
         let property_name = command.get(1).and_then(Value::as_str);
+        let reject_active_network_option = command_name == Some("set_property")
+            && property_name.is_some_and(|property| property.starts_with("file-local-options/"))
+            && {
+                self.active_network_option_writes += 1;
+                self.commands
+                    .lock()
+                    .expect("active-network command log should not be poisoned")
+                    .push(Value::Array(command.clone()));
+                self.active_network_option_writes == self.rejected_write
+            };
         let response = match (command_name, property_name) {
             (Some("get_property"), Some("path")) => json!({
                 "request_id": request_id,
@@ -130,12 +169,85 @@ impl MpvJsonIpcTransport for RejectFirstActiveNetworkOptionTransport {
             (Some("get_property"), _) => {
                 json!({"request_id": request_id, "error": "success", "data": false})
             }
-            (Some("set_property"), Some(property))
-                if property.starts_with("file-local-options/")
-                    && !self.active_network_option_rejected =>
-            {
-                self.active_network_option_rejected = true;
+            (Some("set_property"), Some(_)) if reject_active_network_option => {
                 json!({"request_id": request_id, "error": "invalid parameter"})
+            }
+            _ => json!({"request_id": request_id, "error": "success"}),
+        };
+        self.responses.push_back(response.to_string() + "\n");
+        Ok(())
+    }
+
+    fn read_line_until(&mut self, line: &mut String, _deadline: Instant) -> io::Result<usize> {
+        let response = self.responses.pop_front().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "test mpv transport had no queued response",
+            )
+        })?;
+        line.clear();
+        line.push_str(&response);
+        Ok(line.len())
+    }
+}
+
+#[derive(Debug)]
+struct DelayedActiveNetworkMediaTransport {
+    responses: VecDeque<String>,
+    path_queries: usize,
+    commands: Arc<Mutex<Vec<Value>>>,
+}
+
+impl MpvJsonIpcTransport for DelayedActiveNetworkMediaTransport {
+    fn send_line_until(&mut self, line: &str, _deadline: Instant) -> io::Result<()> {
+        let request: Value = serde_json::from_str(line.trim())
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let request_id = request.get("request_id").cloned().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "test mpv request omitted request_id",
+            )
+        })?;
+        let command = request
+            .get("command")
+            .and_then(Value::as_array)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing command array"))?;
+        let command_name = command.first().and_then(Value::as_str);
+        let property_name = command.get(1).and_then(Value::as_str);
+        let response = match (command_name, property_name) {
+            (Some("get_property"), Some("path")) => {
+                self.path_queries += 1;
+                if self.path_queries == 1 {
+                    json!({"request_id": request_id, "error": "success", "data": null})
+                } else {
+                    json!({
+                        "request_id": request_id,
+                        "error": "success",
+                        "data": "https://media.example.test/delayed.m3u8",
+                    })
+                }
+            }
+            (Some("get_property"), Some("osd-align-y")) => json!({
+                "request_id": request_id,
+                "error": "success",
+                "data": "top",
+            }),
+            (Some("get_property"), Some("osd-margin-y")) => json!({
+                "request_id": request_id,
+                "error": "success",
+                "data": 16,
+            }),
+            (Some("get_property"), _) => {
+                json!({"request_id": request_id, "error": "success", "data": false})
+            }
+            (Some("set_property"), Some(property))
+                if property.starts_with("file-local-options/") =>
+            {
+                self.commands
+                    .lock()
+                    .expect("active-network command log should not be poisoned")
+                    .push(Value::Array(command.clone()));
+                json!({"request_id": request_id, "error": "success"})
             }
             _ => json!({"request_id": request_id, "error": "success"}),
         };

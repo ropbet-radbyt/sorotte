@@ -16,7 +16,7 @@ use super::runtime_bridge::{
     GuiNativeRuntimeBridge, GuiNativeRuntimePump, GuiNoopRuntimePump, GuiPendingRoomChangeRequest,
     GuiPreviewRuntimeBridge, GuiQueuedRuntimeOwner,
 };
-use super::runtime_owner::GuiPersistedConfigRuntimeOwner;
+use super::runtime_owner::{GuiCorePlayerConfigurationHealth, GuiPersistedConfigRuntimeOwner};
 use super::runtime_queue::{
     GuiQueuedRuntimeBridge, GuiQueuedRuntimeBridgeHandle, GuiRuntimeThreadUnavailablePump,
     GuiThreadedRuntimeOwnerPump,

@@ -1,6 +1,25 @@
 use super::*;
 
 impl GuiEframeNativeHost {
+    fn apply_player_settings_degraded_test_override(owner: &mut GuiPersistedConfigRuntimeOwner) {
+        if !env_trimmed("SOROTTE_GUI_TEST_PLAYER_SETTINGS_DEGRADED")
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case("true"))
+            || owner.player.is_none()
+        {
+            return;
+        }
+        let reason = "Playback remains available. Retry mpv settings to apply the remaining streaming options in place."
+            .to_owned();
+        owner.player_apply_state.core_reapply_required = true;
+        owner.core_player_configuration_health =
+            GuiCorePlayerConfigurationHealth::StreamingDegraded {
+                reason: reason.clone(),
+                retryable_in_place: true,
+            };
+        owner.player_unavailability_reason = Some(reason);
+    }
+
     pub(in crate::app) fn native_options() -> eframe::NativeOptions {
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
@@ -63,6 +82,7 @@ impl GuiEframeNativeHost {
     ) -> Self {
         let mut owner =
             GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player(config_path);
+        Self::apply_player_settings_degraded_test_override(&mut owner);
         if env_trimmed("SOROTTE_GUI_TEST_DISABLE_STARTUP_SAVED_CONNECT")
             .as_deref()
             .is_some_and(|value| value.eq_ignore_ascii_case("true"))
@@ -81,9 +101,10 @@ impl GuiEframeNativeHost {
         room: impl Into<String>,
         config_path: Option<PathBuf>,
     ) -> Result<Self, String> {
-        let owner =
+        let mut owner =
             GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player(config_path)
                 .with_client_core_chat_loopback_session_runtime(username, room)?;
+        Self::apply_player_settings_degraded_test_override(&mut owner);
         Ok(Self::with_queued_runtime_owner(false, owner))
     }
 
@@ -93,9 +114,10 @@ impl GuiEframeNativeHost {
         host_arg: impl AsRef<str>,
         config_path: Option<PathBuf>,
     ) -> Result<Self, String> {
-        let owner =
+        let mut owner =
             GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player(config_path)
                 .with_client_core_chat_tcp_session_runtime(username, room, host_arg)?;
+        Self::apply_player_settings_degraded_test_override(&mut owner);
         Ok(Self::with_queued_runtime_owner(false, owner))
     }
 

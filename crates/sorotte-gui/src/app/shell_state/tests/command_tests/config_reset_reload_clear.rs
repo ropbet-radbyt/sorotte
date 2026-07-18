@@ -597,6 +597,7 @@ fn configuration_changes_expose_typed_apply_requirements_and_save_follow_up() {
     assert!(
         state.apply(GuiShellAction::ApplyPendingApplyRequirementsSnapshot(vec![
             GuiSettingApplyRequirement::Reconnect,
+            GuiSettingApplyRequirement::PlayerSettingsRetryAvailable,
             GuiSettingApplyRequirement::RestartPlayer,
             GuiSettingApplyRequirement::RestartApplication,
         ]))
@@ -605,6 +606,7 @@ fn configuration_changes_expose_typed_apply_requirements_and_save_follow_up() {
         state.pending_apply_requirements,
         vec![
             GuiSettingApplyRequirement::Reconnect,
+            GuiSettingApplyRequirement::PlayerSettingsRetryAvailable,
             GuiSettingApplyRequirement::RestartPlayer,
             GuiSettingApplyRequirement::RestartApplication,
         ]
@@ -614,6 +616,7 @@ fn configuration_changes_expose_typed_apply_requirements_and_save_follow_up() {
     assert!(clean_tree.find("configuration:changes").is_none());
     for requirement in [
         GuiSettingApplyRequirement::Reconnect,
+        GuiSettingApplyRequirement::PlayerSettingsRetryAvailable,
         GuiSettingApplyRequirement::RestartPlayer,
         GuiSettingApplyRequirement::RestartApplication,
     ] {
@@ -637,6 +640,7 @@ fn configuration_changes_expose_typed_apply_requirements_and_save_follow_up() {
         state.pending_apply_requirements,
         vec![
             GuiSettingApplyRequirement::Reconnect,
+            GuiSettingApplyRequirement::PlayerSettingsRetryAvailable,
             GuiSettingApplyRequirement::RestartPlayer,
             GuiSettingApplyRequirement::RestartApplication,
         ]

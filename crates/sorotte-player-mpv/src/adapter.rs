@@ -64,6 +64,18 @@ static LEGACY_SYNCPLAYINTF_OWNER_ID: LazyLock<String> = LazyLock::new(|| {
     format!("sorotte-{}-{started_at}", process::id())
 });
 
+/// Describes how applying configured network-media options affected mpv's authoritative
+/// active-media state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MpvActiveNetworkMediaOptionsApplyOutcome {
+    /// mpv currently has no active media path.
+    NoActiveMedia,
+    /// mpv's active path is local, so network-only options were intentionally left unchanged.
+    LocalMediaUnchanged,
+    /// mpv's active path is network media and all configured file-local options were accepted.
+    NetworkMediaUpdated,
+}
+
 fn uses_network_media_options(path: &str) -> bool {
     let Some((scheme, _)) = path.trim().split_once("://") else {
         return false;
@@ -472,6 +484,58 @@ impl MpvAdapter {
         }
     }
 
+    /// Builds a ready simulated bridge over connected IPC that rejects exactly the Nth
+    /// active-network option write while recording the partial apply and later retry.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn with_nth_active_network_option_rejection_test_ipc(
+        settings: LegacySyncplayUiSettings,
+        rejected_write: usize,
+    ) -> (
+        Self,
+        std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    ) {
+        let (ipc_client, commands) =
+            crate::test_support::reject_nth_active_network_option_client(rejected_write);
+        let adapter = Self {
+            legacy_syncplay_ui_settings: settings,
+            legacy_syncplayintf_script_loaded: true,
+            legacy_syncplayintf_options_applied: true,
+            legacy_syncplayintf_bridge_instance_id: Some("test-bridge".to_owned()),
+            legacy_syncplayintf_acknowledged_options_generation: Some(1),
+            sorotte_bridge_health: SorotteBridgeHealth::Ready,
+            simulation_mode: true,
+            ipc_client: Some(ipc_client),
+            ..Self::default()
+        };
+        (adapter, commands)
+    }
+
+    /// Builds a ready simulated bridge whose authoritative path is initially absent and becomes
+    /// network media on the next query, recording accepted active-network option writes.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn with_delayed_active_network_media_test_ipc(
+        settings: LegacySyncplayUiSettings,
+    ) -> (
+        Self,
+        std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    ) {
+        let (ipc_client, commands) = crate::test_support::delayed_active_network_media_client();
+        let adapter = Self {
+            legacy_syncplay_ui_settings: settings,
+            legacy_syncplayintf_script_loaded: true,
+            legacy_syncplayintf_options_applied: true,
+            legacy_syncplayintf_bridge_instance_id: Some("test-bridge".to_owned()),
+            legacy_syncplayintf_acknowledged_options_generation: Some(1),
+            sorotte_bridge_health: SorotteBridgeHealth::Ready,
+            simulation_mode: true,
+            ipc_client: Some(ipc_client),
+            ..Self::default()
+        };
+        (adapter, commands)
+    }
+
     /// Marks a feature-gated fake IPC client unhealthy so higher-layer tests can distinguish a
     /// fatal player transport loss from optional bridge degradation.
     #[cfg(feature = "test-support")]
@@ -558,6 +622,15 @@ impl MpvAdapter {
     /// attaches to an existing mpv session or changes settings in place. Local
     /// files are deliberately left untouched.
     pub fn apply_network_media_options_to_active_media(&mut self) -> Result<(), PlayerError> {
+        self.apply_network_media_options_to_active_media_classified()
+            .map(|_| ())
+    }
+
+    /// Applies configured network options and reports whether mpv had no active media, local
+    /// media that was intentionally unchanged, or network media that accepted every option.
+    pub fn apply_network_media_options_to_active_media_classified(
+        &mut self,
+    ) -> Result<MpvActiveNetworkMediaOptionsApplyOutcome, PlayerError> {
         // `current_path` may describe a requested load or a prior externally
         // replaced playlist entry. An attached mpv is authoritative; the cache
         // is safe only for simulation or other no-IPC operation.
@@ -570,10 +643,10 @@ impl MpvAdapter {
             None => self.current_path.clone(),
         };
         let Some(active_path) = active_path else {
-            return Ok(());
+            return Ok(MpvActiveNetworkMediaOptionsApplyOutcome::NoActiveMedia);
         };
         if !uses_network_media_options(&active_path) {
-            return Ok(());
+            return Ok(MpvActiveNetworkMediaOptionsApplyOutcome::LocalMediaUnchanged);
         }
 
         for (name, value) in self.network_media_options.clone() {
@@ -583,7 +656,7 @@ impl MpvAdapter {
                 value
             ]))?;
         }
-        Ok(())
+        Ok(MpvActiveNetworkMediaOptionsApplyOutcome::NetworkMediaUpdated)
     }
 
     fn network_media_options_map(&self) -> serde_json::Map<String, Value> {

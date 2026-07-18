@@ -12,7 +12,8 @@ use sorotte_client_app::app_boundary::state::{
 };
 use sorotte_player_api::PlayerAdapter;
 use sorotte_player_mpv::{
-    LegacySyncplayUiSettings, MpvAdapter, SorotteBridgeFailureKind, SorotteBridgeHealth,
+    LegacySyncplayUiSettings, MpvActiveNetworkMediaOptionsApplyOutcome, MpvAdapter,
+    SorotteBridgeFailureKind, SorotteBridgeHealth,
 };
 use sorotte_secret::RedactedCommandArgs;
 
@@ -56,10 +57,31 @@ impl std::fmt::Debug for ManagedMpvLaunchConfig {
     }
 }
 
+impl ManagedMpvLaunchConfig {
+    pub(crate) fn has_positional_network_media(&self) -> bool {
+        let mut positional_only = false;
+        self.extra_args.iter().any(|argument| {
+            if !positional_only && argument == "--" {
+                positional_only = true;
+                return false;
+            }
+            if !positional_only && argument.starts_with('-') {
+                return false;
+            }
+            let Some((scheme, _)) = argument.trim().split_once("://") else {
+                return false;
+            };
+            !scheme.eq_ignore_ascii_case("file")
+        })
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct ManagedMpvProcessGuard {
     child: Child,
     ipc_cleanup_path: Option<PathBuf>,
+    #[cfg(test)]
+    drop_observer: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl ManagedMpvProcessGuard {
@@ -74,6 +96,19 @@ impl ManagedMpvProcessGuard {
         Self {
             child,
             ipc_cleanup_path: None,
+            drop_observer: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_test_child_with_drop_observer(
+        child: Child,
+        drop_observer: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        Self {
+            child,
+            ipc_cleanup_path: None,
+            drop_observer: Some(drop_observer),
         }
     }
 }
@@ -84,6 +119,10 @@ impl Drop for ManagedMpvProcessGuard {
         let _ = self.child.wait();
         if let Some(path) = self.ipc_cleanup_path.as_ref() {
             let _ = fs::remove_file(path);
+        }
+        #[cfg(test)]
+        if let Some(observer) = self.drop_observer.as_ref() {
+            observer.store(true, std::sync::atomic::Ordering::Release);
         }
     }
 }
@@ -199,6 +238,14 @@ pub(crate) fn apply_effective_streaming_options_to_active_network_media(
         .map_err(|error| format!("failed to update active mpv network-media options: {error}"))
 }
 
+pub(crate) fn apply_effective_streaming_options_to_active_network_media_classified(
+    player: &mut MpvAdapter,
+) -> Result<MpvActiveNetworkMediaOptionsApplyOutcome, String> {
+    player
+        .apply_network_media_options_to_active_media_classified()
+        .map_err(|error| format!("failed to update active mpv network-media options: {error}"))
+}
+
 pub(crate) fn spawn_managed_mpv_and_attach(
     config: &ManagedMpvLaunchConfig,
     path_prefixes: &[PathBuf],
@@ -251,6 +298,8 @@ pub(crate) fn spawn_managed_mpv_and_attach(
     let guard = ManagedMpvProcessGuard {
         child,
         ipc_cleanup_path,
+        #[cfg(test)]
+        drop_observer: None,
     };
     let mut adapter = connect_mpv_adapter_with_retry(
         &ipc_path,
@@ -727,6 +776,63 @@ mod tests {
                 r"--input-ipc-server=\\.\pipe\sorotte-gui-mpv-test".to_owned(),
                 "--profile=syncplay".to_owned(),
             ]
+        );
+    }
+
+    #[test]
+    fn managed_mpv_launch_args_preserve_positional_network_media_after_ipc_setup() {
+        let positional_media = "https://media.example.test/active.m3u8";
+        let args = managed_mpv_launch_args(
+            r"\\.\pipe\sorotte-gui-mpv-test",
+            &["--profile=syncplay".to_owned(), positional_media.to_owned()],
+            None,
+        );
+
+        assert_eq!(args.last().map(String::as_str), Some(positional_media));
+        let ipc_argument_index = args
+            .iter()
+            .position(|argument| argument.starts_with("--input-ipc-server="))
+            .expect("managed mpv args should configure JSON IPC");
+        let positional_media_index = args
+            .iter()
+            .position(|argument| argument == positional_media)
+            .expect("managed mpv args should retain positional media");
+        assert!(
+            ipc_argument_index < positional_media_index,
+            "mpv must receive IPC setup before the positional media target"
+        );
+    }
+
+    #[test]
+    fn managed_mpv_launch_config_classifies_only_positional_network_media() {
+        let config = |extra_args: Vec<String>| ManagedMpvLaunchConfig {
+            requested_player_path: "mpv".to_owned(),
+            program: PathBuf::from("mpv"),
+            effective_streaming_options: Vec::new(),
+            extra_args,
+            ui_settings: LegacySyncplayUiSettings::default(),
+        };
+
+        assert!(
+            config(vec![
+                "--profile=syncplay".to_owned(),
+                "https://media.example.test/active.m3u8".to_owned(),
+            ])
+            .has_positional_network_media()
+        );
+        assert!(
+            config(vec![
+                "--".to_owned(),
+                "https://media.example.test/dash-prefixed-safe.m3u8".to_owned(),
+            ])
+            .has_positional_network_media()
+        );
+        assert!(
+            !config(vec![
+                "--script-opts=source=https://media.example.test/not-positional".to_owned(),
+                "file:///C:/Media/local.mkv".to_owned(),
+            ])
+            .has_positional_network_media()
         );
     }
 

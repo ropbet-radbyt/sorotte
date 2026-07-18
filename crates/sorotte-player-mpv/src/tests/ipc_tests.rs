@@ -1388,9 +1388,12 @@ fn active_network_option_reapply_uses_authoritative_network_path_over_stale_loca
         .expect("stale local path should be cached from an earlier request");
     adapter.configure_network_media_options([("cache-secs", "75"), ("cache-pause-wait", "5")]);
 
-    adapter
-        .apply_network_media_options_to_active_media()
-        .expect("an attached network file should accept file-local options");
+    assert_eq!(
+        adapter
+            .apply_network_media_options_to_active_media_classified()
+            .expect("an attached network file should accept file-local options"),
+        MpvActiveNetworkMediaOptionsApplyOutcome::NetworkMediaUpdated
+    );
     assert!(adapter.is_connected());
 
     let payloads = state
@@ -1433,9 +1436,12 @@ fn active_network_option_reapply_uses_authoritative_local_path_over_stale_networ
         .expect("stale network path should be cached from an earlier request");
     adapter.configure_network_media_options([("cache-secs", "75")]);
 
-    adapter
-        .apply_network_media_options_to_active_media()
-        .expect("an attached local file should be left unchanged");
+    assert_eq!(
+        adapter
+            .apply_network_media_options_to_active_media_classified()
+            .expect("an attached local file should be left unchanged"),
+        MpvActiveNetworkMediaOptionsApplyOutcome::LocalMediaUnchanged
+    );
     assert!(adapter.is_connected());
 
     let writes = state.writes();
@@ -1466,9 +1472,12 @@ fn active_network_option_reapply_treats_null_path_as_healthy_idle_player() {
     let mut adapter = MpvAdapter::with_test_transport(transport);
     adapter.configure_network_media_options([("cache-secs", "75")]);
 
-    adapter
-        .apply_network_media_options_to_active_media()
-        .expect("an idle attached player should need no option changes");
+    assert_eq!(
+        adapter
+            .apply_network_media_options_to_active_media_classified()
+            .expect("an idle attached player should need no option changes"),
+        MpvActiveNetworkMediaOptionsApplyOutcome::NoActiveMedia
+    );
 
     assert!(adapter.is_connected());
     assert_eq!(state.writes().len(), 1, "only the path should be queried");
@@ -1481,9 +1490,12 @@ fn active_network_option_reapply_treats_property_unavailable_as_healthy_idle_pla
     let mut adapter = MpvAdapter::with_test_transport(transport);
     adapter.configure_network_media_options([("cache-secs", "75")]);
 
-    adapter
-        .apply_network_media_options_to_active_media()
-        .expect("mpv's canonical unavailable-path response should mean no active file");
+    assert_eq!(
+        adapter
+            .apply_network_media_options_to_active_media_classified()
+            .expect("mpv's canonical unavailable-path response should mean no active file"),
+        MpvActiveNetworkMediaOptionsApplyOutcome::NoActiveMedia
+    );
 
     assert!(adapter.is_connected());
     assert_eq!(state.writes().len(), 1, "only the path should be queried");
@@ -1491,6 +1503,44 @@ fn active_network_option_reapply_treats_property_unavailable_as_healthy_idle_pla
         adapter.take_ipc_connection_events().as_slice(),
         [MpvIpcConnectionEvent::Connected { .. }]
     ));
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn delayed_active_network_media_fixture_reports_idle_then_applies_network_options() {
+    let (mut adapter, commands) =
+        MpvAdapter::with_delayed_active_network_media_test_ipc(LegacySyncplayUiSettings::default());
+    adapter.configure_network_media_options([("cache-secs", "75"), ("cache-pause-wait", "5")]);
+
+    assert_eq!(
+        adapter
+            .apply_network_media_options_to_active_media_classified()
+            .expect("the first authoritative path query should be healthy and idle"),
+        MpvActiveNetworkMediaOptionsApplyOutcome::NoActiveMedia
+    );
+    assert!(
+        commands
+            .lock()
+            .expect("active-network command log should not be poisoned")
+            .is_empty(),
+        "no file-local option may be written before network media becomes active"
+    );
+
+    assert_eq!(
+        adapter
+            .apply_network_media_options_to_active_media_classified()
+            .expect("the later network path should accept every configured option"),
+        MpvActiveNetworkMediaOptionsApplyOutcome::NetworkMediaUpdated
+    );
+    assert_eq!(
+        *commands
+            .lock()
+            .expect("active-network command log should not be poisoned"),
+        vec![
+            json!(["set_property", "file-local-options/cache-pause-wait", "5"]),
+            json!(["set_property", "file-local-options/cache-secs", "75"]),
+        ]
+    );
 }
 
 #[test]

@@ -15,6 +15,7 @@ use crate::platform_driver::NativeAccessibilityNode;
 const VISUAL_SCHEMA_VERSION: u32 = 2;
 const VISUAL_SETTLE_DELAY: Duration = Duration::from_millis(800);
 const VISUAL_WIDE_VIEWPORT: (i32, i32) = (1700, 1100);
+const VISUAL_RECOVERY_VIEWPORT: (i32, i32) = (1700, 1300);
 const VISUAL_NARROW_VIEWPORT: (i32, i32) = (900, 760);
 const CONNECTION_HOST_AUTOMATION_ID: &str = "settings.connection.host";
 const CONNECTION_PORT_AUTOMATION_ID: &str = "settings.connection.port";
@@ -32,6 +33,7 @@ const CONFIG_CANCEL_CLEAR_GUI_DATA_AUTOMATION_ID: &str = "config-command:cancel-
 const CONFIG_INTERFACE_SYSTEM_TAB_AUTOMATION_ID: &str = "configuration:tab:interface-system";
 const CONFIG_PLAYBACK_SEARCH_TAB_AUTOMATION_ID: &str = "configuration:tab:playback-search";
 const CONFIGURATION_SURFACE_AUTOMATION_ID: &str = "configuration-root";
+const MAIN_WINDOW_SURFACE_AUTOMATION_ID: &str = "main-window-root";
 const PLUGINS_SURFACE_AUTOMATION_ID: &str = "plugins-root";
 const STREAM_SUPPORT_ENABLED_AUTOMATION_ID: &str = "plugins:stream-support:enabled";
 const STREAMING_ADVANCED_AUTOMATION_ID: &str = "settings.streaming.recovery_retry_budget";
@@ -39,6 +41,10 @@ const STORAGE_BROWSE_AUTOMATION_ID: &str = "config-storage:root:browse";
 const PLAYER_SETUP_MODAL_OPEN_SETTINGS_AUTOMATION_ID: &str =
     "shell:modal:player-setup:open-settings";
 const PLAYER_SETUP_AUTODETECT_AUTOMATION_ID: &str = "config-player-setup:autodetect";
+const PLAYER_SETUP_MODAL_CLOSE_AUTOMATION_ID: &str = "shell:modal:close";
+const MAIN_WINDOW_PLAYER_SETUP_RETRY_AUTOMATION_ID: &str = "main-window:player-setup:retry";
+const MAIN_WINDOW_PAUSE_AUTOMATION_ID: &str = "main-window:control:pause";
+const PLAYER_SETTINGS_DEGRADED_DETAIL: &str = "Playback remains available. Retry mpv settings to apply the remaining streaming options in place.";
 const VISUAL_PASSWORD_SEED: &str = "visual-password-seed";
 const VISUAL_PASSWORD_REPLACEMENT: &str = "visual-password-replacement";
 const SAVE_AND_CONNECT_ROOM: &str = "visual-save-and-connect-room";
@@ -57,6 +63,7 @@ const CONNECT_ONCE_SERVER_LINES: &[&str] = &[
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum VisualScenario {
     FirstRunPlayerMissing,
+    PlayerSettingsDegraded,
     ConnectionClean,
     ConnectionDirty,
     ValidationErrors,
@@ -76,8 +83,9 @@ enum VisualScenario {
 }
 
 impl VisualScenario {
-    const ALL: [Self; 17] = [
+    const ALL: [Self; 18] = [
         Self::FirstRunPlayerMissing,
+        Self::PlayerSettingsDegraded,
         Self::ConnectionClean,
         Self::ConnectionDirty,
         Self::ValidationErrors,
@@ -99,6 +107,7 @@ impl VisualScenario {
     fn id(self) -> &'static str {
         match self {
             Self::FirstRunPlayerMissing => "settings.first-run.player-missing",
+            Self::PlayerSettingsDegraded => "room.player-settings-degraded",
             Self::ConnectionClean => "settings.connection.clean",
             Self::ConnectionDirty => "settings.connection.dirty",
             Self::ValidationErrors => "settings.validation-errors",
@@ -141,6 +150,7 @@ impl VisualScenario {
     fn selected_page(self) -> &'static str {
         match self {
             Self::FirstRunPlayerMissing => "first-run-player-remediation",
+            Self::PlayerSettingsDegraded => "room-playback-recovery",
             Self::PluginToggleDirty => "plugins",
             Self::StreamingAdvanced => "playback-search",
             Self::StorageLocationPending | Self::DataDangerZone => "interface-system",
@@ -173,16 +183,18 @@ impl VisualScenario {
     }
 
     fn viewport(self) -> (i32, i32) {
-        if self == Self::NarrowLight {
-            VISUAL_NARROW_VIEWPORT
-        } else {
-            VISUAL_WIDE_VIEWPORT
+        match self {
+            Self::NarrowLight => VISUAL_NARROW_VIEWPORT,
+            Self::PlayerSettingsDegraded => VISUAL_RECOVERY_VIEWPORT,
+            _ => VISUAL_WIDE_VIEWPORT,
         }
     }
 
     fn configuration_tab(self) -> Option<&'static str> {
         match self {
-            Self::FirstRunPlayerMissing | Self::PluginToggleDirty => None,
+            Self::FirstRunPlayerMissing
+            | Self::PlayerSettingsDegraded
+            | Self::PluginToggleDirty => None,
             Self::StreamingAdvanced => Some("playback-search"),
             Self::StorageLocationPending | Self::DataDangerZone => Some("interface-system"),
             _ => Some("connection"),
@@ -245,6 +257,10 @@ impl VisualScenario {
             Self::FirstRunPlayerMissing => &[
                 PLAYER_SETUP_MODAL_OPEN_SETTINGS_AUTOMATION_ID,
                 PLAYER_SETUP_AUTODETECT_AUTOMATION_ID,
+            ],
+            Self::PlayerSettingsDegraded => &[
+                MAIN_WINDOW_PLAYER_SETUP_RETRY_AUTOMATION_ID,
+                MAIN_WINDOW_PAUSE_AUTOMATION_ID,
             ],
             Self::ConnectionClean | Self::NarrowLight | Self::WideDark => {
                 &[CONNECTION_HOST_AUTOMATION_ID]
@@ -557,7 +573,12 @@ fn capture_visual_scenario(
     fs::write(&open_media_path, b"visual-open-target")
         .map_err(|error| format!("failed to seed visual media fixture: {error}"))?;
     seed_visual_scenario_config(scenario, &config_path)?;
-    let mut main_window_entries = vec![("activeView", "setup".to_owned())];
+    let active_view = if scenario == VisualScenario::PlayerSettingsDegraded {
+        "room"
+    } else {
+        "setup"
+    };
+    let mut main_window_entries = vec![("activeView", active_view.to_owned())];
     if let Some(configuration_tab) = scenario.configuration_tab() {
         main_window_entries.push(("configurationTab", configuration_tab.to_owned()));
     }
@@ -587,6 +608,7 @@ fn capture_visual_scenario(
     } else {
         DEFAULT_PUBLIC_SERVERS_SPEC
     };
+    let dropped_media_spec = open_media_path.display().to_string();
     let launch = GuiLaunchConfig {
         config_path: &config_path,
         media_search_browse_path: &media_search_path,
@@ -597,8 +619,9 @@ fn capture_visual_scenario(
             .uses_loopback_session()
             .then_some((CONFIG_USERNAME_VALUE, CONFIG_ROOM_VALUE)),
         attach_test_player: !scenario.first_run(),
-        drop_file_paths_spec: None,
-        drop_target: None,
+        drop_file_paths_spec: (scenario == VisualScenario::PlayerSettingsDegraded)
+            .then_some(dropped_media_spec.as_str()),
+        drop_target: (scenario == VisualScenario::PlayerSettingsDegraded).then_some("playlist"),
     };
     let launch_result = launch_sorotte_gui_with_retry_and_test_overrides(
         &driver,
@@ -616,6 +639,7 @@ fn capture_visual_scenario(
                 scenario,
                 VisualScenario::SaveAndConnect | VisualScenario::ConnectOnceDirty
             ),
+            player_settings_degraded: scenario == VisualScenario::PlayerSettingsDegraded,
         },
     );
     let (mut child, window) = match launch_result {
@@ -643,10 +667,16 @@ fn capture_visual_scenario(
             )?;
             None
         } else {
+            let initial_surface_id = if scenario == VisualScenario::PlayerSettingsDegraded {
+                MAIN_WINDOW_SURFACE_AUTOMATION_ID
+            } else {
+                CONFIGURATION_SURFACE_AUTOMATION_ID
+            };
             wait_for_visible_semantic_id(
                 &driver,
                 window,
-                CONFIGURATION_SURFACE_AUTOMATION_ID,
+                initial_surface_id,
+                viewport_height,
                 timeout,
             )?;
             let settled_nodes = driver.accessibility_nodes(window)?;
@@ -671,6 +701,7 @@ fn capture_visual_scenario(
                 window,
                 &config_path,
                 session_server.as_ref(),
+                viewport_height,
                 timeout,
             )?
         };
@@ -819,14 +850,68 @@ fn prepare_visual_scenario_state<D: NativeGuiDriver>(
     window: D::WindowHandle,
     config_path: &Path,
     session_server: Option<&MockSessionServer>,
+    viewport_height: i32,
     timeout: Duration,
 ) -> Result<Option<String>, String> {
     match scenario {
         VisualScenario::FirstRunPlayerMissing => unreachable!("first run is handled by caller"),
+        VisualScenario::PlayerSettingsDegraded => {
+            for expected in [
+                "mpv streaming settings incomplete",
+                "mpv is ready, but some streaming settings could not be applied to the active media.",
+                PLAYER_SETTINGS_DEGRADED_DETAIL,
+                "Retry mpv settings",
+            ] {
+                wait_for_semantic_name(driver, window, &[expected], timeout)?;
+            }
+            wait_for_semantic_enabled_state(
+                driver,
+                window,
+                PLAYER_SETUP_MODAL_CLOSE_AUTOMATION_ID,
+                true,
+                viewport_height,
+                timeout,
+            )?;
+            invoke_visible_control(
+                driver,
+                window,
+                PLAYER_SETUP_MODAL_CLOSE_AUTOMATION_ID,
+                viewport_height,
+                timeout,
+            )?;
+            wait_for_semantic_name(driver, window, &["view: room"], timeout)?;
+            wait_for_semantic_name(driver, window, &["open-target.mkv"], timeout)?;
+            wait_for_semantic_name(driver, window, &[PLAYER_SETTINGS_DEGRADED_DETAIL], timeout)?;
+            wait_for_semantic_enabled_state(
+                driver,
+                window,
+                MAIN_WINDOW_PLAYER_SETUP_RETRY_AUTOMATION_ID,
+                true,
+                viewport_height,
+                timeout,
+            )?;
+            wait_for_semantic_enabled_state(
+                driver,
+                window,
+                MAIN_WINDOW_PAUSE_AUTOMATION_ID,
+                true,
+                viewport_height,
+                timeout,
+            )?;
+            Ok(Some(
+                MAIN_WINDOW_PLAYER_SETUP_RETRY_AUTOMATION_ID.to_owned(),
+            ))
+        }
         VisualScenario::ConnectionClean
         | VisualScenario::NarrowLight
         | VisualScenario::WideDark => {
-            wait_for_visible_semantic_id(driver, window, CONNECTION_HOST_AUTOMATION_ID, timeout)?;
+            wait_for_visible_semantic_id(
+                driver,
+                window,
+                CONNECTION_HOST_AUTOMATION_ID,
+                viewport_height,
+                timeout,
+            )?;
             Ok(None)
         }
         VisualScenario::ConnectionDirty => {
@@ -835,9 +920,16 @@ fn prepare_visual_scenario_state<D: NativeGuiDriver>(
                 window,
                 CONNECTION_HOST_AUTOMATION_ID,
                 "visual-dirty.example",
+                viewport_height,
                 timeout,
             )?;
-            scroll_until_visible_semantic_id(driver, window, CONFIG_SAVE_AUTOMATION_ID, timeout)?;
+            scroll_until_visible_semantic_id(
+                driver,
+                window,
+                CONFIG_SAVE_AUTOMATION_ID,
+                viewport_height,
+                timeout,
+            )?;
             Ok(Some(CONNECTION_HOST_AUTOMATION_ID.to_owned()))
         }
         VisualScenario::ValidationErrors => {
@@ -846,6 +938,7 @@ fn prepare_visual_scenario_state<D: NativeGuiDriver>(
                 window,
                 CONNECTION_PORT_AUTOMATION_ID,
                 "not-a-port",
+                viewport_height,
                 timeout,
             )?;
             wait_for_semantic_name(
@@ -867,6 +960,7 @@ fn prepare_visual_scenario_state<D: NativeGuiDriver>(
                 window,
                 CONNECTION_HOST_AUTOMATION_ID,
                 "127.0.0.1",
+                viewport_height,
                 timeout,
             )?;
             set_visible_edit_value(
@@ -874,6 +968,7 @@ fn prepare_visual_scenario_state<D: NativeGuiDriver>(
                 window,
                 CONNECTION_PORT_AUTOMATION_ID,
                 &server_port,
+                viewport_height,
                 timeout,
             )?;
             set_visible_edit_value(
@@ -881,18 +976,21 @@ fn prepare_visual_scenario_state<D: NativeGuiDriver>(
                 window,
                 CONNECTION_ROOM_AUTOMATION_ID,
                 SAVE_AND_CONNECT_ROOM,
+                viewport_height,
                 timeout,
             )?;
             scroll_until_visible_semantic_id(
                 driver,
                 window,
                 CONFIG_SAVE_AND_CONNECT_AUTOMATION_ID,
+                viewport_height,
                 timeout,
             )?;
             invoke_visible_control(
                 driver,
                 window,
                 CONFIG_SAVE_AND_CONNECT_AUTOMATION_ID,
+                viewport_height,
                 timeout,
             )?;
             let hello = native_smoke_runner::recv_visual_mock_session_hello(
@@ -916,7 +1014,13 @@ fn prepare_visual_scenario_state<D: NativeGuiDriver>(
                         && settings.room.as_deref() == Some(SAVE_AND_CONNECT_ROOM)
                 },
             )?;
-            invoke_visible_control(driver, window, CONFIGURATION_SURFACE_AUTOMATION_ID, timeout)?;
+            invoke_visible_control(
+                driver,
+                window,
+                CONFIGURATION_SURFACE_AUTOMATION_ID,
+                viewport_height,
+                timeout,
+            )?;
             wait_for_semantic_name(driver, window, &["view: setup"], timeout)?;
             assert_named_edit_value(driver, window, CONNECTION_HOST_AUTOMATION_ID, "127.0.0.1")?;
             assert_named_edit_value(driver, window, CONNECTION_PORT_AUTOMATION_ID, &server_port)?;
@@ -930,6 +1034,7 @@ fn prepare_visual_scenario_state<D: NativeGuiDriver>(
                 driver,
                 window,
                 CONFIG_SAVE_AND_CONNECT_AUTOMATION_ID,
+                viewport_height,
                 timeout,
             )?;
             Ok(Some(CONFIG_SAVE_AND_CONNECT_AUTOMATION_ID.to_owned()))
@@ -945,6 +1050,7 @@ fn prepare_visual_scenario_state<D: NativeGuiDriver>(
                 window,
                 CONNECTION_HOST_AUTOMATION_ID,
                 "127.0.0.1",
+                viewport_height,
                 timeout,
             )?;
             set_visible_edit_value(
@@ -952,6 +1058,7 @@ fn prepare_visual_scenario_state<D: NativeGuiDriver>(
                 window,
                 CONNECTION_PORT_AUTOMATION_ID,
                 &server_port,
+                viewport_height,
                 timeout,
             )?;
             set_visible_edit_value(
@@ -959,6 +1066,7 @@ fn prepare_visual_scenario_state<D: NativeGuiDriver>(
                 window,
                 CONNECTION_ROOM_AUTOMATION_ID,
                 CONNECT_ONCE_ROOM,
+                viewport_height,
                 timeout,
             )?;
             set_visible_edit_value(
@@ -966,15 +1074,23 @@ fn prepare_visual_scenario_state<D: NativeGuiDriver>(
                 window,
                 PLAYER_ARGUMENTS_AUTOMATION_ID,
                 CONNECT_ONCE_PLAYER_ARGUMENTS,
+                viewport_height,
                 timeout,
             )?;
             scroll_until_visible_semantic_id(
                 driver,
                 window,
                 CONFIG_CONNECT_ONCE_AUTOMATION_ID,
+                viewport_height,
                 timeout,
             )?;
-            invoke_visible_control(driver, window, CONFIG_CONNECT_ONCE_AUTOMATION_ID, timeout)?;
+            invoke_visible_control(
+                driver,
+                window,
+                CONFIG_CONNECT_ONCE_AUTOMATION_ID,
+                viewport_height,
+                timeout,
+            )?;
             let hello = native_smoke_runner::recv_visual_mock_session_hello(
                 server,
                 timeout,
@@ -996,7 +1112,13 @@ fn prepare_visual_scenario_state<D: NativeGuiDriver>(
                     "Connect once changed persisted settings: {persisted:?}"
                 ));
             }
-            invoke_visible_control(driver, window, CONFIGURATION_SURFACE_AUTOMATION_ID, timeout)?;
+            invoke_visible_control(
+                driver,
+                window,
+                CONFIGURATION_SURFACE_AUTOMATION_ID,
+                viewport_height,
+                timeout,
+            )?;
             wait_for_semantic_name(driver, window, &["view: setup"], timeout)?;
             assert_named_edit_value(driver, window, CONNECTION_HOST_AUTOMATION_ID, "127.0.0.1")?;
             assert_named_edit_value(driver, window, CONNECTION_PORT_AUTOMATION_ID, &server_port)?;
@@ -1016,6 +1138,7 @@ fn prepare_visual_scenario_state<D: NativeGuiDriver>(
                 driver,
                 window,
                 CONFIG_CONNECT_ONCE_AUTOMATION_ID,
+                viewport_height,
                 timeout,
             )?;
             Ok(Some(CONFIG_CONNECT_ONCE_AUTOMATION_ID.to_owned()))
@@ -1026,11 +1149,24 @@ fn prepare_visual_scenario_state<D: NativeGuiDriver>(
                 window,
                 CONNECTION_HOST_AUTOMATION_ID,
                 RECONNECT_HOST,
+                viewport_height,
                 timeout,
             )?;
             wait_for_semantic_name(driver, window, &["Reconnect required"], timeout)?;
-            scroll_until_visible_semantic_id(driver, window, CONFIG_SAVE_AUTOMATION_ID, timeout)?;
-            invoke_visible_control(driver, window, CONFIG_SAVE_AUTOMATION_ID, timeout)?;
+            scroll_until_visible_semantic_id(
+                driver,
+                window,
+                CONFIG_SAVE_AUTOMATION_ID,
+                viewport_height,
+                timeout,
+            )?;
+            invoke_visible_control(
+                driver,
+                window,
+                CONFIG_SAVE_AUTOMATION_ID,
+                viewport_height,
+                timeout,
+            )?;
             wait_for_stored_settings(
                 config_path,
                 timeout,
@@ -1043,6 +1179,7 @@ fn prepare_visual_scenario_state<D: NativeGuiDriver>(
                 driver,
                 window,
                 "Configuration saved.",
+                viewport_height,
                 timeout,
             )?;
             Ok(Some(CONFIG_SAVE_AUTOMATION_ID.to_owned()))
@@ -1054,6 +1191,7 @@ fn prepare_visual_scenario_state<D: NativeGuiDriver>(
                 window,
                 CONNECTION_PASSWORD_AUTOMATION_ID,
                 false,
+                viewport_height,
                 timeout,
             )?;
             Ok(None)
@@ -1063,6 +1201,7 @@ fn prepare_visual_scenario_state<D: NativeGuiDriver>(
                 driver,
                 window,
                 CONNECTION_PASSWORD_CHANGE_AUTOMATION_ID,
+                viewport_height,
                 timeout,
             )?;
             wait_for_semantic_enabled_state(
@@ -1070,6 +1209,7 @@ fn prepare_visual_scenario_state<D: NativeGuiDriver>(
                 window,
                 CONNECTION_PASSWORD_AUTOMATION_ID,
                 true,
+                viewport_height,
                 timeout,
             )?;
             set_visible_edit_value(
@@ -1077,6 +1217,7 @@ fn prepare_visual_scenario_state<D: NativeGuiDriver>(
                 window,
                 CONNECTION_PASSWORD_AUTOMATION_ID,
                 VISUAL_PASSWORD_REPLACEMENT,
+                viewport_height,
                 timeout,
             )?;
             wait_for_semantic_name(driver, window, &["Reconnect required"], timeout)?;
@@ -1087,6 +1228,7 @@ fn prepare_visual_scenario_state<D: NativeGuiDriver>(
                 driver,
                 window,
                 CONNECTION_PASSWORD_REMOVE_AUTOMATION_ID,
+                viewport_height,
                 timeout,
             )?;
             wait_for_semantic_name(driver, window, &["No password is configured."], timeout)?;
@@ -1111,15 +1253,29 @@ fn prepare_visual_scenario_state<D: NativeGuiDriver>(
                 window,
                 CONNECTION_HOST_AUTOMATION_ID,
                 FAILURE_HOST,
+                viewport_height,
                 timeout,
             )?;
-            scroll_until_visible_semantic_id(driver, window, CONFIG_SAVE_AUTOMATION_ID, timeout)?;
-            invoke_visible_control(driver, window, CONFIG_SAVE_AUTOMATION_ID, timeout)?;
+            scroll_until_visible_semantic_id(
+                driver,
+                window,
+                CONFIG_SAVE_AUTOMATION_ID,
+                viewport_height,
+                timeout,
+            )?;
+            invoke_visible_control(
+                driver,
+                window,
+                CONFIG_SAVE_AUTOMATION_ID,
+                viewport_height,
+                timeout,
+            )?;
             wait_for_semantic_name_contains(driver, window, "Configuration save failed", timeout)?;
             scroll_until_visible_semantic_name_contains(
                 driver,
                 window,
                 "Configuration save failed",
+                viewport_height,
                 timeout,
             )?;
             assert_named_edit_value(driver, window, CONNECTION_HOST_AUTOMATION_ID, FAILURE_HOST)?;
@@ -1131,38 +1287,66 @@ fn prepare_visual_scenario_state<D: NativeGuiDriver>(
                 window,
                 CONNECTION_HOST_AUTOMATION_ID,
                 PLUGIN_DIRTY_HOST,
+                viewport_height,
                 timeout,
             )?;
-            invoke_visible_control(driver, window, PLUGINS_SURFACE_AUTOMATION_ID, timeout)?;
+            invoke_visible_control(
+                driver,
+                window,
+                PLUGINS_SURFACE_AUTOMATION_ID,
+                viewport_height,
+                timeout,
+            )?;
             wait_for_visible_semantic_id(
                 driver,
                 window,
                 STREAM_SUPPORT_ENABLED_AUTOMATION_ID,
+                viewport_height,
                 timeout,
             )?;
             invoke_visible_control(
                 driver,
                 window,
                 STREAM_SUPPORT_ENABLED_AUTOMATION_ID,
+                viewport_height,
                 timeout,
             )?;
             wait_for_stored_settings(config_path, timeout, "plugin enablement", |settings| {
                 settings.stream_support_plugin_enabled == Some(false)
                     && settings.host.as_deref() == Some(CONFIG_HOST_VALUE)
             })?;
-            invoke_visible_control(driver, window, CONFIGURATION_SURFACE_AUTOMATION_ID, timeout)?;
-            wait_for_visible_semantic_id(driver, window, CONNECTION_HOST_AUTOMATION_ID, timeout)?;
+            invoke_visible_control(
+                driver,
+                window,
+                CONFIGURATION_SURFACE_AUTOMATION_ID,
+                viewport_height,
+                timeout,
+            )?;
+            wait_for_visible_semantic_id(
+                driver,
+                window,
+                CONNECTION_HOST_AUTOMATION_ID,
+                viewport_height,
+                timeout,
+            )?;
             assert_named_edit_value(
                 driver,
                 window,
                 CONNECTION_HOST_AUTOMATION_ID,
                 PLUGIN_DIRTY_HOST,
             )?;
-            invoke_visible_control(driver, window, PLUGINS_SURFACE_AUTOMATION_ID, timeout)?;
+            invoke_visible_control(
+                driver,
+                window,
+                PLUGINS_SURFACE_AUTOMATION_ID,
+                viewport_height,
+                timeout,
+            )?;
             wait_for_visible_semantic_id(
                 driver,
                 window,
                 STREAM_SUPPORT_ENABLED_AUTOMATION_ID,
+                viewport_height,
                 timeout,
             )?;
             Ok(Some(STREAM_SUPPORT_ENABLED_AUTOMATION_ID.to_owned()))
@@ -1172,12 +1356,14 @@ fn prepare_visual_scenario_state<D: NativeGuiDriver>(
                 driver,
                 window,
                 CONFIG_PLAYBACK_SEARCH_TAB_AUTOMATION_ID,
+                viewport_height,
                 timeout,
             )?;
             scroll_until_visible_semantic_id(
                 driver,
                 window,
                 STREAMING_ADVANCED_AUTOMATION_ID,
+                viewport_height,
                 timeout,
             )?;
             Ok(Some(STREAMING_ADVANCED_AUTOMATION_ID.to_owned()))
@@ -1187,15 +1373,23 @@ fn prepare_visual_scenario_state<D: NativeGuiDriver>(
                 driver,
                 window,
                 CONFIG_INTERFACE_SYSTEM_TAB_AUTOMATION_ID,
+                viewport_height,
                 timeout,
             )?;
             scroll_until_visible_semantic_id(
                 driver,
                 window,
                 STORAGE_BROWSE_AUTOMATION_ID,
+                viewport_height,
                 timeout,
             )?;
-            invoke_visible_control(driver, window, STORAGE_BROWSE_AUTOMATION_ID, timeout)?;
+            invoke_visible_control(
+                driver,
+                window,
+                STORAGE_BROWSE_AUTOMATION_ID,
+                viewport_height,
+                timeout,
+            )?;
             wait_for_semantic_name_contains(
                 driver,
                 window,
@@ -1209,19 +1403,28 @@ fn prepare_visual_scenario_state<D: NativeGuiDriver>(
                 driver,
                 window,
                 CONFIG_INTERFACE_SYSTEM_TAB_AUTOMATION_ID,
+                viewport_height,
                 timeout,
             )?;
             scroll_until_visible_semantic_id(
                 driver,
                 window,
                 CONFIG_CLEAR_GUI_DATA_AUTOMATION_ID,
+                viewport_height,
                 timeout,
             )?;
-            invoke_visible_control(driver, window, CONFIG_CLEAR_GUI_DATA_AUTOMATION_ID, timeout)?;
+            invoke_visible_control(
+                driver,
+                window,
+                CONFIG_CLEAR_GUI_DATA_AUTOMATION_ID,
+                viewport_height,
+                timeout,
+            )?;
             scroll_until_visible_semantic_id(
                 driver,
                 window,
                 CONFIG_CONFIRM_CLEAR_GUI_DATA_AUTOMATION_ID,
+                viewport_height,
                 timeout,
             )?;
             wait_for_semantic_name_contains(
@@ -1284,9 +1487,10 @@ fn set_visible_edit_value<D: NativeGuiDriver>(
     window: D::WindowHandle,
     automation_id: &str,
     value: &str,
+    viewport_height: i32,
     timeout: Duration,
 ) -> Result<(), String> {
-    wait_for_visible_semantic_id(driver, window, automation_id, timeout)?;
+    wait_for_visible_semantic_id(driver, window, automation_id, viewport_height, timeout)?;
     driver.set_named_edit_value(window, automation_id, value, false)
 }
 
@@ -1310,9 +1514,10 @@ fn invoke_visible_control<D: NativeGuiDriver>(
     driver: &D,
     window: D::WindowHandle,
     automation_id: &str,
+    viewport_height: i32,
     timeout: Duration,
 ) -> Result<(), String> {
-    wait_for_visible_semantic_id(driver, window, automation_id, timeout)?;
+    wait_for_visible_semantic_id(driver, window, automation_id, viewport_height, timeout)?;
     driver.invoke_named_control(window, automation_id, NativeControlKind::Any)
 }
 
@@ -1320,15 +1525,15 @@ fn wait_for_visible_semantic_id<D: NativeGuiDriver>(
     driver: &D,
     window: D::WindowHandle,
     automation_id: &str,
+    viewport_height: i32,
     timeout: Duration,
 ) -> Result<NativeAccessibilityNode, String> {
     let deadline = Instant::now() + timeout;
     loop {
         let nodes = driver.accessibility_nodes(window)?;
-        if let Some(node) = nodes
-            .into_iter()
-            .find(|node| semantic_node_is_visible(node) && node.automation_id == automation_id)
-        {
+        if let Some(node) = nodes.into_iter().find(|node| {
+            semantic_node_is_visible(node, viewport_height) && node.automation_id == automation_id
+        }) {
             return Ok(node);
         }
         if Instant::now() >= deadline {
@@ -1345,13 +1550,14 @@ fn wait_for_semantic_enabled_state<D: NativeGuiDriver>(
     window: D::WindowHandle,
     automation_id: &str,
     enabled: bool,
+    viewport_height: i32,
     timeout: Duration,
 ) -> Result<(), String> {
     let deadline = Instant::now() + timeout;
     loop {
         let nodes = driver.accessibility_nodes(window)?;
         if nodes.iter().any(|node| {
-            semantic_node_is_visible(node)
+            semantic_node_is_visible(node, viewport_height)
                 && node.automation_id == automation_id
                 && node.enabled == enabled
         }) {
@@ -1370,15 +1576,15 @@ fn scroll_until_visible_semantic_id<D: NativeGuiDriver>(
     driver: &D,
     window: D::WindowHandle,
     automation_id: &str,
+    viewport_height: i32,
     timeout: Duration,
 ) -> Result<(), String> {
     let deadline = Instant::now() + timeout;
     loop {
         let nodes = driver.accessibility_nodes(window)?;
-        if nodes
-            .iter()
-            .any(|node| semantic_node_is_visible(node) && node.automation_id == automation_id)
-        {
+        if nodes.iter().any(|node| {
+            semantic_node_is_visible(node, viewport_height) && node.automation_id == automation_id
+        }) {
             return Ok(());
         }
         if Instant::now() >= deadline {
@@ -1386,7 +1592,7 @@ fn scroll_until_visible_semantic_id<D: NativeGuiDriver>(
                 "timed out scrolling to semantic ID {automation_id:?}"
             ));
         }
-        if let Some(anchor) = visual_scroll_anchor(&nodes) {
+        if let Some(anchor) = visual_scroll_anchor(&nodes, viewport_height) {
             driver.scroll_named_control_down(window, anchor, NativeControlKind::Any)?;
         } else {
             driver.scroll_active_view_page_down(window)?;
@@ -1398,18 +1604,18 @@ fn scroll_until_visible_semantic_name_contains<D: NativeGuiDriver>(
     driver: &D,
     window: D::WindowHandle,
     expected: &str,
+    viewport_height: i32,
     timeout: Duration,
 ) -> Result<(), String> {
     let deadline = Instant::now() + timeout;
     let mut framing_attempts = 0;
     loop {
         let nodes = driver.accessibility_nodes(window)?;
-        if let Some(node) = nodes
-            .iter()
-            .find(|node| semantic_node_is_visible(node) && node.name.contains(expected))
-        {
+        if let Some(node) = nodes.iter().find(|node| {
+            semantic_node_is_visible(node, viewport_height) && node.name.contains(expected)
+        }) {
             if node.bounds.is_some_and(|bounds| bounds[1] < 180) && framing_attempts < 4 {
-                if let Some(anchor) = visual_scroll_anchor(&nodes) {
+                if let Some(anchor) = visual_scroll_anchor(&nodes, viewport_height) {
                     driver.scroll_named_control_up(window, anchor, NativeControlKind::Any)?;
                 } else {
                     driver.scroll_active_view_page_up(window)?;
@@ -1425,7 +1631,7 @@ fn scroll_until_visible_semantic_name_contains<D: NativeGuiDriver>(
                 "timed out scrolling to accessible text containing {expected:?}"
             ));
         }
-        if let Some(anchor) = visual_scroll_anchor(&nodes) {
+        if let Some(anchor) = visual_scroll_anchor(&nodes, viewport_height) {
             driver.scroll_named_control_up(window, anchor, NativeControlKind::Any)?;
         } else {
             driver.scroll_active_view_page_up(window)?;
@@ -1433,11 +1639,11 @@ fn scroll_until_visible_semantic_name_contains<D: NativeGuiDriver>(
     }
 }
 
-fn visual_scroll_anchor(nodes: &[NativeAccessibilityNode]) -> Option<&str> {
+fn visual_scroll_anchor(nodes: &[NativeAccessibilityNode], viewport_height: i32) -> Option<&str> {
     nodes
         .iter()
         .filter(|node| {
-            semantic_node_is_visible(node)
+            semantic_node_is_visible(node, viewport_height)
                 && node.enabled
                 && !node.automation_id.is_empty()
                 && node
@@ -1474,11 +1680,11 @@ fn validate_scenario_semantics(
     }
 }
 
-fn semantic_node_is_visible(node: &NativeAccessibilityNode) -> bool {
+fn semantic_node_is_visible(node: &NativeAccessibilityNode, viewport_height: i32) -> bool {
     !node.offscreen
         && node
             .bounds
-            .is_none_or(|bounds| bounds[3] > 0 && bounds[1] < VISUAL_WIDE_VIEWPORT.1)
+            .is_none_or(|bounds| bounds[3] > 0 && bounds[1] < viewport_height)
 }
 
 fn assert_visual_secrets_redacted(nodes: &[NativeAccessibilityNode]) -> Result<(), String> {
@@ -1499,11 +1705,11 @@ fn assert_visual_secrets_redacted(nodes: &[NativeAccessibilityNode]) -> Result<(
 fn select_control_target(
     nodes: &[NativeAccessibilityNode],
     automation_id: &str,
+    viewport_height: i32,
 ) -> Result<String, String> {
-    if nodes
-        .iter()
-        .any(|node| semantic_node_is_visible(node) && node.automation_id == automation_id)
-    {
+    if nodes.iter().any(|node| {
+        semantic_node_is_visible(node, viewport_height) && node.automation_id == automation_id
+    }) {
         return Ok(automation_id.to_owned());
     }
     Err(format!(
@@ -1707,6 +1913,10 @@ mod tests {
             VISUAL_NARROW_VIEWPORT
         );
         assert_eq!(
+            VisualScenario::PlayerSettingsDegraded.viewport(),
+            VISUAL_RECOVERY_VIEWPORT
+        );
+        assert_eq!(
             VisualScenario::StreamingAdvanced.selected_page(),
             "playback-search"
         );
@@ -1737,6 +1947,11 @@ mod tests {
         assert!(!VisualScenario::ConnectOnceDirty.uses_loopback_session());
         assert!(VisualScenario::ConnectionClean.uses_loopback_session());
         assert!(VisualScenario::ReconnectRequired.uses_loopback_session());
+        assert!(VisualScenario::PlayerSettingsDegraded.uses_loopback_session());
+        assert_eq!(
+            VisualScenario::PlayerSettingsDegraded.selected_page(),
+            "room-playback-recovery"
+        );
     }
 
     #[test]
@@ -1797,16 +2012,41 @@ mod tests {
     #[test]
     fn visual_edits_require_stable_automation_ids() {
         let named_only = [accessibility_node("Host", "")];
-        assert!(select_control_target(&named_only, CONNECTION_HOST_AUTOMATION_ID).is_err());
+        assert!(
+            select_control_target(
+                &named_only,
+                CONNECTION_HOST_AUTOMATION_ID,
+                VISUAL_WIDE_VIEWPORT.1,
+            )
+            .is_err()
+        );
 
         let stable = [accessibility_node(
             "Localized host label",
             CONNECTION_HOST_AUTOMATION_ID,
         )];
         assert_eq!(
-            select_control_target(&stable, CONNECTION_HOST_AUTOMATION_ID),
+            select_control_target(
+                &stable,
+                CONNECTION_HOST_AUTOMATION_ID,
+                VISUAL_WIDE_VIEWPORT.1,
+            ),
             Ok(CONNECTION_HOST_AUTOMATION_ID.to_owned())
         );
+    }
+
+    #[test]
+    fn semantic_visibility_respects_each_scenario_viewport_height() {
+        let mut node = accessibility_node("Viewport boundary", "viewport-boundary");
+        node.bounds = Some([0, 900, 10, 10]);
+        assert!(!semantic_node_is_visible(&node, VISUAL_NARROW_VIEWPORT.1));
+        assert!(semantic_node_is_visible(&node, VISUAL_WIDE_VIEWPORT.1));
+        assert!(semantic_node_is_visible(&node, VISUAL_RECOVERY_VIEWPORT.1));
+
+        node.bounds = Some([0, 1_200, 10, 10]);
+        assert!(!semantic_node_is_visible(&node, VISUAL_NARROW_VIEWPORT.1));
+        assert!(!semantic_node_is_visible(&node, VISUAL_WIDE_VIEWPORT.1));
+        assert!(semantic_node_is_visible(&node, VISUAL_RECOVERY_VIEWPORT.1));
     }
 
     #[test]

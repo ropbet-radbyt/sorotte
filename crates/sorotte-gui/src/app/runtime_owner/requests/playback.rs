@@ -194,8 +194,8 @@ impl GuiPersistedConfigRuntimeOwner {
         ];
         if player_settings_applied {
             self.promote_restart_player_runtime_fields(&settings);
-            actions.push(self.pending_apply_requirements_action(projected_state, &settings));
         }
+        actions.push(self.pending_apply_requirements_action(projected_state, &settings));
         Self::push_actions_and_project(handle, projected_state, actions);
         true
     }

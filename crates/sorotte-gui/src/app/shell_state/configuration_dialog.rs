@@ -406,6 +406,7 @@ pub(in crate::app) enum GuiSettingApplyRequirement {
     Immediate,
     OnSave,
     Reconnect,
+    PlayerSettingsRetryAvailable,
     RestartPlayer,
     RestartApplication,
 }
@@ -416,6 +417,7 @@ impl GuiSettingApplyRequirement {
             Self::Immediate => "Applies immediately",
             Self::OnSave => "Applies when saved",
             Self::Reconnect => "Reconnect required",
+            Self::PlayerSettingsRetryAvailable => "Retry mpv streaming settings in place",
             Self::RestartPlayer => "Player restart required",
             Self::RestartApplication => "Sorotte restart required",
         }
@@ -426,6 +428,7 @@ impl GuiSettingApplyRequirement {
             Self::Immediate => "settings.apply.immediate",
             Self::OnSave => "settings.apply.on_save",
             Self::Reconnect => "settings.apply.reconnect",
+            Self::PlayerSettingsRetryAvailable => "settings.apply.retry_player_settings",
             Self::RestartPlayer => "settings.apply.restart_player",
             Self::RestartApplication => "settings.apply.restart_application",
         }

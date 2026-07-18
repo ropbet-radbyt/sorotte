@@ -75,6 +75,7 @@ struct GuiLaunchTestOverrides<'a> {
     appdata_root: Option<&'a Path>,
     config_storage_browse_path: Option<&'a Path>,
     disable_startup_saved_connect: bool,
+    player_settings_degraded: bool,
 }
 
 struct MockSessionServer {

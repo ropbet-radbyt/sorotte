@@ -63,6 +63,7 @@ use super::mpv_launch;
 use super::mpv_launch::{
     ManagedMpvProcessGuard, ManagedMpvSettingsDecision,
     apply_effective_streaming_options_to_active_network_media,
+    apply_effective_streaming_options_to_active_network_media_classified,
     configure_effective_streaming_options_for_network_media,
     configure_sorotte_chat_osd_integration, managed_mpv_settings_decision_from_settings,
 };
@@ -618,18 +619,43 @@ impl GuiPersistedConfigRuntimeOwner {
                 &env_trimmed,
                 Some(saved_settings),
             );
-        let core_player_state_differs = (self.player_apply_state.applied_process_target.is_some()
-            || self.player.is_some())
+        let core_player_state_is_active =
+            self.player_apply_state.applied_process_target.is_some() || self.player.is_some();
+        let process_target_differs = core_player_state_is_active
             && desired_player_launch_state
                 .as_ref()
                 .map_or(true, |desired| {
                     !self.player_apply_state.process_target_is_applied(desired)
-                        || !self
-                            .player_apply_state
-                            .streaming_options_are_applied(desired)
                 });
-        if self.player_apply_state.core_reapply_required || core_player_state_differs {
-            requirements.insert(GuiSettingApplyRequirement::RestartPlayer);
+        let streaming_options_differ = core_player_state_is_active
+            && desired_player_launch_state
+                .as_ref()
+                .map_or(true, |desired| {
+                    !self
+                        .player_apply_state
+                        .streaming_options_are_applied(desired)
+                });
+        let retryable_streaming_degradation_on_attached_target = self.player.is_some()
+            && self.player_apply_state.core_reapply_required
+            && desired_player_launch_state
+                .as_ref()
+                .is_ok_and(|desired| self.player_apply_state.process_target_is_applied(desired))
+            && matches!(
+                self.core_player_configuration_health,
+                GuiCorePlayerConfigurationHealth::StreamingDegraded {
+                    retryable_in_place: true,
+                    ..
+                }
+            );
+        if self.player_apply_state.core_reapply_required
+            || process_target_differs
+            || streaming_options_differ
+        {
+            requirements.insert(if retryable_streaming_degradation_on_attached_target {
+                GuiSettingApplyRequirement::PlayerSettingsRetryAvailable
+            } else {
+                GuiSettingApplyRequirement::RestartPlayer
+            });
         }
 
         let saved_language = saved_settings

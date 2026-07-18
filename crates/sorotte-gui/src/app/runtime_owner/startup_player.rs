@@ -466,6 +466,110 @@ impl GuiPersistedConfigRuntimeOwner {
         );
     }
 
+    pub(in crate::app::runtime_owner) fn complete_managed_mpv_attachment_after_ipc_connect(
+        &mut self,
+        config: &mpv_launch::ManagedMpvLaunchConfig,
+        adapter: MpvAdapter,
+        guard: ManagedMpvProcessGuard,
+    ) {
+        self.complete_managed_mpv_attachment_with_active_apply(
+            config,
+            adapter,
+            guard,
+            apply_effective_streaming_options_to_active_network_media_classified,
+        );
+    }
+
+    fn complete_managed_mpv_attachment_with_active_apply<F>(
+        &mut self,
+        config: &mpv_launch::ManagedMpvLaunchConfig,
+        mut adapter: MpvAdapter,
+        guard: ManagedMpvProcessGuard,
+        apply_to_active_media: F,
+    ) where
+        F: FnOnce(
+            &mut MpvAdapter,
+        )
+            -> Result<sorotte_player_mpv::MpvActiveNetworkMediaOptionsApplyOutcome, String>,
+    {
+        let launch_state = self.player_launch_state.clone();
+        self.player_apply_state
+            .record_process_target_applied(&launch_state);
+        configure_effective_streaming_options_for_network_media(
+            &mut adapter,
+            &config.effective_streaming_options,
+        );
+
+        let streaming_failure = match apply_to_active_media(&mut adapter) {
+            Ok(sorotte_player_mpv::MpvActiveNetworkMediaOptionsApplyOutcome::NoActiveMedia)
+                if config.has_positional_network_media() =>
+            {
+                let reason = "GUI-owned mpv launched with positional network media, but mpv has not exposed that media as active yet; retry mpv settings once the media is loaded"
+                    .to_owned();
+                self.mark_streaming_apply_failed(reason.clone(), true);
+                Some(reason)
+            }
+            Ok(_) => {
+                self.record_streaming_options_applied(&launch_state);
+                None
+            }
+            Err(error) if adapter.is_connected() => {
+                let reason = format!(
+                    "GUI-owned mpv launched and attached, but player streaming settings could not be applied: {error}"
+                );
+                self.mark_streaming_apply_failed(reason.clone(), true);
+                Some(reason)
+            }
+            Err(error) => {
+                self.player_apply_state.mark_streaming_apply_failed();
+                self.player_unavailability_reason = Some(format!(
+                    "GUI-owned mpv became unavailable while applying player streaming settings: {error}"
+                ));
+                return;
+            }
+        };
+
+        if let Err(error) = self.complete_mpv_attachment_after_core_configuration(
+            adapter,
+            Some(guard),
+            &config.ui_settings,
+        ) {
+            self.player_unavailability_reason =
+                Some(format!("GUI-owned mpv became unavailable: {error}"));
+            return;
+        }
+
+        if let Some(reason) = streaming_failure {
+            // Retaining the healthy adapter and guard clears generic unavailability state. Restore
+            // the scoped core error after optional Chat/OSD setup so the partial configuration
+            // remains visible and independently retryable.
+            self.player_unavailability_reason = Some(reason);
+        }
+    }
+
+    #[cfg(test)]
+    pub(in crate::app::runtime_owner) fn complete_managed_mpv_attachment_with_active_apply_for_test<
+        F,
+    >(
+        &mut self,
+        config: &mpv_launch::ManagedMpvLaunchConfig,
+        adapter: MpvAdapter,
+        guard: ManagedMpvProcessGuard,
+        apply_to_active_media: F,
+    ) where
+        F: FnOnce(
+            &mut MpvAdapter,
+        )
+            -> Result<sorotte_player_mpv::MpvActiveNetworkMediaOptionsApplyOutcome, String>,
+    {
+        self.complete_managed_mpv_attachment_with_active_apply(
+            config,
+            adapter,
+            guard,
+            apply_to_active_media,
+        );
+    }
+
     fn attach_player_from_launch_state(&mut self, launch_state: GuiPlayerLaunchRuntimeState) {
         self.detach_player();
         self.player_apply_state.clear_integration_baselines();
@@ -521,22 +625,10 @@ impl GuiPersistedConfigRuntimeOwner {
                     &helper_path_prefixes,
                     helper_downloader_path.as_deref(),
                 ) {
-                    Ok((mut adapter, guard)) => {
-                        configure_effective_streaming_options_for_network_media(
-                            &mut adapter,
-                            &config.effective_streaming_options,
+                    Ok((adapter, guard)) => {
+                        self.complete_managed_mpv_attachment_after_ipc_connect(
+                            &config, adapter, guard,
                         );
-                        if let Err(error) = self.complete_mpv_attachment_after_core_configuration(
-                            adapter,
-                            Some(guard),
-                            &config.ui_settings,
-                        ) {
-                            self.player_unavailability_reason =
-                                Some(format!("GUI-owned mpv became unavailable: {error}"));
-                        } else {
-                            self.player_apply_state
-                                .record_core_apply(&self.player_launch_state);
-                        }
                     }
                     Err(error) => {
                         self.player_unavailability_reason = Some(format!(
@@ -642,23 +734,41 @@ impl GuiPersistedConfigRuntimeOwner {
         let Some(player) = self.player.as_mut().and_then(GuiOwnedPlayer::as_mpv_mut) else {
             return false;
         };
+        let positional_network_media_expected = matches!(
+            next_launch_state,
+            GuiPlayerLaunchRuntimeState::ManagedMpv(config)
+                if config.has_positional_network_media()
+        );
         let core_ipc_was_connected = player.is_connected();
         if streaming_options_changed {
             configure_effective_streaming_options_for_network_media(
                 player,
                 &next_streaming_options,
             );
-            if let Err(error) = apply_effective_streaming_options_to_active_network_media(player) {
-                let ipc_unhealthy = !player.is_connected();
-                if ipc_unhealthy {
-                    self.detach_player();
-                    self.player_unavailability_reason = Some(format!(
-                        "mpv JSON IPC became unavailable while applying core streaming settings: {error}"
-                    ));
-                } else {
-                    self.mark_streaming_apply_failed(error, true);
+            match apply_effective_streaming_options_to_active_network_media_classified(player) {
+                Err(error) => {
+                    let ipc_unhealthy = !player.is_connected();
+                    if ipc_unhealthy {
+                        self.detach_player();
+                        self.player_unavailability_reason = Some(format!(
+                            "mpv JSON IPC became unavailable while applying core streaming settings: {error}"
+                        ));
+                    } else {
+                        self.mark_streaming_apply_failed(error, true);
+                    }
+                    return false;
                 }
-                return false;
+                Ok(sorotte_player_mpv::MpvActiveNetworkMediaOptionsApplyOutcome::NoActiveMedia)
+                    if positional_network_media_expected =>
+                {
+                    self.mark_streaming_apply_failed(
+                        "mpv has not exposed the positional network media as active yet; retry mpv settings once the media is loaded"
+                            .to_owned(),
+                        true,
+                    );
+                    return false;
+                }
+                Ok(_) => {}
             }
             self.player_apply_state
                 .record_streaming_options_applied(next_launch_state);

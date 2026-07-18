@@ -63,7 +63,7 @@ fn install_attached_mpv_baseline(
 ) {
     let applied =
         GuiPersistedConfigRuntimeOwner::configured_player_launch_state_from_lookup_and_settings(
-            &crate::app::startup_support::env_trimmed,
+            &|_| None,
             Some(settings),
         )
         .expect("mpv lifecycle fixture should resolve to a launch state");
@@ -84,7 +84,7 @@ fn install_attached_unacknowledging_mpv_baseline(
 ) {
     let applied =
         GuiPersistedConfigRuntimeOwner::configured_player_launch_state_from_lookup_and_settings(
-            &crate::app::startup_support::env_trimmed,
+            &|_| None,
             Some(settings),
         )
         .expect("unacknowledged mpv fixture should resolve to a launch state");
@@ -693,7 +693,143 @@ fn bridge_warning_does_not_suppress_restart_for_incompatible_player_target() {
 }
 
 #[test]
+fn streaming_retry_requirement_escalates_when_in_place_retry_is_not_safe() {
+    use crate::app::runtime_owner::GuiCorePlayerConfigurationHealth;
+
+    let env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
+    env_guard.remove_var("SOROTTE_CLIENT_MPV_IPC_PATH");
+    env_guard.remove_var("SOROTTE_MPV_IPC_PATH");
+    env_guard.remove_var("SOROTTE_GUI_ENABLE_TEST_PLAYER");
+
+    let initial = StoredClientSettingsMvp {
+        player_path: Some("C:/Players/mpv.exe".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    };
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    install_attached_mpv_baseline(&mut owner, &initial);
+    owner.player_apply_state.core_reapply_required = true;
+    owner.core_player_configuration_health = GuiCorePlayerConfigurationHealth::StreamingDegraded {
+        reason: "the active media rejected a streaming option".to_owned(),
+        retryable_in_place: false,
+    };
+    let state = SorotteGuiShellAppState::from_stored_settings(&initial);
+
+    assert_eq!(
+        owner.pending_apply_requirements_for_settings(&state, &initial),
+        vec![GuiSettingApplyRequirement::RestartPlayer],
+        "a non-retryable streaming failure must retain restart guidance"
+    );
+
+    owner.core_player_configuration_health = GuiCorePlayerConfigurationHealth::StreamingDegraded {
+        reason: "the active media rejected a streaming option".to_owned(),
+        retryable_in_place: true,
+    };
+    owner.player = None;
+    assert_eq!(
+        owner.pending_apply_requirements_for_settings(&state, &initial),
+        vec![GuiSettingApplyRequirement::RestartPlayer],
+        "an absent player cannot offer an in-place settings retry"
+    );
+
+    owner.player = Some(GuiOwnedPlayer::Mpv(Box::new(
+        sorotte_player_mpv::SimulatedPlayer::new().into_inner(),
+    )));
+    let mut per_player_arguments = std::collections::BTreeMap::new();
+    per_player_arguments.insert(
+        "C:/Players/mpv.exe".to_owned(),
+        vec!["--profile=changed-process-arguments".to_owned()],
+    );
+    let changed_process_arguments = StoredClientSettingsMvp {
+        per_player_arguments: Some(per_player_arguments),
+        ..initial.clone()
+    };
+    assert_eq!(
+        owner.pending_apply_requirements_for_settings(&state, &changed_process_arguments),
+        vec![GuiSettingApplyRequirement::RestartPlayer],
+        "changed managed-player arguments must override retryable streaming degradation"
+    );
+}
+
+#[test]
+fn failed_streaming_settings_retry_replaces_retry_requirement_with_restart_player() {
+    let env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
+    env_guard.remove_var("SOROTTE_CLIENT_MPV_IPC_PATH");
+    env_guard.remove_var("SOROTTE_MPV_IPC_PATH");
+    env_guard.remove_var("SOROTTE_GUI_ENABLE_TEST_PLAYER");
+
+    let initial = StoredClientSettingsMvp {
+        player_path: Some("C:/Players/mpv.exe".to_owned()),
+        streaming_read_ahead_seconds: Some(3.0),
+        ..StoredClientSettingsMvp::default()
+    };
+    let desired = StoredClientSettingsMvp {
+        streaming_read_ahead_seconds: Some(9.0),
+        ..initial.clone()
+    };
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    install_attached_mpv_baseline(&mut owner, &initial);
+    let initial_ui_settings =
+        crate::app::mpv_launch::legacy_syncplay_ui_settings_from_stored_settings(Some(&initial));
+    owner.player = Some(GuiOwnedPlayer::Mpv(Box::new(
+        sorotte_player_mpv::MpvAdapter::with_first_active_network_option_rejection_test_ipc(
+            initial_ui_settings,
+        ),
+    )));
+
+    assert!(
+        !owner.apply_saved_player_settings_in_place(&desired),
+        "the first active-network option write should establish retryable degradation"
+    );
+    assert!(owner.player.is_some());
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&desired);
+    assert!(state.apply(owner.pending_apply_requirements_action(&state, &desired)));
+    assert_eq!(
+        state.pending_apply_requirements,
+        vec![GuiSettingApplyRequirement::PlayerSettingsRetryAvailable]
+    );
+
+    let player = owner
+        .player
+        .as_mut()
+        .and_then(GuiOwnedPlayer::as_mpv_mut)
+        .expect("the retryable failure should retain its mpv adapter");
+    player.mark_test_ipc_unhealthy("test transport was lost before the settings retry");
+    assert!(!player.is_connected());
+
+    handle.push_request(GuiRuntimeRequest::RetryPlayerSettings);
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert!(
+        owner.player.is_none(),
+        "fatal transport loss during retry must detach the unusable player"
+    );
+    assert_eq!(
+        state.pending_apply_requirements,
+        vec![GuiSettingApplyRequirement::RestartPlayer],
+        "the completed retry attempt must reclassify the now-detached player"
+    );
+    let tree = state.configuration_widget_tree();
+    assert!(
+        tree.find("configuration:pending-apply:settings.apply.retry_player_settings")
+            .is_none(),
+        "the stale in-place retry action must be removed"
+    );
+    assert!(
+        tree.find("configuration:pending-apply:settings.apply.restart_player")
+            .is_some(),
+        "fatal retry failure must expose player-restart guidance"
+    );
+}
+
+#[test]
 fn bridge_retry_clears_only_bridge_state_while_streaming_reapply_is_pending() {
+    let env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
+    env_guard.remove_var("SOROTTE_CLIENT_MPV_IPC_PATH");
+    env_guard.remove_var("SOROTTE_MPV_IPC_PATH");
+    env_guard.remove_var("SOROTTE_GUI_ENABLE_TEST_PLAYER");
+
     let initial = StoredClientSettingsMvp {
         player_path: Some("C:/Players/mpv.exe".to_owned()),
         streaming_read_ahead_seconds: Some(3.0),
@@ -757,8 +893,8 @@ fn bridge_retry_clears_only_bridge_state_while_streaming_reapply_is_pending() {
     let mut state = SorotteGuiShellAppState::from_stored_settings(&desired);
     assert_eq!(
         owner.pending_apply_requirements_for_settings(&state, &desired),
-        vec![GuiSettingApplyRequirement::RestartPlayer],
-        "bridge degradation must not suppress the independent streaming requirement"
+        vec![GuiSettingApplyRequirement::PlayerSettingsRetryAvailable],
+        "an attached same-target streaming rejection should offer an in-place retry"
     );
 
     handle.push_request(GuiRuntimeRequest::RetryChatOsdIntegration);
@@ -781,7 +917,23 @@ fn bridge_retry_clears_only_bridge_state_while_streaming_reapply_is_pending() {
     );
     assert_eq!(
         state.pending_apply_requirements,
-        vec![GuiSettingApplyRequirement::RestartPlayer]
+        vec![GuiSettingApplyRequirement::PlayerSettingsRetryAvailable]
+    );
+    assert_eq!(
+        state.player_setup_retry_action(),
+        GuiShellAction::RetryPlayerSettings,
+        "the typed retry requirement and setup issue must route to the same in-place action"
+    );
+    let tree = state.configuration_widget_tree();
+    assert_eq!(
+        tree.find("configuration:pending-apply:settings.apply.retry_player_settings")
+            .and_then(|node| node.value.as_deref()),
+        Some("Retry mpv streaming settings in place")
+    );
+    assert!(
+        tree.find("configuration:pending-apply:settings.apply.restart_player")
+            .is_none(),
+        "retryable degradation must not display contradictory player-restart guidance"
     );
 
     assert!(owner.apply_saved_player_settings_in_place(&desired));

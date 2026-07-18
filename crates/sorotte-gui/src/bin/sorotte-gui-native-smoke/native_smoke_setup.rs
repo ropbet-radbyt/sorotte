@@ -49,6 +49,7 @@ pub(super) fn launch_sorotte_gui_with_test_overrides(
         "SOROTTE_GUI_TEST_DROP_TARGET",
         "SOROTTE_GUI_UPDATE_CHECK_RESPONSE",
         "SOROTTE_GUI_TEST_THEME",
+        "SOROTTE_GUI_TEST_PLAYER_SETTINGS_DEGRADED",
         "SOROTTE_GUI_TEST_CONFIG_ROOT_BROWSE_PATH",
         "SOROTTE_GUI_TEST_DISABLE_STARTUP_SAVED_CONNECT",
         "SOROTTE_CLIENT_CONFIG_ROOT",
@@ -74,6 +75,9 @@ pub(super) fn launch_sorotte_gui_with_test_overrides(
     }
     if test_overrides.disable_startup_saved_connect {
         command.env("SOROTTE_GUI_TEST_DISABLE_STARTUP_SAVED_CONNECT", "true");
+    }
+    if test_overrides.player_settings_degraded {
+        command.env("SOROTTE_GUI_TEST_PLAYER_SETTINGS_DEGRADED", "true");
     }
     command.env(
         "SOROTTE_GUI_REFRESH_PUBLIC_SERVERS",
