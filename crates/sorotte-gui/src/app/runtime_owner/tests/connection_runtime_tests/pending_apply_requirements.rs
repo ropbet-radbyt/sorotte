@@ -302,6 +302,11 @@ fn application_language_and_force_prompt_save_reverts_are_symmetric() {
 
 #[test]
 fn active_player_save_and_revert_toggle_restart_player_symmetrically() {
+    let env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
+    env_guard.remove_var("SOROTTE_CLIENT_MPV_IPC_PATH");
+    env_guard.remove_var("SOROTTE_MPV_IPC_PATH");
+    env_guard.remove_var("SOROTTE_GUI_ENABLE_TEST_PLAYER");
+
     let initial = StoredClientSettingsMvp {
         player_path: Some("C:/Players/vlc-a.exe".to_owned()),
         ..StoredClientSettingsMvp::default()
