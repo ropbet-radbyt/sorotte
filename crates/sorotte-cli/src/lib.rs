@@ -95,7 +95,9 @@ use self::language_support::{
     set_legacy_runtime_language_for_process_legacy_compatible,
 };
 #[cfg(test)]
-use self::local_runtime_actions::run_planned_local_runtime_action_legacy_compatible;
+use self::local_runtime_actions::{
+    publish_pending_local_file_updates, run_planned_local_runtime_action_legacy_compatible,
+};
 use self::mpv_startup::spawn_legacy_external_player_if_requested_legacy_compatible;
 #[cfg(test)]
 use self::mpv_startup::{

@@ -315,6 +315,7 @@ fn cli_runtime_contains_healthy_active_network_option_rejection() {
     let (mut runtime, bridge_health, streaming_warning) =
         create_client_runtime_with_prepared_mpv_and_startup_health_for_test(
             &config,
+            None,
             Some(&settings),
             player,
             |_player, _settings| {
@@ -352,6 +353,161 @@ fn cli_runtime_contains_healthy_active_network_option_rejection() {
     assert!(runtime.player().is_connected());
 }
 
+fn effective_streaming_option_map(
+    settings: &StoredClientSettingsMvp,
+    player_args: &[String],
+) -> std::collections::BTreeMap<String, String> {
+    ClientConfig::resolve(settings)
+        .config
+        .playback
+        .streaming
+        .effective_mpv_options(player_args)
+        .into_iter()
+        .map(|option| (option.name, option.effective_value))
+        .collect()
+}
+
+fn logged_file_local_option_map(commands: &[Value]) -> std::collections::BTreeMap<String, String> {
+    commands
+        .iter()
+        .map(|command| {
+            let command = command
+                .as_array()
+                .expect("file-local command log entries should be arrays");
+            assert_eq!(
+                command.first().and_then(Value::as_str),
+                Some("set_property")
+            );
+            let name = command
+                .get(1)
+                .and_then(Value::as_str)
+                .and_then(|property| property.strip_prefix("file-local-options/"))
+                .expect("logged property should be file-local");
+            let value = command
+                .get(2)
+                .and_then(Value::as_str)
+                .expect("file-local option value should be a string");
+            (name.to_owned(), value.to_owned())
+        })
+        .collect()
+}
+
+#[test]
+fn cli_runtime_applies_launch_options_when_external_queue_advances_local_to_network_media() {
+    let config = test_client_loop_config();
+    let settings = StoredClientSettingsMvp {
+        streaming_read_ahead_seconds: Some(31.0),
+        ..StoredClientSettingsMvp::default()
+    };
+    let overrides = LegacyClientArgOverrides {
+        player_args: vec![
+            "--script-opts".to_owned(),
+            "integration-source=https://example.test/value".to_owned(),
+            "C:/media/local-intro.mkv".to_owned(),
+            "https://media.example.test/main-stream.m3u8".to_owned(),
+            "--cache-secs=91".to_owned(),
+        ],
+        ..LegacyClientArgOverrides::default()
+    };
+    let expected_options = effective_streaming_option_map(&settings, &overrides.player_args);
+    let (player, commands, transition_trigger) =
+        MpvAdapter::with_external_network_media_transition_test_ipc(
+            LegacySyncplayUiSettings::default(),
+        );
+
+    let (mut runtime, bridge_health, startup_warning) =
+        create_client_runtime_with_prepared_mpv_and_startup_health_for_test(
+            &config,
+            Some(&overrides),
+            Some(&settings),
+            player,
+            |_player, _settings| SorotteBridgeHealth::Ready,
+        )
+        .expect("local launch media should leave network-only options staged");
+
+    assert_eq!(bridge_health, SorotteBridgeHealth::Ready);
+    assert!(startup_warning.is_none());
+    assert!(
+        commands
+            .lock()
+            .expect("transition command log should not be poisoned")
+            .is_empty(),
+        "network-only options must not alter the initially active local item"
+    );
+
+    transition_trigger.store(true, std::sync::atomic::Ordering::SeqCst);
+    publish_pending_local_file_updates(&mut runtime, &config)
+        .expect("the CLI runtime pump should publish and configure the queued network item");
+
+    let commands = commands
+        .lock()
+        .expect("transition command log should not be poisoned");
+    assert_eq!(logged_file_local_option_map(&commands), expected_options);
+    assert_eq!(
+        runtime
+            .last_local_file_update()
+            .and_then(|update| update.path.as_deref()),
+        Some("https://media.example.test/main-stream.m3u8")
+    );
+    assert!(runtime.player().is_connected());
+    assert!(
+        runtime
+            .with_player_io(MpvAdapter::take_network_media_options_transition_outcome)
+            .is_none(),
+        "the CLI pump should consume the successful transition outcome"
+    );
+}
+
+#[test]
+fn cli_runtime_contains_external_network_option_rejection_during_file_update_pump() {
+    let config = test_client_loop_config();
+    let settings = StoredClientSettingsMvp {
+        streaming_read_ahead_seconds: Some(31.0),
+        ..StoredClientSettingsMvp::default()
+    };
+    let overrides = LegacyClientArgOverrides {
+        player_args: vec![
+            "C:/media/local-intro.mkv".to_owned(),
+            "https://media.example.test/main-stream.m3u8".to_owned(),
+        ],
+        ..LegacyClientArgOverrides::default()
+    };
+    let (player, commands, transition_trigger) =
+        MpvAdapter::with_rejected_external_network_media_transition_test_ipc(
+            LegacySyncplayUiSettings::default(),
+        );
+    let (mut runtime, _bridge_health, startup_warning) =
+        create_client_runtime_with_prepared_mpv_and_startup_health_for_test(
+            &config,
+            Some(&overrides),
+            Some(&settings),
+            player,
+            |_player, _settings| SorotteBridgeHealth::Ready,
+        )
+        .expect("the initially active local item should not exercise network-only options");
+    assert!(startup_warning.is_none());
+
+    transition_trigger.store(true, std::sync::atomic::Ordering::SeqCst);
+    publish_pending_local_file_updates(&mut runtime, &config)
+        .expect("a healthy mpv option rejection must not abort the CLI session");
+
+    assert!(runtime.player().is_connected());
+    assert_eq!(
+        commands
+            .lock()
+            .expect("transition command log should not be poisoned")
+            .len(),
+        1,
+        "the first rejected option must stop the remaining partial apply"
+    );
+    assert!(
+        runtime
+            .with_player_io(MpvAdapter::take_network_media_options_transition_outcome)
+            .is_none(),
+        "the CLI pump should consume the adapter failure after surfacing its warning"
+    );
+}
+
 #[test]
 fn cli_runtime_keeps_unhealthy_transport_during_initial_streaming_apply_fatal() {
     let config = test_client_loop_config();
@@ -363,6 +519,7 @@ fn cli_runtime_keeps_unhealthy_transport_during_initial_streaming_apply_fatal() 
 
     let result = create_client_runtime_with_prepared_mpv_and_startup_health_for_test(
         &config,
+        None,
         None,
         player,
         |_player, _settings| {

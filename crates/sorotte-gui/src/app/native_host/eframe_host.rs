@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_owner::GuiStreamingDegradationOrigin;
 
 impl GuiEframeNativeHost {
     fn apply_player_settings_degraded_test_override(owner: &mut GuiPersistedConfigRuntimeOwner) {
@@ -16,6 +17,7 @@ impl GuiEframeNativeHost {
             GuiCorePlayerConfigurationHealth::StreamingDegraded {
                 reason: reason.clone(),
                 retryable_in_place: true,
+                origin: GuiStreamingDegradationOrigin::ExplicitApply,
             };
         owner.player_unavailability_reason = Some(reason);
     }

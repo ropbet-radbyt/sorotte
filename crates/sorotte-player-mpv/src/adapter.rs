@@ -43,6 +43,7 @@ use self::state::MpvObservedState;
 const PAUSED_POSITION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_PENDING_TRANSPORT_TELEMETRY_UPDATES: usize = 64;
 const MAX_PENDING_COMMAND_PROGRESS_UPDATES: usize = 128;
+const MAX_PENDING_NETWORK_MEDIA_OPTIONS_TRANSITION_OUTCOMES: usize = 16;
 const PLAYER_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 const PLAYER_LOAD_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 const PLAYBACK_ADVANCEMENT_EPSILON_SECONDS: f64 = 0.01;
@@ -74,6 +75,39 @@ pub enum MpvActiveNetworkMediaOptionsApplyOutcome {
     LocalMediaUnchanged,
     /// mpv's active path is network media and all configured file-local options were accepted.
     NetworkMediaUpdated,
+}
+
+/// Reports whether network-media options are complete for an authoritative path transition.
+#[derive(Debug, PartialEq, Eq)]
+pub enum MpvNetworkMediaOptionsTransitionOutcome {
+    /// Every configured file-local network option was accepted for the new active media.
+    Applied,
+    /// At least one option write failed. IPC health determines whether the failure is retryable.
+    Failed(PlayerError),
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct NetworkMediaOptionsApplyIdentity {
+    attempt_id: u64,
+    media_generation: Option<PlayerMediaGeneration>,
+    path: String,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct EmbeddedNetworkMediaOptions {
+    media_generation: PlayerMediaGeneration,
+    requested_target: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AuthoritativePathObservationOrigin {
+    Event,
+    Poll,
+}
+
+struct DeferredAuthoritativePathObservation {
+    path: Option<String>,
+    origin: AuthoritativePathObservationOrigin,
 }
 
 fn uses_network_media_options(path: &str) -> bool {
@@ -232,6 +266,13 @@ pub struct MpvAdapter {
     window_minimized: bool,
     current_path: Option<String>,
     network_media_options: BTreeMap<String, String>,
+    network_media_options_embedded_load: Option<EmbeddedNetworkMediaOptions>,
+    network_media_options_apply_identity: Option<NetworkMediaOptionsApplyIdentity>,
+    next_network_media_options_apply_attempt_id: u64,
+    network_media_options_event_batch_depth: usize,
+    deferred_network_media_options_observation: Option<DeferredAuthoritativePathObservation>,
+    pending_network_media_options_transition_outcomes:
+        VecDeque<MpvNetworkMediaOptionsTransitionOutcome>,
     loadfile_options_syntax: Option<MpvLoadfileOptionsSyntax>,
     mpv_version: Option<(u64, u64)>,
     pending_local_file_update: Option<LocalFileUpdate>,
@@ -322,11 +363,21 @@ impl MpvAdapter {
         self.observers_registered = false;
         self.transport_observers_registered = false;
         self.loadfile_options_syntax = None;
+        self.reset_network_media_options_attachment_state();
         self.mpv_version = version
             .as_deref()
             .and_then(Self::parse_mpv_major_minor_version);
         self.legacy_syncplay_osd_placement_restore = None;
         Ok(())
+    }
+
+    fn reset_network_media_options_attachment_state(&mut self) {
+        self.network_media_options_embedded_load = None;
+        self.network_media_options_apply_identity = None;
+        self.network_media_options_event_batch_depth = 0;
+        self.deferred_network_media_options_observation = None;
+        self.pending_network_media_options_transition_outcomes
+            .clear();
     }
 
     fn reset_legacy_syncplayintf_attachment_for_new_ipc(&mut self) {
@@ -536,6 +587,60 @@ impl MpvAdapter {
         (adapter, commands)
     }
 
+    /// Builds a ready simulated bridge whose active path starts local and transitions to a
+    /// network path after the returned trigger is armed. The command log contains only
+    /// `file-local-options/*` writes.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn with_external_network_media_transition_test_ipc(
+        settings: LegacySyncplayUiSettings,
+    ) -> (
+        Self,
+        std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        Self::with_external_network_media_transition_test_ipc_mode(settings, false)
+    }
+
+    /// Builds the same triggered local-to-network transition fixture while making mpv reject
+    /// the first transition-time file-local option write without disconnecting IPC.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn with_rejected_external_network_media_transition_test_ipc(
+        settings: LegacySyncplayUiSettings,
+    ) -> (
+        Self,
+        std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        Self::with_external_network_media_transition_test_ipc_mode(settings, true)
+    }
+
+    #[cfg(feature = "test-support")]
+    fn with_external_network_media_transition_test_ipc_mode(
+        settings: LegacySyncplayUiSettings,
+        reject_option_write: bool,
+    ) -> (
+        Self,
+        std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        let (ipc_client, commands, transition_trigger) =
+            crate::test_support::external_network_media_transition_client(reject_option_write);
+        let adapter = Self {
+            legacy_syncplay_ui_settings: settings,
+            legacy_syncplayintf_script_loaded: true,
+            legacy_syncplayintf_options_applied: true,
+            legacy_syncplayintf_bridge_instance_id: Some("test-bridge".to_owned()),
+            legacy_syncplayintf_acknowledged_options_generation: Some(1),
+            sorotte_bridge_health: SorotteBridgeHealth::Ready,
+            simulation_mode: true,
+            ipc_client: Some(ipc_client),
+            ..Self::default()
+        };
+        (adapter, commands, transition_trigger)
+    }
+
     /// Marks a feature-gated fake IPC client unhealthy so higher-layer tests can distinguish a
     /// fatal player transport loss from optional bridge degradation.
     #[cfg(feature = "test-support")]
@@ -609,10 +714,34 @@ impl MpvAdapter {
         K: Into<String>,
         V: Into<String>,
     {
-        self.network_media_options = options
+        let options = options
             .into_iter()
             .map(|(name, value)| (name.into(), value.into()))
             .collect();
+        if options != self.network_media_options {
+            self.network_media_options = options;
+            self.network_media_options_embedded_load = None;
+            self.network_media_options_apply_identity = None;
+            self.deferred_network_media_options_observation = None;
+            self.pending_network_media_options_transition_outcomes
+                .clear();
+        }
+    }
+
+    /// Returns the next ordered outcome after an authoritative network-media path transition.
+    /// This includes external transitions that require file-local writes and Sorotte-issued
+    /// `loadfile` transitions whose complete option map was already embedded in the load command.
+    ///
+    /// A healthy mpv command rejection remains retryable on the same adapter. Callers can use
+    /// [`Self::is_connected`] to distinguish that case from a terminal IPC transport failure.
+    /// Explicit calls to [`Self::apply_network_media_options_to_active_media`] return their own
+    /// errors directly and clear older transition outcomes that they supersede.
+    pub fn take_network_media_options_transition_outcome(
+        &mut self,
+    ) -> Option<MpvNetworkMediaOptionsTransitionOutcome> {
+        self.drain_ipc_events_if_attached();
+        self.pending_network_media_options_transition_outcomes
+            .pop_front()
     }
 
     /// Applies the configured network options to an already-active network file.
@@ -631,6 +760,8 @@ impl MpvAdapter {
     pub fn apply_network_media_options_to_active_media_classified(
         &mut self,
     ) -> Result<MpvActiveNetworkMediaOptionsApplyOutcome, PlayerError> {
+        self.pending_network_media_options_transition_outcomes
+            .clear();
         // `current_path` may describe a requested load or a prior externally
         // replaced playlist entry. An attached mpv is authoritative; the cache
         // is safe only for simulation or other no-IPC operation.
@@ -643,20 +774,241 @@ impl MpvAdapter {
             None => self.current_path.clone(),
         };
         let Some(active_path) = active_path else {
+            self.clear_network_media_options_path_identity();
             return Ok(MpvActiveNetworkMediaOptionsApplyOutcome::NoActiveMedia);
         };
         if !uses_network_media_options(&active_path) {
+            self.clear_network_media_options_path_identity();
             return Ok(MpvActiveNetworkMediaOptionsApplyOutcome::LocalMediaUnchanged);
         }
 
+        let attempt_id = self
+            .begin_network_media_options_apply_attempt(self.active_media_generation, &active_path);
+        if !self.apply_network_media_options_for_attempt(&active_path, attempt_id)? {
+            return Err(PlayerError::OperationFailed(
+                "active media changed while mpv network options were being applied".to_owned(),
+            ));
+        }
+        Ok(MpvActiveNetworkMediaOptionsApplyOutcome::NetworkMediaUpdated)
+    }
+
+    fn begin_network_media_options_apply_attempt(
+        &mut self,
+        media_generation: Option<PlayerMediaGeneration>,
+        path: &str,
+    ) -> u64 {
+        let attempt_id = self.next_network_media_options_apply_attempt_id;
+        self.next_network_media_options_apply_attempt_id = self
+            .next_network_media_options_apply_attempt_id
+            .wrapping_add(1)
+            .max(1);
+        self.network_media_options_apply_identity = Some(NetworkMediaOptionsApplyIdentity {
+            attempt_id,
+            media_generation,
+            path: path.to_owned(),
+        });
+        attempt_id
+    }
+
+    fn network_media_options_apply_attempt_is_current(&self, attempt_id: u64) -> bool {
+        self.network_media_options_apply_identity
+            .as_ref()
+            .is_some_and(|identity| identity.attempt_id == attempt_id)
+    }
+
+    fn apply_network_media_options_for_attempt(
+        &mut self,
+        path: &str,
+        attempt_id: u64,
+    ) -> Result<bool, PlayerError> {
+        if !uses_network_media_options(path) {
+            return Ok(true);
+        }
         for (name, value) in self.network_media_options.clone() {
-            self.send_ipc_command_if_attached(json!([
+            if !self.network_media_options_apply_attempt_is_current(attempt_id) {
+                return Ok(false);
+            }
+            let result = self.send_ipc_command_if_attached(json!([
                 MPV_COMMAND_SET_PROPERTY,
                 format!("file-local-options/{name}"),
                 value
-            ]))?;
+            ]));
+            if let Err(error) = result {
+                // Command rejection returns before the generic sender drains events that arrived
+                // ahead of the response. Process them before attributing the error so a newer
+                // authoritative path can supersede this attempt without a stale failure outcome.
+                self.drain_ipc_events_if_attached();
+                // Supersession can make a healthy rejection irrelevant to the new file, but an
+                // unhealthy transport is adapter-wide and must remain observable to its owner.
+                if !self.is_connected() {
+                    return Err(error);
+                }
+                if !self.network_media_options_apply_attempt_is_current(attempt_id) {
+                    return Ok(false);
+                }
+                return Err(error);
+            }
+            if !self.network_media_options_apply_attempt_is_current(attempt_id) {
+                return Ok(false);
+            }
         }
-        Ok(MpvActiveNetworkMediaOptionsApplyOutcome::NetworkMediaUpdated)
+        Ok(true)
+    }
+
+    fn embedded_network_media_options_belong_to_pending_load(&self) -> bool {
+        self.network_media_options_embedded_load
+            .as_ref()
+            .is_some_and(|embedded| {
+                self.pending_load_generation == Some(embedded.media_generation)
+                    || (self.pending_load_request.is_some()
+                        && self.active_media_generation == Some(embedded.media_generation))
+            })
+    }
+
+    fn embedded_network_media_options_apply_to_path(
+        &self,
+        media_generation: Option<PlayerMediaGeneration>,
+        path: &str,
+    ) -> bool {
+        self.network_media_options_embedded_load
+            .as_ref()
+            .is_some_and(|embedded| {
+                Some(embedded.media_generation) == media_generation
+                    && Self::media_target_matches(path, &embedded.requested_target)
+            })
+    }
+
+    fn clear_network_media_options_path_identity(&mut self) {
+        self.network_media_options_apply_identity = None;
+        if !self.embedded_network_media_options_belong_to_pending_load() {
+            self.network_media_options_embedded_load = None;
+        }
+    }
+
+    fn observe_authoritative_path_for_network_options(
+        &mut self,
+        path: Option<&str>,
+        origin: AuthoritativePathObservationOrigin,
+    ) {
+        if self.network_media_options_event_batch_depth != 0 {
+            // A poll issued while reducing an already-buffered event batch completes after every
+            // event already present in that batch. Preserve that newer snapshot over events that
+            // are merely handled later from the older local batch vector.
+            if self
+                .deferred_network_media_options_observation
+                .as_ref()
+                .is_some_and(|observation| {
+                    observation.origin == AuthoritativePathObservationOrigin::Poll
+                        && origin == AuthoritativePathObservationOrigin::Event
+                })
+            {
+                return;
+            }
+            self.deferred_network_media_options_observation =
+                Some(DeferredAuthoritativePathObservation {
+                    path: path.map(ToOwned::to_owned),
+                    origin,
+                });
+            return;
+        }
+        self.apply_authoritative_path_for_network_options(path, origin);
+    }
+
+    fn apply_authoritative_path_for_network_options(
+        &mut self,
+        path: Option<&str>,
+        origin: AuthoritativePathObservationOrigin,
+    ) {
+        let Some(path) = path else {
+            self.clear_network_media_options_path_identity();
+            return;
+        };
+        let media_generation = self.active_media_generation;
+        if !uses_network_media_options(path) {
+            self.network_media_options_apply_identity = None;
+            let embedded_generation_is_current = self
+                .network_media_options_embedded_load
+                .as_ref()
+                .is_some_and(|embedded| Some(embedded.media_generation) == media_generation);
+            if embedded_generation_is_current
+                && !self.embedded_network_media_options_belong_to_pending_load()
+            {
+                self.network_media_options_embedded_load = None;
+            }
+            return;
+        }
+        if self.network_media_options.is_empty() {
+            return;
+        }
+
+        let duplicate = self
+            .network_media_options_apply_identity
+            .as_ref()
+            .is_some_and(|identity| {
+                identity.path == path
+                    && (identity.media_generation == media_generation
+                        || identity.media_generation.is_none())
+            });
+        if duplicate {
+            if let Some(identity) = self.network_media_options_apply_identity.as_mut()
+                && identity.media_generation.is_none()
+            {
+                identity.media_generation = media_generation;
+            }
+            return;
+        }
+
+        if self.embedded_network_media_options_apply_to_path(media_generation, path) {
+            self.begin_network_media_options_apply_attempt(media_generation, path);
+            self.network_media_options_embedded_load = None;
+            self.queue_network_media_options_transition_outcome(
+                MpvNetworkMediaOptionsTransitionOutcome::Applied,
+            );
+            return;
+        }
+        if origin == AuthoritativePathObservationOrigin::Event
+            && self.embedded_network_media_options_belong_to_pending_load()
+        {
+            // Until a matching target establishes the pending load's generation, any event-time
+            // network path can belong to the file being replaced. A later property poll can
+            // safely establish that a mismatched external path is still authoritative.
+            return;
+        }
+        let embedded_generation_is_current = self
+            .network_media_options_embedded_load
+            .as_ref()
+            .is_some_and(|embedded| Some(embedded.media_generation) == media_generation);
+        // Poll-time mismatches apply to the current external path but retain a pending embedded
+        // marker in case Sorotte's requested target appears later. Only an orphaned marker is
+        // obsolete here.
+        if embedded_generation_is_current
+            && !self.embedded_network_media_options_belong_to_pending_load()
+        {
+            self.network_media_options_embedded_load = None;
+        }
+
+        let attempt_id = self.begin_network_media_options_apply_attempt(media_generation, path);
+
+        let outcome = match self.apply_network_media_options_for_attempt(path, attempt_id) {
+            Ok(true) => MpvNetworkMediaOptionsTransitionOutcome::Applied,
+            Ok(false) => return,
+            Err(error) => MpvNetworkMediaOptionsTransitionOutcome::Failed(error),
+        };
+        self.queue_network_media_options_transition_outcome(outcome);
+    }
+
+    fn queue_network_media_options_transition_outcome(
+        &mut self,
+        outcome: MpvNetworkMediaOptionsTransitionOutcome,
+    ) {
+        if self.pending_network_media_options_transition_outcomes.len()
+            == MAX_PENDING_NETWORK_MEDIA_OPTIONS_TRANSITION_OUTCOMES
+        {
+            self.pending_network_media_options_transition_outcomes
+                .pop_front();
+        }
+        self.pending_network_media_options_transition_outcomes
+            .push_back(outcome);
     }
 
     fn network_media_options_map(&self) -> serde_json::Map<String, Value> {
@@ -1803,24 +2155,48 @@ impl MpvAdapter {
             return;
         }
 
-        let Some(ipc_client) = self.ipc_client.as_mut() else {
-            return;
-        };
+        let polled_update = self.poll_local_file_update_from_mpv_coherent();
 
-        let Ok(polled_update) = Self::poll_local_file_update_from_mpv(ipc_client) else {
+        let Ok(polled_update) = polled_update else {
             return;
         };
         let Some(polled_update) = polled_update else {
+            self.observe_authoritative_path_for_network_options(
+                None,
+                AuthoritativePathObservationOrigin::Poll,
+            );
             return;
         };
 
         if self.pending_load_request.is_some() {
-            self.complete_pending_load_request_from_polled_update_if_ready(polled_update);
+            let authoritative_update = polled_update.clone();
+            let authoritative_path = polled_update.path.clone();
+            let pending_load_completed =
+                self.complete_pending_load_request_from_polled_update_if_ready(polled_update);
+            if !pending_load_completed {
+                self.current_path = authoritative_update.path.clone();
+                self.observed_state.path = authoritative_update.path;
+                self.observed_state.duration_seconds = authoritative_update.duration_seconds;
+                self.observed_state.size_bytes = authoritative_update.size_bytes;
+                self.path_metadata_generation = self.active_media_generation;
+                self.duration_metadata_generation = self.active_media_generation;
+                if self.refresh_timeline_kind_from_metadata() {
+                    let update = self.transport_update();
+                    self.queue_transport_telemetry_update(update);
+                }
+            }
+            if let Some(path) = authoritative_path.as_deref() {
+                self.observe_authoritative_path_for_network_options(
+                    Some(path),
+                    AuthoritativePathObservationOrigin::Poll,
+                );
+            }
             self.drain_ipc_events_if_attached();
             return;
         }
 
-        self.observed_state.path = polled_update.path.clone();
+        let authoritative_path = polled_update.path.clone();
+        self.observed_state.path = authoritative_path.clone();
         self.observed_state.duration_seconds = polled_update.duration_seconds;
         self.observed_state.size_bytes = polled_update.size_bytes;
         self.current_path = polled_update.path.clone();
@@ -1837,6 +2213,12 @@ impl MpvAdapter {
         }
         if Self::local_file_update_ready_for_sync(&polled_update) {
             self.record_local_file_update_if_changed(polled_update);
+        }
+        if let Some(path) = authoritative_path.as_deref() {
+            self.observe_authoritative_path_for_network_options(
+                Some(path),
+                AuthoritativePathObservationOrigin::Poll,
+            );
         }
         self.drain_ipc_events_if_attached();
     }
@@ -1859,6 +2241,72 @@ impl MpvAdapter {
         }
 
         Ok(Some(local_file_update))
+    }
+
+    fn poll_local_file_update_from_mpv_coherent(
+        &mut self,
+    ) -> Result<Option<LocalFileUpdate>, String> {
+        let generation_before_poll = self.active_media_generation;
+        let initial_update = {
+            let Some(ipc_client) = self.ipc_client.as_mut() else {
+                return Ok(None);
+            };
+            Self::poll_local_file_update_from_mpv(ipc_client)
+        };
+
+        // Events collected by the composite property reads precede the response that collected
+        // them, but some can be newer than the initial path response because duration and size
+        // are queried afterward. Reduce them without firing network-option side effects, then
+        // re-read path to establish one final authoritative boundary.
+        let observed_interleaved_events = self.drain_ipc_events_without_network_options_flush();
+        let initial_update = match initial_update {
+            Ok(update) => update,
+            Err(error) => {
+                self.deferred_network_media_options_observation = None;
+                return Err(error);
+            }
+        };
+        if !observed_interleaved_events {
+            self.deferred_network_media_options_observation = None;
+            return Ok(initial_update);
+        }
+
+        let final_path = {
+            let Some(ipc_client) = self.ipc_client.as_mut() else {
+                self.deferred_network_media_options_observation = None;
+                return Ok(None);
+            };
+            ipc_client.get_property_string(MPV_PROPERTY_PATH)
+        };
+        // Direct events collected before this response are older than it. A handler can,
+        // however, issue its own nested poll while reducing those events; that nested Poll
+        // observation completes afterward and must outrank this captured response.
+        self.deferred_network_media_options_observation = None;
+        self.drain_ipc_events_without_network_options_flush();
+        let nested_poll_observation = self
+            .deferred_network_media_options_observation
+            .take()
+            .filter(|observation| observation.origin == AuthoritativePathObservationOrigin::Poll);
+        let final_path = match nested_poll_observation {
+            Some(observation) => observation.path,
+            None => final_path?,
+        };
+        let Some(final_path) = final_path else {
+            return Ok(None);
+        };
+
+        let initial_path = initial_update
+            .as_ref()
+            .and_then(|update| update.path.as_deref());
+        if initial_path == Some(final_path.as_str())
+            && self.active_media_generation == generation_before_poll
+        {
+            return Ok(initial_update);
+        }
+
+        // Metadata read before a path/generation change can describe the replaced file. Keep the
+        // final path but let a later poll repopulate duration/size for its authoritative media.
+        Ok(Some(Self::local_file_update_for_path(&final_path)))
     }
 
     fn poll_paused_position_telemetry_if_attached(&mut self) {
@@ -1916,14 +2364,14 @@ impl MpvAdapter {
     fn complete_pending_load_request_from_polled_update_if_ready(
         &mut self,
         polled_update: LocalFileUpdate,
-    ) {
+    ) -> bool {
         let Some(requested_target) = self.pending_load_request.as_deref() else {
-            return;
+            return false;
         };
         if !Self::local_file_update_matches_request(&polled_update, requested_target)
             || !Self::local_file_update_ready_for_sync(&polled_update)
         {
-            return;
+            return false;
         }
         let requested_target = self
             .pending_load_request
@@ -1950,6 +2398,7 @@ impl MpvAdapter {
                 polled_update.path,
             ));
         self.refresh_inferred_transport_phase();
+        true
     }
 
     fn queue_playback_telemetry_update(&mut self, update: PlayerPlaybackTelemetryUpdate) {
@@ -2691,13 +3140,46 @@ impl MpvAdapter {
     }
 
     fn drain_ipc_events_if_attached(&mut self) {
-        let pending_events = match self.ipc_client.as_mut() {
-            Some(ipc_client) => ipc_client.take_pending_events(),
-            None => return,
-        };
-        for event in pending_events {
-            self.handle_ipc_event(&event);
+        self.reduce_pending_ipc_events(true);
+    }
+
+    fn drain_ipc_events_without_network_options_flush(&mut self) -> bool {
+        self.reduce_pending_ipc_events(false)
+    }
+
+    fn reduce_pending_ipc_events(&mut self, flush_network_options: bool) -> bool {
+        let outermost_batch = self.network_media_options_event_batch_depth == 0;
+        self.network_media_options_event_batch_depth += 1;
+        let mut processed_any = false;
+        loop {
+            let pending_events = match self.ipc_client.as_mut() {
+                Some(ipc_client) => ipc_client.take_pending_events(),
+                None => Vec::new(),
+            };
+            if pending_events.is_empty() {
+                break;
+            }
+            processed_any = true;
+            for event in pending_events {
+                self.handle_ipc_event(&event);
+            }
         }
+        self.network_media_options_event_batch_depth -= 1;
+
+        if outermost_batch && flush_network_options {
+            self.flush_deferred_network_media_options_observation();
+        }
+        processed_any
+    }
+
+    fn flush_deferred_network_media_options_observation(&mut self) {
+        let Some(observation) = self.deferred_network_media_options_observation.take() else {
+            return;
+        };
+        self.apply_authoritative_path_for_network_options(
+            observation.path.as_deref(),
+            observation.origin,
+        );
     }
 
     fn observe_unhealthy_ipc_transport(&mut self) {
@@ -2766,8 +3248,11 @@ impl MpvAdapter {
         };
         let data = event.get("data");
 
+        let mut authoritative_path_observed = false;
+        let mut authoritative_path = None;
         let file_metadata_changed = match property_name {
             MPV_PROPERTY_PATH => {
+                authoritative_path_observed = true;
                 let next_path = data.and_then(Value::as_str).map(ToOwned::to_owned);
                 if next_path.is_some() && self.active_media_generation.is_none() {
                     let generation = self
@@ -2784,6 +3269,7 @@ impl MpvAdapter {
                 }
                 self.current_path = next_path.clone();
                 self.observed_state.path = next_path.clone();
+                authoritative_path = next_path.clone();
                 self.path_metadata_generation = self.active_media_generation;
                 if let (Some(generation), Some(target)) =
                     (self.active_media_generation, next_path.as_deref())
@@ -3044,6 +3530,12 @@ impl MpvAdapter {
             }
             self.maybe_emit_local_file_update_from_observed_state();
         }
+        if authoritative_path_observed {
+            self.observe_authoritative_path_for_network_options(
+                authoritative_path.as_deref(),
+                AuthoritativePathObservationOrigin::Event,
+            );
+        }
     }
 
     fn handle_start_file_event(&mut self, event: &Value) {
@@ -3061,6 +3553,8 @@ impl MpvAdapter {
             .and_then(|entry_id| self.playlist_entry_generations.get(&entry_id).copied())
             .or(self.pending_load_generation)
             .unwrap_or_else(|| self.allocate_media_generation());
+
+        self.network_media_options_apply_identity = None;
 
         if let Some(playlist_entry_id) = playlist_entry_id {
             self.playlist_entry_generations
@@ -3101,6 +3595,13 @@ impl MpvAdapter {
         if let Some(target) = requested_probe_target.as_deref() {
             self.maybe_start_ytdl_live_probe(generation, target);
         }
+        // A later start-file in the same buffered batch invalidates every earlier path even when
+        // mpv has not emitted the replacement path yet. The batch reducer will let a following
+        // path observation supersede this idle/loading marker before any option write begins.
+        self.observe_authoritative_path_for_network_options(
+            None,
+            AuthoritativePathObservationOrigin::Event,
+        );
     }
 
     fn handle_seek_event(&mut self) {
@@ -3180,9 +3681,8 @@ impl MpvAdapter {
         self.pending_load_generation = None;
 
         let polled_update = self
-            .ipc_client
-            .as_mut()
-            .and_then(|ipc_client| Self::poll_local_file_update_from_mpv(ipc_client).ok())
+            .poll_local_file_update_from_mpv_coherent()
+            .ok()
             .flatten();
         let metadata_is_current = polled_update.is_some();
         let loaded_update =
@@ -3201,6 +3701,12 @@ impl MpvAdapter {
         }
         if let Some(generation) = self.active_media_generation {
             self.maybe_start_ytdl_live_probe(generation, &requested_target);
+        }
+        if let Some(path) = loaded_update.path.as_deref() {
+            self.observe_authoritative_path_for_network_options(
+                Some(path),
+                AuthoritativePathObservationOrigin::Poll,
+            );
         }
         if Self::local_file_update_ready_for_sync(&loaded_update) {
             self.record_local_file_update_if_changed(loaded_update.clone());
@@ -3275,6 +3781,27 @@ impl MpvAdapter {
             if self.active_playlist_entry_id == playlist_entry_id {
                 self.active_playlist_entry_id = None;
             }
+            if self
+                .network_media_options_apply_identity
+                .as_ref()
+                .is_some_and(|identity| identity.media_generation == generation)
+            {
+                self.network_media_options_apply_identity = None;
+            }
+            if self
+                .network_media_options_embedded_load
+                .as_ref()
+                .is_some_and(|embedded| Some(embedded.media_generation) == generation)
+            {
+                self.network_media_options_embedded_load = None;
+            }
+            // end-file is authoritative for the matching active generation even when mpv does
+            // not emit a separate path=null observation. It must supersede a network path seen
+            // earlier in the same buffered batch before that path can trigger an option write.
+            self.observe_authoritative_path_for_network_options(
+                None,
+                AuthoritativePathObservationOrigin::Event,
+            );
         }
 
         if reason != MPV_END_FILE_REASON_ERROR
@@ -3721,6 +4248,7 @@ impl MpvAdapter {
         self.observers_registered = false;
         self.transport_observers_registered = false;
         self.loadfile_options_syntax = None;
+        self.reset_network_media_options_attachment_state();
         self.mpv_version = None;
         self.legacy_syncplay_osd_placement_restore = None;
     }

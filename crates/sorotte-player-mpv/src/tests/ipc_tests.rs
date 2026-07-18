@@ -1544,6 +1544,772 @@ fn delayed_active_network_media_fixture_reports_idle_then_applies_network_option
 }
 
 #[test]
+fn external_local_to_network_transition_applies_options_once_per_generation_and_path() {
+    let (transport, state) = fake_transport_with_reads(&[
+        r#"{"request_id":1,"error":"success","data":"C:/media/local-intro.mkv"}"#,
+        r#"{"event":"start-file","playlist_entry_id":42}"#,
+        r#"{"event":"property-change","name":"path","data":"https://media.example.test/main-stream.m3u8"}"#,
+        r#"{"event":"file-loaded"}"#,
+        r#"{"request_id":2,"error":"success"}"#,
+        r#"{"request_id":3,"error":"success"}"#,
+        r#"{"request_id":4,"error":"success"}"#,
+        r#"{"event":"property-change","name":"path","data":"https://media.example.test/main-stream.m3u8"}"#,
+        r#"{"request_id":5,"error":"success"}"#,
+        r#"{"event":"start-file","playlist_entry_id":43}"#,
+        r#"{"event":"property-change","name":"path","data":"C:/media/next-local.mkv"}"#,
+        r#"{"event":"file-loaded"}"#,
+        r#"{"request_id":6,"error":"success"}"#,
+        r#"{"event":"start-file","playlist_entry_id":44}"#,
+        r#"{"event":"property-change","name":"path","data":"https://media.example.test/main-stream.m3u8"}"#,
+        r#"{"event":"file-loaded"}"#,
+        r#"{"request_id":7,"error":"success"}"#,
+        r#"{"request_id":8,"error":"success"}"#,
+        r#"{"request_id":9,"error":"success"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75"), ("cache-pause-wait", "5")]);
+
+    assert_eq!(
+        adapter
+            .apply_network_media_options_to_active_media_classified()
+            .expect("initial local media query should remain healthy"),
+        MpvActiveNetworkMediaOptionsApplyOutcome::LocalMediaUnchanged
+    );
+    adapter
+        .set_playback_rate(1.0)
+        .expect("the first external network transition should remain healthy");
+    adapter
+        .set_playback_rate(1.0)
+        .expect("a duplicate path observation should remain healthy");
+    adapter
+        .set_playback_rate(1.0)
+        .expect("a later local file must remain untouched");
+    adapter
+        .set_playback_rate(1.0)
+        .expect("the same URL in a new media generation must reapply options");
+
+    let file_local_commands = state
+        .writes()
+        .iter()
+        .map(|write| serde_json::from_str::<Value>(write.trim_end()).expect("valid command json"))
+        .filter(|command| {
+            command
+                .pointer("/command/1")
+                .and_then(Value::as_str)
+                .is_some_and(|name| name.starts_with("file-local-options/"))
+        })
+        .map(|command| command["command"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        file_local_commands,
+        vec![
+            json!(["set_property", "file-local-options/cache-pause-wait", "5"]),
+            json!(["set_property", "file-local-options/cache-secs", "75"]),
+            json!(["set_property", "file-local-options/cache-pause-wait", "5"]),
+            json!(["set_property", "file-local-options/cache-secs", "75"]),
+        ],
+        "the duplicate path and intervening local generation must not receive option writes"
+    );
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
+    );
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
+    );
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None
+    );
+}
+
+#[test]
+fn explicit_active_network_apply_suppresses_initial_path_echo_but_not_same_url_reload() {
+    let (transport, state) = fake_transport_with_reads(&[
+        r#"{"request_id":1,"error":"success","data":"https://media.example.test/live.m3u8"}"#,
+        r#"{"request_id":2,"error":"success"}"#,
+        r#"{"event":"property-change","name":"path","data":"https://media.example.test/live.m3u8"}"#,
+        r#"{"request_id":3,"error":"success"}"#,
+        r#"{"event":"start-file","playlist_entry_id":91}"#,
+        r#"{"event":"property-change","name":"path","data":"https://media.example.test/live.m3u8"}"#,
+        r#"{"event":"file-loaded"}"#,
+        r#"{"request_id":4,"error":"success"}"#,
+        r#"{"request_id":5,"error":"success"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+
+    assert_eq!(
+        adapter
+            .apply_network_media_options_to_active_media_classified()
+            .expect("initial active network file should accept its options"),
+        MpvActiveNetworkMediaOptionsApplyOutcome::NetworkMediaUpdated
+    );
+    adapter
+        .set_playback_rate(1.0)
+        .expect("the initial observer echo should not duplicate options");
+    adapter
+        .set_playback_rate(1.0)
+        .expect("a genuine same-URL reload should accept options");
+
+    let file_local_writes = state
+        .writes()
+        .iter()
+        .filter(|write| write.contains("file-local-options/cache-secs"))
+        .count();
+    assert_eq!(
+        file_local_writes, 2,
+        "one explicit apply and one new-generation apply are expected"
+    );
+}
+
+#[test]
+fn local_transition_during_first_option_write_supersedes_remaining_network_writes() {
+    let (transport, state) = fake_transport_with_reads(&[
+        r#"{"request_id":1,"error":"success","data":"C:/media/local-intro.mkv"}"#,
+        r#"{"event":"start-file","playlist_entry_id":81}"#,
+        r#"{"event":"property-change","name":"path","data":"https://media.example.test/a.m3u8"}"#,
+        r#"{"request_id":2,"error":"success"}"#,
+        r#"{"event":"start-file","playlist_entry_id":82}"#,
+        r#"{"event":"property-change","name":"path","data":"C:/media/replaced-local.mkv"}"#,
+        r#"{"event":"file-loaded"}"#,
+        r#"{"request_id":3,"error":"success"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75"), ("cache-pause-wait", "5")]);
+    assert_eq!(
+        adapter
+            .apply_network_media_options_to_active_media_classified()
+            .expect("initial local path should remain healthy"),
+        MpvActiveNetworkMediaOptionsApplyOutcome::LocalMediaUnchanged
+    );
+
+    adapter
+        .set_playback_rate(1.0)
+        .expect("the triggering command and superseding local transition should remain healthy");
+
+    let file_local_writes = state
+        .writes()
+        .iter()
+        .filter(|write| write.contains("file-local-options/"))
+        .count();
+    assert_eq!(
+        file_local_writes, 1,
+        "the stale network attempt must stop before writing its remaining option to local media"
+    );
+    assert_eq!(adapter.current_path(), Some("C:/media/replaced-local.mkv"));
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None
+    );
+}
+
+#[test]
+fn newer_network_success_supersedes_rejected_older_attempt_and_remains_final_outcome() {
+    let (transport, state) = fake_transport_with_reads(&[
+        r#"{"request_id":1,"error":"success","data":"C:/media/local-intro.mkv"}"#,
+        r#"{"event":"start-file","playlist_entry_id":83}"#,
+        r#"{"event":"property-change","name":"path","data":"https://media.example.test/a.m3u8"}"#,
+        r#"{"request_id":2,"error":"success"}"#,
+        r#"{"event":"start-file","playlist_entry_id":84}"#,
+        r#"{"event":"property-change","name":"path","data":"https://media.example.test/c.m3u8"}"#,
+        r#"{"event":"file-loaded"}"#,
+        r#"{"request_id":3,"error":"invalid parameter"}"#,
+        r#"{"request_id":4,"error":"success"}"#,
+        r#"{"request_id":5,"error":"success"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75"), ("cache-pause-wait", "5")]);
+    assert_eq!(
+        adapter
+            .apply_network_media_options_to_active_media_classified()
+            .expect("initial local path should remain healthy"),
+        MpvActiveNetworkMediaOptionsApplyOutcome::LocalMediaUnchanged
+    );
+
+    adapter
+        .set_playback_rate(1.0)
+        .expect("the triggering command should remain accepted");
+
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied),
+        "the newer complete C application must be the only observable outcome"
+    );
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None
+    );
+    assert_eq!(
+        adapter.current_path(),
+        Some("https://media.example.test/c.m3u8")
+    );
+    assert_eq!(
+        state
+            .writes()
+            .iter()
+            .filter(|write| write.contains("file-local-options/"))
+            .count(),
+        3,
+        "A writes once before supersession and C receives the complete two-option set"
+    );
+}
+
+#[test]
+fn authoritative_null_rearms_same_url_transition_without_mutating_idle_media() {
+    let (transport, state) = fake_transport_with_reads(&[
+        r#"{"request_id":1,"error":"success","data":"https://media.example.test/live.m3u8"}"#,
+        r#"{"request_id":2,"error":"success"}"#,
+        r#"{"event":"property-change","name":"path","data":null}"#,
+        r#"{"request_id":3,"error":"success"}"#,
+        r#"{"event":"property-change","name":"path","data":"https://media.example.test/live.m3u8"}"#,
+        r#"{"request_id":4,"error":"success"}"#,
+        r#"{"request_id":5,"error":"success"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+    adapter
+        .apply_network_media_options_to_active_media()
+        .expect("initial active network file should accept its options");
+
+    adapter
+        .set_playback_rate(1.0)
+        .expect("the authoritative idle transition should remain healthy");
+    assert_eq!(
+        state
+            .writes()
+            .iter()
+            .filter(|write| write.contains("file-local-options/cache-secs"))
+            .count(),
+        1,
+        "idle media must not receive a file-local option write"
+    );
+    adapter
+        .set_playback_rate(1.0)
+        .expect("the same URL after idle should be treated as a new authoritative transition");
+    assert_eq!(
+        state
+            .writes()
+            .iter()
+            .filter(|write| write.contains("file-local-options/cache-secs"))
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn sorotte_network_loadfile_path_echo_does_not_double_apply_embedded_options() {
+    let (transport, state) = fake_transport_with_reads(&[
+        r#"{"request_id":1,"error":"success","data":"C:/media/local-intro.mkv"}"#,
+        r#"{"event":"start-file","playlist_entry_id":72}"#,
+        r#"{"event":"property-change","name":"path","data":"https://media.example.test/rejected.m3u8"}"#,
+        r#"{"event":"file-loaded"}"#,
+        r#"{"request_id":2,"error":"success"}"#,
+        r#"{"request_id":3,"error":"invalid parameter"}"#,
+        r#"{"request_id":4,"error":"success","data":"0.40.0"}"#,
+        r#"{"event":"property-change","name":"path","data":"C:/media/stale-local.mkv"}"#,
+        r#"{"event":"property-change","name":"path","data":"https://media.example.test/pre-start-network.m3u8"}"#,
+        r#"{"event":"start-file","playlist_entry_id":999}"#,
+        r#"{"event":"property-change","name":"path","data":"https://media.example.test/stale-network.m3u8"}"#,
+        r#"{"event":"start-file","playlist_entry_id":73}"#,
+        r#"{"event":"property-change","name":"path","data":null}"#,
+        r#"{"event":"property-change","name":"path","data":"https://media.example.test/sorotte.m3u8"}"#,
+        r#"{"request_id":5,"error":"success"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+    assert_eq!(
+        adapter
+            .apply_network_media_options_to_active_media_classified()
+            .expect("initial local path should remain healthy"),
+        MpvActiveNetworkMediaOptionsApplyOutcome::LocalMediaUnchanged
+    );
+    adapter
+        .set_playback_rate(1.0)
+        .expect("the command that observes the external transition should succeed");
+    let file_local_writes_before_sorotte_load = state
+        .writes()
+        .iter()
+        .filter(|write| write.contains("file-local-options/"))
+        .count();
+    assert_eq!(file_local_writes_before_sorotte_load, 1);
+
+    adapter
+        .open_file("https://media.example.test/sorotte.m3u8")
+        .expect("Sorotte network loadfile should be accepted");
+
+    assert_eq!(
+        state
+            .writes()
+            .iter()
+            .filter(|write| write.contains("file-local-options/"))
+            .count(),
+        file_local_writes_before_sorotte_load,
+        "stale local/network/null observations and the final path echo must not duplicate loadfile's embedded options"
+    );
+    let loadfile = state
+        .writes()
+        .iter()
+        .map(|write| serde_json::from_str::<Value>(write.trim_end()).expect("valid command json"))
+        .find(|command| command.pointer("/command/0").and_then(Value::as_str) == Some("loadfile"))
+        .expect("loadfile command should be present");
+    assert_eq!(loadfile["command"][4]["cache-secs"], json!("75"));
+    assert!(matches!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::Failed(_))
+    ));
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied),
+        "embedded Sorotte options must signal recovery from the earlier external rejection"
+    );
+}
+
+#[test]
+fn pending_sorotte_load_poll_applies_mismatched_network_path_and_retains_target_marker() {
+    let requested_target = "https://media.example.test/requested-a.m3u8";
+    let polled_external_target = "https://media.example.test/external-b.m3u8";
+    let (transport, state) = fake_transport_with_reads(&[
+        r#"{"request_id":1,"error":"success","data":"0.40.0"}"#,
+        r#"{"event":"start-file","playlist_entry_id":701}"#,
+        r#"{"event":"property-change","name":"path","data":"https://media.example.test/external-b.m3u8"}"#,
+        r#"{"request_id":2,"error":"success"}"#,
+        r#"{"request_id":3,"error":"success"}"#,
+        r#"{"request_id":4,"error":"success"}"#,
+        r#"{"request_id":5,"error":"success"}"#,
+        r#"{"request_id":6,"error":"success"}"#,
+        r#"{"request_id":7,"error":"success"}"#,
+        r#"{"request_id":8,"error":"success"}"#,
+        r#"{"request_id":9,"error":"success"}"#,
+        r#"{"request_id":10,"error":"success"}"#,
+        r#"{"request_id":11,"error":"success","data":"https://media.example.test/external-b.m3u8"}"#,
+        r#"{"request_id":12,"error":"success","data":10.0}"#,
+        r#"{"request_id":13,"error":"success","data":0}"#,
+        r#"{"request_id":14,"error":"success"}"#,
+        r#"{"request_id":15,"error":"success","data":"https://media.example.test/requested-a.m3u8"}"#,
+        r#"{"request_id":16,"error":"success","data":20.0}"#,
+        r#"{"request_id":17,"error":"success","data":0}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+    adapter
+        .open_file(requested_target)
+        .expect("Sorotte network loadfile should be accepted");
+
+    assert_eq!(
+        adapter.take_local_file_update(),
+        None,
+        "the mismatched poll must not complete Sorotte's pending A load"
+    );
+    assert_eq!(adapter.current_path(), Some(polled_external_target));
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied),
+        "fresh polling must apply policy to authoritative external B"
+    );
+    assert_eq!(
+        state
+            .writes()
+            .iter()
+            .filter(|write| write.contains("file-local-options/cache-secs"))
+            .count(),
+        1
+    );
+
+    let update = adapter
+        .take_local_file_update()
+        .expect("a later matching A poll should complete the pending Sorotte load");
+    assert_eq!(update.path.as_deref(), Some(requested_target));
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied),
+        "matching A should consume its retained embedded marker without another write"
+    );
+    assert_eq!(
+        state
+            .writes()
+            .iter()
+            .filter(|write| write.contains("file-local-options/cache-secs"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn pending_sorotte_load_drains_matching_start_and_path_events_before_poll_response() {
+    let requested_target = "https://media.example.test/requested-a.m3u8";
+    let (transport, state) = fake_transport_with_reads(&[
+        r#"{"request_id":1,"error":"success","data":"0.40.0"}"#,
+        r#"{"request_id":2,"error":"success"}"#,
+        r#"{"request_id":3,"error":"success"}"#,
+        r#"{"request_id":4,"error":"success"}"#,
+        r#"{"request_id":5,"error":"success"}"#,
+        r#"{"request_id":6,"error":"success"}"#,
+        r#"{"request_id":7,"error":"success"}"#,
+        r#"{"request_id":8,"error":"success"}"#,
+        r#"{"request_id":9,"error":"success"}"#,
+        r#"{"request_id":10,"error":"success"}"#,
+        r#"{"event":"start-file","playlist_entry_id":702}"#,
+        r#"{"event":"property-change","name":"path","data":"https://media.example.test/requested-a.m3u8"}"#,
+        r#"{"request_id":11,"error":"success","data":"https://media.example.test/requested-a.m3u8"}"#,
+        r#"{"request_id":12,"error":"success","data":20.0}"#,
+        r#"{"request_id":13,"error":"success","data":0}"#,
+        r#"{"request_id":14,"error":"success","data":"https://media.example.test/requested-a.m3u8"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+    adapter
+        .open_file(requested_target)
+        .expect("Sorotte network loadfile should be accepted");
+
+    let update = adapter
+        .take_local_file_update()
+        .expect("the matching poll should complete the pending Sorotte load");
+    assert_eq!(update.path.as_deref(), Some(requested_target));
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied),
+        "the queued path echo should consume the embedded-options marker"
+    );
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None,
+        "the matching poll must not report a second application"
+    );
+    assert_eq!(
+        state
+            .writes()
+            .iter()
+            .filter(|write| write.contains("file-local-options/cache-secs"))
+            .count(),
+        0,
+        "the queued path echo must not duplicate loadfile's embedded options after polling"
+    );
+    let loadfile = state
+        .writes()
+        .iter()
+        .map(|write| serde_json::from_str::<Value>(write.trim_end()).expect("valid command json"))
+        .find(|command| command.pointer("/command/0").and_then(Value::as_str) == Some("loadfile"))
+        .expect("loadfile command should be present");
+    assert_eq!(loadfile["command"][4]["cache-secs"], json!("75"));
+}
+
+#[test]
+fn buffered_network_then_local_batch_never_writes_network_options_to_local_media() {
+    let (transport, state) = fake_transport_with_reads(&[
+        r#"{"event":"start-file","playlist_entry_id":801}"#,
+        r#"{"event":"property-change","name":"path","data":"https://media.example.test/transient.m3u8"}"#,
+        r#"{"event":"start-file","playlist_entry_id":802}"#,
+        r#"{"event":"property-change","name":"path","data":"C:/media/final-local.mkv"}"#,
+        r#"{"event":"file-loaded"}"#,
+        r#"{"request_id":1,"error":"success"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75"), ("cache-pause-wait", "5")]);
+
+    adapter
+        .set_playback_rate(1.0)
+        .expect("the command that collects the transition batch should succeed");
+
+    assert_eq!(adapter.current_path(), Some("C:/media/final-local.mkv"));
+    assert!(
+        state
+            .writes()
+            .iter()
+            .all(|write| !write.contains("file-local-options/")),
+        "no option write may begin until the whole buffered batch resolves to local media"
+    );
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None,
+        "a transient network path superseded in the same batch has no apply outcome"
+    );
+}
+
+#[test]
+fn trailing_start_in_buffered_batch_invalidates_earlier_network_path_before_write() {
+    let (transport, state) = fake_transport_with_reads(&[
+        r#"{"event":"start-file","playlist_entry_id":803}"#,
+        r#"{"event":"property-change","name":"path","data":"https://media.example.test/transient.m3u8"}"#,
+        r#"{"event":"start-file","playlist_entry_id":804}"#,
+        r#"{"request_id":1,"error":"success"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+
+    adapter
+        .set_playback_rate(1.0)
+        .expect("the command that collects the transition batch should succeed");
+
+    assert_eq!(adapter.current_path(), None);
+    assert!(
+        state
+            .writes()
+            .iter()
+            .all(|write| !write.contains("file-local-options/")),
+        "a later start without a path must invalidate the earlier network candidate"
+    );
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None
+    );
+}
+
+#[test]
+fn matching_end_file_in_buffered_batch_invalidates_earlier_network_path_before_write() {
+    let (transport, state) = fake_transport_with_reads(&[
+        r#"{"event":"start-file","playlist_entry_id":805}"#,
+        r#"{"event":"property-change","name":"path","data":"https://media.example.test/ended.m3u8"}"#,
+        r#"{"event":"end-file","playlist_entry_id":805,"reason":"eof"}"#,
+        r#"{"request_id":1,"error":"success"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+
+    adapter
+        .set_playback_rate(1.0)
+        .expect("the command that collects the lifecycle batch should succeed");
+
+    assert!(
+        state
+            .writes()
+            .iter()
+            .all(|write| !write.contains("file-local-options/")),
+        "a matching end-file must cancel the earlier network candidate before any write"
+    );
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None
+    );
+}
+
+#[test]
+fn composite_poll_revalidates_path_after_newer_local_events_during_metadata_reads() {
+    let (transport, state) = fake_transport_with_reads(&[
+        r#"{"request_id":1,"error":"success"}"#,
+        r#"{"request_id":2,"error":"success"}"#,
+        r#"{"request_id":3,"error":"success"}"#,
+        r#"{"request_id":4,"error":"success"}"#,
+        r#"{"request_id":5,"error":"success"}"#,
+        r#"{"request_id":6,"error":"success"}"#,
+        r#"{"request_id":7,"error":"success"}"#,
+        r#"{"request_id":8,"error":"success"}"#,
+        r#"{"request_id":9,"error":"success","data":"https://media.example.test/stale-a.m3u8"}"#,
+        r#"{"event":"start-file","playlist_entry_id":811}"#,
+        r#"{"event":"property-change","name":"path","data":"C:/media/newer-b.mkv"}"#,
+        r#"{"event":"file-loaded"}"#,
+        r#"{"request_id":10,"error":"success","data":10.0}"#,
+        r#"{"request_id":11,"error":"success","data":0}"#,
+        r#"{"request_id":12,"error":"success","data":"C:/media/newer-b.mkv"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+
+    assert_eq!(
+        adapter.take_local_file_update(),
+        None,
+        "metadata from stale network A must not be published as local B metadata"
+    );
+    assert_eq!(adapter.current_path(), Some("C:/media/newer-b.mkv"));
+    assert!(
+        state
+            .writes()
+            .iter()
+            .all(|write| !write.contains("file-local-options/")),
+        "the final path revalidation must prevent a stale network-A option write"
+    );
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None
+    );
+}
+
+#[test]
+fn nested_poll_from_final_query_events_outranks_captured_outer_path() {
+    let requested_target = "https://media.example.test/requested-a.m3u8";
+    let (transport, state) = fake_transport_with_reads(&[
+        r#"{"request_id":1,"error":"success","data":"0.40.0"}"#,
+        r#"{"request_id":2,"error":"success"}"#,
+        r#"{"request_id":3,"error":"success"}"#,
+        r#"{"request_id":4,"error":"success"}"#,
+        r#"{"request_id":5,"error":"success"}"#,
+        r#"{"request_id":6,"error":"success"}"#,
+        r#"{"request_id":7,"error":"success"}"#,
+        r#"{"request_id":8,"error":"success"}"#,
+        r#"{"request_id":9,"error":"success"}"#,
+        r#"{"request_id":10,"error":"success"}"#,
+        r#"{"request_id":11,"error":"success","data":"https://media.example.test/requested-a.m3u8"}"#,
+        r#"{"event":"property-change","name":"path","data":"https://media.example.test/requested-a.m3u8"}"#,
+        r#"{"request_id":12,"error":"success","data":20.0}"#,
+        r#"{"request_id":13,"error":"success","data":0}"#,
+        r#"{"event":"file-loaded"}"#,
+        r#"{"request_id":14,"error":"success","data":"https://media.example.test/requested-a.m3u8"}"#,
+        r#"{"request_id":15,"error":"success","data":"C:/media/newer-b.mkv"}"#,
+        r#"{"request_id":16,"error":"success","data":10.0}"#,
+        r#"{"request_id":17,"error":"success","data":0}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+    adapter
+        .open_file(requested_target)
+        .expect("Sorotte network loadfile should be accepted");
+
+    let update = adapter
+        .take_local_file_update()
+        .expect("the nested newer poll should publish its local target");
+    assert_eq!(update.path.as_deref(), Some("C:/media/newer-b.mkv"));
+    assert_eq!(adapter.current_path(), Some("C:/media/newer-b.mkv"));
+    assert!(
+        state
+            .writes()
+            .iter()
+            .all(|write| !write.contains("file-local-options/")),
+        "a nested newer poll must prevent the captured outer network path from being applied"
+    );
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None
+    );
+}
+
+#[test]
+fn superseded_option_write_still_reports_fatal_transport_loss() {
+    let (transport, _state) = fake_transport_with_reads(&[
+        r#"{"event":"start-file","playlist_entry_id":821}"#,
+        r#"{"event":"property-change","name":"path","data":"https://media.example.test/failing-a.m3u8"}"#,
+        r#"{"request_id":1,"error":"success"}"#,
+        r#"{"event":"start-file","playlist_entry_id":822}"#,
+        r#"{"event":"property-change","name":"path","data":"C:/media/superseding-b.mkv"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+
+    adapter
+        .set_playback_rate(1.0)
+        .expect("the outer triggering command should be acknowledged before transport loss");
+
+    assert!(!adapter.is_connected());
+    let outcome = adapter
+        .take_network_media_options_transition_outcome()
+        .expect("transport loss must remain observable after path supersession");
+    let MpvNetworkMediaOptionsTransitionOutcome::Failed(error) = outcome else {
+        panic!("expected a failed transition outcome, got {outcome:?}");
+    };
+    assert!(error.to_string().contains("unexpected EOF"));
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None
+    );
+}
+
+#[test]
+fn external_network_option_rejection_is_queued_while_healthy_and_only_once() {
+    let (transport, state) = fake_transport_with_reads(&[
+        r#"{"request_id":1,"error":"success","data":"C:/media/local-intro.mkv"}"#,
+        r#"{"event":"start-file","playlist_entry_id":52}"#,
+        r#"{"event":"property-change","name":"path","data":"https://media.example.test/main.m3u8"}"#,
+        r#"{"event":"file-loaded"}"#,
+        r#"{"request_id":2,"error":"success"}"#,
+        r#"{"request_id":3,"error":"invalid parameter"}"#,
+        r#"{"event":"start-file","playlist_entry_id":53}"#,
+        r#"{"event":"property-change","name":"path","data":"C:/media/recovery-local.mkv"}"#,
+        r#"{"event":"file-loaded"}"#,
+        r#"{"event":"start-file","playlist_entry_id":54}"#,
+        r#"{"event":"property-change","name":"path","data":"https://media.example.test/recovered.m3u8"}"#,
+        r#"{"event":"file-loaded"}"#,
+        r#"{"request_id":4,"error":"success"}"#,
+        r#"{"request_id":5,"error":"success"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+    assert_eq!(
+        adapter
+            .apply_network_media_options_to_active_media_classified()
+            .expect("initial local path should remain healthy"),
+        MpvActiveNetworkMediaOptionsApplyOutcome::LocalMediaUnchanged
+    );
+
+    adapter
+        .set_playback_rate(1.0)
+        .expect("the triggering player command itself should remain accepted");
+    let outcome = adapter
+        .take_network_media_options_transition_outcome()
+        .expect("the transition-time option rejection must be observable");
+    let MpvNetworkMediaOptionsTransitionOutcome::Failed(error) = outcome else {
+        panic!("expected failed transition outcome, got {outcome:?}");
+    };
+    assert!(
+        matches!(error, PlayerError::OperationFailed(ref message) if message.contains("invalid parameter")),
+        "unexpected transition error: {error:?}"
+    );
+    assert!(
+        adapter.is_connected(),
+        "server rejection must leave IPC healthy"
+    );
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None
+    );
+    adapter
+        .set_playback_rate(1.0)
+        .expect("local interlude and later network recovery should remain healthy");
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied),
+        "a later successful network generation must clear higher-layer degradation"
+    );
+    assert_eq!(
+        state
+            .writes()
+            .iter()
+            .filter(|write| write.contains("file-local-options/cache-secs"))
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn external_network_option_transport_loss_is_queued_and_marks_ipc_unhealthy() {
+    let (transport, _state) = fake_transport_with_reads(&[
+        r#"{"request_id":1,"error":"success","data":"C:/media/local-intro.mkv"}"#,
+        r#"{"event":"start-file","playlist_entry_id":62}"#,
+        r#"{"event":"property-change","name":"path","data":"https://media.example.test/main.m3u8"}"#,
+        r#"{"event":"file-loaded"}"#,
+        r#"{"request_id":2,"error":"success"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+    assert_eq!(
+        adapter
+            .apply_network_media_options_to_active_media_classified()
+            .expect("initial local path should remain healthy"),
+        MpvActiveNetworkMediaOptionsApplyOutcome::LocalMediaUnchanged
+    );
+
+    adapter
+        .set_playback_rate(1.0)
+        .expect("the triggering player command was acknowledged before transport loss");
+    let outcome = adapter
+        .take_network_media_options_transition_outcome()
+        .expect("the transition-time transport loss must be observable");
+    let MpvNetworkMediaOptionsTransitionOutcome::Failed(error) = outcome else {
+        panic!("expected failed transition outcome, got {outcome:?}");
+    };
+    assert!(
+        matches!(error, PlayerError::OperationFailed(ref message) if message.contains("unexpected EOF")),
+        "unexpected transition error: {error:?}"
+    );
+    assert!(!adapter.is_connected());
+    assert!(
+        adapter
+            .take_ipc_connection_events()
+            .iter()
+            .any(|event| { matches!(event, MpvIpcConnectionEvent::Disconnected { .. }) })
+    );
+}
+
+#[test]
 fn active_network_option_reapply_does_not_swallow_other_server_rejection() {
     let (transport, state) =
         fake_transport_with_reads(&[r#"{"request_id":1,"error":"property not found"}"#]);

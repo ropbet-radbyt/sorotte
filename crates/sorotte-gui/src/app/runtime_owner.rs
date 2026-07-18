@@ -178,7 +178,14 @@ pub(super) enum GuiCorePlayerConfigurationHealth {
     StreamingDegraded {
         reason: String,
         retryable_in_place: bool,
+        origin: GuiStreamingDegradationOrigin,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum GuiStreamingDegradationOrigin {
+    ExplicitApply,
+    AuthoritativeMediaTransition,
 }
 
 impl GuiCorePlayerConfigurationHealth {

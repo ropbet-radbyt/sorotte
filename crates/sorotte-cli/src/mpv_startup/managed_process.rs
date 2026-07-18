@@ -198,6 +198,7 @@ where
 #[cfg(test)]
 pub(crate) fn create_client_runtime_with_prepared_mpv_and_startup_health_for_test<F>(
     config: &ClientLoopConfig,
+    legacy_overrides: Option<&LegacyClientArgOverrides>,
     stored_settings: Option<&StoredClientSettingsMvp>,
     player: MpvAdapter,
     configure_bridge: F,
@@ -216,7 +217,7 @@ where
         streaming_warning,
     } = finish_client_runtime_with_mpv_and_bridge_setup(
         config,
-        None,
+        legacy_overrides,
         stored_settings,
         player,
         None,

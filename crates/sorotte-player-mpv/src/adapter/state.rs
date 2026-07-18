@@ -39,6 +39,21 @@ impl fmt::Debug for MpvAdapter {
                 "network_media_option_count",
                 &self.network_media_options.len(),
             )
+            .field(
+                "network_media_options_embedded_generation",
+                &self
+                    .network_media_options_embedded_load
+                    .as_ref()
+                    .map(|embedded| embedded.media_generation),
+            )
+            .field(
+                "network_media_options_apply_identity_present",
+                &self.network_media_options_apply_identity.is_some(),
+            )
+            .field(
+                "pending_network_media_options_transition_outcome_count",
+                &self.pending_network_media_options_transition_outcomes.len(),
+            )
             .field("loadfile_options_syntax", &self.loadfile_options_syntax)
             .field("mpv_version", &self.mpv_version)
             .field("pending_local_file_update", &self.pending_local_file_update)
@@ -199,6 +214,12 @@ impl Default for MpvAdapter {
             window_minimized: false,
             current_path: None,
             network_media_options: BTreeMap::new(),
+            network_media_options_embedded_load: None,
+            network_media_options_apply_identity: None,
+            next_network_media_options_apply_attempt_id: 1,
+            network_media_options_event_batch_depth: 0,
+            deferred_network_media_options_observation: None,
+            pending_network_media_options_transition_outcomes: VecDeque::new(),
             loadfile_options_syntax: None,
             mpv_version: None,
             pending_local_file_update: None,

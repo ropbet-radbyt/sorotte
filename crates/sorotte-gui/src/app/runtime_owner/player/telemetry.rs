@@ -1,4 +1,6 @@
 use super::*;
+use crate::app::runtime_owner::{GuiCorePlayerConfigurationHealth, GuiStreamingDegradationOrigin};
+use sorotte_player_mpv::MpvNetworkMediaOptionsTransitionOutcome;
 
 impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn emit_gui_actions_to_attached_player_impl(
@@ -140,6 +142,34 @@ impl GuiPersistedConfigRuntimeOwner {
         }
         while let Some(update) = player.take_local_file_update() {
             local_file_updates.push(update);
+        }
+        let mut streaming_transition_outcomes = Vec::new();
+        let mut mpv_connected = true;
+        if let Some(player) = player.as_mpv_mut() {
+            while let Some(outcome) = player.take_network_media_options_transition_outcome() {
+                streaming_transition_outcomes.push(outcome);
+            }
+            mpv_connected = player.is_connected();
+        }
+        for outcome in streaming_transition_outcomes {
+            match outcome {
+                MpvNetworkMediaOptionsTransitionOutcome::Applied => {
+                    self.record_network_media_transition_recovered();
+                }
+                MpvNetworkMediaOptionsTransitionOutcome::Failed(error) if mpv_connected => {
+                    self.mark_network_media_transition_apply_failed(format!(
+                        "mpv switched to network media, but configured streaming settings could not be applied to the new file: {error}"
+                    ));
+                }
+                MpvNetworkMediaOptionsTransitionOutcome::Failed(error) => {
+                    self.player_apply_state.mark_streaming_apply_failed();
+                    self.detach_player();
+                    self.player_unavailability_reason = Some(format!(
+                        "mpv JSON IPC became unavailable while applying configured streaming settings to newly active network media: {error}"
+                    ));
+                    return;
+                }
+            }
         }
         let now = Instant::now();
         if self
@@ -309,6 +339,48 @@ impl GuiPersistedConfigRuntimeOwner {
             Some(PlaybackBarrierTimeoutAction::Continue) | None => {}
         }
         self.clamp_player_position_to_file_duration();
+    }
+
+    pub(in crate::app::runtime_owner) fn mark_network_media_transition_apply_failed(
+        &mut self,
+        reason: String,
+    ) {
+        self.player_apply_state.mark_streaming_apply_failed();
+        self.core_player_configuration_health =
+            GuiCorePlayerConfigurationHealth::StreamingDegraded {
+                reason: reason.clone(),
+                retryable_in_place: true,
+                origin: GuiStreamingDegradationOrigin::AuthoritativeMediaTransition,
+            };
+        self.player_unavailability_reason = Some(reason);
+    }
+
+    pub(in crate::app::runtime_owner) fn record_network_media_transition_recovered(&mut self) {
+        let transition_failure_reason = match &self.core_player_configuration_health {
+            GuiCorePlayerConfigurationHealth::StreamingDegraded {
+                reason,
+                origin: GuiStreamingDegradationOrigin::AuthoritativeMediaTransition,
+                ..
+            } => reason.clone(),
+            GuiCorePlayerConfigurationHealth::Ready
+            | GuiCorePlayerConfigurationHealth::StreamingDegraded { .. } => return,
+        };
+        if !self
+            .player_apply_state
+            .process_target_is_applied(&self.player_launch_state)
+            || !self
+                .player_apply_state
+                .streaming_options_are_applied(&self.player_launch_state)
+        {
+            return;
+        }
+
+        self.player_apply_state.core_reapply_required = false;
+        self.core_player_configuration_health = GuiCorePlayerConfigurationHealth::Ready;
+        if self.player_unavailability_reason.as_deref() == Some(transition_failure_reason.as_str())
+        {
+            self.player_unavailability_reason = None;
+        }
     }
 
     pub(super) fn player_local_file_ready_for_attached_sync(&self) -> bool {

@@ -3,7 +3,7 @@ use std::{
     io,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Instant,
 };
@@ -73,6 +73,26 @@ pub(crate) fn delayed_active_network_media_client() -> (MpvJsonIpcClient, Arc<Mu
         commands: Arc::clone(&commands),
     };
     (MpvJsonIpcClient::new(Box::new(transport)), commands)
+}
+
+pub(crate) fn external_network_media_transition_client(
+    reject_option_write: bool,
+) -> (MpvJsonIpcClient, Arc<Mutex<Vec<Value>>>, Arc<AtomicBool>) {
+    let commands = Arc::new(Mutex::new(Vec::new()));
+    let transition_trigger = Arc::new(AtomicBool::new(false));
+    let transport = ExternalNetworkMediaTransitionTransport {
+        responses: VecDeque::new(),
+        commands: Arc::clone(&commands),
+        transition_trigger: Arc::clone(&transition_trigger),
+        transition_count: 0,
+        reject_option_write,
+        option_write_rejected: false,
+    };
+    (
+        MpvJsonIpcClient::new(Box::new(transport)),
+        commands,
+        transition_trigger,
+    )
 }
 
 #[derive(Debug, Default)]
@@ -196,6 +216,130 @@ struct DelayedActiveNetworkMediaTransport {
     responses: VecDeque<String>,
     path_queries: usize,
     commands: Arc<Mutex<Vec<Value>>>,
+}
+
+#[derive(Debug)]
+struct ExternalNetworkMediaTransitionTransport {
+    responses: VecDeque<String>,
+    commands: Arc<Mutex<Vec<Value>>>,
+    transition_trigger: Arc<AtomicBool>,
+    transition_count: usize,
+    reject_option_write: bool,
+    option_write_rejected: bool,
+}
+
+impl MpvJsonIpcTransport for ExternalNetworkMediaTransitionTransport {
+    fn send_line_until(&mut self, line: &str, _deadline: Instant) -> io::Result<()> {
+        let request: Value = serde_json::from_str(line.trim())
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let request_id = request.get("request_id").cloned().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "test mpv request omitted request_id",
+            )
+        })?;
+        let command = request
+            .get("command")
+            .and_then(Value::as_array)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing command array"))?;
+        let command_name = command.first().and_then(Value::as_str);
+        let property_name = command.get(1).and_then(Value::as_str);
+
+        if self.transition_trigger.swap(false, Ordering::SeqCst) {
+            if self.transition_count > 0 {
+                self.responses.push_back(
+                    json!({"event": "start-file", "playlist_entry_id": 43}).to_string() + "\n",
+                );
+                self.responses.push_back(
+                    json!({
+                        "event": "property-change",
+                        "name": "path",
+                        "data": "C:/media/recovery-local.mkv",
+                    })
+                    .to_string()
+                        + "\n",
+                );
+                self.responses
+                    .push_back(json!({"event": "file-loaded"}).to_string() + "\n");
+            }
+            self.transition_count += 1;
+            self.responses.push_back(
+                json!({
+                    "event": "start-file",
+                    "playlist_entry_id": 43 + self.transition_count,
+                })
+                .to_string()
+                    + "\n",
+            );
+            self.responses.push_back(
+                json!({
+                    "event": "property-change",
+                    "name": "path",
+                    "data": "https://media.example.test/main-stream.m3u8",
+                })
+                .to_string()
+                    + "\n",
+            );
+            self.responses
+                .push_back(json!({"event": "file-loaded"}).to_string() + "\n");
+        }
+
+        let is_file_local_write = command_name == Some("set_property")
+            && property_name.is_some_and(|property| property.starts_with("file-local-options/"));
+        if is_file_local_write {
+            self.commands
+                .lock()
+                .expect("external-transition command log should not be poisoned")
+                .push(Value::Array(command.clone()));
+        }
+        let reject_this_option_write =
+            is_file_local_write && self.reject_option_write && !self.option_write_rejected;
+        if reject_this_option_write {
+            self.option_write_rejected = true;
+        }
+        let response = match (command_name, property_name) {
+            (Some("get_property"), Some("path")) => json!({
+                "request_id": request_id,
+                "error": "success",
+                "data": if self.transition_count > 0 {
+                    "https://media.example.test/main-stream.m3u8"
+                } else {
+                    "C:/media/local-intro.mkv"
+                },
+            }),
+            (Some("get_property"), Some("osd-align-y")) => json!({
+                "request_id": request_id,
+                "error": "success",
+                "data": "top",
+            }),
+            (Some("get_property"), Some("osd-margin-y")) => json!({
+                "request_id": request_id,
+                "error": "success",
+                "data": 16,
+            }),
+            (Some("get_property"), _) => {
+                json!({"request_id": request_id, "error": "success", "data": false})
+            }
+            (Some("set_property"), Some(_)) if reject_this_option_write => {
+                json!({"request_id": request_id, "error": "invalid parameter"})
+            }
+            _ => json!({"request_id": request_id, "error": "success"}),
+        };
+        self.responses.push_back(response.to_string() + "\n");
+        Ok(())
+    }
+
+    fn read_line_until(&mut self, line: &mut String, _deadline: Instant) -> io::Result<usize> {
+        let response = self.responses.pop_front().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "test mpv transport had no queued response",
+            )
+        })?;
+        line.clear();
+        line.push_str(&response);
+        Ok(line.len())
+    }
 }
 
 impl MpvJsonIpcTransport for DelayedActiveNetworkMediaTransport {

@@ -362,12 +362,13 @@ impl GuiPersistedConfigRuntimeOwner {
         self.core_player_configuration_health = GuiCorePlayerConfigurationHealth::Ready;
     }
 
-    fn mark_streaming_apply_failed(&mut self, reason: String, retryable_in_place: bool) {
+    pub(super) fn mark_streaming_apply_failed(&mut self, reason: String, retryable_in_place: bool) {
         self.player_apply_state.mark_streaming_apply_failed();
         self.core_player_configuration_health =
             GuiCorePlayerConfigurationHealth::StreamingDegraded {
                 reason: reason.clone(),
                 retryable_in_place,
+                origin: GuiStreamingDegradationOrigin::ExplicitApply,
             };
         self.player_unavailability_reason = Some(reason);
     }
@@ -501,15 +502,10 @@ impl GuiPersistedConfigRuntimeOwner {
         );
 
         let streaming_failure = match apply_to_active_media(&mut adapter) {
-            Ok(sorotte_player_mpv::MpvActiveNetworkMediaOptionsApplyOutcome::NoActiveMedia)
-                if config.has_positional_network_media() =>
-            {
-                let reason = "GUI-owned mpv launched with positional network media, but mpv has not exposed that media as active yet; retry mpv settings once the media is loaded"
-                    .to_owned();
-                self.mark_streaming_apply_failed(reason.clone(), true);
-                Some(reason)
-            }
             Ok(_) => {
+                // No active media and local media are both complete policy installs: the adapter
+                // applies these configured options when a later authoritative network path
+                // becomes active, without guessing which launch arguments are positional media.
                 self.record_streaming_options_applied(&launch_state);
                 None
             }
@@ -734,41 +730,25 @@ impl GuiPersistedConfigRuntimeOwner {
         let Some(player) = self.player.as_mut().and_then(GuiOwnedPlayer::as_mpv_mut) else {
             return false;
         };
-        let positional_network_media_expected = matches!(
-            next_launch_state,
-            GuiPlayerLaunchRuntimeState::ManagedMpv(config)
-                if config.has_positional_network_media()
-        );
         let core_ipc_was_connected = player.is_connected();
         if streaming_options_changed {
             configure_effective_streaming_options_for_network_media(
                 player,
                 &next_streaming_options,
             );
-            match apply_effective_streaming_options_to_active_network_media_classified(player) {
-                Err(error) => {
-                    let ipc_unhealthy = !player.is_connected();
-                    if ipc_unhealthy {
-                        self.detach_player();
-                        self.player_unavailability_reason = Some(format!(
-                            "mpv JSON IPC became unavailable while applying core streaming settings: {error}"
-                        ));
-                    } else {
-                        self.mark_streaming_apply_failed(error, true);
-                    }
-                    return false;
+            if let Err(error) =
+                apply_effective_streaming_options_to_active_network_media_classified(player)
+            {
+                let ipc_unhealthy = !player.is_connected();
+                if ipc_unhealthy {
+                    self.detach_player();
+                    self.player_unavailability_reason = Some(format!(
+                        "mpv JSON IPC became unavailable while applying core streaming settings: {error}"
+                    ));
+                } else {
+                    self.mark_streaming_apply_failed(error, true);
                 }
-                Ok(sorotte_player_mpv::MpvActiveNetworkMediaOptionsApplyOutcome::NoActiveMedia)
-                    if positional_network_media_expected =>
-                {
-                    self.mark_streaming_apply_failed(
-                        "mpv has not exposed the positional network media as active yet; retry mpv settings once the media is loaded"
-                            .to_owned(),
-                        true,
-                    );
-                    return false;
-                }
-                Ok(_) => {}
+                return false;
             }
             self.player_apply_state
                 .record_streaming_options_applied(next_launch_state);

@@ -1,7 +1,7 @@
 use super::{
     ConnectedMpvPlayer, LegacySyncplayOsdKind, LegacySyncplayUiSettings,
-    MpvActiveNetworkMediaOptionsApplyOutcome, MpvAdapter, SimulatedPlayer,
-    SorotteBridgeFailureKind, SorotteBridgeHealth,
+    MpvActiveNetworkMediaOptionsApplyOutcome, MpvAdapter, MpvNetworkMediaOptionsTransitionOutcome,
+    SimulatedPlayer, SorotteBridgeFailureKind, SorotteBridgeHealth,
 };
 use crate::constants::{
     LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_LEASE_EXPIRED,

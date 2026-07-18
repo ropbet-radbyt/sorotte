@@ -260,6 +260,7 @@ impl PlayerAdapter for MpvAdapter {
         let previous_phase = self.transport_phase;
         self.pending_load_request = Some(path.to_owned());
         self.pending_load_generation = Some(generation);
+        self.network_media_options_embedded_load = None;
         self.transport_phase = PlayerTransportPhase::Loading;
         let loading_update = self
             .transport_update_for(generation)
@@ -268,6 +269,10 @@ impl PlayerAdapter for MpvAdapter {
 
         let load_result =
             if uses_network_media_options(path) && !self.network_media_options.is_empty() {
+                self.network_media_options_embedded_load = Some(EmbeddedNetworkMediaOptions {
+                    media_generation: generation,
+                    requested_target: path.to_owned(),
+                });
                 self.send_network_media_loadfile(path)
             } else {
                 self.send_ipc_command_if_attached(json!([
@@ -277,6 +282,13 @@ impl PlayerAdapter for MpvAdapter {
                 ]))
             };
         if let Err(error) = load_result {
+            if self
+                .network_media_options_embedded_load
+                .as_ref()
+                .is_some_and(|embedded| embedded.media_generation == generation)
+            {
+                self.network_media_options_embedded_load = None;
+            }
             if self.pending_load_generation == Some(generation) {
                 self.pending_load_request = None;
                 self.pending_load_generation = None;

@@ -5,7 +5,7 @@ use sorotte_client_app::app_boundary::commands::{
     PlannedLocalRuntimeAction, plan_local_runtime_dispatch_legacy_compatible,
 };
 use sorotte_player_api::PlayerPlaybackTelemetryUpdate;
-use sorotte_player_mpv::MpvAdapter;
+use sorotte_player_mpv::{MpvAdapter, MpvNetworkMediaOptionsTransitionOutcome};
 use sorotte_protocol::DirectReadinessSurface;
 
 use crate::client_config::ClientLoopConfig;
@@ -21,12 +21,63 @@ pub(super) fn publish_pending_local_file_updates(
         let published = application.publish_pending_local_file_update_legacy_compatible(
             config.filename_privacy_mode,
             config.filesize_privacy_mode,
-        )?;
+        );
+        surface_network_media_options_transition_outcomes(application)?;
+        let published = published?;
         if !published {
             break;
         }
     }
     Ok(())
+}
+
+fn surface_network_media_options_transition_outcomes(
+    application: &mut ClientApplication<MpvAdapter>,
+) -> anyhow::Result<()> {
+    let mut latest_healthy_failure = None;
+    loop {
+        let (outcome, player_connected) = application.with_player_io(|player| {
+            (
+                player.take_network_media_options_transition_outcome(),
+                player.is_connected(),
+            )
+        });
+        let Some(outcome) = outcome else {
+            if let Some(error) = latest_healthy_failure {
+                eprintln!(
+                    "warning: mpv playback remains available, but streaming options could not be applied after external network media became active: {error}; desired options remain configured for later network transitions"
+                );
+            }
+            return Ok(());
+        };
+        if let Err(error) = fold_network_media_options_transition_outcome(
+            &mut latest_healthy_failure,
+            outcome,
+            player_connected,
+        ) {
+            return Err(anyhow::anyhow!(
+                "mpv JSON IPC became unavailable while applying streaming options to externally activated network media: {error}"
+            ));
+        }
+    }
+}
+
+fn fold_network_media_options_transition_outcome(
+    latest_healthy_failure: &mut Option<sorotte_player_api::PlayerError>,
+    outcome: MpvNetworkMediaOptionsTransitionOutcome,
+    player_connected: bool,
+) -> Result<(), sorotte_player_api::PlayerError> {
+    match outcome {
+        MpvNetworkMediaOptionsTransitionOutcome::Applied => {
+            *latest_healthy_failure = None;
+            Ok(())
+        }
+        MpvNetworkMediaOptionsTransitionOutcome::Failed(error) if !player_connected => Err(error),
+        MpvNetworkMediaOptionsTransitionOutcome::Failed(error) => {
+            *latest_healthy_failure = Some(error);
+            Ok(())
+        }
+    }
 }
 
 pub(super) fn drain_player_chat_input_legacy_compatible(
@@ -160,4 +211,36 @@ pub(super) fn run_planned_local_runtime_action_legacy_compatible(
     command.map_or(Ok(false), |command| {
         command_result(application.dispatch(command))
     })
+}
+
+#[cfg(test)]
+mod network_media_options_transition_outcome_tests {
+    use super::*;
+    use sorotte_player_api::PlayerError;
+
+    #[test]
+    fn applied_outcome_supersedes_a_pending_healthy_failure() {
+        let mut latest_healthy_failure = None;
+        fold_network_media_options_transition_outcome(
+            &mut latest_healthy_failure,
+            MpvNetworkMediaOptionsTransitionOutcome::Failed(PlayerError::OperationFailed(
+                "test option rejection".to_owned(),
+            )),
+            true,
+        )
+        .expect("a healthy rejection should be buffered as a warning");
+        assert!(latest_healthy_failure.is_some());
+
+        fold_network_media_options_transition_outcome(
+            &mut latest_healthy_failure,
+            MpvNetworkMediaOptionsTransitionOutcome::Applied,
+            true,
+        )
+        .expect("a later successful transition should remain healthy");
+
+        assert!(
+            latest_healthy_failure.is_none(),
+            "a successful outcome in the same drain batch must suppress the stale warning"
+        );
+    }
 }

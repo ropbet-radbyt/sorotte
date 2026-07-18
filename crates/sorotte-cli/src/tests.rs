@@ -49,7 +49,7 @@ use super::{
     persist_sorotte_cli_stored_settings_mvp_legacy_compatible,
     player_playback_telemetry_update_message, playlist_index_in_bounds_legacy_compatible,
     protocol_lines_for_startup_playlist_load_from_file_legacy_compatible,
-    reconnect_correction_diagnostics_alert_thresholds_from_env,
+    publish_pending_local_file_updates, reconnect_correction_diagnostics_alert_thresholds_from_env,
     reconnect_correction_diagnostics_format_from_env,
     reconnect_correction_metrics_delta_alert_lines, reconnect_correction_metrics_delta_json_line,
     reconnect_correction_metrics_delta_message, reconnect_correction_state_snapshot_json_line,

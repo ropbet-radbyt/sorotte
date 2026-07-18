@@ -1,5 +1,6 @@
 use super::*;
 use crate::app::GuiClientCoreChatSessionRuntimeAdapter;
+use crate::app::runtime_owner::GuiStreamingDegradationOrigin;
 
 fn save_current_draft(
     owner: &mut GuiPersistedConfigRuntimeOwner,
@@ -711,6 +712,7 @@ fn streaming_retry_requirement_escalates_when_in_place_retry_is_not_safe() {
     owner.core_player_configuration_health = GuiCorePlayerConfigurationHealth::StreamingDegraded {
         reason: "the active media rejected a streaming option".to_owned(),
         retryable_in_place: false,
+        origin: GuiStreamingDegradationOrigin::ExplicitApply,
     };
     let state = SorotteGuiShellAppState::from_stored_settings(&initial);
 
@@ -723,6 +725,7 @@ fn streaming_retry_requirement_escalates_when_in_place_retry_is_not_safe() {
     owner.core_player_configuration_health = GuiCorePlayerConfigurationHealth::StreamingDegraded {
         reason: "the active media rejected a streaming option".to_owned(),
         retryable_in_place: true,
+        origin: GuiStreamingDegradationOrigin::ExplicitApply,
     };
     owner.player = None;
     assert_eq!(

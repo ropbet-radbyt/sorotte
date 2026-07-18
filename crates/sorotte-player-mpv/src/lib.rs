@@ -16,7 +16,9 @@ mod test_support;
 /// generation and an observation that `seeking` is false.
 pub const MPV_SEEK_COMPLETION_TOLERANCE_SECONDS: f64 = 0.5;
 
-pub use adapter::{MpvActiveNetworkMediaOptionsApplyOutcome, MpvAdapter};
+pub use adapter::{
+    MpvActiveNetworkMediaOptionsApplyOutcome, MpvAdapter, MpvNetworkMediaOptionsTransitionOutcome,
+};
 pub use bridge::{SorotteBridgeFailure, SorotteBridgeFailureKind, SorotteBridgeHealth};
 pub use bridge_resource::{
     materialize_bundled_sorotte_bridge, materialize_bundled_sorotte_bridge_in,

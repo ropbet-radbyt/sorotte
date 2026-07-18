@@ -57,25 +57,6 @@ impl std::fmt::Debug for ManagedMpvLaunchConfig {
     }
 }
 
-impl ManagedMpvLaunchConfig {
-    pub(crate) fn has_positional_network_media(&self) -> bool {
-        let mut positional_only = false;
-        self.extra_args.iter().any(|argument| {
-            if !positional_only && argument == "--" {
-                positional_only = true;
-                return false;
-            }
-            if !positional_only && argument.starts_with('-') {
-                return false;
-            }
-            let Some((scheme, _)) = argument.trim().split_once("://") else {
-                return false;
-            };
-            !scheme.eq_ignore_ascii_case("file")
-        })
-    }
-}
-
 #[derive(Debug)]
 pub(crate) struct ManagedMpvProcessGuard {
     child: Child,
@@ -800,39 +781,6 @@ mod tests {
         assert!(
             ipc_argument_index < positional_media_index,
             "mpv must receive IPC setup before the positional media target"
-        );
-    }
-
-    #[test]
-    fn managed_mpv_launch_config_classifies_only_positional_network_media() {
-        let config = |extra_args: Vec<String>| ManagedMpvLaunchConfig {
-            requested_player_path: "mpv".to_owned(),
-            program: PathBuf::from("mpv"),
-            effective_streaming_options: Vec::new(),
-            extra_args,
-            ui_settings: LegacySyncplayUiSettings::default(),
-        };
-
-        assert!(
-            config(vec![
-                "--profile=syncplay".to_owned(),
-                "https://media.example.test/active.m3u8".to_owned(),
-            ])
-            .has_positional_network_media()
-        );
-        assert!(
-            config(vec![
-                "--".to_owned(),
-                "https://media.example.test/dash-prefixed-safe.m3u8".to_owned(),
-            ])
-            .has_positional_network_media()
-        );
-        assert!(
-            !config(vec![
-                "--script-opts=source=https://media.example.test/not-positional".to_owned(),
-                "file:///C:/Media/local.mkv".to_owned(),
-            ])
-            .has_positional_network_media()
         );
     }
 
