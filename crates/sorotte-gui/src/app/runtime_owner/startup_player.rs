@@ -34,6 +34,7 @@ impl GuiPersistedConfigRuntimeOwner {
             managed_mpv_process: None,
             player_unavailability_reason: None,
             core_player_configuration_health: GuiCorePlayerConfigurationHealth::Ready,
+            pending_apply_requirements_refresh_required: false,
             player_integration_health: GuiPlayerIntegrationHealth::Ready,
             player_local_file: None,
             player_local_file_placeholder: false,
@@ -362,6 +363,12 @@ impl GuiPersistedConfigRuntimeOwner {
         self.core_player_configuration_health = GuiCorePlayerConfigurationHealth::Ready;
     }
 
+    fn record_streaming_apply_superseded(&mut self) {
+        self.player_apply_state.mark_streaming_apply_superseded();
+        self.core_player_configuration_health = GuiCorePlayerConfigurationHealth::Ready;
+        self.player_unavailability_reason = None;
+    }
+
     pub(super) fn mark_streaming_apply_failed(&mut self, reason: String, retryable_in_place: bool) {
         self.player_apply_state.mark_streaming_apply_failed();
         self.core_player_configuration_health =
@@ -385,7 +392,7 @@ impl GuiPersistedConfigRuntimeOwner {
             ui_settings,
             effective_streaming_options,
             adapter,
-            apply_effective_streaming_options_to_active_network_media,
+            apply_effective_streaming_options_to_active_network_media_classified,
         );
     }
 
@@ -397,7 +404,10 @@ impl GuiPersistedConfigRuntimeOwner {
         mut adapter: MpvAdapter,
         apply_to_active_media: F,
     ) where
-        F: FnOnce(&mut MpvAdapter) -> Result<(), String>,
+        F: FnOnce(
+            &mut MpvAdapter,
+        )
+            -> Result<sorotte_player_mpv::MpvActiveNetworkMediaOptionsApplyOutcome, String>,
     {
         let launch_state = self.player_launch_state.clone();
         self.player_apply_state
@@ -408,7 +418,11 @@ impl GuiPersistedConfigRuntimeOwner {
         );
 
         let streaming_failure = match apply_to_active_media(&mut adapter) {
-            Ok(()) => {
+            Ok(sorotte_player_mpv::MpvActiveNetworkMediaOptionsApplyOutcome::Superseded) => {
+                self.record_streaming_apply_superseded();
+                None
+            }
+            Ok(_) => {
                 self.record_streaming_options_applied(&launch_state);
                 None
             }
@@ -456,7 +470,10 @@ impl GuiPersistedConfigRuntimeOwner {
         adapter: MpvAdapter,
         apply_to_active_media: F,
     ) where
-        F: FnOnce(&mut MpvAdapter) -> Result<(), String>,
+        F: FnOnce(
+            &mut MpvAdapter,
+        )
+            -> Result<sorotte_player_mpv::MpvActiveNetworkMediaOptionsApplyOutcome, String>,
     {
         self.complete_explicit_mpv_attachment_with_active_apply(
             ipc_path,
@@ -502,6 +519,10 @@ impl GuiPersistedConfigRuntimeOwner {
         );
 
         let streaming_failure = match apply_to_active_media(&mut adapter) {
+            Ok(sorotte_player_mpv::MpvActiveNetworkMediaOptionsApplyOutcome::Superseded) => {
+                self.record_streaming_apply_superseded();
+                None
+            }
             Ok(_) => {
                 // No active media and local media are both complete policy installs: the adapter
                 // applies these configured options when a later authoritative network path
@@ -736,24 +757,31 @@ impl GuiPersistedConfigRuntimeOwner {
                 player,
                 &next_streaming_options,
             );
-            if let Err(error) =
-                apply_effective_streaming_options_to_active_network_media_classified(player)
-            {
-                let ipc_unhealthy = !player.is_connected();
-                if ipc_unhealthy {
-                    self.detach_player();
-                    self.player_unavailability_reason = Some(format!(
-                        "mpv JSON IPC became unavailable while applying core streaming settings: {error}"
-                    ));
-                } else {
-                    self.mark_streaming_apply_failed(error, true);
+            match apply_effective_streaming_options_to_active_network_media_classified(player) {
+                Ok(sorotte_player_mpv::MpvActiveNetworkMediaOptionsApplyOutcome::Superseded) => {
+                    self.player_apply_state.mark_streaming_apply_superseded();
+                    self.core_player_configuration_health = GuiCorePlayerConfigurationHealth::Ready;
+                    self.player_unavailability_reason = None;
                 }
-                return false;
+                Ok(_) => {
+                    self.player_apply_state
+                        .record_streaming_options_applied(next_launch_state);
+                    self.core_player_configuration_health = GuiCorePlayerConfigurationHealth::Ready;
+                    self.player_unavailability_reason = None;
+                }
+                Err(error) => {
+                    let ipc_unhealthy = !player.is_connected();
+                    if ipc_unhealthy {
+                        self.detach_player();
+                        self.player_unavailability_reason = Some(format!(
+                            "mpv JSON IPC became unavailable while applying core streaming settings: {error}"
+                        ));
+                    } else {
+                        self.mark_streaming_apply_failed(error, true);
+                    }
+                    return false;
+                }
             }
-            self.player_apply_state
-                .record_streaming_options_applied(next_launch_state);
-            self.core_player_configuration_health = GuiCorePlayerConfigurationHealth::Ready;
-            self.player_unavailability_reason = None;
         }
         self.player_launch_state = next_launch_state.clone();
         if integration_settings_changed {

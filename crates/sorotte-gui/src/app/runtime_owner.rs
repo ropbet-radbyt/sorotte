@@ -62,7 +62,6 @@ use super::media_search_cache::clear_persisted_media_search_cache_at_root;
 use super::mpv_launch;
 use super::mpv_launch::{
     ManagedMpvProcessGuard, ManagedMpvSettingsDecision,
-    apply_effective_streaming_options_to_active_network_media,
     apply_effective_streaming_options_to_active_network_media_classified,
     configure_effective_streaming_options_for_network_media,
     configure_sorotte_chat_osd_integration, managed_mpv_settings_decision_from_settings,
@@ -221,6 +220,9 @@ pub(super) struct GuiPlayerApplyState {
     pub(super) acknowledged_bridge_generation: Option<u64>,
     /// A process or streaming apply failed and still needs a core player retry/restart.
     pub(super) core_reapply_required: bool,
+    /// An explicit apply was superseded by a newer authoritative media transition. The ordered
+    /// transition result owns whether the desired streaming baseline may be promoted.
+    pub(super) streaming_apply_awaiting_transition: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -298,10 +300,17 @@ impl GuiPlayerApplyState {
             .effective_mpv_streaming_options()
             .map(<[_]>::to_vec);
         self.core_reapply_required = false;
+        self.streaming_apply_awaiting_transition = false;
     }
 
     fn mark_streaming_apply_failed(&mut self) {
         self.core_reapply_required = true;
+        self.streaming_apply_awaiting_transition = false;
+    }
+
+    fn mark_streaming_apply_superseded(&mut self) {
+        self.core_reapply_required = false;
+        self.streaming_apply_awaiting_transition = true;
     }
 
     fn clear_integration_baselines(&mut self) {
@@ -341,6 +350,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) managed_mpv_process: Option<ManagedMpvProcessGuard>,
     pub(super) player_unavailability_reason: Option<String>,
     pub(super) core_player_configuration_health: GuiCorePlayerConfigurationHealth,
+    pub(super) pending_apply_requirements_refresh_required: bool,
     pub(super) player_integration_health: GuiPlayerIntegrationHealth,
     pub(super) player_local_file: Option<LocalFileUpdate>,
     pub(super) player_local_file_placeholder: bool,
@@ -635,6 +645,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     !self.player_apply_state.process_target_is_applied(desired)
                 });
         let streaming_options_differ = core_player_state_is_active
+            && !self.player_apply_state.streaming_apply_awaiting_transition
             && desired_player_launch_state
                 .as_ref()
                 .map_or(true, |desired| {

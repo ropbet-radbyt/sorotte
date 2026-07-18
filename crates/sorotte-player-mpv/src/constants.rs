@@ -83,3 +83,15 @@ pub(crate) const LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_OPTIONS_APPLIED: &str =
 pub(crate) const LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_PONG: &str = "sorotte-syncplayintf-pong";
 pub(crate) const LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_LEASE_EXPIRED: &str =
     "sorotte-syncplayintf-lease-expired";
+pub(crate) const SOROTTE_NETWORK_OPTIONS_SCRIPT_NAME: &str = "sorotte_network_options";
+pub(crate) const SOROTTE_NETWORK_OPTIONS_PROTOCOL: &str = "sorotte-network-options-v1";
+pub(crate) const SOROTTE_NETWORK_OPTIONS_CONFIGURE_MESSAGE: &str =
+    "sorotte_network_options_configure";
+pub(crate) const SOROTTE_NETWORK_OPTIONS_APPLY_ACTIVE_MESSAGE: &str =
+    "sorotte_network_options_apply_active";
+pub(crate) const SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_CONFIGURED: &str =
+    "sorotte-network-options-configured";
+pub(crate) const SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_ACTIVE_RESULT: &str =
+    "sorotte-network-options-active-result";
+pub(crate) const SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_TRANSITION_RESULT: &str =
+    "sorotte-network-options-transition-result";

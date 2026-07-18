@@ -25,7 +25,9 @@ use sorotte_player_api::{
 };
 
 use crate::bridge::{SorotteBridgeFailure, SorotteBridgeFailureKind, SorotteBridgeHealth};
-use crate::bridge_resource::materialize_bundled_sorotte_bridge;
+use crate::bridge_resource::{
+    materialize_bundled_sorotte_bridge, materialize_bundled_sorotte_network_options_hook,
+};
 use crate::constants::*;
 #[cfg(test)]
 use crate::ipc::MpvJsonIpcTransport;
@@ -56,6 +58,8 @@ const LEGACY_SYNCPLAYINTF_DISCOVERY_ATTEMPTS: usize = 3;
 const LEGACY_SYNCPLAYINTF_REGISTRATION_ATTEMPTS: usize = 20;
 const LEGACY_SYNCPLAYINTF_CONFIGURATION_RETRY_WINDOW: Duration = Duration::from_millis(2_500);
 const LEGACY_SYNCPLAYINTF_CONFIGURATION_RETRY_INTERVAL: Duration = Duration::from_millis(25);
+const NETWORK_OPTIONS_HOOK_CONFIGURATION_RETRY_WINDOW: Duration = Duration::from_millis(2_500);
+const NETWORK_OPTIONS_HOOK_CONFIGURATION_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 static NEXT_LEGACY_SYNCPLAYINTF_ATTACHMENT: AtomicU64 = AtomicU64::new(1);
 static LEGACY_SYNCPLAYINTF_OWNER_ID: LazyLock<String> = LazyLock::new(|| {
     let started_at = SystemTime::now()
@@ -75,6 +79,9 @@ pub enum MpvActiveNetworkMediaOptionsApplyOutcome {
     LocalMediaUnchanged,
     /// mpv's active path is network media and all configured file-local options were accepted.
     NetworkMediaUpdated,
+    /// A newer authoritative path replaced the path being applied. Its ordered transition
+    /// outcome is authoritative and will be reported separately by the adapter.
+    Superseded,
 }
 
 /// Reports whether network-media options are complete for an authoritative path transition.
@@ -97,6 +104,22 @@ struct NetworkMediaOptionsApplyIdentity {
 struct EmbeddedNetworkMediaOptions {
     media_generation: PlayerMediaGeneration,
     requested_target: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum NetworkOptionsHookApplyStatus {
+    NoActiveMedia,
+    LocalMediaUnchanged,
+    NetworkMediaUpdated,
+    Failed(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct NetworkOptionsHookActiveResult {
+    attempt_id: u64,
+    generation: u64,
+    path: Option<String>,
+    status: NetworkOptionsHookApplyStatus,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -266,6 +289,12 @@ pub struct MpvAdapter {
     window_minimized: bool,
     current_path: Option<String>,
     network_media_options: BTreeMap<String, String>,
+    network_media_options_hook_enabled: bool,
+    network_media_options_hook_loaded: bool,
+    network_media_options_generation: u64,
+    network_media_options_hook_configured_generation: Option<u64>,
+    network_media_options_hook_configuration_error: Option<String>,
+    pending_network_media_options_hook_active_result: Option<NetworkOptionsHookActiveResult>,
     network_media_options_embedded_load: Option<EmbeddedNetworkMediaOptions>,
     network_media_options_apply_identity: Option<NetworkMediaOptionsApplyIdentity>,
     next_network_media_options_apply_attempt_id: u64,
@@ -372,6 +401,10 @@ impl MpvAdapter {
     }
 
     fn reset_network_media_options_attachment_state(&mut self) {
+        self.network_media_options_hook_loaded = false;
+        self.network_media_options_hook_configured_generation = None;
+        self.network_media_options_hook_configuration_error = None;
+        self.pending_network_media_options_hook_active_result = None;
         self.network_media_options_embedded_load = None;
         self.network_media_options_apply_identity = None;
         self.network_media_options_event_batch_depth = 0;
@@ -616,6 +649,32 @@ impl MpvAdapter {
         Self::with_external_network_media_transition_test_ipc_mode(settings, true)
     }
 
+    /// Builds a ready simulated bridge whose explicit apply starts on network A and is
+    /// superseded during its first write by network B, which accepts the complete option map.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn with_active_network_media_supersession_test_ipc(
+        settings: LegacySyncplayUiSettings,
+    ) -> (
+        Self,
+        std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    ) {
+        let (ipc_client, commands) =
+            crate::test_support::active_network_media_supersession_client();
+        let adapter = Self {
+            legacy_syncplay_ui_settings: settings,
+            legacy_syncplayintf_script_loaded: true,
+            legacy_syncplayintf_options_applied: true,
+            legacy_syncplayintf_bridge_instance_id: Some("test-bridge".to_owned()),
+            legacy_syncplayintf_acknowledged_options_generation: Some(1),
+            sorotte_bridge_health: SorotteBridgeHealth::Ready,
+            simulation_mode: true,
+            ipc_client: Some(ipc_client),
+            ..Self::default()
+        };
+        (adapter, commands)
+    }
+
     #[cfg(feature = "test-support")]
     fn with_external_network_media_transition_test_ipc_mode(
         settings: LegacySyncplayUiSettings,
@@ -720,6 +779,11 @@ impl MpvAdapter {
             .collect();
         if options != self.network_media_options {
             self.network_media_options = options;
+            self.network_media_options_generation =
+                self.network_media_options_generation.wrapping_add(1).max(1);
+            self.network_media_options_hook_configured_generation = None;
+            self.network_media_options_hook_configuration_error = None;
+            self.pending_network_media_options_hook_active_result = None;
             self.network_media_options_embedded_load = None;
             self.network_media_options_apply_identity = None;
             self.deferred_network_media_options_observation = None;
@@ -735,7 +799,8 @@ impl MpvAdapter {
     /// A healthy mpv command rejection remains retryable on the same adapter. Callers can use
     /// [`Self::is_connected`] to distinguish that case from a terminal IPC transport failure.
     /// Explicit calls to [`Self::apply_network_media_options_to_active_media`] return their own
-    /// errors directly and clear older transition outcomes that they supersede.
+    /// errors directly and clear older transition outcomes. If a newer authoritative path
+    /// supersedes an explicit apply, its ordered transition outcome remains available here.
     pub fn take_network_media_options_transition_outcome(
         &mut self,
     ) -> Option<MpvNetworkMediaOptionsTransitionOutcome> {
@@ -756,12 +821,14 @@ impl MpvAdapter {
     }
 
     /// Applies configured network options and reports whether mpv had no active media, local
-    /// media that was intentionally unchanged, or network media that accepted every option.
+    /// media that was intentionally unchanged, network media that accepted every option, or a
+    /// newer authoritative path superseded the explicit attempt.
     pub fn apply_network_media_options_to_active_media_classified(
         &mut self,
     ) -> Result<MpvActiveNetworkMediaOptionsApplyOutcome, PlayerError> {
         self.pending_network_media_options_transition_outcomes
             .clear();
+        self.ensure_network_media_options_hook_configured()?;
         // `current_path` may describe a requested load or a prior externally
         // replaced playlist entry. An attached mpv is authoritative; the cache
         // is safe only for simulation or other no-IPC operation.
@@ -784,12 +851,157 @@ impl MpvAdapter {
 
         let attempt_id = self
             .begin_network_media_options_apply_attempt(self.active_media_generation, &active_path);
+        if self.network_media_options_hook_is_ready() {
+            return self
+                .apply_network_media_options_to_active_media_via_hook(&active_path, attempt_id);
+        }
         if !self.apply_network_media_options_for_attempt(&active_path, attempt_id)? {
-            return Err(PlayerError::OperationFailed(
-                "active media changed while mpv network options were being applied".to_owned(),
-            ));
+            return Ok(MpvActiveNetworkMediaOptionsApplyOutcome::Superseded);
         }
         Ok(MpvActiveNetworkMediaOptionsApplyOutcome::NetworkMediaUpdated)
+    }
+
+    fn network_media_options_hook_should_run(&self) -> bool {
+        self.network_media_options_hook_enabled
+            && !self.simulation_mode
+            && self.ipc_client.is_some()
+    }
+
+    fn network_media_options_hook_is_ready(&self) -> bool {
+        self.network_media_options_hook_should_run()
+            && self.network_media_options_hook_loaded
+            && self.network_media_options_hook_configured_generation
+                == Some(self.network_media_options_generation)
+    }
+
+    fn ensure_network_media_options_hook_configured(&mut self) -> Result<(), PlayerError> {
+        if !self.network_media_options_hook_should_run() {
+            return Ok(());
+        }
+        if !self.network_media_options_hook_loaded {
+            let path = materialize_bundled_sorotte_network_options_hook().map_err(|error| {
+                PlayerError::OperationFailed(format!(
+                    "failed to materialize Sorotte's mpv network-options hook: {error}"
+                ))
+            })?;
+            self.send_ipc_command_if_attached(json!([
+                MPV_COMMAND_LOAD_SCRIPT,
+                path.to_string_lossy()
+            ]))?;
+            self.network_media_options_hook_loaded = true;
+        }
+        if self.network_media_options_hook_is_ready() {
+            return Ok(());
+        }
+
+        let generation = self.network_media_options_generation;
+        let payload = json!({
+            "protocol": SOROTTE_NETWORK_OPTIONS_PROTOCOL,
+            "attachment": self.legacy_syncplayintf_attachment_id,
+            "generation": generation,
+            "options": self.network_media_options_map(),
+        })
+        .to_string();
+        let command = json!([
+            MPV_COMMAND_SCRIPT_MESSAGE_TO,
+            SOROTTE_NETWORK_OPTIONS_SCRIPT_NAME,
+            SOROTTE_NETWORK_OPTIONS_CONFIGURE_MESSAGE,
+            payload
+        ]);
+        let deadline = Instant::now() + NETWORK_OPTIONS_HOOK_CONFIGURATION_RETRY_WINDOW;
+        loop {
+            self.send_ipc_command_if_attached(command.clone())?;
+            if self.network_media_options_hook_configured_generation == Some(generation) {
+                return Ok(());
+            }
+            if let Some(error) = self.network_media_options_hook_configuration_error.take() {
+                return Err(PlayerError::OperationFailed(error));
+            }
+            if Instant::now() >= deadline {
+                return Err(PlayerError::OperationFailed(format!(
+                    "Sorotte's mpv network-options hook did not acknowledge generation {generation}"
+                )));
+            }
+            std::thread::sleep(NETWORK_OPTIONS_HOOK_CONFIGURATION_RETRY_INTERVAL);
+        }
+    }
+
+    fn apply_network_media_options_to_active_media_via_hook(
+        &mut self,
+        initial_path: &str,
+        attempt_id: u64,
+    ) -> Result<MpvActiveNetworkMediaOptionsApplyOutcome, PlayerError> {
+        self.pending_network_media_options_hook_active_result = None;
+        let generation = self.network_media_options_generation;
+        let payload = json!({
+            "protocol": SOROTTE_NETWORK_OPTIONS_PROTOCOL,
+            "attachment": self.legacy_syncplayintf_attachment_id,
+            "generation": generation,
+            "attempt": attempt_id,
+        })
+        .to_string();
+        let command = json!([
+            MPV_COMMAND_SCRIPT_MESSAGE_TO,
+            SOROTTE_NETWORK_OPTIONS_SCRIPT_NAME,
+            SOROTTE_NETWORK_OPTIONS_APPLY_ACTIVE_MESSAGE,
+            payload
+        ]);
+        let deadline = Instant::now() + NETWORK_OPTIONS_HOOK_CONFIGURATION_RETRY_WINDOW;
+        let result = loop {
+            self.send_ipc_command_if_attached(command.clone())?;
+            if let Some(result) = self.pending_network_media_options_hook_active_result.take()
+                && result.attempt_id == attempt_id
+                && result.generation == generation
+            {
+                break result;
+            }
+            if Instant::now() >= deadline {
+                return Err(PlayerError::OperationFailed(format!(
+                    "Sorotte's mpv network-options hook did not report active apply attempt {attempt_id}"
+                )));
+            }
+            std::thread::sleep(NETWORK_OPTIONS_HOOK_CONFIGURATION_RETRY_INTERVAL);
+        };
+
+        let superseded = result.path.as_deref() != Some(initial_path)
+            || !self.network_media_options_apply_attempt_is_current(attempt_id);
+        if superseded {
+            let outcome = match result.status {
+                NetworkOptionsHookApplyStatus::Failed(error) => {
+                    MpvNetworkMediaOptionsTransitionOutcome::Failed(PlayerError::OperationFailed(
+                        error,
+                    ))
+                }
+                NetworkOptionsHookApplyStatus::NoActiveMedia
+                | NetworkOptionsHookApplyStatus::LocalMediaUnchanged
+                | NetworkOptionsHookApplyStatus::NetworkMediaUpdated => {
+                    MpvNetworkMediaOptionsTransitionOutcome::Applied
+                }
+            };
+            if self
+                .pending_network_media_options_transition_outcomes
+                .back()
+                != Some(&outcome)
+            {
+                self.queue_network_media_options_transition_outcome(outcome);
+            }
+            return Ok(MpvActiveNetworkMediaOptionsApplyOutcome::Superseded);
+        }
+
+        match result.status {
+            NetworkOptionsHookApplyStatus::NoActiveMedia => {
+                Ok(MpvActiveNetworkMediaOptionsApplyOutcome::NoActiveMedia)
+            }
+            NetworkOptionsHookApplyStatus::LocalMediaUnchanged => {
+                Ok(MpvActiveNetworkMediaOptionsApplyOutcome::LocalMediaUnchanged)
+            }
+            NetworkOptionsHookApplyStatus::NetworkMediaUpdated => {
+                Ok(MpvActiveNetworkMediaOptionsApplyOutcome::NetworkMediaUpdated)
+            }
+            NetworkOptionsHookApplyStatus::Failed(error) => {
+                Err(PlayerError::OperationFailed(error))
+            }
+        }
     }
 
     fn begin_network_media_options_apply_attempt(
@@ -938,6 +1150,24 @@ impl MpvAdapter {
             return;
         }
         if self.network_media_options.is_empty() {
+            return;
+        }
+
+        if self.network_media_options_hook_is_ready() {
+            let duplicate = self
+                .network_media_options_apply_identity
+                .as_ref()
+                .is_some_and(|identity| {
+                    identity.path == path
+                        && (identity.media_generation == media_generation
+                            || identity.media_generation.is_none())
+                });
+            if !duplicate {
+                self.begin_network_media_options_apply_attempt(media_generation, path);
+            }
+            if self.embedded_network_media_options_apply_to_path(media_generation, path) {
+                self.network_media_options_embedded_load = None;
+            }
             return;
         }
 
@@ -3843,6 +4073,15 @@ impl MpvAdapter {
         };
         let payload = args.get(1).and_then(Value::as_str);
         match message_name {
+            SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_CONFIGURED => {
+                self.handle_network_options_hook_configured(payload);
+            }
+            SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_ACTIVE_RESULT => {
+                self.handle_network_options_hook_active_result(payload);
+            }
+            SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_TRANSITION_RESULT => {
+                self.handle_network_options_hook_transition_result(payload);
+            }
             LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_OPTIONS_APPLIED => {
                 self.handle_legacy_syncplayintf_options_ack(payload);
             }
@@ -3857,6 +4096,131 @@ impl MpvAdapter {
             }
             _ => {}
         }
+    }
+
+    fn parse_network_options_hook_status(parsed: &Value) -> Option<NetworkOptionsHookApplyStatus> {
+        match parsed.get("status").and_then(Value::as_str)? {
+            "no-active" => Some(NetworkOptionsHookApplyStatus::NoActiveMedia),
+            "local" => Some(NetworkOptionsHookApplyStatus::LocalMediaUnchanged),
+            "network-updated" => Some(NetworkOptionsHookApplyStatus::NetworkMediaUpdated),
+            "failed" => Some(NetworkOptionsHookApplyStatus::Failed(
+                parsed
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("mpv rejected a network-media file-local option")
+                    .to_owned(),
+            )),
+            _ => None,
+        }
+    }
+
+    fn parse_network_options_hook_payload(&self, payload: Option<&str>) -> Option<Value> {
+        let parsed = serde_json::from_str::<Value>(payload?).ok()?;
+        (parsed.get("protocol").and_then(Value::as_str) == Some(SOROTTE_NETWORK_OPTIONS_PROTOCOL)
+            && parsed.get("attachment").and_then(Value::as_str)
+                == Some(self.legacy_syncplayintf_attachment_id.as_str()))
+        .then_some(parsed)
+    }
+
+    fn network_options_hook_generation(parsed: &Value) -> Option<u64> {
+        parsed.get("generation").and_then(|value| {
+            value
+                .as_u64()
+                .or_else(|| value.as_str()?.parse::<u64>().ok())
+        })
+    }
+
+    fn handle_network_options_hook_configured(&mut self, payload: Option<&str>) {
+        let Some(parsed) = self.parse_network_options_hook_payload(payload) else {
+            return;
+        };
+        let Some(generation) = Self::network_options_hook_generation(&parsed) else {
+            self.network_media_options_hook_configuration_error =
+                Some("Sorotte's mpv network-options hook omitted a valid generation".to_owned());
+            return;
+        };
+        if generation != self.network_media_options_generation {
+            return;
+        }
+        match parsed.get("status").and_then(Value::as_str) {
+            Some("configured") => {
+                self.network_media_options_hook_configured_generation = Some(generation);
+                self.network_media_options_hook_configuration_error = None;
+            }
+            Some("stale") => {
+                self.network_media_options_hook_configuration_error = Some(format!(
+                    "Sorotte's mpv network-options hook rejected stale generation {generation}"
+                ));
+            }
+            _ => {
+                self.network_media_options_hook_configuration_error = Some(format!(
+                    "Sorotte's mpv network-options hook returned an invalid status for generation {generation}"
+                ));
+            }
+        }
+    }
+
+    fn handle_network_options_hook_active_result(&mut self, payload: Option<&str>) {
+        let Some(parsed) = self.parse_network_options_hook_payload(payload) else {
+            return;
+        };
+        let Some(generation) = Self::network_options_hook_generation(&parsed) else {
+            return;
+        };
+        let Some(attempt_id) = parsed.get("attempt").and_then(|value| {
+            value
+                .as_u64()
+                .or_else(|| value.as_str()?.parse::<u64>().ok())
+        }) else {
+            return;
+        };
+        let Some(status) = Self::parse_network_options_hook_status(&parsed) else {
+            return;
+        };
+        self.pending_network_media_options_hook_active_result =
+            Some(NetworkOptionsHookActiveResult {
+                attempt_id,
+                generation,
+                path: parsed
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .filter(|path| !path.is_empty())
+                    .map(ToOwned::to_owned),
+                status,
+            });
+    }
+
+    fn handle_network_options_hook_transition_result(&mut self, payload: Option<&str>) {
+        let Some(parsed) = self.parse_network_options_hook_payload(payload) else {
+            return;
+        };
+        if Self::network_options_hook_generation(&parsed)
+            != self.network_media_options_hook_configured_generation
+        {
+            return;
+        }
+        let Some(path) = parsed
+            .get("path")
+            .and_then(Value::as_str)
+            .filter(|path| !path.is_empty())
+        else {
+            return;
+        };
+        let Some(status) = Self::parse_network_options_hook_status(&parsed) else {
+            return;
+        };
+        self.begin_network_media_options_apply_attempt(self.active_media_generation, path);
+        let outcome = match status {
+            NetworkOptionsHookApplyStatus::NetworkMediaUpdated => {
+                MpvNetworkMediaOptionsTransitionOutcome::Applied
+            }
+            NetworkOptionsHookApplyStatus::Failed(error) => {
+                MpvNetworkMediaOptionsTransitionOutcome::Failed(PlayerError::OperationFailed(error))
+            }
+            NetworkOptionsHookApplyStatus::NoActiveMedia
+            | NetworkOptionsHookApplyStatus::LocalMediaUnchanged => return,
+        };
+        self.queue_network_media_options_transition_outcome(outcome);
     }
 
     fn handle_legacy_syncplayintf_options_ack(&mut self, payload: Option<&str>) {
@@ -4180,6 +4544,20 @@ impl MpvAdapter {
     pub(crate) fn with_test_transport(transport: impl MpvJsonIpcTransport + 'static) -> Self {
         let mut adapter = Self {
             ipc_client: Some(MpvJsonIpcClient::new(Box::new(transport))),
+            network_media_options_hook_enabled: false,
+            ..Self::default()
+        };
+        adapter.reset_legacy_syncplayintf_attachment_for_new_ipc();
+        adapter
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_network_options_hook_test_transport(
+        transport: impl MpvJsonIpcTransport + 'static,
+    ) -> Self {
+        let mut adapter = Self {
+            ipc_client: Some(MpvJsonIpcClient::new(Box::new(transport))),
+            network_media_options_hook_enabled: true,
             ..Self::default()
         };
         adapter.reset_legacy_syncplayintf_attachment_for_new_ipc();
@@ -4192,6 +4570,7 @@ impl MpvAdapter {
     ) -> Self {
         let mut adapter = Self {
             ipc_client: Some(MpvJsonIpcClient::new(Box::new(transport))),
+            network_media_options_hook_enabled: false,
             observers_registered: true,
             transport_observers_registered: true,
             ..Self::default()
@@ -4210,6 +4589,7 @@ impl MpvAdapter {
                 Box::new(transport),
                 command_timeout,
             )),
+            network_media_options_hook_enabled: false,
             ..Self::default()
         };
         adapter.reset_legacy_syncplayintf_attachment_for_new_ipc();

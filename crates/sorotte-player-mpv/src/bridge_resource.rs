@@ -11,7 +11,12 @@ const BUNDLED_SOROTTE_BRIDGE: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../resources/sorotte_syncplayintf.lua"
 ));
+const BUNDLED_SOROTTE_NETWORK_OPTIONS_HOOK: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../resources/sorotte_network_options.lua"
+));
 const SOROTTE_BRIDGE_FILE_NAME: &str = "sorotte_syncplayintf.lua";
+const SOROTTE_NETWORK_OPTIONS_HOOK_FILE_NAME: &str = "sorotte_network_options.lua";
 static NEXT_TEMPORARY_RESOURCE: AtomicU64 = AtomicU64::new(1);
 
 pub fn materialize_bundled_sorotte_bridge() -> io::Result<PathBuf> {
@@ -19,16 +24,38 @@ pub fn materialize_bundled_sorotte_bridge() -> io::Result<PathBuf> {
 }
 
 pub fn materialize_bundled_sorotte_bridge_in(cache_root: &Path) -> io::Result<PathBuf> {
-    let content_hash = hex_sha256(BUNDLED_SOROTTE_BRIDGE);
+    materialize_bundled_resource_in(cache_root, SOROTTE_BRIDGE_FILE_NAME, BUNDLED_SOROTTE_BRIDGE)
+}
+
+pub fn materialize_bundled_sorotte_network_options_hook() -> io::Result<PathBuf> {
+    materialize_bundled_sorotte_network_options_hook_in(&default_bridge_cache_root())
+}
+
+pub fn materialize_bundled_sorotte_network_options_hook_in(
+    cache_root: &Path,
+) -> io::Result<PathBuf> {
+    materialize_bundled_resource_in(
+        cache_root,
+        SOROTTE_NETWORK_OPTIONS_HOOK_FILE_NAME,
+        BUNDLED_SOROTTE_NETWORK_OPTIONS_HOOK,
+    )
+}
+
+fn materialize_bundled_resource_in(
+    cache_root: &Path,
+    file_name: &str,
+    content: &[u8],
+) -> io::Result<PathBuf> {
+    let content_hash = hex_sha256(content);
     let content_directory = cache_root.join(content_hash);
-    let resource_path = content_directory.join(SOROTTE_BRIDGE_FILE_NAME);
-    if resource_matches(&resource_path)? {
+    let resource_path = content_directory.join(file_name);
+    if resource_matches(&resource_path, content)? {
         return Ok(resource_path);
     }
 
     fs::create_dir_all(&content_directory)?;
     let temporary_path = content_directory.join(format!(
-        ".{SOROTTE_BRIDGE_FILE_NAME}.{}.{}.tmp",
+        ".{file_name}.{}.{}.tmp",
         std::process::id(),
         NEXT_TEMPORARY_RESOURCE.fetch_add(1, Ordering::Relaxed)
     ));
@@ -37,7 +64,7 @@ pub fn materialize_bundled_sorotte_bridge_in(cache_root: &Path) -> io::Result<Pa
         .create_new(true)
         .open(&temporary_path)?;
     if let Err(error) = temporary
-        .write_all(BUNDLED_SOROTTE_BRIDGE)
+        .write_all(content)
         .and_then(|()| temporary.sync_all())
     {
         let _ = fs::remove_file(&temporary_path);
@@ -47,7 +74,7 @@ pub fn materialize_bundled_sorotte_bridge_in(cache_root: &Path) -> io::Result<Pa
 
     if let Err(error) = replace_file_atomically(&temporary_path, &resource_path) {
         let _ = fs::remove_file(&temporary_path);
-        if resource_matches(&resource_path)? {
+        if resource_matches(&resource_path, content)? {
             return Ok(resource_path);
         }
         return Err(error);
@@ -56,9 +83,9 @@ pub fn materialize_bundled_sorotte_bridge_in(cache_root: &Path) -> io::Result<Pa
     Ok(resource_path)
 }
 
-fn resource_matches(path: &Path) -> io::Result<bool> {
+fn resource_matches(path: &Path, expected: &[u8]) -> io::Result<bool> {
     match fs::read(path) {
-        Ok(content) => Ok(content == BUNDLED_SOROTTE_BRIDGE),
+        Ok(content) => Ok(content == expected),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(error),
     }
@@ -181,6 +208,27 @@ mod tests {
             .expect("corrupt materialization should be repaired");
         assert_eq!(repaired, first);
         assert_eq!(fs::read(&repaired).unwrap(), BUNDLED_SOROTTE_BRIDGE);
+
+        let _ = fs::remove_dir_all(cache_root);
+    }
+
+    #[test]
+    fn bundled_network_options_hook_materializes_independently_from_the_optional_bridge() {
+        let cache_root = unique_cache_root("network-options-resource");
+        let hook_path = materialize_bundled_sorotte_network_options_hook_in(&cache_root)
+            .expect("bundled network-options hook should materialize");
+        let bridge_path = materialize_bundled_sorotte_bridge_in(&cache_root)
+            .expect("bundled optional bridge should materialize");
+
+        assert_eq!(
+            hook_path.file_name().and_then(|name| name.to_str()),
+            Some(SOROTTE_NETWORK_OPTIONS_HOOK_FILE_NAME)
+        );
+        assert_ne!(hook_path.parent(), bridge_path.parent());
+        assert_eq!(
+            fs::read(&hook_path).unwrap(),
+            BUNDLED_SOROTTE_NETWORK_OPTIONS_HOOK
+        );
 
         let _ = fs::remove_dir_all(cache_root);
     }

@@ -95,6 +95,17 @@ pub(crate) fn external_network_media_transition_client(
     )
 }
 
+pub(crate) fn active_network_media_supersession_client()
+-> (MpvJsonIpcClient, Arc<Mutex<Vec<Value>>>) {
+    let commands = Arc::new(Mutex::new(Vec::new()));
+    let transport = ActiveNetworkMediaSupersessionTransport {
+        responses: VecDeque::new(),
+        commands: Arc::clone(&commands),
+        superseded: false,
+    };
+    (MpvJsonIpcClient::new(Box::new(transport)), commands)
+}
+
 #[derive(Debug, Default)]
 struct SuccessfulNoAckTransport {
     responses: VecDeque<String>,
@@ -226,6 +237,97 @@ struct ExternalNetworkMediaTransitionTransport {
     transition_count: usize,
     reject_option_write: bool,
     option_write_rejected: bool,
+}
+
+#[derive(Debug)]
+struct ActiveNetworkMediaSupersessionTransport {
+    responses: VecDeque<String>,
+    commands: Arc<Mutex<Vec<Value>>>,
+    superseded: bool,
+}
+
+impl MpvJsonIpcTransport for ActiveNetworkMediaSupersessionTransport {
+    fn send_line_until(&mut self, line: &str, _deadline: Instant) -> io::Result<()> {
+        let request: Value = serde_json::from_str(line.trim())
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let request_id = request.get("request_id").cloned().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "test mpv request omitted request_id",
+            )
+        })?;
+        let command = request
+            .get("command")
+            .and_then(Value::as_array)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing command array"))?;
+        let command_name = command.first().and_then(Value::as_str);
+        let property_name = command.get(1).and_then(Value::as_str);
+        let is_file_local_write = command_name == Some("set_property")
+            && property_name.is_some_and(|property| property.starts_with("file-local-options/"));
+        if is_file_local_write {
+            self.commands
+                .lock()
+                .expect("supersession command log should not be poisoned")
+                .push(Value::Array(command.clone()));
+            if !self.superseded {
+                self.superseded = true;
+                self.responses.push_back(
+                    json!({"event": "start-file", "playlist_entry_id": 502}).to_string() + "\n",
+                );
+                self.responses.push_back(
+                    json!({
+                        "event": "property-change",
+                        "name": "path",
+                        "data": "https://media.example.test/b.m3u8",
+                    })
+                    .to_string()
+                        + "\n",
+                );
+                self.responses
+                    .push_back(json!({"event": "file-loaded"}).to_string() + "\n");
+            }
+        }
+
+        let response = match (command_name, property_name) {
+            (Some("get_property"), Some("path")) => json!({
+                "request_id": request_id,
+                "error": "success",
+                "data": if self.superseded {
+                    "https://media.example.test/b.m3u8"
+                } else {
+                    "https://media.example.test/a.m3u8"
+                },
+            }),
+            (Some("get_property"), Some("osd-align-y")) => json!({
+                "request_id": request_id,
+                "error": "success",
+                "data": "top",
+            }),
+            (Some("get_property"), Some("osd-margin-y")) => json!({
+                "request_id": request_id,
+                "error": "success",
+                "data": 16,
+            }),
+            (Some("get_property"), _) => {
+                json!({"request_id": request_id, "error": "success", "data": false})
+            }
+            _ => json!({"request_id": request_id, "error": "success"}),
+        };
+        self.responses.push_back(response.to_string() + "\n");
+        Ok(())
+    }
+
+    fn read_line_until(&mut self, line: &mut String, _deadline: Instant) -> io::Result<usize> {
+        let response = self.responses.pop_front().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "test mpv transport had no queued response",
+            )
+        })?;
+        line.clear();
+        line.push_str(&response);
+        Ok(line.len())
+    }
 }
 
 impl MpvJsonIpcTransport for ExternalNetworkMediaTransitionTransport {

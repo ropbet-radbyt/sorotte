@@ -22,6 +22,8 @@ pub use adapter::{
 pub use bridge::{SorotteBridgeFailure, SorotteBridgeFailureKind, SorotteBridgeHealth};
 pub use bridge_resource::{
     materialize_bundled_sorotte_bridge, materialize_bundled_sorotte_bridge_in,
+    materialize_bundled_sorotte_network_options_hook,
+    materialize_bundled_sorotte_network_options_hook_in,
 };
 pub use ipc::MpvIpcConnectionEvent;
 pub use legacy_ui::{LegacySyncplayOsdKind, LegacySyncplayUiSettings};

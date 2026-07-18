@@ -428,6 +428,7 @@ fn gui_persisted_config_runtime_owner_keeps_offset_commands_on_global_timeline()
         managed_mpv_process: None,
         player_unavailability_reason: None,
         core_player_configuration_health: Default::default(),
+        pending_apply_requirements_refresh_required: false,
         player_integration_health: crate::app::runtime_owner::GuiPlayerIntegrationHealth::Ready,
         player_local_file: None,
         player_local_file_placeholder: false,

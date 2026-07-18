@@ -28,6 +28,7 @@ mod command_tests;
 mod event_tests;
 mod ipc_tests;
 mod legacy_ui_tests;
+mod network_options_lua_tests;
 mod smoke_tests;
 mod state_tests;
 mod syncplayintf_lua_tests;

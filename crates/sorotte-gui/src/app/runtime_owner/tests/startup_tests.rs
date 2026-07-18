@@ -862,8 +862,8 @@ fn managed_mpv_active_streaming_success_promotes_baseline_after_process_attachme
         &desired_streaming_options,
     );
     assert!(
-        crate::app::mpv_launch::apply_effective_streaming_options_to_active_network_media(
-            &mut adapter
+        crate::app::mpv_launch::apply_effective_streaming_options_to_active_network_media_classified(
+            &mut adapter,
         )
         .is_err(),
         "the fixture's first active-media write should be rejected"

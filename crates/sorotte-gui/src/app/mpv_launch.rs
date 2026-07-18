@@ -211,14 +211,6 @@ pub(crate) fn configure_effective_streaming_options_for_network_media(
     );
 }
 
-pub(crate) fn apply_effective_streaming_options_to_active_network_media(
-    player: &mut MpvAdapter,
-) -> Result<(), String> {
-    player
-        .apply_network_media_options_to_active_media()
-        .map_err(|error| format!("failed to update active mpv network-media options: {error}"))
-}
-
 pub(crate) fn apply_effective_streaming_options_to_active_network_media_classified(
     player: &mut MpvAdapter,
 ) -> Result<MpvActiveNetworkMediaOptionsApplyOutcome, String> {

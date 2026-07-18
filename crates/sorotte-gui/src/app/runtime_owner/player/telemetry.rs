@@ -346,6 +346,7 @@ impl GuiPersistedConfigRuntimeOwner {
         reason: String,
     ) {
         self.player_apply_state.mark_streaming_apply_failed();
+        self.pending_apply_requirements_refresh_required = true;
         self.core_player_configuration_health =
             GuiCorePlayerConfigurationHealth::StreamingDegraded {
                 reason: reason.clone(),
@@ -356,6 +357,18 @@ impl GuiPersistedConfigRuntimeOwner {
     }
 
     pub(in crate::app::runtime_owner) fn record_network_media_transition_recovered(&mut self) {
+        if self.player_apply_state.streaming_apply_awaiting_transition
+            && self
+                .player_apply_state
+                .process_target_is_applied(&self.player_launch_state)
+        {
+            self.player_apply_state
+                .record_streaming_options_applied(&self.player_launch_state);
+            self.pending_apply_requirements_refresh_required = true;
+            self.core_player_configuration_health = GuiCorePlayerConfigurationHealth::Ready;
+            self.player_unavailability_reason = None;
+            return;
+        }
         let transition_failure_reason = match &self.core_player_configuration_health {
             GuiCorePlayerConfigurationHealth::StreamingDegraded {
                 reason,
@@ -376,6 +389,7 @@ impl GuiPersistedConfigRuntimeOwner {
         }
 
         self.player_apply_state.core_reapply_required = false;
+        self.pending_apply_requirements_refresh_required = true;
         self.core_player_configuration_health = GuiCorePlayerConfigurationHealth::Ready;
         if self.player_unavailability_reason.as_deref() == Some(transition_failure_reason.as_str())
         {

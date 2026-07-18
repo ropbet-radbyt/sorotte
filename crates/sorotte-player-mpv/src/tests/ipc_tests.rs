@@ -12,6 +12,113 @@ use std::{
 #[derive(Debug)]
 struct NeverRespondingTransport;
 
+#[derive(Debug)]
+struct NetworkOptionsHookSupersessionTransport {
+    writes: Arc<Mutex<Vec<String>>>,
+    responses: VecDeque<String>,
+}
+
+impl NetworkOptionsHookSupersessionTransport {
+    fn push(&mut self, value: Value) {
+        self.responses.push_back(value.to_string() + "\n");
+    }
+}
+
+impl MpvJsonIpcTransport for NetworkOptionsHookSupersessionTransport {
+    fn send_line_until(&mut self, line: &str, _deadline: Instant) -> io::Result<()> {
+        self.writes
+            .lock()
+            .expect("network-options hook writes should not be poisoned")
+            .push(line.to_owned());
+        let request: Value = serde_json::from_str(line.trim_end()).map_err(io::Error::other)?;
+        let request_id = request["request_id"]
+            .as_u64()
+            .expect("test request should contain an id");
+        let command = request["command"]
+            .as_array()
+            .expect("test request should contain a command");
+        match command.first().and_then(Value::as_str) {
+            Some("get_property") if command.get(1).and_then(Value::as_str) == Some("path") => {
+                self.push(json!({
+                    "request_id": request_id,
+                    "error": "success",
+                    "data": "https://media.example.test/a.m3u8",
+                }));
+            }
+            Some("script-message-to")
+                if command.get(2).and_then(Value::as_str)
+                    == Some("sorotte_network_options_configure") =>
+            {
+                let payload: Value = serde_json::from_str(
+                    command
+                        .get(3)
+                        .and_then(Value::as_str)
+                        .expect("configure command should contain JSON"),
+                )
+                .expect("configure payload should be valid");
+                self.push(json!({
+                    "event": "client-message",
+                    "args": ["sorotte-network-options-configured", json!({
+                        "protocol": "sorotte-network-options-v1",
+                        "attachment": payload["attachment"],
+                        "generation": payload["generation"],
+                        "status": "configured",
+                    }).to_string()],
+                }));
+                self.push(json!({"request_id": request_id, "error": "success"}));
+            }
+            Some("script-message-to")
+                if command.get(2).and_then(Value::as_str)
+                    == Some("sorotte_network_options_apply_active") =>
+            {
+                let payload: Value = serde_json::from_str(
+                    command
+                        .get(3)
+                        .and_then(Value::as_str)
+                        .expect("apply command should contain JSON"),
+                )
+                .expect("apply payload should be valid");
+                let result = json!({
+                    "protocol": "sorotte-network-options-v1",
+                    "attachment": payload["attachment"],
+                    "generation": payload["generation"],
+                    "path": "https://media.example.test/b.m3u8",
+                    "status": "network-updated",
+                });
+                self.push(json!({
+                    "event": "start-file",
+                    "playlist_entry_id": 92,
+                }));
+                self.push(json!({
+                    "event": "client-message",
+                    "args": ["sorotte-network-options-transition-result", result.to_string()],
+                }));
+                let mut active_result = result;
+                active_result["attempt"] = payload["attempt"].clone();
+                self.push(json!({
+                    "event": "client-message",
+                    "args": ["sorotte-network-options-active-result", active_result.to_string()],
+                }));
+                self.push(json!({"request_id": request_id, "error": "success"}));
+            }
+            _ => self.push(json!({"request_id": request_id, "error": "success"})),
+        }
+        Ok(())
+    }
+
+    fn read_line_until(&mut self, line: &mut String, _deadline: Instant) -> io::Result<usize> {
+        let response = self.responses.pop_front().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "network-options hook test omitted a response",
+            )
+        })?;
+        line.clear();
+        line.push_str(&response);
+        Ok(line.len())
+    }
+}
+
 impl MpvJsonIpcTransport for NeverRespondingTransport {
     fn send_line_until(&mut self, _line: &str, _deadline: Instant) -> io::Result<()> {
         Ok(())
@@ -1702,6 +1809,43 @@ fn local_transition_during_first_option_write_supersedes_remaining_network_write
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
         None
+    );
+}
+
+#[test]
+fn core_hook_keeps_network_option_writes_inside_mpv_and_classifies_a_to_b_as_superseded() {
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let transport = NetworkOptionsHookSupersessionTransport {
+        writes: Arc::clone(&writes),
+        responses: VecDeque::new(),
+    };
+    let mut adapter = MpvAdapter::with_network_options_hook_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75"), ("cache-pause-wait", "5")]);
+
+    assert_eq!(
+        adapter
+            .apply_network_media_options_to_active_media_classified()
+            .expect("the hook should accept the complete map for superseding network B"),
+        MpvActiveNetworkMediaOptionsApplyOutcome::Superseded
+    );
+    assert!(adapter.is_connected());
+    assert!(
+        writes
+            .lock()
+            .expect("network-options hook writes should not be poisoned")
+            .iter()
+            .all(|write| !write.contains("file-local-options/")),
+        "Rust JSON IPC must never issue per-option writes once the core hook is active"
+    );
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied),
+        "network B's ordered result should own the final transition state"
+    );
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None,
+        "the explicit result and on-load result should converge without duplicate recovery"
     );
 }
 

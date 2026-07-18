@@ -395,6 +395,17 @@ impl GuiPersistedConfigRuntimeOwner {
             ));
         }
 
+        if self.pending_apply_requirements_refresh_required {
+            let desired_pending_apply_requirements =
+                self.pending_apply_requirements_for_settings(state, &state.saved_configuration);
+            if state.pending_apply_requirements != desired_pending_apply_requirements {
+                handle.push_action(GuiShellAction::ApplyPendingApplyRequirementsSnapshot(
+                    desired_pending_apply_requirements,
+                ));
+            }
+            self.pending_apply_requirements_refresh_required = false;
+        }
+
         let desired_seek_preparation = self.seek_preparation_runtime_snapshot_impl();
         if state.seek_preparation != desired_seek_preparation.preparation
             || state.seek_preparation_degraded_reason != desired_seek_preparation.degraded_reason
