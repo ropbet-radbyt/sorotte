@@ -743,6 +743,9 @@ impl PlayerMediaLoadOutcome {
 
 pub trait PlayerAdapter: Send + Sync {
     fn name(&self) -> &'static str;
+    /// Advances adapter-owned integrations that require bounded background servicing while the
+    /// application is awaiting unrelated I/O or worker completion.
+    fn maintain_runtime_integrations(&mut self) {}
     fn capabilities(&self) -> PlayerCapabilities {
         PlayerCapabilities::NONE
     }

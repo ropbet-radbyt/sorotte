@@ -5,6 +5,7 @@ use crate::app::runtime_owner::GuiPlayerIntegrationHealth;
 use crate::app::runtime_stack::GuiAttachedPlayerRuntimeAction;
 use crate::app::runtime_stack::GuiOwnedPlayer;
 use crate::app::support::system_time_seconds;
+use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
 use sorotte_player_mpv::SorotteBridgeHealth;
 
 impl GuiPersistedConfigRuntimeOwner {
@@ -118,11 +119,20 @@ impl GuiPersistedConfigRuntimeOwner {
     ) -> bool {
         let settings = projected_state.saved_configuration.clone();
         self.sync_player_from_lookup_and_settings(&env_trimmed, Some(&settings), true);
+        self.finish_retry_player_launch_request(handle, projected_state, &settings)
+    }
+
+    pub(in crate::app::runtime_owner) fn finish_retry_player_launch_request(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        settings: &StoredClientSettingsMvp,
+    ) -> bool {
         self.refresh_player_state();
         let stream_helper_snapshot = self.recheck_stream_helper_runtime_snapshot(projected_state);
         let player_settings_applied = self.current_player_core_state_is_applied();
 
-        let (level, message) = if self.player.is_some() {
+        let (level, message) = if self.player.is_some() && player_settings_applied {
             (
                 GuiTransientNotificationLevel::Success,
                 "mpv is ready with the current player settings.".to_owned(),
@@ -140,7 +150,15 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.player_unavailability_reason
                     .clone()
                     .unwrap_or_else(|| {
-                        "Retrying mpv launch did not attach a playback runtime.".to_owned()
+                        if self
+                            .player_apply_state
+                            .streaming_apply_awaiting_transition
+                        {
+                            "mpv attached, but its streaming settings are still awaiting the authoritative media-load result."
+                                .to_owned()
+                        } else {
+                            "Retrying mpv launch did not attach a playback runtime.".to_owned()
+                        }
                     }),
             )
         };
@@ -153,9 +171,9 @@ impl GuiPersistedConfigRuntimeOwner {
             GuiShellAction::AnnounceSystemChatEvent(message),
         ];
         if player_settings_applied {
-            self.promote_restart_player_runtime_fields(&settings);
-            actions.push(self.pending_apply_requirements_action(projected_state, &settings));
+            self.promote_restart_player_runtime_fields(settings);
         }
+        actions.push(self.pending_apply_requirements_action(projected_state, settings));
         Self::push_actions_and_project(handle, projected_state, actions);
         true
     }

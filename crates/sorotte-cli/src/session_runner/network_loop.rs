@@ -14,18 +14,7 @@ async fn wait_with_player_integration_maintenance(
     runtime: &mut ClientApplication<MpvAdapter>,
     duration: Duration,
 ) {
-    let delay = tokio::time::sleep(duration);
-    tokio::pin!(delay);
-    let mut maintenance_tick =
-        tokio::time::interval(Duration::from_millis(PLAYER_CHAT_INPUT_POLL_INTERVAL_MS));
-    loop {
-        tokio::select! {
-            _ = &mut delay => break,
-            _ = maintenance_tick.tick() => {
-                runtime.with_player_io(MpvAdapter::maintain_runtime_integrations);
-            }
-        }
-    }
+    await_with_player_integration_maintenance(runtime, tokio::time::sleep(duration)).await;
 }
 
 async fn run_reconnect_backoff(
@@ -344,20 +333,9 @@ where
     F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
     G: FnMut(&str) -> anyhow::Result<()>,
 {
-    let connect = TcpStream::connect(endpoint);
-    tokio::pin!(connect);
-    let mut maintenance_tick =
-        tokio::time::interval(Duration::from_millis(PLAYER_CHAT_INPUT_POLL_INTERVAL_MS));
-    let connect_result = loop {
-        tokio::select! {
-            result = &mut connect => break result,
-            _ = maintenance_tick.tick() => {
-                launch
-                    .runtime
-                    .with_player_io(MpvAdapter::maintain_runtime_integrations);
-            }
-        }
-    };
+    let connect_result =
+        await_with_player_integration_maintenance(launch.runtime, TcpStream::connect(endpoint))
+            .await;
     Ok(match connect_result {
         Ok(stream) => (
             client_network_loop_attempt_execution_plan_for_connected_session_exit_legacy_compatible(

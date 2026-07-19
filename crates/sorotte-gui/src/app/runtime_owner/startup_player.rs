@@ -365,8 +365,6 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn record_streaming_apply_superseded(&mut self) {
         self.player_apply_state.mark_streaming_apply_superseded();
-        self.core_player_configuration_health = GuiCorePlayerConfigurationHealth::Ready;
-        self.player_unavailability_reason = None;
     }
 
     pub(super) fn mark_streaming_apply_failed(&mut self, reason: String, retryable_in_place: bool) {
@@ -760,8 +758,6 @@ impl GuiPersistedConfigRuntimeOwner {
             match apply_effective_streaming_options_to_active_network_media_classified(player) {
                 Ok(sorotte_player_mpv::MpvActiveNetworkMediaOptionsApplyOutcome::Superseded) => {
                     self.player_apply_state.mark_streaming_apply_superseded();
-                    self.core_player_configuration_health = GuiCorePlayerConfigurationHealth::Ready;
-                    self.player_unavailability_reason = None;
                 }
                 Ok(_) => {
                     self.player_apply_state
@@ -852,7 +848,8 @@ impl GuiPersistedConfigRuntimeOwner {
                 let core_retry_required = self.player_apply_state.core_reapply_required;
                 return self
                     .try_apply_mpv_ui_settings_in_place(&next_launch_state, core_retry_required)
-                    && !self.player_apply_state.core_reapply_required;
+                    && !self.player_apply_state.core_reapply_required
+                    && !self.player_apply_state.streaming_apply_awaiting_transition;
             }
             // A failed relaunch can leave the desired launch state pointing at the failed target
             // while the last-applied baseline still describes the saved target. Reconcile the
@@ -882,12 +879,14 @@ impl GuiPersistedConfigRuntimeOwner {
                         })
                 };
             }
-            return target_was_stale
-                || self.player.is_some()
-                || matches!(self.player_launch_state, GuiPlayerLaunchRuntimeState::None);
+            return !self.player_apply_state.streaming_apply_awaiting_transition
+                && (target_was_stale
+                    || self.player.is_some()
+                    || matches!(self.player_launch_state, GuiPlayerLaunchRuntimeState::None));
         }
         self.try_apply_mpv_ui_settings_in_place(&next_launch_state, false)
             && !self.player_apply_state.core_reapply_required
+            && !self.player_apply_state.streaming_apply_awaiting_transition
     }
 
     pub(in crate::app) fn sync_player_from_lookup_and_settings<F>(
@@ -936,6 +935,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app) fn current_player_core_state_is_applied(&self) -> bool {
         !self.player_apply_state.core_reapply_required
+            && !self.player_apply_state.streaming_apply_awaiting_transition
             && self
                 .player_apply_state
                 .process_target_is_applied(&self.player_launch_state)

@@ -1,5 +1,23 @@
 use super::*;
 
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+use tokio::io::AsyncReadExt;
+
+struct StartupPlaylistMaintenancePlayer(Arc<AtomicUsize>);
+
+impl PlayerAdapter for StartupPlaylistMaintenancePlayer {
+    fn name(&self) -> &'static str {
+        "startup-playlist-maintenance-player"
+    }
+
+    fn maintain_runtime_integrations(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
 #[test]
 fn protocol_lines_for_startup_playlist_load_from_file_legacy_compatible_emits_playlist_change_then_index()
  {
@@ -48,6 +66,78 @@ fn protocol_lines_for_startup_playlist_load_from_file_legacy_compatible_emits_pl
     assert!(
         second_set.set.playlist_change.is_none(),
         "playlistIndex message should not also contain playlistChange"
+    );
+
+    let _ = std::fs::remove_file(&playlist_path);
+    let _ = std::fs::remove_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn blocked_startup_playlist_write_maintains_player_integrations() {
+    let unique_suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("time should be monotonic enough for test")
+        .as_nanos();
+    let temp_dir = std::env::temp_dir().join(format!(
+        "sorotte-cli-startup-playlist-maintenance-{unique_suffix}"
+    ));
+    std::fs::create_dir_all(&temp_dir).expect("temp dir should be created");
+    let playlist_path = temp_dir.join("startup-playlist.txt");
+    std::fs::write(&playlist_path, format!("{}.mkv\n", "episode".repeat(128)))
+        .expect("playlist file should write");
+
+    let maintenance_calls = Arc::new(AtomicUsize::new(0));
+    let mut runtime = ClientApplication::with_default_session(StartupPlaylistMaintenancePlayer(
+        Arc::clone(&maintenance_calls),
+    ));
+    let (mut reader, mut writer) = tokio::io::duplex(1);
+    let reader_maintenance_calls = Arc::clone(&maintenance_calls);
+    let drain = tokio::spawn(async move {
+        while reader_maintenance_calls.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+        let mut received = Vec::new();
+        let mut byte = [0_u8; 1];
+        while received
+            .windows(2)
+            .filter(|window| *window == b"\r\n")
+            .count()
+            < 2
+        {
+            reader
+                .read_exact(&mut byte)
+                .await
+                .expect("blocked startup playlist writer should remain readable");
+            received.push(byte[0]);
+        }
+        received
+    });
+
+    let emitted = tokio::time::timeout(
+        Duration::from_secs(2),
+        crate::startup_playlist::emit_startup_playlist_load_from_file_legacy_compatible(
+            &mut runtime,
+            &mut writer,
+            &playlist_path.to_string_lossy(),
+        ),
+    )
+    .await
+    .expect("maintenance should unblock the delayed reader")
+    .expect("startup playlist lines should write");
+
+    assert!(emitted);
+    assert!(
+        maintenance_calls.load(Ordering::SeqCst) >= 1,
+        "maintenance must run before the blocked writer is allowed to continue"
+    );
+    let received = drain.await.expect("reader task should finish");
+    assert_eq!(
+        received
+            .windows(2)
+            .filter(|window| *window == b"\r\n")
+            .count(),
+        2,
+        "both startup playlist protocol lines should be emitted"
     );
 
     let _ = std::fs::remove_file(&playlist_path);

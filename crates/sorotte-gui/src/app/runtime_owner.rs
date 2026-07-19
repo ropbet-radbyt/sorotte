@@ -665,7 +665,14 @@ impl GuiPersistedConfigRuntimeOwner {
                     ..
                 }
             );
-        if self.player_apply_state.core_reapply_required
+        let streaming_apply_awaiting_on_attached_target = self.player.is_some()
+            && self.player_apply_state.streaming_apply_awaiting_transition
+            && desired_player_launch_state
+                .as_ref()
+                .is_ok_and(|desired| self.player_apply_state.process_target_is_applied(desired));
+        if streaming_apply_awaiting_on_attached_target {
+            requirements.insert(GuiSettingApplyRequirement::PlayerSettingsRetryAvailable);
+        } else if self.player_apply_state.core_reapply_required
             || process_target_differs
             || streaming_options_differ
         {

@@ -448,7 +448,11 @@ where
     let hello_line = encode_message_line(&hello_message)?;
     let stream: Box<dyn ConnectedSessionAsyncStream> =
         if start_tls_negotiation_enabled_legacy_compatible() {
-            negotiate_start_tls_legacy_compatible(stream, &config.host).await?
+            await_with_player_integration_maintenance(
+                runtime,
+                negotiate_start_tls_legacy_compatible(stream, &config.host),
+            )
+            .await?
         } else {
             Box::new(stream)
         };
@@ -462,7 +466,11 @@ where
             )
             .await,
     );
-    write_protocol_line(&mut writer, &hello_line).await?;
+    await_with_player_integration_maintenance(
+        runtime,
+        write_protocol_line(&mut writer, &hello_line),
+    )
+    .await?;
     let mut pending_chat_message_on_connect = chat_message_on_connect.map(str::to_owned);
     publish_pending_local_file_updates(runtime, config)?;
     flush_runtime_protocol_lines(runtime, &mut writer).await?;
@@ -724,9 +732,25 @@ where
 mod tests {
     use super::*;
     use sorotte_client_core::ClientSession;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
     use tokio::io::AsyncBufReadExt;
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
+
+    struct StartTlsMaintenancePlayer(Arc<AtomicUsize>);
+
+    impl PlayerAdapter for StartTlsMaintenancePlayer {
+        fn name(&self) -> &'static str {
+            "starttls-maintenance-test-player"
+        }
+
+        fn maintain_runtime_integrations(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
 
     #[test]
     fn reconnect_token_is_added_only_to_same_room_hello() {
@@ -764,6 +788,8 @@ mod tests {
             .local_addr()
             .expect("listener should have local addr");
 
+        let maintenance_calls = Arc::new(AtomicUsize::new(0));
+        let server_maintenance_calls = Arc::clone(&maintenance_calls);
         let server_task = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.expect("server should accept");
             let (reader, mut writer) = socket.into_split();
@@ -778,6 +804,9 @@ mod tests {
                 tls_line.contains(r#""TLS":{"startTLS":"send"}"#),
                 "client should request StartTLS before Hello"
             );
+            while server_maintenance_calls.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
             writer
                 .write_all(b"{\"TLS\":{\"startTLS\":\"false\"}}\n")
                 .await
@@ -791,9 +820,23 @@ mod tests {
         let stream = TcpStream::connect(addr)
             .await
             .expect("client should connect to test server");
-        let _stream = negotiate_start_tls_legacy_compatible(stream, "127.0.0.1")
-            .await
-            .expect("plain TLS fallback should complete");
+        let mut runtime = ClientApplication::with_default_session(StartTlsMaintenancePlayer(
+            Arc::clone(&maintenance_calls),
+        ));
+        let _stream = tokio::time::timeout(
+            Duration::from_secs(2),
+            await_with_player_integration_maintenance(
+                &mut runtime,
+                negotiate_start_tls_legacy_compatible(stream, "127.0.0.1"),
+            ),
+        )
+        .await
+        .expect("STARTTLS fallback should remain serviced")
+        .expect("plain TLS fallback should complete");
+        assert!(
+            maintenance_calls.load(Ordering::SeqCst) >= 1,
+            "STARTTLS response wait must maintain player integrations"
+        );
 
         server_task
             .await

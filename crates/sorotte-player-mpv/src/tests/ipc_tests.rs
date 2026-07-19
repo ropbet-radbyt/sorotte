@@ -20,6 +20,7 @@ struct NetworkOptionsHookSupersessionTransport {
 
 #[derive(Clone, Copy, Debug)]
 enum HookSupersessionTarget {
+    StableNetwork,
     Local,
     Idle,
     NetworkSuccess,
@@ -89,6 +90,8 @@ impl MpvJsonIpcTransport for NetworkOptionsHookScenarioTransport {
                         "ownerId": payload["ownerId"],
                         "attachmentId": payload["attachmentId"],
                         "configurationGeneration": payload["configurationGeneration"],
+                        "hookInstanceId": "scenario-hook-instance",
+                        "currentLoadSequence": 0,
                         "status": "configured",
                     }),
                 ));
@@ -110,6 +113,7 @@ impl MpvJsonIpcTransport for NetworkOptionsHookScenarioTransport {
                     "ownerId": payload["ownerId"],
                     "attachmentId": payload["attachmentId"],
                     "configurationGeneration": payload["configurationGeneration"],
+                    "hookInstanceId": "scenario-hook-instance",
                 });
                 let mut active_result = base.clone();
                 active_result["attempt"] = payload["attempt"].clone();
@@ -128,6 +132,7 @@ impl MpvJsonIpcTransport for NetworkOptionsHookScenarioTransport {
                 ));
 
                 match self.target {
+                    HookSupersessionTarget::StableNetwork => {}
                     HookSupersessionTarget::Local => {
                         self.push(json!({"event": "start-file", "playlist_entry_id": 102}));
                         self.push(json!({
@@ -196,6 +201,7 @@ impl MpvJsonIpcTransport for NetworkOptionsHookScenarioTransport {
                             "ownerId": payload["ownerId"],
                             "attachmentId": payload["attachmentId"],
                             "configurationGeneration": payload["configurationGeneration"],
+                            "hookInstanceId": "scenario-hook-instance",
                             "status": "ownership-lost",
                         }),
                     ));
@@ -207,6 +213,7 @@ impl MpvJsonIpcTransport for NetworkOptionsHookScenarioTransport {
                             "ownerId": payload["ownerId"],
                             "attachmentId": payload["attachmentId"],
                             "configurationGeneration": payload["configurationGeneration"],
+                            "hookInstanceId": "scenario-hook-instance",
                             "heartbeatNonce": payload["heartbeatNonce"],
                             "status": "renewed",
                         }),
@@ -333,6 +340,8 @@ impl MpvJsonIpcTransport for NetworkOptionsHookReloadTransport {
                             "ownerId": payload["ownerId"],
                             "attachmentId": payload["attachmentId"],
                             "configurationGeneration": payload["configurationGeneration"],
+                            "hookInstanceId": "reload-hook-instance",
+                            "currentLoadSequence": 0,
                             "status": "configured",
                         }),
                     ));
@@ -359,6 +368,7 @@ impl MpvJsonIpcTransport for NetworkOptionsHookReloadTransport {
                         "ownerId": payload["ownerId"],
                         "attachmentId": payload["attachmentId"],
                         "configurationGeneration": payload["configurationGeneration"],
+                        "hookInstanceId": "reload-hook-instance",
                         "attempt": payload["attempt"],
                         "loadSequence": 0,
                         "sourcePath": "https://media.example.test/recovered.m3u8",
@@ -428,6 +438,8 @@ impl MpvJsonIpcTransport for NetworkOptionsHookSupersessionTransport {
                         "ownerId": payload["ownerId"],
                         "attachmentId": payload["attachmentId"],
                         "configurationGeneration": payload["configurationGeneration"],
+                        "hookInstanceId": "supersession-hook-instance",
+                        "currentLoadSequence": 0,
                         "status": "configured",
                     }).to_string()],
                 }));
@@ -449,6 +461,7 @@ impl MpvJsonIpcTransport for NetworkOptionsHookSupersessionTransport {
                     "ownerId": payload["ownerId"],
                     "attachmentId": payload["attachmentId"],
                     "configurationGeneration": payload["configurationGeneration"],
+                    "hookInstanceId": "supersession-hook-instance",
                     "loadSequence": 2,
                     "sourcePath": "https://media.example.test/b.m3u8",
                     "streamOpenFilename": "https://media.example.test/b.m3u8",
@@ -2450,6 +2463,262 @@ fn higher_sequence_result_before_same_url_path_observation_completes_once() {
 }
 
 #[test]
+fn production_path_observations_wait_for_authoritative_hook_completion() {
+    let mut adapter = configured_v3_hook_reducer_adapter();
+    adapter.set_test_network_options_awaiting_authoritative_transition(true);
+
+    adapter.begin_test_network_options_event_batch();
+    adapter.observe_test_network_options_pending_start();
+    adapter.end_test_network_options_event_batch();
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None
+    );
+    assert!(adapter.test_network_options_awaiting_authoritative_transition());
+
+    adapter.begin_test_network_options_event_batch();
+    adapter.observe_test_network_options_path("C:/media/local-b.mkv");
+    adapter.end_test_network_options_event_batch();
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None
+    );
+    assert!(adapter.test_network_options_awaiting_authoritative_transition());
+
+    defer_v3_transition(
+        &mut adapter,
+        1,
+        "C:/media/local-b.mkv",
+        "C:/media/local-b.mkv",
+        "local",
+        None,
+    );
+    apply_deferred_v3_transition(&mut adapter);
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
+    );
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None
+    );
+    assert!(!adapter.test_network_options_awaiting_authoritative_transition());
+}
+
+#[test]
+fn rewritten_network_failure_is_not_masked_by_local_logical_path() {
+    let mut adapter = configured_v3_hook_reducer_adapter();
+    adapter.set_test_network_options_awaiting_authoritative_transition(true);
+    adapter.begin_test_network_options_event_batch();
+    adapter.observe_test_network_options_path("C:/logical/source.mkv");
+    defer_v3_transition(
+        &mut adapter,
+        1,
+        "C:/logical/source.mkv",
+        "https://cdn.example.test/rewritten.m3u8",
+        "failed",
+        Some("rewritten stream rejected cache-secs"),
+    );
+    adapter.end_test_network_options_event_batch();
+
+    let Some(MpvNetworkMediaOptionsTransitionOutcome::Failed(error)) =
+        adapter.take_network_media_options_transition_outcome()
+    else {
+        panic!("the sequenced rewritten-stream failure should be the only outcome");
+    };
+    assert!(error.to_string().contains("rewritten stream rejected"));
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None
+    );
+}
+
+#[test]
+fn only_terminal_end_file_can_complete_hook_policy_without_a_hook_result() {
+    let mut adapter = configured_v3_hook_reducer_adapter();
+    adapter.set_test_network_options_awaiting_authoritative_transition(true);
+
+    adapter.begin_test_network_options_event_batch();
+    adapter.observe_test_network_options_null_path();
+    adapter.end_test_network_options_event_batch();
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None
+    );
+    assert!(adapter.test_network_options_awaiting_authoritative_transition());
+
+    adapter.begin_test_network_options_event_batch();
+    adapter.observe_test_network_options_terminal_end();
+    adapter.end_test_network_options_event_batch();
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
+    );
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None
+    );
+}
+
+#[test]
+fn successor_start_supersedes_terminal_idle_completion_in_the_same_batch() {
+    let mut adapter = configured_v3_hook_reducer_adapter();
+    adapter.set_test_network_options_awaiting_authoritative_transition(true);
+    adapter.begin_test_network_options_event_batch();
+    adapter.observe_test_network_options_terminal_end();
+    adapter.observe_test_network_options_pending_start();
+    adapter.end_test_network_options_event_batch();
+
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None
+    );
+    assert!(adapter.test_network_options_awaiting_authoritative_transition());
+}
+
+#[test]
+fn sequenced_failure_precedes_terminal_idle_fallback_in_the_same_batch() {
+    let mut adapter = configured_v3_hook_reducer_adapter();
+    adapter.set_test_network_options_awaiting_authoritative_transition(true);
+    adapter.begin_test_network_options_event_batch();
+    defer_v3_transition(
+        &mut adapter,
+        1,
+        "https://media.example.test/ended.m3u8",
+        "https://media.example.test/ended.m3u8",
+        "failed",
+        Some("ended load rejected cache-secs"),
+    );
+    adapter.observe_test_network_options_terminal_end();
+    adapter.end_test_network_options_event_batch();
+
+    let Some(MpvNetworkMediaOptionsTransitionOutcome::Failed(error)) =
+        adapter.take_network_media_options_transition_outcome()
+    else {
+        panic!("the hook's sequenced failure must outrank terminal-idle fallback");
+    };
+    assert!(error.to_string().contains("ended load rejected"));
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None
+    );
+}
+
+#[test]
+fn matching_real_end_file_completes_idle_but_successor_start_does_not() {
+    let mut adapter = configured_v3_hook_reducer_adapter();
+    adapter.set_test_network_options_awaiting_authoritative_transition(true);
+    adapter.handle_test_network_options_start_file(701);
+    adapter.observe_test_network_options_path("https://media.example.test/a.m3u8");
+    adapter.handle_test_network_options_end_file(701);
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
+    );
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None
+    );
+
+    adapter.set_test_network_options_awaiting_authoritative_transition(true);
+    adapter.begin_test_network_options_event_batch();
+    adapter.handle_test_network_options_start_file(702);
+    adapter.observe_test_network_options_path("https://media.example.test/b.m3u8");
+    adapter.handle_test_network_options_end_file(702);
+    adapter.handle_test_network_options_start_file(703);
+    adapter.end_test_network_options_event_batch();
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None
+    );
+    assert!(adapter.test_network_options_awaiting_authoritative_transition());
+}
+
+#[test]
+fn hook_instance_ack_preserves_or_resets_the_sequence_floor_authoritatively() {
+    let mut adapter = configured_v3_hook_reducer_adapter();
+    defer_v3_transition(
+        &mut adapter,
+        3,
+        "https://media.example.test/a.m3u8",
+        "https://media.example.test/a.m3u8",
+        "network-updated",
+        None,
+    );
+    apply_deferred_v3_transition(&mut adapter);
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
+    );
+
+    adapter.invalidate_test_network_options_hook_delivery();
+    assert_eq!(
+        adapter.test_network_options_last_accepted_load_sequence(),
+        Some(3),
+        "delivery invalidation must preserve the canonical hook cursor"
+    );
+    adapter.configure_test_network_options_hook_instance("test-hook-instance", 5);
+    adapter.defer_test_network_options_hook_v3_transition_for_instance(
+        "test-hook-instance",
+        4,
+        "https://media.example.test/delayed.m3u8",
+        "failed",
+    );
+    apply_deferred_v3_transition(&mut adapter);
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None
+    );
+    assert_eq!(
+        adapter.test_network_options_last_accepted_load_sequence(),
+        Some(5)
+    );
+    adapter.configure_test_network_options_hook_instance("test-hook-instance", 2);
+    assert_eq!(
+        adapter.test_network_options_last_accepted_load_sequence(),
+        Some(5),
+        "same-instance acknowledgement must never move the sequence floor backward"
+    );
+
+    adapter.configure_test_network_options_hook_instance("fresh-hook-instance", 0);
+    adapter.defer_test_network_options_hook_v3_transition_for_instance(
+        "test-hook-instance",
+        6,
+        "https://media.example.test/stale-instance.m3u8",
+        "failed",
+    );
+    adapter.defer_test_network_options_hook_v3_transition_for_instance(
+        "fresh-hook-instance",
+        1,
+        "https://media.example.test/fresh.m3u8",
+        "network-updated",
+    );
+    apply_deferred_v3_transition(&mut adapter);
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
+    );
+    assert_eq!(
+        adapter.test_network_options_last_accepted_load_sequence(),
+        Some(1)
+    );
+}
+
+#[test]
+fn incomplete_hook_instance_ack_never_marks_delivery_ready() {
+    let mut adapter = configured_v3_hook_reducer_adapter();
+    adapter.invalidate_test_network_options_hook_delivery();
+
+    adapter.configure_test_network_options_hook_instance_fields(None, Some(0));
+    assert!(!adapter.test_network_media_options_hook_is_ready());
+    adapter.configure_test_network_options_hook_instance_fields(Some("test-hook-instance"), None);
+    assert!(!adapter.test_network_media_options_hook_is_ready());
+
+    adapter.configure_test_network_options_hook_instance("test-hook-instance", 0);
+    assert!(adapter.test_network_media_options_hook_is_ready());
+}
+
+#[test]
 fn failed_network_a_superseded_by_local_b_recovers_without_stale_failure() {
     let (apply, outcome, _) =
         run_core_hook_supersession_scenario(false, HookSupersessionTarget::Local);
@@ -2461,14 +2730,11 @@ fn failed_network_a_superseded_by_local_b_recovers_without_stale_failure() {
 }
 
 #[test]
-fn failed_network_a_superseded_by_idle_recovers_without_stale_failure() {
+fn failed_network_a_superseded_by_raw_null_waits_for_terminal_end_or_hook_result() {
     let (apply, outcome, _) =
         run_core_hook_supersession_scenario(false, HookSupersessionTarget::Idle);
     assert_eq!(apply, MpvActiveNetworkMediaOptionsApplyOutcome::Superseded);
-    assert_eq!(
-        outcome,
-        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
-    );
+    assert_eq!(outcome, None);
 }
 
 #[test]
@@ -2576,6 +2842,70 @@ fn missing_canonical_hook_is_loaded_again_and_recovers_on_retry() {
         writes
             .iter()
             .all(|write| !write.contains("file-local-options/"))
+    );
+}
+
+#[test]
+fn successful_explicit_retry_rearms_independent_hook_degradation_reporting() {
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let transport = NetworkOptionsHookScenarioTransport {
+        writes,
+        responses: VecDeque::new(),
+        old_network_succeeds: true,
+        target: HookSupersessionTarget::StableNetwork,
+        lose_ownership_on_heartbeat: true,
+        acknowledge_heartbeats: false,
+    };
+    let mut adapter = MpvAdapter::with_network_options_hook_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+
+    assert_eq!(
+        adapter
+            .apply_network_media_options_to_active_media_classified()
+            .expect("initial explicit hook apply should succeed"),
+        MpvActiveNetworkMediaOptionsApplyOutcome::NetworkMediaUpdated
+    );
+    adapter.force_test_network_media_options_hook_heartbeat_due();
+    assert!(matches!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(_))
+    ));
+    assert!(adapter.is_connected());
+
+    assert_eq!(
+        adapter
+            .apply_network_media_options_to_active_media_classified()
+            .expect("same-map retry should restore authoritative policy health"),
+        MpvActiveNetworkMediaOptionsApplyOutcome::NetworkMediaUpdated
+    );
+    assert!(!adapter.test_network_options_awaiting_authoritative_transition());
+    assert_eq!(
+        adapter.test_network_options_last_accepted_load_sequence(),
+        Some(1)
+    );
+
+    adapter.force_test_network_media_options_hook_heartbeat_due();
+    assert!(matches!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(_))
+    ));
+    assert!(adapter.is_connected());
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn continuous_hook_degradation_is_emitted_only_once() {
+    let mut adapter = configured_v3_hook_reducer_adapter();
+    adapter.inject_test_network_media_options_hook_degradation("first lease failure");
+    adapter.inject_test_network_media_options_hook_degradation("duplicate lease failure");
+
+    assert!(matches!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(_))
+    ));
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None
     );
 }
 

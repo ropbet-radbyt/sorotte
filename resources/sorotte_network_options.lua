@@ -22,6 +22,10 @@ if script_name ~= SCRIPT_NAME then
     return
 end
 
+-- Stable for this canonical Lua client lifetime. Rust pairs it with the attachment id so a
+-- delivery retry preserves the sequence floor while a genuinely reloaded hook starts a new one.
+local hook_instance_id = SCRIPT_NAME .. ":" .. tostring({})
+
 local owner_id = nil
 local attachment_id = nil
 local generation = 0
@@ -51,7 +55,6 @@ local function clear_owner()
     owner_lease_seconds = 0
     last_active_attempt = nil
     last_active_result = nil
-    load_sequence = 0
 end
 
 local function owner_is_live()
@@ -67,6 +70,8 @@ local function ownership_payload(status, target_owner_id, target_attachment_id, 
         ownerId = target_owner_id,
         attachmentId = target_attachment_id,
         configurationGeneration = target_generation,
+        hookInstanceId = hook_instance_id,
+        currentLoadSequence = load_sequence,
         status = status,
     }
 end
@@ -105,6 +110,7 @@ local function result_payload(status, sequence, source_path, stream_open_filenam
         ownerId = owner_id,
         attachmentId = attachment_id,
         configurationGeneration = generation,
+        hookInstanceId = hook_instance_id,
         loadSequence = sequence,
         sourcePath = source_path,
         streamOpenFilename = stream_open_filename,

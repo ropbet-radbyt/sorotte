@@ -225,6 +225,45 @@ fn configure_heartbeat_release_and_expiry_bound_network_writes() -> mlua::Result
 }
 
 #[test]
+fn configuration_reports_stable_instance_and_monotonic_load_sequence() -> mlua::Result<()> {
+    let harness = Harness::new()?;
+    harness.configure_as("owner-a", "attachment-a", 1, json!({"cache-secs": "75"}))?;
+    let configured = harness.emissions("sorotte-network-options-configured")?;
+    let instance_id = configured[0]["hookInstanceId"]
+        .as_str()
+        .expect("configured response should identify the canonical hook")
+        .to_owned();
+    assert!(!instance_id.is_empty());
+    assert_eq!(configured[0]["currentLoadSequence"], 0);
+
+    harness.set_path("path", "https://media.example.test/a.m3u8")?;
+    harness.set_path("stream-open-filename", "https://media.example.test/a.m3u8")?;
+    harness.invoke_on_load()?;
+    let transition = &harness.emissions("sorotte-network-options-transition-result")?[0];
+    assert_eq!(transition["hookInstanceId"], instance_id);
+    assert_eq!(transition["loadSequence"], 1);
+
+    harness.configure_as("owner-a", "attachment-a", 2, json!({"cache-secs": "90"}))?;
+    let configured = harness.emissions("sorotte-network-options-configured")?;
+    assert_eq!(configured[1]["hookInstanceId"], instance_id);
+    assert_eq!(configured[1]["currentLoadSequence"], 1);
+
+    harness.send(
+        RELEASE_MESSAGE,
+        Harness::controller_payload("owner-a", "attachment-a", 2),
+    )?;
+    harness.configure_as("owner-a", "attachment-b", 3, json!({"cache-secs": "120"}))?;
+    let configured = harness.emissions("sorotte-network-options-configured")?;
+    assert_eq!(configured[2]["hookInstanceId"], instance_id);
+    assert_eq!(configured[2]["currentLoadSequence"], 1);
+
+    harness.invoke_on_load()?;
+    let transitions = harness.emissions("sorotte-network-options-transition-result")?;
+    assert_eq!(transitions[1]["loadSequence"], 2);
+    Ok(())
+}
+
+#[test]
 fn live_owner_contention_is_rejected_and_takeover_follows_release_or_expiry() -> mlua::Result<()> {
     let harness = Harness::new()?;
     harness.configure_as("owner-a", "attachment-a", 1, json!({"cache-secs": "75"}))?;

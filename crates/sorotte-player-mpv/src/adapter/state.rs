@@ -222,6 +222,7 @@ impl Default for MpvAdapter {
             network_media_options_hook_last_heartbeat_at: None,
             network_media_options_hook_pending_heartbeat: None,
             next_network_media_options_hook_heartbeat_nonce: 1,
+            network_media_options_hook_instance_id: None,
             network_media_options_hook_last_accepted_load_sequence: None,
             network_media_options_hook_degraded: false,
             network_media_options_hook_ownership_possible: false,

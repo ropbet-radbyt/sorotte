@@ -147,8 +147,10 @@ struct PendingNetworkOptionsHookHeartbeat {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AuthoritativePathObservationOrigin {
-    Event,
+    StartFilePending,
+    PathEvent,
     Poll,
+    EndFileIdle,
 }
 
 struct DeferredAuthoritativePathObservation {
@@ -320,6 +322,7 @@ pub struct MpvAdapter {
     network_media_options_hook_last_heartbeat_at: Option<Instant>,
     network_media_options_hook_pending_heartbeat: Option<PendingNetworkOptionsHookHeartbeat>,
     next_network_media_options_hook_heartbeat_nonce: u64,
+    network_media_options_hook_instance_id: Option<String>,
     network_media_options_hook_last_accepted_load_sequence: Option<u64>,
     network_media_options_hook_degraded: bool,
     network_media_options_hook_ownership_possible: bool,
@@ -441,6 +444,7 @@ impl MpvAdapter {
         self.network_media_options_hook_last_heartbeat_at = None;
         self.network_media_options_hook_pending_heartbeat = None;
         self.next_network_media_options_hook_heartbeat_nonce = 1;
+        self.network_media_options_hook_instance_id = None;
         self.network_media_options_hook_last_accepted_load_sequence = None;
         self.network_media_options_hook_degraded = false;
         self.network_media_options_hook_ownership_possible = false;
@@ -719,6 +723,16 @@ impl MpvAdapter {
         (adapter, commands)
     }
 
+    /// Injects a scoped core-hook degradation into a feature-gated adapter fixture.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn inject_test_network_media_options_hook_degradation(
+        &mut self,
+        reason: impl Into<String>,
+    ) {
+        self.queue_network_media_options_hook_degraded(PlayerError::OperationFailed(reason.into()));
+    }
+
     #[cfg(feature = "test-support")]
     fn with_external_network_media_transition_test_ipc_mode(
         settings: LegacySyncplayUiSettings,
@@ -903,13 +917,21 @@ impl MpvAdapter {
             None => self.current_path.clone(),
         };
         let Some(active_path) = active_path else {
+            if self.network_media_options_hook_should_run()
+                && (self.pending_load_request.is_some()
+                    || self.pending_load_generation.is_some()
+                    || matches!(
+                        self.transport_phase,
+                        PlayerTransportPhase::Loading | PlayerTransportPhase::Prebuffering
+                    ))
+            {
+                self.network_media_options_apply_awaiting_authoritative_transition = true;
+                return Ok(MpvActiveNetworkMediaOptionsApplyOutcome::Superseded);
+            }
             self.clear_network_media_options_path_identity();
+            self.record_network_media_options_policy_applied(None);
             return Ok(MpvActiveNetworkMediaOptionsApplyOutcome::NoActiveMedia);
         };
-        if !uses_network_media_options(&active_path) {
-            self.clear_network_media_options_path_identity();
-            return Ok(MpvActiveNetworkMediaOptionsApplyOutcome::LocalMediaUnchanged);
-        }
 
         let attempt_id = self
             .begin_network_media_options_apply_attempt(self.active_media_generation, &active_path);
@@ -923,12 +945,18 @@ impl MpvAdapter {
             return self
                 .apply_network_media_options_to_active_media_via_hook(&active_path, attempt_id);
         }
+        if !uses_network_media_options(&active_path) {
+            self.clear_network_media_options_path_identity();
+            self.record_network_media_options_policy_applied(None);
+            return Ok(MpvActiveNetworkMediaOptionsApplyOutcome::LocalMediaUnchanged);
+        }
         // Direct file-local writes are intentionally limited to simulation and explicit test
         // fixtures. A real JSON IPC attachment must never re-enter the cross-file fallback when
         // the core hook is enabled but unavailable.
         if !self.apply_network_media_options_for_attempt(&active_path, attempt_id)? {
             return Ok(MpvActiveNetworkMediaOptionsApplyOutcome::Superseded);
         }
+        self.record_network_media_options_policy_applied(None);
         Ok(MpvActiveNetworkMediaOptionsApplyOutcome::NetworkMediaUpdated)
     }
 
@@ -950,7 +978,6 @@ impl MpvAdapter {
         self.network_media_options_hook_configured_generation = None;
         self.network_media_options_hook_last_heartbeat_at = None;
         self.network_media_options_hook_pending_heartbeat = None;
-        self.network_media_options_hook_last_accepted_load_sequence = None;
         self.pending_network_media_options_hook_active_result = None;
         self.deferred_network_media_options_hook_transition_result = None;
     }
@@ -1149,19 +1176,28 @@ impl MpvAdapter {
             return Ok(MpvActiveNetworkMediaOptionsApplyOutcome::Superseded);
         }
 
-        self.network_media_options_apply_awaiting_authoritative_transition = false;
+        self.network_media_options_hook_last_accepted_load_sequence = Some(
+            self.network_media_options_hook_last_accepted_load_sequence
+                .map_or(result.load_sequence, |accepted| {
+                    accepted.max(result.load_sequence)
+                }),
+        );
 
         match result.status {
             NetworkOptionsHookApplyStatus::NoActiveMedia => {
+                self.record_network_media_options_policy_applied(Some(result.load_sequence));
                 Ok(MpvActiveNetworkMediaOptionsApplyOutcome::NoActiveMedia)
             }
             NetworkOptionsHookApplyStatus::LocalMediaUnchanged => {
+                self.record_network_media_options_policy_applied(Some(result.load_sequence));
                 Ok(MpvActiveNetworkMediaOptionsApplyOutcome::LocalMediaUnchanged)
             }
             NetworkOptionsHookApplyStatus::NetworkMediaUpdated => {
+                self.record_network_media_options_policy_applied(Some(result.load_sequence));
                 Ok(MpvActiveNetworkMediaOptionsApplyOutcome::NetworkMediaUpdated)
             }
             NetworkOptionsHookApplyStatus::Failed(error) => {
+                self.network_media_options_apply_awaiting_authoritative_transition = false;
                 Err(PlayerError::OperationFailed(format!(
                     "{error} (hook load sequence {}, source {}, stream target {})",
                     result.load_sequence,
@@ -1265,12 +1301,57 @@ impl MpvAdapter {
         }
     }
 
+    fn record_network_media_options_policy_applied(&mut self, load_sequence: Option<u64>) {
+        self.network_media_options_hook_degraded = false;
+        self.network_media_options_policy_degraded = false;
+        self.network_media_options_apply_awaiting_authoritative_transition = false;
+        if let Some(load_sequence) = load_sequence {
+            self.network_media_options_hook_last_accepted_load_sequence = Some(
+                self.network_media_options_hook_last_accepted_load_sequence
+                    .map_or(load_sequence, |accepted| accepted.max(load_sequence)),
+            );
+        }
+    }
+
     fn observe_authoritative_path_for_network_options(
         &mut self,
         path: Option<&str>,
         origin: AuthoritativePathObservationOrigin,
     ) {
         if self.network_media_options_event_batch_depth != 0 {
+            if origin == AuthoritativePathObservationOrigin::StartFilePending {
+                self.deferred_network_media_options_hook_transition_result = None;
+            }
+
+            if path.is_none() {
+                if origin == AuthoritativePathObservationOrigin::EndFileIdle
+                    && self
+                        .deferred_network_media_options_observation
+                        .as_ref()
+                        .is_some_and(|observation| {
+                            observation.origin == AuthoritativePathObservationOrigin::Poll
+                                && observation.path.is_none()
+                        })
+                {
+                    self.deferred_network_media_options_observation =
+                        Some(DeferredAuthoritativePathObservation {
+                            path: None,
+                            origin: AuthoritativePathObservationOrigin::EndFileIdle,
+                        });
+                    return;
+                }
+                if origin != AuthoritativePathObservationOrigin::StartFilePending
+                    && self
+                        .deferred_network_media_options_observation
+                        .as_ref()
+                        .is_some_and(|observation| {
+                            observation.origin == AuthoritativePathObservationOrigin::EndFileIdle
+                                && observation.path.is_none()
+                        })
+                {
+                    return;
+                }
+            }
             // A poll issued while reducing an already-buffered event batch completes after every
             // event already present in that batch. Preserve that newer snapshot over events that
             // are merely handled later from the older local batch vector.
@@ -1279,7 +1360,7 @@ impl MpvAdapter {
                 .as_ref()
                 .is_some_and(|observation| {
                     observation.origin == AuthoritativePathObservationOrigin::Poll
-                        && origin == AuthoritativePathObservationOrigin::Event
+                        && origin != AuthoritativePathObservationOrigin::Poll
                 })
             {
                 return;
@@ -1305,7 +1386,13 @@ impl MpvAdapter {
                 || self.network_media_options_policy_degraded
                 || self.network_media_options_apply_awaiting_authoritative_transition;
             self.clear_network_media_options_path_identity();
-            if self.network_media_options_hook_should_run() && completes_pending_policy {
+            if self.network_media_options_hook_should_run()
+                && origin == AuthoritativePathObservationOrigin::EndFileIdle
+                && completes_pending_policy
+                && self
+                    .deferred_network_media_options_hook_transition_result
+                    .is_none()
+            {
                 self.queue_network_media_options_transition_outcome(
                     MpvNetworkMediaOptionsTransitionOutcome::Applied,
                 );
@@ -1313,43 +1400,6 @@ impl MpvAdapter {
             return;
         };
         let media_generation = self.active_media_generation;
-        if !uses_network_media_options(path) {
-            let duplicate = self
-                .network_media_options_apply_identity
-                .as_ref()
-                .is_some_and(|identity| {
-                    identity.path == path
-                        && (identity.media_generation == media_generation
-                            || identity.media_generation.is_none())
-                });
-            let completes_pending_policy = self.network_media_options_apply_identity.is_some()
-                || self.network_media_options_hook_degraded
-                || self.network_media_options_policy_degraded
-                || self.network_media_options_apply_awaiting_authoritative_transition;
-            if self.network_media_options_hook_should_run() && !duplicate {
-                self.begin_network_media_options_apply_attempt(media_generation, path);
-            } else if !self.network_media_options_hook_should_run() {
-                self.network_media_options_apply_identity = None;
-            }
-            let embedded_generation_is_current = self
-                .network_media_options_embedded_load
-                .as_ref()
-                .is_some_and(|embedded| Some(embedded.media_generation) == media_generation);
-            if embedded_generation_is_current
-                && !self.embedded_network_media_options_belong_to_pending_load()
-            {
-                self.network_media_options_embedded_load = None;
-            }
-            if self.network_media_options_hook_should_run()
-                && !duplicate
-                && completes_pending_policy
-            {
-                self.queue_network_media_options_transition_outcome(
-                    MpvNetworkMediaOptionsTransitionOutcome::Applied,
-                );
-            }
-            return;
-        }
         if self.network_media_options.is_empty() {
             return;
         }
@@ -1403,6 +1453,20 @@ impl MpvAdapter {
             return;
         }
 
+        if !uses_network_media_options(path) {
+            self.network_media_options_apply_identity = None;
+            let embedded_generation_is_current = self
+                .network_media_options_embedded_load
+                .as_ref()
+                .is_some_and(|embedded| Some(embedded.media_generation) == media_generation);
+            if embedded_generation_is_current
+                && !self.embedded_network_media_options_belong_to_pending_load()
+            {
+                self.network_media_options_embedded_load = None;
+            }
+            return;
+        }
+
         let duplicate = self
             .network_media_options_apply_identity
             .as_ref()
@@ -1428,7 +1492,7 @@ impl MpvAdapter {
             );
             return;
         }
-        if origin == AuthoritativePathObservationOrigin::Event
+        if origin == AuthoritativePathObservationOrigin::PathEvent
             && self.embedded_network_media_options_belong_to_pending_load()
         {
             // Until a matching target establishes the pending load's generation, any event-time
@@ -1465,9 +1529,7 @@ impl MpvAdapter {
     ) {
         match &outcome {
             MpvNetworkMediaOptionsTransitionOutcome::Applied => {
-                self.network_media_options_hook_degraded = false;
-                self.network_media_options_policy_degraded = false;
-                self.network_media_options_apply_awaiting_authoritative_transition = false;
+                self.record_network_media_options_policy_applied(None);
             }
             MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(_) => {
                 self.network_media_options_apply_awaiting_authoritative_transition = false;
@@ -4038,7 +4100,7 @@ impl MpvAdapter {
         if authoritative_path_observed {
             self.observe_authoritative_path_for_network_options(
                 authoritative_path.as_deref(),
-                AuthoritativePathObservationOrigin::Event,
+                AuthoritativePathObservationOrigin::PathEvent,
             );
         }
     }
@@ -4105,7 +4167,7 @@ impl MpvAdapter {
         // path observation supersede this idle/loading marker before any option write begins.
         self.observe_authoritative_path_for_network_options(
             None,
-            AuthoritativePathObservationOrigin::Event,
+            AuthoritativePathObservationOrigin::StartFilePending,
         );
     }
 
@@ -4287,13 +4349,6 @@ impl MpvAdapter {
                 self.active_playlist_entry_id = None;
             }
             if self
-                .network_media_options_apply_identity
-                .as_ref()
-                .is_some_and(|identity| identity.media_generation == generation)
-            {
-                self.network_media_options_apply_identity = None;
-            }
-            if self
                 .network_media_options_embedded_load
                 .as_ref()
                 .is_some_and(|embedded| Some(embedded.media_generation) == generation)
@@ -4305,7 +4360,7 @@ impl MpvAdapter {
             // earlier in the same buffered batch before that path can trigger an option write.
             self.observe_authoritative_path_for_network_options(
                 None,
-                AuthoritativePathObservationOrigin::Event,
+                AuthoritativePathObservationOrigin::EndFileIdle,
             );
         }
 
@@ -4421,6 +4476,31 @@ impl MpvAdapter {
         })
     }
 
+    fn network_options_hook_current_load_sequence(parsed: &Value) -> Option<u64> {
+        parsed.get("currentLoadSequence").and_then(|value| {
+            value
+                .as_u64()
+                .or_else(|| value.as_str()?.parse::<u64>().ok())
+        })
+    }
+
+    fn network_options_hook_instance_id(parsed: &Value) -> Option<&str> {
+        parsed
+            .get("hookInstanceId")
+            .and_then(Value::as_str)
+            .filter(|instance_id| !instance_id.is_empty())
+    }
+
+    fn network_options_hook_matches_configured_instance(&self, parsed: &Value) -> bool {
+        matches!(
+            (
+                Self::network_options_hook_instance_id(parsed),
+                self.network_media_options_hook_instance_id.as_deref(),
+            ),
+            (Some(received), Some(configured)) if received == configured
+        )
+    }
+
     fn network_options_hook_path(parsed: &Value, key: &str) -> Option<String> {
         parsed
             .get(key)
@@ -4443,6 +4523,36 @@ impl MpvAdapter {
         }
         match parsed.get("status").and_then(Value::as_str) {
             Some("configured") => {
+                let Some(hook_instance_id) = Self::network_options_hook_instance_id(&parsed) else {
+                    self.network_media_options_hook_configuration_error = Some(
+                        "Sorotte's mpv network-options hook omitted its instance id".to_owned(),
+                    );
+                    return;
+                };
+                let Some(current_load_sequence) =
+                    Self::network_options_hook_current_load_sequence(&parsed)
+                else {
+                    self.network_media_options_hook_configuration_error = Some(
+                        "Sorotte's mpv network-options hook omitted its current load sequence"
+                            .to_owned(),
+                    );
+                    return;
+                };
+                if self.network_media_options_hook_instance_id.as_deref() == Some(hook_instance_id)
+                {
+                    self.network_media_options_hook_last_accepted_load_sequence = Some(
+                        self.network_media_options_hook_last_accepted_load_sequence
+                            .map_or(current_load_sequence, |accepted| {
+                                accepted.max(current_load_sequence)
+                            }),
+                    );
+                } else {
+                    self.network_media_options_hook_instance_id = Some(hook_instance_id.to_owned());
+                    self.network_media_options_hook_last_accepted_load_sequence =
+                        Some(current_load_sequence);
+                    self.pending_network_media_options_hook_active_result = None;
+                    self.deferred_network_media_options_hook_transition_result = None;
+                }
                 self.network_media_options_hook_loaded = true;
                 self.network_media_options_hook_ownership_possible = true;
                 self.network_media_options_hook_configured_generation = Some(generation);
@@ -4476,6 +4586,9 @@ impl MpvAdapter {
         let Some(parsed) = self.parse_network_options_hook_payload(payload) else {
             return;
         };
+        if !self.network_options_hook_matches_configured_instance(&parsed) {
+            return;
+        }
         let status = parsed.get("status").and_then(Value::as_str);
         let reason = match status {
             Some("ownership-lost") => "Sorotte's mpv network-options hook ownership was replaced",
@@ -4485,6 +4598,7 @@ impl MpvAdapter {
                 self.network_media_options_hook_configured_generation = None;
                 self.network_media_options_hook_last_heartbeat_at = None;
                 self.network_media_options_hook_pending_heartbeat = None;
+                self.network_media_options_hook_instance_id = None;
                 self.network_media_options_hook_last_accepted_load_sequence = None;
                 self.pending_network_media_options_hook_active_result = None;
                 return;
@@ -4494,6 +4608,7 @@ impl MpvAdapter {
         self.network_media_options_hook_configured_generation = None;
         self.network_media_options_hook_last_heartbeat_at = None;
         self.network_media_options_hook_pending_heartbeat = None;
+        self.network_media_options_hook_instance_id = None;
         self.network_media_options_hook_last_accepted_load_sequence = None;
         self.network_media_options_hook_ownership_possible = false;
         self.pending_network_media_options_hook_active_result = None;
@@ -4507,6 +4622,9 @@ impl MpvAdapter {
         let Some(parsed) = self.parse_network_options_hook_payload(payload) else {
             return;
         };
+        if !self.network_options_hook_matches_configured_instance(&parsed) {
+            return;
+        }
         if Self::network_options_hook_generation(&parsed)
             != self.network_media_options_hook_configured_generation
             || parsed.get("status").and_then(Value::as_str) != Some("renewed")
@@ -4533,6 +4651,9 @@ impl MpvAdapter {
         let Some(parsed) = self.parse_network_options_hook_payload(payload) else {
             return;
         };
+        if !self.network_options_hook_matches_configured_instance(&parsed) {
+            return;
+        }
         let Some(generation) = Self::network_options_hook_generation(&parsed) else {
             return;
         };
@@ -4567,6 +4688,9 @@ impl MpvAdapter {
         let Some(parsed) = self.parse_network_options_hook_payload(payload) else {
             return;
         };
+        if !self.network_options_hook_matches_configured_instance(&parsed) {
+            return;
+        }
         let Some(generation) = Self::network_options_hook_generation(&parsed) else {
             return;
         };
@@ -4605,7 +4729,7 @@ impl MpvAdapter {
     fn apply_network_options_hook_transition_result(
         &mut self,
         result: NetworkOptionsHookTransitionResult,
-        observed_path: Option<Option<String>>,
+        _observed_path: Option<Option<String>>,
     ) {
         if result.generation != self.network_media_options_generation
             || self
@@ -4623,35 +4747,24 @@ impl MpvAdapter {
         match result.status {
             NetworkOptionsHookApplyStatus::NoActiveMedia => {
                 self.clear_network_media_options_path_identity();
-                if observed_path.is_none() && completes_pending_policy {
+                self.record_network_media_options_policy_applied(Some(result.load_sequence));
+                if completes_pending_policy {
                     self.queue_network_media_options_transition_outcome(
                         MpvNetworkMediaOptionsTransitionOutcome::Applied,
                     );
                 }
             }
             NetworkOptionsHookApplyStatus::LocalMediaUnchanged => {
-                if observed_path.is_none() && completes_pending_policy {
-                    if let Some(path) = result.source_path.as_deref() {
-                        self.begin_network_media_options_apply_attempt(
-                            self.active_media_generation,
-                            path,
-                        );
-                    }
-                    self.queue_network_media_options_transition_outcome(
-                        MpvNetworkMediaOptionsTransitionOutcome::Applied,
-                    );
-                } else if self
-                    .pending_network_media_options_transition_outcomes
-                    .back()
-                    != Some(&MpvNetworkMediaOptionsTransitionOutcome::Applied)
-                {
-                    // A local on-load result is itself an authoritative completion: the installed
-                    // policy correctly requires no mutation. Avoid duplicating the Rust path
-                    // observation when it already resolved an awaiting transition in this batch.
-                    self.queue_network_media_options_transition_outcome(
-                        MpvNetworkMediaOptionsTransitionOutcome::Applied,
+                if let Some(path) = result.source_path.as_deref() {
+                    self.begin_network_media_options_apply_attempt(
+                        self.active_media_generation,
+                        path,
                     );
                 }
+                self.record_network_media_options_policy_applied(Some(result.load_sequence));
+                self.queue_network_media_options_transition_outcome(
+                    MpvNetworkMediaOptionsTransitionOutcome::Applied,
+                );
             }
             NetworkOptionsHookApplyStatus::NetworkMediaUpdated => {
                 if let Some(path) = result.source_path.as_deref() {
@@ -4660,6 +4773,7 @@ impl MpvAdapter {
                         path,
                     );
                 }
+                self.record_network_media_options_policy_applied(Some(result.load_sequence));
                 self.queue_network_media_options_transition_outcome(
                     MpvNetworkMediaOptionsTransitionOutcome::Applied,
                 );
@@ -5130,6 +5244,7 @@ impl MpvAdapter {
     #[cfg(test)]
     pub(crate) fn prepare_test_network_options_hook_v3_reducer(&mut self) {
         self.network_media_options_hook_loaded = true;
+        self.network_media_options_hook_instance_id = Some("test-hook-instance".to_owned());
         self.network_media_options_hook_configured_generation =
             Some(self.network_media_options_generation);
         self.network_media_options_hook_last_heartbeat_at = Some(Instant::now());
@@ -5149,6 +5264,7 @@ impl MpvAdapter {
             "ownerId": self.legacy_syncplayintf_owner_id,
             "attachmentId": self.legacy_syncplayintf_attachment_id,
             "configurationGeneration": self.network_media_options_generation,
+            "hookInstanceId": "test-hook-instance",
             "loadSequence": load_sequence,
             "sourcePath": source_path,
             "streamOpenFilename": stream_open_filename,
@@ -5158,6 +5274,73 @@ impl MpvAdapter {
             payload["error"] = Value::String(error.to_owned());
         }
         self.handle_network_options_hook_transition_result(Some(&payload.to_string()));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn defer_test_network_options_hook_v3_transition_for_instance(
+        &mut self,
+        hook_instance_id: &str,
+        load_sequence: u64,
+        source_path: &str,
+        status: &str,
+    ) {
+        let payload = json!({
+            "protocol": SOROTTE_NETWORK_OPTIONS_PROTOCOL,
+            "ownerId": self.legacy_syncplayintf_owner_id,
+            "attachmentId": self.legacy_syncplayintf_attachment_id,
+            "configurationGeneration": self.network_media_options_generation,
+            "hookInstanceId": hook_instance_id,
+            "loadSequence": load_sequence,
+            "sourcePath": source_path,
+            "streamOpenFilename": source_path,
+            "status": status,
+        });
+        self.handle_network_options_hook_transition_result(Some(&payload.to_string()));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn configure_test_network_options_hook_instance(
+        &mut self,
+        hook_instance_id: &str,
+        current_load_sequence: u64,
+    ) {
+        let payload = json!({
+            "protocol": SOROTTE_NETWORK_OPTIONS_PROTOCOL,
+            "ownerId": self.legacy_syncplayintf_owner_id,
+            "attachmentId": self.legacy_syncplayintf_attachment_id,
+            "configurationGeneration": self.network_media_options_generation,
+            "hookInstanceId": hook_instance_id,
+            "currentLoadSequence": current_load_sequence,
+            "status": "configured",
+        });
+        self.handle_network_options_hook_configured(Some(&payload.to_string()));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn configure_test_network_options_hook_instance_fields(
+        &mut self,
+        hook_instance_id: Option<&str>,
+        current_load_sequence: Option<u64>,
+    ) {
+        let mut payload = json!({
+            "protocol": SOROTTE_NETWORK_OPTIONS_PROTOCOL,
+            "ownerId": self.legacy_syncplayintf_owner_id,
+            "attachmentId": self.legacy_syncplayintf_attachment_id,
+            "configurationGeneration": self.network_media_options_generation,
+            "status": "configured",
+        });
+        if let Some(hook_instance_id) = hook_instance_id {
+            payload["hookInstanceId"] = Value::String(hook_instance_id.to_owned());
+        }
+        if let Some(current_load_sequence) = current_load_sequence {
+            payload["currentLoadSequence"] = Value::from(current_load_sequence);
+        }
+        self.handle_network_options_hook_configured(Some(&payload.to_string()));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn invalidate_test_network_options_hook_delivery(&mut self) {
+        self.invalidate_network_media_options_hook_delivery();
     }
 
     #[cfg(test)]
@@ -5174,8 +5357,45 @@ impl MpvAdapter {
     pub(crate) fn observe_test_network_options_path(&mut self, path: &str) {
         self.observe_authoritative_path_for_network_options(
             Some(path),
-            AuthoritativePathObservationOrigin::Event,
+            AuthoritativePathObservationOrigin::PathEvent,
         );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observe_test_network_options_pending_start(&mut self) {
+        self.observe_authoritative_path_for_network_options(
+            None,
+            AuthoritativePathObservationOrigin::StartFilePending,
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observe_test_network_options_null_path(&mut self) {
+        self.observe_authoritative_path_for_network_options(
+            None,
+            AuthoritativePathObservationOrigin::PathEvent,
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observe_test_network_options_terminal_end(&mut self) {
+        self.observe_authoritative_path_for_network_options(
+            None,
+            AuthoritativePathObservationOrigin::EndFileIdle,
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn handle_test_network_options_start_file(&mut self, playlist_entry_id: u64) {
+        self.handle_start_file_event(&json!({ "playlist_entry_id": playlist_entry_id }));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn handle_test_network_options_end_file(&mut self, playlist_entry_id: u64) {
+        self.handle_end_file_event(&json!({
+            "playlist_entry_id": playlist_entry_id,
+            "reason": "eof",
+        }));
     }
 
     #[cfg(test)]

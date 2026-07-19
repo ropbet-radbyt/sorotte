@@ -218,9 +218,12 @@ async fn apply_connected_session_protocol_plan_legacy_compatible(
         ConnectedSessionStartupPlaylistDisposition::LeavePending => {}
         ConnectedSessionStartupPlaylistDisposition::EmitIfAvailable => {
             if let Some(playlist_path) = startup_playlist_file_on_connect.take() {
-                let _ =
-                    emit_startup_playlist_load_from_file_legacy_compatible(writer, &playlist_path)
-                        .await?;
+                let _ = emit_startup_playlist_load_from_file_legacy_compatible(
+                    runtime,
+                    writer,
+                    &playlist_path,
+                )
+                .await?;
             }
         }
         ConnectedSessionStartupPlaylistDisposition::DiscardIfPending => {

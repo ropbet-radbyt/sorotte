@@ -3,6 +3,8 @@ use sorotte_player_api::PlayerAdapter;
 use sorotte_protocol::DEFAULT_MAX_PROTOCOL_LINE_BYTES;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 
+use crate::local_runtime_actions::PLAYER_CHAT_INPUT_POLL_INTERVAL_MS;
+
 pub(crate) const MAX_INBOUND_PROTOCOL_LINE_BYTES: usize = DEFAULT_MAX_PROTOCOL_LINE_BYTES;
 
 pub(crate) async fn read_inbound_protocol_line<R>(reader: &mut R) -> anyhow::Result<Option<String>>
@@ -78,7 +80,21 @@ where
     P: PlayerAdapter,
 {
     while let Some(pending) = runtime.pending_protocol_line()? {
-        if let Err(error) = write_protocol_line(writer, pending.line()).await {
+        let write = write_protocol_line(writer, pending.line());
+        tokio::pin!(write);
+        let mut maintenance_tick = tokio::time::interval(std::time::Duration::from_millis(
+            PLAYER_CHAT_INPUT_POLL_INTERVAL_MS,
+        ));
+        maintenance_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let write_result = loop {
+            tokio::select! {
+                result = &mut write => break result,
+                _ = maintenance_tick.tick() => {
+                    runtime.with_player_io(PlayerAdapter::maintain_runtime_integrations);
+                }
+            }
+        };
+        if let Err(error) = write_result {
             let _ = runtime.release_protocol_line(pending.lease());
             return Err(error);
         }
@@ -100,6 +116,11 @@ mod tests {
         PlaybackBarrierPolicy, PlaybackBarrierRequestResultPayload, PlaybackBarrierSetExtension,
         ProtocolMessage, SetPayload, decode_message_line_items, encode_message_line,
     };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use tokio::io::AsyncReadExt;
     use tokio::io::BufReader;
 
     struct ProtocolIoTestPlayer;
@@ -107,6 +128,18 @@ mod tests {
     impl PlayerAdapter for ProtocolIoTestPlayer {
         fn name(&self) -> &'static str {
             "protocol-io-test-player"
+        }
+    }
+
+    struct MaintainingProtocolIoTestPlayer(Arc<AtomicUsize>);
+
+    impl PlayerAdapter for MaintainingProtocolIoTestPlayer {
+        fn name(&self) -> &'static str {
+            "maintaining-protocol-io-test-player"
+        }
+
+        fn maintain_runtime_integrations(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -177,6 +210,54 @@ mod tests {
                 .line()
                 .contains("retry me")
         );
+    }
+
+    #[tokio::test]
+    async fn blocked_protocol_write_maintains_player_integrations_until_acknowledged() {
+        let maintenance_calls = Arc::new(AtomicUsize::new(0));
+        let mut control = QueuedRuntimeControl::default();
+        control
+            .emit(ClientEffect::SendChat("x".repeat(512)))
+            .expect("chat effect should be supported");
+        let runtime = ClientRuntime::new(
+            ClientSession::default(),
+            MaintainingProtocolIoTestPlayer(Arc::clone(&maintenance_calls)),
+            control,
+        );
+        let mut runtime = ClientApplication::from_runtime(runtime);
+        let (mut reader, mut writer) = tokio::io::duplex(1);
+        let reader_maintenance_calls = Arc::clone(&maintenance_calls);
+        let drain = tokio::spawn(async move {
+            while reader_maintenance_calls.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+            let mut received = Vec::new();
+            let mut byte = [0_u8; 1];
+            while !received.ends_with(b"\r\n") {
+                reader
+                    .read_exact(&mut byte)
+                    .await
+                    .expect("blocked protocol writer should remain readable");
+                received.push(byte[0]);
+            }
+            received
+        });
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            flush_runtime_protocol_lines(&mut runtime, &mut writer),
+        )
+        .await
+        .expect("maintenance should unblock the delayed reader")
+        .expect("delayed transport reader should eventually accept the line");
+
+        assert_eq!(runtime.pending_protocol_message_count(), 0);
+        assert!(
+            maintenance_calls.load(Ordering::SeqCst) >= 1,
+            "maintenance must run before the blocked writer is allowed to continue"
+        );
+        let received = drain.await.expect("reader task should finish");
+        assert!(received.ends_with(b"\r\n"));
     }
 
     #[test]

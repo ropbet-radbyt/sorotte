@@ -8,6 +8,10 @@ impl PlayerAdapter for MpvAdapter {
         "mpv"
     }
 
+    fn maintain_runtime_integrations(&mut self) {
+        MpvAdapter::maintain_runtime_integrations(self);
+    }
+
     fn capabilities(&self) -> PlayerCapabilities {
         if self.is_connected() || self.simulation_mode {
             PlayerCapabilities::ALL
