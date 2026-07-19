@@ -35,6 +35,9 @@ impl GuiPersistedConfigRuntimeOwner {
             player_unavailability_reason: None,
             core_player_configuration_health: GuiCorePlayerConfigurationHealth::Ready,
             network_options_hook_failure_reason: None,
+            network_options_runtime_health_revision: None,
+            #[cfg(test)]
+            test_queue_network_options_hook_recovery_before_player_commands: false,
             pending_apply_requirements_refresh_required: false,
             player_integration_health: GuiPlayerIntegrationHealth::Ready,
             player_local_file: None,
@@ -276,6 +279,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.player = None;
         self.managed_mpv_process = None;
         self.network_options_hook_failure_reason = None;
+        self.network_options_runtime_health_revision = None;
         self.core_player_configuration_health = GuiCorePlayerConfigurationHealth::Ready;
         self.player_integration_health = GuiPlayerIntegrationHealth::Ready;
         self.clear_player_runtime_cache();

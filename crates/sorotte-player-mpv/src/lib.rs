@@ -18,6 +18,8 @@ pub const MPV_SEEK_COMPLETION_TOLERANCE_SECONDS: f64 = 0.5;
 
 pub use adapter::{
     MpvActiveNetworkMediaOptionsApplyOutcome, MpvAdapter, MpvNetworkMediaOptionsTransitionOutcome,
+    MpvNetworkMediaPolicyOutcome, MpvNetworkMediaPolicyState, MpvNetworkOptionsHookHealth,
+    MpvNetworkOptionsHookHealthTransition, MpvNetworkOptionsRuntimeHealthSnapshot,
 };
 pub use bridge::{SorotteBridgeFailure, SorotteBridgeFailureKind, SorotteBridgeHealth};
 pub use bridge_resource::{

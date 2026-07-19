@@ -3,9 +3,255 @@ use sorotte_player_api::{
     PlayerAdapter, PlayerCapabilities, PlayerCommand, PlayerCommandId, PlayerCommandProgress,
 };
 
+const NETWORK_OPTIONS_HEARTBEAT_COMMAND_TOKEN: u64 = 1;
+const NETWORK_OPTIONS_EVENT_POLL_COMMAND_TOKEN: u64 = 2;
+const LEGACY_SYNCPLAYINTF_HEARTBEAT_COMMAND_TOKEN: u64 = 3;
+
+impl MpvAdapter {
+    fn is_nonblocking_runtime_lease_event(event: &Value) -> bool {
+        if event.get("event").and_then(Value::as_str) != Some(MPV_EVENT_CLIENT_MESSAGE) {
+            return false;
+        }
+        matches!(
+            event
+                .get("args")
+                .and_then(Value::as_array)
+                .and_then(|args| args.first())
+                .and_then(Value::as_str),
+            Some(
+                SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_CONFIGURED
+                    | SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_OWNERSHIP
+                    | SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_HEARTBEAT
+                    | SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_ACTIVE_RESULT
+                    | SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_TRANSITION_RESULT
+                    | LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_OPTIONS_APPLIED
+                    | LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_PONG
+                    | LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_LEASE_EXPIRED
+                    | LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_CHAT
+            )
+        )
+    }
+
+    pub(super) fn drain_runtime_lease_events_nonblocking(&mut self) -> bool {
+        let items = self
+            .ipc_client
+            .as_mut()
+            .map(|client| {
+                client.take_nonblocking_runtime_items_matching(
+                    Self::is_nonblocking_runtime_lease_event,
+                )
+            })
+            .unwrap_or_default();
+        let processed_any = !items.is_empty();
+        for item in items {
+            match item {
+                crate::ipc::MpvIpcNonblockingRuntimeItem::Event(event) => {
+                    let is_transition_result = event
+                        .get("args")
+                        .and_then(Value::as_array)
+                        .and_then(|args| args.first())
+                        .and_then(Value::as_str)
+                        == Some(SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_TRANSITION_RESULT);
+                    self.handle_client_message_event(&event);
+                    if is_transition_result
+                        && let Some(result) = self
+                            .deferred_network_media_options_hook_transition_result
+                            .take()
+                    {
+                        // Commit the earlier policy result before a later selected ownership,
+                        // lease, or command-completion item mutates hook state. Path/property
+                        // events can remain queued for the ordinary full pump.
+                        self.apply_network_options_hook_transition_result(result, None);
+                    }
+                }
+                crate::ipc::MpvIpcNonblockingRuntimeItem::Completion(completion) => {
+                    match completion {
+                        crate::ipc::MpvIpcNonblockingCommandCompletion::Succeeded {
+                            token: LEGACY_SYNCPLAYINTF_HEARTBEAT_COMMAND_TOKEN,
+                        } => {
+                            self.legacy_syncplayintf_last_heartbeat_at = Some(Instant::now());
+                        }
+                        crate::ipc::MpvIpcNonblockingCommandCompletion::Succeeded {
+                            token: NETWORK_OPTIONS_HEARTBEAT_COMMAND_TOKEN,
+                        } => {
+                            if let Some(pending) =
+                                self.network_media_options_hook_pending_heartbeat.as_mut()
+                            {
+                                pending.sent_at = Some(Instant::now());
+                            }
+                        }
+                        crate::ipc::MpvIpcNonblockingCommandCompletion::Succeeded { .. } => {}
+                        crate::ipc::MpvIpcNonblockingCommandCompletion::Failed {
+                            token,
+                            message,
+                        } if token == NETWORK_OPTIONS_HEARTBEAT_COMMAND_TOKEN
+                            || token == NETWORK_OPTIONS_EVENT_POLL_COMMAND_TOKEN =>
+                        {
+                            self.invalidate_network_media_options_hook_delivery();
+                            self.queue_network_media_options_hook_degraded(
+                                PlayerError::OperationFailed(message),
+                            );
+                        }
+                        crate::ipc::MpvIpcNonblockingCommandCompletion::Failed {
+                            token: LEGACY_SYNCPLAYINTF_HEARTBEAT_COMMAND_TOKEN,
+                            message,
+                        } => self.begin_sorotte_bridge_runtime_recovery(
+                            SorotteBridgeFailureKind::IpcCommand,
+                            format!("failed to renew Sorotte's mpv bridge lease: {message}"),
+                            true,
+                        ),
+                        crate::ipc::MpvIpcNonblockingCommandCompletion::Failed { .. } => {}
+                    }
+                }
+            }
+        }
+        processed_any
+    }
+
+    fn maintain_network_options_hook_lease_nonblocking(&mut self) {
+        if !self.network_media_options_hook_is_ready() {
+            return;
+        }
+        if let Some(pending) = self.network_media_options_hook_pending_heartbeat {
+            if pending.sent_at.is_some_and(|sent_at| {
+                sent_at.elapsed() >= NETWORK_OPTIONS_HOOK_HEARTBEAT_ACK_TIMEOUT
+            }) {
+                let reason = format!(
+                    "Sorotte's mpv network-options hook did not acknowledge heartbeat nonce {}",
+                    pending.nonce
+                );
+                self.invalidate_network_media_options_hook_delivery();
+                self.queue_network_media_options_hook_degraded(PlayerError::OperationFailed(
+                    reason,
+                ));
+                return;
+            }
+
+            if pending.sent_at.is_none() {
+                return;
+            }
+
+            // A heartbeat acknowledgement can arrive after mpv's response to the script-message
+            // command. Queue a harmless read so the IPC worker continues harvesting events while
+            // the async owner is otherwise waiting on unrelated I/O.
+            let poll_result = self.ipc_client.as_mut().map(|client| {
+                client.try_send_command_expect_success_nonblocking(
+                    json!([MPV_COMMAND_GET_PROPERTY, MPV_PROPERTY_PAUSE]),
+                    NETWORK_OPTIONS_EVENT_POLL_COMMAND_TOKEN,
+                )
+            });
+            if let Some(Err(error)) = poll_result {
+                self.invalidate_network_media_options_hook_delivery();
+                self.queue_network_media_options_hook_degraded(PlayerError::OperationFailed(error));
+            }
+            return;
+        }
+        if self
+            .network_media_options_hook_last_heartbeat_at
+            .is_some_and(|last| last.elapsed() < NETWORK_OPTIONS_HOOK_HEARTBEAT_INTERVAL)
+        {
+            return;
+        }
+
+        let nonce = self.next_network_media_options_hook_heartbeat_nonce;
+        let payload = json!({
+            "protocol": SOROTTE_NETWORK_OPTIONS_PROTOCOL,
+            "ownerId": self.legacy_syncplayintf_owner_id,
+            "attachmentId": self.legacy_syncplayintf_attachment_id,
+            "configurationGeneration": self.network_media_options_generation,
+            "heartbeatNonce": nonce,
+        });
+        let command = json!([
+            MPV_COMMAND_SCRIPT_MESSAGE_TO,
+            SOROTTE_NETWORK_OPTIONS_SCRIPT_NAME,
+            SOROTTE_NETWORK_OPTIONS_HEARTBEAT_MESSAGE,
+            payload.to_string(),
+        ]);
+        match self.ipc_client.as_mut().map(|client| {
+            client.try_send_command_expect_success_nonblocking(
+                command,
+                NETWORK_OPTIONS_HEARTBEAT_COMMAND_TOKEN,
+            )
+        }) {
+            Some(Ok(true)) => {
+                self.next_network_media_options_hook_heartbeat_nonce = self
+                    .next_network_media_options_hook_heartbeat_nonce
+                    .wrapping_add(1)
+                    .max(1);
+                self.network_media_options_hook_pending_heartbeat =
+                    Some(PendingNetworkOptionsHookHeartbeat {
+                        nonce,
+                        sent_at: None,
+                    });
+            }
+            Some(Ok(false)) => {}
+            Some(Err(error)) => {
+                self.invalidate_network_media_options_hook_delivery();
+                self.queue_network_media_options_hook_degraded(PlayerError::OperationFailed(error));
+            }
+            None => {}
+        }
+    }
+
+    fn maintain_legacy_syncplayintf_lease_nonblocking(&mut self) {
+        if !matches!(self.sorotte_bridge_health, SorotteBridgeHealth::Ready) {
+            return;
+        }
+        if !self.legacy_syncplay_ui_settings.chat_input_enabled {
+            self.legacy_syncplayintf_last_heartbeat_at = None;
+            return;
+        }
+        if !self.legacy_syncplayintf_options_ready()
+            || self
+                .legacy_syncplayintf_last_heartbeat_at
+                .is_some_and(|last| last.elapsed() < LEGACY_SYNCPLAYINTF_HEARTBEAT_INTERVAL)
+        {
+            return;
+        }
+        let Some(payload) = self.legacy_syncplayintf_controller_payload() else {
+            return;
+        };
+        let command = json!([
+            MPV_COMMAND_SCRIPT_MESSAGE_TO,
+            self.legacy_syncplayintf_script_name.as_str(),
+            LEGACY_SYNCPLAYINTF_HEARTBEAT_MESSAGE,
+            payload,
+        ]);
+        match self.ipc_client.as_mut().map(|client| {
+            client.try_send_command_expect_success_nonblocking(
+                command,
+                LEGACY_SYNCPLAYINTF_HEARTBEAT_COMMAND_TOKEN,
+            )
+        }) {
+            Some(Ok(true)) => {}
+            Some(Ok(false)) => {}
+            Some(Err(error)) => self.begin_sorotte_bridge_runtime_recovery(
+                SorotteBridgeFailureKind::IpcCommand,
+                format!("failed to renew Sorotte's mpv bridge lease: {error}"),
+                true,
+            ),
+            None => {}
+        }
+    }
+
+    fn maintain_runtime_leases_nonblocking_inner(&mut self) {
+        self.drain_runtime_lease_events_nonblocking();
+        // The optional bridge uses the same two-second lease as the core hook but has no
+        // acknowledgement state that naturally reserves a later slot. Service it first so
+        // network-hook event polling cannot monopolize the single IPC worker command slot.
+        self.maintain_legacy_syncplayintf_lease_nonblocking();
+        self.maintain_network_options_hook_lease_nonblocking();
+        self.drain_runtime_lease_events_nonblocking();
+    }
+}
+
 impl PlayerAdapter for MpvAdapter {
     fn name(&self) -> &'static str {
         "mpv"
+    }
+
+    fn maintain_runtime_leases_nonblocking(&mut self) {
+        self.maintain_runtime_leases_nonblocking_inner();
     }
 
     fn maintain_runtime_integrations(&mut self) {
@@ -630,5 +876,409 @@ impl PlayerAdapter for MpvAdapter {
             self.poll_ipc_events_for_chat_input_if_enabled();
         }
         self.pending_chat_requests.pop_front()
+    }
+}
+
+#[cfg(test)]
+mod nonblocking_maintenance_tests {
+    use super::*;
+    use std::{collections::VecDeque, io};
+
+    struct RejectingHeartbeatTransport {
+        responses: VecDeque<String>,
+    }
+
+    struct DelayedSuccessTransport {
+        responses: VecDeque<String>,
+        first_response_delay: Option<Duration>,
+    }
+
+    struct OrderedHookEventsTransport {
+        responses: VecDeque<String>,
+        emitted_events: bool,
+        emit_ownership_loss: bool,
+        response_error: &'static str,
+    }
+
+    impl MpvJsonIpcTransport for RejectingHeartbeatTransport {
+        fn send_line_until(&mut self, line: &str, _deadline: Instant) -> io::Result<()> {
+            let request: Value = serde_json::from_str(line.trim())
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            let request_id = request.get("request_id").cloned().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "test request omitted request_id",
+                )
+            })?;
+            self.responses.push_back(
+                json!({"request_id": request_id, "error": "client not found"}).to_string() + "\n",
+            );
+            Ok(())
+        }
+
+        fn read_line_until(&mut self, line: &mut String, _deadline: Instant) -> io::Result<usize> {
+            let response = self.responses.pop_front().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "test response queue was empty",
+                )
+            })?;
+            line.clear();
+            line.push_str(&response);
+            Ok(line.len())
+        }
+    }
+
+    impl MpvJsonIpcTransport for DelayedSuccessTransport {
+        fn send_line_until(&mut self, line: &str, _deadline: Instant) -> io::Result<()> {
+            let request: Value = serde_json::from_str(line.trim())
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            let request_id = request.get("request_id").cloned().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "test request omitted request_id",
+                )
+            })?;
+            self.responses.push_back(
+                json!({"request_id": request_id, "error": "success"}).to_string() + "\n",
+            );
+            Ok(())
+        }
+
+        fn read_line_until(&mut self, line: &mut String, _deadline: Instant) -> io::Result<usize> {
+            if let Some(delay) = self.first_response_delay.take() {
+                std::thread::sleep(delay);
+            }
+            let response = self.responses.pop_front().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "test response queue was empty",
+                )
+            })?;
+            line.clear();
+            line.push_str(&response);
+            Ok(line.len())
+        }
+    }
+
+    impl MpvJsonIpcTransport for OrderedHookEventsTransport {
+        fn send_line_until(&mut self, line: &str, _deadline: Instant) -> io::Result<()> {
+            let request: Value = serde_json::from_str(line.trim())
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            let request_id = request.get("request_id").cloned().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "test request omitted request_id",
+                )
+            })?;
+            if !self.emitted_events {
+                let transition_payload = json!({
+                    "protocol": SOROTTE_NETWORK_OPTIONS_PROTOCOL,
+                    "ownerId": "ordered-owner",
+                    "attachmentId": "ordered-attachment",
+                    "hookInstanceId": "ordered-hook",
+                    "configurationGeneration": 7,
+                    "loadSequence": 2,
+                    "sourcePath": "https://example.invalid/video",
+                    "streamOpenFilename": "https://example.invalid/video",
+                    "status": "network-updated",
+                });
+                self.responses.push_back(
+                    json!({
+                        "event": MPV_EVENT_CLIENT_MESSAGE,
+                        "args": [
+                            SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_TRANSITION_RESULT,
+                            transition_payload.to_string(),
+                        ],
+                    })
+                    .to_string()
+                        + "\n",
+                );
+                if self.emit_ownership_loss {
+                    let ownership_payload = json!({
+                        "protocol": SOROTTE_NETWORK_OPTIONS_PROTOCOL,
+                        "ownerId": "ordered-owner",
+                        "attachmentId": "ordered-attachment",
+                        "hookInstanceId": "ordered-hook",
+                        "status": "ownership-lost",
+                    });
+                    self.responses.push_back(
+                        json!({
+                            "event": MPV_EVENT_CLIENT_MESSAGE,
+                            "args": [
+                                SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_OWNERSHIP,
+                                ownership_payload.to_string(),
+                            ],
+                        })
+                        .to_string()
+                            + "\n",
+                    );
+                }
+                self.emitted_events = true;
+            }
+            self.responses.push_back(
+                json!({"request_id": request_id, "error": self.response_error}).to_string() + "\n",
+            );
+            Ok(())
+        }
+
+        fn read_line_until(&mut self, line: &mut String, _deadline: Instant) -> io::Result<usize> {
+            let response = self.responses.pop_front().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "test response queue was empty",
+                )
+            })?;
+            line.clear();
+            line.push_str(&response);
+            Ok(line.len())
+        }
+    }
+
+    #[test]
+    fn rejected_nonblocking_legacy_heartbeat_enters_recovery_without_blocking() {
+        let command_timeout = Duration::from_millis(100);
+        let mut adapter = MpvAdapter::with_test_transport_and_ipc_timeout(
+            RejectingHeartbeatTransport {
+                responses: VecDeque::new(),
+            },
+            command_timeout,
+        );
+        adapter.enable_test_legacy_chat_input();
+        adapter.sorotte_bridge_health = SorotteBridgeHealth::Ready;
+        adapter.legacy_syncplayintf_last_heartbeat_at =
+            Some(Instant::now() - LEGACY_SYNCPLAYINTF_HEARTBEAT_INTERVAL);
+
+        let queued_at = Instant::now();
+        PlayerAdapter::maintain_runtime_leases_nonblocking(&mut adapter);
+        assert!(
+            queued_at.elapsed() < command_timeout / 2,
+            "lease maintenance must not wait for mpv's command response"
+        );
+
+        let observation_deadline = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < observation_deadline
+            && matches!(adapter.sorotte_bridge_health(), SorotteBridgeHealth::Ready)
+        {
+            PlayerAdapter::maintain_runtime_leases_nonblocking(&mut adapter);
+            std::thread::yield_now();
+        }
+        assert!(matches!(
+            adapter.sorotte_bridge_health(),
+            SorotteBridgeHealth::Recovering
+        ));
+        assert!(adapter.legacy_syncplayintf_last_heartbeat_at.is_none());
+    }
+
+    #[test]
+    fn slow_successful_network_heartbeat_starts_ack_timeout_after_command_delivery() {
+        let response_delay = NETWORK_OPTIONS_HOOK_HEARTBEAT_ACK_TIMEOUT
+            .checked_add(Duration::from_millis(400))
+            .expect("test delay should fit in Duration");
+        let command_timeout = response_delay
+            .checked_add(Duration::from_secs(2))
+            .expect("test timeout should fit in Duration");
+        let mut adapter = MpvAdapter::with_test_transport_and_ipc_timeout(
+            DelayedSuccessTransport {
+                responses: VecDeque::new(),
+                first_response_delay: Some(response_delay),
+            },
+            command_timeout,
+        );
+        adapter.network_media_options_hook_enabled = true;
+        adapter.network_media_options_hook_loaded = true;
+        adapter.network_media_options_hook_configured_generation =
+            Some(adapter.network_media_options_generation);
+        adapter.set_network_options_hook_health(MpvNetworkOptionsHookHealth::Ready);
+        adapter.network_media_options_hook_last_heartbeat_at =
+            Some(Instant::now() - NETWORK_OPTIONS_HOOK_HEARTBEAT_INTERVAL);
+
+        let queued_at = Instant::now();
+        PlayerAdapter::maintain_runtime_leases_nonblocking(&mut adapter);
+        assert!(
+            queued_at.elapsed() < NETWORK_OPTIONS_HOOK_HEARTBEAT_ACK_TIMEOUT / 2,
+            "queueing a network heartbeat must not wait for mpv's command response"
+        );
+        assert!(
+            adapter
+                .network_media_options_hook_pending_heartbeat
+                .is_some_and(|pending| pending.sent_at.is_none())
+        );
+
+        let pre_delivery_deadline = Instant::now()
+            + NETWORK_OPTIONS_HOOK_HEARTBEAT_ACK_TIMEOUT
+            + Duration::from_millis(100);
+        while Instant::now() < pre_delivery_deadline {
+            PlayerAdapter::maintain_runtime_leases_nonblocking(&mut adapter);
+            assert_eq!(
+                adapter.network_media_options_hook_health,
+                MpvNetworkOptionsHookHealth::Ready,
+                "an in-flight command must not consume the hook acknowledgement window"
+            );
+            assert!(
+                adapter
+                    .network_media_options_hook_pending_heartbeat
+                    .is_some_and(|pending| pending.sent_at.is_none())
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        let delivery_deadline = Instant::now() + command_timeout;
+        while Instant::now() < delivery_deadline
+            && adapter
+                .network_media_options_hook_pending_heartbeat
+                .is_none_or(|pending| pending.sent_at.is_none())
+        {
+            PlayerAdapter::maintain_runtime_leases_nonblocking(&mut adapter);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            adapter
+                .network_media_options_hook_pending_heartbeat
+                .is_some_and(|pending| pending.sent_at.is_some())
+        );
+        assert_eq!(
+            adapter.network_media_options_hook_health,
+            MpvNetworkOptionsHookHealth::Ready
+        );
+    }
+
+    #[test]
+    fn nonblocking_transition_result_commits_before_later_ownership_loss() {
+        let mut adapter = MpvAdapter::with_test_transport_and_ipc_timeout(
+            OrderedHookEventsTransport {
+                responses: VecDeque::new(),
+                emitted_events: false,
+                emit_ownership_loss: true,
+                response_error: "success",
+            },
+            Duration::from_millis(100),
+        );
+        adapter.legacy_syncplayintf_owner_id = "ordered-owner".to_owned();
+        adapter.legacy_syncplayintf_attachment_id = "ordered-attachment".to_owned();
+        adapter.network_media_options_generation = 7;
+        adapter.network_media_options_hook_enabled = true;
+        adapter.network_media_options_hook_loaded = true;
+        adapter.network_media_options_hook_instance_id = Some("ordered-hook".to_owned());
+        adapter.network_media_options_hook_configured_generation = Some(7);
+        adapter.network_media_options_hook_last_accepted_load_sequence = Some(1);
+        adapter.set_network_options_hook_health(MpvNetworkOptionsHookHealth::Ready);
+        adapter
+            .set_network_media_policy_state(MpvNetworkMediaPolicyState::AwaitingAuthoritativeLoad);
+        adapter.network_media_options_hook_last_heartbeat_at =
+            Some(Instant::now() - NETWORK_OPTIONS_HOOK_HEARTBEAT_INTERVAL);
+
+        let observation_deadline = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < observation_deadline {
+            PlayerAdapter::maintain_runtime_leases_nonblocking(&mut adapter);
+            let snapshot = adapter.network_options_runtime_health_snapshot();
+            if matches!(
+                snapshot.hook_health,
+                MpvNetworkOptionsHookHealth::Degraded(_)
+            ) && snapshot.media_policy == MpvNetworkMediaPolicyState::NetworkMediaUpdated
+            {
+                break;
+            }
+            std::thread::yield_now();
+        }
+
+        let snapshot = adapter.network_options_runtime_health_snapshot();
+        assert_eq!(
+            snapshot.media_policy,
+            MpvNetworkMediaPolicyState::NetworkMediaUpdated,
+            "the earlier transition result must commit before ownership is invalidated"
+        );
+        assert!(
+            matches!(
+                snapshot.hook_health,
+                MpvNetworkOptionsHookHealth::Degraded(ref reason)
+                    if reason.contains("ownership was replaced")
+            ),
+            "the later ownership loss must remain the final hook state: {snapshot:?}"
+        );
+        assert!(
+            adapter
+                .pending_network_options_hook_health_transitions
+                .iter()
+                .all(|event| !matches!(
+                    event.value,
+                    MpvNetworkOptionsHookHealthTransition::Recovered
+                )),
+            "an earlier transition result must not recover the hook after later ownership loss"
+        );
+        assert!(matches!(
+            adapter
+                .pending_network_media_policy_outcomes
+                .front()
+                .map(|event| &event.value),
+            Some(MpvNetworkMediaPolicyOutcome::NetworkMediaUpdated)
+        ));
+        assert!(
+            adapter
+                .deferred_network_media_options_hook_transition_result
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn nonblocking_transition_result_precedes_later_rejected_command_response() {
+        let mut adapter = MpvAdapter::with_test_transport_and_ipc_timeout(
+            OrderedHookEventsTransport {
+                responses: VecDeque::new(),
+                emitted_events: false,
+                emit_ownership_loss: false,
+                response_error: "client not found",
+            },
+            Duration::from_millis(100),
+        );
+        adapter.legacy_syncplayintf_owner_id = "ordered-owner".to_owned();
+        adapter.legacy_syncplayintf_attachment_id = "ordered-attachment".to_owned();
+        adapter.network_media_options_generation = 7;
+        adapter.network_media_options_hook_enabled = true;
+        adapter.network_media_options_hook_loaded = true;
+        adapter.network_media_options_hook_instance_id = Some("ordered-hook".to_owned());
+        adapter.network_media_options_hook_configured_generation = Some(7);
+        adapter.network_media_options_hook_last_accepted_load_sequence = Some(1);
+        adapter.set_network_options_hook_health(MpvNetworkOptionsHookHealth::Ready);
+        adapter
+            .set_network_media_policy_state(MpvNetworkMediaPolicyState::AwaitingAuthoritativeLoad);
+        adapter.network_media_options_hook_last_heartbeat_at =
+            Some(Instant::now() - NETWORK_OPTIONS_HOOK_HEARTBEAT_INTERVAL);
+
+        let observation_deadline = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < observation_deadline {
+            PlayerAdapter::maintain_runtime_leases_nonblocking(&mut adapter);
+            let snapshot = adapter.network_options_runtime_health_snapshot();
+            if matches!(
+                snapshot.hook_health,
+                MpvNetworkOptionsHookHealth::Degraded(_)
+            ) && snapshot.media_policy == MpvNetworkMediaPolicyState::NetworkMediaUpdated
+            {
+                break;
+            }
+            std::thread::yield_now();
+        }
+
+        let snapshot = adapter.network_options_runtime_health_snapshot();
+        assert_eq!(
+            snapshot.media_policy,
+            MpvNetworkMediaPolicyState::NetworkMediaUpdated,
+            "the earlier transition result must remain the authoritative media-policy result"
+        );
+        assert!(
+            matches!(
+                snapshot.hook_health,
+                MpvNetworkOptionsHookHealth::Degraded(ref reason)
+                    if reason.contains("client not found")
+            ),
+            "the later rejected response must remain the final hook state: {snapshot:?}"
+        );
+        assert!(matches!(
+            adapter
+                .pending_network_media_policy_outcomes
+                .front()
+                .map(|event| &event.value),
+            Some(MpvNetworkMediaPolicyOutcome::NetworkMediaUpdated)
+        ));
     }
 }

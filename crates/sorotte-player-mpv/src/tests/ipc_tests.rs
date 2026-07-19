@@ -796,6 +796,153 @@ fn mpv_ipc_timeout_marks_connection_dead_and_next_command_fails_immediately() {
     ));
 }
 
+#[test]
+fn mpv_ipc_nonblocking_command_never_waits_for_transport_timeout() {
+    let command_timeout = Duration::from_millis(100);
+    let mut client = MpvJsonIpcClient::new_with_command_timeout(
+        Box::new(NeverRespondingTransport),
+        command_timeout,
+    );
+
+    let queued_at = Instant::now();
+    assert_eq!(
+        client.try_send_command_expect_success_nonblocking(json!(["get_property", "path"]), 1),
+        Ok(true)
+    );
+    assert!(
+        queued_at.elapsed() < command_timeout / 2,
+        "queueing nonblocking maintenance must not wait for the IPC response timeout"
+    );
+
+    let observation_deadline = Instant::now() + Duration::from_secs(1);
+    let mut events = Vec::new();
+    while Instant::now() < observation_deadline
+        && !events.iter().any(|event| {
+            matches!(
+                event,
+                MpvIpcConnectionEvent::Disconnected { .. } | MpvIpcConnectionEvent::TimedOut { .. }
+            )
+        })
+    {
+        events.extend(client.take_connection_events());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(events.iter().any(|event| matches!(
+        event,
+        MpvIpcConnectionEvent::TimedOut { timeout, .. } if *timeout == command_timeout
+    )));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, MpvIpcConnectionEvent::Disconnected { .. }))
+    );
+}
+
+#[test]
+fn mpv_ipc_nonblocking_command_harvests_selected_events_without_dropping_others() {
+    let property_event = json!({
+        "event": "property-change",
+        "name": "path",
+        "data": "network.mkv",
+    });
+    let lease_event = json!({
+        "event": "client-message",
+        "args": ["lease-heartbeat", "{}"],
+    });
+    let response = json!({"request_id": 1, "error": "success", "data": false});
+    let reads = [
+        property_event.to_string(),
+        lease_event.to_string(),
+        response.to_string(),
+    ];
+    let read_refs = reads.iter().map(String::as_str).collect::<Vec<_>>();
+    let (transport, _state) = fake_transport_with_reads(&read_refs);
+    let mut client = MpvJsonIpcClient::new(Box::new(transport));
+
+    assert_eq!(
+        client.try_send_command_expect_success_nonblocking(json!(["get_property", "pause"]), 1),
+        Ok(true)
+    );
+    let observation_deadline = Instant::now() + Duration::from_secs(1);
+    let selected = loop {
+        let events = client.take_pending_events_matching(|event| {
+            event.get("event").and_then(Value::as_str) == Some("client-message")
+        });
+        if !events.is_empty() || Instant::now() >= observation_deadline {
+            break events;
+        }
+        std::thread::yield_now();
+    };
+
+    assert_eq!(selected, vec![lease_event]);
+    assert_eq!(client.take_pending_events(), vec![property_event]);
+}
+
+#[test]
+fn mpv_ipc_nonblocking_runtime_items_wait_behind_an_earlier_unselected_event() {
+    let property_event = json!({
+        "event": "property-change",
+        "name": "path",
+        "data": "network.mkv",
+    });
+    let lease_event = json!({
+        "event": "client-message",
+        "args": ["lease-heartbeat", "{}"],
+    });
+    let response = json!({"request_id": 1, "error": "success", "data": false});
+    let reads = [
+        property_event.to_string(),
+        lease_event.to_string(),
+        response.to_string(),
+    ];
+    let read_refs = reads.iter().map(String::as_str).collect::<Vec<_>>();
+    let (transport, _state) = fake_transport_with_reads(&read_refs);
+    let mut client = MpvJsonIpcClient::new(Box::new(transport));
+
+    assert_eq!(
+        client.try_send_command_expect_success_nonblocking(json!(["get_property", "pause"]), 7),
+        Ok(true)
+    );
+
+    let observation_deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        let runtime_items = client.take_nonblocking_runtime_items_matching(|event| {
+            event.get("event").and_then(Value::as_str) == Some("client-message")
+        });
+        assert!(
+            runtime_items.is_empty(),
+            "a later selected event or completion must not leapfrog the path event"
+        );
+        let barriers = client.take_pending_events_matching(|event| {
+            event.get("event").and_then(Value::as_str) == Some("property-change")
+        });
+        if !barriers.is_empty() {
+            assert_eq!(barriers, vec![property_event]);
+            break;
+        }
+        assert!(
+            Instant::now() < observation_deadline,
+            "the nonblocking command did not produce its ordered event batch"
+        );
+        std::thread::yield_now();
+    }
+
+    let runtime_items = client.take_nonblocking_runtime_items_matching(|event| {
+        event.get("event").and_then(Value::as_str) == Some("client-message")
+    });
+    assert_eq!(runtime_items.len(), 2);
+    assert!(matches!(
+        &runtime_items[0],
+        crate::ipc::MpvIpcNonblockingRuntimeItem::Event(event) if event == &lease_event
+    ));
+    assert!(matches!(
+        &runtime_items[1],
+        crate::ipc::MpvIpcNonblockingRuntimeItem::Completion(
+            crate::ipc::MpvIpcNonblockingCommandCompletion::Succeeded { token: 7 }
+        )
+    ));
+}
+
 #[cfg(windows)]
 #[test]
 fn windows_named_pipe_read_is_cancelled_at_command_deadline() {
@@ -3113,6 +3260,117 @@ fn continuous_hook_degradation_is_emitted_only_once() {
 
 #[cfg(feature = "test-support")]
 #[test]
+fn queued_hook_recovery_survives_successful_explicit_policy_apply() {
+    let (mut adapter, _) = MpvAdapter::with_nth_active_network_option_rejection_test_ipc(
+        LegacySyncplayUiSettings::default(),
+        usize::MAX,
+    );
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+    adapter.inject_test_network_media_options_hook_degradation("consumed hook lease loss");
+    assert!(matches!(
+        adapter.take_network_options_hook_health_transition(),
+        Some(MpvNetworkOptionsHookHealthTransition::Degraded(_))
+    ));
+
+    adapter.inject_test_network_media_options_hook_recovery();
+    assert_eq!(
+        adapter
+            .apply_network_media_options_to_active_media_classified()
+            .expect("the explicit policy retry should succeed"),
+        MpvActiveNetworkMediaOptionsApplyOutcome::NetworkMediaUpdated
+    );
+
+    assert_eq!(
+        adapter.take_network_options_hook_health_transition(),
+        Some(MpvNetworkOptionsHookHealthTransition::Recovered),
+        "an explicit media-policy apply must not erase queued hook recovery"
+    );
+    let snapshot = adapter.network_options_runtime_health_snapshot();
+    assert_eq!(snapshot.hook_health, MpvNetworkOptionsHookHealth::Ready);
+    assert_eq!(
+        snapshot.media_policy,
+        MpvNetworkMediaPolicyState::NetworkMediaUpdated
+    );
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn queued_hook_degradation_survives_failed_explicit_policy_apply() {
+    let (mut adapter, _) = MpvAdapter::with_nth_active_network_option_rejection_test_ipc(
+        LegacySyncplayUiSettings::default(),
+        1,
+    );
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+    adapter.inject_test_network_media_options_hook_degradation("unconsumed hook lease loss");
+
+    adapter
+        .apply_network_media_options_to_active_media_classified()
+        .expect_err("the first explicit file-local option should be rejected");
+
+    let Some(MpvNetworkOptionsHookHealthTransition::Degraded(error)) =
+        adapter.take_network_options_hook_health_transition()
+    else {
+        panic!("the unconsumed hook degradation must remain observable");
+    };
+    assert!(error.to_string().contains("unconsumed hook lease loss"));
+    let snapshot = adapter.network_options_runtime_health_snapshot();
+    assert!(matches!(
+        snapshot.hook_health,
+        MpvNetworkOptionsHookHealth::Degraded(reason)
+            if reason.contains("unconsumed hook lease loss")
+    ));
+    assert!(matches!(
+        snapshot.media_policy,
+        MpvNetworkMediaPolicyState::Failed(_)
+    ));
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn explicit_apply_preserves_pending_hook_recovery_and_authoritative_policy_failure() {
+    let (mut adapter, _) = MpvAdapter::with_nth_active_network_option_rejection_test_ipc(
+        LegacySyncplayUiSettings::default(),
+        usize::MAX,
+    );
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+    adapter.inject_test_network_media_options_hook_degradation("prior hook lease loss");
+    assert!(matches!(
+        adapter.take_network_options_hook_health_transition(),
+        Some(MpvNetworkOptionsHookHealthTransition::Degraded(_))
+    ));
+    adapter.inject_test_network_media_options_hook_recovery();
+    adapter.inject_test_network_media_options_policy_failure(
+        42,
+        "https://media.example.test/source.m3u8",
+        "https://cdn.example.test/resolved.m3u8",
+    );
+
+    assert_eq!(
+        adapter
+            .apply_network_media_options_to_active_media_classified()
+            .expect("the later explicit apply should succeed"),
+        MpvActiveNetworkMediaOptionsApplyOutcome::NetworkMediaUpdated
+    );
+    assert_eq!(
+        adapter.take_network_options_hook_health_transition(),
+        Some(MpvNetworkOptionsHookHealthTransition::Recovered)
+    );
+    assert!(matches!(
+        adapter.take_network_media_policy_outcome(),
+        Some(MpvNetworkMediaPolicyOutcome::Failed(error))
+            if error.to_string().contains("hook load 42")
+    ));
+    let snapshot = adapter.network_options_runtime_health_snapshot();
+    assert_eq!(snapshot.hook_health, MpvNetworkOptionsHookHealth::Ready);
+    assert_eq!(
+        snapshot.media_policy,
+        MpvNetworkMediaPolicyState::NetworkMediaUpdated,
+        "snapshot-last reconciliation must identify the later explicit success as current"
+    );
+}
+
+#[cfg(feature = "test-support")]
+#[test]
 fn network_options_map_change_preserves_queued_hook_degradation_and_dedup_state() {
     let mut adapter = configured_v3_hook_reducer_adapter();
     adapter.inject_test_network_media_options_hook_degradation("original lease failure");
@@ -3167,17 +3425,24 @@ fn network_options_map_change_preserves_queued_hook_degradation_and_dedup_state(
     let Some(MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error)) =
         ordered.take_network_media_options_transition_outcome()
     else {
+        panic!("the pre-recovery degradation must survive a settings-map change");
+    };
+    assert!(error.to_string().contains("first independent failure"));
+    assert_eq!(
+        ordered.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::HookRecovered),
+        "the recovery separating two independent degradations must remain observable"
+    );
+    let Some(MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error)) =
+        ordered.take_network_media_options_transition_outcome()
+    else {
         panic!("the current post-recovery degradation must survive a settings-map change");
     };
     assert!(error.to_string().contains("latest independent failure"));
-    assert!(
-        !error.to_string().contains("first independent failure"),
-        "the superseded pre-recovery degradation must not be replayed"
-    );
     assert_eq!(
         ordered.take_network_media_options_transition_outcome(),
         None,
-        "D1, HookRecovered, D2 must collapse to exactly the current D2 after a map change"
+        "D1, HookRecovered, D2 must remain exactly ordered after a map change"
     );
 }
 

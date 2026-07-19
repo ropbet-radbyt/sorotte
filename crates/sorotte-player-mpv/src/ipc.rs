@@ -3,6 +3,7 @@ use std::{
     io,
     path::Path,
     sync::{
+        Mutex,
         atomic::{AtomicU64, Ordering},
         mpsc,
     },
@@ -77,9 +78,12 @@ pub(crate) struct MpvJsonIpcClient {
     command_tx: mpsc::SyncSender<MpvIpcActorMessage>,
     worker_thread: Option<JoinHandle<()>>,
     command_timeout: Duration,
+    pending_nonblocking_command: Option<PendingMpvIpcCommand>,
+    pending_nonblocking_completions: VecDeque<SequencedMpvIpcNonblockingCommandCompletion>,
+    next_runtime_item_sequence: u64,
     generation: u64,
     healthy: bool,
-    pending_events: VecDeque<Value>,
+    pending_events: VecDeque<SequencedMpvIpcEvent>,
     pending_connection_events: VecDeque<MpvIpcConnectionEvent>,
 }
 
@@ -141,6 +145,9 @@ impl MpvJsonIpcClient {
             command_tx,
             worker_thread: Some(worker_thread),
             command_timeout,
+            pending_nonblocking_command: None,
+            pending_nonblocking_completions: VecDeque::new(),
+            next_runtime_item_sequence: 1,
             generation,
             healthy: true,
             pending_events: VecDeque::new(),
@@ -192,6 +199,7 @@ impl MpvJsonIpcClient {
     /// commands from being attempted. The bounded completion wait ensures callers cannot reattach
     /// to an external mpv or exit the process before the cleanup worker has made every attempt.
     pub(crate) fn send_final_commands_best_effort(&mut self, commands: Vec<Value>) {
+        self.finish_nonblocking_command();
         if !self.healthy {
             return;
         }
@@ -311,6 +319,7 @@ impl MpvJsonIpcClient {
         command: Value,
         suppress_server_rejection_event: bool,
     ) -> Result<Value, MpvIpcCommandFailure> {
+        self.finish_nonblocking_command();
         if !self.healthy {
             return Err(MpvIpcCommandFailure::disconnected(
                 "mpv IPC connection is not connected".to_owned(),
@@ -367,7 +376,7 @@ impl MpvJsonIpcClient {
                 return Err(failure);
             }
         };
-        self.pending_events.extend(outcome.pending_events);
+        self.extend_pending_events(outcome.pending_events);
         match outcome.result {
             Ok(response) => Ok(response),
             Err(failure) => {
@@ -379,11 +388,264 @@ impl MpvJsonIpcClient {
         }
     }
 
+    /// Attempts to enqueue a command without waiting for the worker or mpv response.
+    ///
+    /// `Ok(true)` means the command was queued. `Ok(false)` means another nonblocking command or
+    /// actor message is still in flight and the caller should retry on a later maintenance tick.
+    /// Completion events and failures are harvested by the client's ordinary event accessors.
+    pub(crate) fn try_send_command_expect_success_nonblocking(
+        &mut self,
+        command: Value,
+        token: u64,
+    ) -> Result<bool, String> {
+        self.poll_nonblocking_command();
+        if self.pending_nonblocking_command.is_some() {
+            return Ok(false);
+        }
+        if !self.healthy {
+            return Err("mpv IPC connection is not connected".to_owned());
+        }
+
+        let (response_tx, response_rx) = mpsc::channel();
+        let now = Instant::now();
+        let command_deadline = now.checked_add(self.command_timeout).unwrap_or(now);
+        let response_timeout = self
+            .command_timeout
+            .checked_add(MPV_IPC_ACTOR_RESPONSE_GRACE)
+            .unwrap_or(self.command_timeout);
+        let response_deadline = now
+            .checked_add(response_timeout)
+            .unwrap_or(command_deadline);
+        let request = MpvIpcWorkerRequest {
+            command,
+            deadline: command_deadline,
+            timeout: self.command_timeout,
+            response_tx,
+        };
+        match self
+            .command_tx
+            .try_send(MpvIpcActorMessage::Command(request))
+        {
+            Ok(()) => {
+                self.pending_nonblocking_command = Some(PendingMpvIpcCommand {
+                    token,
+                    response_rx: Mutex::new(response_rx),
+                    response_deadline,
+                });
+                Ok(true)
+            }
+            Err(mpsc::TrySendError::Full(_)) => Ok(false),
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                let failure = MpvIpcCommandFailure::disconnected(
+                    "mpv IPC command worker disconnected".to_owned(),
+                );
+                let message = failure.message.clone();
+                self.record_failure(&failure);
+                Err(message)
+            }
+        }
+    }
+
+    fn poll_nonblocking_command(&mut self) {
+        let completion = match self.pending_nonblocking_command.as_mut() {
+            None => return,
+            Some(pending) => match pending
+                .response_rx
+                .get_mut()
+                .expect("exclusive IPC client access must not poison its response receiver")
+                .try_recv()
+            {
+                Ok(outcome) => Some(Ok(outcome)),
+                Err(mpsc::TryRecvError::Empty) if Instant::now() < pending.response_deadline => {
+                    None
+                }
+                Err(mpsc::TryRecvError::Empty) => Some(Err(mpsc::RecvTimeoutError::Timeout)),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    Some(Err(mpsc::RecvTimeoutError::Disconnected))
+                }
+            },
+        };
+        let Some(completion) = completion else {
+            return;
+        };
+        let token = self
+            .pending_nonblocking_command
+            .take()
+            .expect("polled nonblocking IPC command should remain present")
+            .token;
+        self.record_nonblocking_completion(token, completion);
+    }
+
+    fn finish_nonblocking_command(&mut self) {
+        let Some(pending) = self.pending_nonblocking_command.take() else {
+            return;
+        };
+        let remaining = pending
+            .response_deadline
+            .saturating_duration_since(Instant::now());
+        let completion = pending
+            .response_rx
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .recv_timeout(remaining);
+        self.record_nonblocking_completion(pending.token, completion);
+    }
+
+    fn record_nonblocking_completion(
+        &mut self,
+        token: u64,
+        completion: Result<MpvIpcCommandOutcome, mpsc::RecvTimeoutError>,
+    ) {
+        match completion {
+            Ok(outcome) => {
+                self.extend_pending_events(outcome.pending_events);
+                match outcome.result {
+                    Ok(_) => self.push_nonblocking_completion(
+                        MpvIpcNonblockingCommandCompletion::Succeeded { token },
+                    ),
+                    Err(failure) => {
+                        let message = failure.message.clone();
+                        self.record_failure(&failure);
+                        self.push_nonblocking_completion(
+                            MpvIpcNonblockingCommandCompletion::Failed { token, message },
+                        );
+                    }
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let failure = MpvIpcCommandFailure::timed_out(format!(
+                    "mpv IPC command timed out after {:.1} seconds",
+                    self.command_timeout.as_secs_f64()
+                ));
+                let message = failure.message.clone();
+                self.record_failure(&failure);
+                self.push_nonblocking_completion(MpvIpcNonblockingCommandCompletion::Failed {
+                    token,
+                    message,
+                });
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let failure = MpvIpcCommandFailure::disconnected(
+                    "mpv IPC command worker disconnected".to_owned(),
+                );
+                let message = failure.message.clone();
+                self.record_failure(&failure);
+                self.push_nonblocking_completion(MpvIpcNonblockingCommandCompletion::Failed {
+                    token,
+                    message,
+                });
+            }
+        }
+    }
+
+    fn next_runtime_item_sequence(&mut self) -> u64 {
+        let sequence = self.next_runtime_item_sequence;
+        self.next_runtime_item_sequence = self.next_runtime_item_sequence.wrapping_add(1).max(1);
+        sequence
+    }
+
+    fn extend_pending_events(&mut self, events: impl IntoIterator<Item = Value>) {
+        for event in events {
+            let sequence = self.next_runtime_item_sequence();
+            self.pending_events.push_back(SequencedMpvIpcEvent {
+                sequence,
+                value: event,
+            });
+        }
+    }
+
+    fn push_nonblocking_completion(&mut self, value: MpvIpcNonblockingCommandCompletion) {
+        let sequence = self.next_runtime_item_sequence();
+        self.pending_nonblocking_completions
+            .push_back(SequencedMpvIpcNonblockingCommandCompletion { sequence, value });
+    }
+
     pub(crate) fn take_pending_events(&mut self) -> Vec<Value> {
-        self.pending_events.drain(..).collect()
+        self.poll_nonblocking_command();
+        let completion_barrier = self
+            .pending_nonblocking_completions
+            .front()
+            .map(|completion| completion.sequence);
+        let mut events = Vec::new();
+        while self
+            .pending_events
+            .front()
+            .is_some_and(|event| completion_barrier.is_none_or(|barrier| event.sequence < barrier))
+        {
+            events.push(
+                self.pending_events
+                    .pop_front()
+                    .expect("the pending-event front was present")
+                    .value,
+            );
+        }
+        events
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_pending_events_matching(
+        &mut self,
+        mut predicate: impl FnMut(&Value) -> bool,
+    ) -> Vec<Value> {
+        self.poll_nonblocking_command();
+        let mut matching = Vec::new();
+        let mut retained = VecDeque::with_capacity(self.pending_events.len());
+        while let Some(event) = self.pending_events.pop_front() {
+            if predicate(&event.value) {
+                matching.push(event.value);
+            } else {
+                retained.push_back(event);
+            }
+        }
+        self.pending_events = retained;
+        matching
+    }
+
+    pub(crate) fn take_nonblocking_runtime_items_matching(
+        &mut self,
+        mut predicate: impl FnMut(&Value) -> bool,
+    ) -> Vec<MpvIpcNonblockingRuntimeItem> {
+        self.poll_nonblocking_command();
+        let barrier = self
+            .pending_events
+            .iter()
+            .find(|event| !predicate(&event.value))
+            .map(|event| event.sequence);
+        let mut items = Vec::new();
+        while self
+            .pending_events
+            .front()
+            .is_some_and(|event| barrier.is_none_or(|barrier| event.sequence < barrier))
+        {
+            let event = self
+                .pending_events
+                .pop_front()
+                .expect("the pending-event front was present");
+            items.push((
+                event.sequence,
+                MpvIpcNonblockingRuntimeItem::Event(event.value),
+            ));
+        }
+        while self
+            .pending_nonblocking_completions
+            .front()
+            .is_some_and(|completion| barrier.is_none_or(|barrier| completion.sequence < barrier))
+        {
+            let completion = self
+                .pending_nonblocking_completions
+                .pop_front()
+                .expect("the pending-completion front was present");
+            items.push((
+                completion.sequence,
+                MpvIpcNonblockingRuntimeItem::Completion(completion.value),
+            ));
+        }
+        items.sort_unstable_by_key(|(sequence, _)| *sequence);
+        items.into_iter().map(|(_, item)| item).collect()
     }
 
     pub(crate) fn take_connection_events(&mut self) -> Vec<MpvIpcConnectionEvent> {
+        self.poll_nonblocking_command();
         self.pending_connection_events.drain(..).collect()
     }
 
@@ -722,6 +984,32 @@ impl MpvIpcWorker {
             let _ = self.transport.send_line_until(&line, deadline);
         }
     }
+}
+
+struct PendingMpvIpcCommand {
+    token: u64,
+    response_rx: Mutex<mpsc::Receiver<MpvIpcCommandOutcome>>,
+    response_deadline: Instant,
+}
+
+struct SequencedMpvIpcEvent {
+    sequence: u64,
+    value: Value,
+}
+
+struct SequencedMpvIpcNonblockingCommandCompletion {
+    sequence: u64,
+    value: MpvIpcNonblockingCommandCompletion,
+}
+
+pub(crate) enum MpvIpcNonblockingCommandCompletion {
+    Succeeded { token: u64 },
+    Failed { token: u64, message: String },
+}
+
+pub(crate) enum MpvIpcNonblockingRuntimeItem {
+    Event(Value),
+    Completion(MpvIpcNonblockingCommandCompletion),
 }
 
 struct MpvPipeTransport {

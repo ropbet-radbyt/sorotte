@@ -145,6 +145,8 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         player_unavailability_reason: None,
         core_player_configuration_health: Default::default(),
         network_options_hook_failure_reason: None,
+        network_options_runtime_health_revision: None,
+        test_queue_network_options_hook_recovery_before_player_commands: false,
         pending_apply_requirements_refresh_required: false,
         player_integration_health: crate::app::runtime_owner::GuiPlayerIntegrationHealth::Ready,
         player_local_file: None,

@@ -13,7 +13,7 @@ impl PlayerAdapter for StartupPlaylistMaintenancePlayer {
         "startup-playlist-maintenance-player"
     }
 
-    fn maintain_runtime_integrations(&mut self) {
+    fn maintain_runtime_leases_nonblocking(&mut self) {
         self.0.fetch_add(1, Ordering::SeqCst);
     }
 }

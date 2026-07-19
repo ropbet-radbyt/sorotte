@@ -90,7 +90,7 @@ where
             tokio::select! {
                 result = &mut write => break result,
                 _ = maintenance_tick.tick() => {
-                    runtime.with_player_io(PlayerAdapter::maintain_runtime_integrations);
+                    runtime.with_player_io(PlayerAdapter::maintain_runtime_leases_nonblocking);
                 }
             }
         };
@@ -138,8 +138,12 @@ mod tests {
             "maintaining-protocol-io-test-player"
         }
 
-        fn maintain_runtime_integrations(&mut self) {
+        fn maintain_runtime_leases_nonblocking(&mut self) {
             self.0.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn maintain_runtime_integrations(&mut self) {
+            panic!("async protocol writes must not invoke blocking player maintenance");
         }
     }
 

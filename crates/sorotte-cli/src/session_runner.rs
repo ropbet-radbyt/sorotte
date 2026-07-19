@@ -120,7 +120,7 @@ where
         tokio::select! {
             result = &mut future => return result,
             _ = maintenance_tick.tick() => {
-                runtime.with_player_io(PlayerAdapter::maintain_runtime_integrations);
+                runtime.with_player_io(PlayerAdapter::maintain_runtime_leases_nonblocking);
             }
         }
     }

@@ -18,11 +18,11 @@ use std::{
 
 use serde_json::{Value, json};
 use sorotte_player_api::{
-    LocalFileUpdate, PlayerCommandFailureKind, PlayerCommandId, PlayerCommandProgress,
-    PlayerCommandResult, PlayerError, PlayerMediaGeneration, PlayerMediaLoadFailureKind,
-    PlayerMediaLoadOutcome, PlayerObservationTimestamp, PlayerPlayIntent,
-    PlayerPlaybackTelemetryUpdate, PlayerSeekableRange, PlayerTimelineKind, PlayerTransportPhase,
-    PlayerTransportTelemetryUpdate,
+    LocalFileUpdate, PlayerAdapter, PlayerCommandFailureKind, PlayerCommandId,
+    PlayerCommandProgress, PlayerCommandResult, PlayerError, PlayerMediaGeneration,
+    PlayerMediaLoadFailureKind, PlayerMediaLoadOutcome, PlayerObservationTimestamp,
+    PlayerPlayIntent, PlayerPlaybackTelemetryUpdate, PlayerSeekableRange, PlayerTimelineKind,
+    PlayerTransportPhase, PlayerTransportTelemetryUpdate,
 };
 use sorotte_secret::SecretValue;
 
@@ -89,7 +89,70 @@ pub enum MpvActiveNetworkMediaOptionsApplyOutcome {
     Superseded,
 }
 
-/// Reports independent hook-health and active-media policy changes.
+/// Reports a change in the availability of Sorotte's mpv network-options hook.
+#[derive(Debug, PartialEq, Eq)]
+pub enum MpvNetworkOptionsHookHealthTransition {
+    /// A previously degraded core hook was positively reconfigured or responded successfully.
+    Recovered,
+    /// The core hook is unavailable or this adapter lost its lease. Playback and JSON IPC remain
+    /// attached, but applying network-only policy requires an explicit retry or hook recovery.
+    Degraded(PlayerError),
+}
+
+/// Reports the result of applying configured options to authoritative active media.
+#[derive(Debug, PartialEq, Eq)]
+pub enum MpvNetworkMediaPolicyOutcome {
+    /// The active media ended and there is currently no file-specific policy to apply.
+    NoActiveMedia,
+    /// The authoritative hook classified the active media as local, so network options are idle.
+    LocalMediaUnchanged,
+    /// Every configured file-local network option was accepted for the active network media.
+    NetworkMediaUpdated,
+    /// At least one option write failed. IPC health determines whether the failure is retryable.
+    Failed(PlayerError),
+}
+
+/// Authoritative current health of Sorotte's mpv network-options hook.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum MpvNetworkOptionsHookHealth {
+    /// Hook configuration or ownership has not yet been positively acknowledged.
+    #[default]
+    Pending,
+    /// Hook configuration and ownership are currently acknowledged.
+    Ready,
+    /// The hook is unavailable. The message is safe for user-visible diagnostics.
+    Degraded(String),
+}
+
+/// Authoritative current state of active-media network-option policy.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum MpvNetworkMediaPolicyState {
+    /// No authoritative media-policy result has been observed for this attachment or generation.
+    #[default]
+    Unknown,
+    /// An explicit apply was superseded and is waiting for the successor load's hook result.
+    AwaitingAuthoritativeLoad,
+    /// There is no active media requiring file-specific policy.
+    NoActiveMedia,
+    /// Active media is local and network-only options are intentionally idle.
+    LocalMediaUnchanged,
+    /// Active network media accepted every configured option.
+    NetworkMediaUpdated,
+    /// Active-media policy failed. The message is safe for user-visible diagnostics.
+    Failed(String),
+}
+
+/// Revisioned authoritative network-options state. Consumers can reconcile this snapshot every
+/// pump so a dropped notification can never leave their stored health divergent from the adapter.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MpvNetworkOptionsRuntimeHealthSnapshot {
+    pub revision: u64,
+    pub hook_health: MpvNetworkOptionsHookHealth,
+    pub media_policy: MpvNetworkMediaPolicyState,
+}
+
+/// Compatibility view that merges the two independent event channels in production order.
+/// New consumers should use the split transition/outcome APIs and the authoritative snapshot.
 #[derive(Debug, PartialEq, Eq)]
 pub enum MpvNetworkMediaOptionsTransitionOutcome {
     /// A previously degraded core hook was positively reconfigured or responded successfully.
@@ -105,6 +168,11 @@ pub enum MpvNetworkMediaOptionsTransitionOutcome {
     HookDegraded(PlayerError),
     /// At least one option write failed. IPC health determines whether the failure is retryable.
     Failed(PlayerError),
+}
+
+struct SequencedNetworkOptionsEvent<T> {
+    sequence: u64,
+    value: T,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -147,14 +215,6 @@ struct NetworkOptionsHookTransitionResult {
     source_kind: NetworkOptionsMediaTargetKind,
     stream_target_kind: NetworkOptionsMediaTargetKind,
     status: NetworkOptionsHookApplyStatus,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum NetworkOptionsHookHealth {
-    #[default]
-    Pending,
-    Ready,
-    Degraded,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -237,7 +297,10 @@ impl fmt::Display for NetworkOptionsApplyDiagnostic {
 #[derive(Clone, Copy, Debug)]
 struct PendingNetworkOptionsHookHeartbeat {
     nonce: u64,
-    sent_at: Instant,
+    /// Set only after mpv has accepted the heartbeat command. A nonblocking IPC command can
+    /// remain in flight longer than the hook acknowledgement window, so starting that window at
+    /// enqueue time would falsely degrade an otherwise healthy hook.
+    sent_at: Option<Instant>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -419,21 +482,24 @@ pub struct MpvAdapter {
     next_network_media_options_hook_heartbeat_nonce: u64,
     network_media_options_hook_instance_id: Option<String>,
     network_media_options_hook_last_accepted_load_sequence: Option<u64>,
-    network_media_options_hook_health: NetworkOptionsHookHealth,
+    network_media_options_hook_health: MpvNetworkOptionsHookHealth,
     network_media_options_hook_ownership_possible: bool,
     network_media_options_hook_configuration_in_progress: bool,
-    network_media_options_policy_degraded: bool,
+    network_media_options_policy_state: MpvNetworkMediaPolicyState,
+    network_media_options_runtime_health_revision: u64,
     pending_network_media_options_hook_active_result: Option<NetworkOptionsHookActiveResult>,
     deferred_network_media_options_hook_transition_result:
         Option<NetworkOptionsHookTransitionResult>,
     network_media_options_embedded_load: Option<EmbeddedNetworkMediaOptions>,
     network_media_options_apply_identity: Option<NetworkMediaOptionsApplyIdentity>,
-    network_media_options_apply_awaiting_authoritative_transition: bool,
     next_network_media_options_apply_attempt_id: u64,
     network_media_options_event_batch_depth: usize,
     deferred_network_media_options_observation: Option<DeferredAuthoritativePathObservation>,
-    pending_network_media_options_transition_outcomes:
-        VecDeque<MpvNetworkMediaOptionsTransitionOutcome>,
+    next_network_options_event_sequence: u64,
+    pending_network_options_hook_health_transitions:
+        VecDeque<SequencedNetworkOptionsEvent<MpvNetworkOptionsHookHealthTransition>>,
+    pending_network_media_policy_outcomes:
+        VecDeque<SequencedNetworkOptionsEvent<MpvNetworkMediaPolicyOutcome>>,
     loadfile_options_syntax: Option<MpvLoadfileOptionsSyntax>,
     mpv_version: Option<(u64, u64)>,
     pending_local_file_update: Option<LocalFileUpdate>,
@@ -541,19 +607,19 @@ impl MpvAdapter {
         self.next_network_media_options_hook_heartbeat_nonce = 1;
         self.network_media_options_hook_instance_id = None;
         self.network_media_options_hook_last_accepted_load_sequence = None;
-        self.network_media_options_hook_health = NetworkOptionsHookHealth::Pending;
+        self.network_media_options_hook_health = MpvNetworkOptionsHookHealth::Pending;
         self.network_media_options_hook_ownership_possible = false;
         self.network_media_options_hook_configuration_in_progress = false;
-        self.network_media_options_policy_degraded = false;
+        self.network_media_options_policy_state = MpvNetworkMediaPolicyState::Unknown;
+        self.bump_network_options_runtime_health_revision();
         self.pending_network_media_options_hook_active_result = None;
         self.deferred_network_media_options_hook_transition_result = None;
         self.network_media_options_embedded_load = None;
         self.network_media_options_apply_identity = None;
-        self.network_media_options_apply_awaiting_authoritative_transition = false;
         self.network_media_options_event_batch_depth = 0;
         self.deferred_network_media_options_observation = None;
-        self.pending_network_media_options_transition_outcomes
-            .clear();
+        self.pending_network_options_hook_health_transitions.clear();
+        self.pending_network_media_policy_outcomes.clear();
     }
 
     fn reset_legacy_syncplayintf_attachment_for_new_ipc(&mut self) {
@@ -832,18 +898,14 @@ impl MpvAdapter {
     #[cfg(feature = "test-support")]
     #[doc(hidden)]
     pub fn inject_test_network_media_options_no_active_media(&mut self) {
-        self.queue_network_media_options_transition_outcome(
-            MpvNetworkMediaOptionsTransitionOutcome::NoActiveMedia,
-        );
+        self.queue_network_media_policy_outcome(MpvNetworkMediaPolicyOutcome::NoActiveMedia);
     }
 
     /// Injects a local-media policy result without changing hook health.
     #[cfg(feature = "test-support")]
     #[doc(hidden)]
     pub fn inject_test_network_media_options_local_media_unchanged(&mut self) {
-        self.queue_network_media_options_transition_outcome(
-            MpvNetworkMediaOptionsTransitionOutcome::LocalMediaUnchanged,
-        );
+        self.queue_network_media_policy_outcome(MpvNetworkMediaPolicyOutcome::LocalMediaUnchanged);
     }
 
     /// Positively recovers a feature-gated hook-health fixture.
@@ -851,6 +913,13 @@ impl MpvAdapter {
     #[doc(hidden)]
     pub fn inject_test_network_media_options_hook_recovery(&mut self) {
         self.queue_network_media_options_hook_recovered();
+    }
+
+    /// Marks the feature-gated adapter fixture as waiting for an authoritative media result.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn inject_test_network_media_options_awaiting_authoritative_transition(&mut self) {
+        self.set_network_media_policy_state(MpvNetworkMediaPolicyState::AwaitingAuthoritativeLoad);
     }
 
     /// Injects a sanitized active-media policy failure from credential-bearing raw targets.
@@ -862,15 +931,13 @@ impl MpvAdapter {
         source_path: &str,
         stream_open_filename: &str,
     ) {
-        self.queue_network_media_options_transition_outcome(
-            MpvNetworkMediaOptionsTransitionOutcome::Failed(
-                NetworkOptionsApplyDiagnostic::player_error(
-                    load_sequence,
-                    NetworkOptionsMediaTargetKind::from_target(Some(source_path)),
-                    NetworkOptionsMediaTargetKind::from_target(Some(stream_open_filename)),
-                ),
+        self.queue_network_media_policy_outcome(MpvNetworkMediaPolicyOutcome::Failed(
+            NetworkOptionsApplyDiagnostic::player_error(
+                load_sequence,
+                NetworkOptionsMediaTargetKind::from_target(Some(source_path)),
+                NetworkOptionsMediaTargetKind::from_target(Some(stream_open_filename)),
             ),
-        );
+        ));
     }
 
     #[cfg(feature = "test-support")]
@@ -984,63 +1051,110 @@ impl MpvAdapter {
             self.network_media_options_hook_configuration_error = None;
             self.network_media_options_hook_last_heartbeat_at = None;
             self.network_media_options_hook_pending_heartbeat = None;
-            if self.network_media_options_hook_health != NetworkOptionsHookHealth::Degraded {
-                self.network_media_options_hook_health = NetworkOptionsHookHealth::Pending;
+            if !matches!(
+                self.network_media_options_hook_health,
+                MpvNetworkOptionsHookHealth::Degraded(_)
+            ) {
+                self.set_network_options_hook_health(MpvNetworkOptionsHookHealth::Pending);
             }
             self.pending_network_media_options_hook_active_result = None;
             self.deferred_network_media_options_hook_transition_result = None;
             self.network_media_options_embedded_load = None;
             self.network_media_options_apply_identity = None;
-            self.network_media_options_apply_awaiting_authoritative_transition = false;
-            self.network_media_options_policy_degraded = false;
+            self.set_network_media_policy_state(MpvNetworkMediaPolicyState::Unknown);
             self.deferred_network_media_options_observation = None;
-            if self.network_media_options_hook_health == NetworkOptionsHookHealth::Degraded {
-                // Media-policy outcomes belong to the superseded option generation, but an
-                // undrained hook-health failure remains current. Dropping it would leave the
-                // degraded latch deduplicating every later report before consumers saw one. Keep
-                // only the latest degradation so removing an intervening recovery cannot turn two
-                // independent failures into duplicate reports for one continuous degradation.
-                let latest_hook_degradation = self
-                    .pending_network_media_options_transition_outcomes
-                    .iter()
-                    .rposition(|outcome| {
-                        matches!(
-                            outcome,
-                            MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(_)
-                        )
-                    })
-                    .and_then(|index| {
-                        self.pending_network_media_options_transition_outcomes
-                            .remove(index)
-                    });
-                self.pending_network_media_options_transition_outcomes
-                    .clear();
-                if let Some(outcome) = latest_hook_degradation {
-                    self.pending_network_media_options_transition_outcomes
-                        .push_back(outcome);
-                }
-            } else {
-                self.pending_network_media_options_transition_outcomes
-                    .clear();
-            }
+            // File-policy results belong to the superseded option generation. Hook-health
+            // transitions describe the adapter-wide hook lease and must survive unchanged,
+            // including Degraded -> Recovered -> Degraded sequences that have not yet drained.
+            self.pending_network_media_policy_outcomes.clear();
         }
     }
 
-    /// Returns the next ordered outcome after an authoritative network-media path transition.
-    /// This includes external transitions that require file-local writes and Sorotte-issued
-    /// `loadfile` transitions whose complete option map was already embedded in the load command.
-    ///
-    /// A healthy mpv command rejection remains retryable on the same adapter. Callers can use
-    /// [`Self::is_connected`] to distinguish that case from a terminal IPC transport failure.
-    /// Explicit calls to [`Self::apply_network_media_options_to_active_media`] return their own
-    /// errors directly and clear older transition outcomes. If a newer authoritative path
-    /// supersedes an explicit apply, its ordered transition outcome remains available here.
+    /// Returns the oldest unconsumed hook-health transition.
+    pub fn take_network_options_hook_health_transition(
+        &mut self,
+    ) -> Option<MpvNetworkOptionsHookHealthTransition> {
+        self.maintain_runtime_integrations();
+        self.pending_network_options_hook_health_transitions
+            .pop_front()
+            .map(|event| event.value)
+    }
+
+    /// Returns the oldest unconsumed active-media policy outcome.
+    pub fn take_network_media_policy_outcome(&mut self) -> Option<MpvNetworkMediaPolicyOutcome> {
+        self.maintain_runtime_integrations();
+        self.pending_network_media_policy_outcomes
+            .pop_front()
+            .map(|event| event.value)
+    }
+
+    /// Returns the authoritative current network-options state without consuming notifications.
+    pub fn network_options_runtime_health_snapshot(
+        &self,
+    ) -> MpvNetworkOptionsRuntimeHealthSnapshot {
+        MpvNetworkOptionsRuntimeHealthSnapshot {
+            revision: self.network_media_options_runtime_health_revision,
+            hook_health: self.network_media_options_hook_health.clone(),
+            media_policy: self.network_media_options_policy_state.clone(),
+        }
+    }
+
+    /// Returns the next production-ordered compatibility outcome across the two independent
+    /// channels. New consumers should drain each typed channel and reconcile the snapshot.
     pub fn take_network_media_options_transition_outcome(
         &mut self,
     ) -> Option<MpvNetworkMediaOptionsTransitionOutcome> {
         self.maintain_runtime_integrations();
-        self.pending_network_media_options_transition_outcomes
-            .pop_front()
+        let hook_sequence = self
+            .pending_network_options_hook_health_transitions
+            .front()
+            .map(|event| event.sequence);
+        let policy_sequence = self
+            .pending_network_media_policy_outcomes
+            .front()
+            .map(|event| event.sequence);
+        match (hook_sequence, policy_sequence) {
+            (Some(hook), Some(policy)) if hook <= policy => self
+                .pending_network_options_hook_health_transitions
+                .pop_front()
+                .map(|event| match event.value {
+                    MpvNetworkOptionsHookHealthTransition::Recovered => {
+                        MpvNetworkMediaOptionsTransitionOutcome::HookRecovered
+                    }
+                    MpvNetworkOptionsHookHealthTransition::Degraded(error) => {
+                        MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error)
+                    }
+                }),
+            (Some(_), Some(_)) | (None, Some(_)) => self
+                .pending_network_media_policy_outcomes
+                .pop_front()
+                .map(|event| match event.value {
+                    MpvNetworkMediaPolicyOutcome::NoActiveMedia => {
+                        MpvNetworkMediaOptionsTransitionOutcome::NoActiveMedia
+                    }
+                    MpvNetworkMediaPolicyOutcome::LocalMediaUnchanged => {
+                        MpvNetworkMediaOptionsTransitionOutcome::LocalMediaUnchanged
+                    }
+                    MpvNetworkMediaPolicyOutcome::NetworkMediaUpdated => {
+                        MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated
+                    }
+                    MpvNetworkMediaPolicyOutcome::Failed(error) => {
+                        MpvNetworkMediaOptionsTransitionOutcome::Failed(error)
+                    }
+                }),
+            (Some(_), None) => self
+                .pending_network_options_hook_health_transitions
+                .pop_front()
+                .map(|event| match event.value {
+                    MpvNetworkOptionsHookHealthTransition::Recovered => {
+                        MpvNetworkMediaOptionsTransitionOutcome::HookRecovered
+                    }
+                    MpvNetworkOptionsHookHealthTransition::Degraded(error) => {
+                        MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error)
+                    }
+                }),
+            (None, None) => None,
+        }
     }
 
     /// Advances the bounded maintenance required by Sorotte-owned mpv integrations.
@@ -1071,8 +1185,20 @@ impl MpvAdapter {
     pub fn apply_network_media_options_to_active_media_classified(
         &mut self,
     ) -> Result<MpvActiveNetworkMediaOptionsApplyOutcome, PlayerError> {
-        self.pending_network_media_options_transition_outcomes
-            .clear();
+        let result = self.apply_network_media_options_to_active_media_classified_inner();
+        if let Err(error) = &result {
+            self.set_network_media_policy_state(MpvNetworkMediaPolicyState::Failed(
+                error.to_string(),
+            ));
+        }
+        result
+    }
+
+    fn apply_network_media_options_to_active_media_classified_inner(
+        &mut self,
+    ) -> Result<MpvActiveNetworkMediaOptionsApplyOutcome, PlayerError> {
+        // An explicit file-policy operation must not discard adapter-wide hook-health events or
+        // authoritative path results already queued by early maintenance in this same pump.
         self.ensure_network_media_options_hook_configured()?;
         // `current_path` may describe a requested load or a prior externally
         // replaced playlist entry. An attached mpv is authoritative; the cache
@@ -1094,11 +1220,16 @@ impl MpvAdapter {
                         PlayerTransportPhase::Loading | PlayerTransportPhase::Prebuffering
                     ))
             {
-                self.network_media_options_apply_awaiting_authoritative_transition = true;
+                self.set_network_media_policy_state(
+                    MpvNetworkMediaPolicyState::AwaitingAuthoritativeLoad,
+                );
                 return Ok(MpvActiveNetworkMediaOptionsApplyOutcome::Superseded);
             }
             self.clear_network_media_options_path_identity();
-            self.record_network_media_options_policy_applied(None);
+            self.record_network_media_options_policy_applied(
+                MpvNetworkMediaPolicyState::NoActiveMedia,
+                None,
+            );
             return Ok(MpvActiveNetworkMediaOptionsApplyOutcome::NoActiveMedia);
         };
 
@@ -1116,7 +1247,10 @@ impl MpvAdapter {
         }
         if !uses_network_media_options(&active_path) {
             self.clear_network_media_options_path_identity();
-            self.record_network_media_options_policy_applied(None);
+            self.record_network_media_options_policy_applied(
+                MpvNetworkMediaPolicyState::LocalMediaUnchanged,
+                None,
+            );
             return Ok(MpvActiveNetworkMediaOptionsApplyOutcome::LocalMediaUnchanged);
         }
         // Direct file-local writes are intentionally limited to simulation and explicit test
@@ -1125,7 +1259,10 @@ impl MpvAdapter {
         if !self.apply_network_media_options_for_attempt(&active_path, attempt_id)? {
             return Ok(MpvActiveNetworkMediaOptionsApplyOutcome::Superseded);
         }
-        self.record_network_media_options_policy_applied(None);
+        self.record_network_media_options_policy_applied(
+            MpvNetworkMediaPolicyState::NetworkMediaUpdated,
+            None,
+        );
         Ok(MpvActiveNetworkMediaOptionsApplyOutcome::NetworkMediaUpdated)
     }
 
@@ -1137,15 +1274,21 @@ impl MpvAdapter {
 
     fn network_media_options_hook_is_ready(&self) -> bool {
         self.network_media_options_hook_should_run()
-            && self.network_media_options_hook_health == NetworkOptionsHookHealth::Ready
+            && matches!(
+                self.network_media_options_hook_health,
+                MpvNetworkOptionsHookHealth::Ready
+            )
             && self.network_media_options_hook_loaded
             && self.network_media_options_hook_configured_generation
                 == Some(self.network_media_options_generation)
     }
 
     fn invalidate_network_media_options_hook_delivery(&mut self) {
-        if self.network_media_options_hook_health == NetworkOptionsHookHealth::Ready {
-            self.network_media_options_hook_health = NetworkOptionsHookHealth::Pending;
+        if matches!(
+            self.network_media_options_hook_health,
+            MpvNetworkOptionsHookHealth::Ready
+        ) {
+            self.set_network_options_hook_health(MpvNetworkOptionsHookHealth::Pending);
         }
         self.network_media_options_hook_loaded = false;
         self.network_media_options_hook_configured_generation = None;
@@ -1170,7 +1313,9 @@ impl MpvAdapter {
             return;
         }
         if let Some(pending) = self.network_media_options_hook_pending_heartbeat {
-            if pending.sent_at.elapsed() >= NETWORK_OPTIONS_HOOK_HEARTBEAT_ACK_TIMEOUT {
+            if pending.sent_at.is_some_and(|sent_at| {
+                sent_at.elapsed() >= NETWORK_OPTIONS_HOOK_HEARTBEAT_ACK_TIMEOUT
+            }) {
                 let reason = format!(
                     "Sorotte's mpv network-options hook did not acknowledge heartbeat nonce {}",
                     pending.nonce
@@ -1203,7 +1348,7 @@ impl MpvAdapter {
         self.network_media_options_hook_pending_heartbeat =
             Some(PendingNetworkOptionsHookHeartbeat {
                 nonce,
-                sent_at: Instant::now(),
+                sent_at: Some(Instant::now()),
             });
         let command = json!([
             MPV_COMMAND_SCRIPT_MESSAGE_TO,
@@ -1302,7 +1447,7 @@ impl MpvAdapter {
         attempt_id: u64,
     ) -> Result<MpvActiveNetworkMediaOptionsApplyOutcome, PlayerError> {
         self.pending_network_media_options_hook_active_result = None;
-        self.network_media_options_apply_awaiting_authoritative_transition = true;
+        self.set_network_media_policy_state(MpvNetworkMediaPolicyState::AwaitingAuthoritativeLoad);
         let generation = self.network_media_options_generation;
         let payload = json!({
             "protocol": SOROTTE_NETWORK_OPTIONS_PROTOCOL,
@@ -1322,7 +1467,7 @@ impl MpvAdapter {
         let result = loop {
             if let Err(error) = self.send_ipc_command_if_attached(command.clone()) {
                 self.invalidate_network_media_options_hook_delivery();
-                self.network_media_options_apply_awaiting_authoritative_transition = false;
+                self.set_network_media_policy_state(MpvNetworkMediaPolicyState::Unknown);
                 return Err(error);
             }
             if let Some(result) = self.pending_network_media_options_hook_active_result.take()
@@ -1333,7 +1478,7 @@ impl MpvAdapter {
             }
             if Instant::now() >= deadline {
                 self.invalidate_network_media_options_hook_delivery();
-                self.network_media_options_apply_awaiting_authoritative_transition = false;
+                self.set_network_media_policy_state(MpvNetworkMediaPolicyState::Unknown);
                 return Err(PlayerError::OperationFailed(format!(
                     "Sorotte's mpv network-options hook did not report active apply attempt {attempt_id}"
                 )));
@@ -1360,24 +1505,36 @@ impl MpvAdapter {
 
         match result.status {
             NetworkOptionsHookApplyStatus::NoActiveMedia => {
-                self.record_network_media_options_policy_applied(Some(result.load_sequence));
+                self.record_network_media_options_policy_applied(
+                    MpvNetworkMediaPolicyState::NoActiveMedia,
+                    Some(result.load_sequence),
+                );
                 Ok(MpvActiveNetworkMediaOptionsApplyOutcome::NoActiveMedia)
             }
             NetworkOptionsHookApplyStatus::LocalMediaUnchanged => {
-                self.record_network_media_options_policy_applied(Some(result.load_sequence));
+                self.record_network_media_options_policy_applied(
+                    MpvNetworkMediaPolicyState::LocalMediaUnchanged,
+                    Some(result.load_sequence),
+                );
                 Ok(MpvActiveNetworkMediaOptionsApplyOutcome::LocalMediaUnchanged)
             }
             NetworkOptionsHookApplyStatus::NetworkMediaUpdated => {
-                self.record_network_media_options_policy_applied(Some(result.load_sequence));
+                self.record_network_media_options_policy_applied(
+                    MpvNetworkMediaPolicyState::NetworkMediaUpdated,
+                    Some(result.load_sequence),
+                );
                 Ok(MpvActiveNetworkMediaOptionsApplyOutcome::NetworkMediaUpdated)
             }
             NetworkOptionsHookApplyStatus::Failed => {
-                self.network_media_options_apply_awaiting_authoritative_transition = false;
-                Err(NetworkOptionsApplyDiagnostic::player_error(
+                let error = NetworkOptionsApplyDiagnostic::player_error(
                     result.load_sequence,
                     result.source_kind,
                     result.stream_target_kind,
-                ))
+                );
+                self.set_network_media_policy_state(MpvNetworkMediaPolicyState::Failed(
+                    error.to_string(),
+                ));
+                Err(error)
             }
         }
     }
@@ -1475,9 +1632,12 @@ impl MpvAdapter {
         }
     }
 
-    fn record_network_media_options_policy_applied(&mut self, load_sequence: Option<u64>) {
-        self.network_media_options_policy_degraded = false;
-        self.network_media_options_apply_awaiting_authoritative_transition = false;
+    fn record_network_media_options_policy_applied(
+        &mut self,
+        state: MpvNetworkMediaPolicyState,
+        load_sequence: Option<u64>,
+    ) {
+        self.set_network_media_policy_state(state);
         if let Some(load_sequence) = load_sequence {
             self.network_media_options_hook_last_accepted_load_sequence = Some(
                 self.network_media_options_hook_last_accepted_load_sequence
@@ -1555,9 +1715,15 @@ impl MpvAdapter {
     ) {
         let Some(path) = path else {
             let completes_pending_policy = self.network_media_options_apply_identity.is_some()
-                || self.network_media_options_policy_degraded
-                || self.network_media_options_apply_awaiting_authoritative_transition;
+                || matches!(
+                    self.network_media_options_policy_state,
+                    MpvNetworkMediaPolicyState::Failed(_)
+                        | MpvNetworkMediaPolicyState::AwaitingAuthoritativeLoad
+                );
             self.clear_network_media_options_path_identity();
+            if origin == AuthoritativePathObservationOrigin::EndFileIdle {
+                self.set_network_media_policy_state(MpvNetworkMediaPolicyState::NoActiveMedia);
+            }
             if self.network_media_options_hook_should_run()
                 && origin == AuthoritativePathObservationOrigin::EndFileIdle
                 && completes_pending_policy
@@ -1565,8 +1731,8 @@ impl MpvAdapter {
                     .deferred_network_media_options_hook_transition_result
                     .is_none()
             {
-                self.queue_network_media_options_transition_outcome(
-                    MpvNetworkMediaOptionsTransitionOutcome::NoActiveMedia,
+                self.queue_network_media_policy_outcome(
+                    MpvNetworkMediaPolicyOutcome::NoActiveMedia,
                 );
             }
             return;
@@ -1610,27 +1776,28 @@ impl MpvAdapter {
                 {
                     Ok(MpvActiveNetworkMediaOptionsApplyOutcome::Superseded) => return,
                     Ok(MpvActiveNetworkMediaOptionsApplyOutcome::NoActiveMedia) => {
-                        MpvNetworkMediaOptionsTransitionOutcome::NoActiveMedia
+                        MpvNetworkMediaPolicyOutcome::NoActiveMedia
                     }
                     Ok(MpvActiveNetworkMediaOptionsApplyOutcome::LocalMediaUnchanged) => {
-                        MpvNetworkMediaOptionsTransitionOutcome::LocalMediaUnchanged
+                        MpvNetworkMediaPolicyOutcome::LocalMediaUnchanged
                     }
                     Ok(MpvActiveNetworkMediaOptionsApplyOutcome::NetworkMediaUpdated) => {
-                        MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated
+                        MpvNetworkMediaPolicyOutcome::NetworkMediaUpdated
                     }
                     Err(error) if !self.network_media_options_hook_is_ready() => {
                         self.queue_network_media_options_hook_degraded(error);
                         return;
                     }
-                    Err(error) => MpvNetworkMediaOptionsTransitionOutcome::Failed(error),
+                    Err(error) => MpvNetworkMediaPolicyOutcome::Failed(error),
                 };
-                self.queue_network_media_options_transition_outcome(outcome);
+                self.queue_network_media_policy_outcome(outcome);
             }
             return;
         }
 
         if !uses_network_media_options(path) {
             self.network_media_options_apply_identity = None;
+            self.set_network_media_policy_state(MpvNetworkMediaPolicyState::LocalMediaUnchanged);
             let embedded_generation_is_current = self
                 .network_media_options_embedded_load
                 .as_ref()
@@ -1663,8 +1830,8 @@ impl MpvAdapter {
         if self.embedded_network_media_options_apply_to_path(media_generation, path) {
             self.begin_network_media_options_apply_attempt(media_generation, path);
             self.network_media_options_embedded_load = None;
-            self.queue_network_media_options_transition_outcome(
-                MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated,
+            self.queue_network_media_policy_outcome(
+                MpvNetworkMediaPolicyOutcome::NetworkMediaUpdated,
             );
             return;
         }
@@ -1692,58 +1859,121 @@ impl MpvAdapter {
         let attempt_id = self.begin_network_media_options_apply_attempt(media_generation, path);
 
         let outcome = match self.apply_network_media_options_for_attempt(path, attempt_id) {
-            Ok(true) => MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated,
+            Ok(true) => MpvNetworkMediaPolicyOutcome::NetworkMediaUpdated,
             Ok(false) => return,
-            Err(error) => MpvNetworkMediaOptionsTransitionOutcome::Failed(error),
+            Err(error) => MpvNetworkMediaPolicyOutcome::Failed(error),
         };
-        self.queue_network_media_options_transition_outcome(outcome);
+        self.queue_network_media_policy_outcome(outcome);
     }
 
-    fn queue_network_media_options_transition_outcome(
+    fn bump_network_options_runtime_health_revision(&mut self) {
+        self.network_media_options_runtime_health_revision = self
+            .network_media_options_runtime_health_revision
+            .wrapping_add(1)
+            .max(1);
+    }
+
+    fn set_network_options_hook_health(&mut self, health: MpvNetworkOptionsHookHealth) {
+        if self.network_media_options_hook_health != health {
+            self.network_media_options_hook_health = health;
+            self.bump_network_options_runtime_health_revision();
+        }
+    }
+
+    fn set_network_media_policy_state(&mut self, state: MpvNetworkMediaPolicyState) {
+        if self.network_media_options_policy_state != state {
+            self.network_media_options_policy_state = state;
+            self.bump_network_options_runtime_health_revision();
+        }
+    }
+
+    fn next_network_options_event_sequence(&mut self) -> u64 {
+        let sequence = self.next_network_options_event_sequence;
+        self.next_network_options_event_sequence = self
+            .next_network_options_event_sequence
+            .wrapping_add(1)
+            .max(1);
+        sequence
+    }
+
+    fn queue_network_options_hook_health_transition(
         &mut self,
-        outcome: MpvNetworkMediaOptionsTransitionOutcome,
+        transition: MpvNetworkOptionsHookHealthTransition,
     ) {
-        match &outcome {
-            MpvNetworkMediaOptionsTransitionOutcome::HookRecovered => {}
-            MpvNetworkMediaOptionsTransitionOutcome::NoActiveMedia
-            | MpvNetworkMediaOptionsTransitionOutcome::LocalMediaUnchanged
-            | MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated => {
-                self.record_network_media_options_policy_applied(None);
+        match &transition {
+            MpvNetworkOptionsHookHealthTransition::Recovered => {
+                self.set_network_options_hook_health(MpvNetworkOptionsHookHealth::Ready);
             }
-            MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(_) => {
-                if self.network_media_options_hook_health == NetworkOptionsHookHealth::Degraded {
+            MpvNetworkOptionsHookHealthTransition::Degraded(error) => {
+                if matches!(
+                    self.network_media_options_hook_health,
+                    MpvNetworkOptionsHookHealth::Degraded(_)
+                ) {
                     return;
                 }
-                self.network_media_options_hook_health = NetworkOptionsHookHealth::Degraded;
-            }
-            MpvNetworkMediaOptionsTransitionOutcome::Failed(_) => {
-                self.network_media_options_policy_degraded = true;
-                self.network_media_options_apply_awaiting_authoritative_transition = false;
+                self.set_network_options_hook_health(MpvNetworkOptionsHookHealth::Degraded(
+                    error.to_string(),
+                ));
             }
         }
-        if self.pending_network_media_options_transition_outcomes.len()
+        if self.pending_network_options_hook_health_transitions.len()
             == MAX_PENDING_NETWORK_MEDIA_OPTIONS_TRANSITION_OUTCOMES
         {
-            self.pending_network_media_options_transition_outcomes
+            self.pending_network_options_hook_health_transitions
                 .pop_front();
         }
-        self.pending_network_media_options_transition_outcomes
-            .push_back(outcome);
+        let sequence = self.next_network_options_event_sequence();
+        self.pending_network_options_hook_health_transitions
+            .push_back(SequencedNetworkOptionsEvent {
+                sequence,
+                value: transition,
+            });
+    }
+
+    fn queue_network_media_policy_outcome(&mut self, outcome: MpvNetworkMediaPolicyOutcome) {
+        let state = match &outcome {
+            MpvNetworkMediaPolicyOutcome::NoActiveMedia => {
+                MpvNetworkMediaPolicyState::NoActiveMedia
+            }
+            MpvNetworkMediaPolicyOutcome::LocalMediaUnchanged => {
+                MpvNetworkMediaPolicyState::LocalMediaUnchanged
+            }
+            MpvNetworkMediaPolicyOutcome::NetworkMediaUpdated => {
+                MpvNetworkMediaPolicyState::NetworkMediaUpdated
+            }
+            MpvNetworkMediaPolicyOutcome::Failed(error) => {
+                MpvNetworkMediaPolicyState::Failed(error.to_string())
+            }
+        };
+        self.set_network_media_policy_state(state);
+        if self.pending_network_media_policy_outcomes.len()
+            == MAX_PENDING_NETWORK_MEDIA_OPTIONS_TRANSITION_OUTCOMES
+        {
+            self.pending_network_media_policy_outcomes.pop_front();
+        }
+        let sequence = self.next_network_options_event_sequence();
+        self.pending_network_media_policy_outcomes
+            .push_back(SequencedNetworkOptionsEvent {
+                sequence,
+                value: outcome,
+            });
     }
 
     fn queue_network_media_options_hook_degraded(&mut self, error: PlayerError) {
-        self.queue_network_media_options_transition_outcome(
-            MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error),
+        self.queue_network_options_hook_health_transition(
+            MpvNetworkOptionsHookHealthTransition::Degraded(error),
         );
     }
 
     fn queue_network_media_options_hook_recovered(&mut self) {
-        let was_degraded =
-            self.network_media_options_hook_health == NetworkOptionsHookHealth::Degraded;
-        self.network_media_options_hook_health = NetworkOptionsHookHealth::Ready;
+        let was_degraded = matches!(
+            self.network_media_options_hook_health,
+            MpvNetworkOptionsHookHealth::Degraded(_)
+        );
+        self.set_network_options_hook_health(MpvNetworkOptionsHookHealth::Ready);
         if was_degraded {
-            self.queue_network_media_options_transition_outcome(
-                MpvNetworkMediaOptionsTransitionOutcome::HookRecovered,
+            self.queue_network_options_hook_health_transition(
+                MpvNetworkOptionsHookHealthTransition::Recovered,
             );
         }
     }
@@ -2173,6 +2403,23 @@ impl MpvAdapter {
     pub fn take_sorotte_bridge_health_transition(&mut self) -> Option<SorotteBridgeHealth> {
         self.maintain_runtime_integrations();
         self.pending_sorotte_bridge_health_transitions.pop_front()
+    }
+
+    /// Services only nonblocking lease/event work and returns the oldest bridge-health change.
+    /// Async owners should use this variant so draining notifications cannot enter configuration
+    /// retry loops or sleep while unrelated I/O futures are waiting to be polled.
+    pub fn take_sorotte_bridge_health_transition_nonblocking(
+        &mut self,
+    ) -> Option<SorotteBridgeHealth> {
+        PlayerAdapter::maintain_runtime_leases_nonblocking(self);
+        self.pending_sorotte_bridge_health_transitions.pop_front()
+    }
+
+    /// Services only nonblocking lease/event work and returns the oldest player-chat request.
+    /// This is the async-owner counterpart to [`PlayerAdapter::take_pending_chat_request`].
+    pub fn take_pending_chat_request_nonblocking(&mut self) -> Option<String> {
+        PlayerAdapter::maintain_runtime_leases_nonblocking(self);
+        self.pending_chat_requests.pop_front()
     }
 
     pub fn mark_sorotte_bridge_degraded(
@@ -3887,7 +4134,17 @@ impl MpvAdapter {
     }
 
     fn drain_ipc_events_if_attached(&mut self) {
-        self.reduce_pending_ipc_events(true);
+        // A prior nonblocking command can have harvested events followed by its completion.
+        // Reduce that ordered stream first so the ordinary full pump cannot leapfrog the
+        // completion with a newer event. Path observations remain deferred until the full flush
+        // below, where potentially blocking hook recovery is allowed.
+        self.drain_runtime_lease_events_nonblocking();
+        self.reduce_pending_ipc_events(false);
+        // `take_pending_events` above can be the poll that observes a just-finished nonblocking
+        // command. Its events have now reduced in order; consume the following completion before
+        // flushing deferred path work.
+        self.drain_runtime_lease_events_nonblocking();
+        self.flush_deferred_network_media_options_observation();
     }
 
     fn drain_ipc_events_without_network_options_flush(&mut self) -> bool {
@@ -4797,7 +5054,7 @@ impl MpvAdapter {
             Some("ownership-lost") => "Sorotte's mpv network-options hook ownership was replaced",
             Some("lease-expired") => "Sorotte's mpv network-options hook lease expired",
             Some("released") => {
-                self.network_media_options_hook_health = NetworkOptionsHookHealth::Pending;
+                self.set_network_options_hook_health(MpvNetworkOptionsHookHealth::Pending);
                 self.network_media_options_hook_ownership_possible = false;
                 self.network_media_options_hook_configured_generation = None;
                 self.network_media_options_hook_last_heartbeat_at = None;
@@ -4951,15 +5208,21 @@ impl MpvAdapter {
         self.queue_network_media_options_hook_recovered();
 
         let completes_pending_policy = self.network_media_options_apply_identity.is_some()
-            || self.network_media_options_policy_degraded
-            || self.network_media_options_apply_awaiting_authoritative_transition;
+            || matches!(
+                self.network_media_options_policy_state,
+                MpvNetworkMediaPolicyState::Failed(_)
+                    | MpvNetworkMediaPolicyState::AwaitingAuthoritativeLoad
+            );
         match result.status {
             NetworkOptionsHookApplyStatus::NoActiveMedia => {
                 self.clear_network_media_options_path_identity();
-                self.record_network_media_options_policy_applied(Some(result.load_sequence));
+                self.record_network_media_options_policy_applied(
+                    MpvNetworkMediaPolicyState::NoActiveMedia,
+                    Some(result.load_sequence),
+                );
                 if completes_pending_policy {
-                    self.queue_network_media_options_transition_outcome(
-                        MpvNetworkMediaOptionsTransitionOutcome::NoActiveMedia,
+                    self.queue_network_media_policy_outcome(
+                        MpvNetworkMediaPolicyOutcome::NoActiveMedia,
                     );
                 }
             }
@@ -4970,9 +5233,12 @@ impl MpvAdapter {
                         path,
                     );
                 }
-                self.record_network_media_options_policy_applied(Some(result.load_sequence));
-                self.queue_network_media_options_transition_outcome(
-                    MpvNetworkMediaOptionsTransitionOutcome::LocalMediaUnchanged,
+                self.record_network_media_options_policy_applied(
+                    MpvNetworkMediaPolicyState::LocalMediaUnchanged,
+                    Some(result.load_sequence),
+                );
+                self.queue_network_media_policy_outcome(
+                    MpvNetworkMediaPolicyOutcome::LocalMediaUnchanged,
                 );
             }
             NetworkOptionsHookApplyStatus::NetworkMediaUpdated => {
@@ -4982,9 +5248,12 @@ impl MpvAdapter {
                         path,
                     );
                 }
-                self.record_network_media_options_policy_applied(Some(result.load_sequence));
-                self.queue_network_media_options_transition_outcome(
-                    MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated,
+                self.record_network_media_options_policy_applied(
+                    MpvNetworkMediaPolicyState::NetworkMediaUpdated,
+                    Some(result.load_sequence),
+                );
+                self.queue_network_media_policy_outcome(
+                    MpvNetworkMediaPolicyOutcome::NetworkMediaUpdated,
                 );
             }
             NetworkOptionsHookApplyStatus::Failed => {
@@ -4994,15 +5263,13 @@ impl MpvAdapter {
                         path,
                     );
                 }
-                self.queue_network_media_options_transition_outcome(
-                    MpvNetworkMediaOptionsTransitionOutcome::Failed(
-                        NetworkOptionsApplyDiagnostic::player_error(
-                            result.load_sequence,
-                            result.source_kind,
-                            result.stream_target_kind,
-                        ),
+                self.queue_network_media_policy_outcome(MpvNetworkMediaPolicyOutcome::Failed(
+                    NetworkOptionsApplyDiagnostic::player_error(
+                        result.load_sequence,
+                        result.source_kind,
+                        result.stream_target_kind,
                     ),
-                );
+                ));
             }
         }
     }
@@ -5434,7 +5701,7 @@ impl MpvAdapter {
     #[cfg(test)]
     pub(crate) fn force_test_network_media_options_hook_heartbeat_ack_timeout(&mut self) {
         if let Some(pending) = self.network_media_options_hook_pending_heartbeat.as_mut() {
-            pending.sent_at = Instant::now() - NETWORK_OPTIONS_HOOK_HEARTBEAT_ACK_TIMEOUT;
+            pending.sent_at = Some(Instant::now() - NETWORK_OPTIONS_HOOK_HEARTBEAT_ACK_TIMEOUT);
         }
         self.maintain_network_media_options_hook_lease();
     }
@@ -5451,7 +5718,7 @@ impl MpvAdapter {
 
     #[cfg(test)]
     pub(crate) fn prepare_test_network_options_hook_v3_reducer(&mut self) {
-        self.network_media_options_hook_health = NetworkOptionsHookHealth::Ready;
+        self.set_network_options_hook_health(MpvNetworkOptionsHookHealth::Ready);
         self.network_media_options_hook_loaded = true;
         self.network_media_options_hook_instance_id = Some("test-hook-instance".to_owned());
         self.network_media_options_hook_configured_generation =
@@ -5632,12 +5899,19 @@ impl MpvAdapter {
         &mut self,
         awaiting: bool,
     ) {
-        self.network_media_options_apply_awaiting_authoritative_transition = awaiting;
+        self.set_network_media_policy_state(if awaiting {
+            MpvNetworkMediaPolicyState::AwaitingAuthoritativeLoad
+        } else {
+            MpvNetworkMediaPolicyState::Unknown
+        });
     }
 
     #[cfg(test)]
     pub(crate) fn test_network_options_awaiting_authoritative_transition(&self) -> bool {
-        self.network_media_options_apply_awaiting_authoritative_transition
+        matches!(
+            self.network_media_options_policy_state,
+            MpvNetworkMediaPolicyState::AwaitingAuthoritativeLoad
+        )
     }
 
     #[cfg(test)]

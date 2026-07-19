@@ -114,8 +114,8 @@ fn drain_cli_bridge_runtime_health_transitions_to_sink(
     mut emit: impl FnMut(String),
 ) {
     let transitions = runtime.with_player_io(|player| {
-        player.maintain_runtime_integrations();
-        std::iter::from_fn(|| player.take_sorotte_bridge_health_transition()).collect::<Vec<_>>()
+        std::iter::from_fn(|| player.take_sorotte_bridge_health_transition_nonblocking())
+            .collect::<Vec<_>>()
     });
     for health in transitions {
         if let Some(line) = reporter.line_for_transition(&health) {
@@ -747,8 +747,12 @@ mod tests {
             "starttls-maintenance-test-player"
         }
 
-        fn maintain_runtime_integrations(&mut self) {
+        fn maintain_runtime_leases_nonblocking(&mut self) {
             self.0.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn maintain_runtime_integrations(&mut self) {
+            panic!("async connection waits must not invoke blocking player maintenance");
         }
     }
 

@@ -4,8 +4,16 @@ use sorotte_client_app::app_boundary::application::{
 use sorotte_client_app::app_boundary::commands::{
     PlannedLocalRuntimeAction, plan_local_runtime_dispatch_legacy_compatible,
 };
-use sorotte_player_api::{PlayerError, PlayerPlaybackTelemetryUpdate};
-use sorotte_player_mpv::{MpvAdapter, MpvNetworkMediaOptionsTransitionOutcome};
+#[cfg(test)]
+use sorotte_player_api::PlayerError;
+use sorotte_player_api::PlayerPlaybackTelemetryUpdate;
+#[cfg(test)]
+use sorotte_player_mpv::MpvNetworkMediaOptionsTransitionOutcome;
+use sorotte_player_mpv::{
+    MpvAdapter, MpvNetworkMediaPolicyOutcome, MpvNetworkMediaPolicyState,
+    MpvNetworkOptionsHookHealth, MpvNetworkOptionsHookHealthTransition,
+    MpvNetworkOptionsRuntimeHealthSnapshot,
+};
 use sorotte_protocol::DirectReadinessSurface;
 
 use crate::client_config::ClientLoopConfig;
@@ -15,13 +23,35 @@ pub(super) const PLAYER_CHAT_INPUT_POLL_INTERVAL_MS: u64 = 100;
 
 #[derive(Default)]
 struct NetworkMediaOptionsWarningState {
-    hook_failure: Option<PlayerError>,
-    policy_failure: Option<PlayerError>,
+    hook_failure: Option<String>,
+    policy_failure: Option<String>,
 }
 
 impl NetworkMediaOptionsWarningState {
-    fn current_failure(&self) -> Option<&PlayerError> {
-        self.hook_failure.as_ref().or(self.policy_failure.as_ref())
+    fn current_failure(&self) -> Option<&str> {
+        self.hook_failure
+            .as_deref()
+            .or(self.policy_failure.as_deref())
+    }
+
+    fn reconcile_snapshot(&mut self, snapshot: MpvNetworkOptionsRuntimeHealthSnapshot) {
+        match snapshot.hook_health {
+            MpvNetworkOptionsHookHealth::Ready => self.hook_failure = None,
+            MpvNetworkOptionsHookHealth::Degraded(reason) => {
+                self.hook_failure = Some(reason);
+            }
+            MpvNetworkOptionsHookHealth::Pending => {}
+        }
+        match snapshot.media_policy {
+            MpvNetworkMediaPolicyState::NoActiveMedia
+            | MpvNetworkMediaPolicyState::LocalMediaUnchanged
+            | MpvNetworkMediaPolicyState::NetworkMediaUpdated => self.policy_failure = None,
+            MpvNetworkMediaPolicyState::Failed(reason) => {
+                self.policy_failure = Some(reason);
+            }
+            MpvNetworkMediaPolicyState::Unknown
+            | MpvNetworkMediaPolicyState::AwaitingAuthoritativeLoad => {}
+        }
     }
 }
 
@@ -47,37 +77,69 @@ fn surface_network_media_options_transition_outcomes(
     application: &mut ClientApplication<MpvAdapter>,
 ) -> anyhow::Result<()> {
     let mut warning_state = NetworkMediaOptionsWarningState::default();
-    loop {
-        let (outcome, player_connected) = application.with_player_io(|player| {
-            (
-                player.take_network_media_options_transition_outcome(),
-                player.is_connected(),
-            )
-        });
-        let Some(outcome) = outcome else {
-            if let Some(error) = warning_state.current_failure() {
-                eprintln!("{}", network_media_options_warning_message(error));
-            }
-            return Ok(());
-        };
-        if let Err(error) = fold_network_media_options_transition_outcome(
-            &mut warning_state,
-            outcome,
-            player_connected,
-        ) {
+    while let Some(transition) =
+        application.with_player_io(MpvAdapter::take_network_options_hook_health_transition)
+    {
+        fold_network_options_hook_health_transition(&mut warning_state, transition);
+    }
+    while let Some(outcome) =
+        application.with_player_io(MpvAdapter::take_network_media_policy_outcome)
+    {
+        fold_network_media_policy_outcome(&mut warning_state, outcome);
+    }
+    let (snapshot, player_connected) = application.with_player_io(|player| {
+        (
+            player.network_options_runtime_health_snapshot(),
+            player.is_connected(),
+        )
+    });
+    warning_state.reconcile_snapshot(snapshot);
+    if let Some(error) = warning_state.current_failure() {
+        if !player_connected {
             return Err(anyhow::anyhow!(
                 "mpv JSON IPC became unavailable while applying streaming options to externally activated network media: {error}"
             ));
         }
+        eprintln!("{}", network_media_options_warning_message(error));
     }
+    Ok(())
 }
 
-fn network_media_options_warning_message(error: &PlayerError) -> String {
+fn network_media_options_warning_message(error: &str) -> String {
     format!(
         "warning: mpv playback remains available, but streaming options need attention: {error}; desired options remain configured for later network transitions"
     )
 }
 
+fn fold_network_options_hook_health_transition(
+    warning_state: &mut NetworkMediaOptionsWarningState,
+    transition: MpvNetworkOptionsHookHealthTransition,
+) {
+    match transition {
+        MpvNetworkOptionsHookHealthTransition::Recovered => warning_state.hook_failure = None,
+        MpvNetworkOptionsHookHealthTransition::Degraded(error) => {
+            warning_state.hook_failure = Some(error.to_string());
+        }
+    }
+}
+
+fn fold_network_media_policy_outcome(
+    warning_state: &mut NetworkMediaOptionsWarningState,
+    outcome: MpvNetworkMediaPolicyOutcome,
+) {
+    match outcome {
+        MpvNetworkMediaPolicyOutcome::NoActiveMedia
+        | MpvNetworkMediaPolicyOutcome::LocalMediaUnchanged
+        | MpvNetworkMediaPolicyOutcome::NetworkMediaUpdated => {
+            warning_state.policy_failure = None;
+        }
+        MpvNetworkMediaPolicyOutcome::Failed(error) => {
+            warning_state.policy_failure = Some(error.to_string());
+        }
+    }
+}
+
+#[cfg(test)]
 fn fold_network_media_options_transition_outcome(
     warning_state: &mut NetworkMediaOptionsWarningState,
     outcome: MpvNetworkMediaOptionsTransitionOutcome,
@@ -85,25 +147,46 @@ fn fold_network_media_options_transition_outcome(
 ) -> Result<(), PlayerError> {
     match outcome {
         MpvNetworkMediaOptionsTransitionOutcome::HookRecovered => {
-            warning_state.hook_failure = None;
+            fold_network_options_hook_health_transition(
+                warning_state,
+                MpvNetworkOptionsHookHealthTransition::Recovered,
+            );
             Ok(())
         }
         MpvNetworkMediaOptionsTransitionOutcome::NoActiveMedia
         | MpvNetworkMediaOptionsTransitionOutcome::LocalMediaUnchanged
         | MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated => {
-            warning_state.policy_failure = None;
+            let outcome = match outcome {
+                MpvNetworkMediaOptionsTransitionOutcome::NoActiveMedia => {
+                    MpvNetworkMediaPolicyOutcome::NoActiveMedia
+                }
+                MpvNetworkMediaOptionsTransitionOutcome::LocalMediaUnchanged => {
+                    MpvNetworkMediaPolicyOutcome::LocalMediaUnchanged
+                }
+                MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated => {
+                    MpvNetworkMediaPolicyOutcome::NetworkMediaUpdated
+                }
+                _ => unreachable!(),
+            };
+            fold_network_media_policy_outcome(warning_state, outcome);
             Ok(())
         }
         MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error) if !player_connected => {
             Err(error)
         }
         MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error) => {
-            warning_state.hook_failure = Some(error);
+            fold_network_options_hook_health_transition(
+                warning_state,
+                MpvNetworkOptionsHookHealthTransition::Degraded(error),
+            );
             Ok(())
         }
         MpvNetworkMediaOptionsTransitionOutcome::Failed(error) if !player_connected => Err(error),
         MpvNetworkMediaOptionsTransitionOutcome::Failed(error) => {
-            warning_state.policy_failure = Some(error);
+            fold_network_media_policy_outcome(
+                warning_state,
+                MpvNetworkMediaPolicyOutcome::Failed(error),
+            );
             Ok(())
         }
     }
@@ -112,7 +195,15 @@ fn fold_network_media_options_transition_outcome(
 pub(super) fn drain_player_chat_input_legacy_compatible(
     application: &mut ClientApplication<MpvAdapter>,
 ) -> anyhow::Result<bool> {
-    Ok(application.run_player_chat_input_if_needed()? > 0)
+    let mut sent = 0usize;
+    while let Some(message) =
+        application.with_player_io(MpvAdapter::take_pending_chat_request_nonblocking)
+    {
+        if application.run_send_chat_message(message)? {
+            sent += 1;
+        }
+    }
+    Ok(sent > 0)
 }
 
 fn command_result(events: Vec<ClientEvent>) -> anyhow::Result<bool> {
@@ -304,6 +395,39 @@ mod network_media_options_transition_outcome_tests {
         )
         .expect("positive hook recovery should remain healthy");
         assert!(warning_state.hook_failure.is_none());
+    }
+
+    #[test]
+    fn authoritative_snapshot_supersedes_stale_notifications_and_restores_missed_failures() {
+        let mut warning_state = NetworkMediaOptionsWarningState {
+            hook_failure: Some("stale hook failure".to_owned()),
+            policy_failure: Some("stale policy failure".to_owned()),
+        };
+        warning_state.reconcile_snapshot(MpvNetworkOptionsRuntimeHealthSnapshot {
+            revision: 7,
+            hook_health: MpvNetworkOptionsHookHealth::Ready,
+            media_policy: MpvNetworkMediaPolicyState::NetworkMediaUpdated,
+        });
+        assert!(warning_state.hook_failure.is_none());
+        assert!(warning_state.policy_failure.is_none());
+
+        warning_state.reconcile_snapshot(MpvNetworkOptionsRuntimeHealthSnapshot {
+            revision: 8,
+            hook_health: MpvNetworkOptionsHookHealth::Degraded(
+                "authoritative hook failure".to_owned(),
+            ),
+            media_policy: MpvNetworkMediaPolicyState::Failed(
+                "authoritative policy failure".to_owned(),
+            ),
+        });
+        assert_eq!(
+            warning_state.hook_failure.as_deref(),
+            Some("authoritative hook failure")
+        );
+        assert_eq!(
+            warning_state.policy_failure.as_deref(),
+            Some("authoritative policy failure")
+        );
     }
 
     #[test]

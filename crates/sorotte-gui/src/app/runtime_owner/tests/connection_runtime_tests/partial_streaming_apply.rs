@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::feature_slices::player::Command;
 use crate::app::runtime_owner::GuiCorePlayerConfigurationHealth;
 
 fn active_option_properties(commands: &Arc<Mutex<Vec<serde_json::Value>>>) -> Vec<String> {
@@ -274,7 +275,7 @@ fn explicit_retry_defers_a_to_b_supersession_and_clears_degradation_after_b_appl
 }
 
 #[test]
-fn independent_hook_degradation_reappears_after_successful_same_adapter_retry() {
+fn same_pump_hook_recovery_survives_explicit_retry_and_later_degradation_reappears() {
     let env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
     let ipc_path = r"\\.\pipe\sorotte-hook-degradation-rearm-test";
     env_guard.set_var("SOROTTE_CLIENT_MPV_IPC_PATH", ipc_path);
@@ -350,19 +351,36 @@ fn independent_hook_degradation_reappears_after_successful_same_adapter_retry() 
         Some(original_player_address)
     );
 
-    let player = match owner.player.as_mut() {
-        Some(GuiOwnedPlayer::Mpv(player)) => player,
-        _ => unreachable!(),
-    };
-    player.inject_test_network_media_options_hook_recovery();
+    // Queue recovery at the exact production boundary after early pump synchronization but before
+    // queued player commands. The complete owner pump must carry it across the explicit retry and
+    // through the ordinary tail projection without replacing the attached adapter.
+    owner.test_queue_network_options_hook_recovery_before_player_commands = true;
     handle.push_request(GuiRuntimeRequest::RetryPlayerSettings);
     let retry_actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     assert!(owner.player_setup_runtime_snapshot_impl().issue.is_none());
+    assert!(state.player_setup_issue.is_none());
     assert!(state.pending_apply_requirements.is_empty());
+    assert_eq!(
+        owner.player.as_ref().and_then(|player| match player {
+            GuiOwnedPlayer::Mpv(player) => {
+                Some(&**player as *const sorotte_player_mpv::MpvAdapter)
+            }
+            _ => None,
+        }),
+        Some(original_player_address),
+        "same-pump recovery and retry must retain the attached adapter"
+    );
     assert!(retry_actions.iter().any(|action| matches!(
         action,
         GuiShellAction::PushTransientNotification {
             level: GuiTransientNotificationLevel::Success,
+            ..
+        }
+    )));
+    assert!(!retry_actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::PushTransientNotification {
+            level: GuiTransientNotificationLevel::Error,
             ..
         }
     )));
@@ -395,6 +413,126 @@ fn independent_hook_degradation_reappears_after_successful_same_adapter_retry() 
         }),
         Some(original_player_address),
         "both scoped degradations must retain the same playback attachment"
+    );
+
+    env_guard.remove_var("SOROTTE_CLIENT_MPV_IPC_PATH");
+}
+
+#[test]
+fn queued_hook_degradation_remains_observable_when_same_pump_explicit_retry_fails() {
+    let env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
+    let ipc_path = r"\\.\pipe\sorotte-queued-hook-degradation-failed-retry-test";
+    env_guard.set_var("SOROTTE_CLIENT_MPV_IPC_PATH", ipc_path);
+    let settings = StoredClientSettingsMvp::default();
+    let launch_state =
+        GuiPersistedConfigRuntimeOwner::configured_player_launch_state_from_lookup_and_settings(
+            &crate::app::startup_support::env_trimmed,
+            Some(&settings),
+        )
+        .expect("explicit mpv launch state should resolve");
+    let (ui_settings, desired_streaming_options) = match &launch_state {
+        GuiPlayerLaunchRuntimeState::ExplicitMpvIpc {
+            ui_settings,
+            effective_streaming_options,
+            ..
+        } => ((**ui_settings).clone(), effective_streaming_options.clone()),
+        _ => panic!("expected explicit mpv launch state"),
+    };
+    let rejected_retry_write = desired_streaming_options.len() + 1;
+    let (adapter, _) =
+        sorotte_player_mpv::MpvAdapter::with_nth_active_network_option_rejection_test_ipc(
+            ui_settings.clone(),
+            rejected_retry_write,
+        );
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player_launch_state = launch_state;
+    owner.complete_explicit_mpv_attachment_after_ipc_connect(
+        ipc_path,
+        &ui_settings,
+        &desired_streaming_options,
+        adapter,
+    );
+    let original_player_address = match owner.player.as_ref() {
+        Some(GuiOwnedPlayer::Mpv(player)) => &**player as *const sorotte_player_mpv::MpvAdapter,
+        _ => panic!("initial successful apply should retain mpv"),
+    };
+    owner.player_apply_state.core_reapply_required = true;
+    owner.core_player_configuration_health = GuiCorePlayerConfigurationHealth::StreamingDegraded {
+        reason: "retry the explicit streaming apply".to_owned(),
+        retryable_in_place: true,
+        origin: crate::app::runtime_owner::GuiStreamingDegradationOrigin::ExplicitApply,
+    };
+    owner.player_unavailability_reason = Some("retry the explicit streaming apply".to_owned());
+    let player = match owner.player.as_mut() {
+        Some(GuiOwnedPlayer::Mpv(player)) => player,
+        _ => unreachable!(),
+    };
+    player.inject_test_network_media_options_hook_degradation(
+        "queued hook lease loss before failed explicit retry",
+    );
+    assert!(
+        owner.network_options_hook_failure_reason.is_none(),
+        "the hook degradation must still be queued rather than pre-projected"
+    );
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&settings);
+    assert!(owner.handle_player_command(&handle, &mut state, Command::RetrySettings));
+    let mut retry_actions = handle.drain_actions();
+    owner.sync_player_runtime_state(&handle, &state);
+    let projection_actions = handle.drain_actions();
+    for action in &projection_actions {
+        assert!(
+            state.apply(action.clone()),
+            "state should accept failed same-pump tail projection {action:?}"
+        );
+    }
+    retry_actions.extend(projection_actions);
+
+    assert!(
+        owner
+            .network_options_hook_failure_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("queued hook lease loss")),
+        "the failed explicit media-policy apply must not erase the queued hook degradation"
+    );
+    assert!(matches!(
+        owner.core_player_configuration_health,
+        GuiCorePlayerConfigurationHealth::StreamingDegraded {
+            origin: crate::app::runtime_owner::GuiStreamingDegradationOrigin::ExplicitApply,
+            ..
+        }
+    ));
+    assert!(owner.player_setup_runtime_snapshot_impl().issue.is_some());
+    assert!(state.player_setup_issue.is_some());
+    assert!(
+        state
+            .pending_apply_requirements
+            .contains(&GuiSettingApplyRequirement::PlayerSettingsRetryAvailable)
+    );
+    assert!(retry_actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::PushTransientNotification {
+            level: GuiTransientNotificationLevel::Error,
+            ..
+        }
+    )));
+    assert!(!retry_actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::PushTransientNotification {
+            level: GuiTransientNotificationLevel::Success,
+            ..
+        }
+    )));
+    assert_eq!(
+        owner.player.as_ref().and_then(|player| match player {
+            GuiOwnedPlayer::Mpv(player) => {
+                Some(&**player as *const sorotte_player_mpv::MpvAdapter)
+            }
+            _ => None,
+        }),
+        Some(original_player_address),
+        "a retryable policy failure and hook degradation must retain the attached adapter"
     );
 
     env_guard.remove_var("SOROTTE_CLIENT_MPV_IPC_PATH");
@@ -693,6 +831,7 @@ fn hook_degradation_survives_idle_and_local_media_until_positive_hook_recovery()
         Some(GuiOwnedPlayer::Mpv(player)) => player,
         _ => unreachable!(),
     };
+    player.inject_test_network_media_options_awaiting_authoritative_transition();
     player.inject_test_network_media_options_hook_degradation("first independent hook lease loss");
     player.inject_test_network_media_options_hook_degradation(
         "duplicate report while the same hook remains degraded",
@@ -778,6 +917,7 @@ fn hook_degradation_survives_idle_and_local_media_until_positive_hook_recovery()
         Some(GuiOwnedPlayer::Mpv(player)) => player,
         _ => unreachable!(),
     };
+    player.inject_test_network_media_options_awaiting_authoritative_transition();
     player.inject_test_network_media_options_hook_degradation("second independent hook lease loss");
     let _ = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     let rearmed_issue = owner

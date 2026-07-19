@@ -354,6 +354,9 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     /// A degraded network-options hook is independent of the active file's policy result. Keep
     /// this reason even when another player-configuration issue is currently projected.
     pub(super) network_options_hook_failure_reason: Option<String>,
+    pub(super) network_options_runtime_health_revision: Option<u64>,
+    #[cfg(test)]
+    pub(super) test_queue_network_options_hook_recovery_before_player_commands: bool,
     pub(super) pending_apply_requirements_refresh_required: bool,
     pub(super) player_integration_health: GuiPlayerIntegrationHealth,
     pub(super) player_local_file: Option<LocalFileUpdate>,

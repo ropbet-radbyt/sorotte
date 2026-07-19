@@ -142,6 +142,24 @@ impl PlayerAdapter for GuiOwnedPlayer {
         self.name()
     }
 
+    fn maintain_runtime_leases_nonblocking(&mut self) {
+        match self {
+            Self::Test(player) => player.maintain_runtime_leases_nonblocking(),
+            Self::Mpv(player) => player.maintain_runtime_leases_nonblocking(),
+            #[cfg(test)]
+            Self::Custom(player) => player.maintain_runtime_leases_nonblocking(),
+        }
+    }
+
+    fn maintain_runtime_integrations(&mut self) {
+        match self {
+            Self::Test(player) => player.maintain_runtime_integrations(),
+            Self::Mpv(player) => player.maintain_runtime_integrations(),
+            #[cfg(test)]
+            Self::Custom(player) => player.maintain_runtime_integrations(),
+        }
+    }
+
     fn open_file(&mut self, path: &str) -> Result<(), sorotte_player_api::PlayerError> {
         match self {
             Self::Test(player) => player.open_file(path),

@@ -74,6 +74,12 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.sync_detached_session_runtime_state_or_notify(handle, &mut projected_state);
             }
         }
+        #[cfg(test)]
+        if std::mem::take(&mut self.test_queue_network_options_hook_recovery_before_player_commands)
+            && let Some(player) = self.player.as_mut().and_then(GuiOwnedPlayer::as_mpv_mut)
+        {
+            player.inject_test_network_media_options_hook_recovery();
+        }
         for command in handle.drain_client_commands() {
             let handled = match command {
                 GuiClientCommand::Player(command) => {

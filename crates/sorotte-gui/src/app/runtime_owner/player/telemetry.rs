@@ -1,6 +1,9 @@
 use super::*;
 use crate::app::runtime_owner::{GuiCorePlayerConfigurationHealth, GuiStreamingDegradationOrigin};
-use sorotte_player_mpv::MpvNetworkMediaOptionsTransitionOutcome;
+use sorotte_player_mpv::{
+    MpvNetworkMediaPolicyOutcome, MpvNetworkMediaPolicyState, MpvNetworkOptionsHookHealth,
+    MpvNetworkOptionsHookHealthTransition, MpvNetworkOptionsRuntimeHealthSnapshot,
+};
 
 impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn emit_gui_actions_to_attached_player_impl(
@@ -143,30 +146,31 @@ impl GuiPersistedConfigRuntimeOwner {
         while let Some(update) = player.take_local_file_update() {
             local_file_updates.push(update);
         }
-        let mut streaming_transition_outcomes = Vec::new();
+        let mut hook_health_transitions = Vec::new();
+        let mut media_policy_outcomes = Vec::new();
+        let mut network_options_snapshot = None;
         let mut mpv_connected = true;
         if let Some(player) = player.as_mpv_mut() {
-            while let Some(outcome) = player.take_network_media_options_transition_outcome() {
-                streaming_transition_outcomes.push(outcome);
+            while let Some(transition) = player.take_network_options_hook_health_transition() {
+                hook_health_transitions.push(transition);
             }
+            while let Some(outcome) = player.take_network_media_policy_outcome() {
+                media_policy_outcomes.push(outcome);
+            }
+            network_options_snapshot = Some(player.network_options_runtime_health_snapshot());
             mpv_connected = player.is_connected();
         }
-        for outcome in streaming_transition_outcomes {
-            match outcome {
-                MpvNetworkMediaOptionsTransitionOutcome::HookRecovered => {
+        for transition in hook_health_transitions {
+            match transition {
+                MpvNetworkOptionsHookHealthTransition::Recovered => {
                     self.record_network_options_hook_recovered();
                 }
-                MpvNetworkMediaOptionsTransitionOutcome::NoActiveMedia
-                | MpvNetworkMediaOptionsTransitionOutcome::LocalMediaUnchanged
-                | MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated => {
-                    self.record_network_media_transition_recovered();
-                }
-                MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error) if mpv_connected => {
+                MpvNetworkOptionsHookHealthTransition::Degraded(error) if mpv_connected => {
                     self.mark_network_options_hook_degraded(format!(
                         "mpv playback remains available, but Sorotte's core streaming-settings hook needs retry or player restart: {error}"
                     ));
                 }
-                MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error) => {
+                MpvNetworkOptionsHookHealthTransition::Degraded(error) => {
                     self.player_apply_state.mark_streaming_apply_failed();
                     self.detach_player();
                     self.player_unavailability_reason = Some(format!(
@@ -174,12 +178,21 @@ impl GuiPersistedConfigRuntimeOwner {
                     ));
                     return;
                 }
-                MpvNetworkMediaOptionsTransitionOutcome::Failed(error) if mpv_connected => {
+            }
+        }
+        for outcome in media_policy_outcomes {
+            match outcome {
+                MpvNetworkMediaPolicyOutcome::NoActiveMedia
+                | MpvNetworkMediaPolicyOutcome::LocalMediaUnchanged
+                | MpvNetworkMediaPolicyOutcome::NetworkMediaUpdated => {
+                    self.record_network_media_transition_recovered();
+                }
+                MpvNetworkMediaPolicyOutcome::Failed(error) if mpv_connected => {
                     self.mark_network_media_transition_apply_failed(format!(
                         "mpv switched to network media, but configured streaming settings could not be applied to the new file: {error}"
                     ));
                 }
-                MpvNetworkMediaOptionsTransitionOutcome::Failed(error) => {
+                MpvNetworkMediaPolicyOutcome::Failed(error) => {
                     self.player_apply_state.mark_streaming_apply_failed();
                     self.detach_player();
                     self.player_unavailability_reason = Some(format!(
@@ -188,6 +201,11 @@ impl GuiPersistedConfigRuntimeOwner {
                     return;
                 }
             }
+        }
+        if let Some(snapshot) = network_options_snapshot
+            && !self.reconcile_network_options_runtime_health_snapshot(snapshot, mpv_connected)
+        {
+            return;
         }
         let now = Instant::now();
         if self
@@ -372,6 +390,65 @@ impl GuiPersistedConfigRuntimeOwner {
                 origin: GuiStreamingDegradationOrigin::AuthoritativeMediaTransition,
             };
         self.player_unavailability_reason = Some(reason);
+    }
+
+    fn reconcile_network_options_runtime_health_snapshot(
+        &mut self,
+        snapshot: MpvNetworkOptionsRuntimeHealthSnapshot,
+        mpv_connected: bool,
+    ) -> bool {
+        // Apply the snapshot after both event queues every time. A transition can be enqueued by
+        // the maintenance performed while draining the other channel, so revision equality alone
+        // is not sufficient to skip this final authoritative reconciliation.
+        self.network_options_runtime_health_revision = Some(snapshot.revision);
+        match snapshot.hook_health {
+            MpvNetworkOptionsHookHealth::Ready => self.record_network_options_hook_recovered(),
+            MpvNetworkOptionsHookHealth::Degraded(reason) if mpv_connected => {
+                self.mark_network_options_hook_degraded(format!(
+                    "mpv playback remains available, but Sorotte's core streaming-settings hook needs retry or player restart: {reason}"
+                ));
+            }
+            MpvNetworkOptionsHookHealth::Degraded(reason) => {
+                self.player_apply_state.mark_streaming_apply_failed();
+                self.detach_player();
+                self.player_unavailability_reason = Some(format!(
+                    "mpv JSON IPC became unavailable while maintaining Sorotte's core streaming-settings hook: {reason}"
+                ));
+                return false;
+            }
+            MpvNetworkOptionsHookHealth::Pending => {}
+        }
+        match snapshot.media_policy {
+            MpvNetworkMediaPolicyState::NoActiveMedia
+            | MpvNetworkMediaPolicyState::LocalMediaUnchanged
+            | MpvNetworkMediaPolicyState::NetworkMediaUpdated => {
+                self.record_network_media_transition_recovered();
+            }
+            MpvNetworkMediaPolicyState::Failed(reason) if mpv_connected => {
+                if !matches!(
+                    self.core_player_configuration_health,
+                    GuiCorePlayerConfigurationHealth::StreamingDegraded {
+                        origin: GuiStreamingDegradationOrigin::ExplicitApply,
+                        ..
+                    }
+                ) {
+                    self.mark_network_media_transition_apply_failed(format!(
+                        "mpv switched to network media, but configured streaming settings could not be applied to the new file: {reason}"
+                    ));
+                }
+            }
+            MpvNetworkMediaPolicyState::Failed(reason) => {
+                self.player_apply_state.mark_streaming_apply_failed();
+                self.detach_player();
+                self.player_unavailability_reason = Some(format!(
+                    "mpv JSON IPC became unavailable while applying configured streaming settings to newly active network media: {reason}"
+                ));
+                return false;
+            }
+            MpvNetworkMediaPolicyState::Unknown
+            | MpvNetworkMediaPolicyState::AwaitingAuthoritativeLoad => {}
+        }
+        true
     }
 
     fn mark_network_options_hook_degraded(&mut self, reason: String) {

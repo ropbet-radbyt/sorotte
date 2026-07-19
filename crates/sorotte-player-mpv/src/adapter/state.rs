@@ -51,8 +51,16 @@ impl fmt::Debug for MpvAdapter {
                 &self.network_media_options_apply_identity.is_some(),
             )
             .field(
-                "pending_network_media_options_transition_outcome_count",
-                &self.pending_network_media_options_transition_outcomes.len(),
+                "pending_network_options_hook_health_transition_count",
+                &self.pending_network_options_hook_health_transitions.len(),
+            )
+            .field(
+                "pending_network_media_policy_outcome_count",
+                &self.pending_network_media_policy_outcomes.len(),
+            )
+            .field(
+                "network_media_options_runtime_health_revision",
+                &self.network_media_options_runtime_health_revision,
             )
             .field("loadfile_options_syntax", &self.loadfile_options_syntax)
             .field("mpv_version", &self.mpv_version)
@@ -224,19 +232,21 @@ impl Default for MpvAdapter {
             next_network_media_options_hook_heartbeat_nonce: 1,
             network_media_options_hook_instance_id: None,
             network_media_options_hook_last_accepted_load_sequence: None,
-            network_media_options_hook_health: NetworkOptionsHookHealth::Pending,
+            network_media_options_hook_health: MpvNetworkOptionsHookHealth::Pending,
             network_media_options_hook_ownership_possible: false,
             network_media_options_hook_configuration_in_progress: false,
-            network_media_options_policy_degraded: false,
+            network_media_options_policy_state: MpvNetworkMediaPolicyState::Unknown,
+            network_media_options_runtime_health_revision: 0,
             pending_network_media_options_hook_active_result: None,
             deferred_network_media_options_hook_transition_result: None,
             network_media_options_embedded_load: None,
             network_media_options_apply_identity: None,
-            network_media_options_apply_awaiting_authoritative_transition: false,
             next_network_media_options_apply_attempt_id: 1,
             network_media_options_event_batch_depth: 0,
             deferred_network_media_options_observation: None,
-            pending_network_media_options_transition_outcomes: VecDeque::new(),
+            next_network_options_event_sequence: 1,
+            pending_network_options_hook_health_transitions: VecDeque::new(),
+            pending_network_media_policy_outcomes: VecDeque::new(),
             loadfile_options_syntax: None,
             mpv_version: None,
             pending_local_file_update: None,

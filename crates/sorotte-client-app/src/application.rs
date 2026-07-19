@@ -353,7 +353,7 @@ where
                 result = &mut worker => return result,
                 _ = tick.tick() => {
                     self.runtime
-                        .with_player_io(PlayerAdapter::maintain_runtime_integrations);
+                        .with_player_io(PlayerAdapter::maintain_runtime_leases_nonblocking);
                 }
             }
         }
@@ -446,7 +446,7 @@ where
 
     pub async fn pump_plex_service(&mut self) -> Vec<ClientEvent> {
         self.runtime
-            .with_player_io(PlayerAdapter::maintain_runtime_integrations);
+            .with_player_io(PlayerAdapter::maintain_runtime_leases_nonblocking);
         let watch_event = self.current_plex_watch_event();
         let Some(plex) = self.plex.as_mut() else {
             return Vec::new();
@@ -1898,6 +1898,7 @@ mod tests {
         open_error: Option<String>,
         pause_error: Option<String>,
         maintenance_calls: Arc<AtomicUsize>,
+        blocking_maintenance_calls: Arc<AtomicUsize>,
     }
 
     impl PlayerAdapter for TestPlayer {
@@ -1906,6 +1907,11 @@ mod tests {
         }
 
         fn maintain_runtime_integrations(&mut self) {
+            self.blocking_maintenance_calls
+                .fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn maintain_runtime_leases_nonblocking(&mut self) {
             self.maintenance_calls.fetch_add(1, Ordering::SeqCst);
         }
 
@@ -2807,6 +2813,32 @@ mod tests {
                 .with_player_io(|player| { player.maintenance_calls.load(Ordering::SeqCst) })
                 >= 1,
             "maintenance must run before the pending worker is released"
+        );
+        assert_eq!(
+            application.with_player_io(|player| {
+                player.blocking_maintenance_calls.load(Ordering::SeqCst)
+            }),
+            0,
+            "an async worker wait must not invoke potentially blocking player maintenance"
+        );
+    }
+
+    #[tokio::test]
+    async fn async_plex_pump_uses_only_nonblocking_player_maintenance() {
+        let mut application =
+            ClientApplication::new(ClientSession::default(), TestPlayer::default());
+
+        assert!(application.pump_plex_service().await.is_empty());
+        assert_eq!(
+            application.with_player_io(|player| player.maintenance_calls.load(Ordering::SeqCst)),
+            1
+        );
+        assert_eq!(
+            application.with_player_io(|player| {
+                player.blocking_maintenance_calls.load(Ordering::SeqCst)
+            }),
+            0,
+            "an async Plex pump must not invoke potentially blocking player maintenance"
         );
     }
 }
