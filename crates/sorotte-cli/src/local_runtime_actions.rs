@@ -4,14 +4,9 @@ use sorotte_client_app::app_boundary::application::{
 use sorotte_client_app::app_boundary::commands::{
     PlannedLocalRuntimeAction, plan_local_runtime_dispatch_legacy_compatible,
 };
-#[cfg(test)]
-use sorotte_player_api::PlayerError;
 use sorotte_player_api::PlayerPlaybackTelemetryUpdate;
-#[cfg(test)]
-use sorotte_player_mpv::MpvNetworkMediaOptionsTransitionOutcome;
 use sorotte_player_mpv::{
-    MpvAdapter, MpvNetworkMediaPolicyOutcome, MpvNetworkMediaPolicyState,
-    MpvNetworkOptionsHookHealth, MpvNetworkOptionsHookHealthTransition,
+    MpvAdapter, MpvNetworkMediaPolicyState, MpvNetworkOptionsHookHealth,
     MpvNetworkOptionsRuntimeHealthSnapshot,
 };
 use sorotte_protocol::DirectReadinessSurface;
@@ -21,50 +16,82 @@ use crate::language_support::current_legacy_runtime_language_tag_legacy_compatib
 
 pub(super) const PLAYER_CHAT_INPUT_POLL_INTERVAL_MS: u64 = 100;
 
-#[derive(Default)]
-struct NetworkMediaOptionsWarningState {
-    hook_failure: Option<String>,
-    policy_failure: Option<String>,
+#[derive(Debug, Default)]
+pub(super) struct CliNetworkOptionsHealthReporter {
+    last_revision: Option<u64>,
+    last_reported_hook_failure: Option<String>,
+    last_reported_policy_failure: Option<String>,
 }
 
-impl NetworkMediaOptionsWarningState {
+impl CliNetworkOptionsHealthReporter {
     fn current_failure(&self) -> Option<&str> {
-        self.hook_failure
+        self.last_reported_hook_failure
             .as_deref()
-            .or(self.policy_failure.as_deref())
+            .or(self.last_reported_policy_failure.as_deref())
     }
 
-    fn reconcile_snapshot(&mut self, snapshot: MpvNetworkOptionsRuntimeHealthSnapshot) {
+    fn lines_for_snapshot(
+        &mut self,
+        snapshot: MpvNetworkOptionsRuntimeHealthSnapshot,
+    ) -> Vec<String> {
+        if self
+            .last_revision
+            .is_some_and(|last_revision| snapshot.revision <= last_revision)
+        {
+            return Vec::new();
+        }
+        self.last_revision = Some(snapshot.revision);
+
+        let mut lines = Vec::new();
         match snapshot.hook_health {
-            MpvNetworkOptionsHookHealth::Ready => self.hook_failure = None,
+            MpvNetworkOptionsHookHealth::Ready => {
+                if self.last_reported_hook_failure.take().is_some() {
+                    lines.push("info: mpv streaming-options hook recovered".to_owned());
+                }
+            }
             MpvNetworkOptionsHookHealth::Degraded(reason) => {
-                self.hook_failure = Some(reason);
+                if self.last_reported_hook_failure.as_deref() != Some(reason.as_str()) {
+                    lines.push(network_media_options_warning_message(&reason));
+                    self.last_reported_hook_failure = Some(reason);
+                }
             }
             MpvNetworkOptionsHookHealth::Pending => {}
         }
         match snapshot.media_policy {
             MpvNetworkMediaPolicyState::NoActiveMedia
             | MpvNetworkMediaPolicyState::LocalMediaUnchanged
-            | MpvNetworkMediaPolicyState::NetworkMediaUpdated => self.policy_failure = None,
+            | MpvNetworkMediaPolicyState::NetworkMediaUpdated => {
+                if self.last_reported_policy_failure.take().is_some() {
+                    lines.push("info: mpv streaming options for active media recovered".to_owned());
+                }
+            }
             MpvNetworkMediaPolicyState::Failed(reason) => {
-                self.policy_failure = Some(reason);
+                if self.last_reported_policy_failure.as_deref() != Some(reason.as_str()) {
+                    lines.push(network_media_options_warning_message(&reason));
+                    self.last_reported_policy_failure = Some(reason);
+                }
             }
             MpvNetworkMediaPolicyState::Unknown
             | MpvNetworkMediaPolicyState::AwaitingAuthoritativeLoad => {}
         }
+        lines
     }
 }
 
 pub(super) fn publish_pending_local_file_updates(
     application: &mut ClientApplication<MpvAdapter>,
     config: &ClientLoopConfig,
+    network_options_health_reporter: &mut CliNetworkOptionsHealthReporter,
 ) -> anyhow::Result<()> {
     loop {
         let published = application.publish_pending_local_file_update_legacy_compatible(
             config.filename_privacy_mode,
             config.filesize_privacy_mode,
         );
-        surface_network_media_options_transition_outcomes(application)?;
+        surface_network_media_options_transition_outcomes(
+            application,
+            network_options_health_reporter,
+        )?;
         let published = published?;
         if !published {
             break;
@@ -75,32 +102,38 @@ pub(super) fn publish_pending_local_file_updates(
 
 fn surface_network_media_options_transition_outcomes(
     application: &mut ClientApplication<MpvAdapter>,
+    reporter: &mut CliNetworkOptionsHealthReporter,
 ) -> anyhow::Result<()> {
-    let mut warning_state = NetworkMediaOptionsWarningState::default();
-    while let Some(transition) =
-        application.with_player_io(MpvAdapter::take_network_options_hook_health_transition)
-    {
-        fold_network_options_hook_health_transition(&mut warning_state, transition);
-    }
-    while let Some(outcome) =
-        application.with_player_io(MpvAdapter::take_network_media_policy_outcome)
-    {
-        fold_network_media_policy_outcome(&mut warning_state, outcome);
-    }
+    surface_network_media_options_transition_outcomes_to_sink(application, reporter, |line| {
+        eprintln!("{line}");
+    })
+}
+
+fn surface_network_media_options_transition_outcomes_to_sink(
+    application: &mut ClientApplication<MpvAdapter>,
+    reporter: &mut CliNetworkOptionsHealthReporter,
+    mut emit: impl FnMut(String),
+) -> anyhow::Result<()> {
+    while application
+        .with_player_io(MpvAdapter::take_network_options_hook_health_transition_nonblocking)
+        .is_some()
+    {}
+    while application
+        .with_player_io(MpvAdapter::take_network_media_policy_outcome_nonblocking)
+        .is_some()
+    {}
     let (snapshot, player_connected) = application.with_player_io(|player| {
         (
             player.network_options_runtime_health_snapshot(),
             player.is_connected(),
         )
     });
-    warning_state.reconcile_snapshot(snapshot);
-    if let Some(error) = warning_state.current_failure() {
-        if !player_connected {
-            return Err(anyhow::anyhow!(
-                "mpv JSON IPC became unavailable while applying streaming options to externally activated network media: {error}"
-            ));
-        }
-        eprintln!("{}", network_media_options_warning_message(error));
+    let lines = reporter.lines_for_snapshot(snapshot);
+    if !player_connected && let Some(error) = reporter.current_failure() {
+        return Err(network_media_options_fatal_error(error));
+    }
+    for line in lines {
+        emit(line);
     }
     Ok(())
 }
@@ -111,85 +144,10 @@ fn network_media_options_warning_message(error: &str) -> String {
     )
 }
 
-fn fold_network_options_hook_health_transition(
-    warning_state: &mut NetworkMediaOptionsWarningState,
-    transition: MpvNetworkOptionsHookHealthTransition,
-) {
-    match transition {
-        MpvNetworkOptionsHookHealthTransition::Recovered => warning_state.hook_failure = None,
-        MpvNetworkOptionsHookHealthTransition::Degraded(error) => {
-            warning_state.hook_failure = Some(error.to_string());
-        }
-    }
-}
-
-fn fold_network_media_policy_outcome(
-    warning_state: &mut NetworkMediaOptionsWarningState,
-    outcome: MpvNetworkMediaPolicyOutcome,
-) {
-    match outcome {
-        MpvNetworkMediaPolicyOutcome::NoActiveMedia
-        | MpvNetworkMediaPolicyOutcome::LocalMediaUnchanged
-        | MpvNetworkMediaPolicyOutcome::NetworkMediaUpdated => {
-            warning_state.policy_failure = None;
-        }
-        MpvNetworkMediaPolicyOutcome::Failed(error) => {
-            warning_state.policy_failure = Some(error.to_string());
-        }
-    }
-}
-
-#[cfg(test)]
-fn fold_network_media_options_transition_outcome(
-    warning_state: &mut NetworkMediaOptionsWarningState,
-    outcome: MpvNetworkMediaOptionsTransitionOutcome,
-    player_connected: bool,
-) -> Result<(), PlayerError> {
-    match outcome {
-        MpvNetworkMediaOptionsTransitionOutcome::HookRecovered => {
-            fold_network_options_hook_health_transition(
-                warning_state,
-                MpvNetworkOptionsHookHealthTransition::Recovered,
-            );
-            Ok(())
-        }
-        MpvNetworkMediaOptionsTransitionOutcome::NoActiveMedia
-        | MpvNetworkMediaOptionsTransitionOutcome::LocalMediaUnchanged
-        | MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated => {
-            let outcome = match outcome {
-                MpvNetworkMediaOptionsTransitionOutcome::NoActiveMedia => {
-                    MpvNetworkMediaPolicyOutcome::NoActiveMedia
-                }
-                MpvNetworkMediaOptionsTransitionOutcome::LocalMediaUnchanged => {
-                    MpvNetworkMediaPolicyOutcome::LocalMediaUnchanged
-                }
-                MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated => {
-                    MpvNetworkMediaPolicyOutcome::NetworkMediaUpdated
-                }
-                _ => unreachable!(),
-            };
-            fold_network_media_policy_outcome(warning_state, outcome);
-            Ok(())
-        }
-        MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error) if !player_connected => {
-            Err(error)
-        }
-        MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error) => {
-            fold_network_options_hook_health_transition(
-                warning_state,
-                MpvNetworkOptionsHookHealthTransition::Degraded(error),
-            );
-            Ok(())
-        }
-        MpvNetworkMediaOptionsTransitionOutcome::Failed(error) if !player_connected => Err(error),
-        MpvNetworkMediaOptionsTransitionOutcome::Failed(error) => {
-            fold_network_media_policy_outcome(
-                warning_state,
-                MpvNetworkMediaPolicyOutcome::Failed(error),
-            );
-            Ok(())
-        }
-    }
+fn network_media_options_fatal_error(error: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "mpv JSON IPC became unavailable while applying streaming options to externally activated network media: {error}"
+    )
 }
 
 pub(super) fn drain_player_chat_input_legacy_compatible(
@@ -336,98 +294,167 @@ pub(super) fn run_planned_local_runtime_action_legacy_compatible(
 #[cfg(test)]
 mod network_media_options_transition_outcome_tests {
     use super::*;
-    use sorotte_player_api::PlayerError;
+    use sorotte_player_mpv::LegacySyncplayUiSettings;
 
-    #[test]
-    fn network_policy_success_supersedes_only_a_pending_policy_failure() {
-        let mut warning_state = NetworkMediaOptionsWarningState::default();
-        fold_network_media_options_transition_outcome(
-            &mut warning_state,
-            MpvNetworkMediaOptionsTransitionOutcome::Failed(PlayerError::OperationFailed(
-                "test option rejection".to_owned(),
-            )),
-            true,
-        )
-        .expect("a healthy rejection should be buffered as a warning");
-        assert!(warning_state.policy_failure.is_some());
-
-        fold_network_media_options_transition_outcome(
-            &mut warning_state,
-            MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated,
-            true,
-        )
-        .expect("a later successful transition should remain healthy");
-
-        assert!(
-            warning_state.policy_failure.is_none(),
-            "a successful outcome in the same drain batch must suppress the stale warning"
-        );
-    }
-
-    #[test]
-    fn idle_and_local_policy_state_do_not_clear_a_hook_warning() {
-        let mut warning_state = NetworkMediaOptionsWarningState::default();
-        fold_network_media_options_transition_outcome(
-            &mut warning_state,
-            MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(PlayerError::OperationFailed(
-                "test hook loss".to_owned(),
-            )),
-            true,
-        )
-        .expect("a healthy hook failure should remain a scoped warning");
-
-        for outcome in [
-            MpvNetworkMediaOptionsTransitionOutcome::NoActiveMedia,
-            MpvNetworkMediaOptionsTransitionOutcome::LocalMediaUnchanged,
-        ] {
-            fold_network_media_options_transition_outcome(&mut warning_state, outcome, true)
-                .expect("media policy completion should remain healthy");
-            assert!(
-                warning_state.hook_failure.is_some(),
-                "media policy state must not clear independent hook health"
-            );
+    fn snapshot(
+        revision: u64,
+        hook_health: MpvNetworkOptionsHookHealth,
+        media_policy: MpvNetworkMediaPolicyState,
+    ) -> MpvNetworkOptionsRuntimeHealthSnapshot {
+        MpvNetworkOptionsRuntimeHealthSnapshot {
+            revision,
+            hook_health,
+            media_policy,
         }
-
-        fold_network_media_options_transition_outcome(
-            &mut warning_state,
-            MpvNetworkMediaOptionsTransitionOutcome::HookRecovered,
-            true,
-        )
-        .expect("positive hook recovery should remain healthy");
-        assert!(warning_state.hook_failure.is_none());
     }
 
     #[test]
-    fn authoritative_snapshot_supersedes_stale_notifications_and_restores_missed_failures() {
-        let mut warning_state = NetworkMediaOptionsWarningState {
-            hook_failure: Some("stale hook failure".to_owned()),
-            policy_failure: Some("stale policy failure".to_owned()),
-        };
-        warning_state.reconcile_snapshot(MpvNetworkOptionsRuntimeHealthSnapshot {
-            revision: 7,
-            hook_health: MpvNetworkOptionsHookHealth::Ready,
-            media_policy: MpvNetworkMediaPolicyState::NetworkMediaUpdated,
-        });
-        assert!(warning_state.hook_failure.is_none());
-        assert!(warning_state.policy_failure.is_none());
+    fn reporter_emits_each_authoritative_failure_and_recovery_once() {
+        let mut reporter = CliNetworkOptionsHealthReporter::default();
+        let hook_failure = "hook lease expired";
+        let policy_failure = "active network option rejected";
 
-        warning_state.reconcile_snapshot(MpvNetworkOptionsRuntimeHealthSnapshot {
-            revision: 8,
-            hook_health: MpvNetworkOptionsHookHealth::Degraded(
-                "authoritative hook failure".to_owned(),
-            ),
-            media_policy: MpvNetworkMediaPolicyState::Failed(
-                "authoritative policy failure".to_owned(),
-            ),
-        });
+        let hook_degraded = snapshot(
+            1,
+            MpvNetworkOptionsHookHealth::Degraded(hook_failure.to_owned()),
+            MpvNetworkMediaPolicyState::Unknown,
+        );
+        assert_eq!(reporter.lines_for_snapshot(hook_degraded.clone()).len(), 1);
+        assert!(reporter.lines_for_snapshot(hook_degraded).is_empty());
+        assert!(
+            reporter
+                .lines_for_snapshot(snapshot(
+                    2,
+                    MpvNetworkOptionsHookHealth::Degraded(hook_failure.to_owned()),
+                    MpvNetworkMediaPolicyState::AwaitingAuthoritativeLoad,
+                ))
+                .is_empty(),
+            "an unrelated newer revision must not repeat an unchanged hook warning"
+        );
+
+        let policy_degraded = reporter.lines_for_snapshot(snapshot(
+            3,
+            MpvNetworkOptionsHookHealth::Degraded(hook_failure.to_owned()),
+            MpvNetworkMediaPolicyState::Failed(policy_failure.to_owned()),
+        ));
+        assert_eq!(policy_degraded.len(), 1);
+        assert!(policy_degraded[0].contains(policy_failure));
+
         assert_eq!(
-            warning_state.hook_failure.as_deref(),
-            Some("authoritative hook failure")
+            reporter.lines_for_snapshot(snapshot(
+                4,
+                MpvNetworkOptionsHookHealth::Ready,
+                MpvNetworkMediaPolicyState::Failed(policy_failure.to_owned()),
+            )),
+            vec!["info: mpv streaming-options hook recovered"]
+        );
+        assert!(
+            reporter
+                .lines_for_snapshot(snapshot(
+                    4,
+                    MpvNetworkOptionsHookHealth::Ready,
+                    MpvNetworkMediaPolicyState::Failed(policy_failure.to_owned()),
+                ))
+                .is_empty()
         );
         assert_eq!(
-            warning_state.policy_failure.as_deref(),
-            Some("authoritative policy failure")
+            reporter.lines_for_snapshot(snapshot(
+                5,
+                MpvNetworkOptionsHookHealth::Ready,
+                MpvNetworkMediaPolicyState::NetworkMediaUpdated,
+            )),
+            vec!["info: mpv streaming options for active media recovered"]
         );
+        assert!(
+            reporter
+                .lines_for_snapshot(snapshot(
+                    6,
+                    MpvNetworkOptionsHookHealth::Ready,
+                    MpvNetworkMediaPolicyState::NetworkMediaUpdated,
+                ))
+                .is_empty(),
+            "a newer healthy revision must not repeat either recovery"
+        );
+    }
+
+    #[test]
+    fn pending_states_preserve_independent_reported_failures() {
+        let mut reporter = CliNetworkOptionsHealthReporter::default();
+        assert_eq!(
+            reporter
+                .lines_for_snapshot(snapshot(
+                    1,
+                    MpvNetworkOptionsHookHealth::Degraded("hook failure".to_owned()),
+                    MpvNetworkMediaPolicyState::Failed("policy failure".to_owned()),
+                ))
+                .len(),
+            2
+        );
+        assert!(
+            reporter
+                .lines_for_snapshot(snapshot(
+                    2,
+                    MpvNetworkOptionsHookHealth::Pending,
+                    MpvNetworkMediaPolicyState::AwaitingAuthoritativeLoad,
+                ))
+                .is_empty()
+        );
+        assert_eq!(reporter.current_failure(), Some("hook failure"));
+        assert_eq!(
+            reporter.lines_for_snapshot(snapshot(
+                3,
+                MpvNetworkOptionsHookHealth::Ready,
+                MpvNetworkMediaPolicyState::LocalMediaUnchanged,
+            )),
+            vec![
+                "info: mpv streaming-options hook recovered",
+                "info: mpv streaming options for active media recovered",
+            ]
+        );
+    }
+
+    #[test]
+    fn repeated_runtime_drains_do_not_repeat_streaming_health_lines() {
+        let (mut adapter, _commands, _transition_trigger) =
+            MpvAdapter::with_external_network_media_transition_test_ipc(
+                LegacySyncplayUiSettings::default(),
+            );
+        adapter.inject_test_network_media_options_hook_degradation("test hook loss");
+        let mut application = ClientApplication::with_default_session(adapter);
+        let mut reporter = CliNetworkOptionsHealthReporter::default();
+        let mut lines = Vec::new();
+
+        surface_network_media_options_transition_outcomes_to_sink(
+            &mut application,
+            &mut reporter,
+            |line| lines.push(line),
+        )
+        .expect("an attached hook failure should remain a warning");
+        surface_network_media_options_transition_outcomes_to_sink(
+            &mut application,
+            &mut reporter,
+            |line| lines.push(line),
+        )
+        .expect("a repeated drain should remain healthy");
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("test hook loss"));
+
+        application.with_player_io(MpvAdapter::inject_test_network_media_options_hook_recovery);
+        surface_network_media_options_transition_outcomes_to_sink(
+            &mut application,
+            &mut reporter,
+            |line| lines.push(line),
+        )
+        .expect("hook recovery should remain healthy");
+        surface_network_media_options_transition_outcomes_to_sink(
+            &mut application,
+            &mut reporter,
+            |line| lines.push(line),
+        )
+        .expect("a repeated recovery drain should remain healthy");
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("test hook loss"));
+        assert_eq!(lines[1], "info: mpv streaming-options hook recovered");
     }
 
     #[test]
@@ -463,32 +490,22 @@ mod network_media_options_transition_outcome_tests {
         for (source, resolved) in cases {
             let mut adapter = MpvAdapter::default();
             adapter.inject_test_network_media_options_policy_failure(42, &source, &resolved);
-            let outcome = adapter
-                .take_network_media_options_transition_outcome()
-                .expect("the fixture should queue a sanitized policy failure");
-            let mut warning_state = NetworkMediaOptionsWarningState::default();
-            fold_network_media_options_transition_outcome(&mut warning_state, outcome, true)
-                .expect("an attached-player failure should remain scoped");
-            let warning = network_media_options_warning_message(
-                warning_state
-                    .current_failure()
-                    .expect("the scoped warning should remain active"),
-            );
+            let mut reporter = CliNetworkOptionsHealthReporter::default();
+            let lines =
+                reporter.lines_for_snapshot(adapter.network_options_runtime_health_snapshot());
+            let warning = lines
+                .first()
+                .expect("the scoped warning should remain active");
             assert!(!warning.contains(CANARY));
             assert!(!warning.contains(&source));
             assert!(!warning.contains(&resolved));
             assert!(warning.contains("hook load 42"));
 
-            let mut adapter = MpvAdapter::default();
-            adapter.inject_test_network_media_options_policy_failure(42, &source, &resolved);
-            let fatal = fold_network_media_options_transition_outcome(
-                &mut NetworkMediaOptionsWarningState::default(),
-                adapter
-                    .take_network_media_options_transition_outcome()
-                    .expect("the second fixture should queue a failure"),
-                false,
+            let fatal = network_media_options_fatal_error(
+                reporter
+                    .current_failure()
+                    .expect("the failure should remain available for fatal surfacing"),
             )
-            .expect_err("a disconnected player should surface a fatal error")
             .to_string();
             assert!(!fatal.contains(CANARY));
             assert!(!fatal.contains(&source));

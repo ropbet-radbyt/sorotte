@@ -63,8 +63,9 @@ use crate::diagnostics_config::{ClientLoopDiagnosticsConfig, client_loop_diagnos
 use crate::env_support::{env_flag_enabled, env_flag_override, env_trimmed};
 use crate::language_support::current_legacy_runtime_language_tag_legacy_compatible;
 use crate::local_runtime_actions::{
-    PLAYER_CHAT_INPUT_POLL_INTERVAL_MS, drain_player_chat_input_legacy_compatible,
-    publish_pending_local_file_updates, run_planned_local_runtime_action_legacy_compatible,
+    CliNetworkOptionsHealthReporter, PLAYER_CHAT_INPUT_POLL_INTERVAL_MS,
+    drain_player_chat_input_legacy_compatible, publish_pending_local_file_updates,
+    run_planned_local_runtime_action_legacy_compatible,
 };
 use crate::mpv_startup::{
     ManagedMpvProcessGuard,

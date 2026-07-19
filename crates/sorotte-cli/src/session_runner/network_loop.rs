@@ -134,6 +134,7 @@ where
     notification_sink: F,
     file_difference_sink: G,
     plex_config: PlexClientConfig,
+    network_options_health_reporter: CliNetworkOptionsHealthReporter,
     retries: u32,
 }
 
@@ -231,6 +232,7 @@ where
             notification_sink,
             file_difference_sink,
             plex_config: cli_plex_config_from_env_and_stored_settings(stored_settings),
+            network_options_health_reporter: CliNetworkOptionsHealthReporter::default(),
             retries: 0_u32,
         },
         _managed_mpv_process_guard: managed_mpv_process_guard,
@@ -260,6 +262,7 @@ where
             file_difference_sink: &mut retry_state.file_difference_sink,
             diagnostics_config,
             plex_config: &retry_state.plex_config,
+            network_options_health_reporter: &mut retry_state.network_options_health_reporter,
         },
         retries: &mut retry_state.retries,
         network_start,
@@ -376,6 +379,7 @@ where
         file_difference_sink,
         diagnostics_config,
         plex_config,
+        network_options_health_reporter,
     } = launch;
     let (attempt_execution_plan, connect_error) =
         client_network_loop_transport_attempt_execution_plan_legacy_compatible(
@@ -390,6 +394,7 @@ where
                 file_difference_sink,
                 diagnostics_config,
                 plex_config,
+                network_options_health_reporter,
             },
         )
         .await?;

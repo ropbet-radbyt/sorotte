@@ -297,6 +297,9 @@ impl fmt::Display for NetworkOptionsApplyDiagnostic {
 #[derive(Clone, Copy, Debug)]
 struct PendingNetworkOptionsHookHeartbeat {
     nonce: u64,
+    /// Present only for heartbeats sent through the asynchronous control lane. Synchronous
+    /// maintenance observes delivery directly and therefore does not need completion identity.
+    command_id: Option<u64>,
     /// Set only after mpv has accepted the heartbeat command. A nonblocking IPC command can
     /// remain in flight longer than the hook acknowledgement window, so starting that window at
     /// enqueue time would falsely degrade an otherwise healthy hook.
@@ -479,6 +482,7 @@ pub struct MpvAdapter {
     network_media_options_hook_configuration_error: Option<String>,
     network_media_options_hook_last_heartbeat_at: Option<Instant>,
     network_media_options_hook_pending_heartbeat: Option<PendingNetworkOptionsHookHeartbeat>,
+    network_media_options_hook_pending_event_poll_command_id: Option<u64>,
     next_network_media_options_hook_heartbeat_nonce: u64,
     network_media_options_hook_instance_id: Option<String>,
     network_media_options_hook_last_accepted_load_sequence: Option<u64>,
@@ -552,6 +556,7 @@ pub struct MpvAdapter {
     legacy_syncplayintf_next_ping_nonce: u64,
     legacy_syncplayintf_pending_ping_nonce: Option<u64>,
     legacy_syncplayintf_last_heartbeat_at: Option<Instant>,
+    legacy_syncplayintf_pending_heartbeat_command_id: Option<u64>,
     legacy_syncplayintf_last_discovery_at: Option<Instant>,
     legacy_syncplayintf_lease_reacquire_required: bool,
     legacy_syncplayintf_runtime_rediscovery_required: bool,
@@ -604,6 +609,7 @@ impl MpvAdapter {
         self.network_media_options_hook_configuration_error = None;
         self.network_media_options_hook_last_heartbeat_at = None;
         self.network_media_options_hook_pending_heartbeat = None;
+        self.network_media_options_hook_pending_event_poll_command_id = None;
         self.next_network_media_options_hook_heartbeat_nonce = 1;
         self.network_media_options_hook_instance_id = None;
         self.network_media_options_hook_last_accepted_load_sequence = None;
@@ -632,6 +638,7 @@ impl MpvAdapter {
         self.legacy_syncplayintf_options_ack_error = None;
         self.legacy_syncplayintf_pending_ping_nonce = None;
         self.legacy_syncplayintf_last_heartbeat_at = None;
+        self.legacy_syncplayintf_pending_heartbeat_command_id = None;
         self.legacy_syncplayintf_last_discovery_at = None;
         self.legacy_syncplayintf_lease_reacquire_required = false;
         self.legacy_syncplayintf_runtime_rediscovery_required = false;
@@ -1051,6 +1058,7 @@ impl MpvAdapter {
             self.network_media_options_hook_configuration_error = None;
             self.network_media_options_hook_last_heartbeat_at = None;
             self.network_media_options_hook_pending_heartbeat = None;
+            self.network_media_options_hook_pending_event_poll_command_id = None;
             if !matches!(
                 self.network_media_options_hook_health,
                 MpvNetworkOptionsHookHealth::Degraded(_)
@@ -1075,6 +1083,13 @@ impl MpvAdapter {
         &mut self,
     ) -> Option<MpvNetworkOptionsHookHealthTransition> {
         self.maintain_runtime_integrations();
+        self.take_network_options_hook_health_transition_nonblocking()
+    }
+
+    /// Pure queue pop for async wait loops that already service leases explicitly.
+    pub fn take_network_options_hook_health_transition_nonblocking(
+        &mut self,
+    ) -> Option<MpvNetworkOptionsHookHealthTransition> {
         self.pending_network_options_hook_health_transitions
             .pop_front()
             .map(|event| event.value)
@@ -1083,6 +1098,13 @@ impl MpvAdapter {
     /// Returns the oldest unconsumed active-media policy outcome.
     pub fn take_network_media_policy_outcome(&mut self) -> Option<MpvNetworkMediaPolicyOutcome> {
         self.maintain_runtime_integrations();
+        self.take_network_media_policy_outcome_nonblocking()
+    }
+
+    /// Pure queue pop for async wait loops that already service leases explicitly.
+    pub fn take_network_media_policy_outcome_nonblocking(
+        &mut self,
+    ) -> Option<MpvNetworkMediaPolicyOutcome> {
         self.pending_network_media_policy_outcomes
             .pop_front()
             .map(|event| event.value)
@@ -1166,6 +1188,9 @@ impl MpvAdapter {
         self.drain_ipc_events_if_attached();
         self.maintain_network_media_options_hook_lease();
         self.maintain_legacy_syncplayintf_lease();
+        // Synchronous heartbeat commands can themselves harvest a bounded batch of events. Flush
+        // their control faults and ordinary observations before returning to a full-pump owner.
+        self.drain_ipc_events_if_attached();
     }
 
     /// Applies the configured network options to an already-active network file.
@@ -1294,6 +1319,7 @@ impl MpvAdapter {
         self.network_media_options_hook_configured_generation = None;
         self.network_media_options_hook_last_heartbeat_at = None;
         self.network_media_options_hook_pending_heartbeat = None;
+        self.network_media_options_hook_pending_event_poll_command_id = None;
         self.pending_network_media_options_hook_active_result = None;
         self.deferred_network_media_options_hook_transition_result = None;
     }
@@ -1348,6 +1374,7 @@ impl MpvAdapter {
         self.network_media_options_hook_pending_heartbeat =
             Some(PendingNetworkOptionsHookHeartbeat {
                 nonce,
+                command_id: None,
                 sent_at: Some(Instant::now()),
             });
         let command = json!([
@@ -1426,6 +1453,7 @@ impl MpvAdapter {
             if self.network_media_options_hook_configured_generation == Some(generation) {
                 self.network_media_options_hook_last_heartbeat_at = Some(Instant::now());
                 self.network_media_options_hook_pending_heartbeat = None;
+                self.network_media_options_hook_pending_event_poll_command_id = None;
                 return Ok(());
             }
             if let Some(error) = self.network_media_options_hook_configuration_error.take() {
@@ -2539,6 +2567,7 @@ impl MpvAdapter {
     ) -> SorotteBridgeHealth {
         self.legacy_syncplayintf_options_applied = false;
         self.legacy_syncplayintf_last_heartbeat_at = None;
+        self.legacy_syncplayintf_pending_heartbeat_command_id = None;
         self.legacy_syncplayintf_lease_reacquire_required =
             kind == SorotteBridgeFailureKind::LeaseBusy;
         self.pending_chat_requests.clear();
@@ -2847,6 +2876,7 @@ impl MpvAdapter {
         }
         self.legacy_syncplayintf_options_applied = false;
         self.legacy_syncplayintf_last_heartbeat_at = None;
+        self.legacy_syncplayintf_pending_heartbeat_command_id = None;
         self.legacy_syncplayintf_lease_reacquire_required = true;
         self.legacy_syncplayintf_runtime_rediscovery_required |= rediscovery_required;
         self.legacy_syncplayintf_runtime_recovery_failure =
@@ -2969,6 +2999,7 @@ impl MpvAdapter {
 
         if !self.legacy_syncplay_ui_settings.chat_input_enabled {
             self.legacy_syncplayintf_last_heartbeat_at = None;
+            self.legacy_syncplayintf_pending_heartbeat_command_id = None;
             return;
         }
         if !self.legacy_syncplayintf_options_ready() {
@@ -2992,10 +3023,12 @@ impl MpvAdapter {
         match self.send_syncplayintf_script_message(LEGACY_SYNCPLAYINTF_HEARTBEAT_MESSAGE, &payload)
         {
             Ok(()) if matches!(self.sorotte_bridge_health, SorotteBridgeHealth::Ready) => {
+                self.legacy_syncplayintf_pending_heartbeat_command_id = None;
                 self.legacy_syncplayintf_last_heartbeat_at = Some(Instant::now());
             }
             Ok(()) => {
                 self.legacy_syncplayintf_last_heartbeat_at = None;
+                self.legacy_syncplayintf_pending_heartbeat_command_id = None;
                 self.attempt_sorotte_bridge_runtime_recovery();
             }
             Err(error) => self.begin_sorotte_bridge_runtime_recovery(
@@ -3059,6 +3092,7 @@ impl MpvAdapter {
         self.legacy_syncplayintf_options_ack_error = None;
         self.legacy_syncplayintf_pending_ping_nonce = None;
         self.legacy_syncplayintf_last_heartbeat_at = None;
+        self.legacy_syncplayintf_pending_heartbeat_command_id = None;
         self.legacy_syncplayintf_lease_reacquire_required = false;
         self.pending_chat_requests.clear();
         // Release is terminal for this endpoint; queued observations are no longer actionable.
@@ -5018,6 +5052,7 @@ impl MpvAdapter {
                 self.network_media_options_hook_configuration_error = None;
                 self.network_media_options_hook_last_heartbeat_at = Some(Instant::now());
                 self.network_media_options_hook_pending_heartbeat = None;
+                self.network_media_options_hook_pending_event_poll_command_id = None;
                 self.queue_network_media_options_hook_recovered();
             }
             Some("stale") => {
@@ -5059,6 +5094,7 @@ impl MpvAdapter {
                 self.network_media_options_hook_configured_generation = None;
                 self.network_media_options_hook_last_heartbeat_at = None;
                 self.network_media_options_hook_pending_heartbeat = None;
+                self.network_media_options_hook_pending_event_poll_command_id = None;
                 self.network_media_options_hook_instance_id = None;
                 self.network_media_options_hook_last_accepted_load_sequence = None;
                 self.pending_network_media_options_hook_active_result = None;
@@ -5069,6 +5105,7 @@ impl MpvAdapter {
         self.network_media_options_hook_configured_generation = None;
         self.network_media_options_hook_last_heartbeat_at = None;
         self.network_media_options_hook_pending_heartbeat = None;
+        self.network_media_options_hook_pending_event_poll_command_id = None;
         self.network_media_options_hook_instance_id = None;
         self.network_media_options_hook_last_accepted_load_sequence = None;
         self.network_media_options_hook_ownership_possible = false;
@@ -5104,6 +5141,7 @@ impl MpvAdapter {
             .is_some_and(|pending| pending.nonce == nonce)
         {
             self.network_media_options_hook_pending_heartbeat = None;
+            self.network_media_options_hook_pending_event_poll_command_id = None;
             self.network_media_options_hook_last_heartbeat_at = Some(Instant::now());
             self.queue_network_media_options_hook_recovered();
         }

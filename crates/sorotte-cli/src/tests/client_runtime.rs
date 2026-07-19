@@ -1,4 +1,5 @@
 use super::*;
+use crate::local_runtime_actions::CliNetworkOptionsHealthReporter;
 
 #[test]
 fn normalize_controlled_room_input_extracts_canonical_room_and_password() {
@@ -436,8 +437,12 @@ fn cli_runtime_applies_launch_options_when_external_queue_advances_local_to_netw
     );
 
     transition_trigger.store(true, std::sync::atomic::Ordering::SeqCst);
-    publish_pending_local_file_updates(&mut runtime, &config)
-        .expect("the CLI runtime pump should publish and configure the queued network item");
+    publish_pending_local_file_updates(
+        &mut runtime,
+        &config,
+        &mut CliNetworkOptionsHealthReporter::default(),
+    )
+    .expect("the CLI runtime pump should publish and configure the queued network item");
 
     let commands = commands
         .lock()
@@ -488,8 +493,12 @@ fn cli_runtime_contains_external_network_option_rejection_during_file_update_pum
     assert!(startup_warning.is_none());
 
     transition_trigger.store(true, std::sync::atomic::Ordering::SeqCst);
-    publish_pending_local_file_updates(&mut runtime, &config)
-        .expect("a healthy mpv option rejection must not abort the CLI session");
+    publish_pending_local_file_updates(
+        &mut runtime,
+        &config,
+        &mut CliNetworkOptionsHealthReporter::default(),
+    )
+    .expect("a healthy mpv option rejection must not abort the CLI session");
 
     assert!(runtime.player().is_connected());
     assert_eq!(

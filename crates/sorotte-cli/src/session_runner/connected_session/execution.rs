@@ -237,6 +237,7 @@ async fn apply_connected_session_protocol_plan_legacy_compatible(
 fn run_connected_session_branch_runtime_steps_legacy_compatible(
     runtime: &mut ClientApplication<MpvAdapter>,
     config: &ClientLoopConfig,
+    network_options_health_reporter: &mut CliNetworkOptionsHealthReporter,
     now_seconds: f64,
     dont_slow_down_with_me: bool,
     outbound_state_sync_enabled: bool,
@@ -293,7 +294,11 @@ fn run_connected_session_branch_runtime_steps_legacy_compatible(
                 );
             }
             ConnectedSessionRuntimeStepAction::PublishPendingLocalFileUpdates => {
-                publish_pending_local_file_updates(runtime, config)?;
+                publish_pending_local_file_updates(
+                    runtime,
+                    config,
+                    network_options_health_reporter,
+                )?;
             }
         }
     }
@@ -322,6 +327,7 @@ where
         seek_preparation_notification_state,
         readiness_notification_state,
         file_difference_state,
+        network_options_health_reporter,
         notification_sink,
         file_difference_sink,
     } = context;
@@ -337,6 +343,7 @@ where
     run_connected_session_branch_runtime_steps_legacy_compatible(
         runtime,
         config,
+        network_options_health_reporter,
         now_seconds,
         dont_slow_down_with_me,
         outbound_state_sync_enabled,
@@ -381,6 +388,7 @@ where
     pub(super) seek_preparation_notification_state: &'a mut SeekPreparationNotificationState,
     pub(super) readiness_notification_state: &'a mut ReadinessNotificationState,
     pub(super) file_difference_state: &'a mut FileDifferenceNotificationState,
+    pub(super) network_options_health_reporter: &'a mut CliNetworkOptionsHealthReporter,
     pub(super) notification_sink: &'a mut F,
     pub(super) file_difference_sink: &'a mut G,
 }

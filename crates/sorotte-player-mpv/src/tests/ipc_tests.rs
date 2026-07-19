@@ -1,4 +1,5 @@
 use super::*;
+use crate::constants::SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_HEARTBEAT;
 use crate::ipc::{MPV_IPC_MAX_LINE_BYTES, MpvIpcConnectionEvent, MpvJsonIpcClient};
 use sorotte_player_api::PlayerCapabilities;
 use std::{
@@ -807,7 +808,7 @@ fn mpv_ipc_nonblocking_command_never_waits_for_transport_timeout() {
     let queued_at = Instant::now();
     assert_eq!(
         client.try_send_command_expect_success_nonblocking(json!(["get_property", "path"]), 1),
-        Ok(true)
+        Ok(Some(1))
     );
     assert!(
         queued_at.elapsed() < command_timeout / 2,
@@ -847,7 +848,7 @@ fn mpv_ipc_nonblocking_command_harvests_selected_events_without_dropping_others(
     });
     let lease_event = json!({
         "event": "client-message",
-        "args": ["lease-heartbeat", "{}"],
+        "args": [SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_HEARTBEAT, "{}"],
     });
     let response = json!({"request_id": 1, "error": "success", "data": false});
     let reads = [
@@ -861,7 +862,7 @@ fn mpv_ipc_nonblocking_command_harvests_selected_events_without_dropping_others(
 
     assert_eq!(
         client.try_send_command_expect_success_nonblocking(json!(["get_property", "pause"]), 1),
-        Ok(true)
+        Ok(Some(1))
     );
     let observation_deadline = Instant::now() + Duration::from_secs(1);
     let selected = loop {
@@ -879,7 +880,7 @@ fn mpv_ipc_nonblocking_command_harvests_selected_events_without_dropping_others(
 }
 
 #[test]
-fn mpv_ipc_nonblocking_runtime_items_wait_behind_an_earlier_unselected_event() {
+fn mpv_ipc_nonblocking_runtime_items_bypass_an_earlier_unselected_event() {
     let property_event = json!({
         "event": "property-change",
         "name": "path",
@@ -887,7 +888,7 @@ fn mpv_ipc_nonblocking_runtime_items_wait_behind_an_earlier_unselected_event() {
     });
     let lease_event = json!({
         "event": "client-message",
-        "args": ["lease-heartbeat", "{}"],
+        "args": [SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_HEARTBEAT, "{}"],
     });
     let response = json!({"request_id": 1, "error": "success", "data": false});
     let reads = [
@@ -901,35 +902,18 @@ fn mpv_ipc_nonblocking_runtime_items_wait_behind_an_earlier_unselected_event() {
 
     assert_eq!(
         client.try_send_command_expect_success_nonblocking(json!(["get_property", "pause"]), 7),
-        Ok(true)
+        Ok(Some(1))
     );
 
     let observation_deadline = Instant::now() + Duration::from_secs(1);
-    loop {
-        let runtime_items = client.take_nonblocking_runtime_items_matching(|event| {
+    let mut runtime_items = Vec::new();
+    while runtime_items.len() < 2 && Instant::now() < observation_deadline {
+        runtime_items.extend(client.take_nonblocking_runtime_items_matching(|event| {
             event.get("event").and_then(Value::as_str) == Some("client-message")
-        });
-        assert!(
-            runtime_items.is_empty(),
-            "a later selected event or completion must not leapfrog the path event"
-        );
-        let barriers = client.take_pending_events_matching(|event| {
-            event.get("event").and_then(Value::as_str) == Some("property-change")
-        });
-        if !barriers.is_empty() {
-            assert_eq!(barriers, vec![property_event]);
-            break;
-        }
-        assert!(
-            Instant::now() < observation_deadline,
-            "the nonblocking command did not produce its ordered event batch"
-        );
+        }));
         std::thread::yield_now();
     }
 
-    let runtime_items = client.take_nonblocking_runtime_items_matching(|event| {
-        event.get("event").and_then(Value::as_str) == Some("client-message")
-    });
     assert_eq!(runtime_items.len(), 2);
     assert!(matches!(
         &runtime_items[0],
@@ -938,9 +922,199 @@ fn mpv_ipc_nonblocking_runtime_items_wait_behind_an_earlier_unselected_event() {
     assert!(matches!(
         &runtime_items[1],
         crate::ipc::MpvIpcNonblockingRuntimeItem::Completion(
-            crate::ipc::MpvIpcNonblockingCommandCompletion::Succeeded { token: 7 }
+            crate::ipc::MpvIpcNonblockingCommandCompletion::Succeeded {
+                command_id: 1,
+                token: 7,
+            }
         )
     ));
+    assert_eq!(
+        client.take_pending_events(),
+        vec![property_event],
+        "the bypassed ordinary event must remain available to the full pump"
+    );
+}
+
+#[test]
+fn each_nonblocking_command_receives_a_unique_completion_identity() {
+    let responses = [
+        json!({"request_id": 1, "error": "success"}).to_string(),
+        json!({"request_id": 2, "error": "success"}).to_string(),
+    ];
+    let response_refs = responses.iter().map(String::as_str).collect::<Vec<_>>();
+    let (transport, _state) = fake_transport_with_reads(&response_refs);
+    let mut client = MpvJsonIpcClient::new(Box::new(transport));
+    assert_eq!(
+        client.try_send_command_expect_success_nonblocking(json!(["get_property", "pause"]), 7),
+        Ok(Some(1))
+    );
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while client.test_nonblocking_command_is_pending() && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    let first = client.take_nonblocking_runtime_items_matching(|_| true);
+    assert!(matches!(
+        first.as_slice(),
+        [crate::ipc::MpvIpcNonblockingRuntimeItem::Completion(
+            crate::ipc::MpvIpcNonblockingCommandCompletion::Succeeded {
+                command_id: 1,
+                token: 7,
+            }
+        )]
+    ));
+    assert_eq!(
+        client.try_send_command_expect_success_nonblocking(json!(["get_property", "pause"]), 7),
+        Ok(Some(2))
+    );
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while client.test_nonblocking_command_is_pending() && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    let second = client.take_nonblocking_runtime_items_matching(|_| true);
+    assert!(matches!(
+        second.as_slice(),
+        [crate::ipc::MpvIpcNonblockingRuntimeItem::Completion(
+            crate::ipc::MpvIpcNonblockingCommandCompletion::Succeeded {
+                command_id: 2,
+                token: 7,
+            }
+        )]
+    ));
+}
+
+#[test]
+fn unrelated_client_message_stays_on_the_ordinary_full_pump_lane() {
+    let unrelated = json!({
+        "event": "client-message",
+        "args": ["third-party-script-message", "payload"],
+    });
+    let response = json!({"request_id": 1, "error": "success"});
+    let reads = [unrelated.to_string(), response.to_string()];
+    let read_refs = reads.iter().map(String::as_str).collect::<Vec<_>>();
+    let (transport, _state) = fake_transport_with_reads(&read_refs);
+    let mut client = MpvJsonIpcClient::new(Box::new(transport));
+
+    assert_eq!(
+        client.try_send_command_expect_success_nonblocking(json!(["get_property", "pause"]), 9),
+        Ok(Some(1))
+    );
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while client.test_runtime_queue_sizes().0 == 0 && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    let (ordinary_count, control_count) = client.test_runtime_queue_sizes();
+    assert_eq!(ordinary_count, 1);
+    assert!(
+        control_count <= 1,
+        "only the command completion may use the control lane"
+    );
+
+    let runtime_items = client.take_nonblocking_runtime_items_matching(|_| false);
+    assert!(
+        runtime_items
+            .iter()
+            .all(|item| !matches!(item, crate::ipc::MpvIpcNonblockingRuntimeItem::Event(_)))
+    );
+    assert_eq!(client.take_pending_events(), vec![unrelated]);
+}
+
+#[test]
+fn ipc_runtime_queues_are_bounded_and_preserve_structural_ordinary_events() {
+    let (ordinary_capacity, control_capacity) = MpvJsonIpcClient::test_runtime_queue_capacities();
+    let start_file = json!({"event": "start-file", "playlist_entry_id": 41});
+    let path = json!({
+        "event": "property-change",
+        "name": "path",
+        "data": "https://media.example.test/live.m3u8",
+    });
+    let mut reads = vec![start_file.to_string(), path.to_string()];
+    for tick in 0..(ordinary_capacity + 32) {
+        reads.push(
+            json!({"event": "property-change", "name": "time-pos", "data": tick}).to_string(),
+        );
+    }
+    for nonce in 0..(control_capacity + 32) {
+        reads.push(
+            json!({
+                "event": "client-message",
+                "args": [SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_HEARTBEAT, nonce.to_string()],
+            })
+            .to_string(),
+        );
+    }
+    reads.push(json!({"request_id": 1, "error": "success"}).to_string());
+    let read_refs = reads.iter().map(String::as_str).collect::<Vec<_>>();
+    let (transport, _state) = fake_transport_with_reads(&read_refs);
+    let mut client = MpvJsonIpcClient::new(Box::new(transport));
+
+    assert_eq!(
+        client.try_send_command_expect_success_nonblocking(json!(["get_property", "pause"]), 11),
+        Ok(Some(1))
+    );
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while client.test_nonblocking_command_is_pending() && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(!client.test_nonblocking_command_is_pending());
+    let (ordinary_count, control_count) = client.test_runtime_queue_sizes();
+    assert_eq!(ordinary_count, ordinary_capacity);
+    assert_eq!(control_count, control_capacity);
+
+    let control_items = client.take_nonblocking_runtime_items_matching(|_| true);
+    assert!(control_items.iter().any(|item| matches!(
+        item,
+        crate::ipc::MpvIpcNonblockingRuntimeItem::ControlQueueOverflow
+    )));
+    let ordinary_events = client.take_pending_events();
+    assert!(ordinary_events.contains(&start_file));
+    assert!(ordinary_events.contains(&path));
+    assert!(ordinary_events.len() <= ordinary_capacity);
+}
+
+#[test]
+fn noisy_incoming_event_cannot_evict_a_full_structural_event_window() {
+    let (ordinary_capacity, _) = MpvJsonIpcClient::test_runtime_queue_capacities();
+    let mut reads = Vec::with_capacity(ordinary_capacity + 2);
+    for playlist_entry_id in 0..ordinary_capacity {
+        reads.push(
+            json!({"event": "start-file", "playlist_entry_id": playlist_entry_id}).to_string(),
+        );
+    }
+    reads.push(json!({"event": "property-change", "name": "time-pos", "data": 99}).to_string());
+    reads.push(json!({"request_id": 1, "error": "success"}).to_string());
+    let read_refs = reads.iter().map(String::as_str).collect::<Vec<_>>();
+    let (transport, _state) = fake_transport_with_reads(&read_refs);
+    let mut client = MpvJsonIpcClient::new(Box::new(transport));
+    assert_eq!(
+        client.try_send_command_expect_success_nonblocking(json!(["get_property", "pause"]), 12),
+        Ok(Some(1))
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut control_items = Vec::new();
+    while Instant::now() < deadline {
+        control_items.extend(client.take_nonblocking_runtime_items_matching(|_| true));
+        if control_items.iter().any(|item| {
+            matches!(
+                item,
+                crate::ipc::MpvIpcNonblockingRuntimeItem::Completion(_)
+            )
+        }) {
+            break;
+        }
+        std::thread::yield_now();
+    }
+    assert!(control_items.iter().all(|item| !matches!(
+        item,
+        crate::ipc::MpvIpcNonblockingRuntimeItem::OrdinaryQueueOverflow
+    )));
+    let ordinary_events = client.take_pending_events();
+    assert_eq!(ordinary_events.len(), ordinary_capacity);
+    assert!(
+        ordinary_events
+            .iter()
+            .all(|event| { event.get("event").and_then(Value::as_str) == Some("start-file") })
+    );
 }
 
 #[cfg(windows)]

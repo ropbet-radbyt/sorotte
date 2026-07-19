@@ -354,6 +354,7 @@ where
 {
     let diagnostics_config = client_loop_diagnostics_config(None);
     let plex_config = cli_plex_config_from_env_and_stored_settings(None);
+    let mut network_options_health_reporter = CliNetworkOptionsHealthReporter::default();
     run_connected_client_session_with_legacy_startup_overrides_and_diagnostics(
         stream,
         ConnectedSessionLaunchContext {
@@ -366,6 +367,7 @@ where
             file_difference_sink,
             diagnostics_config,
             plex_config: &plex_config,
+            network_options_health_reporter: &mut network_options_health_reporter,
         },
     )
     .await
@@ -385,6 +387,7 @@ where
     pub(crate) file_difference_sink: &'a mut G,
     pub(crate) diagnostics_config: ClientLoopDiagnosticsConfig,
     pub(crate) plex_config: &'a PlexClientConfig,
+    pub(crate) network_options_health_reporter: &'a mut CliNetworkOptionsHealthReporter,
 }
 
 pub(crate) async fn run_connected_client_session_with_legacy_startup_overrides_and_diagnostics<
@@ -408,6 +411,7 @@ where
         file_difference_sink,
         diagnostics_config,
         plex_config,
+        network_options_health_reporter,
     } = launch;
     let had_current_v2_membership = runtime.session().room() == Some(config.room.as_str())
         && (runtime.session().readiness_snapshot().is_some()
@@ -472,7 +476,7 @@ where
     )
     .await?;
     let mut pending_chat_message_on_connect = chat_message_on_connect.map(str::to_owned);
-    publish_pending_local_file_updates(runtime, config)?;
+    publish_pending_local_file_updates(runtime, config, network_options_health_reporter)?;
     flush_runtime_protocol_lines(runtime, &mut writer).await?;
     emit_application_service_events(runtime.pump_plex_service().await);
 
@@ -566,6 +570,7 @@ where
                                     seek_preparation_notification_state: &mut seek_preparation_notification_state,
                                     readiness_notification_state: &mut readiness_notification_state,
                                     file_difference_state: &mut file_difference_state,
+                                    network_options_health_reporter,
                                     notification_sink,
                                     file_difference_sink,
                                 },
@@ -617,6 +622,7 @@ where
                             seek_preparation_notification_state: &mut seek_preparation_notification_state,
                             readiness_notification_state: &mut readiness_notification_state,
                             file_difference_state: &mut file_difference_state,
+                            network_options_health_reporter,
                             notification_sink,
                             file_difference_sink,
                         },
@@ -715,6 +721,7 @@ where
                                 seek_preparation_notification_state: &mut seek_preparation_notification_state,
                                 readiness_notification_state: &mut readiness_notification_state,
                                 file_difference_state: &mut file_difference_state,
+                                network_options_health_reporter,
                                 notification_sink,
                                 file_difference_sink,
                             },
