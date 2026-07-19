@@ -34,6 +34,7 @@ impl GuiPersistedConfigRuntimeOwner {
             managed_mpv_process: None,
             player_unavailability_reason: None,
             core_player_configuration_health: GuiCorePlayerConfigurationHealth::Ready,
+            network_options_hook_failure_reason: None,
             pending_apply_requirements_refresh_required: false,
             player_integration_health: GuiPlayerIntegrationHealth::Ready,
             player_local_file: None,
@@ -274,6 +275,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.release_attached_sorotte_bridge_best_effort();
         self.player = None;
         self.managed_mpv_process = None;
+        self.network_options_hook_failure_reason = None;
         self.core_player_configuration_health = GuiCorePlayerConfigurationHealth::Ready;
         self.player_integration_health = GuiPlayerIntegrationHealth::Ready;
         self.clear_player_runtime_cache();
@@ -361,6 +363,25 @@ impl GuiPersistedConfigRuntimeOwner {
         self.player_apply_state
             .record_streaming_options_applied(launch_state);
         self.core_player_configuration_health = GuiCorePlayerConfigurationHealth::Ready;
+        self.restore_network_options_hook_degradation();
+    }
+
+    pub(in crate::app::runtime_owner) fn restore_network_options_hook_degradation(
+        &mut self,
+    ) -> bool {
+        let Some(reason) = self.network_options_hook_failure_reason.clone() else {
+            return false;
+        };
+        self.player_apply_state.core_reapply_required = true;
+        self.pending_apply_requirements_refresh_required = true;
+        self.core_player_configuration_health =
+            GuiCorePlayerConfigurationHealth::StreamingDegraded {
+                reason: reason.clone(),
+                retryable_in_place: true,
+                origin: GuiStreamingDegradationOrigin::NetworkOptionsHook,
+            };
+        self.player_unavailability_reason = Some(reason);
+        true
     }
 
     fn record_streaming_apply_superseded(&mut self) {
@@ -763,7 +784,19 @@ impl GuiPersistedConfigRuntimeOwner {
                     self.player_apply_state
                         .record_streaming_options_applied(next_launch_state);
                     self.core_player_configuration_health = GuiCorePlayerConfigurationHealth::Ready;
-                    self.player_unavailability_reason = None;
+                    if let Some(reason) = self.network_options_hook_failure_reason.clone() {
+                        self.player_apply_state.core_reapply_required = true;
+                        self.pending_apply_requirements_refresh_required = true;
+                        self.core_player_configuration_health =
+                            GuiCorePlayerConfigurationHealth::StreamingDegraded {
+                                reason: reason.clone(),
+                                retryable_in_place: true,
+                                origin: GuiStreamingDegradationOrigin::NetworkOptionsHook,
+                            };
+                        self.player_unavailability_reason = Some(reason);
+                    } else {
+                        self.player_unavailability_reason = None;
+                    }
                 }
                 Err(error) => {
                     let ipc_unhealthy = !player.is_connected();

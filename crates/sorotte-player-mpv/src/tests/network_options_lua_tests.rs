@@ -12,9 +12,17 @@ const SCRIPT_SOURCE: &str = include_str!(concat!(
 ));
 
 const MP_MOCK_SOURCE: &str = r#"
+local original_tostring = tostring
+function tostring(value)
+    if type(value) == 'table' and __fixed_table_tostring ~= nil then
+        return __fixed_table_tostring
+    end
+    return original_tostring(value)
+end
+os.time = function() return __wall_clock_time end
 __harness = {
     messages = {}, hooks = {}, timers = {}, properties = {}, writes = {}, emissions = {},
-    reject = nil, time = 0,
+    reject = nil, time = __start_time,
 }
 mp = { keep_running = true }
 function mp.get_script_name() return __script_name end
@@ -42,9 +50,28 @@ function mp.commandv(...)
     end
 end
 package.preload['mp.utils'] = function()
-    return { parse_json = __parse_json, format_json = __format_json }
+    return { parse_json = __parse_json, format_json = __format_json, getpid = function() return __pid end }
 end
 "#;
+
+#[derive(Clone, Copy)]
+struct HookInstanceIdentityInputs {
+    pid: u32,
+    wall_clock_time: i64,
+    start_time: f64,
+    fixed_table_tostring: &'static str,
+}
+
+impl Default for HookInstanceIdentityInputs {
+    fn default() -> Self {
+        Self {
+            pid: 4_242,
+            wall_clock_time: 1_700_000_000,
+            start_time: 10.0,
+            fixed_table_tostring: "table: fixed-hook-anchor",
+        }
+    }
+}
 
 struct Harness {
     lua: Lua,
@@ -52,6 +79,10 @@ struct Harness {
 
 impl Harness {
     fn new() -> mlua::Result<Self> {
+        Self::new_with_identity_inputs(HookInstanceIdentityInputs::default())
+    }
+
+    fn new_with_identity_inputs(inputs: HookInstanceIdentityInputs) -> mlua::Result<Self> {
         let lua = Lua::new();
         let parse_json = lua.create_function(|lua, input: String| {
             let value: JsonValue = serde_json::from_str(&input).map_err(mlua::Error::external)?;
@@ -63,6 +94,12 @@ impl Harness {
         })?;
         lua.globals().set("__parse_json", parse_json)?;
         lua.globals().set("__format_json", format_json)?;
+        lua.globals().set("__pid", inputs.pid)?;
+        lua.globals()
+            .set("__wall_clock_time", inputs.wall_clock_time)?;
+        lua.globals().set("__start_time", inputs.start_time)?;
+        lua.globals()
+            .set("__fixed_table_tostring", inputs.fixed_table_tostring)?;
         lua.globals()
             .set("__script_name", "sorotte_network_options")?;
         lua.load(MP_MOCK_SOURCE).exec()?;
@@ -260,6 +297,38 @@ fn configuration_reports_stable_instance_and_monotonic_load_sequence() -> mlua::
     harness.invoke_on_load()?;
     let transitions = harness.emissions("sorotte-network-options-transition-result")?;
     assert_eq!(transitions[1]["loadSequence"], 2);
+    Ok(())
+}
+
+#[test]
+fn reloaded_hook_instances_differ_when_pid_wall_clock_and_table_identity_collide()
+-> mlua::Result<()> {
+    let first = Harness::new_with_identity_inputs(HookInstanceIdentityInputs {
+        start_time: 10.25,
+        ..HookInstanceIdentityInputs::default()
+    })?;
+    let second = Harness::new_with_identity_inputs(HookInstanceIdentityInputs {
+        start_time: 10.5,
+        ..HookInstanceIdentityInputs::default()
+    })?;
+
+    first.configure_as("owner-a", "attachment-a", 1, json!({"cache-secs": "75"}))?;
+    first.configure_as("owner-a", "attachment-a", 2, json!({"cache-secs": "90"}))?;
+    second.configure_as("owner-b", "attachment-b", 1, json!({"cache-secs": "75"}))?;
+
+    let first_configured = first.emissions("sorotte-network-options-configured")?;
+    let second_configured = second.emissions("sorotte-network-options-configured")?;
+    let first_instance = &first_configured[0]["hookInstanceId"];
+    let second_instance = &second_configured[0]["hookInstanceId"];
+
+    assert_eq!(
+        &first_configured[1]["hookInstanceId"], first_instance,
+        "one Lua runtime must retain a stable hook instance id"
+    );
+    assert_ne!(
+        first_instance, second_instance,
+        "separately loaded hooks must not collide when PID, wall clock, and table tostring do"
+    );
     Ok(())
 }
 

@@ -398,11 +398,13 @@ impl GuiPersistedConfigRuntimeOwner {
         if self.pending_apply_requirements_refresh_required {
             let desired_pending_apply_requirements =
                 self.pending_apply_requirements_for_settings(state, &state.saved_configuration);
-            if state.pending_apply_requirements != desired_pending_apply_requirements {
-                handle.push_action(GuiShellAction::ApplyPendingApplyRequirementsSnapshot(
-                    desired_pending_apply_requirements,
-                ));
-            }
+            // Pending requirements are runtime-owned output and are intentionally absent from
+            // the compact threaded input projection. A refresh request must therefore publish an
+            // authoritative snapshot even when the compatibility projection happens to compare
+            // equal, otherwise the real shell can retain stale retry guidance.
+            handle.push_action(GuiShellAction::ApplyPendingApplyRequirementsSnapshot(
+                desired_pending_apply_requirements,
+            ));
             self.pending_apply_requirements_refresh_required = false;
         }
 

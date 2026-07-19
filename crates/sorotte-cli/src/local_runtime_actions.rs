@@ -4,7 +4,7 @@ use sorotte_client_app::app_boundary::application::{
 use sorotte_client_app::app_boundary::commands::{
     PlannedLocalRuntimeAction, plan_local_runtime_dispatch_legacy_compatible,
 };
-use sorotte_player_api::PlayerPlaybackTelemetryUpdate;
+use sorotte_player_api::{PlayerError, PlayerPlaybackTelemetryUpdate};
 use sorotte_player_mpv::{MpvAdapter, MpvNetworkMediaOptionsTransitionOutcome};
 use sorotte_protocol::DirectReadinessSurface;
 
@@ -12,6 +12,18 @@ use crate::client_config::ClientLoopConfig;
 use crate::language_support::current_legacy_runtime_language_tag_legacy_compatible;
 
 pub(super) const PLAYER_CHAT_INPUT_POLL_INTERVAL_MS: u64 = 100;
+
+#[derive(Default)]
+struct NetworkMediaOptionsWarningState {
+    hook_failure: Option<PlayerError>,
+    policy_failure: Option<PlayerError>,
+}
+
+impl NetworkMediaOptionsWarningState {
+    fn current_failure(&self) -> Option<&PlayerError> {
+        self.hook_failure.as_ref().or(self.policy_failure.as_ref())
+    }
+}
 
 pub(super) fn publish_pending_local_file_updates(
     application: &mut ClientApplication<MpvAdapter>,
@@ -34,7 +46,7 @@ pub(super) fn publish_pending_local_file_updates(
 fn surface_network_media_options_transition_outcomes(
     application: &mut ClientApplication<MpvAdapter>,
 ) -> anyhow::Result<()> {
-    let mut latest_healthy_failure = None;
+    let mut warning_state = NetworkMediaOptionsWarningState::default();
     loop {
         let (outcome, player_connected) = application.with_player_io(|player| {
             (
@@ -43,15 +55,13 @@ fn surface_network_media_options_transition_outcomes(
             )
         });
         let Some(outcome) = outcome else {
-            if let Some(error) = latest_healthy_failure {
-                eprintln!(
-                    "warning: mpv playback remains available, but streaming options could not be applied after external network media became active: {error}; desired options remain configured for later network transitions"
-                );
+            if let Some(error) = warning_state.current_failure() {
+                eprintln!("{}", network_media_options_warning_message(error));
             }
             return Ok(());
         };
         if let Err(error) = fold_network_media_options_transition_outcome(
-            &mut latest_healthy_failure,
+            &mut warning_state,
             outcome,
             player_connected,
         ) {
@@ -62,26 +72,38 @@ fn surface_network_media_options_transition_outcomes(
     }
 }
 
+fn network_media_options_warning_message(error: &PlayerError) -> String {
+    format!(
+        "warning: mpv playback remains available, but streaming options need attention: {error}; desired options remain configured for later network transitions"
+    )
+}
+
 fn fold_network_media_options_transition_outcome(
-    latest_healthy_failure: &mut Option<sorotte_player_api::PlayerError>,
+    warning_state: &mut NetworkMediaOptionsWarningState,
     outcome: MpvNetworkMediaOptionsTransitionOutcome,
     player_connected: bool,
-) -> Result<(), sorotte_player_api::PlayerError> {
+) -> Result<(), PlayerError> {
     match outcome {
-        MpvNetworkMediaOptionsTransitionOutcome::Applied => {
-            *latest_healthy_failure = None;
+        MpvNetworkMediaOptionsTransitionOutcome::HookRecovered => {
+            warning_state.hook_failure = None;
+            Ok(())
+        }
+        MpvNetworkMediaOptionsTransitionOutcome::NoActiveMedia
+        | MpvNetworkMediaOptionsTransitionOutcome::LocalMediaUnchanged
+        | MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated => {
+            warning_state.policy_failure = None;
             Ok(())
         }
         MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error) if !player_connected => {
             Err(error)
         }
         MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error) => {
-            *latest_healthy_failure = Some(error);
+            warning_state.hook_failure = Some(error);
             Ok(())
         }
         MpvNetworkMediaOptionsTransitionOutcome::Failed(error) if !player_connected => Err(error),
         MpvNetworkMediaOptionsTransitionOutcome::Failed(error) => {
-            *latest_healthy_failure = Some(error);
+            warning_state.policy_failure = Some(error);
             Ok(())
         }
     }
@@ -226,28 +248,127 @@ mod network_media_options_transition_outcome_tests {
     use sorotte_player_api::PlayerError;
 
     #[test]
-    fn applied_outcome_supersedes_a_pending_healthy_failure() {
-        let mut latest_healthy_failure = None;
+    fn network_policy_success_supersedes_only_a_pending_policy_failure() {
+        let mut warning_state = NetworkMediaOptionsWarningState::default();
         fold_network_media_options_transition_outcome(
-            &mut latest_healthy_failure,
+            &mut warning_state,
             MpvNetworkMediaOptionsTransitionOutcome::Failed(PlayerError::OperationFailed(
                 "test option rejection".to_owned(),
             )),
             true,
         )
         .expect("a healthy rejection should be buffered as a warning");
-        assert!(latest_healthy_failure.is_some());
+        assert!(warning_state.policy_failure.is_some());
 
         fold_network_media_options_transition_outcome(
-            &mut latest_healthy_failure,
-            MpvNetworkMediaOptionsTransitionOutcome::Applied,
+            &mut warning_state,
+            MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated,
             true,
         )
         .expect("a later successful transition should remain healthy");
 
         assert!(
-            latest_healthy_failure.is_none(),
+            warning_state.policy_failure.is_none(),
             "a successful outcome in the same drain batch must suppress the stale warning"
         );
+    }
+
+    #[test]
+    fn idle_and_local_policy_state_do_not_clear_a_hook_warning() {
+        let mut warning_state = NetworkMediaOptionsWarningState::default();
+        fold_network_media_options_transition_outcome(
+            &mut warning_state,
+            MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(PlayerError::OperationFailed(
+                "test hook loss".to_owned(),
+            )),
+            true,
+        )
+        .expect("a healthy hook failure should remain a scoped warning");
+
+        for outcome in [
+            MpvNetworkMediaOptionsTransitionOutcome::NoActiveMedia,
+            MpvNetworkMediaOptionsTransitionOutcome::LocalMediaUnchanged,
+        ] {
+            fold_network_media_options_transition_outcome(&mut warning_state, outcome, true)
+                .expect("media policy completion should remain healthy");
+            assert!(
+                warning_state.hook_failure.is_some(),
+                "media policy state must not clear independent hook health"
+            );
+        }
+
+        fold_network_media_options_transition_outcome(
+            &mut warning_state,
+            MpvNetworkMediaOptionsTransitionOutcome::HookRecovered,
+            true,
+        )
+        .expect("positive hook recovery should remain healthy");
+        assert!(warning_state.hook_failure.is_none());
+    }
+
+    #[test]
+    fn credential_bearing_targets_never_reach_cli_warning_or_fatal_text() {
+        const CANARY: &str = "SOROTTE-CLI-RAW-TARGET-CANARY";
+        let cases = [
+            (
+                format!("https://alice:{CANARY}@example.test/media"),
+                "https://cdn.example.test/media".to_owned(),
+            ),
+            (
+                format!("https://example.test/media?sig={CANARY}"),
+                format!("https://example.test/media?sig={CANARY}"),
+            ),
+            (
+                format!("https://example.test/media?auth={CANARY}"),
+                format!("https://example.test/media?auth={CANARY}"),
+            ),
+            (
+                format!("https://example.test/media?X-Amz-Signature={CANARY}"),
+                format!("https://example.test/media?X-Amz-Signature={CANARY}"),
+            ),
+            (
+                "https://example.test/watch/1".to_owned(),
+                format!("edl://nested.example.test/video?token={CANARY}"),
+            ),
+            (
+                format!("C:/Users/{CANARY}/private/movie.mkv"),
+                format!("https://cdn.example.test/video?opaque={CANARY}"),
+            ),
+        ];
+
+        for (source, resolved) in cases {
+            let mut adapter = MpvAdapter::default();
+            adapter.inject_test_network_media_options_policy_failure(42, &source, &resolved);
+            let outcome = adapter
+                .take_network_media_options_transition_outcome()
+                .expect("the fixture should queue a sanitized policy failure");
+            let mut warning_state = NetworkMediaOptionsWarningState::default();
+            fold_network_media_options_transition_outcome(&mut warning_state, outcome, true)
+                .expect("an attached-player failure should remain scoped");
+            let warning = network_media_options_warning_message(
+                warning_state
+                    .current_failure()
+                    .expect("the scoped warning should remain active"),
+            );
+            assert!(!warning.contains(CANARY));
+            assert!(!warning.contains(&source));
+            assert!(!warning.contains(&resolved));
+            assert!(warning.contains("hook load 42"));
+
+            let mut adapter = MpvAdapter::default();
+            adapter.inject_test_network_media_options_policy_failure(42, &source, &resolved);
+            let fatal = fold_network_media_options_transition_outcome(
+                &mut NetworkMediaOptionsWarningState::default(),
+                adapter
+                    .take_network_media_options_transition_outcome()
+                    .expect("the second fixture should queue a failure"),
+                false,
+            )
+            .expect_err("a disconnected player should surface a fatal error")
+            .to_string();
+            assert!(!fatal.contains(CANARY));
+            assert!(!fatal.contains(&source));
+            assert!(!fatal.contains(&resolved));
+        }
     }
 }

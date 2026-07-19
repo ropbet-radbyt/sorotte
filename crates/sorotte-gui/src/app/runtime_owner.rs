@@ -185,6 +185,7 @@ pub(super) enum GuiCorePlayerConfigurationHealth {
 pub(super) enum GuiStreamingDegradationOrigin {
     ExplicitApply,
     AuthoritativeMediaTransition,
+    NetworkOptionsHook,
 }
 
 impl GuiCorePlayerConfigurationHealth {
@@ -350,6 +351,9 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) managed_mpv_process: Option<ManagedMpvProcessGuard>,
     pub(super) player_unavailability_reason: Option<String>,
     pub(super) core_player_configuration_health: GuiCorePlayerConfigurationHealth,
+    /// A degraded network-options hook is independent of the active file's policy result. Keep
+    /// this reason even when another player-configuration issue is currently projected.
+    pub(super) network_options_hook_failure_reason: Option<String>,
     pub(super) pending_apply_requirements_refresh_required: bool,
     pub(super) player_integration_health: GuiPlayerIntegrationHealth,
     pub(super) player_local_file: Option<LocalFileUpdate>,

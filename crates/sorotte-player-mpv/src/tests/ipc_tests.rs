@@ -2106,11 +2106,11 @@ fn external_local_to_network_transition_applies_options_once_per_generation_and_
     );
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
-        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
+        Some(MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated)
     );
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
-        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
+        Some(MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated)
     );
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
@@ -2226,7 +2226,7 @@ fn core_hook_keeps_network_option_writes_inside_mpv_and_classifies_a_to_b_as_sup
     );
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
-        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated),
         "network B's ordered result should own the final transition state"
     );
     assert_eq!(
@@ -2275,6 +2275,31 @@ fn run_core_hook_supersession_scenario(
     (apply, outcome, writes)
 }
 
+fn superseded_network_options_adapter_awaiting_hook_result() -> MpvAdapter {
+    let transport = NetworkOptionsHookScenarioTransport {
+        writes: Arc::new(Mutex::new(Vec::new())),
+        responses: VecDeque::new(),
+        old_network_succeeds: false,
+        target: HookSupersessionTarget::NetworkAwaitingResult,
+        lose_ownership_on_heartbeat: false,
+        acknowledge_heartbeats: true,
+    };
+    let mut adapter = MpvAdapter::with_network_options_hook_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+    assert_eq!(
+        adapter
+            .apply_network_media_options_to_active_media_classified()
+            .expect("network B should supersede the explicit apply while awaiting its hook result"),
+        MpvActiveNetworkMediaOptionsApplyOutcome::Superseded
+    );
+    assert!(adapter.test_network_options_awaiting_authoritative_transition());
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None
+    );
+    adapter
+}
+
 fn configured_v3_hook_reducer_adapter() -> MpvAdapter {
     let mut adapter =
         MpvAdapter::with_network_options_hook_test_transport(NeverRespondingTransport);
@@ -2304,6 +2329,43 @@ fn apply_deferred_v3_transition(adapter: &mut MpvAdapter) {
     adapter.flush_test_network_options_hook_v3_transition();
 }
 
+fn assert_sanitized_hook_failure(
+    outcome: &MpvNetworkMediaOptionsTransitionOutcome,
+    load_sequence: u64,
+    source_kind: &str,
+    resolved_target_kind: &str,
+    forbidden: &[&str],
+) {
+    let MpvNetworkMediaOptionsTransitionOutcome::Failed(error) = outcome else {
+        panic!("expected a failed network-options transition, got {outcome:?}");
+    };
+    let display = error.to_string();
+    let debug = format!("{outcome:?}");
+    let expected_load = format!("hook load {load_sequence}");
+    assert!(
+        display.contains(&expected_load),
+        "sanitized failure should preserve its load sequence: {display}"
+    );
+    assert!(
+        display.contains(&format!("source: {source_kind}")),
+        "sanitized failure should preserve only the source kind: {display}"
+    );
+    assert!(
+        display.contains(&format!("resolved target: {resolved_target_kind}")),
+        "sanitized failure should preserve only the resolved-target kind: {display}"
+    );
+    for secret in forbidden {
+        assert!(
+            !display.contains(secret),
+            "Display leaked credential-bearing hook data {secret:?}: {display}"
+        );
+        assert!(
+            !debug.contains(secret),
+            "Debug leaked credential-bearing hook data {secret:?}: {debug}"
+        );
+    }
+}
+
 #[test]
 fn rewritten_stream_result_is_accepted_and_rejection_remains_visible_and_retryable() {
     let mut adapter = configured_v3_hook_reducer_adapter();
@@ -2320,7 +2382,7 @@ fn rewritten_stream_result_is_accepted_and_rejection_remains_visible_and_retryab
     apply_deferred_v3_transition(&mut adapter);
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
-        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
+        Some(MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated)
     );
     assert_eq!(
         adapter.test_network_options_policy_source_path(),
@@ -2337,13 +2399,16 @@ fn rewritten_stream_result_is_accepted_and_rejection_remains_visible_and_retryab
         Some("mpv rejected cache-secs"),
     );
     apply_deferred_v3_transition(&mut adapter);
-    let Some(MpvNetworkMediaOptionsTransitionOutcome::Failed(error)) =
-        adapter.take_network_media_options_transition_outcome()
-    else {
-        panic!("rewritten target rejection should remain visible");
-    };
-    assert!(error.to_string().contains("mpv rejected cache-secs"));
-    assert!(error.to_string().contains("edl://resolved-stream-b"));
+    let outcome = adapter
+        .take_network_media_options_transition_outcome()
+        .expect("rewritten target rejection should remain visible");
+    assert_sanitized_hook_failure(
+        &outcome,
+        2,
+        "HTTPS",
+        "EDL",
+        &[source, "edl://resolved-stream-b", "mpv rejected cache-secs"],
+    );
 
     defer_v3_transition(
         &mut adapter,
@@ -2356,9 +2421,76 @@ fn rewritten_stream_result_is_accepted_and_rejection_remains_visible_and_retryab
     apply_deferred_v3_transition(&mut adapter);
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
-        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated),
         "a later load sequence must recover a retryable rejection"
     );
+}
+
+#[test]
+fn hook_failures_never_expose_raw_sources_resolved_targets_or_lua_errors() {
+    let cases = [
+        (
+            "https://CANARY_USER:CANARY_PASS@media.example.test/live.m3u8",
+            "https://CANARY_USER:CANARY_PASS@media.example.test/live.m3u8",
+            "CANARY_LUA_ERROR_USERINFO",
+            "HTTPS",
+            "HTTPS",
+            &["CANARY_USER", "CANARY_PASS"][..],
+        ),
+        (
+            "https://media.example.test/live.m3u8?sig=CANARY_SIG&auth=CANARY_AUTH&X-Amz-Credential=CANARY_AWS",
+            "https://cdn.example.test/live.m3u8?sig=CANARY_RESOLVED_SIG",
+            "CANARY_LUA_ERROR_QUERY",
+            "HTTPS",
+            "HTTPS",
+            &[
+                "CANARY_SIG",
+                "CANARY_AUTH",
+                "CANARY_AWS",
+                "CANARY_RESOLVED_SIG",
+            ][..],
+        ),
+        (
+            "https://service.example.test/watch/CANARY_EDL_SOURCE",
+            "edl://https://cdn.example.test/a.ts?sig=CANARY_EDL_SIG;https://cdn.example.test/b.ts?auth=CANARY_EDL_AUTH",
+            "CANARY_LUA_ERROR_EDL",
+            "HTTPS",
+            "EDL",
+            &["CANARY_EDL_SOURCE", "CANARY_EDL_SIG", "CANARY_EDL_AUTH"][..],
+        ),
+        (
+            "C:/Users/private/CANARY_LOCAL_SOURCE.mkv",
+            "https://cdn.example.test/rewritten.m3u8?auth=CANARY_REWRITE_AUTH",
+            "CANARY_LUA_ERROR_REWRITE",
+            "local path",
+            "HTTPS",
+            &["CANARY_LOCAL_SOURCE", "CANARY_REWRITE_AUTH"][..],
+        ),
+    ];
+
+    for (source, resolved_target, lua_error, source_kind, target_kind, canaries) in cases {
+        let mut adapter = configured_v3_hook_reducer_adapter();
+        defer_v3_transition(
+            &mut adapter,
+            41,
+            source,
+            resolved_target,
+            "failed",
+            Some(lua_error),
+        );
+        apply_deferred_v3_transition(&mut adapter);
+        let outcome = adapter
+            .take_network_media_options_transition_outcome()
+            .expect("each hook failure should remain observable");
+        let mut forbidden = vec![source, resolved_target, lua_error];
+        forbidden.extend_from_slice(canaries);
+        assert_sanitized_hook_failure(&outcome, 41, source_kind, target_kind, &forbidden);
+        assert_eq!(
+            adapter.take_network_media_options_transition_outcome(),
+            None,
+            "one raw hook failure must produce exactly one sanitized outcome"
+        );
+    }
 }
 
 #[test]
@@ -2371,7 +2503,7 @@ fn same_url_higher_sequence_is_final_for_success_failure_and_delayed_results() {
     apply_deferred_v3_transition(&mut adapter);
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
-        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
+        Some(MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated)
     );
 
     adapter.begin_test_network_options_event_batch();
@@ -2386,12 +2518,16 @@ fn same_url_higher_sequence_is_final_for_success_failure_and_delayed_results() {
         Some("same-URL B rejected cache-secs"),
     );
     adapter.end_test_network_options_event_batch();
-    let Some(MpvNetworkMediaOptionsTransitionOutcome::Failed(error)) =
-        adapter.take_network_media_options_transition_outcome()
-    else {
-        panic!("same-URL B failure should supersede delayed A success");
-    };
-    assert!(error.to_string().contains("same-URL B rejected"));
+    let outcome = adapter
+        .take_network_media_options_transition_outcome()
+        .expect("same-URL B failure should supersede delayed A success");
+    assert_sanitized_hook_failure(
+        &outcome,
+        2,
+        "HTTPS",
+        "EDL",
+        &[source, stream, "same-URL B rejected cache-secs"],
+    );
     assert_eq!(
         adapter.test_network_options_last_accepted_load_sequence(),
         Some(2)
@@ -2425,7 +2561,7 @@ fn same_url_higher_sequence_is_final_for_success_failure_and_delayed_results() {
     apply_deferred_v3_transition(&mut adapter);
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
-        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated),
         "same-URL B success must supersede delayed A failure"
     );
     assert!(
@@ -2453,7 +2589,7 @@ fn higher_sequence_result_before_same_url_path_observation_completes_once() {
 
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
-        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
+        Some(MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated)
     );
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
@@ -2496,7 +2632,7 @@ fn production_path_observations_wait_for_authoritative_hook_completion() {
     apply_deferred_v3_transition(&mut adapter);
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
-        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
+        Some(MpvNetworkMediaOptionsTransitionOutcome::LocalMediaUnchanged)
     );
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
@@ -2521,12 +2657,20 @@ fn rewritten_network_failure_is_not_masked_by_local_logical_path() {
     );
     adapter.end_test_network_options_event_batch();
 
-    let Some(MpvNetworkMediaOptionsTransitionOutcome::Failed(error)) =
-        adapter.take_network_media_options_transition_outcome()
-    else {
-        panic!("the sequenced rewritten-stream failure should be the only outcome");
-    };
-    assert!(error.to_string().contains("rewritten stream rejected"));
+    let outcome = adapter
+        .take_network_media_options_transition_outcome()
+        .expect("the sequenced rewritten-stream failure should be the only outcome");
+    assert_sanitized_hook_failure(
+        &outcome,
+        1,
+        "local path",
+        "HTTPS",
+        &[
+            "C:/logical/source.mkv",
+            "https://cdn.example.test/rewritten.m3u8",
+            "rewritten stream rejected cache-secs",
+        ],
+    );
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
         None
@@ -2552,7 +2696,7 @@ fn only_terminal_end_file_can_complete_hook_policy_without_a_hook_result() {
     adapter.end_test_network_options_event_batch();
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
-        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
+        Some(MpvNetworkMediaOptionsTransitionOutcome::NoActiveMedia)
     );
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
@@ -2592,12 +2736,19 @@ fn sequenced_failure_precedes_terminal_idle_fallback_in_the_same_batch() {
     adapter.observe_test_network_options_terminal_end();
     adapter.end_test_network_options_event_batch();
 
-    let Some(MpvNetworkMediaOptionsTransitionOutcome::Failed(error)) =
-        adapter.take_network_media_options_transition_outcome()
-    else {
-        panic!("the hook's sequenced failure must outrank terminal-idle fallback");
-    };
-    assert!(error.to_string().contains("ended load rejected"));
+    let outcome = adapter
+        .take_network_media_options_transition_outcome()
+        .expect("the hook's sequenced failure must outrank terminal-idle fallback");
+    assert_sanitized_hook_failure(
+        &outcome,
+        1,
+        "HTTPS",
+        "HTTPS",
+        &[
+            "https://media.example.test/ended.m3u8",
+            "ended load rejected cache-secs",
+        ],
+    );
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
         None
@@ -2613,7 +2764,7 @@ fn matching_real_end_file_completes_idle_but_successor_start_does_not() {
     adapter.handle_test_network_options_end_file(701);
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
-        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
+        Some(MpvNetworkMediaOptionsTransitionOutcome::NoActiveMedia)
     );
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
@@ -2635,7 +2786,7 @@ fn matching_real_end_file_completes_idle_but_successor_start_does_not() {
 }
 
 #[test]
-fn hook_instance_ack_preserves_or_resets_the_sequence_floor_authoritatively() {
+fn hook_instance_ack_fails_closed_on_sequence_regression_and_resets_for_new_instance() {
     let mut adapter = configured_v3_hook_reducer_adapter();
     defer_v3_transition(
         &mut adapter,
@@ -2648,7 +2799,7 @@ fn hook_instance_ack_preserves_or_resets_the_sequence_floor_authoritatively() {
     apply_deferred_v3_transition(&mut adapter);
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
-        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
+        Some(MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated)
     );
 
     adapter.invalidate_test_network_options_hook_delivery();
@@ -2673,14 +2824,49 @@ fn hook_instance_ack_preserves_or_resets_the_sequence_floor_authoritatively() {
         adapter.test_network_options_last_accepted_load_sequence(),
         Some(5)
     );
+    adapter.defer_test_network_options_hook_v3_transition_for_instance(
+        "test-hook-instance",
+        6,
+        "https://media.example.test/must-not-survive-regression.m3u8",
+        "failed",
+    );
     adapter.configure_test_network_options_hook_instance("test-hook-instance", 2);
+    let Some(MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error)) =
+        adapter.take_network_media_options_transition_outcome()
+    else {
+        panic!("same-instance sequence regression must degrade hook delivery");
+    };
+    assert!(error.to_string().contains("regressed load sequence"));
+    assert!(
+        !adapter.test_network_media_options_hook_is_ready(),
+        "a regressed same-instance acknowledgement must fail closed"
+    );
     assert_eq!(
         adapter.test_network_options_last_accepted_load_sequence(),
         Some(5),
         "same-instance acknowledgement must never move the sequence floor backward"
     );
 
+    adapter.configure_test_network_options_hook_instance("test-hook-instance", 5);
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::HookRecovered),
+        "the same instance may recover only after acknowledging the retained floor"
+    );
+    assert!(adapter.test_network_media_options_hook_is_ready());
+    apply_deferred_v3_transition(&mut adapter);
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None,
+        "sequence rollback must discard results deferred under the invalid delivery state"
+    );
+
     adapter.configure_test_network_options_hook_instance("fresh-hook-instance", 0);
+    assert_eq!(
+        adapter.test_network_options_last_accepted_load_sequence(),
+        Some(0),
+        "a genuinely new hook instance owns a fresh sequence namespace"
+    );
     adapter.defer_test_network_options_hook_v3_transition_for_instance(
         "test-hook-instance",
         6,
@@ -2696,7 +2882,7 @@ fn hook_instance_ack_preserves_or_resets_the_sequence_floor_authoritatively() {
     apply_deferred_v3_transition(&mut adapter);
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
-        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
+        Some(MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated)
     );
     assert_eq!(
         adapter.test_network_options_last_accepted_load_sequence(),
@@ -2725,7 +2911,7 @@ fn failed_network_a_superseded_by_local_b_recovers_without_stale_failure() {
     assert_eq!(apply, MpvActiveNetworkMediaOptionsApplyOutcome::Superseded);
     assert_eq!(
         outcome,
-        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
+        Some(MpvNetworkMediaOptionsTransitionOutcome::LocalMediaUnchanged)
     );
 }
 
@@ -2744,7 +2930,7 @@ fn failed_network_a_superseded_by_successful_network_b_applies_b() {
     assert_eq!(apply, MpvActiveNetworkMediaOptionsApplyOutcome::Superseded);
     assert_eq!(
         outcome,
-        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
+        Some(MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated)
     );
 }
 
@@ -2753,11 +2939,18 @@ fn failed_network_a_superseded_by_failed_network_b_reports_only_b_failure() {
     let (apply, outcome, _) =
         run_core_hook_supersession_scenario(false, HookSupersessionTarget::NetworkFailure);
     assert_eq!(apply, MpvActiveNetworkMediaOptionsApplyOutcome::Superseded);
-    let Some(MpvNetworkMediaOptionsTransitionOutcome::Failed(error)) = outcome else {
-        panic!("expected authoritative B failure, got {outcome:?}");
-    };
-    assert!(error.to_string().contains("B rejected cache-secs"));
-    assert!(!error.to_string().contains("A rejected cache-secs"));
+    let outcome = outcome.expect("authoritative B failure should remain observable");
+    assert_sanitized_hook_failure(
+        &outcome,
+        2,
+        "HTTPS",
+        "HTTPS",
+        &[
+            "https://media.example.test/b.m3u8",
+            "B rejected cache-secs",
+            "A rejected cache-secs",
+        ],
+    );
 }
 
 #[test]
@@ -2765,10 +2958,14 @@ fn successful_network_a_superseded_by_failed_network_b_reports_b_failure() {
     let (apply, outcome, _) =
         run_core_hook_supersession_scenario(true, HookSupersessionTarget::NetworkFailure);
     assert_eq!(apply, MpvActiveNetworkMediaOptionsApplyOutcome::Superseded);
-    let Some(MpvNetworkMediaOptionsTransitionOutcome::Failed(error)) = outcome else {
-        panic!("expected authoritative B failure, got {outcome:?}");
-    };
-    assert!(error.to_string().contains("B rejected cache-secs"));
+    let outcome = outcome.expect("authoritative B failure should remain observable");
+    assert_sanitized_hook_failure(
+        &outcome,
+        2,
+        "HTTPS",
+        "HTTPS",
+        &["https://media.example.test/b.m3u8", "B rejected cache-secs"],
+    );
 }
 
 #[test]
@@ -2883,6 +3080,11 @@ fn successful_explicit_retry_rearms_independent_hook_degradation_reporting() {
         adapter.test_network_options_last_accepted_load_sequence(),
         Some(1)
     );
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::HookRecovered),
+        "a successful explicit retry must positively recover hook health"
+    );
 
     adapter.force_test_network_media_options_hook_heartbeat_due();
     assert!(matches!(
@@ -2909,6 +3111,193 @@ fn continuous_hook_degradation_is_emitted_only_once() {
     );
 }
 
+#[cfg(feature = "test-support")]
+#[test]
+fn network_options_map_change_preserves_queued_hook_degradation_and_dedup_state() {
+    let mut adapter = configured_v3_hook_reducer_adapter();
+    adapter.inject_test_network_media_options_hook_degradation("original lease failure");
+
+    adapter.configure_network_media_options([("cache-secs", "90"), ("cache-pause-wait", "7")]);
+    adapter
+        .inject_test_network_media_options_hook_degradation("duplicate after settings-map change");
+
+    let Some(MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error)) =
+        adapter.take_network_media_options_transition_outcome()
+    else {
+        panic!("the original queued hook degradation must survive a settings-map change");
+    };
+    assert!(error.to_string().contains("original lease failure"));
+    assert!(
+        !error
+            .to_string()
+            .contains("duplicate after settings-map change"),
+        "continuous degradation must retain the original observable failure"
+    );
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None,
+        "a map change must not rearm duplicate degradation while health remains degraded"
+    );
+
+    adapter.configure_test_network_options_hook_instance("test-hook-instance", 0);
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::HookRecovered)
+    );
+    assert!(adapter.test_network_media_options_hook_is_ready());
+
+    adapter.inject_test_network_media_options_hook_degradation("lease failed after recovery");
+    let Some(MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error)) =
+        adapter.take_network_media_options_transition_outcome()
+    else {
+        panic!("positive recovery must rearm later degradation reporting");
+    };
+    assert!(error.to_string().contains("lease failed after recovery"));
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None
+    );
+
+    let mut ordered = configured_v3_hook_reducer_adapter();
+    ordered.inject_test_network_media_options_hook_degradation("first independent failure");
+    ordered.inject_test_network_media_options_hook_recovery();
+    ordered.inject_test_network_media_options_hook_degradation("latest independent failure");
+
+    ordered.configure_network_media_options([("cache-secs", "120")]);
+    let Some(MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error)) =
+        ordered.take_network_media_options_transition_outcome()
+    else {
+        panic!("the current post-recovery degradation must survive a settings-map change");
+    };
+    assert!(error.to_string().contains("latest independent failure"));
+    assert!(
+        !error.to_string().contains("first independent failure"),
+        "the superseded pre-recovery degradation must not be replayed"
+    );
+    assert_eq!(
+        ordered.take_network_media_options_transition_outcome(),
+        None,
+        "D1, HookRecovered, D2 must collapse to exactly the current D2 after a map change"
+    );
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn idle_and_local_observations_cannot_clear_hook_degradation_without_positive_recovery() {
+    let mut adapter = configured_v3_hook_reducer_adapter();
+    adapter.inject_test_network_media_options_hook_degradation("lease unavailable");
+    assert!(matches!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(_))
+    ));
+    assert!(!adapter.test_network_media_options_hook_is_ready());
+
+    adapter.inject_test_network_media_options_no_active_media();
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::NoActiveMedia),
+        "terminal idle may resolve media policy without claiming the hook recovered"
+    );
+    assert!(
+        !adapter.test_network_media_options_hook_is_ready(),
+        "idle policy success must leave independent hook degradation intact"
+    );
+
+    adapter.begin_test_network_options_event_batch();
+    adapter.observe_test_network_options_path("C:/media/local-after-degradation.mkv");
+    adapter.end_test_network_options_event_batch();
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None,
+        "an unsequenced local observation is not positive hook recovery"
+    );
+    assert!(!adapter.test_network_media_options_hook_is_ready());
+
+    adapter.configure_test_network_options_hook_instance("test-hook-instance", 0);
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::HookRecovered)
+    );
+    assert!(adapter.test_network_media_options_hook_is_ready());
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        None
+    );
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn superseded_policy_and_hook_health_resolve_independently_in_both_event_orders() {
+    let mut idle_then_hook = superseded_network_options_adapter_awaiting_hook_result();
+    idle_then_hook.inject_test_network_media_options_hook_degradation("lease unavailable");
+    assert!(matches!(
+        idle_then_hook.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(_))
+    ));
+    assert!(
+        idle_then_hook.test_network_options_awaiting_authoritative_transition(),
+        "hook degradation must preserve the successor's pending authoritative policy"
+    );
+    assert!(!idle_then_hook.test_network_media_options_hook_is_ready());
+
+    idle_then_hook.inject_test_network_media_options_no_active_media();
+    assert_eq!(
+        idle_then_hook.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::NoActiveMedia)
+    );
+    assert!(
+        !idle_then_hook.test_network_options_awaiting_authoritative_transition(),
+        "terminal idle should resolve only the pending media policy"
+    );
+    assert!(
+        !idle_then_hook.test_network_media_options_hook_is_ready(),
+        "terminal idle must not recover the independent hook failure"
+    );
+
+    idle_then_hook.inject_test_network_media_options_hook_recovery();
+    assert_eq!(
+        idle_then_hook.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::HookRecovered)
+    );
+    assert!(idle_then_hook.test_network_media_options_hook_is_ready());
+    assert_eq!(
+        idle_then_hook.take_network_media_options_transition_outcome(),
+        None
+    );
+
+    let mut hook_then_local = superseded_network_options_adapter_awaiting_hook_result();
+    hook_then_local.inject_test_network_media_options_hook_degradation("lease unavailable");
+    assert!(matches!(
+        hook_then_local.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(_))
+    ));
+    assert!(hook_then_local.test_network_options_awaiting_authoritative_transition());
+
+    hook_then_local.inject_test_network_media_options_hook_recovery();
+    assert_eq!(
+        hook_then_local.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::HookRecovered),
+        "positive hook recovery must be reported before the later policy result"
+    );
+    assert!(
+        hook_then_local.test_network_options_awaiting_authoritative_transition(),
+        "hook recovery must not fabricate completion for the pending successor policy"
+    );
+    assert!(hook_then_local.test_network_media_options_hook_is_ready());
+
+    hook_then_local.inject_test_network_media_options_local_media_unchanged();
+    assert_eq!(
+        hook_then_local.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::LocalMediaUnchanged)
+    );
+    assert!(!hook_then_local.test_network_options_awaiting_authoritative_transition());
+    assert!(hook_then_local.test_network_media_options_hook_is_ready());
+    assert_eq!(
+        hook_then_local.take_network_media_options_transition_outcome(),
+        None
+    );
+}
+
 #[test]
 fn ownership_loss_is_typed_and_keeps_playback_attached() {
     let writes = Arc::new(Mutex::new(Vec::new()));
@@ -2930,7 +3319,7 @@ fn ownership_loss_is_typed_and_keeps_playback_attached() {
     );
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
-        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
+        Some(MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated)
     );
     assert!(
         adapter.test_network_media_options_hook_is_ready(),
@@ -2968,7 +3357,7 @@ fn transport_telemetry_only_pump_keeps_core_hook_ownership_live_past_the_lease()
         .expect("initial hook ownership should configure");
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
-        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
+        Some(MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated)
     );
 
     let deadline = Instant::now() + Duration::from_millis(2_200);
@@ -3013,7 +3402,7 @@ fn accepted_but_unacknowledged_heartbeat_degrades_after_bounded_deadline() {
         .expect("initial hook ownership should configure");
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
-        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied)
+        Some(MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated)
     );
 
     adapter.force_test_network_media_options_hook_heartbeat_due();
@@ -3105,7 +3494,7 @@ fn newer_network_success_supersedes_rejected_older_attempt_and_remains_final_out
 
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
-        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated),
         "the newer complete C application must be the only observable outcome"
     );
     assert_eq!(
@@ -3232,7 +3621,7 @@ fn sorotte_network_loadfile_path_echo_does_not_double_apply_embedded_options() {
     ));
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
-        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated),
         "embedded Sorotte options must signal recovery from the earlier external rejection"
     );
 }
@@ -3276,7 +3665,7 @@ fn pending_sorotte_load_poll_applies_mismatched_network_path_and_retains_target_
     assert_eq!(adapter.current_path(), Some(polled_external_target));
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
-        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated),
         "fresh polling must apply policy to authoritative external B"
     );
     assert_eq!(
@@ -3294,7 +3683,7 @@ fn pending_sorotte_load_poll_applies_mismatched_network_path_and_retains_target_
     assert_eq!(update.path.as_deref(), Some(requested_target));
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
-        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated),
         "matching A should consume its retained embedded marker without another write"
     );
     assert_eq!(
@@ -3340,7 +3729,7 @@ fn pending_sorotte_load_drains_matching_start_and_path_events_before_poll_respon
     assert_eq!(update.path.as_deref(), Some(requested_target));
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
-        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated),
         "the queued path echo should consume the embedded-options marker"
     );
     assert_eq!(
@@ -3627,7 +4016,7 @@ fn external_network_option_rejection_is_queued_while_healthy_and_only_once() {
         .expect("local interlude and later network recovery should remain healthy");
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
-        Some(MpvNetworkMediaOptionsTransitionOutcome::Applied),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated),
         "a later successful network generation must clear higher-layer degradation"
     );
     assert_eq!(

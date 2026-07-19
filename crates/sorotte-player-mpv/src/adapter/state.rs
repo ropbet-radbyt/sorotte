@@ -224,7 +224,7 @@ impl Default for MpvAdapter {
             next_network_media_options_hook_heartbeat_nonce: 1,
             network_media_options_hook_instance_id: None,
             network_media_options_hook_last_accepted_load_sequence: None,
-            network_media_options_hook_degraded: false,
+            network_media_options_hook_health: NetworkOptionsHookHealth::Pending,
             network_media_options_hook_ownership_possible: false,
             network_media_options_hook_configuration_in_progress: false,
             network_media_options_policy_degraded: false,

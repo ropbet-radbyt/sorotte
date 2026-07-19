@@ -24,7 +24,15 @@ end
 
 -- Stable for this canonical Lua client lifetime. Rust pairs it with the attachment id so a
 -- delivery retry preserves the sequence floor while a genuinely reloaded hook starts a new one.
-local hook_instance_id = SCRIPT_NAME .. ":" .. tostring({})
+local hook_instance_anchor = {}
+local hook_instance_pid = utils.getpid ~= nil and utils.getpid() or "unknown"
+local hook_instance_id = table.concat({
+    SCRIPT_NAME,
+    tostring(hook_instance_pid),
+    tostring(os.time()),
+    string.format("%.17g", mp.get_time()),
+    tostring(hook_instance_anchor),
+}, ":")
 
 local owner_id = nil
 local attachment_id = nil

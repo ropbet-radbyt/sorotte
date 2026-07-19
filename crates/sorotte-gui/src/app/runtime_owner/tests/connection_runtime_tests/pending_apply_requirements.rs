@@ -104,6 +104,7 @@ fn install_attached_unacknowledging_mpv_baseline(
 
 #[test]
 fn chat_and_osd_requirements_follow_their_runtime_consumers() {
+    let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
     for id in [
         SettingId::ChatInputFont,
         SettingId::ChatTopMargin,
@@ -137,6 +138,7 @@ fn chat_and_osd_requirements_follow_their_runtime_consumers() {
 
 #[test]
 fn streaming_requirements_follow_player_and_session_consumers() {
+    let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
     for id in [
         SettingId::StreamingCustomFormat,
         SettingId::StreamingReadAheadSeconds,
@@ -186,6 +188,7 @@ fn streaming_requirements_follow_player_and_session_consumers() {
 
 #[test]
 fn detached_ordinary_save_does_not_report_reconnect() {
+    let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
     let initial = StoredClientSettingsMvp {
         host: Some("active-a.example".to_owned()),
         port: Some(8999),
@@ -214,6 +217,7 @@ fn detached_ordinary_save_does_not_report_reconnect() {
 
 #[test]
 fn connected_host_save_and_revert_toggle_reconnect_symmetrically() {
+    let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
     let active = StoredClientSettingsMvp {
         host: Some("active-a.example".to_owned()),
         port: Some(8999),
@@ -256,6 +260,7 @@ fn connected_host_save_and_revert_toggle_reconnect_symmetrically() {
 
 #[test]
 fn application_language_and_force_prompt_save_reverts_are_symmetric() {
+    let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
     let initial = StoredClientSettingsMvp {
         language: Some("en".to_owned()),
         force_gui_prompt: Some(false),
@@ -348,6 +353,7 @@ fn active_player_save_and_revert_toggle_restart_player_symmetrically() {
 
 #[test]
 fn tainted_partial_bridge_apply_is_rolled_back_without_core_restart_guidance() {
+    let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
     let applied_settings = StoredClientSettingsMvp {
         player_path: Some("C:/Players/mpv.exe".to_owned()),
         chat_top_margin: Some(25),
@@ -399,6 +405,7 @@ fn tainted_partial_bridge_apply_is_rolled_back_without_core_restart_guidance() {
 
 #[test]
 fn tainted_player_without_a_live_adapter_keeps_restart_guidance_and_failure_reason() {
+    let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
     let settings = StoredClientSettingsMvp {
         player_path: Some("C:/Players/mpv.exe".to_owned()),
         check_for_updates_automatically: Some(true),
@@ -438,6 +445,7 @@ fn tainted_player_without_a_live_adapter_keeps_restart_guidance_and_failure_reas
 
 #[test]
 fn reverting_a_failed_player_target_reconciles_the_stale_target_and_error() {
+    let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
     let settings_a = StoredClientSettingsMvp {
         player_path: Some("C:/Players/vlc-a.exe".to_owned()),
         check_for_updates_automatically: Some(true),
@@ -490,6 +498,7 @@ fn reverting_a_failed_player_target_reconciles_the_stale_target_and_error() {
 
 #[test]
 fn reverting_a_failed_attachable_target_keeps_restart_until_the_restored_target_is_attached() {
+    let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
     let settings_a = StoredClientSettingsMvp {
         player_path: Some("C:/Players/A/mpv.exe".to_owned()),
         check_for_updates_automatically: Some(true),
@@ -542,6 +551,7 @@ fn reverting_a_failed_attachable_target_keeps_restart_until_the_restored_target_
 
 #[test]
 fn osd_timeout_save_applies_to_attached_mpv_without_reconnect_or_restart() {
+    let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
     let initial = StoredClientSettingsMvp {
         player_path: Some("C:/Players/mpv.exe".to_owned()),
         notification_timeout_seconds: Some(3),
@@ -592,6 +602,7 @@ fn osd_timeout_save_applies_to_attached_mpv_without_reconnect_or_restart() {
 
 #[test]
 fn missing_syncplayintf_ack_keeps_player_and_offers_bridge_retry_after_save() {
+    let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
     let initial = StoredClientSettingsMvp {
         player_path: Some("C:/Players/mpv.exe".to_owned()),
         chat_move_osd: Some(false),
@@ -668,6 +679,7 @@ fn missing_syncplayintf_ack_keeps_player_and_offers_bridge_retry_after_save() {
 
 #[test]
 fn bridge_warning_does_not_suppress_restart_for_incompatible_player_target() {
+    let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
     let initial = StoredClientSettingsMvp {
         player_path: Some("C:/Players/mpv-a.exe".to_owned()),
         ..StoredClientSettingsMvp::default()
@@ -962,6 +974,7 @@ fn bridge_retry_clears_only_bridge_state_while_streaming_reapply_is_pending() {
 
 #[test]
 fn chat_margin_save_applies_to_attached_mpv_without_reconnect_or_restart() {
+    let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
     let initial = StoredClientSettingsMvp {
         player_path: Some("C:/Players/mpv.exe".to_owned()),
         chat_top_margin: Some(25),
@@ -993,6 +1006,7 @@ fn chat_margin_save_applies_to_attached_mpv_without_reconnect_or_restart() {
 
 #[test]
 fn chat_input_save_applies_to_mpv_and_reports_only_reconnect_until_reconnected() {
+    let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
     let initial = StoredClientSettingsMvp {
         player_path: Some("C:/Players/mpv.exe".to_owned()),
         chat_input_enabled: Some(true),
@@ -1030,6 +1044,7 @@ fn chat_input_save_applies_to_mpv_and_reports_only_reconnect_until_reconnected()
 
 #[test]
 fn successful_player_retry_reconciles_restart_player_requirement() {
+    let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
     let initial = StoredClientSettingsMvp::default();
     let (root, mut owner, handle, mut state) =
         persisted_owner_and_state("pending-apply-player-retry", &initial);
@@ -1055,6 +1070,7 @@ fn successful_player_retry_reconciles_restart_player_requirement() {
 
 #[test]
 fn live_autoplay_overrides_do_not_create_reconnect_guidance_on_unrelated_save() {
+    let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
     let initial = StoredClientSettingsMvp {
         username: Some("alice".to_owned()),
         room: Some("room-a".to_owned()),
@@ -1125,6 +1141,7 @@ fn live_autoplay_overrides_do_not_create_reconnect_guidance_on_unrelated_save() 
 
 #[test]
 fn reload_to_intentionally_unconfigured_player_clears_restart_requirement() {
+    let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
     let initial = StoredClientSettingsMvp {
         player_path: Some("C:/Players/vlc.exe".to_owned()),
         ..StoredClientSettingsMvp::default()

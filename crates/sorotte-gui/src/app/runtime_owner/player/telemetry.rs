@@ -153,11 +153,16 @@ impl GuiPersistedConfigRuntimeOwner {
         }
         for outcome in streaming_transition_outcomes {
             match outcome {
-                MpvNetworkMediaOptionsTransitionOutcome::Applied => {
+                MpvNetworkMediaOptionsTransitionOutcome::HookRecovered => {
+                    self.record_network_options_hook_recovered();
+                }
+                MpvNetworkMediaOptionsTransitionOutcome::NoActiveMedia
+                | MpvNetworkMediaOptionsTransitionOutcome::LocalMediaUnchanged
+                | MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated => {
                     self.record_network_media_transition_recovered();
                 }
                 MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error) if mpv_connected => {
-                    self.mark_network_media_transition_apply_failed(format!(
+                    self.mark_network_options_hook_degraded(format!(
                         "mpv playback remains available, but Sorotte's core streaming-settings hook needs retry or player restart: {error}"
                     ));
                 }
@@ -369,6 +374,54 @@ impl GuiPersistedConfigRuntimeOwner {
         self.player_unavailability_reason = Some(reason);
     }
 
+    fn mark_network_options_hook_degraded(&mut self, reason: String) {
+        self.network_options_hook_failure_reason = Some(reason.clone());
+        // Hook health is independent of an explicit media-policy apply that is still awaiting
+        // its authoritative load result. Preserve that latch so NoActive/Local/Network/Failed can
+        // resolve the policy baseline even while future hook transitions remain unprotected.
+        self.player_apply_state.core_reapply_required = true;
+        self.pending_apply_requirements_refresh_required = true;
+        if matches!(
+            self.core_player_configuration_health,
+            GuiCorePlayerConfigurationHealth::StreamingDegraded {
+                origin: GuiStreamingDegradationOrigin::ExplicitApply
+                    | GuiStreamingDegradationOrigin::AuthoritativeMediaTransition,
+                ..
+            }
+        ) {
+            return;
+        }
+        self.core_player_configuration_health =
+            GuiCorePlayerConfigurationHealth::StreamingDegraded {
+                reason: reason.clone(),
+                retryable_in_place: true,
+                origin: GuiStreamingDegradationOrigin::NetworkOptionsHook,
+            };
+        self.player_unavailability_reason = Some(reason);
+    }
+
+    fn record_network_options_hook_recovered(&mut self) {
+        let Some(hook_failure_reason) = self.network_options_hook_failure_reason.take() else {
+            return;
+        };
+        let hook_issue_is_projected = matches!(
+            self.core_player_configuration_health,
+            GuiCorePlayerConfigurationHealth::StreamingDegraded {
+                origin: GuiStreamingDegradationOrigin::NetworkOptionsHook,
+                ..
+            }
+        );
+        self.pending_apply_requirements_refresh_required = true;
+        if !hook_issue_is_projected {
+            return;
+        }
+        self.player_apply_state.core_reapply_required = false;
+        self.core_player_configuration_health = GuiCorePlayerConfigurationHealth::Ready;
+        if self.player_unavailability_reason.as_deref() == Some(hook_failure_reason.as_str()) {
+            self.player_unavailability_reason = None;
+        }
+    }
+
     pub(in crate::app::runtime_owner) fn record_network_media_transition_recovered(&mut self) {
         if self.player_apply_state.streaming_apply_awaiting_transition
             && self
@@ -379,7 +432,9 @@ impl GuiPersistedConfigRuntimeOwner {
                 .record_streaming_options_applied(&self.player_launch_state);
             self.pending_apply_requirements_refresh_required = true;
             self.core_player_configuration_health = GuiCorePlayerConfigurationHealth::Ready;
-            self.player_unavailability_reason = None;
+            if !self.restore_network_options_hook_degradation() {
+                self.player_unavailability_reason = None;
+            }
             return;
         }
         let transition_failure_reason = match &self.core_player_configuration_health {
@@ -404,7 +459,9 @@ impl GuiPersistedConfigRuntimeOwner {
         self.player_apply_state.core_reapply_required = false;
         self.pending_apply_requirements_refresh_required = true;
         self.core_player_configuration_health = GuiCorePlayerConfigurationHealth::Ready;
-        if self.player_unavailability_reason.as_deref() == Some(transition_failure_reason.as_str())
+        if !self.restore_network_options_hook_degradation()
+            && self.player_unavailability_reason.as_deref()
+                == Some(transition_failure_reason.as_str())
         {
             self.player_unavailability_reason = None;
         }

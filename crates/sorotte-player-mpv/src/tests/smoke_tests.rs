@@ -188,7 +188,7 @@ fn real_mpv_bridge_lifecycle_over_json_ipc() {
         .expect("real mpv should accept the asynchronous network load request");
     assert_eq!(
         wait_for_network_outcome(&mut contender),
-        MpvNetworkMediaOptionsTransitionOutcome::Applied,
+        MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated,
         "the on-load hook should apply the owned option map to network media"
     );
 
@@ -202,7 +202,7 @@ fn real_mpv_bridge_lifecycle_over_json_ipc() {
         .expect("real mpv should accept the asynchronous local load request");
     assert_eq!(
         wait_for_network_outcome(&mut contender),
-        MpvNetworkMediaOptionsTransitionOutcome::Applied,
+        MpvNetworkMediaOptionsTransitionOutcome::LocalMediaUnchanged,
         "local on-load must complete the installed policy without a file-local write"
     );
 
